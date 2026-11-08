@@ -4421,8 +4421,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   phone that pairs through the relay and one that pairs with a code see the same room. Neither
   the Codex nor the Claude app has a hosted relay shell to follow.
 - Account part (components/AccountPcs.tsx, RelayDashboard.tsx, RelayOverview.tsx,
-  RelayPcTable.tsx, RelayPcDetails.tsx, RelayMap.tsx, AddPcSheet.tsx, StatusDot.tsx, lib/account/,
-  lib/relay/dashboard.ts), only on the front page and only when the page names an account service
+  RelayPcTable.tsx, RelayPcDetails.tsx, RelayMap.tsx, AddPcSheet.tsx, EnrollmentStatus.tsx,
+  StatusDot.tsx, relayPcState.tsx, lib/account/, lib/relay/dashboard.ts), only on the front page
+  and only when the page names an account service
   (`<meta name="ovis-account-service">`, account.ovis.sh unless the build names another) and, in a
   browser, it is app.ovis.sh, the one page a sign-in comes back to; otherwise the front page is the
   saved-PC list above, unchanged.
@@ -4437,45 +4438,56 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   mode (this device's own pairings, `data-dashboard-mode="local"`, the nav's foot offering the
   sign-in).
 - Routes: the dashboard is one page with five hash routes, `#overview` (the default), `#pcs`,
-  `#devices`, `#relay` and `#settings`. Devices lists this device
-  and the account's others, with Sign out and Remove this device; Relay lists each relay host with
-  its PCs and holds the connection map open; Settings is a real page (theme, density, interface
+  `#devices`, `#relay` and `#settings`. Devices shows **This device** and the **Account** controls (**Sign out** and **Remove this device from your account**, or **Sign in** in local mode); Relay holds the connection map open and lists each relay host with its PC count and regional or global; Settings is a real page (theme, density, interface
   font size, language) built from the app's own settings rows.
 - Frame: on a desktop a left nav `--relay-sidebar-w` (240 px) wide on `--bg-panel`, the five places
   with Overview and PCs carrying their counts, the current one on `--bg-elevated`, and the provider
-  and **Sign out** at its foot. The content column stops at `--relay-content-w` (1280 px). A top
+  and **Sign out** (or **Without an account** and **Sign in** in local mode) at its foot. The content column stops at `--relay-content-w` (1280 px). A top
   bar holds the view's title and **Add a PC**, the one primary action on every view. At 768 px and
-  under the nav becomes a bottom tab bar (`--tabbar-h` over the safe area) of the same places, the
-  top bar turns sticky glass with **Add a PC** as a 44 px icon button, and the foot's rows become
-  the page's last section, rendered after the page so Tab follows the eye.
+  under the nav becomes a bottom tab bar (`--tabbar-h` over the safe area) of the same places, and
+  the brand bar turns sticky glass at the top with **Add a PC** as a 44 px icon button (`#devices`
+  carries the account controls on a phone).
 - Overview: a strip of three cells with hairlines between them, **Ready** | **Needs you** |
-  **Relays in use**, each a state dot, its word and one `--fs-xl` numeral. Needs you counts every
+  **Relays in use** (or **Paired with this device** | **Relays** in local mode), each a state dot,
+  its word and one `--fs-xl` numeral. Needs you counts every
   PC that wants something, offline ones included, and says so on a dim line under the numeral
   ("incl. 1 offline"), so the cells add up to the PCs listed. A pressed cell filters the table below
-  (`aria-pressed`). Under the strip, one mono chip per relay host with its PC count and
-  regional or global; a chip filters the table to that relay. Then the attention list: PCs that
-  need you, most urgent first, at most three rows of name and relay, with **View all N** below.
+  (`aria-pressed`). Under the strip, one mono chip per relay host with its PC count,
+  regional or global, and the fastest measured relay RTT when a check answered through it; a chip
+  filters the table to that relay, and once a check has run a dim line summarizes reachability
+  ("Reachable now: {direct} direct · {relay} via relay · {none} no answer"). Then the attention list: PCs that
+  need you, most urgent first, at most three rows of state dot, name, reason (or relay / last seen
+  when the reason is shared) and action, with **View all N** above when more than three need you.
   When the rows share one reason it's said once as a caption above them ("Add window closed · an
   account member must approve") rather than on every row. Then the PC table (below), and last the
-  **Connection map**, a 44 px disclosure row with "N relays · M PCs" on its right, closed until
-  asked for. A first-time account gets one empty state instead of the strip: an icon, one title,
-  one line and **Add a PC**.
-- PCs table (RelayPcTable.tsx), filtered by All / Ready / Needs you / Offline, `--table-row-h`
-  (44 px) rows under a 36 px head. Columns: **Name** (state dot, name, a dim line for a PC new in
-  your account or paired by QR), **State** (the specific word, below), **Route** (how this device
-  reaches the PC right now and the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms",
-  "relay-ap.ovis.sh · 62 ms", or "No answer" / "Not checked"), **Relay** (the assigned host as a
-  mono chip), **Last seen**, and the one action its state allows (Open, Add, Join, Update,
-  Details). Details opens RelayPcDetails beside the table as a `--relay-detail-w` (360 px) side
-  panel at 1100 px and wider, the table dropping Last seen so rows stay on one line; below
-  1100 px the details replace the list in the flow, with a back control. Details holds the same
-  facts as labelled rows (state, route, relay, last seen, version) and the PC's actions docked
-  at its foot.
+  **Connection map**, a 44 px disclosure row that opens `#relay` with "N relays · M PCs" on its right.
+  A first-time account gets one empty state instead of the strip: an icon, one title,
+  one line, **Add a PC** and **Pair with a QR or code**.
+- PCs table (RelayPcTable.tsx), filtered by All / Ready / Needs you / Offline with **Check now**
+  beside the filters, `--table-row-h` (44 px) rows under a 36 px head, or a two-line `<ul>` list
+  on phones (768 px and under) and narrow containers. Columns: **Name** (state dot and name),
+  **State** (the specific word below, plus a dim subline for a fresh Add countdown "new · {n} min
+  left", "Update Ovis on it", or this device's check result after **Check now**; on a phone row a
+  closed Add window also shows "Add window closed · an account member must approve", which is the
+  state word's `title` in the table), **Relay** (how this device reaches a paired PC right now and
+  the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
+  a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
+  host as a mono chip for a PC it isn't paired with), **Last seen**, and the one action its state
+  allows (Open, Try again when account enrollment failed, Add, Join, Update, Details). Selecting a
+  row or **Details** opens RelayPcDetails without opening a socket to the PC: beside the table as a
+  `--relay-detail-w` (360 px) side panel at 1100 px and wider, the table dropping **Last seen** so
+  rows stay on one line; below 1100 px the details replace the list as a full view with **Back**,
+  moving focus to the details heading and returning it to the PC's row on close. Details holds
+  seven labelled rows (state, route, relay, last seen, this device, key ID, version) and the PC's
+  actions (Open or Update, Add or Join, Check now for this PC alone, Forget this PC) at its foot.
 - Connection map (RelayMap.tsx): this device, each relay hub, the PCs behind it. A PC that answered
   by the same network or Tailscale draws its wire straight from this device and skips the hub; a
-  PC reached through a relay hangs off that hub. Wires are still lines in the state dot's tone;
-  only a wire whose PC is being checked animates. On a phone the map is a route list of hops.
-- Add-a-PC sheet (AddPcSheet.tsx): a modal sheet `--relay-sheet-w` (520 px) wide with four
+  PC reached through a relay hangs off that hub. Wires are still lines (`--accent` when live or seen
+  lately, `--text-dim` when unchecked or offline, `--status-working` while checking);
+  only a wire whose PC is being checked animates. On a phone, or past eight PCs, the map is an
+  ordered route list of hops.
+- Add-a-PC sheet and Ready checkpoint (AddPcSheet.tsx, RelayShell.tsx, EnrollmentStatus.tsx,
+  lib/relay/shell.tsx): a modal sheet `--relay-sheet-w` (520 px) wide with four
   segmented bars and a step list, in the mode the row picked, named in `data-add-pc-mode` and its
   phase in `data-add-pc-phase`: `start`, `confirm`, `connecting`, `compare` (six digits to type
   or match), `wrong` (a wrong number, with Try again), `approving`, `ready` and `failed`. **Add**
@@ -4483,15 +4495,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   account, shows this device's digits, and an account member approves on another device. **Add a
   PC** with no PC says how one is added and leads to the QR and code screen. The sheet drives the
   shell's existing join, Pair, match and Cancel; failure stays in the sheet in the shell's own
-  words, except a new identity, which keeps the shell's screen with its ids and Forget.
-- Status vocabulary: one state word per PC, specific to what's true: Ready, Needs approval, Needs
-  update, Checking…, Offline · {date}, Not checked; the strip groups them as Ready, Needs you and
+  words, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
+  at once when local pairing finishes ("{name} is ready to open on this device." with **Open PC**),
+  without waiting on account enrollment. While account enrollment runs (`enrollment: "pending"`),
+  `EnrollmentStatus` shows a spinner and "Adding it to your account…"; when enrollment finishes
+  (`"complete"`), it shows "Every device of your account can open it"; if enrollment fails or times
+  out (`"failed"`), the checkpoint stays on Ready and shows "Ready · not in the account yet" with
+  **Try again** (`data-action="retry-enrollment"`). The enrolling transport stays open in the
+  background if the user opens the PC or closes the checkpoint before enrollment settles, and a
+  paired PC whose enrollment failed or remained pending shows "Ready · not in the account yet" on
+  its dashboard row with **Try again** (which reopens the PC's scope at the Ready checkpoint to
+  retry enrollment).
+- Status vocabulary: one state word per PC, specific to what's true: Ready, Adding it to your
+  account…, Ready · not in the account yet, Needs approval, Needs update, Updating, Checking…,
+  Offline (or Offline · {when}), or for a paired PC in local mode or not listed in the account,
+  Paired · not checked, Answers, or No answer; the strip groups them as Ready, Needs you and
   Offline. The summary,
-  the attention list, the table, Details and the map read one model (lib/relay/dashboard.ts), so a
-  PC never shows two states. Color rule: color sits only on the state dot (StatusDot.tsx, `--dot-size`
-  7 px): filled `--status-done` for ready, half `--notice` for needs you, hollow `--text-dim` for
-  offline, `--status-working` for checking and `--status-blocked` for failed, so the shape alone
-  still reads in forced colors.
+  the attention list, the table, Details and the map read one model (lib/relay/dashboard.ts, with
+  `liveState` in components/relayPcState.tsx letting a live answer from this device beat a stale
+  directory Offline on the row, Details and map). Color rule: color sits only on the state dot (StatusDot.tsx, `--dot-size`
+  7 px): filled `--status-done` for ready, half `--notice` for needs you, ring with an arrow up
+  `--notice` for updating, hollow `--text-dim` for offline, `--status-working` for checking and
+  `--status-blocked` for failed, so the shape alone still reads in forced colors.
   The words stay `--text`, and no row, badge or cell is tinted by state; the one tinted surface is
   the error banner (`--danger-tint` with `--danger-text`) when the account read fails.
 - Motion: nothing enters. Hover and the pressed strip cell change background over `--dur-fast`.
