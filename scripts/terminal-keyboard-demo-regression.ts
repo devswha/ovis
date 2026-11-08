@@ -983,6 +983,11 @@ async function captureSet(browser: Browser, dir: string): Promise<Capture[]> {
       assert.deepEqual(await offlineNow(), [true, false, true], "offline before the capture: control disabled, header not yet saying it within the grace");
       await shot(page, `390-${theme}-disabled-offline`, meta("direct typing, the connection dropped (reconnect held, inside the grace): the bar and the control disabled"), true);
       assert.deepEqual(await offlineNow(), [true, false, true], "still offline after the capture: the screenshot shows the offline state");
+      // a key pressed meanwhile ends the grace at once, the clock still stopped: the person acting is told the
+      // connection is down (a bare Shift, so nothing is typed into the held draft)
+      await page.keyboard.press("Shift");
+      await page.waitForFunction(() => document.querySelector(".conn-reconnecting") !== null && document.querySelector(".conn-live") === null);
+      await page.getByText("Reconnecting to Ovis…").waitFor();
       await page.clock.resume();
       await page.waitForFunction(() => document.querySelector<HTMLButtonElement>('.pane-frame:not(.is-hidden) .key-bar [data-key="keyboard"]')?.disabled === false, undefined, { timeout: 20_000 });
       await role(page, "observe");
