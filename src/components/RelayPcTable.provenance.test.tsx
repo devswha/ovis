@@ -94,5 +94,14 @@ describe("dashboard state provenance across rendered surfaces", () => {
     expect(offline).toContain('data-pc-action="details">Details</button>');
     expect(update).toContain(enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account.");
     expect(offline).toContain(enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account.");
+    const enrollmentText = enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account. Try again.";
+    const lines = (rowHtml: string) => [...rowHtml.matchAll(/class="relay-pc-probe-line"[^>]*>([^<]+)</g)].map((match) => match[1]);
+    // the enrollment line is added under the state; the PC's next action stays beside it
+    expect(lines(update)).toEqual([enrollmentText, "Update Ovis on it"]);
+    expect(lines(offline)).toEqual([enrollmentText]);
+    const model = dashboardModel(pcs, { label: "Me", now: NOW, status: new Map() }, RELAY);
+    const phone = renderToStaticMarkup(<SettingsProvider><RelayPcTable rows={model.rows} narrow onSelect={none} onOpenSheet={none} now={NOW} /></SettingsProvider>);
+    const phoneUpdate = /<li[^>]*data-pc-id="Update"[\s\S]*?<\/li>/.exec(phone)?.[0] ?? "";
+    expect(lines(phoneUpdate)).toEqual([enrollmentText, "Update Ovis on it"]);
   });
 });

@@ -73,8 +73,6 @@ export function RelayPcTable({
   };
   const stateSubline = (row: DashboardRow, updating: boolean, phone = false): string | null => {
     const check = row.check ?? statusMap.get(row.server_id) ?? null;
-    if (mode === "account" && row.enrollment === "pending") return t("Adding it to your account…");
-    if (mode === "account" && row.enrollment === "failed") return t("This PC could not be listed in your account. Try again.");
     if (listedRow(row) && checkedByUser && row.paired) return formatProbeLine(check, t) ?? t("Not checked");
     if (updating) return null;
     if (row.state === "needs-update") return t("Update Ovis on it");
@@ -82,6 +80,13 @@ export function RelayPcTable({
       if (freshIds.has(row.server_id) && row.added_at !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((Date.parse(row.added_at) + 10 * 60_000 - now) / 60_000)) });
       if (phone && row.added_at !== null && row.join !== undefined) return t("Add window closed · an account member must approve");
     }
+    return null;
+  };
+  /** Account enrollment in progress or failed: its own line under the state, so the PC's state and next action stay. */
+  const enrollmentLine = (row: DashboardRow): string | null => {
+    if (mode !== "account") return null;
+    if (row.enrollment === "pending") return t("Adding it to your account…");
+    if (row.enrollment === "failed") return t("This PC could not be listed in your account. Try again.");
     return null;
   };
   /** The state word beside the dot; on a Join row whose 10-minute window closed, the title adds why (the Attention caption and Details say it in full, while the table cell stays one line). */
@@ -155,6 +160,7 @@ export function RelayPcTable({
             const dot = pcDotState(row, updating);
             const selected = selectedPcId === row.server_id;
             const sub = stateSubline(row, updating, true);
+            const enrollment = enrollmentLine(row);
             return (
               <li key={row.server_id} className={selected ? "relay-pc-phone-row is-selected" : "relay-pc-phone-row"}
                 data-pc-state={updating ? "updating" : row.displayState} data-pc-id={row.server_id} onClick={() => onSelect(row.server_id)}>
@@ -174,6 +180,7 @@ export function RelayPcTable({
                     {renderRelay(row)}<span aria-hidden="true">·</span>
                     <span className="relay-pc-seen">{renderSeen(row)}</span>
                   </div>
+                  {enrollment !== null && <p className="relay-pc-probe-line" data-pc-enrollment="">{enrollment}</p>}
                   {sub !== null && <p className="relay-pc-probe-line">{sub}</p>}
                 </div>
               </li>
@@ -193,6 +200,7 @@ export function RelayPcTable({
               const dot = pcDotState(row, updating);
               const selected = selectedPcId === row.server_id;
               const sub = stateSubline(row, updating);
+              const enrollment = enrollmentLine(row);
               return (
                 <tr key={row.server_id} className={selected ? "relay-pc-row is-selected" : "relay-pc-row"}
                   data-pc-state={updating ? "updating" : row.displayState} data-pc-id={row.server_id} onClick={() => onSelect(row.server_id)}>
@@ -208,6 +216,7 @@ export function RelayPcTable({
                   <td className="relay-dash-state-cell relay-pc-cell-state">
                     <div className="relay-pc-state-stack">
                       {stateWord(row, updating)}
+                      {enrollment !== null && <small className="relay-pc-probe-line" data-pc-enrollment="">{enrollment}</small>}
                       {sub !== null && <small className="relay-pc-probe-line">{sub}</small>}
                     </div>
                   </td>
