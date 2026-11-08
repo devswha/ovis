@@ -172,7 +172,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           assertPairing(id === serverId ? current : pairing);
           if (id === serverId) { pairing = change(current); return pairing; }
           return change(current);
-        });
+        }, id === serverId ? undefined : { serverId, assert: assertPairing });
       },
     };
     const record = async (state: EnrollmentState): Promise<void> => {

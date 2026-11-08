@@ -40,7 +40,7 @@ describe("account enrollment ownership", () => {
     const devices = new Map([[offer.server_id, original]]);
     const store: RelayDeviceStore = {
       get: async (id) => devices.get(id), list: async () => [...devices.values()], remove: async (id) => { devices.delete(id); },
-      update: async (id, change) => { const next = change(devices.get(id)); devices.set(id, next); return next; },
+      update: async (id, change, source) => { source?.assert(devices.get(source.serverId)); const next = change(devices.get(id)); devices.set(id, next); return next; },
     };
     const records: AddRecord[] = [];
     for (let index = 0; index < 2; index++) {
@@ -75,7 +75,7 @@ describe("account enrollment ownership", () => {
       override async fetch(path: string) { if (path === heldPath) { requested.resolve(); return response.promise; } return answer(path); }
     }
     const open = async () => { const transport = new Admitted(offer); transports.push(transport); return transport; };
-    const controller = createAccountController({
+    const controller = () => createAccountController({
       container: Object.create(null), entryUrl: "https://app.ovis.invalid", renderApp: () => { throw new TypeError("No app here"); },
       store, accountStore, accountService: "https://account.invalid", accountProviders: ["github"], open,
       accountFetch: async (input, init) => {
@@ -84,7 +84,7 @@ describe("account enrollment ownership", () => {
         return service.fetch(input, init);
       },
     }, { active: () => false, changed: async () => {}, outdated: () => new Set() });
-    return { controller, store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service };
+    return { controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service };
   }
 
   it("does not list a pairing after Forget releases a held renewal", async () => {
@@ -97,22 +97,23 @@ describe("account enrollment ownership", () => {
     expect(run.putPcs).toEqual([]);
   });
 
-  it("does not save an introduced pairing after Forget releases its held update", async () => {
+  it.each(["same", "other"] as const)("does not save an introduced pairing after the %s controller forgets its source during a held update", async (canceller) => {
     const run = await fixture("/api/account/introduction");
     const identity = generateKeyPair();
     const introduced = { server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: run.original.relay, name: "Introduced" };
     const updating = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const update = run.store.update;
-    run.store.update = async (id, change) => {
+    run.store.update = async (id, change, source) => {
       if (id === introduced.server_id) { updating.resolve(); await release.promise; }
-      return update(id, change);
+      return update(id, change, source);
     };
     const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
     await run.requested.promise;
     run.response.resolve(Response.json({ pcs: [introduced] }));
     await updating.promise;
-    run.controller.cancelEnrollment(run.original.server_id);
+    const controller = canceller === "same" ? run.controller : run.otherController;
+    controller.cancelEnrollment(run.original.server_id);
     await forgetSavedPc(run.original.server_id, run.store);
     release.resolve();
     await pending;
