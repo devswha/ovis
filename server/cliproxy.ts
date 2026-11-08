@@ -91,11 +91,14 @@ export class CLIProxyService {
     const temporary = `${this.path}.${process.pid}.tmp`;
     writeFileSync(temporary, JSON.stringify(config ?? {}), { mode: 0o600 });
     renameSync(temporary, this.path);
+    // another Hub, or another key to it, has other accounts: no row of the old one stays, hidden or not
+    const moved = config?.url !== this.config?.url || config?.management_key !== this.config?.management_key;
     this.config = config;
     this.blocked = null;
     this.problem = null;
     this.checked = false;
     this.invalidate();
+    if (moved) this.entries = [];
   }
 
   /** The next report reads the Hub anew, except the rows of the hidden or removed accounts: their credentials stay unused (#3333). */

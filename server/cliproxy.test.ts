@@ -132,6 +132,21 @@ describe("CLIProxyAPI v8", () => {
     expect(after).toEqual(first);
   });
 
+  it("drops hidden rows when the Hub URL changes", async () => {
+    // Given
+    await configure();
+    const hidden = new Set((await service.report()).map((entry) => entry.key));
+    await service.report(false, hidden);
+    const other = startFakeCLIProxy(KEY);
+    try {
+      // When
+      await send("", { url: other.server.url.origin, management_key: KEY });
+      await service.report(false, hidden);
+      // Then
+      expect(other.calls.filter((entry) => entry.path === "/requests/api-call").length).toBe(2);
+    } finally { other.server.stop(true); }
+  });
+
   it("persists the key privately without returning it when saved or reloaded", async () => {
     // Given
     const saved = await configure();

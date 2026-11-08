@@ -1238,6 +1238,27 @@ describe("the service", () => {
     expect(reads).toEqual(["token-a", "token-b", "token-a"]);
   });
 
+  it("searches a provider with one hidden and one visible account once per FRESH_MS", async () => {
+    let searches = 0;
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() { searches++; return ["a", "b"].map((id) => ({ source: id, token: `token-${id}`, expiresAt: null, account: { id, label: id } })); },
+      async read() { return { plan: "pro", windows: [] }; },
+    };
+    let skipped = new Set<string>();
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => skipped);
+    await service.report();
+    skipped = new Set(["copilot:a"]);
+    now += FRESH_MS;
+    await service.report();
+    now += 1000;
+    await service.report();
+    now += 1000;
+    await service.report();
+    expect(searches).toBe(2);
+  });
+
   it("marks a failed request and asks again after RETRY_MS", async () => {
     signInCodex(NOW / 1000 + 24 * 3600);
     replies.set(CODEX_USAGE, { status: 500 });

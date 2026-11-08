@@ -1180,7 +1180,9 @@ export class UsageService {
     for (const source of search?.sources ?? []) if (!read.some(([found]) => found === source)) this.entries.delete(source);
     for (const [source, entry] of read) this.entries.set(source, entry);
     const sources = read.map(([source]) => source);
-    this.searches.set(provider.id, { readAt: now, nextAt: incomplete ? now : Math.min(now + FRESH_MS, ...read.map(([, entry]) => entry.nextAt)), sources });
+    // a hidden account's kept reading is past its time and is not read again, so it cannot bring the next search forward
+    const timed = read.filter(([, entry]) => !(entry.usage && this.lastSkipped.has(entry.usage.key)));
+    this.searches.set(provider.id, { readAt: now, nextAt: incomplete ? now : Math.min(now + FRESH_MS, ...timed.map(([, entry]) => entry.nextAt)), sources });
     return usages(sources);
   }
 
