@@ -111,7 +111,12 @@ export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane
   const { panes } = snapshot;
   // a read older than one already applied shows what the newest said, and changes nothing it keeps
   if (!newest) {
-    for (const pane of panes) if (pane.agent === "letta" && pane.agent_status === "unknown" && !tracks(pane.pane_id)) pane.agent_status = last.get(pane.pane_id) ?? pane.agent_status;
+    for (const pane of panes) {
+      if (pane.agent !== "letta") continue;
+      if (!tracks(pane.pane_id) && pane.agent_status === "unknown") pane.agent_status = last.get(pane.pane_id) ?? pane.agent_status;
+      // a tracked pane's file says working while its approval waits: the newest read saw it blocked
+      else if (tracks(pane.pane_id) && last.get(pane.pane_id) === "blocked") pane.agent_status = "blocked";
+    }
     syncAgents(snapshot);
     return [];
   }
@@ -165,6 +170,8 @@ function syncAgents(snapshot: { panes: HerdrPane[]; agents?: { pane_id: string; 
  */
 /** What of a Letta pane's title finds it anew: the name and whether a spinner or the approval mark shows, never which spinner frame. */
 export function lettaRefreshKey(pane: HerdrPane): string {
+  // another pane's title (a shell's, per command) says nothing of Letta
+  if (pane.agent !== "letta") return "";
   const title = pane.terminal_title ?? "";
   const mark = LETTA_ASKING_TITLE.test(title) ? "asking" : LETTA_BUSY_TITLE.test(title) ? "busy" : "";
   return `${mark}\0${title.replace(LETTA_ASKING_TITLE, "").replace(LETTA_BUSY_TITLE, "")}`;
