@@ -255,27 +255,22 @@ interface RevisionTarget { path: string; checkWindow: boolean; live?: () => bool
 /**
  * The file `path` names as its caller authorized it, taken in the same turn of the event loop, before
  * anything awaits. The page readers follow a link, and so does this; `link` says the settle refuses it,
- * as its open does wherever an open can (O_NOFOLLOW; not Windows). `dir` is the folder the path names it
- * in, taken after it: a file renamed over it there is the agent's own rewrite, a folder swapped on the way
- * names another folder.
+ * as its open does wherever an open can (O_NOFOLLOW; not Windows).
  */
-function authorizedFile(path: string): { dev: number; ino: number; link: boolean; dir: { dev: number; ino: number } } | null {
+function authorizedFile(path: string): { dev: number; ino: number; link: boolean } | null {
   try {
     const own = lstatSync(path);
     const stat = own.isSymbolicLink() ? statSync(path) : own;
-    if (!stat.isFile()) return null;
-    const dir = statSync(dirname(path));
-    return { dev: stat.dev, ino: stat.ino, link: own.isSymbolicLink() && constants.O_NOFOLLOW !== undefined, dir: { dev: dir.dev, ino: dir.ino } };
+    return stat.isFile() ? { dev: stat.dev, ino: stat.ino, link: own.isSymbolicLink() && constants.O_NOFOLLOW !== undefined } : null;
   } catch { return null; }
 }
 
-/** Whether `path` still names the file `authorized` (authorizedFile), in the same folder. */
+/** Whether `path` still names the file `authorized` (authorizedFile). */
 function stillAuthorized(path: string, authorized: ReturnType<typeof authorizedFile>): boolean {
   if (authorized === null) return false;
   try {
     const now = statSync(path);
-    const dir = statSync(dirname(path));
-    return now.dev === authorized.dev && now.ino === authorized.ino && dir.dev === authorized.dir.dev && dir.ino === authorized.dir.ino;
+    return now.dev === authorized.dev && now.ino === authorized.ino;
   } catch { return false; }
 }
 
@@ -316,39 +311,28 @@ const REVISION_SETTLES = 3;
  * the thread pool first (settleTranscriptRevision), from the file authorized as this is called. A change
  * the read meets after that is settled again, REVISION_SETTLES times at most, and the last read reads
  * nothing for its revision. Null when, after a settle, the reader no longer wants it (`live`). The read
- * answers only while the path names the authorized file before and after it. Another file there, renamed
- * over it in the same folder (an agent rewriting its transcript), is authorized again and settled in its
- * turn; one in another folder (a folder on the way swapped since puts another agent's file there), or a
- * replacement the last settle meets, is transcript_missing.
+ * answers only while the path names the authorized file before and after it. Any other file there (one
+ * renamed over it, even from its own folder, or a folder on the way swapped since) may be another
+ * session's, and is never read: that read is pending, for the next poll to authorize afresh. A path that
+ * named no file to authorize is transcript_missing.
  */
 async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ value: T } | null> {
-  let authorized = authorizedFile(target.path);
+  const authorized = authorizedFile(target.path);
+  const refuse = () => authorized === null ? new ConversationUnavailable("transcript_missing") : new ConversationReadPending();
   for (let settles = 1; ; settles++) {
     await settleTranscriptRevision(target, authorized);
     if (!(target.live?.() ?? true)) return null;
     const reads = settles < REVISION_SETTLES ? { mode: "deferred" as const, unsettled: false } : { mode: "none" as const };
     revisionReads = reads;
-    let replaced = false;
     try {
-      replaced = !stillAuthorized(target.path, authorized);
-      if (!replaced) {
-        const value = read();
-        replaced = !stillAuthorized(target.path, authorized);
-        if (!replaced && (reads.mode === "none" || !reads.unsettled)) return { value };
-      }
+      if (!stillAuthorized(target.path, authorized)) throw refuse();
+      const value = read();
+      if (!stillAuthorized(target.path, authorized)) throw refuse();
+      if (reads.mode === "none" || !reads.unsettled) return { value };
     } catch (error) {
-      // a read that met an unsettled revision, or a file replaced meanwhile, answered from a stale one: its
-      // failure says nothing
-      replaced = !stillAuthorized(target.path, authorized);
-      if (!replaced && (reads.mode === "none" || !reads.unsettled)) throw error;
+      // a read that met an unsettled revision answered from a stale one: its failure says nothing
+      if (reads.mode === "none" || !reads.unsettled) throw error;
     } finally { revisionReads = { mode: "inline" }; }
-    if (replaced) {
-      const again = authorizedFile(target.path);
-      if (settles >= REVISION_SETTLES || authorized === null || again === null || again.dir.dev !== authorized.dir.dev || again.dir.ino !== authorized.dir.ino) {
-        throw new ConversationUnavailable("transcript_missing");
-      }
-      authorized = again;
-    }
   }
 }
 
@@ -2447,7 +2431,8 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (settled === null) throw new ConversationUnavailable("no_session_id");
     answer = settled.value ?? await agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome);
   } catch (error) {
-    if (resolved.source !== "copilot-transcript" || !(error instanceof ConversationUnavailable) || error.message !== "transcript_missing") throw error;
+    const refused = error instanceof ConversationReadPending || (error instanceof ConversationUnavailable && error.message === "transcript_missing");
+    if (resolved.source !== "copilot-transcript" || !refused) throw error;
     // refused before its read (readSettled: the path names another file than the one authorized, as
     // after a replacement by rename): the history is the one the path names now, as a read beginning
     // now would bind it, and a cursor from another one has changed history
@@ -3555,7 +3540,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
     let settled: { value: string | null } | null;
     // a transcript the path no longer names (replaced while it settled) has not this output
     try { settled = await readSettled({ path: resolved.path, checkWindow: false, live }, lookup); }
-    catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
+    catch (error) { if (error instanceof ConversationUnavailable || error instanceof ConversationReadPending) return null; throw error; }
     // a pane bound to another transcript while this settled (another OmO session) has not this output:
     // one seen bound elsewhere is refused at once, any other resolved again. Copilot's is checked below.
     if (settled === null || rebound(paneId, transcript)) return null;

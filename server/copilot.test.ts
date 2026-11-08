@@ -876,7 +876,7 @@ it.skipIf(process.platform !== "linux")("reads a Copilot pane at the page size t
   }
 });
 
-it.skipIf(process.platform !== "linux")("answers the new history, not a missing transcript, to a Copilot read whose transcript is replaced by rename while it settles", async () => {
+it.skipIf(process.platform !== "linux")("answers a changed history, not a missing transcript, to a Copilot read whose transcript is replaced by rename while it settles", async () => {
   const root = mkdtempSync(join(tmpdir(), "copilot-replaced-"));
   const transcript = join(root, "session-state", session, "events.jsonl");
   mkdirSync(join(root, "session-state", session), { recursive: true });
@@ -908,10 +908,8 @@ it.skipIf(process.platform !== "linux")("answers the new history, not a missing 
     const shown = await paneConversation("own");
     expect(shown.source).toBe("copilot-transcript");
     replace = true;
-    const fresh = await paneConversation("own", undefined, { history_id: shown.history_id });
+    await expect(paneConversation("own", undefined, { history_id: shown.history_id })).rejects.toBeInstanceOf(HistoryChanged);
     expect(replace).toBe(false);
-    expect(fresh.history_id).not.toBe(shown.history_id);
-    expect(JSON.stringify(fresh.turns)).toContain("second");
   } finally {
     opens.mockRestore(); snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();
     fs.closeSync(held); forgetTranscriptState();

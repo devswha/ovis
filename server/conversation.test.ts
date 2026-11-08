@@ -28,7 +28,7 @@ import * as gjcRuntime from "./gjc-runtime.ts";
 import * as runtime from "./herdr-core/runtime.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -3096,11 +3096,11 @@ describe("a page read that settles its transcript's revision off the event loop"
       }) as typeof handle.close;
       return handle;
     }) as typeof fsp.open));
-    await expect(paneConversation(pane.pane_id)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
     expect(swaps).toBe(1);
   });
 
-  it("answers from the new file when the agent replaces its transcript by atomic rename between the settle and the page read", async () => {
+  it("answers a pending read, not the new file, when the agent replaces its transcript by atomic rename between the settle and the page read", async () => {
     const project = join(root, "project");
     mkdirSync(project);
     path = join(project, "session.jsonl");
@@ -3123,9 +3123,35 @@ describe("a page read that settles its transcript's revision off the event loop"
       }) as typeof handle.close;
       return handle;
     }) as typeof fsp.open));
-    const answer = await paneConversation(pane.pane_id);
-    expect(renames).toBeGreaterThan(0);
-    expect(JSON.stringify(answer.turns)).toContain("rewritten");
+    await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+    expect(renames).toBe(1);
+  });
+
+  it("never answers another session's transcript renamed over the pane's own in its folder between the settle and the page read", async () => {
+    const project = join(root, "project");
+    mkdirSync(project);
+    path = join(project, "session.jsonl");
+    const foreign = join(project, "other-session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    writeFileSync(foreign, JSON.stringify({ type: "session", id: "cmd-foreign", version: 3 }) + "\n" + message("f1", null, "another session's secret"));
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    await paneConversation(pane.pane_id);
+    // the settle closes its handle on the pane's transcript, then another session's file is renamed over it
+    let renames = 0;
+    const { open } = fsp;
+    restores.push(spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await open(...args);
+      if (args[0] !== path) return handle;
+      const close = handle.close.bind(handle);
+      handle.close = (async () => {
+        await close();
+        if (renames++ > 0) return;
+        renameSync(foreign, path);
+      }) as typeof handle.close;
+      return handle;
+    }) as typeof fsp.open));
+    await expect(paneConversation(pane.pane_id)).rejects.toBeInstanceOf(ConversationReadPending);
+    expect(renames).toBe(1);
   });
 
   it("settles again off the event loop a transcript touched between its settle and its page read", async () => {
@@ -3218,7 +3244,7 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(await output).toBeNull();
   });
 
-  it("answers the new file's tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {
+  it("answers no tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {
     const omoPane = { pane_id: "omo-replaced", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
     writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old file" }] } }) + "\n");
     restores.push(
@@ -3233,7 +3259,7 @@ describe("a page read that settles its transcript's revision off the event loop"
     writeFileSync(`${path}.next`, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "new file" }] } }) + "\n");
     renameSync(`${path}.next`, path);
     stat.release();
-    expect(await output).toBe("new file");
+    expect(await output).toBeNull();
   });
 
   it("answers nothing from a herdr session left while its transcript settled", async () => {
