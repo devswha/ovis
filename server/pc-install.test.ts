@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as listenOn } from "node:net";
 import { tmpdir } from "node:os";
 import { readProcessBirth } from "./process-owner.ts";
@@ -55,6 +55,8 @@ interface Pc {
   births?: Record<number, string>;
   /** pids whose process started after its birth-less registration was written (a pid reused later) */
   startedLate?: number[];
+  /** another server registers on the socket (pid 4500) when the restore runs, its own and not the one restored */
+  otherRegistersOnRestore?: boolean;
   /** pids that run another program than Ovis now (a registration left behind, its pid reused) */
   otherPrograms?: number[];
   /** the stop signal does not end the server */
@@ -115,7 +117,12 @@ function fixture(pc: Pc) {
     if (script.includes("ovis-restore.XXXXXXXX") && !sameAsShown(script)) return "changed\n";
     if (script.includes("ovis-restore.XXXXXXXX")) return pc.uncapturable ? "" : pc.captureFails ? "error\n" : pc.unfaithful ? "unfaithful\n" : "/tmp/ovis-restore.Ab12Cd34\n";
     if (script.includes('[ -L "$d/exe" ]') && pc.addressTaken) return "taken\n";
-    if (script.includes('[ -L "$d/exe" ]')) { if (!pc.restoreFails) { const back = descriptor(4243, false, "d".repeat(64)); listed.push(back); alive.add(back.pid); } return ""; }
+    // the launcher tells the pid it started (4243), whether or not that server then registers
+    if (script.includes('[ -L "$d/exe" ]') && pc.otherRegistersOnRestore) { const other = descriptor(4500, true, "f".repeat(64)); listed.push(other); alive.add(other.pid); }
+    if (script.includes('[ -L "$d/exe" ]')) { if (!pc.restoreFails) { const back = descriptor(4243, false, "d".repeat(64)); listed.push(back); alive.add(back.pid); } return "4243\n"; }
+    // whether a registration is still the very process it names (registeredAs), and alive
+    if (script.endsWith("&& echo live || true") && script.startsWith("false")) return "";
+    if (script.endsWith("&& echo live || true")) { const pid = Number(/(?:born_of|reg_of)=(\d+)/.exec(script)?.[1]); return bornAsShown(script) && alive.has(pid) ? "live\n" : ""; }
     if (script.startsWith("rm -rf '") && script.includes("ovis-restore.")) return "";
     // the installer's run first: its watcher's own `kill -TERM 0` is no stop of a process
     if (script.includes("/install.sh -o")) {
@@ -134,7 +141,7 @@ function fixture(pc: Pc) {
       if (dying.has(pid)) { const left = dying.get(pid)! - 1; if (left <= 0) { dying.delete(pid); alive.delete(pid); } else dying.set(pid, left); }
       return alive.has(pid) ? "live" : "";
     }
-    if (script.endsWith("&& echo born || true")) return bornAsShown(script) ? "born\n" : "";
+    if (script.endsWith("&& echo born || true")) return !script.startsWith("false") && bornAsShown(script) ? "born\n" : "";
     if (script.includes("kill -TERM")) {
       const pid = Number(/kill -TERM (\d+)/.exec(script)![1]);
       if (!bornAsShown(script) || !sameAsShown(script)) return "changed\n";
@@ -397,7 +404,7 @@ describe("installing Ovis on a PC over SSH", () => {
 
   it("stops nothing when the shown server ended and another Ovis took its pid, the setting off: its registration's birth differs", async () => {
     // the registration that was shown, of a server long gone; the pid now runs another Ovis server
-    const pc = fixture({ descriptors: [{ ...descriptor(4242), birth: { platform: "linux", value: "boot-1:100" } }], births: { 4242: "boot-1:900" }, restoreOff: true });
+    const pc = fixture({ descriptors: [{ ...descriptor(4242), birth: { platform: "linux", value: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:100" } }], births: { 4242: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:900" }, restoreOff: true });
     const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(job).toMatchObject({ phase: "failed", error_code: "changed" });
     expect(pc.commands.some((command) => /kill -TERM 4242$/.test(command) || command.includes("&& kill -TERM 4242"))).toBe(false);
@@ -417,8 +424,44 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(genuine.alive.has(4242)).toBe(false);
   });
 
+  it("never takes a registration with a birth out of its shape for the server it names", async () => {
+    const pc = fixture({ descriptors: [{ ...descriptor(4242), birth: { platform: "linux", value: 7 } as unknown as { platform: string; value: string } }], restoreOff: true });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "changed" });
+    expect(pc.alive.has(4242)).toBe(true);
+  });
+
+  it("starts the stopped server again past a registration left behind whose pid another process took, and waits for the one it started", async () => {
+    // a registration of a server long gone (birth 100); its pid 4300 now runs another process (birth 900)
+    const leftover = { ...descriptor(4300, false, "e".repeat(64)), birth: { platform: "linux", value: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:100" } };
+    const pc = fixture({ descriptors: [descriptor(4242), leftover], births: { 4300: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:900" }, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job.error).toContain("has been started again as it was");
+    // the launcher probed the port the stopped server's registration named
+    expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]') && command.includes(` '${descriptor(4242).port}' `))).toBe(true);
+    // the restarted server never registers: the leftover is not taken for it
+    const silent = fixture({ descriptors: [descriptor(4242), leftover], births: { 4300: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:900" }, restoreFails: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const two = await silent.settled(silent.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(two.error).toContain("starting it again as it was failed: it did not start within");
+    // another server registering meanwhile is not the one it started
+    const other = fixture({ descriptors: [descriptor(4242)], restoreFails: true, otherRegistersOnRestore: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const three = await other.settled(other.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(three.error).toContain("starting it again as it was failed: it did not start within");
+  });
+
+  it("only removes the copy when this app stops during an install, starting nothing there", async () => {
+    // stopped while the server it signalled is still ending: before anything was installed in its place
+    const pc = fixture({ descriptors: [descriptor(4242)], exitAfterChecks: 3 });
+    const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
+    await pc.reached("stopping");
+    pc.installer.stop();
+    await pc.settled(job);
+    expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+    expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(true);
+  });
+
   it("stops the shown server when its birth still matches its registration", async () => {
-    const pc = fixture({ descriptors: [{ ...descriptor(4242), birth: { platform: "linux", value: "boot-1:100" } }], restoreOff: true });
+    const pc = fixture({ descriptors: [{ ...descriptor(4242), birth: { platform: "linux", value: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:100" } }], restoreOff: true });
     const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(job.phase).toBe("connected");
     expect(pc.alive.has(4242)).toBe(false);
@@ -776,7 +819,8 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     expect(await shell(captureServer(latin.pid, await shell(processIdentity(latin.pid), {})), { TMPDIR: dir })).toBe("unfaithful");
     // its program deleted since it started (an upgrade replaced it)
     const program = join(dir, "bun-copy");
-    try { linkSync(process.execPath, program); } catch { return; }
+    // a copy of Bun (a hard link may cross filesystems): the case always runs
+    copyFileSync(process.execPath, program); chmodSync(program, 0o755);
     const orphan = await serve([program, "-e", up]);
     rmSync(program);
     expect(await shell(captureServer(orphan.pid, await shell(processIdentity(orphan.pid), {})), { TMPDIR: dir })).toBe("unfaithful");

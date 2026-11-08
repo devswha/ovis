@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Machine, PcInstallJob, RemoteOvis, SshTarget } from "../shared/machines.ts";
 import type { CompletionTracker } from "./completion.ts";
+import { appBuild } from "./app-revision.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
@@ -424,4 +425,16 @@ it("cancels an install's follow-up connect as the person's cancel, so its update
   expect(cancel).toHaveBeenCalledWith(handle.job_id, false, true);
   cancel.mockRestore();
   await handle.finished;
+});
+
+it("binds an install's follow-up update to this build's own revision without OVIS_REVISION, as the desktop app runs", async () => {
+  const { manager } = fixture();
+  const { asked, outcomes, connect } = connects(manager);
+  const before = process.env["OVIS_REVISION"];
+  delete process.env["OVIS_REVISION"];
+  const build = spyOn(appBuild, "revision").mockReturnValue("b".repeat(40));
+  cleanups.push(() => { build.mockRestore(); if (before !== undefined) process.env["OVIS_REVISION"] = before; });
+  outcomes.push({ ...OLDER, remote_ovis: { latest_version: APP_VERSION }, offeredRevision: "b".repeat(40) }, { phase: "connected" });
+  expect(await connect({ target: { destination: "me@desktop.invalid" }, update: true }).finished).toBeNull();
+  expect(asked).toEqual([{ update: false, revision: undefined }, { update: true, revision: "b".repeat(40) }]);
 });
