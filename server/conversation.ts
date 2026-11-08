@@ -157,7 +157,10 @@ function copilotHistoryIdentity(path: string): string {
       const stat = fstatSync(fd);
       return `${stat.dev}:${stat.ino}${transcriptGeneration(path, stat)}`;
     } finally { closeSync(fd); }
-  } catch { throw new ConversationUnavailable("transcript_missing"); }
+  } catch (error) {
+    if (error instanceof ConversationReadPending) throw error;
+    throw new ConversationUnavailable("transcript_missing");
+  }
 }
 
 function copilotPage(page: ConversationPage, prefix: string): ConversationPage {
@@ -231,15 +234,25 @@ function transcriptGeneration(path: string, stat: RevisionStat, checkWindow = fa
   const deferred = read && reads.mode === "deferred" ? reads : null;
   let wanted = false as boolean;
   const opened: RevisionOpen = deferred === null ? openRevisionNow : function* () { wanted = true; throw new Error("left to settleTranscriptRevision"); };
-  const { next } = finish(transcriptRevisionSteps(path, stat, checkWindow, read && reads.mode !== "none", opened));
+  const { previous, next: found } = finish(transcriptRevisionSteps(path, stat, checkWindow, read && reads.mode !== "none", opened));
+  let next = found;
   // a revision it could not check: the read stops here, before it parses anything, records nothing, and
   // readSettled settles again off the loop
   if (deferred !== null && wanted) {
     deferred.unsettled = true;
     throw new Error("transcript revision left to settleTranscriptRevision");
   }
-  // a growth whose first bytes were not checked may be a rewrite that also grew: the next poll checks them
-  if (read && reads.mode === "none" && next.prefix !== undefined && next.size > next.prefix.at) throw new ConversationReadPending();
+  // A growth no digest checked (the last settle reads nothing) may be a rewrite that also grew. It is
+  // pending once, for the next poll to check; after that, or where no settle can read it (a link), it is
+  // another history, never the one before it.
+  if (read && reads.mode === "none" && previous?.identity === next.identity && next.generation === previous.generation && previous.size > 0 && next.size > (next.prefix?.at ?? previous.size)) {
+    if (reads.verifiable && !uncheckedGrowths.has(path)) {
+      remember(uncheckedGrowths, path, true, 64);
+      throw new RevisionUnchecked();
+    }
+    next = { ...next, generation: randomUUID(), hash: undefined, hashed: 0, prefix: undefined };
+  }
+  if (read) uncheckedGrowths.delete(path);
   remember(transcriptRevisions, path, next, 64);
   return next.generation ? `-${next.generation}` : "";
 }
@@ -247,9 +260,16 @@ function transcriptGeneration(path: string, stat: RevisionStat, checkWindow = fa
 /**
  * How a synchronous page read's revision check reads the transcript: on the event loop (anywhere
  * readSettled is not running one); "deferred", where any read it needs marks it `unsettled` instead, for
- * readSettled to settle again off the loop; or "none", reading nothing (a touch then counts as a rewrite).
+ * readSettled to settle again off the loop; or "none", reading nothing (a touch then counts as a rewrite, and
+ * a growth is pending once where a later settle can check it, `verifiable`, and another history otherwise).
  */
-let revisionReads: { mode: "inline" } | { mode: "deferred"; unsettled: boolean } | { mode: "none" } = { mode: "inline" };
+let revisionReads: { mode: "inline" } | { mode: "deferred"; unsettled: boolean } | { mode: "none"; verifiable: boolean } = { mode: "inline" };
+
+/** Transcripts whose last read was pending on a growth no digest checked: their next one answers. */
+const uncheckedGrowths = new Map<string, true>();
+
+/** A read pending on a growth no digest checked: no other file is involved, so nothing is recovered for it. */
+class RevisionUnchecked extends ConversationReadPending {}
 
 /** What settleTranscriptRevision brings up to date, and whether its reader still wants it recorded (`live`). */
 interface RevisionTarget { path: string; checkWindow: boolean; live?: () => boolean }
@@ -327,7 +347,7 @@ async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ 
   for (let settles = 1; ; settles++) {
     await settleTranscriptRevision(target, authorized);
     if (!(target.live?.() ?? true)) return null;
-    const reads = settles < REVISION_SETTLES && authorized?.link !== true ? { mode: "deferred" as const, unsettled: false } : { mode: "none" as const };
+    const reads = settles < REVISION_SETTLES && authorized?.link !== true ? { mode: "deferred" as const, unsettled: false } : { mode: "none" as const, verifiable: authorized?.link !== true };
     revisionReads = reads;
     try {
       if (!stillAuthorized(target.path, authorized)) throw refuse();
@@ -367,6 +387,9 @@ function* transcriptRevisionSteps(path: string, stat: RevisionStat, checkWindow:
     head = yield* hashRange(opened, path, stat, createHash("sha256"), 0, Math.min(PREFIX_BYTES, prefix.at));
     if (!head || head.copy().digest("base64") !== prefix.digest) { rewritten = true; head = undefined; }
   }
+  // a growth no digest of its first bytes vouches for (none was kept: a link, or a read that failed) may be a
+  // rewrite; an empty file had none to rewrite
+  if (read && same && !rewritten && prefix === undefined && previous.size > 0 && stat.size > previous.size) rewritten = true;
   // Muse: a rewrite that also grew keeps the inode and passes the checks above, so the window last
   // read must still hold the bytes it held. One read from its start checks it and digests the new
   // window, each chunk once. A growth past the whole window shares no bytes with it, so it counts as
@@ -1469,6 +1492,7 @@ export function forgetTranscriptState(): void {
   settledTurns.clear();
   liveTranscriptTurns.clear();
   transcriptRevisions.clear();
+  uncheckedGrowths.clear();
   clearScans.clear();
   pictureChecks.clear();
   paneReads.clear();
@@ -1516,6 +1540,7 @@ export function forgetPaneTranscriptState(paneId: string): void {
     if (shared((other) => other.paths, path)) continue;
     for (const key of [...cache.keys()]) if (key.startsWith(`${path}\0`)) cache.delete(key);
     transcriptRevisions.delete(path);
+    uncheckedGrowths.delete(path);
     commandTranscripts.delete(path);
     liveScans.delete(path);
     forgetCopilotTurns(path);
@@ -2436,7 +2461,8 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (settled === null) throw new ConversationUnavailable("no_session_id");
     answer = settled.value ?? await agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome);
   } catch (error) {
-    const refused = error instanceof ConversationReadPending || (error instanceof ConversationUnavailable && error.message === "transcript_missing");
+    // a growth no digest checked is the same file: it is pending, with no recovery that would digest it here
+    const refused = (error instanceof ConversationReadPending && !(error instanceof RevisionUnchecked)) || (error instanceof ConversationUnavailable && error.message === "transcript_missing");
     if (resolved.source !== "copilot-transcript" || !refused) throw error;
     // refused before its read (readSettled: the path names another file than the one authorized, as
     // after a replacement by rename): the history is the one the path names now, as a read beginning
