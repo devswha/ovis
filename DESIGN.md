@@ -4443,13 +4443,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Frame: on a desktop a left nav `--relay-sidebar-w` (240 px) wide on `--bg-panel`, the five places
   with Overview and PCs carrying their counts, the current one on `--bg-elevated`, and the provider
   and **Sign out** (or **Without an account** and **Sign in** in local mode) at its foot. The content column stops at `--relay-content-w` (1280 px). A top
-  bar holds the view's title and **Add a PC**, the one primary action on every view. At 768 px and
+  bar holds the view's title and **Add a PC**, the one primary action on every view (quiet `.btn`
+  when Overview or PCs shows the empty state, which holds the primary **Add a PC**). At 768 px and
   under the nav becomes a bottom tab bar (`--tabbar-h` over the safe area) of the same places, and
   the brand bar turns sticky glass at the top with **Add a PC** as a 44 px icon button (`#devices`
-  carries the account controls on a phone).
+  carries the account controls on a phone). `html:has(.relay-dash)` sets `scroll-padding-top` and
+  `scroll-padding-bottom` so keyboard focus stays above the fixed bottom tab bar and below the
+  sticky top bar, and below 280 px (including 200% zoom on a 390 px phone, 195 CSS px) the tab bar
+  shows icons only while keeping each label as a visually hidden accessible name and 44 px targets.
 - Overview: a strip of three cells with hairlines between them, **Ready** | **Needs you** |
   **Relays in use** (or **Paired with this device** | **Relays** in local mode), each a state dot,
-  its word and one `--fs-xl` numeral. Needs you counts every
+  its word and one `--fs-xl` numeral (stacking to one column below 320 px so words never split at
+  200% zoom or +40% text, with `overflow-wrap: break-word` on headings and labels and `word-break:
+  auto-phrase` in Japanese). Needs you counts every
   PC that wants something, offline ones included, and says so on a dim line under the numeral
   ("incl. 1 offline"), so the cells add up to the PCs listed. A pressed cell filters the table below
   (`aria-pressed`). Under the strip, one mono chip per relay host with its PC count,
@@ -4462,22 +4468,26 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   account member must approve") rather than on every row. Then the PC table (below), and last the
   **Connection map**, a 44 px disclosure row that opens `#relay` with "N relays · M PCs" on its right.
   A first-time account gets one empty state instead of the strip: an icon, one title,
-  one line, **Add a PC** and **Pair with a QR or code**.
+  one line ("Sign in on a PC, or scan the QR code it shows, to see it here."), **Add a PC** and **Pair with a QR or code**.
 - PCs table (RelayPcTable.tsx), filtered by All / Ready / Needs you / Offline with **Check now**
   beside the filters, `--table-row-h` (44 px) rows under a 36 px head, or a two-line `<ul>` list
   on phones (768 px and under) and narrow containers. Columns: **Name** (state dot and name),
-  **State** (the specific word below, plus a dim subline for a fresh Add countdown "new · {n} min
+  **State** (the specific word below, plus a separate enrollment line `data-pc-enrollment` when
+  account enrollment is pending "Adding it to your account…" or failed "This PC could not be listed
+  in your account. Try again.", and a dim subline for a fresh Add countdown "new · {n} min
   left", "Update Ovis on it", or this device's check result after **Check now**; on a phone row a
   closed Add window also shows "Add window closed · an account member must approve", which is the
   state word's `title` in the table), **Relay** (how this device reaches a paired PC right now and
   the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
   a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
   host as a mono chip for a PC it isn't paired with), **Last seen**, and the one action its state
-  allows (Open, Try again when account enrollment failed, Add, Join, Update, Details). Selecting a
-  row or **Details** opens RelayPcDetails without opening a socket to the PC: beside the table as a
-  `--relay-detail-w` (360 px) side panel at 1100 px and wider, the table dropping **Last seen** so
-  rows stay on one line; below 1100 px the details replace the list as a full view with **Back**,
-  moving focus to the details heading and returning it to the PC's row on close. Details holds
+  allows (Open, Add, Join, Update, Details; a failed or pending enrollment keeps the PC's state word
+  and its **Open** action, which reopens the PC's scope at the Ready checkpoint to retry enrollment). Selecting a
+  row or **Details** opens RelayPcDetails without opening a socket to the PC: beside the list as a
+  `--relay-detail-w` (360 px) side panel at 1100 px and wider, sitting beside the two-line narrow
+  list from 1100 to 1391 px (`NARROW_SPLIT_TABLE_QUERY`) and beside the four-column table (dropping
+  **Last seen** so rows stay on one line) at 1392 px and wider; below 1100 px the details replace the list as a full view with **Back**,
+  moving focus to the details heading and returning it to the PC's row on close (including browser Back). Details holds
   seven labelled rows (state, route, relay, last seen, this device, key ID, version) and the PC's
   actions (Open or Update, Add or Join, Check now for this PC alone, Forget this PC) at its foot.
 - Connection map (RelayMap.tsx): this device, each relay hub, the PCs behind it. A PC that answered
@@ -4492,28 +4502,40 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   phase in `data-add-pc-phase`: `start`, `confirm`, `connecting`, `compare` (six digits to type
   or match), `wrong` (a wrong number, with Try again), `approving`, `ready` and `failed`. **Add**
   types the six digits the new PC shows, then approves on that PC; **Join** asks through the
-  account, shows this device's digits, and an account member approves on another device. **Add a
-  PC** with no PC says how one is added and leads to the QR and code screen. The sheet drives the
+  account, shows this device's digits, and an account member approves on another device. Pressing
+  **Add this PC** or **Ask to join** in the sheet records the consent once (`keepConfirmedPc`) and
+  starts pairing at once on `/s/<id>/` (`start` -> `connecting` -> `compare`) without a second
+  "Pair with {name}?" step; "Pair with {name}?" with **Pair** remains only for pairing links and QR
+  codes opened from outside the dashboard (or when `sessionStorage` is blocked). **Add a
+  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs to add it to
+  your account, or pair with the QR code or pairing code it shows.") and leads to the QR and code
+  modal sheet (`PairQrDialog`, over the scrimmed inert dashboard), whose QR and code screens name
+  only the current path ("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay
+  and scan the QR code." and "On the PC, open Settings → Devices and PCs → Add a connection → Ovis
+  relay and type the code it shows."). The sheet drives the
   shell's existing join, Pair, match and Cancel; failure stays in the sheet in the shell's own
   words, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
   at once when local pairing finishes ("{name} is ready to open on this device." with **Open PC**),
   without waiting on account enrollment. While account enrollment runs (`enrollment: "pending"`),
-  `EnrollmentStatus` shows a spinner and "Adding it to your account…"; when enrollment finishes
-  (`"complete"`), it shows "Every device of your account can open it"; if enrollment fails or times
+  `EnrollmentStatus` shows a spinner and "Adding it to your account…"; when enrollment finishes, it
+  shows "In your account" (plus " · Devices added: {count}" when `state` is `{ state: "complete",
+  admitted }`, or "In your account" alone when `state === "complete"`); if enrollment fails or times
   out (`"failed"`), the checkpoint stays on Ready and shows "Ready · not in the account yet" with
   **Try again** (`data-action="retry-enrollment"`). The enrolling transport stays open in the
-  background if the user opens the PC or closes the checkpoint before enrollment settles, and a
-  paired PC whose enrollment failed or remained pending shows "Ready · not in the account yet" on
-  its dashboard row with **Try again** (which reopens the PC's scope at the Ready checkpoint to
-  retry enrollment).
-- Status vocabulary: one state word per PC, specific to what's true: Ready, Adding it to your
-  account…, Ready · not in the account yet, Needs approval, Needs update, Updating, Checking…,
-  Offline (or Offline · {when}), or for a paired PC in local mode or not listed in the account,
-  Paired · not checked, Answers, or No answer; the strip groups them as Ready, Needs you and
-  Offline. The summary,
-  the attention list, the table, Details and the map read one model (lib/relay/dashboard.ts, with
-  `liveState` in components/relayPcState.tsx letting a live answer from this device beat a stale
-  directory Offline on the row, Details and map). Color rule: color sits only on the state dot (StatusDot.tsx, `--dot-size`
+  background if the user opens the PC or closes the checkpoint before enrollment settles; on the
+  dashboard row, a paired PC whose enrollment is pending or failed keeps its own state word and
+  **Open** action and adds a separate enrollment line ("Adding it to your account…" or "This PC
+  could not be listed in your account. Try again.").
+- Status vocabulary: one state word per PC, specific to what's true: Ready, Ready · not in the
+  account yet, Needs approval, Needs update, Updating, Checking…, Offline (or Offline · {when}), or
+  for a paired PC in local mode or not listed in the account (`unchecked`), Paired · not checked,
+  Answers, or No answer (with pending or failed account enrollment shown on its own line under the
+  state: "Adding it to your account…" or "This PC could not be listed in your account. Try again.");
+  the strip groups them as Ready, Needs you and Offline. The summary, the filters,
+  the attention list, the table, Details and the map all read one model (`dashboardModel` and
+  `dashboardState()` in lib/relay/dashboard.ts: a live answer from this device beats a stale
+  directory Offline on every surface, while an unlisted pairing without a live answer stays
+  `unchecked` and out of Ready and Needs you). Color rule: color sits only on the state dot (StatusDot.tsx, `--dot-size`
   7 px): filled `--status-done` for ready, half `--notice` for needs you, ring with an arrow up
   `--notice` for updating, hollow `--text-dim` for offline, `--status-working` for checking and
   `--status-blocked` for failed, so the shape alone still reads in forced colors.
