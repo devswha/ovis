@@ -239,7 +239,7 @@ and herdr's default session only.
   `unsupported`, `missing_tool` (no curl, git or tar), `disk` (under 1 GB free in the home folder),
   `permission`, `bridge_there`, `ovis_there`, `changed` (the process to stop is no longer the one
   shown, or its pid now runs another program: nothing is stopped), `not_stopped`, `installer_failed` (with the installer's last words),
-  `no_launcher`, `not_started`, `connect_failed`. When the install fails or is cancelled after the server started by
+  `no_launcher`, `not_started`, `connect_failed`. Experimental, off by default (Settings → Experimental → PCs → Start a replaced server again): when it is off, a failed or cancelled replacement leaves the server started by hand stopped, as before, and nothing of it is copied. When it is on and the install fails or is cancelled after the server started by
   hand was stopped, before anything was installed or launched in its place (the installer could not be
   downloaded, or never ran), that server is started again as it was. Just before it is stopped, its program, arguments,
   environment (its `OVIS_TOKEN` with the rest) and folder are copied from `/proc` into a folder only

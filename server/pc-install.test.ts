@@ -48,6 +48,8 @@ interface Pc {
   reusedAfterReads?: number;
   /** the copied server's address is held by a live server when it is to be started again */
   addressTaken?: boolean;
+  /** Settings -> Experimental -> PCs: start a replaced server again; on in these tests unless said */
+  restoreOff?: boolean;
   /** the stop signal does not end the server */
   killIgnored?: boolean;
   /** the server ends this many liveness checks after the stop signal (Ovis takes a moment to stop) */
@@ -145,7 +147,7 @@ function fixture(pc: Pc) {
   const waiters: { phase: string; resolve(): void }[] = [];
   const onChange = (job: PcInstallJob) => { for (const waiter of waiters.splice(0)) if (waiter.phase === job.phase) waiter.resolve(); else waiters.push(waiter); };
   const reached = (phase: string) => new Promise<void>((resolve) => { waiters.push({ phase, resolve }); });
-  const installer = new PcInstaller({ sshDir: join(dir, "ssh"), connect, release: "v9.9.9", pollMs: 1, startMs: 200, stopMs: 100, onChange });
+  const installer = new PcInstaller({ sshDir: join(dir, "ssh"), connect, release: "v9.9.9", pollMs: 1, startMs: 200, stopMs: 100, onChange, restore: () => !pc.restoreOff });
   cleanups.push(() => installer.stop());
   const settled = async (job: PcInstallJob) => { await installer.finished(job.id); return installer.job(job.id)!; };
   return { installer, commands, challenges, connects, settled, alive, registerNew: register, failConnect: (words: string) => { answer = words; }, holdConnect: (gate: Promise<void>) => { held = gate; }, cancelled: () => cancelled, reached, followUps, installerAnswer: (answer: { exit: number; output: string }) => { pc.installer = answer; } };
@@ -379,6 +381,22 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(ended.phase).toBe("cancelled");
     expect(ended.error).not.toContain("none runs there now");
     expect(ended.error).toContain("being installed in its place");
+  });
+
+  it("never copies or starts again the server it stopped while that setting is off (the default): it stays stopped, as before", async () => {
+    for (const how of ["failed", "cancelled"] as const) {
+      const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+      const pc = fixture({ descriptors: [descriptor(4242)], restoreOff: true,
+        ...(how === "failed" ? { installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } } : { installerHeld: { started: () => started.resolve(), gate: gate.promise } }) });
+      const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
+      if (how === "cancelled") { await started.promise; pc.installer.cancel(job.id); gate.reject(new Error("Connection cancelled")); }
+      const ended = await pc.settled(job);
+      expect(ended.phase).toBe(how);
+      expect(pc.commands.some((command) => command.includes("kill -TERM 4242"))).toBe(true);
+      expect(pc.commands.some((command) => command.includes("ovis-restore."))).toBe(false);
+      expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+      expect(pc.alive.has(4243)).toBe(false);
+    }
   });
 
   it("starts the server it stopped again as it was when the installer then fails", async () => {

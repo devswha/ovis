@@ -184,7 +184,10 @@ export class PcInstaller {
   private readonly pollMs: number;
   private readonly startMs: number;
   private readonly stopMs: number;
-  constructor(private readonly options: { sshDir: string; connect: InstallConnect; release?: string; onChange?(job: PcInstallJob): void; pollMs?: number; startMs?: number; stopMs?: number }) {
+  constructor(private readonly options: { sshDir: string; connect: InstallConnect; release?: string; onChange?(job: PcInstallJob): void; pollMs?: number; startMs?: number; stopMs?: number;
+    /** Settings -> Experimental -> PCs: start a replaced server again. Off (or absent), a server started by hand that an install
+     * stopped is never copied or started again: a failed or cancelled replacement leaves it stopped */
+    restore?: () => boolean }) {
     this.pollMs = options.pollMs ?? 1000;
     this.startMs = options.startMs ?? 180_000;
     this.stopMs = options.stopMs ?? STOP_WAIT_MS;
@@ -360,7 +363,8 @@ export class PcInstaller {
         if (plan.mode === "replace" && !gone) {
           step("stopping", `Stopping that PC's Ovis (process ${plan.pid}); herdr and its sessions keep running…`);
           // copied first, so an install that fails or is cancelled starts it again as it was
-          const copy = (await ssh.run(captureServer(plan.pid, identity)).catch(() => "error")).trim();
+          // copied only while starting it again is turned on (experimental): off, it stays stopped if the install then fails
+          const copy = this.options.restore?.() === true ? (await ssh.run(captureServer(plan.pid, identity)).catch(() => "error")).trim() : "";
           if (copy === "changed") throw new InstallFailed("changed", CHANGED_WORDS);
           // copying failed this time: it is not stopped without a way back. One that cannot be copied faithfully at all is
           // stopped as on macOS, without a copy, and the job then says it stays stopped
