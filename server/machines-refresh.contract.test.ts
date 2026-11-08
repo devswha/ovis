@@ -48,7 +48,10 @@ describe("slow structural roster refreshes", () => {
           bridge = Bun.serve({
             port: 0, hostname: "127.0.0.1",
             async fetch(request, server) {
-              if (new URL(request.url).pathname === "/ws" && server.upgrade(request, { data: undefined })) return;
+              const { pathname } = new URL(request.url);
+              if (pathname === "/ws" && server.upgrade(request, { data: undefined })) return;
+              // only the roster read is held: the move badge's read (watchMove) would otherwise take its place
+              if (pathname !== "/api/session") return new Response(null, { status: 404 });
               return Response.json({ snapshot: await read() });
             },
             websocket: {
@@ -91,7 +94,7 @@ describe("slow structural roster refreshes", () => {
           } else manager.localMessage({ type: "session-changed" });
           const nextRead = started.promise;
           response.resolve(response.snapshot);
-          // The next read starts whether or not the previous response was published.
+          // The next read starts only once the previous response was handled, so it was published by then.
           await nextRead;
           stopListening();
           expect(publishedRoster).toBe(true);
