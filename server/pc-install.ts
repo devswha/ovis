@@ -34,13 +34,21 @@ const SAVED_FOR_S = 2 * 60 * 60;
  * Before a server started by hand is stopped, its exact command line, environment (its OVIS_TOKEN with the rest), folder
  * and program are copied from Linux's /proc into a folder only this account can read: the folder and program as the
  * symlinks /proc has (cp -P), so no byte of their paths is lost. It prints that folder; "error" when /proc is there but the
- * copy failed (nothing is then stopped); nothing where /proc cannot be read (macOS: that server is never started again
- * with a guess). The copy holds a token, so it removes itself after SAVED_FOR_S whatever happens to this job.
+ * copy cannot be faithful: unreadable, its program deleted, or bytes that would not survive being started again (nothing
+ * is then stopped); nothing where there is no /proc (macOS: that server is never started again with a guess). The copy
+ * holds a token, so it removes itself after SAVED_FOR_S whatever happens to this job (systemd-run where it can, so it
+ * outlives the SSH session), and each capture sweeps this account's copies older than that.
  */
+/** run by that server's own Bun on the copy: every byte of it survives being started again from JavaScript (UTF-8) */
+const COPY_CHECK = "const { readFileSync, readlinkSync } = require(\"node:fs\");\nconst d = process.argv.at(-1);\nconst same = (bytes) => Buffer.from(bytes.toString()).equals(bytes);\nfor (const name of [\"cmdline\", \"environ\"]) if (!same(readFileSync(d + \"/\" + name))) process.exit(1);\nfor (const name of [\"cwd\", \"exe\"]) if (!same(readlinkSync(d + \"/\" + name, { encoding: \"buffer\" }))) process.exit(1);";
 export const captureServer = (pid: number): string =>
-  `[ -r /proc/${pid}/environ ] || exit 0; umask 077; d=$(mktemp -d "${'${TMPDIR:-/tmp}'}/ovis-restore.XXXXXXXX") || { echo error; exit 0; }; `
-  + `if cp /proc/${pid}/cmdline "$d/cmdline" && cp /proc/${pid}/environ "$d/environ" && cp -P /proc/${pid}/cwd "$d/cwd" && cp -P /proc/${pid}/exe "$d/exe" && [ -s "$d/cmdline" ]; then `
-  + `(sh -c 'sleep ${SAVED_FOR_S}; rm -rf "$1"' ovis-restore-lease "$d" </dev/null >/dev/null 2>&1 &); printf '%s\\n' "$d"; else rm -rf "$d"; echo error; fi`;
+  // copies of this account's older than the lease, left by a job whose cleanup never ran, go first
+  `find "${'${TMPDIR:-/tmp}'}" -maxdepth 1 -name 'ovis-restore.*' -user "$(id -u)" -mmin +${SAVED_FOR_S / 60} -exec rm -rf {} + 2>/dev/null; `
+  + `[ -d /proc/self ] || exit 0; [ -r /proc/${pid}/environ ] || { echo error; exit 0; }; umask 077; d=$(mktemp -d "${'${TMPDIR:-/tmp}'}/ovis-restore.XXXXXXXX") || { echo error; exit 0; }; `
+  + `if cp /proc/${pid}/cmdline "$d/cmdline" && cp /proc/${pid}/environ "$d/environ" && cp -P /proc/${pid}/cwd "$d/cwd" && cp -P /proc/${pid}/exe "$d/exe" && [ -s "$d/cmdline" ] `
+  + `&& case "$(readlink "$d/exe")" in *' (deleted)') false;; *) true;; esac && "$d/exe" -e ${shellQuote(COPY_CHECK)} "$d" >/dev/null 2>&1; then `
+  + `if ! { command -v systemd-run >/dev/null 2>&1 && systemd-run --user --quiet --on-active=${SAVED_FOR_S} rm -rf "$d" >/dev/null 2>&1; }; then (sh -c 'sleep ${SAVED_FOR_S}; rm -rf "$1"' ovis-restore-lease "$d" </dev/null >/dev/null 2>&1 &); fi; `
+  + `printf '%s\\n' "$d"; else rm -rf "$d"; echo error; fi`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, starts the program, and removes the copy */
 const RESTORE_LAUNCHER = "const { readFileSync, readlinkSync, rmSync, openSync, mkdirSync } = require(\"node:fs\");\nconst { spawn } = require(\"node:child_process\");\nconst d = process.argv.at(-1);\nconst parts = (name) => { const b = readFileSync(d + \"/\" + name); const out = []; let at = 0; for (let i = 0; i < b.length; i++) if (b[i] === 0) { out.push(b.subarray(at, i).toString()); at = i + 1; } if (at < b.length) out.push(b.subarray(at).toString()); return out; };\n(async () => {\n  try {\n    const argv = parts(\"cmdline\"); const env = {};\n    for (const entry of parts(\"environ\")) { const eq = entry.indexOf(\"=\"); if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1); }\n    const exe = readlinkSync(d + \"/exe\"), cwd = readlinkSync(d + \"/cwd\");\n    const logs = (process.env.XDG_STATE_HOME || process.env.HOME + \"/.local/state\") + \"/ovis\";\n    mkdirSync(logs, { recursive: true, mode: 0o700 });\n    const log = openSync(logs + \"/restored-server.log\", \"a\", 0o600);\n    const child = spawn(exe, argv.slice(1), { argv0: argv[0], cwd, env, detached: true, stdio: [\"ignore\", log, log] });\n    await new Promise((resolve, reject) => { child.once(\"spawn\", resolve); child.once(\"error\", reject); });\n    child.unref(); console.log(child.pid);\n  } catch (error) { console.error(String(error && error.message || error)); process.exitCode = 1; }\n  finally { rmSync(d, { recursive: true, force: true }); }\n})();";
 /**
@@ -220,7 +228,13 @@ export class PcInstaller {
       const forgotten = async (said: string) => { await at.run(forgetServer(saved)).catch(() => {}); return said; };
       if (restore === false) return await forgotten("forgotten");
       // the stop signal was sent, but the server may not have ended (a cancel came first): nothing to start then
-      if (restore !== null && await posixHost.alive(at, restore) && OVIS_COMMAND.test(await at.run(`ps -o args= -p ${restore} 2>/dev/null || true`))) return await forgotten("running");
+      // a server ending on its own after the signal (Ovis takes a moment) is waited for, to the stop deadline
+      if (restore !== null) {
+        for (const until = Date.now() + this.stopMs; await posixHost.alive(at, restore);) {
+          if (Date.now() >= until) { if (OVIS_COMMAND.test(await at.run(`ps -o args= -p ${restore} 2>/dev/null || true`))) return await forgotten("running"); break; }
+          await Bun.sleep(this.pollMs);
+        }
+      }
       const fresh = async () => {
         for (const d of await posixHost.descriptors(at)) {
           if (d.socket_path === socket && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0 && await posixHost.alive(at, d.pid)) return true;
@@ -400,10 +414,10 @@ export class PcInstaller {
       if (refused) throw new InstallFailed("connect_failed", refused);
       job.phase = "connected"; job.step = "Connected";
     } catch (error) {
-      // the server stopped (or signalled) for this install, with nothing in its place: started again as it was, before the
-      // job ends. Not after a cancel while the installer ran: a start of its own may still be on its way there. The copy
-      // is removed either way
-      const again = saved ? await this.startAgain(state, request, saved, socket, before, (stopped || signalled !== null) && replaced !== "maybe" ? signalled : false) : null;
+      // the server stopped (or signalled) for this install, with nothing installed or launched in its place: started again
+      // as it was, before the job ends. Not once the installer ran or the launcher was asked: a start of their own may
+      // still be on its way there, and would come up beside it. The copy is removed either way
+      const again = saved ? await this.startAgain(state, request, saved, socket, before, (stopped || signalled !== null) && replaced === "no" ? signalled : false) : null;
       // the signal never stopped it: as if nothing was stopped
       if (again === "running") stopped = false;
       const restored = again === "started" ? " The Ovis started by hand on that PC was stopped for the install, and has been started again as it was."
