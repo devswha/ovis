@@ -330,6 +330,11 @@ async function settleTranscriptRevision({ path, checkWindow, live }: RevisionTar
   } catch { /* a stat that fails digests nothing */ } finally { await handle.close().catch(() => {}); }
 }
 
+/** The transcript a readSettled page read reads, opened once as authorized: readStream reads it through this handle. */
+let pageFile: { path: string; fd: number } | null = null;
+// a link is followed, as the page readers do; O_NONBLOCK: a FIFO put there is not waited on
+const PAGE_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+
 /**
  * How many times readSettled settles a transcript before its read takes what it finds without reading;
  * a transcript reached through a link, which no settle opens, takes it at once.
@@ -355,8 +360,18 @@ async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ 
     const reads = settles < REVISION_SETTLES && authorized?.link !== true ? { mode: "deferred" as const, unsettled: false } : { mode: "none" as const, verifiable: authorized?.link !== true };
     revisionReads = reads;
     try {
-      if (!stillAuthorized(target.path, authorized)) throw refuse();
-      const value = read();
+      if (authorized === null || !stillAuthorized(target.path, authorized)) throw refuse();
+      // the page's bytes come through one handle, the authorized file's: an open of the path itself could
+      // meet a folder swapped in around that open alone, which the checks around the read never see
+      let fd: number;
+      try { fd = openSync(target.path, PAGE_FLAGS); } catch { throw refuse(); }
+      let value: T;
+      try {
+        const opened = fstatSync(fd);
+        if (opened.dev !== authorized.dev || opened.ino !== authorized.ino) throw refuse();
+        pageFile = { path: target.path, fd };
+        value = read();
+      } finally { pageFile = null; closeSync(fd); }
       if (!stillAuthorized(target.path, authorized)) throw refuse();
       if (reads.mode === "none" || !reads.unsettled) return { value };
     } catch (error) {
@@ -557,9 +572,10 @@ function readStreamInto(stream: TranscriptStream, from: number, to: number, into
     const low = Math.max(from, file.start);
     const high = Math.min(to, file.start + file.length);
     if (low >= high) continue;
-    const fd = stream.fd ?? openSync(file.path, "r");
+    const held = stream.fd ?? (pageFile?.path === file.path ? pageFile.fd : undefined);
+    const fd = held ?? openSync(file.path, "r");
     try { length += readSync(fd, into, length, high - low, file.offset + (low - file.start)); }
-    finally { if (stream.fd === undefined) closeSync(fd); }
+    finally { if (held === undefined) closeSync(fd); }
   }
   const bytes = into.subarray(0, length);
   for (const [start, end] of stream.hidden ?? []) {
@@ -576,12 +592,13 @@ function readStream(stream: TranscriptStream, from: number, to: number): Buffer 
     const low = Math.max(from, file.start);
     const high = Math.min(to, file.start + file.length);
     if (low >= high) continue;
-    const fd = stream.fd ?? openSync(file.path, "r");
+    const held = stream.fd ?? (pageFile?.path === file.path ? pageFile.fd : undefined);
+    const fd = held ?? openSync(file.path, "r");
     try {
       const buffer = Buffer.alloc(high - low);
       chunks.push(buffer.subarray(0, readSync(fd, buffer, 0, buffer.length, file.offset + (low - file.start))));
     } finally {
-      if (stream.fd === undefined) closeSync(fd);
+      if (held === undefined) closeSync(fd);
     }
   }
   return hideOffBranch(stream, chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks), from, to);

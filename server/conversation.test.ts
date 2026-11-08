@@ -3194,6 +3194,38 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(swaps).toBe(1);
   });
 
+  it("answers nothing from another agent's transcript that a folder swap puts at the path only while the page read opens it", async () => {
+    const project = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    mkdirSync(project);
+    mkdirSync(elsewhere);
+    path = join(project, "session.jsonl");
+    // the same shape and length, so the foreign bytes fill the pane's own offsets
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-ownses", version: 3 }) + "\n" + message("u1", null, "the pane's own words"));
+    writeFileSync(join(elsewhere, "session.jsonl"), JSON.stringify({ type: "session", id: "cmd-foreig", version: 3 }) + "\n" + message("u1", null, "PI FOREIGN SECRET..."));
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    // no page of it is cached: every synchronous open of the path is made with the other agent's folder swapped in, put back
+    // right after: the identity checks around the page read see only the pane's own
+    let swaps = 0;
+    const { openSync } = fs;
+    restores.push(spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== path) return openSync(...args);
+      swaps++;
+      renameSync(project, away);
+      renameSync(elsewhere, project);
+      try { return openSync(...args); }
+      finally {
+        renameSync(project, elsewhere);
+        renameSync(away, project);
+      }
+    }) as typeof fs.openSync));
+    const answer: unknown = await paneConversation(pane.pane_id).catch((error: unknown) => error);
+    expect(swaps).toBeGreaterThan(0);
+    expect(JSON.stringify(answer)).not.toContain("FOREIGN");
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+  });
+
   it("answers a pending read, not the new file, when the agent replaces its transcript by atomic rename between the settle and the page read", async () => {
     const project = join(root, "project");
     mkdirSync(project);
