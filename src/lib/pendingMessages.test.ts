@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import type { PendingMessage } from "../../shared/protocol.ts";
 import { PendingMessageStore } from "./pendingMessages.ts";
 
@@ -50,10 +50,11 @@ describe("pending message ownership", () => {
     expect(before.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
       ["queued", "held", false], ["unproved", "uncertain", false],
     ]);
-    // Persisted as held in storage, and an early resumed held receipt recovers a copy saved later by another tab.
+    // The receipt's proof is this page's alone: saved, the copy is uncertain until a new receipt proves it after a reload.
+    // An early resumed held receipt recovers a copy saved later by another tab.
     const reloaded = new PendingMessageStore(() => port);
     expect(reloaded.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
-      ["queued", "held", false], ["unproved", "uncertain", false],
+      ["queued", "uncertain", false], ["unproved", "uncertain", false],
     ]);
     port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("queued", "held"), message("early", "queued")] }));
     before.refresh("p");
@@ -83,6 +84,26 @@ describe("pending message ownership", () => {
       expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
     }
     expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
+  });
+  it("holds a copy only on a fresh receipt: one older than the bridge's ten minutes proves nothing", () => {
+    let now = Date.parse("2026-11-08T00:00:00Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const port = storage(), tab = new PendingMessageStore(() => port);
+      // an early receipt, for a copy another tab saves only after the bridge's window has passed
+      tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true }], "new");
+      now += 10 * 60 * 1000 + 1;
+      port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("late", "queued")] }));
+      tab.refresh("p");
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"]]);
+      // a fresh one still holds it, and another tab's unrelated save keeps it held on this page only
+      tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true }], "newer");
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"]]);
+      port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("late", "uncertain"), message("other", "uncertain")] }));
+      tab.refresh("p");
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"], ["other", "uncertain"]]);
+      expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["other", "uncertain"]]);
+    } finally { clock.mockRestore(); }
   });
   it("never offers a discarded copy again: a later resumed held ID leaves another tab's stale copy or a late acceptance uncertain", () => {
     const port = storage(), tab = new PendingMessageStore(() => port);

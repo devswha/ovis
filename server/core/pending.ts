@@ -1236,6 +1236,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         };
         if (message.resend_id !== undefined) {
           authorizeSocket(client);
+          // sent already (its resend record may have expired): a replay never types it again
+          if (completed.some((entry) => entry.id === message.resend_id && entry.outcome === "sent")) {
+            result(true, undefined, undefined, undefined, undefined, undefined, false, undefined);
+            return;
+          }
           // typed by this request: a replayed id, or a copy another connection sent, runs no dispatch here
           let typedNow = false;
           const takeHeld = () => {

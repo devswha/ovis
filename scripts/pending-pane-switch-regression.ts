@@ -324,9 +324,13 @@ try {
   const reload = async (): Promise<void> => {
     await page.reload(); await page.locator(".conn-live").waitFor(); await current(pane).waitFor(); await inputReady(pane);
   };
-  const provenHeld = async (text: string, label: string): Promise<void> => {
+  const heldReceipt = (id: string, since: number): boolean => received.slice(since).some(({ frame }) =>
+    frame.type === "pending-messages" && frame.pane_id === pane && frame.held?.includes(id) === true);
+  const provenHeld = async (pending: PendingMessage, since: number, label: string): Promise<void> => {
+    const text = pending.text;
     const row = rows().filter({ hasText: text });
     await until(async () => await row.getAttribute("data-state") === "held", `${label}: the bridge's held receipt brings the copy back held`);
+    assert.equal(heldReceipt(pending.id, since), true, `${label}: the copy is held on the bridge's receipt for its exact ID, not on a saved state`);
     assert.equal(await row.locator(".pending-message-send").count(), 1, `${label}: a proven held copy offers Send now`);
     await report("idle"); await noBytes(delivered, `${label}: readiness never sends a held copy without Send now`);
     await row.getByRole("button", { name: /^Send now:/ }).click();
@@ -351,18 +355,28 @@ try {
   };
 
   const disconnected = await queue("held after a lost connection");
+  let since = received.length;
   await lostConnection();
-  await provenHeld(disconnected.text, "lost connection");
+  await provenHeld(disconnected, since, "lost connection");
 
   const reloaded = await queue("held after reload");
+  since = received.length;
   await reload();
-  await provenHeld(reloaded.text, "reload");
+  await provenHeld(reloaded, since, "reload");
 
   // (a) another browser session: its saved copy, but none of this browser's receipts
   const otherBrowser = await queue("unproven in another browser session");
   await page.evaluate(() => localStorage.setItem("ovis:pi-receipt-resume", crypto.randomUUID()));
   await reload();
   await unproven(otherBrowser.text, "another browser session");
+
+  // (d) a copy proven held on this page proves nothing to another browser session: the proof is never saved
+  const provenThenMoved = await queue("proven here, unproven in another browser session");
+  await lostConnection();
+  await until(async () => await rows().filter({ hasText: provenThenMoved.text }).getAttribute("data-state") === "held", "the copy is proven held on this page first");
+  await page.evaluate(() => localStorage.setItem("ovis:pi-receipt-resume", crypto.randomUUID()));
+  await reload();
+  await unproven(provenThenMoved.text, "proven on another page");
 
   // (b) past the ten minutes the bridge keeps a held receipt. A witness tab with this browser's resume
   // ID but storage of its own is told the receipt once the bridge kept it: only then does the clock move.

@@ -1,7 +1,8 @@
 import type { PendingMessage, PendingRemoval } from "../../shared/protocol.ts";
 import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
 
-export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number }
+/** `heldByReceipt`: held only on this page, by a live held receipt; saved, it stays uncertain until another receipt proves it */
+export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number; heldByReceipt?: true }
 type StoragePort = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 /** a resumed `held` ID (the frame's own `held` field) travels with the removals */
 export type Removal = PendingRemoval | { id: string; outcome: "held"; resumed: true };
@@ -9,6 +10,9 @@ export type Removal = PendingRemoval | { id: string; outcome: "held"; resumed: t
 export const frameRemovals = (frame: { removed?: PendingRemoval[]; held?: string[] }): Removal[] =>
   [...frame.removed ?? [], ...(frame.held ?? []).map((id) => ({ id, outcome: "held" as const, resumed: true as const }))];
 const PREFIX = "ovis:pending:";
+/** the bridge keeps a held receipt this long (server/core/pending.ts PI_RESUME_MS): one older proves nothing */
+const HELD_RECEIPT_MS = 10 * 60 * 1000;
+const freshReceipt = (at: number | undefined): at is number => at !== undefined && Date.now() - at < HELD_RECEIPT_MS;
 const piReceipt = (message: PendingMessage): boolean => message.id.startsWith("pi:")
   && (message.error?.code === "pi_transcript_pending" || message.error?.code === "transcript_unconfirmed");
 
@@ -23,7 +27,7 @@ export class PendingMessageStore {
   /** ids an exact resumed receipt settled (a consumed Pi id, or a resumed sent/discarded one): no saved copy brings them back */
   private settledResumed = new Map<string, Set<string>>();
   /** ids an exact resumed receipt confirmed held without typing: a saved copy from before the drop stays held */
-  private heldResumed = new Map<string, Set<string>>();
+  private heldResumed = new Map<string, Map<string, number>>();
   /** ids this page discarded: a later resumed held ID never offers them for an explicit send again */
   private discarded = new Map<string, Set<string>>();
   private receiptOrder: Array<{ owner: string; id: string; scope: string }> = [];
@@ -80,9 +84,11 @@ export class PendingMessageStore {
   }
   /** A resumed held ID applies once, to the copy saved when it came: a later send of that copy (another tab's too) is never held again. */
   private applyHeldResumed(owner: string, message: PendingMessageView): PendingMessageView {
-    if (!this.heldResumed.get(owner)?.delete(message.id) || !this.canHoldResumed(owner, message) || message.state === "held") return message;
+    const at = this.heldResumed.get(owner)?.get(message.id);
+    this.heldResumed.get(owner)?.delete(message.id);
+    if (!freshReceipt(at) || !this.canHoldResumed(owner, message) || message.state === "held") return message;
     const { sending_at: _, ...rest } = message;
-    return { ...rest, state: "held" };
+    return { ...rest, state: "held", heldByReceipt: true };
   }
   read(owner: string): PendingMessageView[] {
     const cached = this.rows.get(owner);
@@ -103,7 +109,11 @@ export class PendingMessageStore {
       if (this.saved.get(owner) === raw) return;
       const loaded = this.restored(raw).filter((message) => !this.settledResumed.get(owner)?.has(message.id))
         .map((message) => message.state === "held" && this.discarded.get(owner)?.has(message.id) ? { ...message, state: "uncertain" as const } : message);
-      const next = loaded.map((message) => this.applyHeldResumed(owner, message));
+      // this page's receipt proof stays with its copy while another tab saves the list (saved, it is uncertain)
+      // only while the saved copy is the one this page wrote: another tab that acted on it (sent it, an error) ends the proof
+      const proven = new Map((this.rows.get(owner) ?? []).filter((message) => message.heldByReceipt && message.state === "held").map((message) => [message.id, message.text]));
+      const next = loaded.map((message) => proven.get(message.id) === message.text && message.state === "uncertain" && !message.resendInFlight && !message.error
+        ? { ...message, state: "held" as const, heldByReceipt: true as const } : this.applyHeldResumed(owner, message));
       const heldAgain = next.some((message, at) => message !== loaded[at]);
       // Another tab cannot alter or discard a live connection's authoritative rows.
       for (const own of this.read(owner).filter((message) => this.unsaved.has(owner) || message.serverOwned || this.isBusy(owner, message.id))) {
@@ -126,9 +136,11 @@ export class PendingMessageStore {
   private write(owner: string, messages: PendingMessageView[]): void {
     this.rows.set(owner, messages);
     try {
-      const raw = messages.length ? JSON.stringify({ version: 1, messages: messages.map(({ serverOwned: _, ...message }) =>
+      const raw = messages.length ? JSON.stringify({ version: 1, messages: messages.map(({ serverOwned: _, heldByReceipt, ...message }) =>
         this.unconfirmed.has(`${owner}\0${message.id}`) || message.resendInFlight
-          ? { ...message, state: "uncertain", resendInFlight: true } : message) }) : null;
+          ? { ...message, state: "uncertain", resendInFlight: true }
+          // a receipt's proof is this page's alone: saved, the copy waits for the next one
+          : heldByReceipt && message.state === "held" ? { ...message, state: "uncertain" } : message) }) : null;
       if (raw === null) this.storage().removeItem(PREFIX + owner); else this.storage().setItem(PREFIX + owner, raw);
       this.saved.set(owner, raw);
       this.unsaved.delete(owner);
@@ -165,14 +177,14 @@ export class PendingMessageStore {
     const resendInFlight = previous.find((item) => item.id === message.id)?.resendInFlight;
     const resendGeneration = previous.find((item) => item.id === message.id)?.resendGeneration;
     const heldByReceipt = scope === null && !resendInFlight && !this.unconfirmed.has(`${owner}\0${message.id}`)
-      && !piReceipt(message) && this.heldResumed.get(owner)?.has(message.id) === true;
+      && !piReceipt(message) && freshReceipt(this.heldResumed.get(owner)?.get(message.id));
     const view: PendingMessageView = { ...message, serverOwned: scope !== null,
       ...(resendInFlight ? { resendInFlight } : {}),
       ...(resendGeneration !== undefined ? { resendGeneration } : {}),
       state: resendInFlight ? "uncertain" : heldByReceipt ? "held"
         : scope === null && (message.state === "queued" || message.state === "sending"
           || message.state === "held" && this.discarded.get(owner)?.has(message.id) === true) ? "uncertain" : message.state };
-    if (heldByReceipt) { delete view.sending_at; this.heldResumed.get(owner)?.delete(message.id); }
+    if (heldByReceipt) { delete view.sending_at; view.heldByReceipt = true; this.heldResumed.get(owner)?.delete(message.id); }
     const at = previous.findIndex((item) => item.id === message.id);
     const next = [...previous];
     if (at < 0) next.push(view); else next[at] = view;
@@ -211,9 +223,9 @@ export class PendingMessageStore {
     for (const item of removed) if (item.outcome === "held" && item.resumed === true
       && !this.settledResumed.get(owner)?.has(item.id) && !this.discarded.get(owner)?.has(item.id)
       && (proofs?.get(item.id) === undefined || proofs.get(item.id) === scope)) {
-      const held = this.heldResumed.get(owner) ?? new Set<string>();
-      held.add(item.id);
-      if (held.size > 1024) held.delete(held.values().next().value!);
+      const held = this.heldResumed.get(owner) ?? new Map<string, number>();
+      held.set(item.id, Date.now());
+      if (held.size > 1024) held.delete(held.keys().next().value!);
       this.heldResumed.set(owner, held);
     }
     const receipts = this.removed.get(owner) ?? new Map<string, Set<string>>();

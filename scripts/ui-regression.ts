@@ -149,11 +149,14 @@ try {
   let releaseFeatures: (() => void) | null = null;
   let releaseSnapshot: (() => void) | null = null;
   const routed: Array<{ close: () => Promise<void> }> = [];
+  /** the IDs the bridge's resumed held receipts named, in arrival order */
+  const heldReceipts: string[] = [];
   await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
     routed.push(socket);
     const upstream = socket.connectToServer();
     upstream.onMessage((raw) => {
       const message = JSON.parse(String(raw));
+      if (message.type === "pending-messages" && Array.isArray(message.held)) heldReceipts.push(...message.held);
       if (holdSnapshot && message.type === "features") {
         const release = () => { socket.send(raw); releaseFeatures = null; };
         releaseFeatures = release;
@@ -1021,6 +1024,7 @@ try {
   await page.getByRole("button", { name: "Discard", exact: true }).click();
   await until(async () => await pendingRows.count() === 2, "the live row was discarded on the bridge");
   assert.equal(pendingBytes(), `\u001b[200~${queuedTexts[0]}\u001b[201~\r\u001b`);
+  const heldBeforeReload = heldReceipts.length;
   await page.reload(); await page.locator(".conn-live").waitFor();
   await until(async () => await pendingRows.count() === 2, "saved pending copies restored");
   assert.deepEqual(await pendingRows.locator(".pending-message-bubble").allTextContents(), queuedTexts.slice(1));
@@ -1028,6 +1032,7 @@ try {
   await until(async () => await page.locator('.pending-message[data-state="held"]').count() === 2, "reload brings the proven copies back held");
   assert.equal(await page.locator('.pending-message[data-state="uncertain"]').count(), 0, "a proven copy is not left uncertain");
   assert.equal(await page.locator(".pending-message-send").count(), 2, "a proven held copy offers Send now");
+  assert.equal(new Set(heldReceipts.slice(heldBeforeReload)).size, 2, "each copy is held on the bridge's receipt for its own ID, not on a saved state");
   await reportPending("idle"); await page.locator('.composer-status:not([data-status="working"])').waitFor();
   await page.waitForTimeout(NO_SEND_WAIT_MS); // fixed wait: readiness may not replay saved pending input
   assert.equal(pendingBytes(), `\u001b[200~${queuedTexts[0]}\u001b[201~\r\u001b`, "reload and readiness never send a held copy without Send now");
