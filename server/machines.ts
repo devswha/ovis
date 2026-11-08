@@ -563,7 +563,7 @@ export class MachineManager {
         }
         if (runtime.machine.name !== profile.label) { runtime.machine.name = profile.label; changed = true; }
         runtime.machine.enabled = enabled;
-        runtime.machine.target = profile.target ?? undefined;
+        runtime.machine.target = profile.target ? this.profileState.target(profile.id, profile.target) : undefined;
         if (!enabled) {
           runtime.machine.action_required = null;
           runtime.machine.error = profile.target ? "Disabled in herdr" : "This saved herdr machine uses an unsupported SSH address or session.";
@@ -1227,7 +1227,8 @@ export class MachineManager {
     if (existing?.machine.herdr_profile_id && (!existing.machine.enabled || !existing.machine.target || !sameSshSession(target, existing.machine.target))) throw new Error("This PC is managed by herdr; refresh its saved machine before setup");
     if (existing?.machine.herdr_profile_id) {
       if (target.identity_file) throw new Error("SSH connection details are managed by herdr; use the account's SSH config for keys");
-      target = { ...existing.machine.target! };
+      // SSH identity stays catalog-owned; the socket/new-start choice belongs to this web client.
+      target = { ...existing.machine.target!, herdr_socket: target.herdr_socket, start_new_herdr: target.start_new_herdr };
     }
     // the install that asks it (fromInstall) was the approval of a PC not added here yet too
     const auto = options.auto === true && request.update_remote === true && (!!existing || options.fromInstall === true);

@@ -58,10 +58,19 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [job?.id, finished]);
   useEffect(() => setSecret(""), [job?.challenge?.id]);
+  const editIdentity = (field: "destination" | "port" | "session", value: string) => {
+    setHerdrSocket(""); setStartNewHerdr(false);
+    // A result from the old address must not offer its choices for the edited address.
+    setJob((current) => current?.action_required === "choose_herdr" ? { ...current, action_required: null, found_herdr_sessions: undefined } : current);
+    if (field === "destination") setDestination(value);
+    else if (field === "port") setPort(value);
+    else setSession(value);
+  };
 
   const begin = async (choice?: HerdrChoice) => {
     if (pending) return;
     setError(null); setPending(true);
+    if (choice && machine?.herdr_profile_id) choice = { ...choice, session: machine.target?.session };
     // a PC saved in herdr keeps its catalog name, which the server does not read from here
     if (choice) { if ("session" in choice) setSession(choice.session ?? ""); setHerdrSocket(choice.herdr_socket ?? ""); setStartNewHerdr(choice.start_new_herdr === true); }
     try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(herdrSocket ? { herdr_socket: herdrSocket } : {}), ...(startNewHerdr ? { start_new_herdr: true } : {}), ...choice, ...(machine ? { machine_id: machine.id } : {}), ...(needsBridgeUpdate || updateRemote ? { update_remote: true } : {}) });
@@ -89,12 +98,12 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     <div className="modal-body">
       {(!job || finished && job.phase !== "connected") && <form id="machine-connect-form" onSubmit={(e) => { e.preventDefault(); void begin(); }}>
         {machine?.herdr_profile_id ? <p className="field-hint">{machine.name} — {destination} / {session}</p> : <>
-        <label className="field"><span className="field-label">{t("SSH alias or user@address")}</span><input ref={destinationField} autoFocus className="input" required autoComplete="off" value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="devbox or user@192.168.1.20" /></label>
+        <label className="field"><span className="field-label">{t("SSH alias or user@address")}</span><input ref={destinationField} autoFocus className="input" required autoComplete="off" value={destination} onChange={(e) => editIdentity("destination", e.target.value)} placeholder="devbox or user@192.168.1.20" /></label>
         <label className="field"><span className="field-label">{t("PC name")}</span><input className="input" maxLength={100} value={name} placeholder={destination || t("Filled from the SSH address")} onChange={(e) => setName(e.target.value)} /></label>
         <details><summary>{t("Advanced settings")}</summary><div className="machine-advanced">
-          <label className="field"><span className="field-label">{t("SSH port")}</span><input className="input" type="number" min="1" max="65535" placeholder={t("From SSH config (default 22)")} value={port} onChange={(e) => setPort(e.target.value)} /></label>
+          <label className="field"><span className="field-label">{t("SSH port")}</span><input className="input" type="number" min="1" max="65535" placeholder={t("From SSH config (default 22)")} value={port} onChange={(e) => editIdentity("port", e.target.value)} /></label>
           <label className="field"><span className="field-label">{t("Private key path on this web server")}</span><input className="input" value={key} placeholder="~/.ssh/id_ed25519" onChange={(e) => setKey(e.target.value)} /></label>
-          <label className="field"><span className="field-label">{t("herdr session name")}</span><input className="input" value={session} placeholder={t("Default session")} onChange={(e) => setSession(e.target.value)} /></label>
+          <label className="field"><span className="field-label">{t("herdr session name")}</span><input className="input" value={session} placeholder={t("Default session")} onChange={(e) => editIdentity("session", e.target.value)} /></label>
         </div></details>
         <p className="field-hint">{t("Uses the web server account’s SSH config and ssh-agent. Agent CLI tools and logins use the environment on the target PC.")}</p>
         </>}

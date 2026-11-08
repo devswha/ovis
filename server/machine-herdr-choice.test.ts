@@ -8,22 +8,26 @@ import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
 import { posixHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
+import { herdrMachineId } from "./herdr-profile-state.ts";
 
-it("puts found sessions on the job and card, then remembers the chosen socket across restart", async () => {
+it.each(["manual", "catalog socket", "catalog new"])("remembers %s choice through refresh, restart and reconnect", async (kind) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-herdr-choice-"));
-  const id = "12345678-1234-1234-1234-123456789abc";
-  const socket = "/home/fixture/desktop/herdr/sessions/work/herdr.sock";
+  const catalog = kind !== "manual";
+  const id = catalog ? herdrMachineId("fixture-profile") : "12345678-1234-1234-1234-123456789abc";
+  const profile = { id: "fixture-profile", label: "fixture", enabled: true, target: { destination: "fixture-only", session: "work" } };
+  const socket = kind === "catalog new" ? "/home/fixture/.config/herdr/sessions/work/herdr.sock" : "/home/fixture/desktop/herdr/sessions/work/herdr.sock";
   const found = [{ socket_path: socket, session: "work", label: "work" }];
   const descriptor = { socket_path: socket, pid: 4242, port: 12345, token: "a".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
-  writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: { destination: "fixture-only" } }]));
+  if (!catalog) writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: { destination: "fixture-only" } }]));
+  let started = false;
   const relays: ReturnType<typeof Bun.serve>[] = [];
   const mocks = [
     spyOn(SshConnection.prototype, "start").mockResolvedValue(undefined),
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
-    spyOn(posixHost, "inspect").mockImplementation(async (_ssh, _session, selected) => ({ platform: "linux-x64", home: "/home/fixture", herdrPath: "", expectedSocket: selected ?? "/home/fixture/.config/herdr/herdr.sock", bundleReady: true, bundleOlder: false, descriptors: selected ? [descriptor] : [], runtimeDir: "/runtime", registryDir: "/registry" })),
+    spyOn(posixHost, "inspect").mockImplementation(async (_ssh, _session, selected) => ({ platform: "linux-x64", home: "/home/fixture", herdrPath: "", expectedSocket: selected ?? (kind === "catalog new" ? socket : "/home/fixture/.config/herdr/herdr.sock"), bundleReady: true, bundleOlder: false, descriptors: selected || started ? [descriptor] : [], runtimeDir: "/runtime", registryDir: "/registry" })),
     spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
-    spyOn(posixHost, "start").mockResolvedValue(undefined),
-    spyOn(posixHost, "descriptors").mockResolvedValue([]),
+    spyOn(posixHost, "start").mockImplementation(async (_ssh, options) => { started = options.start_new_herdr === true; }),
+    spyOn(posixHost, "descriptors").mockImplementation(async () => started ? [descriptor] : []),
     spyOn(posixHost, "foundSessions").mockResolvedValue(found),
     spyOn(posixHost, "alive").mockResolvedValue(true),
     spyOn(SshConnection.prototype, "forward").mockImplementation(async (port) => {
@@ -37,6 +41,7 @@ it("puts found sessions on the job and card, then remembers the chosen socket ac
     }),
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+  if (catalog) manager.syncHerdrProfiles([profile]);
   const run = (target: SshTarget): Promise<SetupJob> => new Promise((resolve, reject) => {
     let job: SetupJob | undefined;
     const deadline = setTimeout(() => { off(); reject(new Error("setup did not finish")); }, 5000);
@@ -47,17 +52,28 @@ it("puts found sessions on the job and card, then remembers the chosen socket ac
     job = manager.setup({ ...target, machine_id: id, update_remote: true }, { auto: true });
   });
   try {
-    const failed = await run({ destination: "fixture-only" });
+    const failed = await run(catalog ? profile.target : { destination: "fixture-only" });
     expect(failed).toMatchObject({ phase: "failed", action_required: "choose_herdr", found_herdr_sessions: found });
     expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ action_required: "choose_herdr", found_herdr_sessions: found });
-    const target = { destination: "fixture-only", session: "work", herdr_socket: socket };
+    const target = { destination: "fixture-only", session: "work", ...(kind === "catalog new" ? { start_new_herdr: true } : { herdr_socket: socket }) };
     expect(await run(target)).toMatchObject({ phase: "connected", target });
     expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ target, action_required: null });
-    expect(JSON.parse(readFileSync(join(dir, "machines.json"), "utf8"))[0].target).toEqual(target);
-    manager.patch(id, { enabled: false });
+    if (catalog) { manager.syncHerdrProfiles([profile]); expect(manager.list().find((pc) => pc.id === id)?.target).toEqual(target); }
+    else { expect(JSON.parse(readFileSync(join(dir, "machines.json"), "utf8"))[0].target).toEqual(target); manager.patch(id, { enabled: false }); }
     manager.stop();
-    const restored = new MachineManager(dir, {} as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
-    try { expect(restored.list().find((pc) => pc.id === id)?.target).toEqual(target); }
+    const restored = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+    try {
+      if (catalog) {
+        const connected = new Promise<void>((resolve, reject) => {
+          const deadline = setTimeout(() => { off(); reject(new Error("catalog reconnect did not finish")); }, 5000);
+          const off = restored.subscribe(() => { if (restored.list().find((pc) => pc.id === id)?.state === "connected") { clearTimeout(deadline); off(); resolve(); } });
+        });
+        restored.syncHerdrProfiles([profile]);
+        expect(restored.list().find((pc) => pc.id === id)?.target).toEqual(target);
+        await connected;
+      }
+      expect(restored.list().find((pc) => pc.id === id)?.target).toEqual(target);
+    }
     finally { restored.stop(); }
   } finally {
     manager.stop();

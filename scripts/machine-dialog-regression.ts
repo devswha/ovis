@@ -128,6 +128,38 @@ try {
             await page.unroute("**/api/machines/setup**");
           }
           console.log(`PASS ${width}px: found session offers reuse or explicit new start and sends the chosen identity`);
+          for (const choice of ["Start a new herdr here", "Use work"] as const) for (const changed of ["address", "port", "session"] as const) {
+            const selected: SetupRequest[] = [];
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                const target = route.request().postDataJSON() as SetupRequest;
+                selected.push(target);
+                job = { id: "bound", machine_id: "fixture", target, phase: "failed", step: selected.length === 1 ? "Choose a session" : "Attempt failed",
+                  action_required: selected.length === 1 ? "choose_herdr" : null,
+                  found_herdr_sessions: [{ socket_path: "/home/fixture/desktop/herdr/sessions/work/herdr.sock", session: "work", label: "work" }],
+                  installations: [], challenge: null, error: null, ssh_output: null };
+              }
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await page.reload(); await destination.fill("fixture-only"); await destination.press("Enter");
+            await dialog.getByRole("button", { name: choice, exact: true }).click();
+            await dialog.getByText("Attempt failed", { exact: true }).waitFor();
+            assert.equal(selected.length, 2);
+            if (changed === "address") await destination.fill("another-pc");
+            else {
+              await dialog.locator("summary").click();
+              if (changed === "port") await dialog.getByRole("spinbutton", { name: "SSH port", exact: true }).fill("2222");
+              else await dialog.getByRole("textbox", { name: "herdr session name", exact: true }).fill("different");
+            }
+            await Promise.all([
+              page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/machines/setup"),
+              dialog.getByRole("button", { name: "Retry connection", exact: true }).click(),
+            ]);
+            assert.equal(selected[2]?.start_new_herdr, undefined, `${choice}: ${changed} edit clears new-start consent`);
+            assert.equal(selected[2]?.herdr_socket, undefined, `${choice}: ${changed} edit clears chosen socket`);
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: failed choices lose consent and socket on address, port or session edits`);
           for (const decision of ["early_close", "cancel", "close", "start_headless"] as const) {
             const actions: unknown[] = [];
             await page.route("**/api/machines/setup**", async (route) => {

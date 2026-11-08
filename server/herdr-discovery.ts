@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, readFileSync, statSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { herdrMayListen } from "./herdr/client.ts";
+import { herdrAcceptsConnection } from "./herdr/client.ts";
 import type { FoundHerdrSession } from "../shared/machines.ts";
 
 export interface HerdrDiscoveryHost {
@@ -14,7 +14,7 @@ export interface HerdrDiscoveryHost {
 }
 
 function processSocket(args: string[], home: string, xdg?: string): string | null {
-  if (args[0]?.split("/").pop() !== "herdr") return null;
+  if (!args[0]?.split("/").pop()?.startsWith("herdr")) return null;
   const tail = args.slice(1);
   let session: string | undefined;
   const at = tail.indexOf("--session");
@@ -58,7 +58,13 @@ function candidates(host: HerdrDiscoveryHost): string[] {
 }
 
 export async function discoverHerdrSessions(host: HerdrDiscoveryHost = { home: process.env.HOME || homedir(), xdg: process.env.XDG_CONFIG_HOME, procRoot: "/proc", platform: process.platform, uid: process.getuid?.() }): Promise<FoundHerdrSession[]> {
-  const probe = host.probe ?? ((socket: string) => herdrMayListen(socket));
+  const probe = host.probe ?? herdrAcceptsConnection;
+  const uid = host.uid ?? process.getuid?.();
+  const roots: string[] = [];
+  for (const root of [host.home, host.xdg]) {
+    if (!root?.startsWith("/")) continue;
+    try { roots.push(realpathSync(root)); } catch { /* a missing config root has no candidates */ }
+  }
   const found: FoundHerdrSession[] = [];
   const paths = candidates(host);
   if (host.platform === "darwin") {
@@ -77,7 +83,14 @@ export async function discoverHerdrSessions(host: HerdrDiscoveryHost = { home: p
   for (const path of paths) {
     if (!existsSync(path)) continue;
     let socket: string;
-    try { socket = realpathSync(path); } catch { continue; /* a daemon may leave while discovery runs */ }
+    try {
+      const link = lstatSync(path);
+      if (link.uid !== uid) continue;
+      socket = realpathSync(path);
+      const resolved = statSync(socket);
+      if (resolved.uid !== uid || !resolved.isSocket()) continue;
+      if (!roots.some((root) => socket === root || socket.startsWith(root + "/"))) continue;
+    } catch { continue; /* a daemon may leave while discovery runs */ }
     if (seen.has(socket)) continue;
     seen.add(socket);
     if (!existsSync(socket)) continue;

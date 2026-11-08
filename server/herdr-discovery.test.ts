@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { discoverHerdrSessions } from "./herdr-discovery.ts";
@@ -23,6 +23,47 @@ function listening(socket: string) {
 }
 
 describe("running herdr discovery", () => {
+  it.each([
+    ["/home/u/.local/bin/herdr", [], undefined],
+    ["/usr/local/bin/herdr", ["--session", "check-873df7"], "check-873df7"],
+    ["/usr/local/bin/herdr-real", ["--session", "work"], "work"],
+  ] as const)("finds server executable %s", async (binary, flags, session) => {
+    const f = fixture();
+    const xdg = join(f.home, "desktop");
+    const socket = join(xdg, "herdr", ...(session ? ["sessions", session] : []), "herdr.sock");
+    listening(socket);
+    mkdirSync(join(f.procRoot, "100"));
+    writeFileSync(join(f.procRoot, "100/cmdline"), [binary, ...flags, "server", ""].join("\0"));
+    writeFileSync(join(f.procRoot, "100/environ"), `HOME=${f.home}\0XDG_CONFIG_HOME=${xdg}\0`);
+    expect(await discoverHerdrSessions(f)).toEqual([{ socket_path: socket, ...(session ? { session } : {}), label: session ?? "Default session" }]);
+    writeFileSync(join(f.procRoot, "100/cmdline"), [binary, ...flags, "terminal", "attach", "server", ""].join("\0"));
+    expect(await discoverHerdrSessions(f)).toEqual([]);
+  });
+
+  it("rejects sockets owned by another uid even in the inherited XDG root", async () => {
+    const f = fixture();
+    const xdg = join(f.home, "inherited-xdg");
+    listening(join(xdg, "herdr/herdr.sock"));
+    expect(await discoverHerdrSessions({ ...f, xdg, uid: f.uid + 1 })).toEqual([]);
+  });
+
+  it("rejects a symlink escaping HOME and the configured XDG root", async () => {
+    const f = fixture(), outside = fixture();
+    const socket = join(outside.home, "herdr/herdr.sock");
+    listening(socket);
+    const link = join(f.home, ".config/herdr/herdr.sock");
+    mkdirSync(dirname(link), { recursive: true }); symlinkSync(socket, link);
+    expect(await discoverHerdrSessions(f)).toEqual([]);
+  });
+
+  it("does not offer a permission-denied socket", async () => {
+    const f = fixture();
+    const socket = join(f.home, ".config/herdr/herdr.sock");
+    listening(socket); chmodSync(socket, 0);
+    try { expect(await discoverHerdrSessions(f)).toEqual([]); }
+    finally { chmodSync(socket, 0o600); }
+  });
+
   it("finds a desktop-only XDG root from this user's server process", async () => {
     const f = fixture();
     const xdg = join(f.home, "desktop");
