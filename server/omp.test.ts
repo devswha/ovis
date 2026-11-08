@@ -11,7 +11,7 @@ import { darwinProcess } from "./claude-store.ts";
 import * as darwinKernel from "./darwin-process.ts";
 import * as runtime from "./herdr-core/runtime.ts";
 import { terminalBreadcrumb } from "./gjc-runtime.ts";
-import { isOmpHelper, isOmpProcess, ompAgentDir, ompHeldTranscript, ompLaunch, ompLaunchDir, ompLoadsIntegration, ompStoreLayout } from "./omp.ts";
+import { isOmpHelper, isOmpProcess, ompAgentDir, ompHeldTranscript, ompLaunch, ompLaunchDir, ompLoadsIntegration, ompStoreLayout, readOmpHeldFilesSetting } from "./omp.ts";
 import layouts from "./fixtures/omp-18.8.7-store-layouts.json";
 import * as ompProbe from "./omp-process.ts";
 import * as omo from "./omo.ts";
@@ -587,6 +587,8 @@ describe("an omp pane's chat", () => {
     /** performance.now as the lsof listings' freshness reads it: each test starts long after the last one's. */
     let clock = 0;
     let core = true;
+    /** the experimental setting ompHeldFiles, as the server's shared preferences hold it */
+    let heldFiles = true;
     const listed = (files: string[]) => `p${pid}\nfcwd\nn${pane.cwd}\n${files.map((file, at) => `f${23 + at}\nn${file}\n`).join("")}`;
     /** The breadcrumb an earlier omp in this terminal left, naming `session`, written `at`. */
     const breadcrumb = (session: string, at: number) => {
@@ -615,7 +617,11 @@ describe("an omp pane's chat", () => {
       const serving = spyOn(runtime, "servingCore").mockImplementation(() => core);
       const spawned = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => { lsofCalls.push(argv); return lsof(); }) as unknown as typeof Bun.spawn);
       processes = [{ pid, name: "omp", argv: ["omp", "-c"] }];
+      // Settings -> Experimental -> OMP on macOS herdr-core: on for these tests unless one turns it off
+      heldFiles = true;
+      readOmpHeldFilesSetting(() => heldFiles);
       restores.push(() => {
+        readOmpHeldFilesSetting(() => false);
         now.mockRestore(); spawned.mockRestore(); serving.mockRestore(); environment.mockRestore(); start.mockRestore(); terminal.mockRestore();
         Object.defineProperty(process, "platform", platform);
       });
@@ -737,6 +743,19 @@ describe("an omp pane's chat", () => {
       lsof = () => { throw new Error("spawn failed"); };
       expect(await ompHeldTranscript(pane.pane_id, pane.cwd!, true)).toBeNull();
       expect(lsofCalls).toHaveLength(2);
+    });
+
+    it("with the experimental setting off never runs lsof, and falls back as before", async () => {
+      heldFiles = false;
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      // the breadcrumb an earlier omp left in this terminal: older than this omp, so the chat stays on the terminal
+      breadcrumb(continued, startedAt - 3_600_000);
+      await expect(paneConversation(pane.pane_id)).rejects.toThrow("no_session_path");
+      // one written since this omp started is taken, as it was before lsof was read
+      breadcrumb(continued, Date.now());
+      expect(await chat()).toEqual(synthetic);
+      expect(lsofCalls).toEqual([]);
     });
 
     it("kills lsof and binds nothing when its listing passes the byte cap", async () => {

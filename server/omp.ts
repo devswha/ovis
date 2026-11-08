@@ -409,14 +409,26 @@ function sameStarts(open: Map<number, string[] | null>, identities: ReadonlyMap<
 }
 
 /**
+ * Settings -> Experimental -> OMP on macOS herdr-core: chat from the session it holds open (src/lib/settings.ts
+ * ompHeldFiles), as the server's shared preferences hold it. Off until the server's start points it there, and
+ * off by default: the chat there then falls back as it did before lsof was read.
+ */
+let heldFilesOn: () => boolean = () => false;
+
+/** Points ompHeldOpen at the setting's live value (the server's start, from its shared preferences). */
+export function readOmpHeldFilesSetting(read: () => boolean): void {
+  heldFilesOn = read;
+}
+
+/**
  * The route as the held transcript is read from it, once herdr's report for the pane gave no usable
  * path (none, or one rejected: outside the omp's store, or not its session). On macOS herdr-core
  * (`core`) there is no /proc and omp's breadcrumb proves nothing (#3365): only the files a process
  * holds open do, so lsof lists them, and when it proves nothing no file is held and heldTranscript
- * binds nothing.
+ * binds nothing. Only with ompHeldFiles on; off, lsof is never run and the route is read as before.
  */
 export async function ompHeldOpen(route: OmpRoute, core: boolean): Promise<OmpRoute> {
-  if (process.platform !== "darwin" || !core) return route;
+  if (process.platform !== "darwin" || !core || !heldFilesOn()) return route;
   const open = await darwinOpenFiles(route.pids);
   return { ...route, openFilesOf: (pid) => open.has(pid) ? open.get(pid)! : [] };
 }
