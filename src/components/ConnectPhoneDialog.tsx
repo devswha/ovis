@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, RefreshCw, X } from "lucide-react";
 
@@ -145,7 +145,7 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <div ref={surface} className="modal connect-phone-dialog" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1}>
         <header className="modal-header">
-          <h2 className="modal-title" id={`${id}-title`}>{t("Add a connection")}</h2>
+          <h2 className="modal-title" id={`${id}-title`} tabIndex={-1}>{t("Add a connection")}</h2>
           <button type="button" className="icon-button" aria-label={t("Close")} onClick={onClose}><X aria-hidden="true" /></button>
         </header>
         <div className="modal-body connect-phone-body">
@@ -315,6 +315,15 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, p
   const t = useT();
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [signedInProvider, setSignedInProvider] = useState<AccountSession["provider"] | null>(null);
+  const signInView = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const view = signInView.current;
+    // A completed sign-in leaves the next control ready, unless the person switched tabs.
+    if (!signedIn || signedInProvider === null || view === null || view.closest("[hidden]") !== null) return;
+    const next = view.querySelector<HTMLElement>("button:not(:disabled), a[href]")
+      ?? view.closest('[role="dialog"]')?.querySelector<HTMLElement>("h2");
+    next?.focus();
+  }, [signedIn, signedInProvider, joinBySignIn]);
   const signInStatus = <p key="sign-in-status" className="visually-hidden" role="status" aria-live="polite">{signedInProvider === null ? null : t("Signed in with {provider}", { provider: PROVIDER_NAMES[signedInProvider] })}</p>;
   const on = relayOn(relay);
   useEffect(() => { if (on) setSwitchError(null); }, [on]);
@@ -339,13 +348,13 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, p
     </>
   );
   if (!signedIn) return (
-    <div className="connect-signin" data-testid="connect-signin">
+    <div ref={signInView} className="connect-signin" data-testid="connect-signin">
       {signInStatus}
       <RelaySignIn service={account.service} onOpenAccount={account.onOpen} onSignedIn={(session) => { setSignedInProvider(session.provider); account.onSignedIn(); }} />
     </div>
   );
   return (
-    <div className="connect-signin" data-testid="connect-signin">
+    <div ref={signInView} className="connect-signin" data-testid="connect-signin">
       {signInStatus}
       {joinBySignIn ? <p className="connect-signin-lead">{t("On the new device, sign in to the same Ovis account.")}</p> : (
         <>

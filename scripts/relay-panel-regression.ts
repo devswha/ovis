@@ -101,7 +101,13 @@ const englishContext = async (browser: Browser, access: RemoteAccess = NO_TAILSC
       if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
       const path = new URL(route.request().url()).pathname;
       if (path === "/v1/pcs") return route.fulfill({ headers: cors, json: { pcs: [] } });
-      if (path === "/link") return route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Sign-in fixture</title><p>Sign-in fixture</p>" });
+      if (path === "/link") return route.fulfill({ contentType: "text/html", body: '<!doctype html><title>Sign-in fixture</title><p>Sign-in fixture</p><button onclick="fetch(`/approve${location.search}`, {method: \'POST\'})">Approve</button>' });
+      if (path === "/approve") {
+        const code = new URL(route.request().url()).searchParams.get("code");
+        assert.ok(code);
+        service.approveOnLinkPage(code, "acct_fixture", "github");
+        return route.fulfill({ status: 204 });
+      }
       if (!["/v1/providers", "/v1/signin/ovis/device", "/v1/token"].includes(path)) return route.fulfill({ status: 404, headers: cors, json: { error: { code: "not_found" } } });
       const body = route.request().postData();
       const response = await service.fetch(route.request().url(), {
@@ -242,6 +248,17 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await dialog.locator('.settings-fold[data-fold="more"]').getAttribute("open"), null, "sign-in leaves the Settings account group closed");
     await waiting.getByRole("button", { name: "Cancel", exact: true }).click();
     await linkPage.close();
+
+    const approvalPage = context.waitForEvent("page");
+    await signInButton.click();
+    const approving = await approvalPage;
+    await approving.waitForURL(`${ACCOUNT_SERVICE}/link?code=*`);
+    await waiting.locator("a").focus();
+    await approving.getByRole("button", { name: "Approve", exact: true }).click();
+    await relayTab.getByRole("button", { name: "Open the account", exact: true }).waitFor();
+    assert.equal(await sheet.evaluate((node) => node.contains(document.activeElement)), true, "approval keeps keyboard focus inside the sheet");
+    assert.equal(await toggle.evaluate((node) => node === document.activeElement), true, "approval focuses the signed-in view's first control");
+    await approving.close();
 
     // signed in, the relay's tab carries the relay's switch while it is off, with the gate note and the account
     await signIn(page);
