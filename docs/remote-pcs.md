@@ -149,7 +149,10 @@ use, without going to it. Each PC in `GET /api/machines` (and the machine events
 - `how: "bridge"`: an SSH PC's bridge from this app is of another version.
 - `updatable: false` with `reason`, in plain words, when an update is on offer but cannot run from
   here (not started by its updater, blocked there, too old to install by revision, a saved herdr
-  machine whose bridge was never approved). Absent or null: up to date, or not known yet.
+  machine whose bridge was never approved). An SSH PC's own Ovis is never updated from here to a
+  release newer than this app, beta builds included (`0.6.0-beta.2` is newer than `0.5.1` and older
+  than `0.6.0`), nor to one whose version it does not tell: this app would then refuse to connect
+  to it. Absent or null: up to date, or not known yet.
 
 `POST /api/machines/:id/update` starts that update (202 `{ job_id }`), whichever way the PC is
 reached, and refuses one that cannot run with 409 `update_unavailable` and the same words. A

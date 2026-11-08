@@ -7,6 +7,7 @@ import { unmanagedUpdateStatus, type UpdateStatus } from "../shared/update.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import { MachineManager, OWN_UPDATES_AT_ONCE } from "./machines.ts";
+import { offerFromStatus } from "./pc-update.ts";
 import type { PushService } from "./push.ts";
 
 // Update all's queue and the cancel route on a manager with saved SSH PCs: no SSH runs, the bridge update itself is a
@@ -299,4 +300,33 @@ it("refuses an update-bridge of an SSH PC's own Ovis to a release newer than thi
   const setup = spyOn(manager, "setup");
   expect(() => manager.updateBridge(A)).toThrow("newer than this app");
   expect(setup).not.toHaveBeenCalled();
+});
+
+it("reads a beta release as its updater offers it, and refuses one newer than this app, or one it cannot tell", async () => {
+  const { manager, internals, pc } = fixture();
+  const told = (latest_version: string | null) => offerFromStatus({ ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true, latest_revision: "a".repeat(40), latest_version, revision_bound_install: true });
+  // a PC on the beta channel offers the next release's beta: newer than this app (0.5.1), so it is not offered from here
+  expect(told("999.0.0-beta.2")).toMatchObject({ latest_version: "999.0.0-beta.2", updatable: true });
+  const connected = internals.machines.get(B)!;
+  Object.assign(connected.machine, { state: "connected", action_required: null, error: null });
+  connected.ownOffer = told("999.0.0-beta.2")!;
+  expect(pc(B).ovis_update).toMatchObject({ updatable: false, reason: expect.stringContaining("newer than this app") });
+  // a beta of a release this app already is, or is past, is older than it: offered
+  connected.ownOffer = told("0.5.1-beta.3")!;
+  expect(pc(B).ovis_update).toMatchObject({ updatable: true });
+  // a release whose version it does not tell cannot be checked: not offered from here
+  connected.ownOffer = told("next")!;
+  expect(pc(B).ovis_update).toMatchObject({ updatable: false, reason: expect.stringContaining("does not tell its version") });
+  // the same before it connects, and in update-bridge
+  const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
+  runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "999.0.0-beta.2", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+  runtime.remoteRevision = "a".repeat(40);
+  expect(pc(A).ovis_update).toMatchObject({ updatable: false, reason: expect.stringContaining("newer than this app") });
+  (manager.updateBridge as unknown as { mockRestore(): void }).mockRestore();
+  const setup = spyOn(manager, "setup");
+  expect(() => manager.updateBridge(A)).toThrow("newer than this app");
+  runtime.machine.remote_ovis = { ...runtime.machine.remote_ovis, latest_version: null };
+  expect(() => manager.updateBridge(A)).toThrow("does not tell its version");
+  expect(setup).not.toHaveBeenCalled();
+  expect(manager.updateAll().started).toEqual([]);
 });

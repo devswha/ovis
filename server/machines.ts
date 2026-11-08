@@ -137,12 +137,24 @@ const SETUP_JOBS_AT_ONCE = 4;
 const NEWER_THAN_APP = "That release is newer than this app, which would then refuse to connect to that PC: update this app first, then this PC.";
 /** this app's own release (package.json), the newest an SSH PC's own Ovis may be updated to from here */
 const APP_VERSION = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
-/** a release version (`0.5.1`) newer than this app's */
+const UNKNOWN_RELEASE = "That PC offers a release that does not tell its version, so this app cannot check that it would still connect to that PC: update it on that PC.";
+/** a release (`0.5.1`) or a beta of one (`0.6.0-beta.2`, older than `0.6.0`), as numbers to compare in order */
+const releaseRank = (version: string): number[] | null => {
+  const parts = /^(\d{1,6})\.(\d{1,6})\.(\d{1,6})(?:-beta\.(\d{1,6}))?$/.exec(version);
+  return parts ? [Number(parts[1]), Number(parts[2]), Number(parts[3]), parts[4] === undefined ? Infinity : Number(parts[4])] : null;
+};
+/** a release version newer than this app's; one that cannot be compared counts as newer */
 function newerThanThisApp(version: string | null | undefined): boolean {
   if (!version) return false;
-  const [a, b] = [version, APP_VERSION].map((v) => v.split(".").map(Number));
-  for (let i = 0; i < 3; i++) if ((a![i] ?? 0) !== (b![i] ?? 0)) return (a![i] ?? 0) > (b![i] ?? 0);
+  const [a, b] = [releaseRank(version), releaseRank(APP_VERSION)];
+  if (!a || !b) return true;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i]! > b[i]!;
   return false;
+}
+/** why an offered own update may not be started from here: a release past this app (which would then refuse that PC), or one it cannot check */
+function pastThisApp(offer: { updatable: boolean; latest_version: string | null } | null | undefined): string | null {
+  if (!offer?.updatable) return null;
+  return !offer.latest_version ? UNKNOWN_RELEASE : newerThanThisApp(offer.latest_version) ? NEWER_THAN_APP : null;
 }
 const NOT_CONNECT_APPROVED = "Connect this PC first: it was added from herdr, and connecting it here was not approved yet.";
 const NOT_BRIDGE_APPROVED = "Review the bridge update in this PC's dialog first: it was added from herdr without approving this app's bridge.";
@@ -245,8 +257,8 @@ const OWN_CHECK_RUNNING = "That PC's Ovis is still checking for updates; this PC
 const OWN_OVIS_AWAY = "This PC's own Ovis is not running; this PC tries again until it is back. If it stays away, start it on that PC.";
 /** the host an SSH destination names, without its user: where that PC's own Ovis is opened */
 function sshHost(destination: string): string { return destination.slice(destination.lastIndexOf("@") + 1); }
-/** a release version as a PC's updater tells it (`0.4.18`), or null */
-const releaseVersion = (value: unknown): string | null => typeof value === "string" && /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(value) ? value : null;
+/** a release version as a PC's updater tells it (`0.4.18`, or a beta `0.5.0-beta.2`), or null */
+const releaseVersion = (value: unknown): string | null => typeof value === "string" && /^\d{1,6}\.\d{1,6}\.\d{1,6}(-beta\.\d{1,6})?$/.test(value) ? value : null;
 /** another PC's own words, kept to one short line */
 const remoteWords = (value: unknown): string | null => typeof value === "string" && value.trim() !== "" ? value.trim().replace(/\s+/g, " ").slice(0, 300) : null;
 /** An independently managed web server older than this app, which can install its own update: updating this PC asks it to. */
@@ -627,12 +639,13 @@ export class MachineManager {
       if (!runtime.ownOffer) return null;
       const offer = { ...runtime.ownOffer, revision: runtime.offerRevision ?? null };
       // an SSH PC on a release newer than this app is refused by it (a newer bridge): updating it would cut it off from here
-      return machine.kind === "ssh" && offer.updatable && newerThanThisApp(offer.latest_version) ? { ...offer, updatable: false, reason: NEWER_THAN_APP } : offer;
+      const past = machine.kind === "ssh" ? pastThisApp(offer) : null;
+      return past ? { ...offer, updatable: false, reason: past } : offer;
     }
     const own = machine.remote_ovis;
     if (machine.kind === "ssh" && own) {
       // its own update runs through this app's setup there, which needs the same approvals as a bridge update
-      const unapproved = !own.updatable ? null : newerThanThisApp(own.latest_version) ? NEWER_THAN_APP : !this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null;
+      const unapproved = !own.updatable ? null : pastThisApp(own) ?? (!this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null);
       return { how: "own", current_version: own.version, latest_version: own.latest_version, updatable: own.updatable && !unapproved, reason: unapproved ?? own.reason, revision: runtime.remoteRevision ?? null };
     }
     if (machine.kind === "ssh" && machine.action_required === "update_bridge") {
@@ -832,7 +845,8 @@ export class MachineManager {
     // the user's own Update bridge takes back an earlier Cancel; a scheduled one does not
     if (!scheduled) runtime.updateCancelled = false;
     // its own Ovis on a release newer than this app would be refused by it afterwards, cut off from here (updateOffer)
-    if (newerThanThisApp(runtime.machine.remote_ovis?.latest_version)) throw new PcUpdateRefused(NEWER_THAN_APP);
+    const past = pastThisApp(runtime.machine.remote_ovis);
+    if (past) throw new PcUpdateRefused(past);
     // the release its card shows (the offer its last connect read), when the caller names none
     const revision = expectedRevision ?? runtime.remoteRevision;
     return this.setup({ ...runtime.machine.target!, machine_id: id, update_remote: true }, { auto: true, ...(revision ? { expectedRevision: revision } : {}) });
