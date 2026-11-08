@@ -51,6 +51,8 @@ const FREE: Record<string, string[]> = {
   'a draft with a status-shaped line over key hints': ['› note', '  gpt default · test', '  enter select · esc back', STATUS],
   // a list never draws under the status row: its keys there are a folder or thread name wrapped onto the next row
   'a status row wrapped onto a list\'s keys': ['› Ask Codex to do anything', '  GPT-6-Astra ultra · /fixture ·', '  enter select · esc back'],
+  // the transcript view's row is the screen's last: a draft row reading so has the status row under it
+  'a draft row reading as the transcript view': ['› Please explain', '  Browsing the repository', STATUS, ROWS],
   'such a row at 40 columns': ['› Ask Codex to do anything', '  GPT-6-Astra ultra · /home/u… ·', '  enter select · esc back', '  ← for agents · ? for shortcuts'],
 };
 // /statusline in a narrow pane wraps its hints, the separator left at the end of the first row
@@ -170,6 +172,32 @@ describe('a message sent to a Codex pane', () => {
     prompt.mockRejectedValue(new client.HerdrError('agent_blocked', 'blocked'));
     // herdr stops answering once the paste is in
     typed.mockImplementation(async () => { read.mockRejectedValue(new client.HerdrError('connect_failed', 'cannot reach herdr')); });
+    const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
+    expect((failed as client.HerdrError | null)?.code).toBe('submit_partial');
+    expect(typed).toHaveBeenCalledTimes(1);
+    expect(keys).not.toHaveBeenCalled();
+  });
+
+  // typed raw past agent.prompt, also nothing into what herdr has not yet reported blocked: an approval, a masked prompt
+  const APPROVAL = ['Would you like to run the following command?', '', '$ rm -rf junk', '', '› 1. Yes, proceed (y)', '  2. No, and tell Codex what to do differently (esc)', '', 'Press enter to confirm or esc to cancel'];
+  const PASSPHRASE = ['› Ask Codex to do anything', STATUS, "Enter passphrase for key '/tmp/key':"];
+  for (const [name, rows] of [['an approval', APPROVAL], ['a masked prompt', PASSPHRASE]] as const) {
+    it(`types nothing raw once agent.prompt is refused and ${name} came up`, async () => {
+      const { read, prompt, typed, keys } = spies(FREE['its composer']!);
+      prompt.mockImplementation(async () => {
+        read.mockResolvedValue({ text: screen([...rows]) } as Awaited<ReturnType<typeof client.paneRead>>);
+        throw new client.HerdrError('agent_not_ready', 'refused');
+      });
+      const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
+      expect((failed as client.HerdrError | null)?.code).toBe('agent_blocked');
+      expect(typed).not.toHaveBeenCalled();
+      expect(keys).not.toHaveBeenCalled();
+    });
+  }
+  it('sends no raw Enter into an approval that came up over the paste', async () => {
+    const { read, prompt, typed, keys } = spies(FREE['its composer']!);
+    prompt.mockRejectedValue(new client.HerdrError('agent_not_ready', 'refused'));
+    typed.mockImplementation(async () => { read.mockResolvedValue({ text: screen(APPROVAL) } as Awaited<ReturnType<typeof client.paneRead>>); });
     const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
     expect((failed as client.HerdrError | null)?.code).toBe('submit_partial');
     expect(typed).toHaveBeenCalledTimes(1);

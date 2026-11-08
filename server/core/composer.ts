@@ -377,9 +377,14 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     const mayType = (): boolean => {
       try { authorize(); return true; } catch (error) { refused = error; return false; }
     };
-    /** Codex's own lists and fields take a paste while herdr reports it at rest (codexInputHeld): read right before a write. */
+    /**
+     * What takes a raw paste or its Enter on a Codex screen: one of its own lists or fields (codexInputHeld), herdr reporting
+     * it at rest, and, typed raw past agent.prompt, also an approval or a masked prompt that came up since herdr's own check.
+     */
+    const codexHolds = (text: string): boolean => registry.holdsInput("codex", text) || (codexFallback && (parseInteractivePrompt("codex", text) !== null || maskedPromptAtAnyWidth(text)));
+    /** read right before a write: nothing else is awaited between this read and it */
     const codexScreenFree = async (target: string): Promise<void> => {
-      const held = registry.holdsInput("codex", (await paneRead({ paneId: target, source: "detection", format: "text" })).text);
+      const held = codexHolds((await paneRead({ paneId: target, source: "detection", format: "text" })).text);
       inTime();
       if (held) throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
     };
@@ -674,7 +679,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         // the paste is in: a read that fails leaves the send as unconfirmed as a screen that opened over it
         const unsent = new HerdrError("submit_partial", "The message was pasted into Codex, but its Enter was not sent. Your chat text stayed here. Check the terminal before sending again.");
         const screen = await paneRead({ paneId, source: "detection", format: "text" }).catch(() => { throw unsent; });
-        if (registry.holdsInput("codex", screen.text)) throw unsent;
+        if (codexHolds(screen.text)) throw unsent;
       }
       authorize();
       const sentAt = Date.now();

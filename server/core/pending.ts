@@ -571,7 +571,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (secretPrompt(screen, look.cols) !== null) {
       throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
     }
-    if (look.agent && registry.holdsInput(look.agent, screen)) {
+    // and, for Codex, an approval that came up since pendingContext's read (herdr reports it once its status catches up)
+    if (look.agent && (registry.holdsInput(look.agent, screen) || (look.agent === "codex" && parseInteractivePrompt("codex", screen) !== null))) {
       const status = pending.current(paneId);
       if (status === "idle" || status === "done") throw new ScreenHeldError(status === "idle" ? "idle" : "done", seen);
       throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");

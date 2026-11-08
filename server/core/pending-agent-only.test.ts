@@ -108,6 +108,17 @@ it("reads the screen as the last wait before the queued paste and before its Ent
   expect(waits[waits.indexOf("enter") - 1]).toBe("read");
 });
 
+it("sends no queued Enter into a Codex approval that came up after the paste's own look", async () => {
+  const d = delivery({ pid: 41001, name: "codex" }, "working");
+  await d.submit(1, "queue");
+  d.screen(COMPOSER);
+  // the paste goes in; the look before its Enter still finds the composer, and the approval is up for the last one
+  d.hooks.paste = () => { d.hooks.read = () => { d.hooks.read = undefined; d.screen("Would you like to run the following command?\n\n$ rm -rf junk\n\n› 1. Yes, proceed (y)\n  2. No, and tell Codex what to do differently (esc)\n\nPress enter to confirm or esc to cancel\n"); }; };
+  d.setStatus("idle");
+  await d.settled();
+  expect(d.writes).toEqual(["\u001b[200~> backup.txt\nkeep it\u001b[201~"]);
+});
+
 it("sends no Enter into a Codex list that opened after the paste's own look", async () => {
   const d = delivery({ pid: 41001, name: "codex" }, "working");
   await d.submit(1, "queue");

@@ -288,8 +288,9 @@ const holdsHint = (text: string): boolean => codexHints(text).some((hint) => COD
  * so agent.prompt pastes into them: the paste is dropped, and its Enter takes the row under the cursor,
  * which saves a model as the default for every new session, or in the transcript view rewinds the
  * conversation. Read by the layout Codex 0.167 draws (server/fixtures/codex-held-0.167.0-*), never by what one
- * row merely says. Under the last mark (`›`, `»`): the transcript view's row starts `Browsing` at any width
- * (at 15 columns that word is all it keeps). With the composer's status row there (model and effort first, the
+ * row merely says. Under the last mark (`›`, `»`): the transcript view's row is the screen's last and starts
+ * `Browsing` at any width (at 15 columns that word is all it keeps); a draft row never comes last, its status
+ * row follows it. With the composer's status row there (model and effort first, the
  * last such row: a draft above may read like one), only what /statusline draws under it holds the input
  * (`enter save`, `esc cancel`, read over the rows a narrow pane wraps them onto); a list never draws under a
  * status row, so its hints there are a wrapped folder or thread name. Without it (a list hides the composer, or
@@ -300,7 +301,7 @@ export function codexInputHeld(screen: string): boolean {
   const rows = screen.split(/\r?\n/).map(cleanLine).filter((row) => row && !isDivider(row));
   const composer = findLastIndex(rows, (row) => /^[›»]/.test(row));
   const under = rows.slice(composer + 1);
-  if (under.some((row) => /^Browsing(?:\s|$)/.test(row))) return true;
+  if (composer >= 0 && /^Browsing(?:\s|$)/.test(rows.at(-1) ?? "")) return true;
   const status = findLastIndex(under, (row) => CODEX_STATUS_ROW_RE.test(row));
   if (composer >= 0 && status >= 0) return codexHints(under.slice(status + 1).join(" ")).some((hint) => /^(?:enter save|esc cancel)$/.test(hint));
   const last = under.slice(-4);
