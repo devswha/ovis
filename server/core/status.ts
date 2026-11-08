@@ -517,7 +517,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       hearClaude(paneId, agent, read, replay === undefined);
       if (agent === "claude") claudeAgents.poll(paneId);
     } finally { settling = was; }
-    const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, read));
+    // an unreported Letta pane on herdr-core has no word of herdr's: what its own title last said stands for it
+    const titled = agent === "letta" && read === "unknown" && servingCore() && !letta.tracks(paneId) ? lettaTitled.get(paneId) : undefined;
+    const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, titled ?? read));
     gjc.poll();
     // a report or another agent takes the pane back from Letta's own files
     // a replay around a gap carries Ovis's own projected status, not herdr's word: only another agent hands the pane back then

@@ -61,6 +61,22 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     expect(h.alerts.filter((alert) => alert === "done")).toHaveLength(1);
   });
 
+  it("keeps the work a Letta title shows through a status event that says nothing, and finishes it once", async () => {
+    core();
+    const h = hub();
+    resolving().mockResolvedValue(null);
+    h.herdrSays(letta("⠋ Tutor"));
+    await h.snapshot();
+    expect(h.last().status).toBe("working");
+    // herdr-core tells a status event for a pane that reports nothing: unknown
+    handlers.onStatus("w1:p1", "unknown", "letta");
+    expect(h.last().status).toBe("working");
+    h.herdrSays(letta("Tutor"));
+    await h.snapshot();
+    expect(h.last().status).toBe("done");
+    expect(h.alerts.filter((alert) => alert === "done")).toHaveLength(1);
+  });
+
   it("tells no turn from a read that began before one already applied and finished after it", async () => {
     core();
     const h = hub();
