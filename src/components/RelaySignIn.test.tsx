@@ -124,7 +124,7 @@ describe("the relay tab's Sign in", () => {
     const account = { service: SERVICE, onOpen: () => { settings.push("account"); }, onSignedIn };
     await act(async () => {
       renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>, {
-        createNodeMock: ({ props }) => ({ focus() {
+        createNodeMock: ({ props }) => ({ closest: () => null, querySelector: () => null, focus() {
           if (typeof props === "object" && props !== null && "children" in props && typeof props.children === "string") focusTargets.push(props.children);
         } }),
       });
@@ -171,7 +171,7 @@ describe("the relay tab's Sign in", () => {
     let actions: ReturnType<typeof useLinkPageSignIn> | undefined;
     const gate = Promise.withResolvers<void>();
     if (phase === "starting") startGate = gate.promise;
-    function SignInHarness() { actions = useLinkPageSignIn(SERVICE, () => undefined); return null; }
+    function SignInHarness() { actions = useLinkPageSignIn(SERVICE, () => undefined, () => undefined); return null; }
     await act(async () => { renderer = create(<SignInHarness />); });
     await act(async () => { actions?.start(); });
     if (phase === "waiting") await act(async () => { await firstPoll; });

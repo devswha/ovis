@@ -341,7 +341,7 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, p
   if (!signedIn) return (
     <div className="connect-signin" data-testid="connect-signin">
       {signInStatus}
-      <RelaySignIn service={account.service} onSignedIn={(session) => { setSignedInProvider(session.provider); account.onSignedIn(); }} />
+      <RelaySignIn service={account.service} onOpenAccount={account.onOpen} onSignedIn={(session) => { setSignedInProvider(session.provider); account.onSignedIn(); }} />
     </div>
   );
   return (

@@ -7,7 +7,7 @@
  * the providers the service says it offers get a button. Elsewhere, and with the account off, none
  * of this.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import { listThisPc, thisPcInNoAccount } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
@@ -219,7 +219,17 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     }
   }, [t]);
 
-  useEffect(() => { if (offered) void load(); }, [offered, load, recheck]);
+  const recheckAccount = useEffectEvent(() => {
+    switch (view.kind) {
+      case "device-code":
+      case "signing-in": return;
+      case "loading":
+      case "signed-out":
+      case "signed-in": if (offered) void load(); return;
+      default: view satisfies never;
+    }
+  });
+  useEffect(() => { recheckAccount(); }, [offered, load, recheck]);
   useEffect(() => {
     onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null, reachable: !unreachable });
   }, [onAccount, view, unreachable]);

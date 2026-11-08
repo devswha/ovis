@@ -137,6 +137,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Off. Nothing goes through the relay.": "꺼짐. 릴레이로는 아무것도 오가지 않습니다.",
   "This account has as many PCs on the Ovis relay as it may. Remove one from your account to add this one.": "이 계정은 Ovis 릴레이에 올릴 수 있는 PC 수를 다 썼습니다. 계정에서 PC 하나를 지우면 이 PC를 추가할 수 있습니다.",
   "The sign-in page opened in a new tab with this code. Continue there with GitHub or Google.": "이 코드가 들어간 로그인 페이지를 새 탭에서 열었습니다. 거기서 GitHub 또는 Google로 계속하세요.",
+  "The sign-in page opened in a new tab. Enter this code there, then continue with GitHub or Google.": "로그인 페이지를 새 탭에서 열었습니다. 거기에 이 코드를 입력한 뒤 GitHub 또는 Google로 계속하세요.",
   "The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.": "Ovis 릴레이는 Ovis 계정이 필요합니다. 로그인하거나 같은 Wi-Fi 또는 Tailscale로 연결하세요.",
   "Online. Sign in to keep using the Ovis relay after {date}. Same Wi-Fi, Tailscale and your own relay keep working without an account.": "온라인. {date} 이후에도 Ovis 릴레이를 쓰려면 로그인하세요. 같은 Wi-Fi, Tailscale, 직접 운영하는 릴레이는 계정 없이 계속 쓸 수 있습니다.",
   "Cannot reach the Ovis account service for a relay pass. Retrying.": "릴레이 패스를 받으려고 Ovis 계정 서비스에 연결하지 못했습니다. 다시 시도하는 중입니다.",

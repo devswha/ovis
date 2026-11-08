@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { deviceLabel, deviceOs } from "../phone.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignIn } from "./deviceSignIn.ts";
-import { offeredProviders } from "./service.ts";
+import { offeredProviders, type OfferedProviders } from "./service.ts";
 import { indexedAccountStore, type AccountSession } from "./store.ts";
 
 export type LinkPageSignInState =
@@ -22,12 +22,20 @@ export type LinkPageSignInState =
   | { kind: "signed-in"; session: AccountSession }
   | { kind: "failed"; error: unknown };
 
-export function useLinkPageSignIn(service: string, onSignedIn: (session: AccountSession) => void): { state: LinkPageSignInState; start: () => void; cancel: () => void } {
+export function useLinkPageSignIn(service: string, onSignedIn: (session: AccountSession) => void, onOpenAccount: () => void): { state: LinkPageSignInState; ready: boolean; start: () => void; cancel: () => void } {
   const [state, setState] = useState<LinkPageSignInState>({ kind: "idle" });
+  const [offer, setOffer] = useState<OfferedProviders | null>(null);
   const running = useRef<AbortController | null>(null);
   const signedIn = useRef(onSignedIn);
   signedIn.current = onSignedIn;
   useEffect(() => () => running.current?.abort(), []);
+  useEffect(() => {
+    let live = true;
+    setOffer(null);
+    // Discover before the click: a desktop-only offer opens Settings without opening a blank tab.
+    void offeredProviders(service, ["github"]).then((next) => { if (live) setOffer(next); });
+    return () => { live = false; };
+  }, [service]);
 
   const cancel = useCallback(() => {
     running.current?.abort();
@@ -36,6 +44,8 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
   }, []);
 
   const start = useCallback(() => {
+    if (offer === null) return;
+    if (offer.page.length === 0 && offer.device.length === 0) { onOpenAccount(); return; }
     running.current?.abort();
     // in the click, before anything is awaited: a tab opened later is a popup the browser blocks
     const tab = window.open("about:blank", "_blank");
@@ -48,9 +58,6 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
     setState({ kind: "starting" });
     void (async () => {
       const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
-      // As in Settings, discovery supplies GitHub only when the service's offer is unknown.
-      const offer = await offeredProviders(service, ["github"]);
-      controller.signal.throwIfAborted();
       const options = { service, store: indexedAccountStore, requester };
       const fallback = offer.device[0];
       const started = fallback === undefined
@@ -61,7 +68,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       sent = true;
       setState({ kind: "waiting", started, opened: tab !== null });
       const session = await started.finish(controller.signal);
-      controller.signal.throwIfAborted();
+      // finish owns cancellation under the store lock. A returned session is already committed.
       // The account re-read may unmount us inside the callback; a finished page stays open.
       running.current = null;
       setState({ kind: "signed-in", session });
@@ -73,7 +80,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       console.warn("Ovis: the sign-in did not finish", error instanceof Error ? error.name : error);
       setState({ kind: "failed", error });
     }).finally(() => { if (running.current === controller) running.current = null; });
-  }, [service]);
+  }, [service, offer, onOpenAccount]);
 
-  return { state, start, cancel };
+  return { state, ready: offer !== null, start, cancel };
 }

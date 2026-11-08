@@ -25,9 +25,9 @@ function failureText(t: ReturnType<typeof useT>, error: unknown): string {
  * confirmed there; `onSignedIn` then lets the page read the account again (the tab moves on to how
  * this PC joins). A blocked tab leaves the page's link and code here, as Settings shows them.
  */
-export function RelaySignIn({ service, onSignedIn }: { service: string; onSignedIn: (session: AccountSession) => void }) {
+export function RelaySignIn({ service, onSignedIn, onOpenAccount }: { service: string; onSignedIn: (session: AccountSession) => void; onOpenAccount: () => void }) {
   const t = useT();
-  const { state, start, cancel } = useLinkPageSignIn(service, onSignedIn);
+  const { state, ready, start, cancel } = useLinkPageSignIn(service, onSignedIn, onOpenAccount);
   const signInButton = useRef<HTMLButtonElement>(null);
   const signInPage = useRef<HTMLAnchorElement>(null);
   const previous = useRef(state.kind);
@@ -52,7 +52,9 @@ export function RelaySignIn({ service, onSignedIn }: { service: string; onSigned
         <p className="settings-description">{provider !== "ovis"
           ? t("Open {provider} and enter this code. Enter it only if you started this sign-in on this page.", { provider: PROVIDER_NAMES[provider] })
           : state.opened
-            ? t("The sign-in page opened in a new tab with this code. Continue there with GitHub or Google.")
+            ? verificationUriComplete === null
+              ? t("The sign-in page opened in a new tab. Enter this code there, then continue with GitHub or Google.")
+              : t("The sign-in page opened in a new tab with this code. Continue there with GitHub or Google.")
             : t("On any device, open {address} and enter this code, then continue with GitHub or Google. Enter it only if you started this sign-in on this page.", { address: linkAddress(verificationUri) })}</p>
         <output className="account-device-code" aria-live="polite">{userCode}</output>
         <p className="settings-description" role="status">{provider === "ovis" ? t("Waiting for the sign-in…") : t("Waiting for {provider}…", { provider: PROVIDER_NAMES[provider] })}</p>
@@ -69,7 +71,7 @@ export function RelaySignIn({ service, onSignedIn }: { service: string; onSigned
   return (
     <>
       <p className="settings-description">{t("Connect from anywhere through your Ovis account.")}</p>
-      <button ref={signInButton} type="button" className="btn btn-primary connect-signin-button" aria-disabled={state.kind === "starting"} onClick={() => { if (state.kind !== "starting") start(); }}>{state.kind === "starting" ? t("Signing in…") : t("Sign in to Ovis")}</button>
+      <button ref={signInButton} type="button" className="btn btn-primary connect-signin-button" aria-disabled={!ready || state.kind === "starting"} onClick={() => { if (ready && state.kind !== "starting") start(); }}>{state.kind === "starting" ? t("Signing in…") : t("Sign in to Ovis")}</button>
       {failure !== null && <p className="account-error" role="alert">{failure}</p>}
     </>
   );
