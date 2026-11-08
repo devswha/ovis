@@ -24,6 +24,8 @@ export class CLIProxyService {
   private pending: Promise<readonly ProviderUsage[]> | null = null;
   private generation = 0;
   private requests: Promise<void> = Promise.resolve();
+  /** the hidden or removed accounts of the last report: their credentials are not used (#3333) */
+  private skipped: ReadonlySet<string> = new Set();
 
   constructor(stateDir: string) {
     this.path = join(stateDir, "cliproxy.json");
@@ -147,13 +149,16 @@ export class CLIProxyService {
     }
   }
 
-  report(refresh = false): Promise<readonly ProviderUsage[]> {
+  /** `skipped`: accounts hidden or removed from Ovis, whose last rows stay without asking the Hub to use their credentials; one shown again is read now. */
+  report(refresh = false, skipped: ReadonlySet<string> = new Set()): Promise<readonly ProviderUsage[]> {
     if (!this.config) return Promise.resolve([]);
     if (this.pending) return this.pending;
     const now = Date.now();
-    if (now < this.nextAt && !(refresh && now - this.readAt >= MIN_REFRESH_MS)) return Promise.resolve(this.entries);
+    const shownAgain = this.entries.some((entry) => this.skipped.has(entry.key) && !skipped.has(entry.key));
+    this.skipped = skipped;
+    if (now < this.nextAt && !shownAgain && !(refresh && now - this.readAt >= MIN_REFRESH_MS)) return Promise.resolve(this.entries);
     const generation = this.generation;
-    const pass = this.collect().then((entries) => {
+    const pass = this.collect(skipped).then((entries) => {
       if (generation !== this.generation) return [];
       this.entries = entries; this.readAt = now; this.nextAt = now + FRESH_MS;
       return entries;
@@ -162,7 +167,7 @@ export class CLIProxyService {
     return pass;
   }
 
-  private async collect(): Promise<readonly ProviderUsage[]> {
+  private async collect(skipped: ReadonlySet<string>): Promise<readonly ProviderUsage[]> {
     try {
       const body = await this.call("/credentials");
       if (!Array.isArray(body["files"])) throw new CLIProxyError("cliproxy_response", 502, "Hub returned an unreadable response");
@@ -178,6 +183,9 @@ export class CLIProxyService {
         const claims = file["id_token"];
         const workspace = isJsonObject(claims) && typeof claims["chatgpt_account_id"] === "string" ? claims["chatgpt_account_id"] : null;
         const entry: ProviderUsage = { id: provider.id, key: `${provider.id}:cliproxy:${encodeURIComponent(name)}`, account, plan: null, windows: [], problem: "failed", checked_at: null };
+        // a hidden or removed account keeps its last row; one never read yet is read once, so it can be listed
+        const kept = skipped.has(entry.key) ? this.entries.find((held) => held.key === entry.key) : undefined;
+        if (kept) return [Promise.resolve(kept)];
         if (file["disabled"] === true || file["unavailable"] === true) return [Promise.resolve(entry)];
         return [(async (): Promise<ProviderUsage> => {
           try {

@@ -1049,8 +1049,14 @@ interface Search {
 }
 
 export class UsageService {
-  /** A local CLI login ended: rediscover sign-ins, preserving account rate-limit backoffs. */
-  invalidate(): void { this.searches.clear(); this.entries.clear(); }
+  /**
+   * A local CLI login of `provider` ended: look its sign-ins up again and read them anew, preserving account
+   * rate-limit backoffs. Only that provider: another one's hidden accounts stay unread (#3333).
+   */
+  invalidate(provider: UsageProviderId): void {
+    this.searches.delete(provider);
+    for (const source of [...this.entries.keys()]) if (source.startsWith(`${provider}|`)) this.entries.delete(source);
+  }
   /** Whether Claude's status line is wrapped here (server/statusline-install.ts), on this server's home and CLAUDE_CONFIG_DIR. */
   statusline(): StatuslineInstallState {
     return statuslineInstallState(this.statuslineOptions());
@@ -1062,7 +1068,7 @@ export class UsageService {
       if (enabled) installStatusline(this.statuslineOptions());
       else removeStatusline(this.statuslineOptions());
     } finally {
-      this.invalidate();
+      this.invalidate("claude");
     }
     return this.statusline();
   }
@@ -1088,9 +1094,11 @@ export class UsageService {
   private pendingRefresh = false;
   /** the keys of the accounts hidden or removed from Ovis (skipAccounts) */
   private skipped: () => ReadonlySet<string> = () => new Set();
+  /** what `skipped` gave the last pass: an account no longer in it was shown again */
+  private lastSkipped: ReadonlySet<string> = new Set();
 
   constructor(private readonly ctx: UsageContext = systemUsageContext(), private readonly providers: readonly UsageProvider[] = USAGE_PROVIDERS,
-    private readonly additional: (refresh: boolean) => Promise<readonly ProviderUsage[]> = async () => []) {}
+    private readonly additional: (refresh: boolean, skipped: ReadonlySet<string>) => Promise<readonly ProviderUsage[]> = async () => []) {}
 
   /**
    * `refresh` asks again sooner than FRESH_MS. Concurrent callers share one pass; a refresh that
@@ -1118,6 +1126,10 @@ export class UsageService {
     const now = this.ctx.now();
     const missing = new Map(this.providers.flatMap((provider) => { const command = provider.missingCommand?.(this.ctx) ?? null; return command === null ? [] : [[provider.id, command] as const]; }));
     const skipped = this.skipped();
+    // an account shown again is looked up and read anew now, its provider's last search no longer standing for it
+    const shownAgain = new Set([...this.lastSkipped].filter((key) => !skipped.has(key)));
+    for (const id of new Set([...this.entries.values()].flatMap((entry) => entry.usage && shownAgain.has(entry.usage.key) ? [entry.usage.id] : []))) this.invalidate(id);
+    this.lastSkipped = skipped;
     const usages = await Promise.all(this.providers.map((provider) => {
       const listed = (this.searches.get(provider.id)?.sources ?? []).flatMap((source) => this.entries.get(source)?.usage ?? []);
       return listed.length > 0 && listed.every((usage) => skipped.has(usage.key)) ? listed : this.collectProvider(provider, now, refresh, missing.has(provider.id));
@@ -1137,7 +1149,7 @@ export class UsageService {
     }
     // a provider with an account found here needs nothing more; one with none names what it could not look with (a hub's accounts are not this PC's)
     const missingCommands = [...missing].filter(([id]) => !usages.flat().some((usage) => usage.id === id)).map(([provider, command]) => ({ provider, command }));
-    return { providers: [...byKey.values(), ...await this.additional(refresh)], ...(missingCommands.length > 0 ? { missing_commands: missingCommands } : {}) };
+    return { providers: [...byKey.values(), ...await this.additional(refresh, skipped)], ...(missingCommands.length > 0 ? { missing_commands: missingCommands } : {}) };
   }
 
   /** `incomplete`: a command it looks with is missing, so the search is not kept: the next report looks again, finding a sign-in once it is installed */

@@ -1187,6 +1187,40 @@ describe("the service", () => {
     expect(searches).toBe(1);
   });
 
+  it("keeps a fully hidden Copilot unread when another provider's sign-in ends", async () => {
+    commands.set("gh auth status --hostname github.com --json hosts", JSON.stringify({ hosts: { "github.com": [{ state: "success", login: "alice" }] } }));
+    commands.set("gh auth token --hostname github.com --user alice", "gho_alice");
+    replies.set("https://api.github.com/copilot_internal/user", { body: { login: "alice", copilot_plan: "individual", quota_snapshots: { chat: { entitlement: 50, percent_remaining: 50 } } } });
+    let claudeSearches = 0;
+    const claude: UsageProvider = { id: "claude", async signIns() { claudeSearches += 1; return []; }, async read() { return null; } };
+    const service = new UsageService(context(), [...only("copilot"), claude]);
+    service.skipAccounts(() => new Set(["copilot:alice"]));
+    const tokenReads = () => commandCalls.filter((argv) => argv.slice(0, 3).join(" ") === "gh auth token").length;
+    await service.report();
+    expect(tokenReads()).toBe(1);
+    service.invalidate("claude");
+    await service.report();
+    expect([tokenReads(), claudeSearches]).toEqual([1, 2]);
+  });
+
+  it("looks a provider up again and reads it anew as soon as one of its accounts is shown again", async () => {
+    let searches = 0;
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() { searches += 1; return [{ source: "a", token: "token-a", expiresAt: null, account: { id: "a", label: "a" } }]; },
+      async read() { return { plan: "pro", windows: [] }; },
+    };
+    let skipped = new Set(["copilot:a"]);
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => skipped);
+    await service.report();
+    skipped = new Set();
+    now += MIN_REFRESH_MS;
+    const [shown] = (await service.report()).providers;
+    expect(searches).toBe(2);
+    expect(shown!.checked_at).toBe(new Date(now).toISOString());
+  });
+
   it("marks a failed request and asks again after RETRY_MS", async () => {
     signInCodex(NOW / 1000 + 24 * 3600);
     replies.set(CODEX_USAGE, { status: 500 });

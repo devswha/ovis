@@ -235,3 +235,33 @@ it("stops looking up a provider's sign-ins once its accounts are hidden in Setti
   expect(searches).toBe(before);
   expect([report.providers.map((usage) => usage.key), report.removed?.map((usage) => usage.key)]).toEqual([["copilot:kept"], ["copilot:gone"]]);
 });
+
+it("looks a provider up again as soon as its account is shown again in Settings", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ovis-account-list-"));
+  roots.push(root);
+  let searched = Promise.withResolvers<void>();
+  const copilot: UsageProvider = {
+    id: "copilot",
+    async signIns() { searched.resolve(); return [{ source: "a", token: "token-a", expiresAt: null, account: { id: "a", label: "a" } }]; },
+    async read() { return { plan: "pro", windows: [] }; },
+  };
+  const ctx: UsageContext = {
+    home: root, env: {}, platform: "linux", now: () => 1_000,
+    fetch: async () => { throw new Error("no request expected"); },
+    keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true,
+  };
+  const server = createServer({
+    port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"),
+    machines: false, registerBridge: false, sidecar: false, terminalAttach: false,
+    herdrConfigPath: join(root, "herdr.toml"), usage: new UsageService(ctx, [copilot]),
+  });
+  servers.push(server);
+  const origin = `http://127.0.0.1:${server.port}`;
+  const hide = (keys: string[]) => fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ settings: { usageHidden: keys } }) });
+  expect((await hide(["copilot:a"])).status).toBe(200);
+  expect((await fetch(`${origin}/api/usage`)).status).toBe(200);
+  await searched.promise;
+  searched = Promise.withResolvers<void>();
+  expect((await hide([])).status).toBe(200);
+  await searched.promise;
+});

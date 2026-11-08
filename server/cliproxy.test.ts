@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { CLIProxyService } from "./cliproxy.ts";
 import { startFakeCLIProxy } from "./cliproxy.fake.ts";
 import { CLIProxyRoutes } from "./cliproxy-routes.ts";
 import { createServer } from "./index.ts";
-import { UsageService, type UsageContext } from "./usage.ts";
+import { FRESH_MS, UsageService, type UsageContext } from "./usage.ts";
 
 const KEY = "test-management-secret-not-in-responses";
 let dir: string;
@@ -91,6 +91,31 @@ describe("CLIProxyAPI v8", () => {
       expect.objectContaining({ auth_index: "a", header: expect.objectContaining({ authorization: "Bearer $TOKEN$", "anthropic-beta": "oauth-2025-04-20" }) }),
       expect.objectContaining({ auth_index: "b", header: expect.objectContaining({ authorization: "Bearer $TOKEN$", "chatgpt-account-id": "workspace-b" }) }),
     ]);
+  });
+
+  it("asks the hub nothing for hidden accounts and keeps their last rows, until one is shown again", async () => {
+    // Given
+    await configure();
+    const ctx: UsageContext = { home: dir, env: {}, platform: "linux", fetch, now: Date.now, keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true };
+    const usage = new UsageService(ctx, [], (refresh, skipped) => service.report(refresh, skipped));
+    let skipped = new Set<string>();
+    usage.skipAccounts(() => skipped);
+    const asked = () => fake.calls.filter((entry) => entry.path === "/requests/api-call").length;
+    const start = Date.now();
+    try {
+      const first = await usage.report();
+      expect(asked()).toBe(2);
+      // When
+      skipped = new Set(first.providers.map((entry) => entry.key));
+      setSystemTime(start + FRESH_MS);
+      const hidden = await usage.report(true);
+      // Then
+      expect(asked()).toBe(2);
+      expect(hidden.providers).toEqual(first.providers);
+      skipped = new Set(["claude:cliproxy:claude-a.json"]);
+      await usage.report();
+      expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b", "b"]);
+    } finally { setSystemTime(); }
   });
 
   it("persists the key privately without returning it when saved or reloaded", async () => {
