@@ -180,9 +180,26 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     await page.evaluate((target) => { location.hash = target; }, hash);
     await page.locator(`.relay-dash[data-dashboard-view="${view}"]`).waitFor();
   };
-  /** The strip's cells as the page counts them: data-strip-count and the offline note on Needs you. */
+  /**
+   * The strip's cells as the user reads them: the numeral drawn in each cell and the number in its "incl. N offline"
+   * line (0 when no such line is drawn; null when what is drawn is no number), beside the data-strip-* the page keeps.
+   */
   const strip = (page: Page) => page.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>(".relay-overview-strip [data-strip-cell]")]
-    .map((cell) => [cell.dataset["stripCell"], { count: Number(cell.dataset["stripCount"]), offline: cell.dataset["stripOffline"] === undefined ? null : Number(cell.dataset["stripOffline"]) }])));
+    .map((cell) => {
+      const drawn = (selector: string): string | null => {
+        const element = cell.querySelector<HTMLElement>(selector);
+        return element !== null && element.checkVisibility() ? element.innerText.trim() : null;
+      };
+      const numeral = drawn(".relay-overview-strip-value") ?? "";
+      const note = drawn(".relay-overview-strip-note");
+      const offline = note === null ? "0" : /^incl\. (\d+) offline$/.exec(note)?.[1];
+      return [cell.dataset["stripCell"], {
+        label: drawn(".relay-overview-strip-label"),
+        count: /^\d+$/.test(numeral) ? Number(numeral) : null,
+        offline: offline === undefined ? null : Number(offline),
+        data: { count: Number(cell.dataset["stripCount"]), offline: Number(cell.dataset["stripOffline"] ?? 0) },
+      }];
+    })));
   const listedRows = (page: Page) => page.locator("[data-pc-list] [data-pc-id]");
   /** The height most rows of the PC table share (rows with a second line may grow). */
   const tableGeometry = (page: Page) => page.evaluate(() => {
@@ -261,11 +278,17 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       const { page } = await open({ fleet });
       const cells = await strip(page);
       expect(cells["ready"]?.count === ready && cells["needs"]?.count === needs && cells["needs"]?.offline === offline,
-        `strip ${JSON.stringify(cells)}: want Ready ${ready}, Needs you ${needs} incl. ${offline} offline`);
+        `strip ${JSON.stringify(cells)}: want Ready ${ready}, Needs you ${needs} incl. ${offline} offline drawn`);
+      expect(Object.values(cells).every((cell) => cell.data.count === cell.count && cell.data.offline === cell.offline),
+        `strip ${JSON.stringify(cells)}: data-strip-count and data-strip-offline agree with what is drawn`);
       const attention = await page.locator(".relay-overview-attention-row").count();
       expect(attention === Math.min(3, needs), `attention rows ${attention}: at most three`);
       const all = page.locator('[data-action="view-all-attention"]');
-      expect(needs > 3 ? await all.getAttribute("data-attention-total") === String(needs) : await all.count() === 0, `View all ${needs > 3 ? `says ${needs}` : "absent"}`);
+      if (needs > 3) {
+        const says = await all.innerText();
+        expect(await all.isVisible() && says.trim() === `View all ${needs}`, `View all says "${says}", want "View all ${needs}"`);
+        expect(await all.getAttribute("data-attention-total") === String(needs), `View all data-attention-total agrees with ${needs}`);
+      } else expect(await all.count() === 0, "View all absent");
       await shot(page, `dashboard-${fleet}-1440-dark`, true);
       return `Ready ${ready}, Needs you ${needs} (incl. ${offline} offline), attention ${attention}${needs > 3 ? ` + View all ${needs}` : ""}`;
     });
@@ -338,6 +361,8 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const { page } = await open({ fleet: "FREADY", signedIn: false });
     const keys = await page.locator(".relay-overview-strip [data-strip-cell]").evaluateAll((cells) => cells.map((cell) => cell.getAttribute("data-strip-cell")));
     expect(JSON.stringify(keys) === JSON.stringify(["paired", "relays"]), `local strip ${JSON.stringify(keys)}: no account Ready/Needs you`);
+    const labels = Object.values(await strip(page)).map((cell) => cell.label);
+    expect(JSON.stringify(labels) === JSON.stringify(["Paired with this device", "Relays"]), `local strip reads ${JSON.stringify(labels)}: no account Ready/Needs you`);
     const words = await page.locator(".relay-overview-local-row .relay-overview-attention-why").allInnerTexts();
     expect(words.length > 0 && words.every((word) => /^(Paired · not checked|This device: .+)$/.test(word)), `local rows report this device's checks only ${JSON.stringify(words)}`);
     return `strip ${JSON.stringify(keys)}, rows ${JSON.stringify([...new Set(words)])}`;
