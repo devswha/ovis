@@ -1,12 +1,17 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { openRelayChannel } from "../../shared/relay-channel.ts";
+import type { PairedDevice } from "../../shared/access.ts";
+import { openRelayChannel, probePc } from "../../shared/relay-channel.ts";
+import type { RelayChannel } from "../../shared/relay-channel.ts";
 import type { RelayDevice, RelayDeviceStore } from "../../shared/relay-device.ts";
-import { DIRECT_CARRIER, FrameType, MuxProtocolError } from "../../shared/relay-mux.ts";
+import { DIRECT_CARRIER, DIRECT_TAILNET, FrameType, MuxProtocolError } from "../../shared/relay-mux.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
-import { SignedInSessions } from "./admissions.ts";
-import { admissionDrops, DirectCarrier, rankLanAddresses } from "./direct.ts";
+import { CHECK_GAP_MS, SignedInSessions } from "./admissions.ts";
+import type { Access } from "../access.ts";
+import { handleDeviceRequest } from "../devices.ts";
+import type { DeviceStore } from "../devices.ts";
+import { admissionDrops, directPeerAllowed, DirectCarrier, rankLanAddresses, tailnetAddresses } from "./direct.ts";
 import { openGate } from "./direct-gate.ts";
 import type { NetworkInterfaceInfo } from "node:os";
 import { loadRelayIdentity } from "./identity.ts";
@@ -267,6 +272,20 @@ describe("direct carriers in AUTH_OK", () => {
     expect(await plain.auth(device)).not.toHaveProperty("direct");
   });
 
+  it("name the Tailscale one only to a phone that also offered DIRECT_TAILNET", async () => {
+    // Given a PC whose carriers depend on whether the phone can open a Tailscale address
+    const fixture = relayFixture();
+    cleanup.push(() => fixture.close());
+    const device = await relayDevice(fixture);
+    const carriers = (tailnet: boolean): string[] => ["ws://192.168.0.10:7319", ...tailnet ? ["ws://100.64.0.7:7319"] : []];
+    // When one phone offers both features and another DIRECT_CARRIER alone
+    const both = await relayConnection(fixture, { directCarriers: carriers });
+    const lanOnly = await relayConnection(fixture, { directCarriers: carriers });
+    // Then only the first hears of the Tailscale address
+    expect((await both.auth(device, [DIRECT_CARRIER, DIRECT_TAILNET])).direct).toEqual(["ws://192.168.0.10:7319", "ws://100.64.0.7:7319"]);
+    expect((await lanOnly.auth(device, [DIRECT_CARRIER])).direct).toEqual(["ws://192.168.0.10:7319"]);
+  });
+
   it("are left out when there are none", async () => {
     const fixture = relayFixture();
     cleanup.push(() => fixture.close());
@@ -307,6 +326,31 @@ describe("addresses listened on", () => {
     expect(rankLanAddresses(interfaces, "192.168.0.10")).toEqual(["192.168.0.10", "10.0.0.2", "10.0.1.2", "10.0.2.2"]);
   });
 
+  it("takes the Tailscale address only on Tailscale's adapter, never a shared address on a real adapter or another VPN's tunnel", () => {
+    const cases: [string, NodeJS.Dict<NetworkInterfaceInfo[]>, string | null, string[]][] = [
+      ["Linux tailscale0", { eth0: [nic("192.168.0.10")], tailscale0: [nic("100.101.102.103")] }, null, ["100.101.102.103"]],
+      ["Windows adapter", { Tailscale: [nic("100.64.0.2")] }, null, ["100.64.0.2"]],
+      ["macOS utun with the address tailscale names", { utun4: [nic("100.127.255.254")] }, "100.127.255.254", ["100.127.255.254"]],
+      ["a utun while tailscale names none (another VPN's, maybe)", { utun4: [nic("100.72.1.2")] }, null, []],
+      ["another utun than the one tailscale names", { utun3: [nic("100.70.0.1")], utun5: [nic("100.80.0.9")] }, "100.80.0.9", ["100.80.0.9"]],
+      ["ISP shared address space on a real adapter", { eth0: [nic("100.72.1.2")] }, null, []],
+      ["a stale status naming a real adapter's shared address", { eth0: [nic("100.72.1.2")] }, "100.72.1.2", []],
+      ["outside Tailscale's range", { tailscale0: [nic("100.128.0.1")] }, null, []],
+      ["tailscale names an address no adapter has (it moved): Tailscale's adapter still counts", { tailscale0: [nic("100.90.0.1")] }, "100.90.0.2", ["100.90.0.1"]],
+      ["tailscale names an address no adapter has, and only another VPN's utun is up", { utun4: [nic("100.96.0.3")] }, "100.90.0.2", []],
+    ];
+    for (const [name, interfaces, known, expected] of cases) expect(tailnetAddresses(interfaces, known), name).toEqual(expected);
+  });
+
+  it("lets only Tailscale peers reach the Tailscale listener, and only private peers the others", () => {
+    expect(directPeerAllowed("100.64.0.7", "100.101.102.103")).toBe(true);
+    expect(directPeerAllowed("100.64.0.7", "::ffff:100.101.102.103")).toBe(true);
+    expect(directPeerAllowed("100.64.0.7", "192.168.0.20")).toBe(false);
+    expect(directPeerAllowed("100.64.0.7", "8.8.8.8")).toBe(false);
+    expect(directPeerAllowed("192.168.0.10", "192.168.0.20")).toBe(true);
+    expect(directPeerAllowed("192.168.0.10", "100.101.102.103")).toBe(false);
+  });
+
   it("keeps a virtual adapter the default route leaves from", () => {
     expect(rankLanAddresses({ "vEthernet (Default Switch)": [nic("172.20.0.5")], docker0: [nic("172.17.0.1")] }, "172.20.0.5")).toEqual(["172.20.0.5"]);
   });
@@ -341,6 +385,105 @@ describe("signed-in sessions over every way in", () => {
     sessions.admit("a", () => closed.push("a5"));
     expect(closed).toEqual(["a1"]);
     expect(sessions.size).toBe(8);
+  });
+
+  it("let a carrier an app may still drop make none of its device's sessions give way until it is used", () => {
+    // Given a device with three sessions, and an app racing two more carriers that both sign in
+    const sessions = new SignedInSessions(8, 4);
+    const closed: string[] = [];
+    for (const name of ["s1", "s2", "s3"]) sessions.admit("phone", () => closed.push(name));
+    const lanCarrier = sessions.candidate("phone", () => closed.push("lan"));
+    const tailnetCarrier = sessions.candidate("phone", () => closed.push("tailnet"));
+    // Then neither makes an older session give way
+    expect(closed).toEqual([]);
+    // When the app drops one and uses the other
+    lanCarrier.release();
+    tailnetCarrier.chosen();
+    // Then the device holds its four, and only a fifth it uses makes the oldest give way
+    expect(closed).toEqual([]);
+    sessions.admit("phone", () => closed.push("s5"));
+    expect(closed).toEqual(["s1"]);
+  });
+
+  it("close the oldest carrier past a device's racing ones, never a session it uses", () => {
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    sessions.admit("phone", () => closed.push("s1"));
+    for (const name of ["c1", "c2", "c3", "c4"]) sessions.candidate("phone", () => closed.push(name));
+    expect(closed).toEqual(["c1"]);
+  });
+
+  it("name a device's connection by the session it uses, not a racing carrier it may drop", () => {
+    const sessions = new SignedInSessions(8, 4);
+    const mux = { active: true, rttMs: 40, measure: async () => 40 };
+    sessions.admit("phone", () => {}, { route: "relay", relay: "wss://relay-ap.ovis.sh", since: 1_000, mux });
+    sessions.candidate("phone", () => {}, { route: "lan", since: 2_000, mux });
+    expect(sessions.connections().get("phone")?.route).toBe("relay");
+  });
+
+  it("hold never-used carriers past every place to one device's racing ones", () => {
+    // Given every place taken by two devices at their share
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
+    // When both sign in three carriers each and never use them
+    for (const device of ["a", "b"]) for (let index = 1; index <= 3; index++) sessions.candidate(device, () => closed.push(`${device}-c${index}`));
+    // Then only three get past every place
+    expect(sessions.size).toBe(11);
+    expect(closed).toEqual(["b-c1", "b-c2", "b-c3"]);
+  });
+
+  it("name each device's connection: its nearest way in, with the latest round trip, until released", () => {
+    const sessions = new SignedInSessions(8, 4);
+    const mux = (rttMs: number | undefined, active = true) => ({ active, rttMs, measure: async () => rttMs });
+    sessions.admit("phone", () => {}, { route: "relay", relay: "wss://relay-ap.ovis.sh", since: 1_000, mux: mux(48) });
+    const direct = sessions.admit("phone", () => {}, { route: "lan", since: 2_000, mux: mux(undefined) });
+    sessions.admit("laptop", () => {}, { route: "tailscale", since: 3_000, mux: mux(21) });
+    sessions.admit("script", () => {});
+    // a LAN session whose mux already ended is no way in, though it counts until its socket closes
+    sessions.admit("phone", () => {}, { route: "lan", since: 4_000, mux: mux(5, false) });
+    expect(Object.fromEntries(sessions.connections())).toEqual({
+      phone: { route: "lan", rtt_ms: null, since: new Date(2_000).toISOString() },
+      laptop: { route: "tailscale", rtt_ms: 21, since: new Date(3_000).toISOString() },
+    });
+    direct();
+    expect(sessions.connections().get("phone")).toEqual({ route: "relay", relay: "wss://relay-ap.ovis.sh", rtt_ms: 48, since: new Date(1_000).toISOString() });
+  });
+
+  it("check every connection now, giving up on one that does not answer in time", async () => {
+    const sessions = new SignedInSessions(8, 4);
+    let fast: number | undefined;
+    sessions.admit("phone", () => {}, { route: "lan", since: 0, mux: { active: true, get rttMs() { return fast; }, measure: async () => (fast = 9) } });
+    sessions.admit("laptop", () => {}, { route: "relay", relay: "wss://relay.ovis.sh", since: 0, mux: { active: true, rttMs: 300, measure: () => new Promise<number | undefined>(() => {}) } });
+    await sessions.check(20);
+    expect(sessions.connections().get("phone")?.rtt_ms).toBe(9);
+    expect(sessions.connections().get("laptop")?.rtt_ms).toBe(300);
+  });
+
+  it("share one check among callers at once, and measure nothing again right after", async () => {
+    const sessions = new SignedInSessions(8, 4);
+    let measured = 0;
+    sessions.admit("phone", () => {}, { route: "lan", since: 0, mux: { active: true, rttMs: 9, measure: async () => { measured++; return 9; } } });
+    await Promise.all([sessions.check(20, 10_000), sessions.check(20, 10_000)]);
+    await sessions.check(20, 10_000 + CHECK_GAP_MS - 1);
+    expect(measured).toBe(1);
+    await sessions.check(20, 10_000 + CHECK_GAP_MS);
+    expect(measured).toBe(2);
+  });
+
+  it("tell how other devices are connected, and check them, only to a caller that may manage them", async () => {
+    const sessions = new SignedInSessions(8, 4);
+    let measured = 0;
+    sessions.admit("00112233445566aa", () => {}, { route: "tailscale", since: 0, mux: { active: true, rttMs: 33, measure: async () => { measured++; return 33; } } });
+    const row: PairedDevice = { id: "00112233445566aa", label: "Phone", role: "drive", created_at: "2026-11-01T00:00:00.000Z", last_seen_at: null, current: false, via_relay: true };
+    const store = { error: null, list: () => [row] } as unknown as DeviceStore;
+    const connections = { list: () => sessions.connections(), check: (ms: number) => sessions.check(ms) };
+    const read = async (access: Access) => ((await (await handleDeviceRequest(new Request("http://127.0.0.1/api/devices?check=1"), "/api/devices", store, access, null, undefined, false, connections)).json()) as { devices: PairedDevice[] }).devices[0]?.connection;
+    expect(await read({ level: "full", via: "relay", role: "watch" })).toBeUndefined();
+    expect(await read({ level: "full", via: "portal", role: "drive" })).toBeUndefined();
+    expect(measured).toBe(0);
+    expect(await read({ level: "full", via: "local", role: "drive" })).toEqual({ route: "tailscale", rtt_ms: 33, since: new Date(0).toISOString() });
+    expect(measured).toBe(1);
   });
 
   it("close a session past every place, and give places back", () => {
@@ -379,7 +522,7 @@ describe("direct connections setting, read back", () => {
 
 describe("direct connections with the relay", () => {
   /** A PC on a local relay, direct connections on loopback named as a private address. */
-  async function liveFixture() {
+  async function liveFixture(advertise: (port: number) => readonly string[] = (port) => [`ws://10.0.0.7:${port}`]) {
     const relay = startBunRelay({ port: 0 });
     const holder = relayFixture();
     holder.close();
@@ -392,7 +535,7 @@ describe("direct connections with the relay", () => {
         socket.addEventListener("message", (event) => { if (typeof event.data === "string" && JSON.parse(event.data).type === "sync") synced.resolve(); });
         return socket;
       },
-      direct: { addresses: () => ["127.0.0.1"], peerAllowed: () => true, preferredPort: 0, advertise: (port) => [`ws://10.0.0.7:${port}`] },
+      direct: { addresses: () => ["127.0.0.1"], peerAllowed: () => true, preferredPort: 0, advertise },
     });
     const fixture = relayFixture(false, { stateDir: holder.stateDir, relay: service });
     cleanup.push(() => relay.stop(), () => fixture.close(), () => service.shutdown());
@@ -402,8 +545,78 @@ describe("direct connections with the relay", () => {
     const identity = loadRelayIdentity(holder.stateDir);
     const offer: RelayOffer = { v: 1, server_id: identity.server_id, server_public_key: identity.public_key, relay: "wss://relay.test" };
     const port = (): string => service.status().direct!.carriers[0]!.split(":").at(-1)!;
-    return { fixture, service, offer, port };
+    return { fixture, service, offer, port, relay };
   }
+
+  it("let a direct carrier signed in but never used close none of its device's sessions, until it opens a stream", async () => {
+    // Given a phone with four sessions in use on the PC
+    const { fixture, offer, port } = await liveFixture();
+    const device = await relayDevice(fixture);
+    const open = () => bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(`ws://127.0.0.1:${port()}/v1/ws?v=1`) }));
+    const use = (channel: RelayChannel) => bounded(new Promise<number>((resolve, reject) => {
+      const stream = channel.mux.openHttp({ target: "/api/relay", method: "GET", headers: [], body: "none" });
+      stream.onHeaders = ({ status }) => { if (status >= 200) { resolve(status); void stream.body.cancel(); } };
+      stream.onDispose = (failure) => { if (failure) reject(failure); };
+    }));
+    const firstClosed = deferred<void>();
+    const first = await bounded(openRelayChannel(offer, { store: savedStore(device, offer), socket: () => new WebSocket(`ws://127.0.0.1:${port()}/v1/ws?v=1`), onClose: () => firstClosed.resolve() }));
+    // each used as it opens: an unused one is a carrier the app may still drop
+    expect(await use(first)).toBe(200);
+    const inUse = [first];
+    for (let index = 0; index < 3; index += 1) {
+      inUse.push(await open());
+      expect(await use(inUse.at(-1)!)).toBe(200);
+    }
+    // When a fifth carrier signs in, as one an app races and may drop
+    const racing = await open();
+    cleanup.push(...[...inUse, racing].map((channel) => () => channel.close()));
+    // Then every session in use is still served
+    for (const channel of inUse) expect(await use(channel)).toBe(200);
+    // and once the app uses it, the device's oldest gives way
+    expect(await use(racing)).toBe(200);
+    await bounded(firstClosed.promise);
+  });
+
+  it("answer a probe through the relay with no session, and tell a silent PC from an unreachable relay", async () => {
+    // Given a PC on a local relay
+    const { service, offer, relay } = await liveFixture();
+    const through = (url: string) => {
+      const target = new URL(url);
+      return new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`);
+    };
+    // When a phone probes it through the relay, it answers within one handshake, and holds no session for it
+    const answered = await bounded(probePc(offer, { relay: offer.relay }, through, 5_000));
+    expect(answered.kind).toBe("answered");
+    expect(service.status().sessions).toBe(0);
+    // A PC the relay has nobody for is silent past the probe's time; a relay that refuses the socket is unreachable
+    expect(await bounded(probePc({ ...offer, server_id: "ab".repeat(16) }, { relay: offer.relay }, through, 300))).toEqual({ kind: "silent" });
+    expect(await bounded(probePc(offer, { relay: offer.relay }, () => new WebSocket("ws://127.0.0.1:1/v1/ws"), 5_000))).toEqual({ kind: "unreachable" });
+  });
+
+  it("tell /api/devices how each device reaches the PC now, and measure its round trip on ?check=1", async () => {
+    // Given a PC on a relay with direct connections, and two phones paired with it
+    const { fixture, offer, port, relay } = await liveFixture();
+    const near = await relayDevice(fixture);
+    const away = await relayDevice(fixture);
+    const base = `http://127.0.0.1:${fixture.app.port}`;
+    const listed = async (query = "") => new Map(((await (await fetch(`${base}/api/devices${query}`)).json()) as { devices: PairedDevice[] }).devices.map((d) => [d.id, d.connection]));
+    expect((await listed()).get(near.id)).toBeUndefined();
+    // When one signs in on the direct carrier and the other through the relay
+    const direct = await bounded(openRelayChannel(offer, { store: savedStore(near, offer), socket: () => new WebSocket(`ws://127.0.0.1:${port()}/v1/ws?v=1`) }));
+    const relayed = await bounded(openRelayChannel(offer, { store: savedStore(away, offer), socket: (url) => {
+      const target = new URL(url);
+      return new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`);
+    } }));
+    cleanup.push(() => direct.close(), () => relayed.close());
+    // Then each is named by its way in, with no round trip measured yet
+    const now = await listed();
+    expect(now.get(near.id)).toMatchObject({ route: "lan", rtt_ms: null });
+    expect(now.get(away.id)).toMatchObject({ route: "relay", relay: "wss://relay.test", rtt_ms: null });
+    // And a check pings both sessions and answers with their round trips
+    const checked = await listed("?check=1");
+    expect(checked.get(near.id)?.rtt_ms).toBeGreaterThanOrEqual(0);
+    expect(checked.get(away.id)?.rtt_ms).toBeGreaterThanOrEqual(0);
+  });
 
   it("listen while the relay is on, end their sessions when turned off, and come back when turned on", async () => {
     // Given a PC with the relay on and a phone signed in directly
@@ -423,15 +636,32 @@ describe("direct connections with the relay", () => {
     expect(service.status().direct?.carriers).toHaveLength(1);
   });
 
+  it("name the PC's Tailscale address in AUTH_OK only to an app that can open it", async () => {
+    // Given a PC listening on a home network address and a Tailscale one
+    const { fixture, offer, port } = await liveFixture((listened) => [`ws://10.0.0.7:${listened}`, `ws://100.64.0.7:${listened}`]);
+    const device = await relayDevice(fixture);
+    const open = (offerTailnet: boolean) => bounded(openRelayChannel(offer, { store: savedStore(device, offer),
+      socket: () => new WebSocket(`ws://127.0.0.1:${port()}/v1/ws?v=1`), offerDirect: true, offerTailnet }));
+    // When an app that opens Tailscale addresses signs in, and then one that does not
+    const tailnet = await open(true);
+    cleanup.push(() => tailnet.close());
+    const lan = await open(false);
+    cleanup.push(() => lan.close());
+    // Then only the first is told the Tailscale carrier
+    expect(tailnet.directCarriers).toEqual([`ws://10.0.0.7:${port()}`, `ws://100.64.0.7:${port()}`]);
+    expect(lan.directCarriers).toEqual([`ws://10.0.0.7:${port()}`]);
+  });
+
   it("are told to a client that got in, in /api/health, even with the gate closed", async () => {
     // Given a PC with the relay and direct connections on, a device paired (the gate closed)
     const { fixture } = await liveFixture();
     await relayDevice(fixture);
     // When this PC asks for its health
     const base = `http://127.0.0.1:${fixture.app.port}`;
-    const health = await (await fetch(`${base}/api/health`)).json() as { lan_exposure?: { host: string; direct?: true } };
-    // Then the direct listener is named, as paired-only
-    expect(health.lan_exposure).toEqual({ host: "10.0.0.7", direct: true });
+    const health = await (await fetch(`${base}/api/health`)).json() as { lan_exposure?: unknown; direct_exposure?: unknown };
+    // Then the direct listener is named in a field of its own: a 0.4.x client takes any lan_exposure for an open server
+    expect(health.direct_exposure).toEqual({ host: "10.0.0.7" });
+    expect(health.lan_exposure).toBeUndefined();
   });
 
   it("are told in /api/health while herdr does not answer", async () => {
@@ -442,11 +672,12 @@ describe("direct connections with the relay", () => {
     cleanup.push(() => { if (previous === undefined) delete process.env["HERDR_SOCKET"]; else process.env["HERDR_SOCKET"] = previous; });
     // When this PC asks for its health
     const response = await fetch(`http://127.0.0.1:${fixture.app.port}/api/health`);
-    const health = await response.json() as { error?: unknown; lan_exposure?: { host: string; direct?: true } };
+    const health = await response.json() as { error?: unknown; lan_exposure?: unknown; direct_exposure?: unknown };
     // Then the answer is the failure, and still names the direct listener
     expect(response.ok).toBe(false);
     expect(health.error).toBeDefined();
-    expect(health.lan_exposure).toEqual({ host: "10.0.0.7", direct: true });
+    expect(health.direct_exposure).toEqual({ host: "10.0.0.7" });
+    expect(health.lan_exposure).toBeUndefined();
   });
 
   it("stop with the relay", async () => {
