@@ -35,8 +35,8 @@
  */
 
 import { createHash, randomUUID, type Hash } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
-import { lstat, open as openHandle } from "node:fs/promises";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
+import { open as openHandle, type FileHandle } from "node:fs/promises";
 import { readStatuslineContext } from "./statusline.ts";
 import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
@@ -227,25 +227,97 @@ type RevisionStat = { dev: number; ino: number; size: number; mtimeMs: number; c
 // `read` false (a leased image read, whose bytes come asynchronously) never reads the file here: the
 // digest stays as it was, for the next read to extend, and a touch it sees counts as a rewrite.
 function transcriptGeneration(path: string, stat: RevisionStat, checkWindow = false, read = true): string {
-  const { next } = finish(transcriptRevisionSteps(path, stat, checkWindow, read, openRevisionNow));
+  const reads = revisionReads;
+  const deferred = read && reads.mode === "deferred" ? reads : null;
+  let wanted = false as boolean;
+  const opened: RevisionOpen = deferred === null ? openRevisionNow : function* () { wanted = true; throw new Error("left to settleTranscriptRevision"); };
+  const { next } = finish(transcriptRevisionSteps(path, stat, checkWindow, read && reads.mode !== "none", opened));
+  // what it answers from a revision it could not check is thrown away (readSettled): it records nothing, and
+  // names the generation recorded, so what it derived meanwhile (a Copilot prefix) is the one it had
+  if (deferred !== null && wanted) {
+    deferred.unsettled = true;
+    const previous = transcriptRevisions.get(path);
+    return previous?.identity === `${stat.dev}:${stat.ino}` && previous.generation ? `-${previous.generation}` : "";
+  }
   remember(transcriptRevisions, path, next, 64);
   return next.generation ? `-${next.generation}` : "";
 }
 
 /**
- * Brings a transcript's revision up to date with reads through the thread pool, so the page read that
- * follows finds its digests current and reads nothing for them on the event loop. A read that recorded
- * the transcript meanwhile keeps its own result; a change after this leaves the rest to that page read.
+ * How a synchronous page read's revision check reads the transcript: on the event loop (anywhere
+ * readSettled is not running one); "deferred", where any read it needs marks it `unsettled` instead, for
+ * readSettled to settle again off the loop; or "none", reading nothing (a touch then counts as a rewrite).
  */
-async function settleTranscriptRevision(path: string, checkWindow: boolean): Promise<void> {
+let revisionReads: { mode: "inline" } | { mode: "deferred"; unsettled: boolean } | { mode: "none" } = { mode: "inline" };
+
+/** What settleTranscriptRevision brings up to date, and whether its reader still wants it recorded (`live`). */
+interface RevisionTarget { path: string; checkWindow: boolean; live?: () => boolean }
+
+/**
+ * The file `path` names as its caller authorized it, taken in the same turn of the event loop, before
+ * anything awaits. Where an open cannot refuse a link (no O_NOFOLLOW: Windows), the transcript readers
+ * follow one, and so does this.
+ */
+function authorizedFile(path: string): { dev: number; ino: number } | null {
+  try {
+    const stat = constants.O_NOFOLLOW === undefined ? statSync(path) : lstatSync(path);
+    return stat.isFile() ? { dev: stat.dev, ino: stat.ino } : null;
+  } catch { return null; }
+}
+
+/**
+ * Brings a transcript's revision up to date with reads through the thread pool, so the page read that
+ * follows finds its digests current and reads nothing for them on the event loop. Only `authorized` is
+ * read, through one handle: a folder on the way swapped since names another file, which is refused, and
+ * bytes whose size or mtime changed while they were read record nothing. A read that recorded the
+ * transcript meanwhile keeps its own result; a change after this is the page read's (readSettled).
+ */
+async function settleTranscriptRevision({ path, checkWindow, live }: RevisionTarget, authorized = authorizedFile(path)): Promise<void> {
   // what this settle builds on: a read that recorded the transcript while its stat was awaited saw it
   // later, and an older stat checked against that newer revision would take an append for a shrink
   const start = transcriptRevisions.get(path);
-  let stat: Stats;
-  try { stat = await lstat(path); } catch { return; }
-  if (!stat.isFile() || transcriptRevisions.get(path) !== start) return;
-  const { previous, next } = await finishAsync(transcriptRevisionSteps(path, stat, checkWindow, true, openRevisionAsync));
-  if (transcriptRevisions.get(path) === previous) remember(transcriptRevisions, path, next, 64);
+  if (authorized === null) return;
+  let handle: FileHandle;
+  try { handle = await openHandle(path, REVISION_FLAGS); } catch { return; }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.dev !== authorized.dev || stat.ino !== authorized.ino || transcriptRevisions.get(path) !== start) return;
+    const file: RevisionFile = {
+      stat: () => awaited(handle.stat()),
+      *read(into, length, position) { return (yield* awaited(handle.read(into, 0, length, position))).bytesRead; },
+      *close() { /* the handle is this settle's, closed below */ },
+    };
+    const { previous, next } = await finishAsync(transcriptRevisionSteps(path, stat, checkWindow, true, function* () { return file; }));
+    const after = await handle.stat();
+    if (after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) return;
+    if (transcriptRevisions.get(path) === previous && (live?.() ?? true)) remember(transcriptRevisions, path, next, 64);
+  } catch { /* a stat that fails digests nothing */ } finally { await handle.close().catch(() => {}); }
+}
+
+/** How many times readSettled settles a transcript before its read takes what it finds without reading. */
+const REVISION_SETTLES = 3;
+
+/**
+ * `read`, a synchronous read of `target.path`, with the digests its revision check needs read through
+ * the thread pool first (settleTranscriptRevision), from the file authorized as this is called. A change
+ * the read meets after that is settled again, REVISION_SETTLES times at most, and the last read reads
+ * nothing for its revision. Null when, after a settle, the reader no longer wants it (`live`).
+ */
+async function readSettled<T>(target: RevisionTarget, read: () => T): Promise<{ value: T } | null> {
+  const authorized = authorizedFile(target.path);
+  for (let settles = 1; ; settles++) {
+    await settleTranscriptRevision(target, authorized);
+    if (!(target.live?.() ?? true)) return null;
+    const reads = settles < REVISION_SETTLES ? { mode: "deferred" as const, unsettled: false } : { mode: "none" as const };
+    revisionReads = reads;
+    try {
+      const value = read();
+      if (reads.mode === "none" || !reads.unsettled) return { value };
+    } catch (error) {
+      // a read that met an unsettled revision answered from a stale one: its failure says nothing
+      if (reads.mode === "none" || !reads.unsettled) throw error;
+    } finally { revisionReads = { mode: "inline" }; }
+  }
 }
 
 function* transcriptRevisionSteps(path: string, stat: RevisionStat, checkWindow: boolean, read: boolean, opened: RevisionOpen): Steps<{ previous: TranscriptRevision | undefined; next: TranscriptRevision }> {
@@ -328,14 +400,6 @@ function* openRevisionNow(path: string): Steps<RevisionFile> {
     *stat() { return fstatSync(fd); },
     *read(into, length, position) { return readSync(fd, into, 0, length, position); },
     *close() { closeSync(fd); },
-  };
-}
-function* openRevisionAsync(path: string): Steps<RevisionFile> {
-  const handle = yield* awaited(openHandle(path, REVISION_FLAGS));
-  return {
-    stat: () => awaited(handle.stat()),
-    *read(into, length, position) { return (yield* awaited(handle.read(into, 0, length, position))).bytesRead; },
-    close: () => awaited(handle.close()),
   };
 }
 
@@ -1336,14 +1400,20 @@ export function liveTurnCacheUsage(): { paths: string[]; withinBudget: boolean }
   return { paths: [...liveTranscriptTurns.keys()], withinBudget };
 }
 
-/** How often everything, and each pane, was forgotten: a read that awaited sees whether its pane was meanwhile (paneForgets). */
-let allForgotten = 0;
+/**
+ * Forgets so far, and the last one of each pane or of every pane (the floor): a read that awaited sees
+ * whether its pane was forgotten meanwhile (forgottenSince). A pane's mark pushed out by newer ones
+ * raises the floor, so a read of that pane in flight still sees it (and one of another pane takes it
+ * for its own, and fails once).
+ */
+let forgets = 0;
+let forgottenFloor = 0;
 const forgottenPanes = new Map<string, number>();
-const paneForgets = (paneId: string): string => `${allForgotten}:${forgottenPanes.get(paneId) ?? 0}`;
+const forgottenSince = (paneId: string, at: number): boolean => forgottenFloor > at || (forgottenPanes.get(paneId) ?? 0) > at;
 
 /** Forget every scan and parse kept between polls (tests compare against a cold read). */
 export function forgetTranscriptState(): void {
-  allForgotten++;
+  forgottenFloor = ++forgets;
   forgottenPanes.clear();
   launchedAgents.clear();
   cache.clear();
@@ -1380,7 +1450,13 @@ export function forgetTranscriptState(): void {
  * of a live pane re-derives it, and a file nobody reads again costs nothing to forget.
  */
 export function forgetPaneTranscriptState(paneId: string): void {
-  remember(forgottenPanes, paneId, (forgottenPanes.get(paneId) ?? 0) + 1, PANE_READS_MAX);
+  forgottenPanes.delete(paneId);
+  forgottenPanes.set(paneId, ++forgets);
+  for (const [oldest, at] of forgottenPanes) {
+    if (forgottenPanes.size <= PANE_READS_MAX) break;
+    forgottenPanes.delete(oldest);
+    forgottenFloor = Math.max(forgottenFloor, at);
+  }
   const reads = paneReads.get(paneId);
   paneReads.delete(paneId);
   copilotBindings.delete(paneId);
@@ -2297,21 +2373,26 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       throw error;
     }
   }
-  // the page read below digests the transcript (transcriptGeneration): read it here off the event loop.
-  // A pane closed meanwhile (forgetPaneTranscriptState) or a herdr session left is not read or recorded
-  const forgets = paneForgets(paneId);
-  await settleTranscriptRevision(resolved.path, resolved.source === "muse-transcript");
-  if (herdrSocketPath() !== socket || paneForgets(paneId) !== forgets) throw new ConversationUnavailable("no_session_id");
-  const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" || resolved.source === "letta-transcript" || resolved.source === "kimi-transcript" ? resolved.path
-    : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
-    : resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "omp-transcript" ? realpathSync(resolved.path) : null;
-  rememberPaneRead(paneId, resolved.path);
-  const history = resolved.source === "copilot-transcript" ? copilotHistoryIdentity(resolved.path) : null;
-  const prefix = history !== null && resolved.source === "copilot-transcript" ? copilotPrefix(paneId, `${resolved.binding}\0${history}`, resolved.path) : null;
+  // the page read below digests the transcript (transcriptGeneration): readSettled reads that off the
+  // event loop first. A pane closed meanwhile (forgetPaneTranscriptState) or a herdr session left is not
+  // read or recorded, and a pane bound to another transcript since is not answered (below)
+  const transcript = resolved;
+  const forgetsBefore = forgets;
+  const live = (): boolean => herdrSocketPath() === socket && !forgottenSince(paneId, forgetsBefore);
+  // set by the read below, in a closure the checker does not follow
+  let history = null as string | null;
+  let prefix = null as string | null;
   let answer: RecognizedConversation;
   try {
-    answer = resolved.source === "agy-transcript" ? await agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome)
-      : transcriptPage(resolved.source, resolved.path, prefix === null ? page : copilotPage(page, prefix), resolved.codexHome ?? codexHome, resolved.piAgentDir);
+    const settled = await readSettled({ path: transcript.path, checkWindow: transcript.source === "muse-transcript", live }, () => {
+      rememberPaneRead(paneId, transcript.path);
+      if (transcript.source === "agy-transcript") return null;
+      history = transcript.source === "copilot-transcript" ? copilotHistoryIdentity(transcript.path) : null;
+      prefix = history !== null && transcript.source === "copilot-transcript" ? copilotPrefix(paneId, `${transcript.binding}\0${history}`, transcript.path) : null;
+      return transcriptPage(transcript.source, transcript.path, prefix === null ? page : copilotPage(page, prefix), transcript.codexHome ?? codexHome, transcript.piAgentDir);
+    });
+    if (settled === null) throw new ConversationUnavailable("no_session_id");
+    answer = settled.value ?? await agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome);
   } catch (error) {
     if (resolved.source !== "copilot-transcript" || prefix === null || !(error instanceof ConversationUnavailable) || error.message !== "transcript_missing") throw error;
     const paged = page.before !== undefined || page.since !== undefined || page.from !== undefined;
@@ -2340,6 +2421,15 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (page.history_id !== undefined && !page.history_id.startsWith(prefix)) throw new HistoryChanged();
     throw new ConversationReadPending();
   }
+  // settling awaited after the transcript was resolved: a pane bound to another one since (a new session,
+  // another agent) has not this answer. Copilot's binding is checked after its read below, as it was before
+  if (transcript.source !== "copilot-transcript") {
+    const rebound = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData).catch(() => null);
+    if (rebound === null || rebound.source !== transcript.source || rebound.path !== transcript.path || !live()) throw new ConversationUnavailable("no_session_id");
+  }
+  const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" || resolved.source === "letta-transcript" || resolved.source === "kimi-transcript" ? resolved.path
+    : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
+    : resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "omp-transcript" ? realpathSync(resolved.path) : null;
   const status = snapshot.panes.find((pane) => pane.pane_id === paneId)?.agent_status;
   if (resolved.source === "grok-transcript" && answer.turns.length === 0 && page.before === undefined
     && (status === "working" || status === "blocked")) {
@@ -3358,6 +3448,10 @@ const TOOL_OUTPUT_MAX = 2_000_000;
 /** The whole output of a tool call whose page output was cut, by its id; null when there is none. */
 export async function toolOutput(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string, museData?: string): Promise<string | null> {
   if (!TOOL_REF.test(ref) && !/^cp[0-9a-f]{16}\.[A-Za-z0-9_:.-]{1,128}(?:@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32})?$/.test(ref)) return null;
+  // a pane closed (forgetPaneTranscriptState) or a herdr session left while this awaited answers nothing
+  const socket = herdrSocketPath();
+  const forgetsBefore = forgets;
+  const live = (): boolean => herdrSocketPath() === socket && !forgottenSince(paneId, forgetsBefore);
   const snapshot = await sessionSnapshot();
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
@@ -3372,19 +3466,26 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   if (resolved.source === "dsh-transcript") return await dshToolOutput(resolved, ref);
   if (resolved.source === "kiro-transcript") return await kiroToolOutput(resolved, ref);
   if (resolved.source === "hermes-transcript") return hermesToolOutput(resolved.sessionId, resolved.path, ref, TOOL_OUTPUT_MAX);
-  // the sources whose lookup below digests the transcript (transcriptGeneration)
-  if (resolved.source === "copilot-transcript" || resolved.source === "omo-transcript") await settleTranscriptRevision(resolved.path, false);
-  let nativeRef = ref;
-  if (resolved.source === "copilot-transcript") {
-    let history: string;
-    try { history = copilotHistoryIdentity(resolved.path); } catch { return null; }
-    const prefix = copilotPrefix(paneId, `${resolved.binding}\0${history}`, resolved.path);
-    if (!ref.startsWith(prefix)) return null;
-    nativeRef = ref.slice(prefix.length);
-    if (!nativeRef.includes("@")) return null;
-  }
-  const output = resolved.source === "agy-transcript" ? await agyToolOutput(resolved.path, nativeRef)
-    : transcriptToolOutput(resolved.source, resolved.path, nativeRef, resolved.codexHome ?? codexHome);
+  const transcript = resolved;
+  const lookup = (): string | null => {
+    let nativeRef = ref;
+    if (transcript.source === "copilot-transcript") {
+      let history: string;
+      try { history = copilotHistoryIdentity(transcript.path); } catch { return null; }
+      const prefix = copilotPrefix(paneId, `${transcript.binding}\0${history}`, transcript.path);
+      if (!ref.startsWith(prefix)) return null;
+      nativeRef = ref.slice(prefix.length);
+      if (!nativeRef.includes("@")) return null;
+    }
+    return transcript.source === "agy-transcript" ? null : transcriptToolOutput(transcript.source, transcript.path, nativeRef, transcript.codexHome ?? codexHome);
+  };
+  let output: string | null;
+  // the sources whose lookup digests the transcript (transcriptGeneration) read that off the event loop first
+  if (resolved.source === "copilot-transcript" || resolved.source === "omo-transcript") {
+    const settled = await readSettled({ path: resolved.path, checkWindow: false, live }, lookup);
+    if (settled === null) return null;
+    output = settled.value;
+  } else output = resolved.source === "agy-transcript" ? await agyToolOutput(resolved.path, ref) : lookup();
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;
   if (resolved.source === "copilot-transcript") {
     const current = await copilotTranscriptPath(pane, snapshot.panes, resolved.peerClaims).catch(() => null);
@@ -3393,7 +3494,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
       if (!ref.startsWith(copilotPrefix(paneId, `${resolved.binding}\0${copilotHistoryIdentity(resolved.path)}`, resolved.path))) return null;
     } catch { return null; }
   }
-  return output;
+  return live() ? output : null;
 }
 
 /** The output a transcript file holds for one tool call id, whole (up to TOOL_OUTPUT_MAX). */
@@ -3564,7 +3665,7 @@ export function piTranscriptImage(path: string, ref: string): { mediaType: strin
  * large transcript never holds the bridge for more than a window's work.
  */
 export async function ompTranscriptImage(path: string, ref: string, anchor?: string | null): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
-  await settleTranscriptRevision(path, false);
+  await settleTranscriptRevision({ path, checkWindow: false });
   try { return await finishAsync(ompTranscriptImageSteps(path, ref, anchor)); } catch { return null; }
 }
 
@@ -3675,7 +3776,7 @@ function* ompPictureSteps(stream: TranscriptStream, shape: RecordShape, content:
  * windows (finishAsync).
  */
 export async function codexToolImage(path: string, ref: string, codexHome: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
-  await settleTranscriptRevision(path, false);
+  await settleTranscriptRevision({ path, checkWindow: false });
   try { return await finishAsync(codexToolImageSteps(path, ref, codexHome)); } catch { return null; }
 }
 

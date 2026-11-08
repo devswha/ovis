@@ -27,7 +27,7 @@ import * as gjcRuntime from "./gjc-runtime.ts";
 import * as runtime from "./herdr-core/runtime.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -2890,19 +2890,31 @@ describe("a page read that settles its transcript's revision off the event loop"
     forgetTranscriptState();
     rmSync(root, { recursive: true, force: true });
   });
-  /** Holds the first lstat of the transcript after it read the file, until `release`. */
+  /** Holds the first stat of the transcript off the event loop (an lstat, or an open handle's), after it is taken, until `release`. */
   const holdFirstStat = () => {
-    const realLstat = fsp.lstat;
+    const { lstat, open } = fsp;
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     let held!: () => void;
     const holding = new Promise<void>((resolve) => { held = resolve; });
     let first = true;
-    restores.push(spyOn(fsp, "lstat").mockImplementation((async (...args: Parameters<typeof fsp.lstat>) => {
-      const stats = await realLstat(...args);
-      if (args[0] === path && first) { first = false; held(); await gate; }
+    const hold = async <T>(stats: T): Promise<T> => {
+      if (first) { first = false; held(); await gate; }
       return stats;
-    }) as typeof fsp.lstat));
+    };
+    restores.push(
+      spyOn(fsp, "lstat").mockImplementation((async (...args: Parameters<typeof fsp.lstat>) => {
+        const stats = await lstat(...args);
+        return args[0] === path ? hold(stats) : stats;
+      }) as typeof fsp.lstat),
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        handle.stat = (async (...rest: Parameters<typeof stat>) => hold(await stat(...rest))) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
     return { holding, release: () => release() };
   };
 
@@ -2927,6 +2939,133 @@ describe("a page read that settles its transcript's revision off the event loop"
     forgetPaneTranscriptState(pane.pane_id);
     stat.release();
     await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("records nothing for a pane closed while its transcript settled, however many panes close after it", async () => {
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    forgetPaneTranscriptState(pane.pane_id);
+    // more panes than are remembered close after it
+    for (let other = 0; other < 200; other++) forgetPaneTranscriptState(`cmd-closed-${other}`);
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("answers nothing from a pane bound to another transcript while its transcript settled", async () => {
+    const other = join(root, "other.jsonl");
+    writeFileSync(other, JSON.stringify({ type: "session", id: "cmd-other", version: 3 }) + "\n" + message("o1", null, "elsewhere"));
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    // a new session in the pane: it writes another file now
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path: other }));
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("never digests another agent's transcript that a folder swapped in after authorization puts at the path", async () => {
+    const project = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    mkdirSync(project);
+    mkdirSync(elsewhere);
+    path = join(project, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    writeFileSync(join(elsewhere, "session.jsonl"), JSON.stringify({ type: "session", id: "cmd-foreign", version: 3 }) + "\n" + message("f1", null, "another agent's secret"));
+    const foreign = fs.statSync(join(elsewhere, "session.jsonl")).ino;
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+    const base = await paneConversation(pane.pane_id);
+    // the first call off the event loop for the path after the pane's transcript was authorized swaps
+    // the folder for another agent's; the page read's own stat puts it back
+    let swapped = false;
+    let swaps = 0;
+    const swap = () => {
+      if (swaps++ > 0) return;
+      renameSync(project, away);
+      renameSync(elsewhere, project);
+      swapped = true;
+    };
+    const read: number[] = [];
+    const { lstat, open } = fsp;
+    const { statSync } = fs;
+    restores.push(
+      spyOn(fsp, "lstat").mockImplementation((async (...args: Parameters<typeof fsp.lstat>) => {
+        if (args[0] === path) swap();
+        return lstat(...args);
+      }) as typeof fsp.lstat),
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        if (args[0] === path) swap();
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const { ino } = await handle.stat();
+        const reading = handle.read.bind(handle);
+        handle.read = ((...rest: Parameters<typeof reading>) => { read.push(ino); return reading(...rest); }) as typeof handle.read;
+        return handle;
+      }) as typeof fsp.open),
+      spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+        if (swapped && args[0] === path) {
+          swapped = false;
+          renameSync(project, elsewhere);
+          renameSync(away, project);
+        }
+        return statSync(...args);
+      }) as typeof fs.statSync),
+    );
+    const answer = await paneConversation(pane.pane_id);
+    expect(swaps).toBeGreaterThan(0);
+    expect(read).not.toContain(foreign);
+    expect(answer.history_id).toBe(base.history_id);
+    expect(JSON.stringify(answer.turns)).not.toContain("secret");
+  });
+
+  it("settles again off the event loop a transcript touched between its settle and its page read", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const { open } = fsp;
+    const { statSync } = fs;
+    const order: string[] = [];
+    let touched = false;
+    let fired!: () => void;
+    const timer = new Promise<void>((resolve) => { fired = resolve; });
+    restores.push(
+      // the page read's stat of the transcript: touched just before it is taken, with a timer due at once
+      spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+        if (!touched && args[0] === path) {
+          touched = true;
+          utimesSync(path, new Date(), new Date(Date.now() + 1000));
+          setTimeout(() => { order.push("timer"); fired(); }, 0);
+        }
+        return statSync(...args);
+      }) as typeof fs.statSync),
+      // an open of it off the event loop after the touch goes on once that timer ran
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        if (touched && args[0] === path) await timer;
+        return open(...args);
+      }) as typeof fsp.open),
+    );
+    const answer = await paneConversation(pane.pane_id);
+    order.push("answered");
+    expect(order).toEqual(["timer", "answered"]);
+    // a touch alone: the same history
+    expect(answer.history_id).toBe(base.history_id);
+  });
+
+  it("answers no tool output for an OmO pane closed while its transcript settled", async () => {
+    const omoPane = { pane_id: "omo-settle", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const whole = "x".repeat(9_000);
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: whole }] } }) + "\n");
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null }),
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe(whole);
+    const stat = holdFirstStat();
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await stat.holding;
+    forgetPaneTranscriptState(omoPane.pane_id);
+    stat.release();
+    expect(await output).toBeNull();
   });
 
   it("answers nothing from a herdr session left while its transcript settled", async () => {
