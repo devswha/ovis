@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { act, createElement } from "react";
+import { act, createElement, useLayoutEffect } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { MyPc } from "../lib/account/myPcs.ts";
@@ -239,6 +239,20 @@ describe("the Add-a-PC sheet", () => {
     expect(opener.focused).toBe(0);
     await act(async () => { renderer!.unmount(); });
     expect(opener.focused).toBe(1);
+  });
+
+  it("gives the focus back to what opened it when the page behind turns interactive only after the sheet is gone", async () => {
+    const page = document as unknown as { activeElement: unknown; body: unknown };
+    let inert = true;
+    opener.focus = () => { if (!inert) page.activeElement = opener; };
+    // the page behind is inert while the sheet is open; the commit that removes the sheet lifts it after the sheet's cleanup ran
+    const Behind = ({ shown }: { shown: boolean }) => { useLayoutEffect(() => { inert = shown; }, [shown]); return null; };
+    const screen = (shown: boolean) => createElement(SettingsProvider, { children: [shown && createElement(AddPcSheet, { key: "sheet", ...props("add", null, LIST) }), createElement(Behind, { key: "behind", shown })] });
+    await act(async () => { renderer = create(screen(true), { createNodeMock: node }); });
+    // the focus was in the sheet and leaves with it
+    page.activeElement = page.body;
+    await act(async () => { renderer!.update(screen(false)); });
+    expect(page.activeElement).toBe(opener);
   });
 
   it("with no PC, says how one is added in one concise sentence and leads to the QR and code screen", async () => {

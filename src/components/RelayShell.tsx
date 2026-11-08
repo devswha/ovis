@@ -239,7 +239,8 @@ export function RelayShell(props: RelayShellProps) {
     );
     return (
       <main className="relay-dash-screen" data-relay-state={stateName} data-account-state={account.kind}>
-        {modalOpen ? <div inert>{dash}</div> : dash}
+        {/* one wrapper whether a sheet is open or not: swapping it in would remount the dashboard, losing the control that opened the sheet before its focus trap records it */}
+        <div inert={modalOpen || undefined}>{dash}</div>
         {sheet && (
           <AddPcSheet mode={sheet.mode} pc={sheet.pc} state={state} onJoin={(target, options) => onJoin?.(target, { ...options, sheet: sheet.mode === "new" ? "new" : "join" })} onPair={onPair} onMatch={onMatch} onCancel={onCancel} onClose={() => setSheet(null)} onPairByQr={() => { setSheet(null); setAddingPc(true); }} />
         )}
