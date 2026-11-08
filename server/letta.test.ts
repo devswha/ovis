@@ -184,6 +184,23 @@ describe("Letta conversation binding", () => {
     expect(lettaTranscriptFor(other, [other], owner)).toBeNull();
   });
 
+  test("a conversation another Letta pane's folder record also names binds nothing, reported or not", () => {
+    const owner = setup(settingsAfterNew, now - 60_000, now);
+    const other = join(root, "other");
+    mkdirSync(join(other, ".letta"), { recursive: true });
+    writeFileSync(join(other, ".letta", "settings.local.json"), settingsAfterNew);
+    for (const value of [null, "local-conv-1"]) {
+      const target = pane("w1:p1", value, owner.cwd);
+      expect(lettaTranscriptFor(target, [target], owner)).not.toBeNull();
+      // a Letta in another folder resumed the same conversation: which pane shows it cannot be told
+      expect(lettaTranscriptFor(target, [target, pane("w2:p1", null, other)], owner)).toBeNull();
+      // one that names another conversation there is no claim on this one
+      writeFileSync(join(other, ".letta", "settings.local.json"), JSON.stringify({ sessionsByServer: { local: { agentId: AGENT, conversationId: "local-conv-9" } } }));
+      expect(lettaTranscriptFor(target, [target, pane("w2:p1", null, other)], owner)).not.toBeNull();
+      writeFileSync(join(other, ".letta", "settings.local.json"), settingsAfterNew);
+    }
+  });
+
   test("a record Letta cannot rewrite binds nothing: its switch would fail and leave the old one standing", () => {
     const owner = setup(settingsAfterNew, now - 60_000, now);
     const target = pane("w1:p1", "local-conv-1", owner.cwd);

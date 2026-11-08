@@ -209,9 +209,26 @@ export function lettaTranscriptFor(pane: HerdrPane, panes: readonly HerdrPane[],
   const opened = text === null ? null : lettaOpenedSessions(text);
   const bound = opened === null ? null : session === null ? lettaRecordedBinding(opened) : lettaBinding(session, opened);
   const root = lettaTranscriptRoot(owner.env);
-  if (bound === null || root === null) return null;
+  if (bound === null || root === null || claimedElsewhere(pane, panes, owner, bound)) return null;
   const reported = session?.reported ?? (bound.conversation === "default" ? `default:${bound.agent}` : bound.conversation);
   return { path: lettaTranscriptPath(root, bound.agent, bound.conversation), session: reported, ...bound };
+}
+
+/**
+ * Whether another Letta pane's folder record names the same conversation: a Letta there resumed it
+ * too, and which pane shows it cannot be told. Its record is read as it stands, written whenever:
+ * an old one only costs this pane its chat, never shows it another's.
+ */
+function claimedElsewhere(pane: HerdrPane, panes: readonly HerdrPane[], owner: LettaProcess, bound: { agent: string; conversation: string }): boolean {
+  const own = canonical(owner.cwd);
+  return panes.some((other) => {
+    if (other.pane_id === pane.pane_id || (other.agent !== "letta" && other.agent_session?.agent !== "letta")) return false;
+    const folder = [other.foreground_cwd, other.cwd].find((cwd): cwd is string => typeof cwd === "string" && isAbsolute(cwd));
+    if (folder === undefined || canonical(folder) === own) return false;
+    const text = readBounded(join(folder, ".letta", "settings.local.json"), SETTINGS_BYTES);
+    const opened = text === null ? null : lettaOpenedSessions(text);
+    return opened?.some((ref) => ref.agent === bound.agent && ref.conversation === bound.conversation) === true;
+  });
 }
 
 /**
