@@ -21,9 +21,9 @@ import { openRelayTransport, type RelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import { createAccountController } from "./accountController.ts";
 import { createPcSweep } from "./pcSweep.ts";
-import { createUpdateFlow, observedVersions, reloadPage, freshShellNext } from "./updateFlow.ts";
+import { createUpdateFlow, observedVersions, reloadPage, freshShellNext, forgetSavedPc } from "./updateFlow.ts";
 export type { RelayShellMount } from "./shellState.ts";
-export { forgetSavedPc } from "./shellState.ts";
+export { forgetSavedPc } from "./updateFlow.ts";
 declare const __APP_VERSION__: string;
 const INTRODUCED_GRACE_MS = 15 * 60_000;
 
@@ -143,11 +143,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
         }),
         // the PC turned this phone away after it was in: the app goes, and the reason takes its place
         onFatal: (error) => {
-          if (transport !== opened) return;
+          if (transport !== opened || last === null) return;
           transport = null;
           app?.unmount();
           app = null;
-          last = { offer: attempt.offer, code: false, paired: true };
           updates.cancel();
           void failed(error, last);
         },
@@ -162,7 +161,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the PC admitted this phone: a pairing code is spent, and every later attempt (Try again on
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
-    const enrolled: Attempt = { offer: saved, code: false, paired: true, ...(attempt.paired ? {} : { fresh: true }) };
+    const enrolled: Attempt = { offer: saved, code: false, paired: true, ...(!attempt.paired || attempt.fresh ? { fresh: true } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
@@ -176,6 +175,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     app = mount.renderApp(); account.armRefresh();
     registerPending(attempt.offer.server_id);
     void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true);
+    last = { ...attempt, fresh: false };
   };
   const openPc = (): void => { if (app === null && shown?.kind === "ready" && transport && last) enterApp(transport, last); };
   const updates = createUpdateFlow(mount.shellVersion ?? __APP_VERSION__, {
@@ -223,7 +223,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const forget = (): void => {
     const serverId = last?.offer.server_id ?? entry.serverId, name = last?.offer.name ?? null;
     cancelAttempt(); entry = { ...entry, offer: null };
-    void (async () => { if (serverId !== null) await store.remove(serverId); show({ kind: "forgotten", name }); })();
+    void (async () => { if (serverId !== null) await forgetSavedPc(serverId, store); show({ kind: "forgotten", name }); })();
   };
   const arrived = (): boolean => {
     const confirmedPc = takeConfirmedPc();

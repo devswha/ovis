@@ -2,7 +2,6 @@ import type { Root } from "react-dom/client";
 import type { PendingPushStore } from "../push.ts";
 import type { AccountStore } from "../account/store.ts";
 import type { RelayDeviceStore } from "./device.ts";
-import { indexedDeviceStore } from "./device.ts";
 import type { openRelayTransport } from "./transport.ts";
 import type { checkPc } from "./pcStatus.ts";
 import type { offerFromCode } from "./pairCode.ts";
@@ -265,11 +264,6 @@ export function typedJoin(serverId: string): boolean {
 export function keepTypedJoin(serverId: string | null): void {
   try { if (serverId === null) sessionStorage.removeItem("ovis-typed-join"); else sessionStorage.setItem("ovis-typed-join", serverId); }
   catch { /* the ordinary comparison remains available without tab storage */ }
-}
-
-/** Settings' Forget this PC drops only this device's saved pairing. */
-export async function forgetSavedPc(serverId: string, store: RelayDeviceStore = indexedDeviceStore): Promise<void> {
-  await store.remove(serverId);
 }
 
 /** One navigation's consent: only the PC ID, consumed even if the next load has no offer. */
