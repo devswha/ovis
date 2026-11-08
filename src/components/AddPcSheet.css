@@ -224,7 +224,7 @@
   }
 
   .add-pc-footer {
-    flex-direction: column-reverse;
+    flex-direction: column;
     align-items: stretch;
     padding: var(--space-3) var(--space-4);
   }

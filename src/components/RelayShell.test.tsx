@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -342,7 +342,7 @@ describe("the dashboard", () => {
       Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
       Object.defineProperty(globalThis, "window", { configurable: true, value: {
         location: { href: "https://app.ovis.sh/", search: "", origin: "https://app.ovis.sh", pathname: "/" },
-        history: { state: null, replaceState() {} },
+        history: { state: null, replaceState() {}, pushState() {}, back() {} },
         localStorage: storage, matchMedia, innerWidth: 1440,
         addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
         requestAnimationFrame: () => 1, cancelAnimationFrame() {},
@@ -386,6 +386,41 @@ describe("the dashboard", () => {
       (window as unknown as { matchMedia: typeof narrow }).matchMedia = narrow;
       await mount(signedIn(four()));
       expect(renderer!.root.findAll((node) => node.props.className === "relay-dash-foot")).toHaveLength(0);
+    });
+
+    it("reorders PairQrDialog footer actions in markup per breakpoint so DOM order matches visual order at desktop and phone widths", async () => {
+      const footerLabels = () => dialog().findByType("footer").findAll((n) => n.type === "button").map(textOf);
+      const shownAs = (state: RelayShellProps["state"]) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...signedIn(four()), state }) })); });
+      await mount(signedIn(four()));
+      await act(async () => { button("Add a PC").props.onClick(); });
+      expect(footerLabels()).toEqual(["Close", "Pair with a QR or code"]);
+      await act(async () => { button("Pair with a QR or code").props.onClick(); });
+      expect(footerLabels()).toEqual(["Back", "Pair with a code"]);
+      await shownAs({ kind: "code-entry", failure: null });
+      expect(footerLabels()).toEqual(["Cancel", "Pair"]);
+      await shownAs({ kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, name: "Mac mini" } });
+      expect(footerLabels()).toEqual(["Cancel", "It matches"]);
+      await act(async () => { renderer!.unmount(); });
+
+      const phoneMedia = (query: string) => ({ matches: query === "(max-width: 640px)" || query === "(max-width: 768px)", addEventListener() {}, removeEventListener() {} });
+      Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: phoneMedia });
+      (window as unknown as { matchMedia: typeof phoneMedia }).matchMedia = phoneMedia;
+      const addPcTrigger = () => renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "add-pc");
+      jest.useFakeTimers();
+      try {
+        await mount(signedIn(four()));
+        await act(async () => { addPcTrigger().props.onClick(); });
+        expect(footerLabels()).toEqual(["Pair with a QR or code", "Close"]);
+        await act(async () => { button("Pair with a QR or code").props.onClick(); });
+        expect(footerLabels()).toEqual(["Pair with a code", "Back"]);
+        await shownAs({ kind: "code-entry", failure: null });
+        expect(footerLabels()).toEqual(["Pair", "Cancel"]);
+        await shownAs({ kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, name: "Mac mini" } });
+        expect(footerLabels()).toEqual(["It matches", "Cancel"]);
+        await act(async () => { renderer!.unmount(); jest.runAllTimers(); });
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it("narrows the table: Needs you hides the ready rows while keeping offline, Ready hides the others, All brings them back", async () => {
