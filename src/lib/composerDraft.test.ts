@@ -26,6 +26,8 @@ it("does not edit another tab's saved held copy without authoritative withdrawal
   const message = { id: "another-tabs-held-id", request_id: 1, text: "withdraw me", state: "held" as const, created_at: "2026-10-27T00:00:00Z" };
   try {
     original.accept(owner, message, "original");
+    // the bridge's held receipt proves it untyped for this page: only then is a saved held copy sent again
+    pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     expect(pendingMessages.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false });
     composerDrafts.set(key, "existing draft");
     let actions!: ReturnType<typeof useComposerSends>;
@@ -117,6 +119,8 @@ it("drops a busy saved copy when its delayed resend learns that another tab with
   let sending: Promise<void> | undefined;
   try {
     original.accept(owner, message, "original");
+    // the bridge's held receipt proves it untyped for this page: only then is a saved held copy sent again
+    pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     expect(pendingMessages.read(owner)[0]?.serverOwned).toBe(false);
     let actions!: ReturnType<typeof useComposerSends>;
     function Composer() {
@@ -167,7 +171,8 @@ it("does not restore an already-editing row after another tab's ambiguous resend
   const item = server.enqueue("original", "p", 1, "ambiguous Enter", null, { agent: "claude", terminalId: "p", session: null }, true);
   let deliveries = 0;
   try {
-    expect(other.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false });
+    // the other tab's saved copy of this page's live held row proves nothing there: uncertain
+    expect(other.read(owner)[0]).toMatchObject({ state: "uncertain", serverOwned: false });
     composerDrafts.set(key, "existing draft");
     const socket: Pick<HerdrSocket, "on" | "pendingAction"> = {
       on: (listener: (frame: ServerMessage) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },

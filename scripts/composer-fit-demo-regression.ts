@@ -962,18 +962,25 @@ try {
       });
       console.log("PASS selectable pending bubbles fit phones; explicit Send now and Discard act on IDs");
 
-      // A confirmed hold can be sent explicitly on a new connection. An unconfirmed queued
-      // request instead becomes uncertain and never offers an automatic or explicit retry.
+      // A message the bridge holds untyped as its connection closes comes back held on the bridge's receipt, sent only
+      // by an explicit Send now on the new connection. Past the receipt's ten minutes it proves nothing: the copy is
+      // uncertain and never offers an automatic or explicit retry.
       for (const held of [false, true]) await withCard(browser, 390, { agent: "codex", model: "gpt-5.6" }, async (page) => {
-        const text = held ? "confirmed held follow-up" : "unconfirmed follow-up";
+        const text = held ? "confirmed held follow-up" : "follow-up past its receipt";
         await page.getByRole("textbox", { name: "Message", exact: true }).fill(text);
         await page.getByRole("button", { name: "Send message", exact: true }).click();
         await page.locator(".pending-message-bubble").waitFor();
         await page.evaluate(({ held, paneId }) => {
-          const socket = (window as unknown as { fitSocket: { holdPending: (pane: string) => void; close: () => void } }).fitSocket;
-          if (held) socket.holdPending(paneId);
-          socket.close();
+          const fit = window as unknown as { fitSocket: { holdPending: (pane: string) => void; close: () => void }; fitOffline?: boolean };
+          if (held) fit.fitSocket.holdPending(paneId);
+          // the page stays off while its clock passes the receipt's ten minutes
+          else fit.fitOffline = true;
+          fit.fitSocket.close();
         }, { held, paneId: panes.api });
+        if (!held) {
+          await page.clock.setSystemTime(await page.evaluate(() => Date.now()) + 10 * 60 * 1000 + 1000);
+          await page.evaluate(() => { (window as unknown as { fitOffline?: boolean }).fitOffline = false; });
+        }
         await page.waitForFunction(() => (window as unknown as { fitSocket?: { readyState: number } }).fitSocket?.readyState === 1);
         const bubble = page.locator(".pending-message-bubble");
         await page.waitForFunction((state) => document.querySelector(".pending-message")?.getAttribute("data-state") === state, held ? "held" : "uncertain");
