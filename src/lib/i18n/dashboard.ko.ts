@@ -87,4 +87,6 @@ export const DASHBOARD_KO: Record<string, string> = {
   "No PCs yet": "아직 PC가 없습니다",
   "1 relay": "릴레이 1곳",
   "{count} relays": "릴레이 {count}곳",
+  "This PC could not be listed in your account. Open it to try again.": "이 PC를 계정에 올리지 못했습니다. 열면 다시 시도합니다.",
+  "This PC could not be listed in your account.": "이 PC를 계정에 올리지 못했습니다.",
 };
