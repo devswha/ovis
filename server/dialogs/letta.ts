@@ -147,7 +147,8 @@ function parseLettaModel(screen: string): ParsedPrompt | null {
       const first = words.startsWith("r") ? `R${words.slice(1)}` : words;
       return [...keySteps(Array.from({ length: typed.length }, () => KEY.backspace)), ...[...first].map((character) => ({ text: character }))];
     },
-  });
+    // the search is the card's too: the same rows under another search take other backspaces
+  }, { call: `search ${typed}` });
 }
 
 function parseLettaEffort(screen: string): ParsedPrompt | null {

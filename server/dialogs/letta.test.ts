@@ -77,6 +77,12 @@ describe("Letta Code's /model", () => {
     expect(answerKeys(prompt, { custom_text: "ri" })).toEqual([{ keys: [KEY.backspace] }, { keys: [KEY.backspace] }, { keys: [KEY.backspace] }, { text: "R" }, { text: "i" }]);
   });
 
+  it("tells a card apart by its search", () => {
+    const recents = screen("model-recents");
+    // the same rows under another search are another card: its backspaces would leave a different search
+    expect(parseInteractivePrompt("letta", recents.replace("(type to filter)", "o"))!.id).not.toBe(parseInteractivePrompt("letta", recents)!.id);
+  });
+
   it("reads no picker once output follows it, nor another agent's screen", () => {
     expect(parseInteractivePrompt("letta", `${screen("model-recents")}\n• Model switched\n`)).toBeNull();
     expect(parseInteractivePrompt("letta", `${screen("effort")}\n› \n`)).toBeNull();
