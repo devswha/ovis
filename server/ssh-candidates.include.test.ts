@@ -116,7 +116,7 @@ it.skipIf(!wildcardIncludesRead)("never lists a folder a wildcard Include reache
   ]);
 });
 
-it.skipIf(process.platform === "win32")("never lists a folder swapped for a link out of the home folder after it was checked", async () => {
+it.skipIf(!wildcardIncludesRead)("never lists a folder swapped for a link out of the home folder after it was checked", async () => {
   const { home, ssh, outside } = homeAndOutside({ "conf.d/own/hosts": "Host own\n", config: "Include conf.d/*/*\n" });
   const folder = join(ssh, "conf.d", "own");
   const restore = swapAfterFirstLook(folder, () => { renameSync(folder, `${folder}.old`); symlinkSync(outside, folder); });
@@ -133,8 +133,7 @@ it.skipIf(!wildcardIncludesRead)("never reads a file swapped for a link out of t
   const restore = swapAfterFirstLook(file, () => { renameSync(file, `${file}.old`); symlinkSync(join(outside, "secret"), file); });
   try {
     const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => null });
-    // Linux reads the file it opened; elsewhere the path, resolved again once open, names another file: left unread
-    expect(candidates.map((candidate) => candidate.name)).toEqual(process.platform === "linux" ? ["own"] : []);
+    expect(candidates.map((candidate) => candidate.name)).toEqual(["own"]);
   } finally { restore(); }
 });
 
