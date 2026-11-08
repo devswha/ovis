@@ -610,6 +610,150 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return "Enter opens, Tab stays inside, Escape closes, focus back on Add a PC";
   });
 
+  // ---- what the page computes for its headings, details and dialogs (final review F2 findings 2, 4 and 6) ----
+
+  /** What holds the focus: its tag, classes and first words, the ring it shows, the PC row it sits in, and whether it is on screen. */
+  const focused = (page: Page) => page.evaluate(() => {
+    const active = document.activeElement as HTMLElement | null;
+    if (!active || active === document.body) return null;
+    const style = getComputedStyle(active);
+    const box = active.getBoundingClientRect();
+    return {
+      tag: active.tagName.toLowerCase(), className: String(active.className), text: (active.textContent ?? "").trim().slice(0, 40),
+      outline: style.outlineStyle, row: active.closest("[data-pc-id]")?.getAttribute("data-pc-id") ?? null,
+      inView: box.top >= 0 && box.bottom <= window.innerHeight,
+    };
+  });
+
+  // the view heading takes the focus after a keyboard route change and shows no ring (RelayDashboard.css .relay-dash-title:focus)
+  await check("view-heading-focus", async () => {
+    const { page } = await open({ fleet: "FREADY" });
+    await page.locator('.relay-dash-nav a[href="#devices"]').focus();
+    await page.keyboard.press("Enter");
+    await page.locator('.relay-dash[data-dashboard-view="devices"]').waitFor();
+    const focus = await focused(page);
+    expect(focus?.tag === "h1" && focus.text === "Devices", `the view heading holds the focus after Enter on a destination (${JSON.stringify(focus)})`);
+    expect(focus?.outline === "none", `the heading shows no ring (outline-style ${focus?.outline})`);
+    return `h1 "Devices" focused, outline-style none`;
+  });
+
+  // below 1100px the details are a full view under the list: selecting a row moves the focus to its heading, ringless and
+  // on screen, and Back gives the focus to the row that opened it; from 1100px the side panel keeps the click's focus
+  await check("details-390-focus", async () => {
+    const { page } = await open({ fleet: "FREADY", width: 390 });
+    await go(page, "#pcs", "pcs");
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const row = listedRows(page).filter({ hasText: "Home server" });
+    const id = await row.getAttribute("data-pc-id");
+    await row.locator(".relay-pc-name-btn").click();
+    await page.locator("[data-pc-details]").waitFor();
+    const placed = await page.evaluate(() => {
+      const box = document.querySelector("[data-pc-details]")!.getBoundingClientRect();
+      return { top: Math.round(box.top), inner: window.innerHeight, scrollY: Math.round(window.scrollY) };
+    });
+    const focus = await focused(page);
+    await shot(page, "details-390-dark");
+    expect(focus?.tag === "h2" && focus.text === "Home server", `the details heading holds the focus (${JSON.stringify(focus)})`);
+    expect(focus?.outline === "none", `the heading shows no ring (outline-style ${focus?.outline})`);
+    expect(placed.top >= 0 && placed.top < placed.inner / 2, `the details start in the upper half of the screen (top ${placed.top} of ${placed.inner}, scrolled ${placed.scrollY})`);
+    await page.locator("[data-pc-details]").getByRole("button", { name: "Back" }).click();
+    await page.locator("[data-pc-details]").waitFor({ state: "detached" });
+    const back = await focused(page);
+    await shot(page, "details-390-back-dark");
+    expect(back?.row === id && back.className.includes("relay-pc-name-btn"), `Back gives the focus to the row that opened the details (${JSON.stringify(back)})`);
+    return `heading focused without a ring, details top ${placed.top}px after scrolling ${placed.scrollY}px, Back focuses the row`;
+  });
+
+  await check("details-1440-side-panel", async () => {
+    const { page } = await open({ fleet: "FREADY" });
+    await go(page, "#pcs", "pcs");
+    const before = await page.evaluate(() => window.scrollY);
+    await listedRows(page).filter({ hasText: "Home server" }).locator(".relay-pc-name-btn").click();
+    await page.locator("[data-pc-details]").waitFor();
+    const focus = await focused(page);
+    const columns = await page.locator(".relay-dash-pcs-split").evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(" ").length);
+    const scrollY = await page.evaluate(() => window.scrollY);
+    await shot(page, "details-1440-side-dark");
+    expect(columns === 2, `the details sit beside the table (${columns} grid columns)`);
+    expect(focus?.className.includes("relay-pc-name-btn") === true, `the click's focus stays on the row (${JSON.stringify(focus)})`);
+    expect(scrollY === before, `the page does not scroll (${before} -> ${scrollY})`);
+    return `two columns, focus on the row, no scroll`;
+  });
+
+  // the QR and code dialog is named by the heading of its current screen
+  for (const width of [1440, 390] as const) {
+    await check(`pair-dialog-name-${width}`, async () => {
+      const { page } = await open({ fleet: "FREADY", width });
+      await page.locator('[data-action="add-pc"]').filter({ visible: true }).first().click();
+      await page.locator('[role=dialog][data-add-pc-mode="add"] [data-sheet-primary]').click();
+      const dialog = page.locator("[role=dialog][data-pair-dialog]");
+      await dialog.waitFor();
+      const named = () => dialog.evaluate((element) => {
+        const labelled = element.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim() ?? "").filter((text) => text !== "").join(" ") ?? null;
+        return { screen: element.getAttribute("data-pair-dialog"), name: element.getAttribute("aria-label") ?? (labelled === "" ? null : labelled), heading: element.querySelector("h2")?.textContent?.trim() ?? null };
+      });
+      const qr = await named();
+      const qrTree = (await dialog.ariaSnapshot()).split("\n")[0] ?? "";
+      await shot(page, `pair-dialog-qr-${width}-dark`);
+      await dialog.getByRole("button", { name: "Pair with a code" }).click();
+      await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
+      const code = await named();
+      const codeTree = (await dialog.ariaSnapshot()).split("\n")[0] ?? "";
+      await shot(page, `pair-dialog-code-${width}-dark`);
+      expect(qr.name !== null && qr.name === qr.heading, `the QR screen names its dialog by its heading (${JSON.stringify(qr)}, tree ${qrTree})`);
+      expect(code.name !== null && code.name === code.heading, `the code screen names its dialog by its heading (${JSON.stringify(code)}, tree ${codeTree})`);
+      return `${qrTree}; ${codeTree}`;
+    });
+  }
+
+  // the sidebar foot's provider mark flows inline: AccountPcs.css positions a mark absolutely only inside .account-provider
+  await check("provider-mark-inline", async () => {
+    const { page } = await open({ fleet: "FREADY" });
+    const placed = await page.locator(".relay-dash-foot .relay-dash-who .account-provider-mark").evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const text = element.nextElementSibling?.getBoundingClientRect() ?? null;
+      const row = element.parentElement!.getBoundingClientRect();
+      return { position: getComputedStyle(element).position, right: Math.round(box.right), textLeft: text === null ? null : Math.round(text.left), top: Math.round(box.top), bottom: Math.round(box.bottom), rowTop: Math.round(row.top), rowBottom: Math.round(row.bottom) };
+    });
+    expect(placed.position === "static", `the mark is in the flow (position ${placed.position})`);
+    expect(placed.textLeft !== null && placed.right <= placed.textLeft, `the mark ends before its text starts (${placed.right} <= ${placed.textLeft})`);
+    expect(placed.top >= placed.rowTop && placed.bottom <= placed.rowBottom, `the mark stays inside its row (${placed.top}-${placed.bottom} in ${placed.rowTop}-${placed.rowBottom})`);
+    return `static, ends at ${placed.right}px before the text at ${placed.textLeft}px`;
+  });
+
+  // the phone map's rail: each route's link reaches up through the gap to the item above, and the last one ends inside its relay's mark
+  await check("map-rail-390", async () => {
+    const { page } = await open({ fleet: "FREADY", width: 390 });
+    await go(page, "#relay", "relay");
+    await page.locator(".relay-map-routes .relay-map-route").first().waitFor();
+    const rail = await page.evaluate(() => {
+      const items = [...document.querySelectorAll<HTMLElement>(".relay-map-routes > li")];
+      return items.map((item) => {
+        const box = item.getBoundingClientRect();
+        const link = item.querySelector<HTMLElement>(":scope > .relay-map-link")?.getBoundingClientRect() ?? null;
+        const mark = item.querySelector<HTMLElement>(".relay-map-hop-hub-mark")?.getBoundingClientRect() ?? null;
+        return { route: item.classList.contains("relay-map-route"), top: box.top, bottom: box.bottom, link: link && { top: link.top, bottom: link.bottom }, mark: mark && { top: mark.top, bottom: mark.bottom } };
+      });
+    });
+    const routes = rail.filter((item) => item.route);
+    expect(routes.length >= 2, `${routes.length} relay routes, want 2 or more`);
+    const gaps: string[] = [];
+    rail.forEach((item, index) => {
+      if (!item.route) return;
+      const above = rail[index - 1];
+      if (item.link === null || above === undefined) { gaps.push(`route ${index} has no link`); return; }
+      if (item.link.top > above.bottom + 0.5) gaps.push(`route ${index}: link starts ${Math.round(item.link.top - above.bottom)}px below the item above`);
+      if (index < rail.length - 1) {
+        if (Math.abs(item.link.bottom - item.bottom) > 0.5) gaps.push(`route ${index}: link ends at ${Math.round(item.link.bottom)}, the route at ${Math.round(item.bottom)}`);
+      } else if (item.mark === null || item.link.bottom < item.mark.top - 0.5 || item.link.bottom > item.mark.bottom + 0.5) {
+        gaps.push(`last route: link ends at ${Math.round(item.link.bottom)}, its relay's mark spans ${item.mark === null ? "nothing" : `${Math.round(item.mark.top)}-${Math.round(item.mark.bottom)}`}`);
+      }
+    });
+    await shot(page, "map-rail-390-dark");
+    expect(gaps.length === 0, `the rail is continuous: ${gaps.join("; ")}`);
+    return `${routes.length} routes, each link meets the item above, the last ends inside its relay's mark`;
+  });
+
   // ---- what every page above heard: no page error, no request off the two hosts, no policy violation ----
 
   await check("console-and-policy", async () => {

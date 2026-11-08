@@ -173,17 +173,8 @@ describe("AccountSignIn", () => {
     }
   });
 
-  it("scopes absolute positioning on .account-provider-mark to .account-provider buttons only so shared dashboard/Settings consumers flow inline", async () => {
-    const css = await Bun.file(new URL("./AccountPcs.css", import.meta.url)).text();
-    const unyokedAbsolute = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^}]*position\s*:\s*absolute[^}]*)\}/g)]
-      .map(([, selector]) => selector!.trim());
-    expect(unyokedAbsolute.length).toBeGreaterThan(0);
-    for (const selector of unyokedAbsolute) {
-      for (const part of selector.split(",").map((s) => s.trim())) {
-        expect(part).toMatch(/\.account-provider(?![-\w])/);
-      }
-    }
-  });
+  // the provider mark's placement outside a provider button (inline in the dashboard's foot) is what the browser
+  // computes: scripts/relay-dashboard-browser-qa.ts provider-mark-inline
 });
 
 describe("CheckPcsButton", () => {

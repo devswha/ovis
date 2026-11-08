@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -509,12 +508,6 @@ describe("RelayDashboard frame and routes", () => {
     expect(localHtml).not.toContain(">Ready<");
   });
 
-  it("suppresses the focus ring on the non-interactive page heading and draws a continuous phone connector rail in RelayMap.css", () => {
-    const dashCss = readFileSync(new URL("./RelayDashboard.css", import.meta.url), "utf8");
-    expect(dashCss).toMatch(/\.relay-dash-title:focus\s*,\s*\.relay-dash-title:focus-visible\s*\{\s*outline:\s*none;\s*\}/);
-
-    const mapCss = readFileSync(new URL("./RelayMap.css", import.meta.url), "utf8");
-    expect(mapCss).toMatch(/\.relay-map-link\s*\{[^}]*position:\s*absolute;[^}]*top:\s*calc\(-1\s*\*\s*var\(--space-2\)\);[^}]*bottom:\s*0;/);
-    expect(mapCss).toMatch(/\.relay-map-route:last-child\s*>\s*\.relay-map-link\s*\{[^}]*bottom:\s*calc\(100%\s*-\s*var\(--avatar-size\)\s*\/\s*2\);/);
-  });
+  // the page heading's ring and the phone map's rail are what the browser draws: scripts/relay-dashboard-browser-qa.ts
+  // (view-heading-focus, details-390-focus, map-rail-390) reads their computed styles and rectangles
 });
