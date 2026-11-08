@@ -158,6 +158,9 @@ describe("dashboardModel relays and map", () => {
     expect(Object.fromEntries(m.map.hubs[0]?.nodes.map((node) => [node.server_id, node.seen]) ?? [])).toEqual({
       seen: "lately", "never-seen": "unknown", old: "stale", "approval-seen": "unknown", "approval-unknown": "unknown",
     });
+    expect(Object.fromEntries(m.map.hubs[0]?.nodes.map((node) => [node.server_id, node.last_seen_at]) ?? [])).toEqual({
+      seen: "2026-11-07T00:00:00Z", "never-seen": null, old: "2026-11-01T00:00:00Z", "approval-seen": "2026-11-07T00:00:00Z", "approval-unknown": null,
+    });
   });
 
   it("names a relay by its host, and an origin that is not a URL as it is", () => {

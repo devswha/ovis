@@ -85,11 +85,15 @@ describe("the connection map", () => {
     expect(legend).not.toContain('data-state="ready"');
   });
 
-  it("reconciles live check results (answered with RTT, or failed check) with map nodes and relay inventory", () => {
-    const answered: PcStatus = { kind: "answered", route: "relay", relay: REGIONAL, rttMs: 42 };
-    const html = render(mockup(new Map([["MacBook", answered]])));
+  it("reconciles live check results and labels hub RTT as the latest measured PC handshake", () => {
+    const answeredSlow: PcStatus = { kind: "answered", route: "relay", relay: REGIONAL, rttMs: 68 };
+    const answeredFast: PcStatus = { kind: "answered", route: "relay", relay: REGIONAL, rttMs: 42 };
+    const html = render(mockup(new Map([["Desk PC", answeredSlow], ["MacBook", answeredFast]])));
     expect(wires(html)["MacBook"]).toBe("live");
-    expect(html).toContain("42 ms");
+    expect(html).toContain("Latest PC handshake · 42 ms");
+    // Both diagram and route-list tooltips show known last-seen <time> and explicit unknown last-seen
+    expect(count(html, /<time[^>]*dateTime="2026-11-07T00:00:00Z"[^>]*title="[^"]+"/g)).toBe(4);
+    expect(count(html, /<span class="relay-map-tooltip-seen">Last seen: unknown<\/span>/g)).toBe(2);
   });
 
   it("exposes one accessible route list and figcaption without duplicate SVG aria-label", () => {

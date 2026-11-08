@@ -11,6 +11,7 @@ import {
   nodeStatusDotState,
   nodeWireState,
   placeLabel,
+  relayHandshake,
   relayHandshakeMs,
   wire,
 } from "./relayMapLayout.ts";
@@ -162,23 +163,27 @@ describe("wire, status, and relay RTT helpers", () => {
     expect(nodeStatusDotState(requireNode(nodes, "h-offline"))).toBe("offline");
   });
 
-  it("aggregates hub wire state and latest measured relay handshake RTT per hub", () => {
+  it("aggregates hub wire state and latest measured relay handshake RTT per hub across multiple measured PCs", () => {
     const map = modelOf(
       [
-        pc("a", "paired", REGIONAL, "2026-11-07T00:00:00Z"),
-        pc("b", "paired", REGIONAL, "2026-11-07T00:00:00Z"),
-        pc("c", "offline", GLOBAL, "2026-11-01T00:00:00Z", true),
+        pc("Studio desktop", "paired", REGIONAL, "2026-11-07T00:00:00Z"),
+        pc("Work laptop", "paired", REGIONAL, "2026-11-07T00:00:00Z"),
+        pc("LAN box", "paired", REGIONAL, "2026-11-07T00:00:00Z"),
+        pc("Home server", "offline", GLOBAL, "2026-11-01T00:00:00Z", true),
       ],
       new Map<string, PcStatus>([
-        ["a", { kind: "answered", route: "relay", relay: REGIONAL, rttMs: 42 }],
-        ["b", { kind: "answered", route: "lan", rttMs: 8 }],
+        ["Studio desktop", { kind: "answered", route: "relay", relay: REGIONAL, rttMs: 65 }],
+        ["Work laptop", { kind: "answered", route: "relay", relay: REGIONAL, rttMs: 42 }],
+        ["LAN box", { kind: "answered", route: "lan", rttMs: 8 }],
       ]),
     );
     const [hub0, hub1] = map.hubs;
     if (!hub0 || !hub1) throw new Error("expected two hubs");
     expect(hubWireState(hub0.nodes)).toBe("live");
     expect(hubWireState(hub1.nodes)).toBe("off");
+    expect(relayHandshake(hub0)).toEqual({ rttMs: 42, pcName: "Work laptop" });
     expect(relayHandshakeMs(hub0)).toBe(42);
+    expect(relayHandshake(hub1)).toBeNull();
     expect(relayHandshakeMs(hub1)).toBeNull();
   });
 

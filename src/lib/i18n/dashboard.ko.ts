@@ -25,6 +25,8 @@ export const DASHBOARD_KO: Record<string, string> = {
   "This device can open {name}": "이 기기에서 {name}을(를) 열 수 있습니다",
   "Seen lately": "최근 확인됨",
   "Paired · not checked": "페어링됨 · 미확인",
+  "Last seen: unknown": "마지막 확인: 알 수 없음",
+  "Latest PC handshake": "최근 PC 핸드셰이크",
   "No relays in use yet.": "아직 사용 중인 릴레이가 없습니다.",
   "sees sizes, not content": "크기만 보고 내용은 보지 못함",
   "Connection map": "구성도",

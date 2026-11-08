@@ -21,6 +21,11 @@ export interface PlacedPc extends Placed {
   readonly hub: number;
 }
 
+export interface RelayHandshake {
+  readonly rttMs: number;
+  readonly pcName: string;
+}
+
 export interface PlacedHub extends Placed {
   readonly kind: "hub";
   readonly hub: number;
@@ -28,6 +33,7 @@ export interface PlacedHub extends Placed {
   readonly regional: boolean;
   readonly pcCount: number;
   readonly rttMs: number | null;
+  readonly handshake: RelayHandshake | null;
 }
 
 export interface RelayMapLayout {
@@ -57,15 +63,22 @@ export function isRegionalRelay(origin: string): boolean {
   return REGIONAL_RELAYS.includes(origin);
 }
 
-export function relayHandshakeMs(hub: RelayMapHub): number | null {
+export function relayHandshake(hub: RelayMapHub): RelayHandshake | null {
   const host = relayHost(hub.origin);
+  let best: RelayHandshake | null = null;
   for (const node of hub.nodes) {
     const check = node.check;
     if (check?.kind === "answered" && check.route === "relay" && (check.relay === undefined || relayHost(check.relay) === host)) {
-      return check.rttMs;
+      if (best === null || check.rttMs < best.rttMs) {
+        best = { rttMs: check.rttMs, pcName: node.name };
+      }
     }
   }
-  return null;
+  return best;
+}
+
+export function relayHandshakeMs(hub: RelayMapHub): number | null {
+  return relayHandshake(hub)?.rttMs ?? null;
 }
 
 export function nodeWireState(node: RelayMapNode): WireState {
@@ -133,11 +146,14 @@ export function layoutRelayMap(map: RelayMapModel): RelayMapLayout | null {
     }
   }
 
-  const hubs: PlacedHub[] = map.hubs.map((hub, i) => ({
-    kind: "hub", hub: i, origin: hub.origin, regional: isRegionalRelay(hub.origin),
-    pcCount: hub.nodes.length, rttMs: relayHandshakeMs(hub),
-    x: HUB_X, y: hubCenters[i] ?? centerY, r: HUB_R, side: "below",
-  }));
+  const hubs: PlacedHub[] = map.hubs.map((hub, i) => {
+    const hs = relayHandshake(hub);
+    return {
+      kind: "hub", hub: i, origin: hub.origin, regional: isRegionalRelay(hub.origin),
+      pcCount: hub.nodes.length, rttMs: hs?.rttMs ?? null, handshake: hs,
+      x: HUB_X, y: hubCenters[i] ?? centerY, r: HUB_R, side: "below",
+    };
+  });
   const primary = hubs[0];
   if (primary === undefined) return null;
 

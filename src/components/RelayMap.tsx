@@ -4,17 +4,18 @@ import { Lock, MonitorSmartphone, RadioTower } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { relayHost } from "../lib/relay/dashboard.ts";
-import { useT } from "../lib/i18n.ts";
+import { currentLocale, useT } from "../lib/i18n.ts";
 import type { Translate } from "../lib/i18n.ts";
+import { lastSeen } from "../lib/lastSeen.ts";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 import {
   checkingWirePaths, clip, hubWireState, isRegionalRelay, layoutRelayMap,
-  nodeStatusDotState, nodeWireState, placeLabel, relayHandshakeMs, wire,
+  nodeStatusDotState, nodeWireState, placeLabel, relayHandshake, relayHandshakeMs, wire,
 } from "./relayMapLayout.ts";
-import type { LabelSide, PlacedHub, PlacedPc, RelayMapLayout, RelayMapModel, RelayMapNode, WireState } from "./relayMapLayout.ts";
+import type { LabelSide, PlacedHub, PlacedPc, RelayHandshake, RelayMapLayout, RelayMapModel, RelayMapNode, WireState } from "./relayMapLayout.ts";
 
-export { clip, layoutRelayMap, placeLabel, wire };
-export type { LabelSide, PlacedHub, PlacedPc, RelayMapLayout, RelayMapModel, RelayMapNode, WireState };
+export { clip, layoutRelayMap, placeLabel, relayHandshake, relayHandshakeMs, wire };
+export type { LabelSide, PlacedHub, PlacedPc, RelayHandshake, RelayMapLayout, RelayMapModel, RelayMapNode, WireState };
 
 export interface RelayMapProps {
   readonly map: RelayMapModel;
@@ -40,6 +41,25 @@ function detailOf(node: RelayMapNode, t: Translate): string {
     case "offline": return t("Offline");
     case "paired": return wordOf(node, t);
   }
+}
+
+function seenTitleOf(node: RelayMapNode, t: Translate): string {
+  return node.last_seen_at === null ? t("Last seen: unknown") : `${t("Last seen")} · ${lastSeen(node.last_seen_at)}`;
+}
+
+function NodeTooltip({ node, detail, t }: { readonly node: RelayMapNode; readonly detail: string; readonly t: Translate }) {
+  const iso = node.last_seen_at ?? null;
+  return (
+    <span className="relay-map-tooltip" role="tooltip">
+      <strong>{node.name}</strong>
+      <span>{detail}</span>
+      <span className="relay-map-tooltip-seen">
+        {iso !== null
+          ? <>{t("Last seen")} · <time dateTime={iso} title={new Date(iso).toLocaleString(currentLocale())}>{lastSeen(iso)}</time></>
+          : t("Last seen: unknown")}
+      </span>
+    </span>
+  );
 }
 
 function activatePc(serverId: string, onSelectPc?: (id: string) => void): void {
@@ -154,15 +174,15 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
               const host = relayHost(hub.origin);
               const countText = hub.pcCount === 1 ? t("1 PC") : t("{count} PCs", { count: hub.pcCount });
               const scopeText = hub.regional ? t("regional") : t("global");
-              const rttText = hub.rttMs !== null ? t("{n} ms", { n: hub.rttMs }) : null;
+              const hsText = hub.handshake !== null ? `${t("Latest PC handshake")} · ${t("{n} ms", { n: hub.handshake.rttMs })}` : null;
               return (
-                <button key={hub.origin} type="button" className="relay-map-hub-btn" style={pos(hub.x, hub.y, layout.width, layout.height)} tabIndex={-1} data-hub={hub.origin} title={`${host} · ${countText} · ${scopeText}${rttText ? ` · ${rttText}` : ""}`} onClick={() => activateRelay(hub.origin, onSelectRelay)}>
+                <button key={hub.origin} type="button" className="relay-map-hub-btn" style={pos(hub.x, hub.y, layout.width, layout.height)} tabIndex={-1} data-hub={hub.origin} title={`${host} · ${countText} · ${scopeText}${hsText !== null && hub.handshake !== null ? ` · ${hsText} (${hub.handshake.pcName})` : ""}`} onClick={() => activateRelay(hub.origin, onSelectRelay)}>
                   <span className="relay-map-hub-mark"><RadioTower aria-hidden="true" /></span>
                   <span className="relay-map-hub-body">
                     <span className="pill relay-map-host">{host}</span>
                     <span className="relay-map-hub-meta">
                       {countText} · {scopeText}
-                      {rttText !== null && <> · <span className="relay-map-rtt">{rttText}</span></>}
+                      {hsText !== null && <> · <span className="relay-map-rtt">{hsText}</span></>}
                     </span>
                   </span>
                 </button>
@@ -172,13 +192,13 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
             {layout.pcs.map((pc) => {
               const detailWord = detailOf(pc.node, t);
               return (
-                <button key={pc.node.server_id} type="button" className="relay-map-pc-btn" style={pos(pc.x, pc.y, layout.width, layout.height)} tabIndex={-1} data-pc-node={pc.node.server_id} data-pc-state={pc.node.state} data-seen={pc.node.seen} data-selected={selectedPcId === pc.node.server_id ? "" : undefined} title={`${pc.node.name} · ${detailWord}`} onClick={() => activatePc(pc.node.server_id, onSelectPc)}>
+                <button key={pc.node.server_id} type="button" className="relay-map-pc-btn" style={pos(pc.x, pc.y, layout.width, layout.height)} tabIndex={-1} data-pc-node={pc.node.server_id} data-pc-state={pc.node.state} data-seen={pc.node.seen} data-selected={selectedPcId === pc.node.server_id ? "" : undefined} title={`${pc.node.name} · ${detailWord} · ${seenTitleOf(pc.node, t)}`} onClick={() => activatePc(pc.node.server_id, onSelectPc)}>
                   <StatusDot state={nodeStatusDotState(pc.node)} />
                   <span className="relay-map-pc-body">
                     <span className="relay-map-name">{clip(pc.node.name)}</span>
                     <span className="relay-map-word">{wordOf(pc.node, t)}</span>
                   </span>
-                  <span className="relay-map-tooltip" role="tooltip"><strong>{pc.node.name}</strong><span>{detailWord}</span></span>
+                  <NodeTooltip node={pc.node} detail={detailWord} t={t} />
                 </button>
               );
             })}
@@ -197,20 +217,20 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
           const host = relayHost(hub.origin);
           const scopeText = isRegionalRelay(hub.origin) ? t("regional") : t("global");
           const countText = hub.nodes.length === 1 ? t("1 PC") : t("{count} PCs", { count: hub.nodes.length });
-          const rttMs = relayHandshakeMs(hub);
-          const rttText = rttMs !== null ? t("{n} ms", { n: rttMs }) : null;
+          const hs = relayHandshake(hub);
+          const hsText = hs !== null ? `${t("Latest PC handshake")} · ${t("{n} ms", { n: hs.rttMs })}` : null;
           const linkWire = hubWireState(hub.nodes);
           return (
             <li key={hub.origin} className="relay-map-route">
               <div className="relay-map-link" data-wire={linkWire} data-live={linkWire === "live" ? "" : undefined} aria-hidden="true" />
               <div className="relay-map-hop relay-map-hop-hub">
-                <button type="button" className="relay-map-hop-btn relay-map-hop-hub-btn" data-relay-origin={hub.origin} title={`${host} · ${countText} · ${scopeText}${rttText !== null ? ` · ${rttText}` : ""}`} onClick={() => activateRelay(hub.origin, onSelectRelay)}>
+                <button type="button" className="relay-map-hop-btn relay-map-hop-hub-btn" data-relay-origin={hub.origin} title={`${host} · ${countText} · ${scopeText}${hsText !== null && hs !== null ? ` · ${hsText} (${hs.pcName})` : ""}`} onClick={() => activateRelay(hub.origin, onSelectRelay)}>
                   <span className="relay-map-hop-mark relay-map-hop-hub-mark"><RadioTower aria-hidden="true" /></span>
                   <span className="relay-map-hop-hub-body">
                     <span className="pill relay-map-host">{host}</span>
                     <small className="relay-map-hop-meta">
                       <span>{countText}</span><span>·</span><span>{scopeText}</span>
-                      {rttText !== null && <><span>·</span><span className="relay-map-rtt">{rttText}</span></>}
+                      {hsText !== null && <><span>·</span><span className="relay-map-rtt">{hsText}</span></>}
                     </small>
                   </span>
                 </button>
@@ -221,11 +241,11 @@ function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }
                   const selected = selectedPcId === node.server_id;
                   return (
                     <li key={node.server_id} className="relay-map-hop" data-pc-state={node.state} data-seen={node.seen}>
-                      <button type="button" className="relay-map-hop-btn" data-pc-id={node.server_id} data-selected={selected ? "" : undefined} aria-current={selected ? "true" : undefined} title={`${node.name} · ${detailWord}`} onClick={() => activatePc(node.server_id, onSelectPc)}>
+                      <button type="button" className="relay-map-hop-btn" data-pc-id={node.server_id} data-selected={selected ? "" : undefined} aria-current={selected ? "true" : undefined} title={`${node.name} · ${detailWord} · ${seenTitleOf(node, t)}`} onClick={() => activatePc(node.server_id, onSelectPc)}>
                         <StatusDot state={nodeStatusDotState(node)} />
                         <span className="relay-map-hop-name" title={node.name}>{node.name}</span>
                         <small className="relay-map-hop-note">{wordOf(node, t)}</small>
-                        <span className="relay-map-tooltip" role="tooltip"><strong>{node.name}</strong><span>{detailWord}</span></span>
+                        <NodeTooltip node={node} detail={detailWord} t={t} />
                       </button>
                     </li>
                   );

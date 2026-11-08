@@ -25,6 +25,8 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "This device can open {name}": "此设备可以打开 {name}",
   "Seen lately": "最近出现过",
   "Paired · not checked": "已配对 · 未检查",
+  "Last seen: unknown": "上次出现：未知",
+  "Latest PC handshake": "最近 PC 握手",
   "No relays in use yet.": "尚未使用任何中继。",
   "sees sizes, not content": "只看到大小，看不到内容",
   "Connection map": "连接图",
