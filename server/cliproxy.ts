@@ -177,8 +177,9 @@ export class CLIProxyService {
     const generation = this.generation;
     const pass = this.collect(kept).then((entries) => {
       if (generation !== this.generation) return [];
-      // a partial read that failed changes nothing: the cached rows, hidden ones included, stay
-      if (!due && entries === null) return this.entries;
+      // a partial read that failed changes nothing: the cached rows, hidden ones included, stay, and the
+      // accounts shown again count as just shown at the next report, so it reads them again
+      if (!due && entries === null) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
       this.entries = entries ?? [];
       if (due) { this.readAt = now; this.nextAt = now + FRESH_MS; this.shownAt.clear(); }
       else for (const key of shown) this.shownAt.set(key, now);
