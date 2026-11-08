@@ -5,6 +5,7 @@ import type { Foreground, Status, Terminal } from "./hc-api.generated.ts";
 import { clampRatio, type Grouping, type LayoutNode, LAYOUT_AREA, parseOvisLayout, place, reconcile, sideBySide } from "./layout-doc.ts";
 import { worktreeOfLabels } from "./worktrees.ts";
 import { paneAgent, reportedAgent, reportedStatus } from "../agent-identity.ts";
+import { catalogPlatform, type CatalogPlatform } from "../../shared/agent-catalog.ts";
 
 /**
  * How herdr-core's terminals look to the rest of the server: herdr's session snapshot, built from
@@ -99,10 +100,21 @@ export function agentOfStatus(status: HcStatus | null | undefined): string | nul
   return reportedAgent(status?.app);
 }
 
-/** The agent a terminal runs (agent-identity.ts): its program's report, else the process in front of it. */
-export function agentOf(terminal: Pick<HcTerminal, "status" | "foreground">): string | null {
+/**
+ * The platform a terminal runs on, by the shape of its folder: hc names none, and a terminal may be
+ * another machine's (machine-scope.ts), so this server's (`here`) says nothing of it. A Windows path
+ * is a Windows PC's; a POSIX one seen from a Windows server is Linux's or macOS's, which no agent's
+ * detection tells apart (null); anything else is this PC's.
+ */
+export function terminalPlatform(cwd: string | undefined, here: CatalogPlatform | null): CatalogPlatform | null {
+  if (cwd !== undefined && windowsPath(cwd)) return "windows";
+  return here === "windows" && cwd?.startsWith("/") ? null : here;
+}
+
+/** The agent a terminal runs (agent-identity.ts): its program's report, else the process in front of it, as its own platform names programs. */
+export function agentOf(terminal: Pick<HcTerminal, "status" | "foreground"> & { cwd?: string | undefined }, here = catalogPlatform(process.platform)): string | null {
   const front = terminal.foreground;
-  return paneAgent({ reported: terminal.status?.app, foreground: front ? (front.argv?.length ? front.argv : [front.name]) : null });
+  return paneAgent({ reported: terminal.status?.app, foreground: front ? (front.argv?.length ? front.argv : [front.name]) : null }, terminalPlatform(terminal.cwd, here));
 }
 
 /** hc's record of the process in front of a terminal (a record's `foreground`, a `foreground` event's data); null for none or another shape. */
@@ -177,6 +189,11 @@ function appTree(node: unknown, take: (address: string) => HcTerminal | null, he
   return parts.length === 0 ? null : chain(parts, node["type"] === "column" ? "down" : "right");
 }
 
+/** Whether a path is Windows-shaped: a drive letter or a UNC prefix. */
+function windowsPath(path: string): boolean {
+  return /^(?:[A-Za-z]:[\\/]|\\\\)/.test(path);
+}
+
 /**
  * A folder's last name. A Windows path (a drive letter or a UNC prefix) splits at either slash and
  * any other at `/` only, by the path's shape and not this host's platform: a server can show
@@ -185,7 +202,7 @@ function appTree(node: unknown, take: (address: string) => HcTerminal | null, he
  */
 function basename(path: string): string {
   if (/^(?:\\\\[?.]\\)?[A-Za-z]:[\\/]+$/.test(path)) return path;
-  const parts = path.split(/^(?:[A-Za-z]:[\\/]|\\\\)/.test(path) ? /[\\/]/ : "/").filter(Boolean);
+  const parts = path.split(windowsPath(path) ? /[\\/]/ : "/").filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }
 

@@ -1,5 +1,5 @@
 import nodePath from "node:path";
-import { AGENT_CATALOG, catalogPlatform, type CatalogPlatform } from "../shared/agent-catalog.ts";
+import { AGENT_CATALOG, type CatalogPlatform } from "../shared/agent-catalog.ts";
 import type { AgentSessionInfo, AgentStatus } from "../shared/herdr-api.generated.ts";
 
 /**
@@ -54,7 +54,9 @@ function scriptOf(argv: readonly string[]): string | null {
  * The catalog agent a foreground process is: one of its detect binaries run directly, or the
  * extensionless script by that name an interpreter runs (npm's bin, a Python entry point), never
  * any `pi.js` that shares a name. A binary whose name proves nothing on `platform` (Windows' own
- * cmd) names none there.
+ * cmd) names none there. `platform` is the one the pane's terminal runs on, not this server's: a
+ * Windows terminal started directly as `letta.cmd` (npm's shim) is Letta, as Windows runs
+ * `letta` from that shim, while `letta.cmd` on Linux or macOS is a file named so and names none.
  */
 export function processAgent(argv: readonly string[], platform: CatalogPlatform | null): string | null {
   const first = fileName(argv[0] ?? "", platform, true);
@@ -116,7 +118,7 @@ export function paneSession(agent: string | null, facts: SessionFacts): AgentSes
   return titled.length === 1 && (facts.named ?? []).includes(titled[0]!) ? { agent: "opencode", source: "herdr:opencode", kind: "id", value: titled[0]! } : null;
 }
 
-/** The agent a pane runs: the program's own report first, else the process in front of it; null for none. */
-export function paneAgent(facts: PaneFacts, platform: CatalogPlatform | null = catalogPlatform(process.platform)): string | null {
+/** The agent a pane runs: the program's own report first, else the process in front of it on `platform`, its terminal's; null for none. */
+export function paneAgent(facts: PaneFacts, platform: CatalogPlatform | null): string | null {
   return reportedAgent(facts.reported) ?? (facts.foreground?.length ? processAgent(facts.foreground, platform) : null);
 }

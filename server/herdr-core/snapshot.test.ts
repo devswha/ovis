@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { HerdrPane } from "../../shared/protocol.ts";
-import { buildSnapshot, type HcTerminal, keyBytes, opencodeRecords, OTHER_WORKSPACE_ID } from "./snapshot.ts";
+import { agentOf, buildSnapshot, type HcTerminal, keyBytes, opencodeRecords, OTHER_WORKSPACE_ID } from "./snapshot.ts";
 
 function terminal(address: string, extra: Partial<HcTerminal> = {}): HcTerminal {
   return { address, cols: 120, rows: 40, cwd: "/home/u", state: "live", ...extra };
@@ -151,6 +151,15 @@ describe("buildSnapshot", () => {
     ], { spaces: [] }, "0.1.17");
     expect(snapshot.panes.map((p) => [p.pane_id, p.agent, p.agent_status])).toEqual([["t1", "letta", "unknown"], ["t2", "devin", "unknown"], ["t3", "grok", "blocked"], ["t4", null, "unknown"]]);
     expect(snapshot.agents.map((a) => [a.pane_id, a.agent])).toEqual([["t1", "letta"], ["t2", "devin"], ["t3", "grok"]]);
+  });
+
+  // a terminal may be another machine's (machine-scope.ts), and hc names no platform (#3319)
+  it("names the process in front by the platform its terminal runs on, whatever this server runs on", () => {
+    const hosts = ["linux", "macos", "windows"] as const;
+    const letta = terminal("t1", { cwd: "C:\\Users\\u", argv: ["C:\\Users\\u\\letta.cmd"], foreground: { pid: 11, name: "letta.cmd", argv: ["C:\\Users\\u\\letta.cmd"] } });
+    const command = terminal("t2", { cwd: "/home/u", argv: ["bash"], foreground: { pid: 21, name: "cmd", argv: ["/home/u/.local/bin/cmd"] } });
+    const prompt = terminal("t3", { cwd: "C:\\Users\\u", argv: ["cmd.exe"], foreground: { pid: 31, name: "cmd.exe", argv: ["C:\\Windows\\System32\\cmd.exe"] } });
+    expect(hosts.map((here) => [agentOf(letta, here), agentOf(command, here), agentOf(prompt, here)])).toEqual(hosts.map(() => ["letta", "cmd", null]));
   });
 
   it("cuts the tab top down by the app's tree and weights, whatever size the terminals are, with a divider per split", () => {

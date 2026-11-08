@@ -1300,7 +1300,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
    * `shownStatusOf`): its program's word, its turn and its labels, from hc's snapshot and then its
    * events, with the status last told. Until hc's snapshot is in, events wait in `early`.
    */
-  const known = new Map<string, { status: HcStatus | null; front: HcForeground | null; title: string | null; turn: number; first: number; labels: Record<string, string>; shown: AgentStatus }>();
+  const known = new Map<string, { status: HcStatus | null; front: HcForeground | null; cwd: string | undefined; title: string | null; turn: number; first: number; labels: Record<string, string>; shown: AgentStatus }>();
   let early: HcEvent[] | null = [];
   const remember = (record: unknown) => {
     if (!isRecord(record) || typeof record["address"] !== "string") return;
@@ -1309,11 +1309,12 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
     const labels = labelsOf(record["labels"]);
     const first = firstTurn({ address: record["address"], turn });
     noteSession?.(record["address"], status, record["records"]);
-    known.set(record["address"], { status, front: foregroundOf(record["foreground"]), title: typeof record["title"] === "string" ? record["title"] : null, turn, first, labels, shown: shownStatusOf(status, turn, labels, first) });
+    known.set(record["address"], { status, front: foregroundOf(record["foreground"]), cwd: typeof record["cwd"] === "string" ? record["cwd"] : undefined, title: typeof record["title"] === "string" ? record["title"] : null, turn, first, labels, shown: shownStatusOf(status, turn, labels, first) });
     observeSeen?.(record["address"], turn, labels);
   };
   const tell = (paneId: string, status: HcStatus | null, shown: AgentStatus) => {
-    emit(STATUS_EVENT, { pane_id: paneId, agent_status: shown, agent: agentOf({ status, foreground: known.get(paneId)?.front ?? null }) });
+    const entry = known.get(paneId);
+    emit(STATUS_EVENT, { pane_id: paneId, agent_status: shown, agent: agentOf({ status, foreground: entry?.front ?? null, cwd: entry?.cwd }) });
   };
   /** A turn or a look (the `herdr.seen` label) that changes what a terminal shows is told as its status. */
   const retell = (paneId: string) => {
@@ -1399,9 +1400,9 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
         // a program that reports nothing is named from the process in front of it (snapshot.ts `agentOf`)
         const entry = paneId ? known.get(paneId) : undefined;
         if (!entry) return;
-        const before = agentOf({ status: entry.status, foreground: entry.front });
+        const before = agentOf({ status: entry.status, foreground: entry.front, cwd: entry.cwd });
         entry.front = foregroundOf(event.data);
-        if (agentOf({ status: entry.status, foreground: entry.front }) === before) return;
+        if (agentOf({ status: entry.status, foreground: entry.front, cwd: entry.cwd }) === before) return;
         lifecycle("pane.updated", "pane_updated", paneId);
         if (statusPanes.has(paneId!)) tell(paneId!, entry.status, entry.shown);
         return;
@@ -1413,7 +1414,7 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
         if (!entry) return;
         const title = typeof event.data?.["title"] === "string" ? event.data["title"] : null;
         // only where no report gives a status: none, or a word that says nothing (an error)
-        const agent = agentStatusOf(entry.status) === "unknown" ? agentOf({ status: entry.status, foreground: entry.front }) : null;
+        const agent = agentStatusOf(entry.status) === "unknown" ? agentOf({ status: entry.status, foreground: entry.front, cwd: entry.cwd }) : null;
         const before = titleStatus(agent, entry.title);
         entry.title = title;
         if (titleStatus(agent, title) !== before) lifecycle("pane.updated", "pane_updated", paneId);
