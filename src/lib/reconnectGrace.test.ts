@@ -78,6 +78,16 @@ describe("useReconnectGrace", () => {
     expect(shown.at(-1)).toBe(false);
   });
 
+  it("gives a drop the socket reports anew a grace of its own, even before a connected render came between", async () => {
+    await render(live);
+    await render({ ...dropped, lostAt: Date.now() });
+    await wait(RECONNECT_GRACE_MS);
+    expect(shown.at(-1)).toBe(false);
+    expect(await render({ ...dropped, lostAt: Date.now() })).toBe(true);
+    await wait(RECONNECT_GRACE_MS);
+    expect(shown.at(-1)).toBe(false);
+  });
+
   it("counts from when the socket lost the connection: a terminal mounted during a longer drop says it at once", async () => {
     expect(await render({ ...dropped, lostAt: Date.now() - RECONNECT_GRACE_MS - 1 })).toBe(false);
     expect(shown).not.toContain(true);

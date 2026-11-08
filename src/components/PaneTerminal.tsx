@@ -494,20 +494,21 @@ export function PaneTerminal({
   const [draftState, setDraftState] = useState<{ owner: string | null; value: InputDraft }>({ owner: null, value: EMPTY_DRAFT });
   const draft = draftState.value;
   // a drop the connection is back from within the grace is not said (lib/reconnectGrace.ts); held input,
-  // a key or a press anywhere in the window meanwhile (the active pane's), or stopped output say it at once
+  // a key, a press or typed text (dictation, an IME) anywhere in the window meanwhile (the active pane's),
+  // stopped output, or a pane another app held say it at once: the drop clears that warning (useTerminalMount),
+  // and the pane must not look ready to type in while nothing it is sent can reach it
   const [actedWhileDropped, setActedWhileDropped] = useState(false);
   if (connected && actedWhileDropped) setActedWhileDropped(false);
-  const connectionShown = useReconnectGrace(connected, connectedBefore, !draftIsEmpty(draft) || outputError !== null || actedWhileDropped, socketRef.current?.lostSince ?? null);
+  const heldWhileUp = useRef(false);
+  if (connected) heldWhileUp.current = held;
+  const connectionShown = useReconnectGrace(connected, connectedBefore, !draftIsEmpty(draft) || outputError !== null || actedWhileDropped || heldWhileUp.current, socketRef.current?.lostSince ?? null);
   const waitingOnGrace = active && connectionShown && !connected;
   useEffect(() => {
     if (!waitingOnGrace) return;
     const acted = () => setActedWhileDropped(true);
-    window.addEventListener("keydown", acted, true);
-    window.addEventListener("pointerdown", acted, true);
-    return () => {
-      window.removeEventListener("keydown", acted, true);
-      window.removeEventListener("pointerdown", acted, true);
-    };
+    const actions = ["keydown", "pointerdown", "beforeinput", "compositionstart"] as const;
+    for (const action of actions) window.addEventListener(action, acted, true);
+    return () => { for (const action of actions) window.removeEventListener(action, acted, true); };
   }, [waitingOnGrace]);
   const onPeekRef = useRef(onPeek); onPeekRef.current = onPeek;
   const onEndPeekRef = useRef(onEndPeek); onEndPeekRef.current = onEndPeek;
