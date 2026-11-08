@@ -47,7 +47,14 @@ export async function lettaPanes(panes: HerdrPane[], deps: LettaDiscovery = {}):
  * while a turn runs. Only where no report gave a status and no messages file is tracked. Returns
  * the panes whose title status changed since `last` saw them, which keeps each pane's last one.
  */
-export function lettaTitleStatus(panes: HerdrPane[], tracks: (paneId: string) => boolean, last: Map<string, AgentStatus>): { paneId: string; status: AgentStatus }[] {
+export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane_id: string; agent_status: AgentStatus }[] }, tracks: (paneId: string) => boolean, last: Map<string, AgentStatus>, newest = true): { paneId: string; status: AgentStatus }[] {
+  const { panes } = snapshot;
+  // a read older than one already applied shows what the newest said, and changes nothing it keeps
+  if (!newest) {
+    for (const pane of panes) if (pane.agent === "letta" && pane.agent_status === "unknown" && !tracks(pane.pane_id)) pane.agent_status = last.get(pane.pane_id) ?? pane.agent_status;
+    syncAgents(snapshot);
+    return [];
+  }
   const changed: { paneId: string; status: AgentStatus }[] = [];
   const titled = new Set<string>();
   for (const pane of panes) {
@@ -71,7 +78,14 @@ export function lettaTitleStatus(panes: HerdrPane[], tracks: (paneId: string) =>
     last.set(pane.pane_id, status);
   }
   for (const paneId of [...last.keys()]) if (!titled.has(paneId)) last.delete(paneId);
+  syncAgents(snapshot);
   return changed;
+}
+
+/** The snapshot's agents list says what its panes say. */
+function syncAgents(snapshot: { panes: HerdrPane[]; agents?: { pane_id: string; agent_status: AgentStatus }[] }): void {
+  const status = new Map(snapshot.panes.map((pane) => [pane.pane_id, pane.agent_status]));
+  for (const agent of snapshot.agents ?? []) agent.agent_status = status.get(agent.pane_id) ?? agent.agent_status;
 }
 
 /**

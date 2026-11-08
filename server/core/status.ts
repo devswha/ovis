@@ -149,9 +149,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onChange: (paneId, derived, _background, turn, rest) => gjcChanged(paneId, derived, turn, rest),
     onFound: (paneId) => completions.adopt(paneId, "gjc", []),
   }, omo);
-  /** Letta panes no report gives a status get it from Letta's own local messages (server/letta-status.ts) */
   /** each Letta pane's status as its own title last said it, where nothing else gave one (letta-status.ts lettaTitleStatus) */
   const lettaTitled = new Map<string, AgentStatus>();
+  /** snapshot reads in the order they began, and the newest whose titles were applied: an older read finishing late tells no turn */
+  let titleReads = 0;
+  let titleApplied = 0;
+  /** Letta panes no report gives a status get it from Letta's own local messages (server/letta-status.ts) */
   const letta = createLettaStatus({
     discover: (panes) => lettaPanes(panes),
     snapshot: omoSnapshot,
@@ -291,6 +294,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   });
   /** herdr's snapshot with OmO's and GJC's own status in it: what the completion tracker and web push are given */
   const rawSnapshot = async (): Promise<SessionSnapshot> => {
+    const titleRead = ++titleReads;
     const promptCheckpoint = options.openCodeState?.checkpoint();
     const read = opencodeAgents.beginRead();
     const snapshot = await omoSnapshot();
@@ -299,7 +303,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     for (const pane of snapshot.panes) if (letta.runs(pane.pane_id) && (pane.agent !== "letta" || pane.agent_status !== "unknown")) letta.ended(pane.pane_id);
     await letta.refresh(snapshot.panes);
     const named = letta.apply(gjc.apply(omo.apply(snapshot)));
-    for (const { paneId, status } of lettaTitleStatus(named.panes, (paneId) => letta.tracks(paneId), lettaTitled)) gjcChanged(paneId, status, true, undefined, "letta");
+    // reads overlap (the collector's, each client's): only one newer than every read applied before tells title turns
+    const newest = titleRead > titleApplied;
+    if (newest) titleApplied = titleRead;
+    for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) gjcChanged(paneId, status, true, undefined, "letta");
     const ids = new Set(named.panes.map((pane) => pane.pane_id));
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;
