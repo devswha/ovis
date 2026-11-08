@@ -89,6 +89,13 @@ it("lists 200 PCs at most, keeping a row for every Tailscale PC before config ho
   expect(candidates.at(-1)?.source).toBe("tailscale");
 });
 
+it("keeps a row for the first 32 Tailscale PCs only, as the tailnet list asks no more", async () => {
+  const peers = Array.from({ length: 40 }, (_, index) => `pc${index}`);
+  const dir = sshDir({ config: Array.from({ length: 200 }, (_, index) => `Host h${index}`).join("\n") });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(peers), resolve: async () => [] });
+  expect(candidates.map((candidate) => candidate.name)).toEqual([...Array.from({ length: 168 }, (_, index) => `h${index}`), ...peers.slice(0, 32)]);
+});
+
 it("keeps the Tailscale row of a PC whose many config hosts a skipped Include leaves undetermined", async () => {
   const boxes = Array.from({ length: 200 }, (_, index) => `Host box${index}\n  HostName 100.64.0.1`);
   // every option that routes `lab` is set before the skipped Include, so it still claims `other`

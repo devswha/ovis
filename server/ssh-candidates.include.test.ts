@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from "bun:test";
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, type PathLike, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { basename, join } from "node:path";
 
@@ -79,17 +79,92 @@ it("claims nothing for a host an Include with a token or environment variable ma
   expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
 });
 
+/**
+ * Runs `swap` right after the code under test first resolves or opens `path`: the moment between a check of a path and
+ * its use, where a folder or file on the way can be replaced by a link
+ */
+function swapAfterFirstLook(path: string, swap: () => void): () => void {
+  const [realpath, open] = [fsPromises.realpath, fsPromises.open];
+  let swapped = false;
+  const after = <T>(value: T, looked: unknown): T => {
+    if (!swapped && String(looked) === path) { swapped = true; swap(); }
+    return value;
+  };
+  const spies = [
+    // the code under test resolves paths without options
+    spyOn(fsPromises, "realpath").mockImplementation((async (looked: PathLike) => after(await realpath(looked), looked)) as typeof realpath),
+    spyOn(fsPromises, "open").mockImplementation(async (...args: Parameters<typeof open>) => after(await open(...args), args[0])),
+  ];
+  return () => { for (const spy of spies) spy.mockRestore(); };
+}
+
+/** a home whose ssh folder holds `files`, and a folder outside it whose `evil` links back to the home's `notes/leak` */
+function homeAndOutside(files: Record<string, string>): { home: string; ssh: string; outside: string } {
+  const home = sshDir({ "notes/leak": "Host leaked\n", ...Object.fromEntries(Object.entries(files).map(([name, text]) => [`.ssh/${name}`, text])) });
+  const outside = sshDir({});
+  symlinkSync(join(home, "notes", "leak"), join(outside, "evil"));
+  return { home, ssh: join(home, ".ssh"), outside };
+}
+
 it.skipIf(process.platform === "win32")("never lists a folder a wildcard Include reaches through a link out of the home folder, and claims nothing it may set", async () => {
-  const outside = sshDir({ "box.conf": "Host box\n  HostName 100.64.0.2\n" });
-  const home = sshDir({ ".ssh/conf.d/own/hosts": "Host own\n", ".ssh/config": "Include conf.d/*/*\nHost box\n  HostName 100.64.0.1\n" });
-  symlinkSync(outside, join(home, ".ssh", "conf.d", "link"));
-  const listing = spyOn(fsPromises, "readdir");
+  const { home, ssh, outside } = homeAndOutside({ "conf.d/own/hosts": "Host own\n", config: "Include conf.d/*/*\nHost box\n  HostName 100.64.0.1\n" });
+  symlinkSync(outside, join(ssh, "conf.d", "link"));
+  const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
+    ["own", undefined], ["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"],
+  ]);
+});
+
+it.skipIf(process.platform === "win32")("never lists a folder swapped for a link out of the home folder after it was checked", async () => {
+  const { home, ssh, outside } = homeAndOutside({ "conf.d/own/hosts": "Host own\n", config: "Include conf.d/*/*\n" });
+  const folder = join(ssh, "conf.d", "own");
+  const restore = swapAfterFirstLook(folder, () => { renameSync(folder, `${folder}.old`); symlinkSync(outside, folder); });
   try {
-    const candidates = await sshCandidates({ sshDir: join(home, ".ssh"), home, readStatus: async () => twoPeers });
-    const listed = listing.mock.calls.map(([dir]) => String(dir));
-    expect(listed).toEqual([realpathSync(join(home, ".ssh", "conf.d")), realpathSync(join(home, ".ssh", "conf.d", "own"))]);
-    expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
-      ["own", undefined], ["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"],
-    ]);
-  } finally { listing.mockRestore(); }
+    const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => null });
+    expect(candidates.map((candidate) => candidate.name)).toEqual([]);
+  } finally { restore(); }
+});
+
+it.skipIf(process.platform === "win32")("never reads a file swapped for a link out of the home folder after it was checked", async () => {
+  const { home, ssh, outside } = homeAndOutside({ "conf.d/x.conf": "Host own\n", config: "Include conf.d/*.conf\n" });
+  writeFileSync(join(outside, "secret"), "Host leaked\n");
+  const file = join(ssh, "conf.d", "x.conf");
+  const restore = swapAfterFirstLook(file, () => { renameSync(file, `${file}.old`); symlinkSync(join(outside, "secret"), file); });
+  try {
+    const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => null });
+    expect(candidates.map((candidate) => candidate.name)).toEqual(["own"]);
+  } finally { restore(); }
+});
+
+it("claims nothing for a later host once the folder entries every Include looks at pass their budget, matching or not", async () => {
+  const files: Record<string, string> = { config: "Include conf.d/*.conf\nInclude conf.d/*.conf\nHost box\n  HostName 100.64.0.1\n" };
+  for (let index = 0; index < 600; index++) files[`conf.d/n${String(index).padStart(3, "0")}`] = "";
+  const dir = sshDir(files);
+  const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+});
+
+it.skipIf(process.platform === "win32")("reads the files a wildcard matches in the order of the links' own names, not of their targets", async () => {
+  const home = sshDir({ "z/hosts": "Host box\n  HostName 100.64.0.1\n", "a/hosts": "Host box\n  HostName 100.64.0.2\n", ".ssh/config": "Include conf.d/*/hosts\n" });
+  mkdirSync(join(home, ".ssh", "conf.d"));
+  symlinkSync(join(home, "z"), join(home, ".ssh", "conf.d", "a"));
+  symlinkSync(join(home, "a"), join(home, ".ssh", "conf.d", "b"));
+  const candidates = await sshCandidates({ sshDir: join(home, ".ssh"), home, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.detail, candidate.tailnet])).toEqual([
+    ["box", "100.64.0.1", "box.tail.ts.net"], ["other", "other.tail.ts.net", "other.tail.ts.net"],
+  ]);
+});
+
+it.skipIf(process.platform === "win32")("claims nothing for a host a glob(3) feature not matched exactly here may set, and reads an escaped name as glob(3) does", async () => {
+  const classed = sshDir({ "conf.d/1.conf": "Host box\n  HostName 100.64.0.2\n", config: "Include conf.d/[[:digit:]].conf\nHost box\n  HostName 100.64.0.1\n" });
+  const escaped = sshDir({ "conf.d/d/x.conf": "Host esc\n", "conf.d/a*b": "Host star\n", "conf.d/axb": "Host other-file\n", config: "Include conf.d/*/x\\.conf conf.d/a\\*b\n" });
+  const fromClass = await sshCandidates({ sshDir: classed, home: classed, readStatus: async () => twoPeers });
+  expect(fromClass.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+  expect((await sshCandidates({ sshDir: escaped, home: escaped, readStatus: async () => null })).map((candidate) => candidate.name)).toEqual(["esc", "star"]);
+});
+
+it("claims nothing for a host an Include of another user's home (~user) may set", async () => {
+  const dir = sshDir({ config: "Include ~someone/.ssh/hosts\nHost box\n  HostName 100.64.0.1\n" });
+  const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
 });

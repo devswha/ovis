@@ -4,22 +4,14 @@
  * the hosts named in its own account's ssh config, and the other PCs of its own Tailscale login (reached by
  * their MagicDNS name, over SSH like any other address, never through the relay).
  */
-import { constants } from "node:fs";
-import { open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
 import { isIP } from "node:net";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { join } from "node:path";
 
 import { type ConfigHost, MAX_HOSTS, sshConfigHosts } from "./ssh-config.ts";
+import { includer, MAX_FILE_BYTES, readCapped } from "./ssh-include.ts";
 import { canonicalIp, RESOLVE_TIMEOUT_MS, resolveWithin, systemResolve } from "./ssh-lookup.ts";
 import { readTailscaleStatus, tailnetPeers } from "./tailnet-pcs.ts";
-
-/** an ssh config is a few kilobytes; past this it is not read on */
-const MAX_FILE_BYTES = 256 * 1024;
-/** files every Include of one config together reads at most */
-const MAX_INCLUDED_FILES = 64;
-/** bytes every Include of one config together reads at most */
-const MAX_INCLUDED_BYTES = 1024 * 1024;
 
 export interface SshCandidate {
   /** the Host alias, or the Tailscale machine name */
@@ -44,102 +36,6 @@ export interface SshCandidatesOptions {
   resolve?: (host: string) => Promise<string[]>;
   /** how long the list waits on `resolve` for every name together */
   resolveTimeoutMs?: number;
-}
-
-/**
- * A regular file's text when it is at most `cap` bytes; null for anything else (a FIFO, a device, a folder, a larger
- * file, an error). Opened without blocking and checked on the open handle, so a FIFO never holds the list and
- * `/dev/zero` is never read.
- */
-async function readCapped(path: string, cap: number): Promise<string | null> {
-  let handle: FileHandle | undefined;
-  try {
-    handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > cap) return null;
-    const buffer = Buffer.alloc(stat.size);
-    const { bytesRead } = await handle.read(buffer, 0, stat.size, 0);
-    return buffer.subarray(0, bytesRead).toString("utf8");
-  } catch { return null; } finally { await handle?.close(); }
-}
-
-const inside = (path: string, root: string): boolean => {
-  const rest = relative(root, path);
-  return rest !== ".." && !rest.startsWith(`..${sep}`) && !isAbsolute(rest);
-};
-
-/**
- * The files an Include pattern names: relative to `sshDir` as ssh reads the user config, `~` for the home folder.
- * Only files that really are inside the home or ssh folder are read (after links and `..`), since their hosts reach
- * the response; and every Include of one config shares one budget of files and bytes. A file ssh would read that is
- * left unread (out of those folders, past the budget, not a regular file of at most the size cap) comes back as null,
- * so what it might set stays unknown; a file that is not there is nothing, as for ssh.
- */
-function includer(sshDir: string, home: string): (pattern: string) => Promise<(string | null)[]> {
-  const roots = Promise.all([sshDir, home].map((root) => realpath(root).catch(() => null)));
-  const budget = { files: MAX_INCLUDED_FILES, bytes: MAX_INCLUDED_BYTES };
-  return async (pattern) => {
-    if (budget.files <= 0 || budget.bytes <= 0) return [null];
-    // ssh expands `%` tokens and `${VAR}` in an Include, which this offline reading does not: what it names stays unread
-    if (/%|\$\{/.test(pattern)) return [null];
-    const allowed = (await roots).filter((root): root is string => root !== null);
-    // ssh's glob(3) has no `**`: it is one `*`, which also keeps a scan to the pattern's own depth
-    const expanded = (pattern.startsWith("~/") ? join(home, pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern)).replace(/\*{2,}/g, "*");
-    const paths: string[] = [];
-    // a scan cut short may have missed a file sorted before the ones it found; a read cut short misses only later ones
-    // a folder left unlisted (out of the home or ssh folder) may hold files sorted anywhere among the ones found
-    let [scanCut, refused, truncated] = [false, false, false];
-    const wildcard = expanded.search(/[*?[]/);
-    if (wildcard >= 0) {
-      // the folder before the first wildcard is scanned only inside the home or ssh folder
-      const literal = expanded.slice(0, wildcard);
-      const prefix = literal.slice(0, Math.max(literal.lastIndexOf("/"), literal.lastIndexOf(sep)) + 1);
-      const base = await realpath(prefix || ".").catch(() => null);
-      if (base === null) return [];
-      if (!allowed.some((root) => inside(base, root))) return [null];
-      // walked one component at a time, links followed as ssh's glob(3) does (a dotfiles repo linked in), but a folder is
-      // listed or gone through only when it really is inside the home or ssh folder; each file is still read only when
-      // its real target is, below, and one that is not comes back as null. Every entry the walk takes counts against the
-      // file budget, so a wide tree costs a bounded scan
-      let [level, taken] = [[base], 0];
-      const components = expanded.slice(prefix.length).split(sep === "/" ? "/" : /[\\/]/).filter((part) => part !== "");
-      for (const [index, component] of components.entries()) {
-        const glob = /[*?[]/.test(component) ? new Bun.Glob(component) : null;
-        const next: string[] = [];
-        for (const dir of level) {
-          const real = await realpath(dir).catch(() => null);
-          if (real === null) continue;
-          if (!allowed.some((root) => inside(real, root))) { refused = true; continue; }
-          // glob(3) matches a leading dot only when the pattern spells it
-          const names = glob === null ? [component] : (await readdir(real).catch(() => [])).filter((name) => (!name.startsWith(".") || component.startsWith(".")) && glob.match(name)).sort();
-          for (const name of names) {
-            if (taken >= budget.files) { scanCut = true; break; }
-            taken++;
-            next.push(join(real, name));
-          }
-          if (scanCut) break;
-        }
-        level = next;
-        // a walk cut short keeps the files it found, but goes no deeper
-        if (index < components.length - 1) { if (scanCut) break; continue; }
-        // ssh reads the files glob(3) returns; a folder among them is no config
-        const folders = await Promise.all(level.map((path) => stat(path).then((found) => found.isDirectory(), () => false)));
-        paths.push(...level.filter((_, at) => !folders[at]).sort());
-      }
-    } else paths.push(expanded);
-    const texts: (string | null)[] = [];
-    for (const path of paths) {
-      if (budget.files <= 0 || budget.bytes <= 0) { truncated = true; break; }
-      const real = await realpath(path).catch(() => null);
-      if (real === null) continue;
-      if (!allowed.some((root) => inside(real, root))) { texts.push(null); continue; }
-      budget.files--;
-      const text = await readCapped(real, Math.min(MAX_FILE_BYTES, budget.bytes));
-      if (text !== null) budget.bytes -= Buffer.byteLength(text);
-      texts.push(text);
-    }
-    return [...(scanCut || refused ? [null] : []), ...texts, ...(truncated ? [null] : [])];
-  };
 }
 
 /** the listing each options object has in flight, so concurrent requests share one */
