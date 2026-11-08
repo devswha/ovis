@@ -65,6 +65,8 @@ export function RelayPcTable({
 
   const listedRow = (row: DashboardRow): boolean => mode === "account" && row.listed;
   const stateHeadline = (row: DashboardRow, updating: boolean): string => {
+    if (mode === "account" && row.enrollment === "pending") return t("Adding it to your account…");
+    if (mode === "account" && row.enrollment === "failed") return t("Ready · not in the account yet");
     if (updating) return t("Updating");
     switch (liveState(row)) {
       case "needs-approval": return t("Needs approval");
@@ -101,6 +103,7 @@ export function RelayPcTable({
         onClick={(event) => { event.stopPropagation(); if (onOpenPc) { event.preventDefault(); onOpenPc(row); } }}>{label}</a>
     );
     const detailsBtn = <button type="button" className="btn relay-pc-action-btn" data-pc-action="details" onClick={(e) => { stop(e); onSelect(row.server_id); }}>{t("Details")}</button>;
+    if (mode === "account" && row.enrollment === "failed") return openLink("open", t("Try again"));
     switch (row.state) {
       case "paired": return openLink("open", t("Open"));
       case "needs-update": return row.paired ? openLink("update", t("Update")) : detailsBtn;

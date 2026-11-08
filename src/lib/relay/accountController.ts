@@ -15,7 +15,7 @@ import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
 import { t } from "../i18n.ts";
 import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
-import { indexedDeviceStore } from "./device.ts";
+import { indexedDeviceStore, type SavedDevice, type EnrollmentState } from "./device.ts";
 import { offerOf } from "./shellState.ts";
 import type { AccountView } from "./shellState.ts";
 import type { RelayShellMount } from "./shell.tsx";
@@ -148,17 +148,24 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     signal.throwIfAborted();
     return key ? { accountKey: key, intent } : {};
   };
-  const enroll = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<void> => {
-    if (accountService === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return;
+  const enroll = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | "complete"> => {
+    if (accountService === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
     const session = await account.session();
-    if (session === undefined) return;
+    if (session === undefined) return "local";
+    const saved = await store.get(serverId);
+    if (saved === undefined || saved.device_id === null) return "local";
+    const record = async (state: EnrollmentState): Promise<void> => {
+      await store.update(serverId, (current) => ({ ...(current ?? saved), account_enrollment: { account: session.account, state } } satisfies SavedDevice));
+      await refresh();
+    };
+    if (fresh) await record("pending");
     // a session that just paired has not proved its key to the PC, which then refuses a link and
     // keeps an introduction from it: the account's steps take a connection of their own, signed in
     let own: RelayTransport | null = null;
     try {
       const key = await accountStore.key();
       let device = await store.get(serverId);
-      if (device === undefined || device.device_id === null) return;
+      if (device === undefined || device.device_id === null) return "local";
       if (fresh) own = await open(offerOf(device), { store, label });
       const through = own ?? opened;
       const fetch = (path: string, init?: RequestInit) => through.fetch(path, init);
@@ -175,7 +182,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if (linking) void renewed.then(() => window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT)));
       }
       // a PC of another account is not this account's to list or introduce from
-      if (device.public_spki !== key.public_spki || (!linking && status.account !== session.account)) return;
+      if (device.public_spki !== key.public_spki || (!linking && status.account !== session.account)) throw new AccountPcError(409, "enrolling");
       // the account's removals this PC holds, checked and kept as signed, for a PC this client enrolls later (#2956)
       if (!linking) await keepRemovals({ store: accountStore, account: session.account, removals: status.removals });
       // the PC lists this row as a member: only now does it count as in the account here
@@ -223,6 +230,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if ((await takeIntroduction({ fetch, key, label, store, relay: device.relay })).length > 0 || Date.now() >= deadline) break;
         await wait(INTRODUCTION_POLL_MS);
       }
+      await record("complete");
+      return "complete";
+    } catch (error) {
+      await record("failed");
+      throw error;
     } finally {
       own?.close();
     }

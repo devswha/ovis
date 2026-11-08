@@ -128,7 +128,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
   return (
     <>
       <div className="visually-hidden" role="status">{announcedStatus}</div>
-      {state.kind === "ready" && onOpenPc && <ReadyCheckpoint open={onOpenPc} cancel={onCancel} />}
+      {state.kind === "ready" && onOpenPc && <ReadyCheckpoint open={onOpenPc} cancel={onCancel} state={state} retry={onRetry} />}
       {signInFirst && (
         <>
           <h1 className="relay-shell-title relay-shell-signin-title">{t("Sign in to Ovis")}</h1>

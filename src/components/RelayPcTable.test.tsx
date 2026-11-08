@@ -214,6 +214,16 @@ describe("RelayPcTable", () => {
     ]);
   });
 
+  it.each([false, true])("keeps failed enrollment visible with a retry route on phone=%s", async (phone) => {
+    phoneMatches = phone;
+    const pc = makePc(IDS.local, "Paired desk", "paired", { listed: false, linked: false, enrollment: "failed" });
+    await mount(buildProps([pc]));
+    const root = rootOf(renderer);
+    expect(textOf(root)).toContain("Ready · not in the account yet");
+    const retry = root.find((node) => node.type === "a" && textOf(node) === "Try again");
+    expect(retry.props.href).toBe(`/s/${IDS.local}/`);
+  });
+
   it("offers exactly one neutral next action per row: Open, Add, Join, Update, or Details (never btn-primary)", () => {
     const html = renderHtml(buildProps());
     expect(html).not.toContain("btn-primary");
