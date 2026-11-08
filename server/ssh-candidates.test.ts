@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -198,10 +198,65 @@ it("claims the Tailscale PC a config host's name resolves to, not the one it is 
   ]);
 });
 
-it("matches an equivalent spelling of a Tailscale IPv6 address", async () => {
-  const dir = sshDir({ config: "Host six\n  HostName FD7A:115C:A1E0:0:0:0:0:2\n" });
-  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve: async () => { throw new Error("an address is not looked up"); } });
-  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["six", "other.tail.ts.net"], ["box", "box.tail.ts.net"]]);
+it("matches an equivalent spelling of a Tailscale address without looking it up, and never across zone ids", async () => {
+  const dir = sshDir({ config: "Host six\n  HostName FD7A:115C:A1E0:0:0:0:0:2\nHost mapped\n  HostName ::ffff:100.64.0.1\nHost zoned\n  HostName fe80::1%eth0\n" });
+  const tailnet = JSON.stringify({ BackendState: "Running", Self: { DNSName: "self.tail.ts.net.", UserID: 1 }, Peer: {
+    a: { DNSName: "box.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["100.64.0.1"] },
+    b: { DNSName: "other.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["fd7a:115c:a1e0::2"] },
+    c: { DNSName: "link.tail.ts.net.", UserID: 1, Online: true, OS: "linux", TailscaleIPs: ["fe80::1%eth1"] },
+  } });
+  const looked: string[] = [];
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => tailnet, resolve: async (host) => { looked.push(host); return []; } });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
+    ["six", "other.tail.ts.net"], ["mapped", "box.tail.ts.net"], ["zoned", undefined], ["link", "link.tail.ts.net"],
+  ]);
+  expect(looked).toEqual([]);
+});
+
+it("claims a PC only when every address a name resolves to is that PC's, whatever the order of answers or PCs", async () => {
+  const dir = sshDir({ config: "Host mixed\nHost swapped\nHost half\nHost both\n" });
+  const resolve = resolver({ mixed: ["100.64.0.1", "100.64.0.2"], swapped: ["100.64.0.2", "100.64.0.1"], half: ["100.64.0.2", "192.168.1.9"], both: ["fd7a:115c:a1e0::2", "100.64.0.2"] });
+  const reversed = JSON.stringify({ ...JSON.parse(twoPeers), Peer: { b: JSON.parse(twoPeers).Peer.b, a: JSON.parse(twoPeers).Peer.a } });
+  for (const tailnet of [twoPeers, reversed]) {
+    const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => tailnet, resolve });
+    expect(candidates.filter((candidate) => candidate.source === "ssh_config").map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
+      ["mixed", undefined], ["swapped", undefined], ["half", undefined], ["both", "other.tail.ts.net"],
+    ]);
+    expect(candidates.filter((candidate) => candidate.source === "tailscale").map((candidate) => candidate.name)).toEqual(["box"]);
+  }
+});
+
+it("looks up a HostName as written, an absolute one with its trailing dot", async () => {
+  const dir = sshDir({ config: "Host abs\n  HostName box.example.\n" });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve: resolver({ "box.example.": ["100.64.0.2"], "box.example": ["100.64.0.1"] }) });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["abs", "other.tail.ts.net"], ["box", "box.tail.ts.net"]]);
+});
+
+it("shares one listing between concurrent requests and keeps the lookups in flight bounded across listings", async () => {
+  const dir = sshDir({ config: Array.from({ length: 40 }, (_, index) => `Host n${index}`).join("\n") });
+  let statusReads = 0;
+  let lookups = 0;
+  const options = { sshDir: dir, readStatus: async () => { statusReads++; return twoPeers; }, resolve: () => { lookups++; return new Promise<string[]>(() => {}); }, resolveTimeoutMs: 0 };
+  await Promise.all([sshCandidates(options), sshCandidates(options)]);
+  expect(statusReads).toBe(1);
+  const first = lookups;
+  for (let round = 0; round < 4; round++) await sshCandidates(options);
+  expect(statusReads).toBe(5);
+  expect(first).toBeLessThanOrEqual(16);
+  expect(lookups).toBe(first);
+});
+
+it("weighs each listed host against the HostName lines once, not every alias of a huge config", async () => {
+  const config = [
+    ...Array.from({ length: 400 }, (_, index) => `Host *.none${index}\n  HostName x`),
+    ...Array.from({ length: 3000 }, (_, index) => `Host h${index}`),
+  ].join("\n");
+  const lowered = spyOn(String.prototype, "toLowerCase");
+  try {
+    const hosts = await sshConfigHosts(config);
+    expect(hosts).toHaveLength(200);
+    expect(lowered.mock.calls.length).toBeLessThan(200_000);
+  } finally { lowered.mockRestore(); }
 });
 
 it("stops waiting on a lookup at the deadline and falls back to the name", async () => {

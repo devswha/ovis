@@ -24,6 +24,8 @@ const MAX_INCLUDED_BYTES = 1024 * 1024;
 const MAX_HOSTS = 200;
 /** how long the list waits on every name lookup together; a name still unanswered then is matched by its spelling */
 const RESOLVE_TIMEOUT_MS = 1500;
+/** name lookups in flight at most across every listing, so repeated listings never pile up stuck lookups */
+const MAX_LOOKUPS = 16;
 
 export interface SshCandidate {
   /** the Host alias, or the Tailscale machine name */
@@ -148,13 +150,15 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
   const hosts: { alias: string; hostname: string | null; user: string | null }[] = [];
   for (const block of blocks) {
     for (const alias of block.aliases) {
+      // the list stops at its limit, so a huge config costs its HostName lines once per listed host at most
+      if (hosts.length >= MAX_HOSTS) return hosts;
       if (seen.has(alias)) continue;
       seen.add(alias);
       const hostname = hostnames.find((line) => appliesTo(line.block, alias))?.value.replace(/%([%h])/g, (_, token: string) => token === "h" ? alias : "%");
       hosts.push({ alias, hostname: hostname ?? null, user: block.user ?? null });
     }
   }
-  return hosts.slice(0, MAX_HOSTS);
+  return hosts;
 }
 
 /**
@@ -220,21 +224,46 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<st
   };
 }
 
-/** one spelling per address, so `FD7A:0:0::1` is `fd7a::1` */
+/**
+ * One spelling per address: `FD7A:0:0::1` is `fd7a::1` and `::ffff:100.64.0.1` is `100.64.0.1`. A zone id stays, so
+ * the same address on two links never compares equal.
+ */
 const canonicalIp = (ip: string): string => {
-  const address = ip.split("%")[0]!;
-  return isIP(address) === 6 ? new URL(`http://[${address}]`).hostname.slice(1, -1) : address;
+  const zoneAt = ip.indexOf("%");
+  const [address, zone] = zoneAt < 0 ? [ip, ""] : [ip.slice(0, zoneAt), ip.slice(zoneAt)];
+  if (isIP(address) !== 6) return ip;
+  const canonical = new URL(`http://[${address}]`).hostname.slice(1, -1);
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+  if (mapped === null) return canonical + zone;
+  const [high, low] = [Number.parseInt(mapped[1]!, 16), Number.parseInt(mapped[2]!, 16)];
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}${zone}`;
 };
 
 const systemResolve = async (host: string): Promise<string[]> => (await Bun.dns.lookup(host, { backend: "system" })).map(({ address }) => address);
 
+type Resolve = (host: string) => Promise<string[]>;
+/** each resolver's lookups still in flight by name; a late one stays here until it answers, holding its place */
+const inFlight = new WeakMap<Resolve, Map<string, Promise<string[]>>>();
+
+/** the lookup of `name`: the one already in flight, a new one while fewer than MAX_LOOKUPS are, else null */
+function lookupOnce(resolve: Resolve, name: string): Promise<string[]> | null {
+  const pending = inFlight.get(resolve) ?? new Map<string, Promise<string[]>>();
+  inFlight.set(resolve, pending);
+  const known = pending.get(name);
+  if (known !== undefined) return known;
+  if (pending.size >= MAX_LOOKUPS) return null;
+  const lookup = Promise.resolve().then(() => resolve(name)).catch(() => []).finally(() => pending.delete(name));
+  pending.set(name, lookup);
+  return lookup;
+}
+
 /** the addresses each name resolves to, waiting `timeoutMs` at most for all of them; a name that fails or is late is left out */
-async function resolveWithin(names: string[], resolve: (host: string) => Promise<string[]>, timeoutMs: number): Promise<Map<string, string[]>> {
+async function resolveWithin(names: string[], resolve: Resolve, timeoutMs: number): Promise<Map<string, string[]>> {
   const found = new Map<string, string[]>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<void>((done) => { timer = setTimeout(done, timeoutMs); });
   const lookups = names.map(async (name) => {
-    const addresses = await resolve(name).catch(() => []);
+    const addresses = await (lookupOnce(resolve, name) ?? []);
     if (addresses.length > 0) found.set(name, addresses.map(canonicalIp));
   });
   await Promise.race([Promise.all(lookups), deadline]);
@@ -242,27 +271,44 @@ async function resolveWithin(names: string[], resolve: (host: string) => Promise
   return new Map(found);
 }
 
+/** the listing each options object has in flight, so concurrent requests share one */
+const listings = new WeakMap<SshCandidatesOptions, Promise<SshCandidate[]>>();
+
 /**
  * The SSH tab's list: the ssh config's hosts, then the Tailscale PCs no config host already names (by alias,
- * HostName or MagicDNS name). Either source missing leaves the other.
+ * HostName or MagicDNS name). Either source missing leaves the other. Concurrent calls with the same options share
+ * one listing.
  */
-export async function sshCandidates(options: SshCandidatesOptions = {}): Promise<SshCandidate[]> {
+export function sshCandidates(options: SshCandidatesOptions = {}): Promise<SshCandidate[]> {
+  const running = listings.get(options);
+  if (running !== undefined) return running;
+  const listing = listCandidates(options).finally(() => listings.delete(options));
+  listings.set(options, listing);
+  return listing;
+}
+
+async function listCandidates(options: SshCandidatesOptions): Promise<SshCandidate[]> {
   const sshDir = options.sshDir ?? join(homedir(), ".ssh");
   const [config, status] = await Promise.all([readCapped(join(sshDir, "config"), MAX_FILE_BYTES), (options.readStatus ?? readTailscaleStatus)()]);
   const hosts = config === null ? [] : await sshConfigHosts(config, includer(sshDir, options.home ?? homedir()));
   const peers = tailnetPeers(status);
   // a config host is the Tailscale PC it reaches: its HostName when it sets one, else its alias, as ssh resolves it.
-  // Then that row stands for it. An address, or the addresses a name resolves to, decide; a name only when its lookup
-  // fails or is late. An alias alone never claims a PC its HostName leads away from: one kept from before a rename
-  // names a PC it no longer reaches
-  const targetOf = (alias: string, hostname: string | null) => (hostname ?? alias).toLowerCase().replace(/\.$/, "");
-  const names = peers.length === 0 ? [] : [...new Set(hosts.map(({ alias, hostname }) => targetOf(alias, hostname)).filter((target) => isIP(target) === 0))];
+  // Then that row stands for it. An address, or the addresses a name resolves to, decide: all of them that PC's, else
+  // none (answers naming two PCs, or a PC and an address off the tailnet, claim nothing); a name only when its lookup
+  // fails or is late. A name is looked up as written (`box.example.` stays absolute). An alias alone never claims a
+  // PC its HostName leads away from: one kept from before a rename names a PC it no longer reaches
+  const names = peers.length === 0 ? [] : [...new Set(hosts.map(({ alias, hostname }) => hostname ?? alias).filter((name) => isIP(name) === 0))];
   const resolved = await resolveWithin(names, options.resolve ?? systemResolve, options.resolveTimeoutMs ?? RESOLVE_TIMEOUT_MS);
-  const peerIps = peers.map((peer) => ({ peer, ips: new Set(peer.ips.map(canonicalIp)) }));
+  const peerByIp = new Map<string, (typeof peers)[number]>();
+  for (const peer of peers) for (const ip of peer.ips) if (!peerByIp.has(canonicalIp(ip))) peerByIp.set(canonicalIp(ip), peer);
   const peerOf = (alias: string, hostname: string | null) => {
-    const target = targetOf(alias, hostname);
-    const addresses = isIP(target) === 0 ? resolved.get(target) : [canonicalIp(target)];
-    if (addresses !== undefined) return peerIps.find(({ ips }) => addresses.some((address) => ips.has(address)))?.peer;
+    const written = hostname ?? alias;
+    const addresses = isIP(written) === 0 ? resolved.get(written) : [canonicalIp(written)];
+    if (addresses !== undefined) {
+      const owners = new Set(addresses.map((address) => peerByIp.get(canonicalIp(address))));
+      return owners.size === 1 ? [...owners][0] : undefined;
+    }
+    const target = written.toLowerCase().replace(/\.$/, "");
     return peers.find(({ name, dnsName }) => target === name.toLowerCase() || target === dnsName.toLowerCase());
   };
   const claimed = new Set<string>();
