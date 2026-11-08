@@ -214,9 +214,7 @@ const defaultStoreRoots = (agentDir: string): StoreRoots =>
 
 /**
  * Validate the shared native breadcrumb under the store's terminal sessions (an agent directory's
- * own, or the roots given) and reject stale leftovers. omp skips rewriting a breadcrumb whose content
- * is unchanged, so one `omp -c` leaves from an earlier run still counts once its session is written
- * during this process's lifetime.
+ * own, or the roots given) and reject stale leftovers.
  */
 export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, terminalId: string, startedAt: number): string | null {
   if (!/^(?:pts-\d+|tty[\w-]+|tmux-%\d+)$/.test(terminalId) || !Number.isFinite(startedAt)) return null;
@@ -224,16 +222,14 @@ export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, term
   try {
     const marker = join(roots.terminalSessions, terminalId);
     const stat = statSync(marker);
-    if (!stat.isFile() || stat.size > 8192) return null;
-    const markerStale = stat.mtimeMs < startedAt - 1000;
+    if (!stat.isFile() || stat.size > 8192 || stat.mtimeMs < startedAt - 1000) return null;
     const [savedCwd, savedPath] = readFileSync(marker, "utf8").split("\n");
     if (!savedCwd || !savedPath || realpathSync(savedCwd) !== realpathSync(cwd)) return null;
     // omp writes a relative session directory as given, relative to a directory nothing proves
     if (!nodePath.isAbsolute(savedPath)) return null;
     const root = realpathSync(roots.sessions);
     const saved = realpathSync(savedPath);
-    const savedStat = statSync(saved);
-    if (!savedStat.isFile() || (markerStale && savedStat.mtimeMs < startedAt - 1000)) return null;
+    if (!statSync(saved).isFile()) return null;
     const path = gjcSessionFile(root, saved, nodePath, roots.depth);
     if (!path) return null;
     const headerCwd = transcriptCwd(path);
@@ -248,8 +244,10 @@ export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, term
  * active session; never infer ownership from cwd or session recency. `path` is null unless
  * exactly one transcript qualifies; `found` says how many did. `environOf` supplies a process's
  * environment already read elsewhere, so none is read here; undefined for a pid reads it.
+ * `openFilesOf` supplies the files a process holds open where there is no /proc (lsof on macOS).
  */
-export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly number[], environOf?: (pid: number) => readonly string[] | null | undefined): { path: string | null; found: number } {
+export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly number[], probe: HeldProbe = {}): { path: string | null; found: number } {
+  const { environOf, openFilesOf } = probe;
   let root: string;
   try { root = realpathSync(roots.sessions); }
   catch { return { path: null, found: 0 }; }
@@ -261,11 +259,12 @@ export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly nu
       const path = terminalBreadcrumb(roots, cwd, terminal.id, terminal.startedAt);
       if (path) breadcrumbs.add(path);
     }
-    let fds: string[] = [];
-    try { fds = readdirSync(`/proc/${pid}/fd`); } catch { /* macOS uses the native breadcrumb */ }
-    for (const fd of fds) {
+    let held: readonly string[] = [];
+    if (openFilesOf) held = openFilesOf(pid);
+    else try { held = readdirSync(`/proc/${pid}/fd`).map((fd) => `/proc/${pid}/fd/${fd}`); } catch { /* no /proc: the native breadcrumb */ }
+    for (const entry of held) {
       try {
-        const file = realpathSync(readlinkSync(`/proc/${pid}/fd/${fd}`));
+        const file = realpathSync(openFilesOf ? entry : readlinkSync(entry));
         const target = statSync(file).isFile() ? gjcSessionFile(root, file, nodePath, roots.depth) : null;
         if (target && transcriptCwd(target) === cwd) open.add(target);
       } catch { /* closed, deleted or unreadable descriptor */ }
@@ -273,6 +272,12 @@ export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly nu
   }
   const candidates = open.size > 0 ? open : breadcrumbs;
   return { path: candidates.size === 1 ? [...candidates][0]! : null, found: candidates.size };
+}
+
+/** What heldTranscript reads of a process that its caller already has. */
+export interface HeldProbe {
+  environOf?: (pid: number) => readonly string[] | null | undefined;
+  openFilesOf?: (pid: number) => readonly string[];
 }
 
 type GjcPaneProcessInfo = { process_info?: { shell_pid?: unknown; foreground_processes?: { pid?: unknown; argv?: unknown }[] } };

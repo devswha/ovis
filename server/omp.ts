@@ -292,6 +292,29 @@ export interface OmpRoute {
   environOf: (pid: number) => readonly string[] | undefined;
   /** The absolute `--cwd` every omp process in the pane started with, or null (ompLaunchDir). */
   launchDir: string | null;
+  /** On macOS, the files each process holds open (darwinOpenFiles); elsewhere /proc is read. */
+  openFilesOf?: (pid: number) => readonly string[];
+}
+
+/**
+ * The files each process holds open on macOS, from one lsof run (`-Fpn`: a `p` line per process,
+ * then an `n` line per file). omp keeps its session file open from its first write, which is the
+ * only proof of the session an `omp -c` continues: omp leaves an unchanged breadcrumb as it was
+ * (#3365). Empty when lsof fails or is cut off, so nothing is proved from a partial listing.
+ */
+async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, string[]>> {
+  const open = new Map<number, string[]>();
+  try {
+    const child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", pids.join(","), "-Fpn"], { stdout: "pipe", stderr: "ignore", timeout: 3000 });
+    const text = await new Response(child.stdout).text();
+    if (await child.exited !== 0) return open;
+    let files: string[] | undefined;
+    for (const line of text.split("\n")) {
+      if (line.startsWith("p")) open.set(Number(line.slice(1)), files = []);
+      else if (line.startsWith("n")) files?.push(line.slice(1));
+    }
+  } catch { open.clear(); }
+  return open;
 }
 
 /**
@@ -339,7 +362,12 @@ export async function ompPaneRoute(paneId: string, known?: ProcessInfo | null): 
   if (unread) return "unproved";
   if (layout === null) return null;
   const [launchDir] = launchDirs;
-  return { layout, pids, environOf: (pid) => environs.get(pid), launchDir: launchDirs.size === 1 ? launchDir ?? null : null };
+  const route: OmpRoute = { layout, pids, environOf: (pid) => environs.get(pid), launchDir: launchDirs.size === 1 ? launchDir ?? null : null };
+  if (process.platform === "darwin") {
+    const open = await darwinOpenFiles(pids);
+    route.openFilesOf = (pid) => open.get(pid) ?? [];
+  }
+  return route;
 }
 
 /**
@@ -362,9 +390,9 @@ const sameDirectory = (a: string, b: string): boolean => {
  * not omp's own, or none).
  */
 export function ompRouteTranscript(route: OmpRoute, cwd: string): string | null {
-  const { layout, pids, environOf, launchDir } = route;
-  const live = heldTranscript(layout, cwd, pids, environOf);
-  const path = live.found > 0 ? live.path : launchDir && launchDir !== cwd ? heldTranscript(layout, launchDir, pids, environOf).path : null;
+  const { layout, pids, launchDir } = route;
+  const live = heldTranscript(layout, cwd, pids, route);
+  const path = live.found > 0 ? live.path : launchDir && launchDir !== cwd ? heldTranscript(layout, launchDir, pids, route).path : null;
   return path !== null && ompSessionVersion(transcriptHeader(path)?.version) ? path : null;
 }
 

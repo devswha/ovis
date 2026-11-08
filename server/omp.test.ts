@@ -7,6 +7,8 @@ import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 
 import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import * as herdr from "./herdr/client.ts";
+import { darwinProcess } from "./claude-store.ts";
+import * as darwinKernel from "./darwin-process.ts";
 import { terminalBreadcrumb } from "./gjc-runtime.ts";
 import { isOmpHelper, isOmpProcess, ompAgentDir, ompHeldTranscript, ompLaunch, ompLaunchDir, ompLoadsIntegration, ompStoreLayout } from "./omp.ts";
 import layouts from "./fixtures/omp-18.8.7-store-layouts.json";
@@ -567,6 +569,47 @@ describe("an omp pane's chat", () => {
         ]);
       }
     } finally { child.kill(); await child.exited; }
+  });
+
+  // #3365: omp leaves a breadcrumb whose content is unchanged alone, so `omp -c` keeps the earlier run's
+  it("on macOS an omp -c is proved by the session it holds open, never by the breadcrumb's session being written", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const pid = 99_999_999; // above any pid_max: nothing of this host is read for it
+    const startedAt = Date.now() - 60_000;
+    const terminal = spyOn(darwinKernel, "darwinTerminal").mockImplementation((asked) => asked === pid ? { tty: "ttys000", startedAt } : null);
+    const environment = spyOn(darwinProcess, "environment").mockReturnValue(`HOME=${home}\0`);
+    let listing: string | null = "";
+    const lsofCalls: string[][] = [];
+    const spawned = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => {
+      lsofCalls.push(argv);
+      return { stdout: new Response(listing ?? "").body, exited: Promise.resolve(listing === null ? 1 : 0), kill: () => {} };
+    }) as unknown as typeof Bun.spawn);
+    try {
+      const continued = storeTranscript(pane.cwd!), own = storeTranscript(pane.cwd!, "2026-10-02_own.jsonl");
+      // the breadcrumb an earlier omp in this terminal left; the session it names is written after this start
+      const marker = join(home, ".omp/agent/terminal-sessions/ttys000");
+      mkdirSync(join(home, ".omp/agent/terminal-sessions"));
+      writeFileSync(marker, `${pane.cwd}\n${continued}\n`);
+      fs.utimesSync(marker, (startedAt - 3_600_000) / 1000, (startedAt - 3_600_000) / 1000);
+      processes = [{ pid, name: "omp", argv: ["omp", "-c"] }];
+      // `omp -c` holds the session it continues open from its first write
+      listing = `p${pid}\nfcwd\nn${pane.cwd}\nf23\nn${continued}\n`;
+      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBe(continued);
+      // another omp appending to the breadcrumb's session proves nothing for this process
+      listing = `p${pid}\nfcwd\nn${pane.cwd}\n`;
+      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBeNull();
+      // nor does it once this process writes a session of its own
+      listing = `p${pid}\nf23\nn${own}\n`;
+      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBe(own);
+      // no listing proves nothing
+      listing = null;
+      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!)).toBeNull();
+      expect(lsofCalls).toEqual(Array(4).fill(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(pid), "-Fpn"]));
+    } finally {
+      spawned.mockRestore(); environment.mockRestore(); terminal.mockRestore();
+      Object.defineProperty(process, "platform", platform);
+    }
   });
 
   for (const [profile, includeArgv] of [["personal", true], [null, false], ["personal", false]] as const) it.skipIf(process.platform !== "linux")(`reads the open ${profile ?? "default"} omp transcript when herdr ${includeArgv ? "supplies" : "omits"} argv`, async () => {
