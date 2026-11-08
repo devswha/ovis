@@ -13,5 +13,8 @@
 - An Include with a wildcard now reads a linked file (a dotfiles repo) as ssh does, when the file it
   links to is in the home folder. A link that leads outside it leaves the hosts it could change
   without a claimed PC.
+- The SSH list reads ProxyCommand and ProxyJump, quoted `Match exec` commands and `Match final`
+  as ssh does. It claims no PC for a host that an Include with a `%` token or `${VAR}`, a
+  CanonicalizeHostname, or an Include wildcard matching more files than it reads could change.
 - A long Host pattern in the ssh config, or one Host alias repeated thousands of times, no longer
   stalls the server while the SSH list is read.

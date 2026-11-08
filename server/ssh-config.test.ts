@@ -112,6 +112,32 @@ it("claims nothing for a host whose final pass an unread Include may ask for, ev
   ]);
 });
 
+it("splits a Match exec command as ssh does, escaped and single quotes included, so its words weigh no condition", async () => {
+  for (const exec of ["\"test \\\" host nomatch \\\"\"", "'test host nomatch'"]) {
+    expect(await sshConfigHosts(`Host box\nMatch exec ${exec}\n  HostName 100.64.0.2\nHost *\n  HostName 100.64.0.1\n`))
+      .toEqual([{ alias: "box", hostname: null, user: null, undetermined: true }]);
+  }
+});
+
+it("takes ProxyCommand and ProxyJump as ssh does: a ProxyJump after a ProxyCommand, `none` too, is ignored, not the other way round", async () => {
+  expect(await sshConfigHosts("Host box\n  ProxyCommand none\n  ProxyJump bastion\n  HostName 100.64.0.1\nHost cmd\n  ProxyJump none\n  ProxyCommand nc %h %p\n")).toEqual([
+    { alias: "box", hostname: "100.64.0.1", user: null }, { alias: "cmd", hostname: null, user: null, proxied: true },
+  ]);
+});
+
+it("leaves a host undetermined while CanonicalizeHostname may change its name, even with every route option set", async () => {
+  expect(await sshConfigHosts("Host box\n  CanonicalizeHostname yes\n  HostName box\n  AddressFamily inet\n  ProxyCommand none\n  ProxyJump none\n"))
+    .toEqual([{ alias: "box", hostname: "box", user: null, addressFamily: "inet", undetermined: true }]);
+});
+
+it("keeps the first pass's name on the final pass: a HostName under `Match final` changes nothing, as in ssh", async () => {
+  expect(await sshConfigHosts("Host box\nMatch final\n  HostName 100.64.0.1\n")).toEqual([{ alias: "box", hostname: null, user: null }]);
+});
+
+it("lists a host whose included block applies only on the final pass", async () => {
+  expect(await sshConfigHosts("Match final\n  Include inc\n", async () => ["Host box\n  User bob\n"])).toEqual([{ alias: "box", hostname: null, user: "bob" }]);
+});
+
 it("stops a line at a word that starts a comment", async () => {
   expect(await sshConfigHosts("Host lab # work machine\n  HostName lab.example # the desk\n")).toEqual([{ alias: "lab", hostname: "lab.example", user: null }]);
 });

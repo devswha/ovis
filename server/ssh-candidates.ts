@@ -80,11 +80,14 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<(s
   const budget = { files: MAX_INCLUDED_FILES, bytes: MAX_INCLUDED_BYTES };
   return async (pattern) => {
     if (budget.files <= 0 || budget.bytes <= 0) return [null];
+    // ssh expands `%` tokens and `${VAR}` in an Include, which this offline reading does not: what it names stays unread
+    if (/%|\$\{/.test(pattern)) return [null];
     const allowed = (await roots).filter((root): root is string => root !== null);
     // ssh's glob(3) has no `**`: it is one `*`, which also keeps a scan to the pattern's own depth
     const expanded = (pattern.startsWith("~/") ? join(home, pattern.slice(2)) : isAbsolute(pattern) ? pattern : join(sshDir, pattern)).replace(/\*{2,}/g, "*");
     const paths: string[] = [];
-    let truncated = false;
+    // a scan cut short may have missed a file sorted before the ones it found; a read cut short misses only later ones
+    let [scanCut, truncated] = [false, false];
     const wildcard = expanded.search(/[*?[]/);
     if (wildcard >= 0) {
       // the folder before the first wildcard is scanned only inside the home or ssh folder
@@ -95,7 +98,7 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<(s
       // links are followed as ssh's glob(3) does (a dotfiles repo linked in); each path is still read only when its real
       // target is inside the home or ssh folder, below, and one that is not comes back as null
       for await (const path of new Bun.Glob(expanded).scan({ absolute: true, onlyFiles: true, followSymlinks: true })) {
-        if (paths.length >= budget.files) { truncated = true; break; }
+        if (paths.length >= budget.files) { scanCut = true; break; }
         paths.push(path);
       }
       paths.sort();
@@ -111,7 +114,7 @@ function includer(sshDir: string, home: string): (pattern: string) => Promise<(s
       if (text !== null) budget.bytes -= Buffer.byteLength(text);
       texts.push(text);
     }
-    return truncated ? [...texts, null] : texts;
+    return [...(scanCut ? [null] : []), ...texts, ...(truncated ? [null] : [])];
   };
 }
 

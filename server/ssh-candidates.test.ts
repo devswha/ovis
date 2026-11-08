@@ -139,6 +139,21 @@ it("claims nothing for a later host once a glob Include goes past the included-f
   expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
 });
 
+it("claims nothing for a host a glob Include past the file budget may set before the files it read", async () => {
+  const files: Record<string, string> = { config: "Include a/*\n" };
+  const route = "Host box\n  HostName 100.64.0.1\n  AddressFamily inet\n  ProxyCommand none\n  ProxyJump none\n  CanonicalizeHostname no\n";
+  for (let index = 0; index < 65; index++) files[`a/${String(index).padStart(2, "0")}`] = route;
+  const dir = sshDir(files);
+  const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+});
+
+it("claims nothing for a host an Include with a token or environment variable may set, never expanding it", async () => {
+  const dir = sshDir({ config: "Include ${HOME}/.ssh/conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
+  const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+});
+
 it("lists 200 PCs at most, Tailscale PCs included", async () => {
   const dir = sshDir({ config: Array.from({ length: 200 }, (_, index) => `Host h${index}`).join("\n") });
   const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["extra"]), resolve: async () => [] });

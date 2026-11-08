@@ -37,20 +37,35 @@ export interface ConfigHost {
 const plainAlias = (pattern: string): boolean => pattern !== "" && !/[*?!]/.test(pattern);
 
 /**
- * `Key value`, `Key=value` and `Key "quoted value"`, as ssh reads a line, up to a word that starts a comment
- * (`Host lab # work` names `lab` alone); null for a blank line or a comment
+ * The words of a line's arguments as ssh splits them (argv_split): `"` and `'` quote, a backslash escapes a quote, a
+ * backslash or (outside quotes) a space, and a word that starts with `#` ends the line (`Host lab # work` names `lab`)
  */
+function words(text: string): string[] {
+  const found: string[] = [];
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === " " || text[index] === "\t") continue;
+    if (text[index] === "#") break;
+    let [word, quote] = ["", ""];
+    for (; index < text.length; index++) {
+      const [char, next] = [text[index]!, text[index + 1]];
+      if (char === "\\" && (next === "'" || next === "\"" || next === "\\" || (quote === "" && next === " "))) word += text[++index];
+      else if (quote === "" && (char === " " || char === "\t")) break;
+      else if (quote === "" && (char === "\"" || char === "'")) quote = char;
+      else if (char === quote) quote = "";
+      else word += char;
+    }
+    found.push(word);
+  }
+  return found;
+}
+
+/** `Key value`, `Key=value` and `Key "quoted value"`, as ssh reads a line; null for a blank line or a comment */
 function keyword(line: string): { key: string; values: string[] } | null {
   const trimmed = line.trim();
   if (trimmed === "" || trimmed.startsWith("#")) return null;
   const match = /^(\S+?)(?:\s*=\s*|\s+)(.*)$/.exec(trimmed);
   if (match === null) return null;
-  const values: string[] = [];
-  for (const part of match[2]!.matchAll(/"([^"]*)"|(\S+)/g)) {
-    if (part[2]?.startsWith("#")) break;
-    values.push(part[1] ?? part[2]!);
-  }
-  return { key: match[1]!.toLowerCase(), values };
+  return { key: match[1]!.toLowerCase(), values: words(match[2]!) };
 }
 
 type Criterion = { negate: boolean } & ({ on: "all" | "unknown" } | { on: "final"; asksFinal: boolean } | { on: (typeof WEIGHED)[number]; patterns: string[] });
@@ -91,6 +106,8 @@ function matchCriteria(values: string[]): Criterion[] {
 interface Weighing {
   alias: string; target: string; localUser: string | null; final: boolean;
   effective: Map<string, string | null>; applies: Map<Block, boolean | null>; wantsFinal: boolean | null;
+  /** the final pass, when ssh surely makes one */
+  finalPass?: Weighing;
 }
 const passOf = (alias: string, target: string, localUser: string | null, final: boolean): Weighing =>
   ({ alias, target, localUser, final, effective: new Map(), applies: new Map(), wantsFinal: false });
@@ -147,10 +164,15 @@ function pass(entries: Entry[], weighing: Weighing): void {
         break;
       }
       case "option": {
-        if (weighing.effective.has(entry.key)) break;
+        // ssh sets the HostName to the name it connects to before the final pass, so a HostName there changes nothing
+        if (weighing.effective.has(entry.key) || (weighing.final && entry.key === "hostname")) break;
+        // a ProxyJump other than `none` is ignored once a ProxyCommand (`none` too) is set, and sets it to `none` itself
+        const jumps = entry.key === "proxyjump" && entry.value.toLowerCase() !== "none";
+        if (jumps && weighing.effective.has("proxycommand")) break;
         const verdict = applies(weighing, entry.block);
         // a block that may apply makes the option unknown: whichever way it goes, no later block sets it
         if (verdict !== false) weighing.effective.set(entry.key, verdict === true ? entry.value : null);
+        if (verdict !== false && jumps) weighing.effective.set("proxycommand", verdict === true ? "none" : null);
         break;
       }
       case "unread": {
@@ -178,10 +200,17 @@ function weigh(entries: Entry[], alias: string, localUser: string | null): Weigh
   if (canonicalizes === false && first.wantsFinal === false) return first;
   const hostname = effective.get("hostname");
   if (canonicalizes !== false || first.wantsFinal === null || hostname === null) { leaveUnknown(effective); return first; }
-  const final = passOf(alias, hostname === undefined ? alias : expandHost(hostname, alias).toLowerCase(), localUser, true);
-  pass(entries, { ...final, effective });
+  const final: Weighing = { ...passOf(alias, hostname === undefined ? alias : expandHost(hostname, alias).toLowerCase(), localUser, true), effective };
+  pass(entries, final);
+  first.finalPass = final;
   return first;
 }
+
+/** whether a block applies to the alias on the first pass, else on the final pass ssh makes */
+const appliesOnEither = (weighing: Weighing, block: Block): boolean | null => {
+  const first = applies(weighing, block);
+  return first !== false || weighing.finalPass === undefined ? first : applies(weighing.finalPass, block);
+};
 
 /** whether a block's own Match conditions or those of the Includes it came through rule `alias` out without weighing a line */
 function ruledOut(block: Block, alias: string, localUser: string | null): boolean {
@@ -198,7 +227,9 @@ function describe(alias: string, effective: Map<string, string | null>, named: b
   const [hostname, user] = [effective.get("hostname"), effective.get("user")];
   const family = effective.get("addressfamily")?.toLowerCase();
   const proxied = ["proxycommand", "proxyjump"].some((key) => (effective.get(key) ?? "none").toLowerCase() !== "none");
-  const undetermined = !named || ROUTE_KEYS.some((key) => effective.get(key) === null);
+  // a canonical name only DNS gives (CanonicalDomains) may lead elsewhere, even with every route option set
+  const canonical = effective.get("canonicalizehostname");
+  const undetermined = !named || ROUTE_KEYS.some((key) => effective.get(key) === null) || (canonical !== undefined && canonical?.toLowerCase() !== "no");
   return {
     alias, hostname: hostname == null ? null : expandHost(hostname, alias), user: user ?? null,
     ...(family === "inet" || family === "inet6" ? { addressFamily: family } : {}), ...(proxied ? { proxied: true as const } : {}),
@@ -282,9 +313,9 @@ export async function sshConfigHosts(text: string, include: (pattern: string) =>
         weighing = weigh(entries, alias.toLowerCase(), localUser);
         weighings.set(alias, weighing);
       }
-      if (applies(weighing, block) === false) continue;
+      if (appliesOnEither(weighing, block) === false) continue;
       seen.add(alias);
-      const named = blocksOf.get(alias)!.some((named) => applies(weighing, named) === true);
+      const named = blocksOf.get(alias)!.some((named) => appliesOnEither(weighing, named) === true);
       hosts.push(describe(alias, weighing.effective, named));
     }
   }
