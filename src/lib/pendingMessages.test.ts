@@ -84,6 +84,21 @@ describe("pending message ownership", () => {
     }
     expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
   });
+  it("never offers a discarded copy again: a later resumed held ID leaves another tab's stale copy or a late acceptance uncertain", () => {
+    const port = storage(), tab = new PendingMessageStore(() => port);
+    tab.accept("p", message("saved"), "old");
+    tab.suspendScope("old");
+    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true }], "new");
+    tab.removeCopy("p", "saved");
+    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true }], "newer");
+    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("saved", "queued")] }));
+    tab.refresh("p");
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
+    tab.removeCopy("p", "saved");
+    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true }], "newest");
+    tab.accept("p", message("saved", "sending"), null);
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
+  });
   it("settles only the exact resumed Pi ID after reload, never same-text or unrelated rows", () => {
     const port = storage(), first = new PendingMessageStore(() => port);
     const receipt = { ...message("pi:one", "uncertain", "same"), error: { code: "pi_transcript_pending", message: "waiting" } };

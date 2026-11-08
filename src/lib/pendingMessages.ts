@@ -24,6 +24,8 @@ export class PendingMessageStore {
   private settledResumed = new Map<string, Set<string>>();
   /** ids an exact resumed receipt confirmed held without typing: a saved copy from before the drop stays held */
   private heldResumed = new Map<string, Set<string>>();
+  /** ids this page discarded: a later resumed held ID never offers them for an explicit send again */
+  private discarded = new Map<string, Set<string>>();
   private receiptOrder: Array<{ owner: string; id: string; scope: string }> = [];
   private saved = new Map<string, string | null>();
   private unsaved = new Set<string>();
@@ -205,7 +207,7 @@ export class PendingMessageStore {
       }
     }
     for (const item of removed) if (item.outcome === "held" && item.resumed === true
-      && !this.settledResumed.get(owner)?.has(item.id)
+      && !this.settledResumed.get(owner)?.has(item.id) && !this.discarded.get(owner)?.has(item.id)
       && (proofs?.get(item.id) === undefined || proofs.get(item.id) === scope)) {
       const held = this.heldResumed.get(owner) ?? new Set<string>();
       held.add(item.id);
@@ -277,6 +279,8 @@ export class PendingMessageStore {
       if (kept.length > 0) this.rows.set(owner, kept); else this.rows.delete(owner);
       this.saved.delete(owner);
       this.unsaved.delete(owner);
+      this.heldResumed.delete(owner);
+      this.discarded.delete(owner);
     }
     this.notify();
   }
@@ -407,6 +411,10 @@ export class PendingMessageStore {
     if (this.read(owner).some((message) => message.id === id && message.serverOwned)) return;
     this.scopes.get(owner)?.delete(id);
     this.heldResumed.get(owner)?.delete(id);
+    const discarded = this.discarded.get(owner) ?? new Set<string>();
+    discarded.add(id);
+    if (discarded.size > 1024) discarded.delete(discarded.values().next().value!);
+    this.discarded.set(owner, discarded);
     this.unconfirmed.delete(`${owner}\0${id}`);
     this.refresh(owner);
     this.write(owner, this.read(owner).filter((message) => message.id !== id));
