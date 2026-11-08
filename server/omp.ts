@@ -293,8 +293,11 @@ export interface OmpRoute {
   environOf: (pid: number) => readonly string[] | undefined;
   /** The absolute `--cwd` every omp process in the pane started with, or null (ompLaunchDir). */
   launchDir: string | null;
-  /** On macOS herdr-core, the files each process holds open (ompHeldOpen), the only proof there; elsewhere /proc is read. */
-  openFilesOf?: (pid: number) => readonly string[];
+  /**
+   * On macOS herdr-core, the files each process holds open (ompHeldOpen), the only proof there; null for a
+   * process whose listing held a name that could not be read, so nothing is proved for it. Elsewhere /proc is read.
+   */
+  openFilesOf?: (pid: number) => readonly string[] | null;
 }
 
 /** An lsof listing longer than this is not read: nothing is proved from a part of one. */
@@ -305,28 +308,29 @@ const LSOF_DEADLINE_MS = 3000;
 /** How long one lsof listing of a process stands for it while its start stays the same: about one poll. */
 const LSOF_FRESH_MS = 2000;
 /** Each process's last listing, by pid, with the start it was listed under and when (performance.now). */
-const listed = new Map<number, { identity: number; files: string[]; at: number }>();
+const listed = new Map<number, { identity: number; files: string[] | null; at: number }>();
 
 /** The bytes lsof's `-F n` field writes as a backslash and one letter. */
 const LSOF_ESCAPES = new Map([["b", 8], ["f", 12], ["n", 10], ["r", 13], ["t", 9], ["\\", 92]]);
 
 /**
- * A name as lsof's `-F n` field prints it, decoded: lsof writes \b \f \n \r \t and \\ for those
- * bytes and \xNN for a byte it cannot print, so every backslash it prints starts an escape. Its ^X for
- * another control byte is left as printed: a name's own `^` is printed as it is, so ^X cannot be told
- * from it.
+ * A name as lsof's `-F n` field prints it, decoded from the field's bytes (a latin1 string, one char per
+ * byte): lsof writes \b \f \n \r \t and \\ for those bytes and \xNN for a byte it cannot print, so
+ * every backslash it prints starts an escape. Its ^X for another control byte is left as printed: a
+ * name's own `^` is printed as it is, so ^X cannot be told from it. null when the field is not one lsof
+ * could print (a backslash starting no escape) or its bytes are not UTF-8.
  */
-function lsofName(field: string): string {
+function lsofName(field: string): string | null {
   const bytes: number[] = [];
-  const chars = Array.from(field);
-  for (let at = 0; at < chars.length; at += 1) {
-    const char = chars[at]!, next = chars[at + 1] ?? "";
-    const hex = chars.slice(at + 2, at + 4).join("");
-    if (char === "\\" && LSOF_ESCAPES.has(next)) { bytes.push(LSOF_ESCAPES.get(next)!); at += 1; }
-    else if (char === "\\" && next === "x" && /^[0-9a-f]{2}$/i.test(hex)) { bytes.push(Number.parseInt(hex, 16)); at += 3; }
-    else bytes.push(...Buffer.from(char));
+  for (let at = 0; at < field.length; at += 1) {
+    const char = field[at]!, next = field[at + 1] ?? "";
+    const hex = field.slice(at + 2, at + 4);
+    if (char !== "\\") bytes.push(char.charCodeAt(0));
+    else if (LSOF_ESCAPES.has(next)) { bytes.push(LSOF_ESCAPES.get(next)!); at += 1; }
+    else if (next === "x" && /^[0-9a-f]{2}$/i.test(hex)) { bytes.push(Number.parseInt(hex, 16)); at += 3; }
+    else return null;
   }
-  return Buffer.from(bytes).toString("utf8");
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes)); } catch { return null; }
 }
 
 /**
@@ -341,8 +345,8 @@ function lsofName(field: string): string {
  * #3324 checks); every one, a listing reused too, is checked again after the last wait, just before
  * the listing is returned. A name holding a control character once decoded is no held path.
  */
-async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, string[]>> {
-  const open = new Map<number, string[]>();
+async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, string[] | null>> {
+  const open = new Map<number, string[] | null>();
   const now = performance.now();
   for (const [pid, entry] of listed) if (now - entry.at >= LSOF_FRESH_MS) listed.delete(pid);
   const unlisted: { pid: number; identity: number }[] = [];
@@ -358,7 +362,7 @@ async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, str
   if (unlisted.length === 0) return sameStarts(open, identities);
   let child: Bun.Subprocess<"ignore", "pipe", "ignore">;
   try { child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", unlisted.map(({ pid }) => pid).join(","), "-Fpn"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" }); }
-  catch { return open; }
+  catch { return sameStarts(open, identities); }
   let whole = true;
   const deadline = setTimeout(() => { whole = false; child.kill("SIGKILL"); }, LSOF_DEADLINE_MS);
   const chunks: Uint8Array[] = [];
@@ -373,13 +377,16 @@ async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, str
     const code = whole ? await child.exited : null;
     if (code !== 0 && code !== 1 || !whole) return sameStarts(open, identities);
   } catch { return sameStarts(open, identities); } finally { clearTimeout(deadline); }
-  const fresh = new Map<number, string[]>();
-  let files: string[] | undefined;
-  for (const line of Buffer.concat(chunks).toString("utf8").split("\n")) {
-    if (line.startsWith("p")) fresh.set(Number(line.slice(1)), files = []);
-    else if (line.startsWith("n")) {
+  const fresh = new Map<number, string[] | null>();
+  let current: number | undefined;
+  for (const line of Buffer.concat(chunks).toString("latin1").split("\n")) {
+    if (line.startsWith("p")) fresh.set(current = Number(line.slice(1)), []);
+    else if (line.startsWith("n") && current !== undefined) {
+      // a name that cannot be read may be the very session: nothing is proved for this process then
       const name = lsofName(line.slice(1));
-      if (!/[\x00-\x1f\x7f]/.test(name)) files?.push(name);
+      const files = fresh.get(current);
+      if (name === null || /[\x00-\x1f\x7f]/.test(name)) fresh.set(current, null);
+      else files?.push(name);
     }
   }
   for (const { pid, identity } of unlisted) {
@@ -392,7 +399,7 @@ async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, str
 }
 
 /** The listings of the processes whose start is still the one read before them; a changed one is forgotten. */
-function sameStarts(open: Map<number, string[]>, identities: ReadonlyMap<number, number>): Map<number, string[]> {
+function sameStarts(open: Map<number, string[] | null>, identities: ReadonlyMap<number, number>): Map<number, string[] | null> {
   for (const pid of open.keys()) {
     if (processStartIdentity(pid) === identities.get(pid)) continue;
     open.delete(pid);
@@ -411,7 +418,7 @@ function sameStarts(open: Map<number, string[]>, identities: ReadonlyMap<number,
 export async function ompHeldOpen(route: OmpRoute, core: boolean): Promise<OmpRoute> {
   if (process.platform !== "darwin" || !core) return route;
   const open = await darwinOpenFiles(route.pids);
-  return { ...route, openFilesOf: (pid) => open.get(pid) ?? [] };
+  return { ...route, openFilesOf: (pid) => open.has(pid) ? open.get(pid)! : [] };
 }
 
 /**

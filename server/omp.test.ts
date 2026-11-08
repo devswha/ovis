@@ -713,6 +713,32 @@ describe("an omp pane's chat", () => {
       expect(lsofCalls.at(-1)).toEqual(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(added), "-Fpn"]);
     });
 
+    it("binds nothing when any held name is refused, even beside a valid session", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      const missing = join(home, ".omp/agent/sessions", pane.cwd!.replaceAll("/", "-"), "2026-10-02_gone.jsonl");
+      // a name decoding to a control character, one lsof could not have printed, and a store session that does not resolve
+      for (const refused of [`${pane.cwd}/a\\x01b`, `${pane.cwd}/a\\qb`, missing]) {
+        listing = listed([refused, continued]);
+        expect(await held()).toBeNull();
+      }
+      listing = listed([continued]);
+      expect(await held()).toBe(continued);
+    });
+
+    it("re-checks a reused listing's start when lsof cannot be spawned", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      expect(await held()).toBe(continued);
+      // within the freshness window an omp the pane started since needs lsof, which cannot start; meanwhile
+      // the first pid is taken by another process
+      const added = pid + 1;
+      processes = [{ pid, name: "omp", argv: ["omp", "-c"] }, { pid: added, name: "omp", argv: ["omp"] }];
+      startOf = (asked, read) => asked === added ? 7_000_000n : asked === pid ? (read <= 3 ? 1_000_000n : 2_000_000n) : null;
+      lsof = () => { throw new Error("spawn failed"); };
+      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!, true)).toBeNull();
+      expect(lsofCalls).toHaveLength(2);
+    });
+
     it("kills lsof and binds nothing when its listing passes the byte cap", async () => {
       const continued = storeTranscript(pane.cwd!);
       listing = listed([continued]) + "n/dev/null\n".repeat(110_000);

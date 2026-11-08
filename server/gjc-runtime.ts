@@ -246,6 +246,8 @@ export function terminalBreadcrumb(store: string | StoreRoots, cwd: string, term
  * environment already read elsewhere, so none is read here; undefined for a pid reads it.
  * `openFilesOf` supplies the files a process holds open where there is no /proc (lsof on macOS
  * herdr-core); there they are the only proof, and with none held no breadcrumb stands in (#3365).
+ * There a process whose listing held a name that could not be read (null), or that holds a `.jsonl` in
+ * the store that does not resolve, may hold the very session: nothing is bound for the pane then.
  */
 export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly number[], probe: HeldProbe = {}): { path: string | null; found: number } {
   const { environOf, openFilesOf } = probe;
@@ -254,6 +256,7 @@ export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly nu
   catch { return { path: null, found: 0 }; }
   const open = new Set<string>();
   const breadcrumbs = new Set<string>();
+  let unreadable = false;
   for (const pid of pids) {
     const terminal = gjcTerminal(pid, environOf?.(pid));
     if (terminal) {
@@ -261,16 +264,24 @@ export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly nu
       if (path) breadcrumbs.add(path);
     }
     let held: readonly string[] = [];
-    if (openFilesOf) held = openFilesOf(pid);
+    if (openFilesOf) {
+      const listed = openFilesOf(pid);
+      if (listed === null) { unreadable = true; continue; }
+      held = listed;
+    }
     else try { held = readdirSync(`/proc/${pid}/fd`).map((fd) => `/proc/${pid}/fd/${fd}`); } catch { /* no /proc: the native breadcrumb */ }
     for (const entry of held) {
       try {
         const file = realpathSync(openFilesOf ? entry : readlinkSync(entry));
         const target = statSync(file).isFile() ? gjcSessionFile(root, file, nodePath, roots.depth) : null;
         if (target && transcriptCwd(target) === cwd) open.add(target);
-      } catch { /* closed, deleted or unreadable descriptor */ }
+      } catch {
+        // closed, deleted or unreadable descriptor; a listed session of the store that does not resolve proves nothing either way
+        if (openFilesOf && entry.endsWith(".jsonl") && storeRelative(root, entry) !== null) unreadable = true;
+      }
     }
   }
+  if (unreadable) return { path: null, found: 0 };
   const candidates = open.size > 0 || openFilesOf ? open : breadcrumbs;
   return { path: candidates.size === 1 ? [...candidates][0]! : null, found: candidates.size };
 }
@@ -278,7 +289,7 @@ export function heldTranscript(roots: StoreRoots, cwd: string, pids: readonly nu
 /** What heldTranscript reads of a process that its caller already has. */
 export interface HeldProbe {
   environOf?: (pid: number) => readonly string[] | null | undefined;
-  openFilesOf?: (pid: number) => readonly string[];
+  openFilesOf?: (pid: number) => readonly string[] | null;
 }
 
 type GjcPaneProcessInfo = { process_info?: { shell_pid?: unknown; foreground_processes?: { pid?: unknown; argv?: unknown }[] } };
