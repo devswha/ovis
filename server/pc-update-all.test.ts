@@ -6,7 +6,7 @@ import type { Machine, PcUpdateAll, PcUpdateOffer } from "../shared/machines.ts"
 import { unmanagedUpdateStatus, type UpdateStatus } from "../shared/update.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { handleMachineRequest } from "./machine-api.ts";
-import { MachineManager } from "./machines.ts";
+import { MachineManager, OWN_UPDATES_AT_ONCE } from "./machines.ts";
 import type { PushService } from "./push.ts";
 
 // Update all's queue and the cancel route on a manager with saved SSH PCs: no SSH runs, the bridge update itself is a
@@ -42,7 +42,8 @@ function fixture() {
   });
   const pc = (id: string) => manager.list().find((machine) => machine.id === id)!;
   const until = async (done: () => boolean) => { const deadline = Date.now() + 2000; while (!done()) { if (Date.now() > deadline) throw new Error("condition timed out"); await Bun.sleep(5); } };
-  const request = (path: string, method = "POST") => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method, headers: { origin: "http://localhost:7317", "x-herdr-machine": "1" } }), manager);
+  const request = (path: string, method = "POST") => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method, headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "x-herdr-update": "1" } }), manager,
+    undefined, undefined, false, undefined, undefined, undefined, undefined, true);
   return { manager, internals, asked, ends, pc, until, request };
 }
 
@@ -127,4 +128,41 @@ it("leaves a disabled PC out of Update all and its badge, so it is never connect
   const refused = await request(`${B}/update`);
   expect(refused.status).toBe(409);
   expect(asked.includes(B)).toBe(false);
+});
+
+it("runs at most a few PCs' own updates at once with Update all, starting the next as one ends", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ovis-update-fanout-"));
+  const ids = Array.from({ length: OWN_UPDATES_AT_ONCE + 2 }, (_, i) => `00000000-0000-4000-8000-0000000001${String(i).padStart(2, "0")}`);
+  writeFileSync(join(dir, "machines.json"), JSON.stringify(ids.map((id, i) => ({ id, name: `PC ${i}`, target: { destination: `me@pc${i}.invalid` }, enabled: true }))));
+  const reconnect = spyOn(MachineManager.prototype as unknown as Internals, "reconnect").mockImplementation(async () => {});
+  const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); }, { ownUpdate: { pollMs: 5 } });
+  cleanups.push(() => { manager.stop(); reconnect.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
+  // each PC's own Ovis installs once asked, then stays installing until the test lets it finish
+  const offered = "a".repeat(40);
+  const finished = new Set<string>();
+  const asked: string[] = [];
+  const servers = ids.map((id) => Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req) {
+    if (new URL(req.url).pathname === "/api/updates/install") { asked.push(id); return new Response(null, { status: 202 }); }
+    const base = { ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true, latest_revision: offered, latest_version: "0.5.1", revision_bound_install: true };
+    if (finished.has(id)) return Response.json({ ...base, available: false, current_revision: offered });
+    return Response.json(asked.includes(id) ? { ...base, phase: "building", step: "build" } : base);
+  } }));
+  cleanups.push(() => { for (const server of servers) server.stop(true); });
+  const internals = manager as unknown as Internals;
+  ids.forEach((id, i) => {
+    const runtime = internals.machines.get(id)!;
+    Object.assign(runtime.machine, { state: "connected", action_required: null, error: null });
+    runtime.endpoint = { url: `http://127.0.0.1:${servers[i]!.port}`, token: "t" };
+    runtime.ownOffer = { how: "own", current_version: "0.5.0", latest_version: "0.5.1", updatable: true, reason: null };
+    runtime.offerRevision = offered;
+  });
+  const until = async (done: () => boolean) => { const deadline = Date.now() + 3000; while (!done()) { if (Date.now() > deadline) throw new Error("condition timed out"); await Bun.sleep(5); } };
+  const all = manager.updateAll();
+  expect(all.started).toHaveLength(OWN_UPDATES_AT_ONCE);
+  expect(all.queued).toEqual(ids.slice(OWN_UPDATES_AT_ONCE));
+  await until(() => asked.length === OWN_UPDATES_AT_ONCE);
+  expect(manager.list().find((machine) => machine.id === ids.at(-1))?.updating).toMatchObject({ queued: true });
+  finished.add(ids[0]!);
+  await until(() => asked.length === OWN_UPDATES_AT_ONCE + 1);
+  expect(asked.at(-1)).toBe(ids[OWN_UPDATES_AT_ONCE]);
 });

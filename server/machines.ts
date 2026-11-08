@@ -91,6 +91,8 @@ interface Runtime {
   ownOffer?: PcUpdateOffer | null;
   /** the release that offer names (its latest_revision): an update asked for installs only that one */
   offerRevision?: string;
+  /** the release an SSH PC's own Ovis, older than this app, offered at its last connect (remote_ovis): only that one is installed */
+  remoteRevision?: string;
   offerTimer?: ReturnType<typeof setInterval>;
   /** the connection generation whose read of that offer is under way */
   offerReading?: number;
@@ -116,10 +118,14 @@ interface JobState {
   runtime?: Runtime;
   /** the PC's own Ovis updates itself in this job, asked by it (MachineManager.runOwnUpdate) */
   own?: boolean;
+  /** the release the person was shown: another one on offer by then is refused, never installed (runOwnUpdate) */
+  expectedRevision?: string;
   stageStartedAt: number;
   finished: Promise<void>;
 }
 const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
+/** how many PCs' own updates Update all runs at once: each downloads, installs and builds on its PC, and is followed from here */
+export const OWN_UPDATES_AT_ONCE = 4;
 /** a setup job's phases once it has ended */
 const TERMINAL = new Set<SetupJob["phase"]>(["connected", "failed", "cancelled"]);
 const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis, which updates itself: update it with Update (POST /api/machines/:id/update).";
@@ -333,6 +339,8 @@ export class MachineManager {
   private ownUpdateCheckMs: number;
   /** how often a connected PC's own Ovis is asked what it offers: its own check for releases runs every 5 minutes */
   private ownOfferMs: number;
+  /** connected PCs Update all queued for their own update, in order, while OWN_UPDATES_AT_ONCE run */
+  private ownWaiting: string[] = [];
   /** PCs Update all queued for a bridge update, waiting for their turn on autoChain */
   private updateQueued = new Set<string>();
   /** how a relay PC's connection reaches the relay; tests point it at a local one */
@@ -597,7 +605,7 @@ export class MachineManager {
     if (machine.kind === "hc" || !machine.enabled) return null;
     if (machine.state === "connected") return runtime.ownOffer ? { ...runtime.ownOffer, revision: runtime.offerRevision ?? null } : null;
     const own = machine.remote_ovis;
-    if (machine.kind === "ssh" && own) return { how: "own", current_version: own.version, latest_version: own.latest_version, updatable: own.updatable, reason: own.reason };
+    if (machine.kind === "ssh" && own) return { how: "own", current_version: own.version, latest_version: own.latest_version, updatable: own.updatable, reason: own.reason, revision: runtime.remoteRevision ?? null };
     if (machine.kind === "ssh" && machine.action_required === "update_bridge") {
       if (!this.mayConnect(runtime)) return { how: "bridge", current_version: null, latest_version: null, updatable: false, reason: "Connect this PC first: it was added from herdr, and connecting it here was not approved yet." };
       const approved = this.mayManageBridge(runtime);
@@ -783,7 +791,7 @@ export class MachineManager {
    * and SSH uses the PC's saved key only. A PC that needs a password fails with the reason,
    * and its dialog stays the way in.
    */
-  updateBridge(id: string, scheduled = false): SetupJob {
+  updateBridge(id: string, scheduled = false, expectedRevision?: string): SetupJob {
     const runtime = this.machines.get(id);
     if (!runtime) throw new Error("PC not found");
     if (runtime.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
@@ -794,7 +802,7 @@ export class MachineManager {
     if (!this.mayManageBridge(runtime)) throw new MachineActionRequired("Review the bridge update for this machine", "update_bridge");
     // the user's own Update bridge takes back an earlier Cancel; a scheduled one does not
     if (!scheduled) runtime.updateCancelled = false;
-    return this.setup({ ...runtime.machine.target!, machine_id: id, update_remote: true }, { auto: true });
+    return this.setup({ ...runtime.machine.target!, machine_id: id, update_remote: true }, { auto: true, ...(expectedRevision ? { expectedRevision } : {}) });
   }
   /**
    * Updates a PC from here, whichever way it is reached (POST /api/machines/:id/update): a connected PC's own Ovis
@@ -811,7 +819,7 @@ export class MachineManager {
     // the release the person saw: one the PC offers instead since is shown first, never installed unseen
     if (shown !== undefined && typeof offer.revision === "string" && shown !== offer.revision) throw new PcUpdateRefused("That PC offers another release now than the one shown. Look at it again, then update.");
     if (runtime.machine.state === "connected") return { job_id: this.updateOwn(runtime) };
-    return { job_id: this.updateBridge(id).id };
+    return { job_id: this.updateBridge(id, false, shown ?? offer.revision ?? undefined).id };
   }
   /** Update all (POST /api/machines/update-all): every PC with an update on offer, each as `update` would. */
   updateAll(): PcUpdateAll {
@@ -822,8 +830,8 @@ export class MachineManager {
       if (!offer) continue;
       if (this.updateRunning(runtime)) { result.skipped.push({ machine_id: id, reason: "This PC is already updating." }); continue; }
       if (!offer.updatable) { result.skipped.push({ machine_id: id, reason: offer.reason ?? "This PC cannot take its update from here." }); continue; }
-      if (runtime.machine.state === "connected") { result.started.push({ machine_id: id, job_id: this.updateOwn(runtime) }); continue; }
-      this.queueUpdate(runtime);
+      if (runtime.machine.state === "connected" && this.ownRunning() < OWN_UPDATES_AT_ONCE) { result.started.push({ machine_id: id, job_id: this.updateOwn(runtime) }); continue; }
+      if (runtime.machine.state === "connected") this.queueOwn(runtime); else this.queueUpdate(runtime);
       result.queued.push(id);
     }
     this.emit();
@@ -849,6 +857,26 @@ export class MachineManager {
     // an automatic bridge update already waiting for this PC counts too: Update all would only repeat it
     return !!runtime.ownJob || this.updateQueued.has(runtime.machine.id) || this.autoQueued.has(runtime.machine.id) || [...this.jobs.values()].some((j) => j.public.machine_id === runtime.machine.id && !TERMINAL.has(j.public.phase));
   }
+  private ownRunning(): number { let running = 0; for (const runtime of this.machines.values()) if (runtime.ownJob) running++; return running; }
+  /** an own update of Update all past the ones running at once: started as one of them ends (nextOwn) */
+  private queueOwn(runtime: Runtime): void {
+    this.updateQueued.add(runtime.machine.id);
+    this.ownWaiting.push(runtime.machine.id);
+    runtime.machine.updating = { job_id: "", step: "Waiting for the PCs before it to finish updating…", progress: null, queued: true };
+  }
+  private nextOwn(): void {
+    while (!this.stopped && this.ownRunning() < OWN_UPDATES_AT_ONCE && this.ownWaiting.length > 0) {
+      const id = this.ownWaiting.shift()!;
+      const runtime = this.machines.get(id);
+      // cancelled, disabled or removed meanwhile
+      if (!this.updateQueued.delete(id) || !runtime) continue;
+      runtime.machine.updating = null;
+      // still offered, and still connected: an update before its turn may have done it, or the PC went away
+      const offer = this.updateOffer(runtime);
+      if (offer?.updatable && runtime.machine.state === "connected" && !this.updateRunning(runtime)) this.updateOwn(runtime);
+    }
+    this.emit();
+  }
   /** a bridge update of Update all, after the ones before it: they share one bundle download */
   private queueUpdate(runtime: Runtime): void {
     const id = runtime.machine.id;
@@ -861,7 +889,7 @@ export class MachineManager {
       // still needed: an update before its turn (an automatic one, or one asked for by hand) may have done it
       const offer = this.updateOffer(runtime);
       if (!offer?.updatable || runtime.machine.state === "connected" || this.updateRunning(runtime)) { this.emit(); return; }
-      try { const job = this.updateBridge(id); await this.jobs.get(job.id)?.finished; }
+      try { const job = this.updateBridge(id, false, offer.revision ?? undefined); await this.jobs.get(job.id)?.finished; }
       catch (error) { runtime.machine.update_error = error instanceof Error ? error.message : String(error); this.emit(); }
     });
   }
@@ -902,10 +930,11 @@ export class MachineManager {
       runtime.ownJob = undefined;
       runtime.machine.updating = null;
       this.emit();
+      this.nextOwn();
     });
     return id;
   }
-  setup(request: SetupRequest, options: { auto?: boolean } = {}): SetupJob {
+  setup(request: SetupRequest, options: { auto?: boolean; expectedRevision?: string } = {}): SetupJob {
     if (this.stopped) throw new Error("Server stopping");
     let target = validateTarget(request);
     const existing = request.machine_id ? this.machines.get(request.machine_id) : undefined;
@@ -932,6 +961,7 @@ export class MachineManager {
     const moving = !!existing && !sameSshSession(target, existing.machine.target!);
     const resumeRetry = existing?.machine.state === "reconnecting";
     const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: "Connecting with SSH keys and ssh-agent…", challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
+    if (options.expectedRevision) job.expectedRevision = options.expectedRevision;
     if (job.update && existing) { job.runtime = existing; existing.machine.update_error = null; }
     if (job.update && existing && !auto) existing.updateCancelled = false;
     job.timer.unref();
@@ -1151,7 +1181,7 @@ export class MachineManager {
     if (job && host.kind === "windows") job.public.windows_startup = moving || !this.machines.has(runtime.machine.id);
     const { platform, expectedSocket } = inspection;
     // what the PC's own Ovis said is read anew on every try: it may have been updated or replaced since
-    if (!moving) runtime.machine.remote_ovis = null;
+    if (!moving) { runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; }
     let { herdrPath } = inspection;
     if (herdrPath) {
       const version = await host.herdrVersion(ssh, herdrPath);
@@ -1206,9 +1236,9 @@ export class MachineManager {
     if (descriptor && (update || descriptor.bridge_protocol !== BRIDGE_PROTOCOL || descriptor.bundle_version !== REMOTE_BUNDLE_VERSION)) {
       if (!descriptor.managed_remote) {
         if (newerBundle(descriptor.bundle_version)) throw new MachineActionRequired(independentBridge(descriptor.bundle_version), "setup");
-        const offer = await this.ownOffer(ssh, descriptor, target, job?.abort.signal);
+        const { revision: offeredRevision, ...offer } = await this.ownOffer(ssh, descriptor, target, job?.abort.signal);
         if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
-        if (!moving) runtime.machine.remote_ovis = offer;
+        if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; }
         if (job) job.public.remote_ovis = offer;
         // a check still running there is no refusal: the PC tries again on its own instead of waiting for a tap
         if (!offer.updatable) throw offer.reason === OWN_CHECK_RUNNING ? new Error(OWN_CHECK_RUNNING) : new MachineActionRequired(ownUpdateRefused(offer), "setup");
@@ -1382,7 +1412,7 @@ export class MachineManager {
       signal?.addEventListener("abort", done, { once: true });
     });
   }
-  private async ownOffer(ssh: SshConnection, descriptor: BridgeDescriptor, target: SshTarget, signal?: AbortSignal): Promise<RemoteOvis> {
+  private async ownOffer(ssh: SshConnection, descriptor: BridgeDescriptor, target: SshTarget, signal?: AbortSignal): Promise<RemoteOvis & { revision?: string }> {
     const endpoint = await this.tunnel(ssh, descriptor);
     // never followed: a redirect would leave the tunnel for wherever it names, this PC's own loopback included
     const get = (path: string) => fetch(endpoint.url + path, { headers: { authorization: `Bearer ${endpoint.token}` }, redirect: "manual",
@@ -1408,9 +1438,10 @@ export class MachineManager {
         } else await discard(response);
       } catch { /* the address stays the descriptor's */ }
     };
-    const answer = (status: Partial<UpdateStatus> | null, reason: string | null): RemoteOvis => ({
+    const answer = (status: Partial<UpdateStatus> | null, reason: string | null): RemoteOvis & { revision?: string } => ({
       version: releaseVersion(status?.current_version), latest_version: releaseVersion(status?.latest_version),
       updatable: reason === null, reason, address: `${sshHost(target.destination)}:${port}`, url,
+      ...(reason === null && typeof status?.latest_revision === "string" && REVISION.test(status.latest_revision) ? { revision: status.latest_revision } : {}),
     });
     const there = "Update it on that PC (Settings → Updates), then reconnect.";
     const read = async (): Promise<{ status: Partial<UpdateStatus> | null } | { refused: string }> => {
@@ -1485,6 +1516,7 @@ export class MachineManager {
       if (before.phase === "checking") throw new Error(OWN_CHECK_RUNNING);
       const revision = before.latest_revision;
       if (before.available !== true || typeof revision !== "string" || !REVISION.test(revision)) throw new Error("That PC's Ovis has no update on offer any more. Check its Settings → Updates there, then reconnect.");
+      if (job.expectedRevision && revision !== job.expectedRevision) throw new Error("That PC offers another release now than the one shown. Look at it again, then update.");
       const response = await updates(revision);
       if (response.status === 202) { await discard(response); break; }
       const refusal = (await readCappedJson<{ error?: { code?: unknown; message?: unknown } } | null>(response, REMOTE_LIMITS.bridgeError).catch(() => null))?.error;
@@ -1613,7 +1645,7 @@ export class MachineManager {
     const generation = runtime.generation;
     await this.refresh(runtime);
     if (generation !== runtime.generation || this.stopped) throw new Error("Connection cancelled");
-    runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.remote_ovis = null; runtime.attempts = 0; runtime.updateCancelled = false;
+    runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; runtime.attempts = 0; runtime.updateCancelled = false;
     // told only for a connected PC (shared/machines.ts)
     if (runtime.tunnel) runtime.machine.route = runtime.tunnel.route;
     this.openObserver(runtime, generation);

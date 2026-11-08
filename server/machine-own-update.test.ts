@@ -577,8 +577,8 @@ describe("a PC whose own Ovis is older than this app", () => {
   it("updates it through the one route the devices list uses, and keeps why a failed update failed on its card", async () => {
     const { manager, installs, until } = pc({ status: managedOffer(), afterInstall: { statuses: [{ phase: "building", step: "dependencies" }, { phase: "error", error: "bun install failed (exit 1)" }] } }, { autoUpdate: false, ownUpdate: { pollMs: 5 } });
     const waiting = await until((machine) => machine.action_required === "update_bridge");
-    expect(waiting.ovis_update).toEqual({ how: "own", current_version: "0.4.16", latest_version: "0.4.18", updatable: true, reason: null });
-    const update = () => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${MACHINE_ID}/update`, { method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1" } }), manager);
+    expect(waiting.ovis_update).toEqual({ how: "own", current_version: "0.4.16", latest_version: "0.4.18", updatable: true, reason: null, revision: OFFERED });
+    const update = () => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${MACHINE_ID}/update`, { method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "x-herdr-update": "1" } }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
     const response = await update();
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ job_id: expect.any(String) });
@@ -589,6 +589,20 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(failed.ovis_update?.updatable).toBe(true);
     expect((await update()).status).toBe(202);
     expect(manager.list().find((machine) => machine.id === MACHINE_ID)?.update_error).toBeNull();
+  });
+
+  it("installs only the release it showed: one the PC offers instead by the time it is asked is refused, never installed", async () => {
+    const remote: Remote = { status: managedOffer(), access: { port: OWN_PORT, tailscale: { serving_url: null } } };
+    const { manager, installs, until } = pc(remote, { autoUpdate: false, ownUpdate: { pollMs: 5 } });
+    const waiting = await until((machine) => machine.action_required === "update_bridge");
+    expect(waiting.ovis_update?.revision).toBe(OFFERED);
+    // a newer release appears there before the person's tap reaches it
+    remote.status = managedOffer({ latest_revision: "e".repeat(40), latest_version: "0.4.19" });
+    const asked = await handleMachineRequest(new Request(`http://localhost:7317/api/machines/${MACHINE_ID}/update`, { method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" }, body: JSON.stringify({ revision: OFFERED }) }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
+    expect(asked.status).toBe(202);
+    const failed = await until((machine) => !machine.updating && typeof machine.update_error === "string");
+    expect(failed.update_error).toContain("another release now than the one shown");
+    expect(installs).toEqual([]);
   });
 
   it("shows the update a connected PC's own Ovis of this app's version offers, read through its tunnel", async () => {
@@ -730,7 +744,7 @@ describe("a PC whose own Ovis is older than this app", () => {
     // the devices list tells it the same way, and asking for the update anyway is refused with those words
     expect(waiting.ovis_update).toMatchObject({ how: "own", updatable: false });
     expect(waiting.ovis_update?.reason).toMatch(reason);
-    const asked = await handleMachineRequest(new Request(`http://localhost:7317/api/machines/${MACHINE_ID}/update`, { method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1" } }), manager);
+    const asked = await handleMachineRequest(new Request(`http://localhost:7317/api/machines/${MACHINE_ID}/update`, { method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "x-herdr-update": "1" } }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
     expect(asked.status).toBe(409);
     expect((await asked.json() as { error: { code: string; message: string } }).error).toMatchObject({ code: "update_unavailable", message: expect.stringMatching(reason) });
     expect(installs).toEqual([]);

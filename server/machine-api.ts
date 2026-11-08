@@ -9,11 +9,17 @@ import { TypedCodeError, type TypedCodeFailure } from "../shared/relay-code-offe
 import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
+import { updateRequestAllowed } from "./update-api.ts";
 import { crossSiteFileRead } from "./file-view.ts";
 import { snapshotWithoutHiddenTokens, withoutHiddenTokens } from "./herdr-sidebar.ts";
 import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
 
 const fail = (code: string, message: string, status: number) => jsonResponse({ error: { code, message } }, status);
+/**
+ * Updating this PC's PCs, as switching its own runtime (dispatch.ts): only its owner, from this app's own page (the
+ * update header, same origin, no query).
+ */
+const OWNER_ONLY = "Only this PC's owner can update its PCs, from this app's own page.";
 
 /** POST /api/machines/relay/code: why a typed code found no PC, as `typed_code_<failure>` (the app words each one). */
 const CODE_FAILURES: Record<TypedCodeFailure, [string, number]> = {
@@ -133,7 +139,9 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   seen?: { list(): SeenFinish[]; subscribe(listener: (finish: SeenFinish) => void): () => void },
   /** durable device enrollments (server/devices.ts), already without the ones this stream's own device made, and relay pairings waiting for approval */
   pairings?: { subscribe(listener: (event: DevicePairedEvent | DeviceRemovedEvent | RelayPairingsEvent | RemotePairingsEvent) => void): () => void },
-  relayBudget?: EventStreamBudget): Promise<Response> {
+  relayBudget?: EventStreamBudget,
+  /** this PC's owner (access.ts ownerAccess): only they may start or stop updates of its PCs */
+  owner = false): Promise<Response> {
   const url = new URL(request.url);
   // A PC's file opens as this PC's /api/fs/file does, from any navigation: reading it changes
   // nothing, and Chrome on Android shows a PDF in the viewer's frame as an "Open" button whose
@@ -334,14 +342,14 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     }
     if (parts[0] === "update-all" && parts.length === 1) {
       setRequestRoute("/api/machines/update-all");
-      if (readOnly) return fail("read_only", "this device can only watch", 403);
+      if (!owner || !updateRequestAllowed(request)) return fail("forbidden", OWNER_ONLY, 403);
       if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
       return jsonResponse(manager.updateAll() satisfies PcUpdateAll, 202);
     }
     const id = parts[0]!;
     if (parts.length === 2 && parts[1] === "update") {
       setRequestRoute("/api/machines/:machine_id/update");
-      if (readOnly) return fail("read_only", "this device can only watch", 403);
+      if (!owner || !updateRequestAllowed(request)) return fail("forbidden", OWNER_ONLY, 403);
       if (request.method === "DELETE") return jsonResponse({ cancelled: manager.cancelUpdate(id) });
       if (request.method !== "POST") return fail("method_not_allowed", "Use POST or DELETE", 405);
       const text = await request.text();

@@ -81,7 +81,7 @@ export interface PcUpdateOffer {
   latest_version: string | null;
   updatable: boolean;
   reason: string | null;
-  /** `own` on a connected PC: the release on offer (its commit), which an update asked for may name */
+  /** `own`: the release on offer (its commit), which an update asked for may name; only that release is installed */
   revision?: string | null;
 }
 /**
@@ -89,7 +89,10 @@ export interface PcUpdateOffer {
  * another release by then, nothing is installed: 409 `update_unavailable`, and the person looks again.
  */
 export interface PcUpdateRequest { revision?: string }
-/** POST /api/machines/:id/update: the update started; its steps show on the PC's `updating` */
+/**
+ * POST /api/machines/:id/update: the update started; its steps show on the PC's `updating`. This and update-all are
+ * this PC's owner's only (403 `forbidden` otherwise), and need the `X-Herdr-Update: 1` header.
+ */
 export interface PcUpdateStarted { job_id: string }
 /**
  * POST /api/machines/update-all: every PC with an update it can take. `started`: running now (own updates run side

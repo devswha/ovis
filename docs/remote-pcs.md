@@ -153,7 +153,8 @@ use, without going to it. Each PC in `GET /api/machines` (and the machine events
 
 `POST /api/machines/:id/update` starts that update (202 `{ job_id }`), whichever way the PC is
 reached, and refuses one that cannot run with 409 `update_unavailable` and the same words. A
-connected PC's own offer names its release as `revision`; a body `{ "revision": … }` with the one shown
+PC's own offer names its release as `revision` (a connected PC's, or the one an SSH PC's own
+Ovis older than this app told at its last connect); a body `{ "revision": … }` with the one shown
 makes sure only that release is installed: one the PC offers instead by then is refused, never installed
 unseen. Update all installs each PC's release as this server last read it. A
 connected PC's own Ovis is asked to install the release it offers, by revision, through its
@@ -167,7 +168,14 @@ there runs on).
 `POST /api/machines/update-all` starts every PC's update at once: 202 `{ started, queued, skipped }`.
 Own updates run side by side; bridge updates run one after another, sharing one bundle download,
 and show `updating.queued` until their turn; a PC with an update it cannot take is `skipped` with
-why. Up-to-date PCs are not listed. A watching device may do none of this.
+why. Up-to-date PCs are not listed. At most four PCs' own updates run at once; the others show
+`updating.queued` and start as one ends.
+
+Only this PC's owner may start or cancel these updates, as only they may switch its own runtime: a
+driving sign-in on this PC, its token, a paired driving device or its Tailscale login, from this
+app's own page (the `X-Herdr-Update: 1` header, same origin, no query). A watching device, a
+visitor of an open install, a Portal visitor and a device connected through the relay are refused
+(403 `forbidden`), whatever their role.
 
 ## Runtime and endpoints
 
