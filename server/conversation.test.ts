@@ -3070,6 +3070,46 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(writes).toBe(6);
   });
 
+  it("answers a transcript written to through every settle under one history after its first pending poll, and sees a rewrite once writes stop", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const { open } = fsp;
+    let writing = true;
+    let writes = 0;
+    restores.push(
+      // while writing, an append lands right after each settle's last stat of the transcript, so no settle records
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        let stats = 0;
+        handle.stat = (async (...rest: Parameters<typeof stat>) => {
+          const taken = await stat(...rest);
+          if (++stats === 2 && writing) { writes++; appendFileSync(path, message(`w${writes}`, writes === 1 ? "u1" : `w${writes - 1}`, "more")); }
+          return taken;
+        }) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
+    const polls: (string | "pending")[] = [];
+    for (let poll = 0; poll < 5; poll++) {
+      try { polls.push((await paneConversation(pane.pane_id)).history_id); }
+      catch (error) { if (!(error instanceof ConversationReadPending)) throw error; polls.push("pending"); }
+    }
+    expect(writes).toBe(15);
+    const answered = polls.findIndex((poll) => poll !== "pending");
+    expect(answered).toBeGreaterThanOrEqual(0);
+    expect(answered).toBeLessThanOrEqual(1);
+    const history = polls[answered] ?? "";
+    expect(history).not.toBe(base.history_id);
+    expect(polls.slice(answered)).toEqual(polls.slice(answered).map(() => history));
+    // the writes were appends: once they stop, the history stays
+    writing = false;
+    expect((await paneConversation(pane.pane_id)).history_id).toBe(history);
+    // an in-place rewrite that also grew is another history
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "HELLO, rewritten") + "x".repeat(4096) + "\n");
+    expect((await paneConversation(pane.pane_id)).history_id).not.toBe(history);
+  });
+
   it("never digests another agent's transcript that a folder swapped in after authorization puts at the path", async () => {
     const project = join(root, "project");
     const elsewhere = join(root, "elsewhere");

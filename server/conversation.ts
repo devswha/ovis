@@ -222,8 +222,10 @@ interface TranscriptStream {
 // In-place rewrites keep the inode. Change the cursor generation when observed,
 // invalidating settled turns and incremental parsers as well as the response cache.
 // `hash` digests the first `hashed` bytes, fed only what each growth appends. `prefix` is the digest of
-// the first PREFIX_BYTES (or all) of the `at` bytes the last reading call saw.
-interface TranscriptRevision { identity: string; size: number; changed: string; generation: string; hash?: Hash; hashed: number; prefix?: { digest: string; at: number }; window?: { start: number; end: number; digests: BigUint64Array } }
+// the first PREFIX_BYTES (or all) of the `at` bytes the last reading call saw. `forced`: the generation
+// was given to a growth no digest checked; until a read checks the digests kept from before it, a growth
+// no digest checks keeps it.
+interface TranscriptRevision { identity: string; size: number; changed: string; generation: string; hash?: Hash; hashed: number; prefix?: { digest: string; at: number }; window?: { start: number; end: number; digests: BigUint64Array }; forced?: true }
 const transcriptRevisions = new Map<string, TranscriptRevision>();
 const PREFIX_BYTES = 64 * 1024;
 type RevisionStat = { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number };
@@ -245,12 +247,15 @@ function transcriptGeneration(path: string, stat: RevisionStat, checkWindow = fa
   // A growth no digest checked (the last settle reads nothing) may be a rewrite that also grew. It is
   // pending once, for the next poll to check; after that, or where no settle can read it (a link), it is
   // another history, never the one before it.
-  if (read && reads.mode === "none" && previous?.identity === next.identity && next.generation === previous.generation && previous.size > 0 && next.size > (next.prefix?.at ?? previous.size)) {
+  // That history then stays while the writes go on (`forced`), and keeps the digests from before it, so
+  // the read that can check them finds the first bytes of a rewrite, and an append extends them.
+  if (read && reads.mode === "none" && next.forced !== true && previous?.identity === next.identity && next.generation === previous.generation && previous.size > 0 && next.size > (next.prefix?.at ?? previous.size)) {
     if (reads.verifiable && !uncheckedGrowths.has(path)) {
       remember(uncheckedGrowths, path, true, 64);
       throw new RevisionUnchecked();
     }
-    next = { ...next, generation: randomUUID(), hash: undefined, hashed: 0, prefix: undefined };
+    // a link's digests are never checked: its next growth is measured from here
+    next = reads.verifiable ? { ...next, generation: randomUUID(), forced: true } : { ...next, generation: randomUUID(), hash: undefined, hashed: 0, prefix: undefined };
   }
   if (read) uncheckedGrowths.delete(path);
   remember(transcriptRevisions, path, next, 64);
@@ -425,7 +430,9 @@ function* transcriptRevisionSteps(path: string, stat: RevisionStat, checkWindow:
     prefix = head ? { digest: head.digest("base64"), at: stat.size } : undefined;
   }
   const generation = rewritten ? randomUUID() : previous?.identity === identity ? previous.generation : "";
-  return { previous, next: { identity, size: stat.size, changed, generation, hash, hashed, prefix, window } };
+  // only a read that checked nothing leaves a forced generation as it was
+  const forced = !read && same && !rewritten && previous.forced === true;
+  return { previous, next: forced ? { identity, size: stat.size, changed, generation, hash, hashed, prefix, window, forced } : { identity, size: stat.size, changed, generation, hash, hashed, prefix, window } };
 }
 
 /** The revision check's file: read on the event loop (finish) or through the thread pool (finishAsync). */
