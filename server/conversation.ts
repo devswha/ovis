@@ -1913,7 +1913,7 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
     if (route === null) throw new ConversationUnavailable("no_session_path");
   }
   // herdr names no session of this store (or another agent's): the pane's omp process does
-  const held = route === null ? null : ompRouteTranscript(await ompHeldOpen(route, { core: servingCore(), reported: path }), cwd);
+  const held = route === null ? null : ompRouteTranscript(await ompHeldOpen(route, servingCore()), cwd);
   if (held === null) throw new ConversationUnavailable("no_session_path");
   // the held transcript is the pane's own, in the store its process keeps: authorized there, and read so
   const authorized = authorizedTranscript(held, route!.layout.sessions);

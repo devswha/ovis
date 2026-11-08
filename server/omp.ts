@@ -341,14 +341,15 @@ async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, str
 }
 
 /**
- * The route as the held transcript is read from it. On macOS herdr-core (`core`) there is no /proc
- * and no herdr report, and omp's breadcrumb proves nothing (#3365): only the files a process holds
- * open do. lsof is run for them only when herdr `reported` no session path for the pane; with one,
- * and when lsof proves nothing, no file is held, and heldTranscript then binds nothing.
+ * The route as the held transcript is read from it, once herdr's report for the pane gave no usable
+ * path (none, or one rejected: outside the omp's store, or not its session). On macOS herdr-core
+ * (`core`) there is no /proc and omp's breadcrumb proves nothing (#3365): only the files a process
+ * holds open do, so lsof lists them, and when it proves nothing no file is held and heldTranscript
+ * binds nothing.
  */
-export async function ompHeldOpen(route: OmpRoute, { core, reported }: { core: boolean; reported: string | null }): Promise<OmpRoute> {
+export async function ompHeldOpen(route: OmpRoute, core: boolean): Promise<OmpRoute> {
   if (process.platform !== "darwin" || !core) return route;
-  const open = reported === null ? await darwinOpenFiles(route.pids) : new Map<number, string[]>();
+  const open = await darwinOpenFiles(route.pids);
   return { ...route, openFilesOf: (pid) => open.get(pid) ?? [] };
 }
 
@@ -475,7 +476,7 @@ export function ompBlobStore(transcript: string): string | null {
 }
 
 /** The transcript the pane's omp process holds open or last pointed its terminal breadcrumb at, or null (ompRouteTranscript, read as ompHeldOpen says). */
-export async function ompHeldTranscript(paneId: string, cwd: string, held: { core: boolean; reported: string | null } = { core: false, reported: null }): Promise<string | null> {
+export async function ompHeldTranscript(paneId: string, cwd: string, core = false): Promise<string | null> {
   const route = await ompPaneRoute(paneId);
-  return route === null || route === "unproved" ? null : ompRouteTranscript(await ompHeldOpen(route, held), cwd);
+  return route === null || route === "unproved" ? null : ompRouteTranscript(await ompHeldOpen(route, core), cwd);
 }

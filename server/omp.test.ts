@@ -593,7 +593,7 @@ describe("an omp pane's chat", () => {
       writeFileSync(marker, `${pane.cwd}\n${session}\n`);
       fs.utimesSync(marker, at / 1000, at / 1000);
     };
-    const held = () => ompHeldTranscript(pane.pane_id, pane.cwd!, { core: true, reported: null });
+    const held = () => ompHeldTranscript(pane.pane_id, pane.cwd!, true);
     beforeEach(() => {
       const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
       Object.defineProperty(process, "platform", { value: "darwin" });
@@ -686,18 +686,23 @@ describe("an omp pane's chat", () => {
       } finally { timer.mockRestore(); }
     });
 
-    it("runs lsof only on herdr-core, and only when herdr reports no session path", async () => {
+    it("runs lsof only on herdr-core, and only when herdr's report gives no usable session path", async () => {
       const continued = storeTranscript(pane.cwd!);
       breadcrumb(continued, Date.now());
       listing = listed([continued]);
-      // herdr names a session outside the omp's store: no lsof, and no breadcrumb either
+      // herdr's report in the omp's store is taken as it is: no lsof
+      agentSession = { agent: "omp", kind: "path", value: continued };
+      expect(await chat()).toEqual(synthetic);
+      expect(lsofCalls).toEqual([]);
+      // a report outside the omp's store is rejected: lsof finds the session the omp holds
       agentSession = { agent: "omp", kind: "path", value: join(home, "elsewhere.jsonl") };
-      await expect(paneConversation(pane.pane_id)).rejects.toThrow("no_session_path");
+      expect(await chat()).toEqual(synthetic);
+      expect(lsofCalls).toHaveLength(1);
       // herdr's own TUI keeps its breadcrumb, without lsof
       agentSession = undefined;
       core = false;
       expect(await chat()).toEqual(synthetic);
-      expect(lsofCalls).toEqual([]);
+      expect(lsofCalls).toHaveLength(1);
     });
   });
 
