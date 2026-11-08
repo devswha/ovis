@@ -9,6 +9,7 @@
  * or was aborted a rest after a failure. A cloud conversation keeps its messages on the server:
  * its status stays unknown. A pane a report gives a status keeps it.
  */
+import type { AgentStatus } from "../shared/herdr-api.generated.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { titleStatus } from "./agent-identity.ts";
 import { gjcTurnAfter } from "./gjc-status.ts";
@@ -43,22 +44,36 @@ export async function lettaPanes(panes: HerdrPane[], deps: LettaDiscovery = {}):
 /**
  * A Letta pane still without a status once its local messages had their say (a cloud conversation,
  * whose messages are on the server, or one not bound): Letta's own title, which carries a spinner
- * while a turn runs. Only where no report gave a status and no messages file is tracked.
+ * while a turn runs. Only where no report gave a status and no messages file is tracked. Returns
+ * the panes whose title status changed since `last` saw them, which keeps each pane's last one.
  */
-export function lettaTitleStatus(panes: HerdrPane[], tracks: (paneId: string) => boolean): void {
+export function lettaTitleStatus(panes: HerdrPane[], tracks: (paneId: string) => boolean, last: Map<string, AgentStatus>): { paneId: string; status: AgentStatus }[] {
+  const changed: { paneId: string; status: AgentStatus }[] = [];
+  const titled = new Set<string>();
   for (const pane of panes) {
     if (pane.agent !== "letta" || pane.agent_status !== "unknown" || tracks(pane.pane_id)) continue;
-    pane.agent_status = titleStatus(pane.agent, pane.terminal_title ?? pane.title) ?? pane.agent_status;
+    const status = titleStatus(pane.agent, pane.terminal_title ?? pane.title);
+    if (status === null) continue;
+    pane.agent_status = status;
+    titled.add(pane.pane_id);
+    // the first look is no change: a pane found at work or at rest tells nobody, as a tracker's first read
+    const before = last.get(pane.pane_id);
+    if (before !== undefined && before !== status) changed.push({ paneId: pane.pane_id, status });
+    last.set(pane.pane_id, status);
   }
+  for (const paneId of [...last.keys()]) if (!titled.has(paneId)) last.delete(paneId);
+  return changed;
 }
 
 /**
  * The tracker's Letta composition, as GJC's: no aliases, no background counts, an unfinished turn
  * of a process that is gone told as a failed rest, and a status only once a whole turn record was read.
  */
-export function createLettaStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | "turnAfter" | "ready" | "background" | "staleIsFailure">): OmoStatus {
+export function createLettaStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | "turnAfter" | "ready" | "background" | "staleIsFailure" | "refreshMs">): OmoStatus {
   return new OmoStatus({
     ...deps,
+    // a /new or /resume moves the pane to another conversation: found again within a second
+    refreshMs: 1000,
     agent: "letta",
     aliases: [],
     turnAfter: lettaTurnAfter,

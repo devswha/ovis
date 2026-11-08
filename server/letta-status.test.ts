@@ -37,8 +37,16 @@ describe("a Letta pane's status from its local messages", () => {
   it("takes Letta's own title where no report and no tracked messages file gave a status", () => {
     const titled = (id: string, status: HerdrPane["agent_status"], title: string, agent = "letta") => ({ ...pane(id, agent, status), terminal_title: title } as HerdrPane);
     const panes = [titled("t1", "unknown", "⠋ Tutor"), titled("t2", "unknown", "Tutor"), titled("t3", "unknown", "⠋ Tutor"), titled("t4", "blocked", "⠋ Tutor"), titled("t5", "unknown", "⠋ x", "claude")];
-    lettaTitleStatus(panes, (paneId) => paneId === "t3");
+    const last = new Map<string, HerdrPane["agent_status"]>();
+    // the first look tells nobody
+    expect(lettaTitleStatus(panes, (paneId) => paneId === "t3", last)).toEqual([]);
     expect(panes.map((p) => p.agent_status)).toEqual(["working", "idle", "unknown", "blocked", "unknown"]);
+    // a turn ends in t1 and starts in t2: both are told, as a tracked pane's turns are
+    const next = [titled("t1", "unknown", "Tutor"), titled("t2", "unknown", "⠙ Tutor")];
+    expect(lettaTitleStatus(next, () => false, last)).toEqual([{ paneId: "t1", status: "idle" }, { paneId: "t2", status: "working" }]);
+    // a pane gone, or given a status by a report, is forgotten: its next title is a first look again
+    expect(lettaTitleStatus([titled("t2", "working", "Tutor")], () => false, last)).toEqual([]);
+    expect([...last.keys()]).toEqual([]);
   });
 
   it("keeps a cloud conversation, whose messages are on the server, without a file", async () => {

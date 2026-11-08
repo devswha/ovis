@@ -150,6 +150,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onFound: (paneId) => completions.adopt(paneId, "gjc", []),
   }, omo);
   /** Letta panes no report gives a status get it from Letta's own local messages (server/letta-status.ts) */
+  /** each Letta pane's status as its own title last said it, where nothing else gave one (letta-status.ts lettaTitleStatus) */
+  const lettaTitled = new Map<string, AgentStatus>();
   const letta = createLettaStatus({
     discover: (panes) => lettaPanes(panes),
     snapshot: omoSnapshot,
@@ -293,9 +295,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const read = opencodeAgents.beginRead();
     const snapshot = await omoSnapshot();
     await gjc.refresh(snapshot.panes);
+    // a report or another agent takes a pane back from Letta's own files
+    for (const pane of snapshot.panes) if (letta.runs(pane.pane_id) && (pane.agent !== "letta" || pane.agent_status !== "unknown")) letta.ended(pane.pane_id);
     await letta.refresh(snapshot.panes);
     const named = letta.apply(gjc.apply(omo.apply(snapshot)));
-    lettaTitleStatus(named.panes, (paneId) => letta.tracks(paneId));
+    for (const { paneId, status } of lettaTitleStatus(named.panes, (paneId) => letta.tracks(paneId), lettaTitled)) gjcChanged(paneId, status, true, undefined, "letta");
     const ids = new Set(named.panes.map((pane) => pane.pane_id));
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;
@@ -496,6 +500,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     } finally { settling = was; }
     const raw = restingClaude(paneId, agent, launchedAgents.settle(paneId, read));
     gjc.poll();
+    // a report or another agent takes the pane back from Letta's own files
+    if (letta.runs(paneId) && (agent !== "letta" || read !== "unknown")) letta.ended(paneId);
     letta.poll();
     // read back from a snapshot around a gap between subscriptions. An OmO pane's status there
     // is OmO's own or herdr's by turns (server/omo-status.ts), and a difference is no change;
