@@ -7,6 +7,7 @@ import { imageType, inlineImageType } from "./codex-images.ts";
 import { skillDocument } from "./skill-activity.ts";
 import { grokPromptSkill } from "./skill-invocations/grok.ts";
 import { toolSummary } from "./transcript-records.ts";
+import { openBound } from "./conversation-shared.ts";
 import { trimOutput } from "./tool-output.ts";
 
 type RecordValue = Record<string, unknown>;
@@ -128,7 +129,8 @@ export function grokProjection(path: string, stat: { dev: number; ino: number; s
   // Known limitation: one malformed or unreconstructable record keeps this file on the
   // terminal view until it is replaced or shrinks. Skipping the line could misplace a rewind.
   if (index.failed) throw new GrokUnavailable();
-  const fd = openSync(path, "r");
+  // the file a page read is bound to, never another a folder swapped in around this open puts there
+  const fd = openBound(path);
   let position = index.scanned;
   let carry: Buffer[] = [];
   let carried = 0;

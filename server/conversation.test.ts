@@ -2214,6 +2214,53 @@ describe("transcript pages", () => {
     expect(() => transcriptPage("codex-transcript", segment, { before: before.cursor! }, home)).toThrow(HistoryChanged);
   });
 
+  it("answers nothing from another rollout that a folder swap puts at a parent rollout's path around its opens", () => {
+    const home = join(temp(), "codex");
+    const thread = "01a0a337-19e8-7712-92f5-aa0883392afd";
+    // the other conversation's prompts are as long as the pane's, so its rollout fills the same offsets
+    const task = (n: number, said = "prompt ") => [
+      { type: "event_msg", timestamp: "2026-09-23T00:00:00.000Z", payload: { type: "task_started" } },
+      { type: "response_item", timestamp: "2026-09-23T00:00:00.000Z", payload: { type: "message", role: "user", content: [{ type: "input_text", text: `${said}${n}` }] } },
+      { type: "response_item", timestamp: "2026-09-23T00:00:01.000Z", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `answer ${n}` }] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n");
+    const meta = (extra = {}) => JSON.stringify({ type: "session_meta", payload: { source: "cli", thread_source: "user", ...extra } });
+    const day = join(home, "sessions", "2026", "09", "15");
+    const elsewhere = join(temp(), "15");
+    mkdirSync(day, { recursive: true });
+    mkdirSync(elsewhere);
+    mkdirSync(join(home, "sessions", "2026", "09", "23"), { recursive: true });
+    const name = `rollout-2026-09-15T12-58-12-${thread}.jsonl`;
+    const kept = `${meta()}\n${Array.from({ length: 80 }, (_, n) => task(n)).join("\n")}\n`;
+    writeFileSync(join(day, name), kept);
+    writeFileSync(join(elsewhere, name), `${meta()}\n${Array.from({ length: 80 }, (_, n) => task(n, "FOREIGN")).join("\n")}\n`);
+    // right after a backtrack the live file is small: its newest page reaches into the parent
+    const segment = join(home, "sessions", "2026", "09", "23", `rollout-2026-09-23T10-46-43-${thread}_01a0cbf1-9b0e-7383-a345-80974b279c68.jsonl`);
+    writeFileSync(segment, `${meta({ history_base: { thread_id: thread, end_ordinal_exclusive: kept.split("\n").length - 1, end_byte_offset: Buffer.byteLength(kept) } })}\n${Array.from({ length: 3 }, (_, n) => task(80 + n)).join("\n")}\n`);
+    forgetHistoryChains();
+    const parent = join(day, name);
+    const away = join(temp(), "away");
+    let swaps = 0;
+    const { openSync } = fs;
+    const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== parent) return openSync(...args);
+      swaps++;
+      renameSync(day, away);
+      renameSync(elsewhere, day);
+      try { return openSync(...args); }
+      finally {
+        renameSync(day, elsewhere);
+        renameSync(away, day);
+      }
+    }) as typeof fs.openSync);
+    let answer: unknown;
+    try { answer = transcriptPage("codex-transcript", segment, {}, home); }
+    catch (error) { answer = error; }
+    finally { opens.mockRestore(); }
+    expect(swaps).toBeGreaterThan(0);
+    expect(JSON.stringify(answer)).not.toContain("FOREIGN");
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+  });
+
   it("pages across the rollouts a backtracked Codex conversation continues", () => {
     const home = join(temp(), "codex");
     const thread = "01a0a337-19e8-7712-92f5-aa0883392afd";
@@ -3224,6 +3271,60 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(swaps).toBeGreaterThan(0);
     expect(JSON.stringify(answer)).not.toContain("FOREIGN");
     expect(answer).toBeInstanceOf(ConversationReadPending);
+  });
+
+  /** Another agent's folder beside the pane's, put in place of the pane's around each open of `path` that `swapping` picks. */
+  const swapOpens = (swapping: (open: number) => boolean) => {
+    const project = join(root, "project");
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    const counts = { opens: 0, swaps: 0 };
+    const { openSync } = fs;
+    restores.push(spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== path || !swapping(counts.opens++)) return openSync(...args);
+      counts.swaps++;
+      renameSync(project, away);
+      renameSync(elsewhere, project);
+      try { return openSync(...args); }
+      finally {
+        renameSync(project, elsewhere);
+        renameSync(away, project);
+      }
+    }) as typeof fs.openSync));
+    return counts;
+  };
+  const folders = (own: string, foreign: string) => {
+    mkdirSync(join(root, "project"));
+    mkdirSync(join(root, "elsewhere"));
+    path = join(root, "project", "session.jsonl");
+    writeFileSync(path, own);
+    writeFileSync(join(root, "elsewhere", "session.jsonl"), foreign);
+    restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }));
+  };
+
+  it("answers nothing from another agent's branch index that a folder swap puts at the path for an open after the verified one", async () => {
+    // the other agent's live path carries pi's summary of a branch; the pane's own file is the longer one
+    folders(
+      JSON.stringify({ type: "session", id: "cmd-ownses", version: 3 }) + "\n" + message("u1", null, "own words ".repeat(30)),
+      JSON.stringify({ type: "session", id: "cmd-foreig", version: 3 }) + "\n"
+        + JSON.stringify({ type: "branch_summary", id: "s1", parentId: null, summary: "PI FOREIGN SECRET" }) + "\n" + message("u2", "s1", "hi"),
+    );
+    // the page's first open of the path is the verified one; every later open meets the other folder
+    const counts = swapOpens((open) => open > 0);
+    const answer: unknown = await paneConversation(pane.pane_id).catch((error: unknown) => error);
+    expect(counts.swaps).toBeGreaterThan(0);
+    expect(JSON.stringify(answer)).not.toContain("FOREIGN");
+    expect(answer).toBeInstanceOf(ConversationReadPending);
+  });
+
+  it("answers no tool output from another agent's transcript that a folder swap puts at the path around the lookup's opens", async () => {
+    const result = (id: string, text: string) => JSON.stringify({ type: "session", id, version: 3 }) + "\n"
+      + JSON.stringify({ type: "message", id: "a1", parentId: null, message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text }] } }) + "\n";
+    folders(result("cmd-ownses", "the pane's own output"), result("cmd-foreig", "PI FOREIGN SECRET...."));
+    expect(await toolOutput(pane.pane_id, "call_1")).toBe("the pane's own output");
+    const counts = swapOpens(() => true);
+    expect(await toolOutput(pane.pane_id, "call_1")).toBeNull();
+    expect(counts.swaps).toBeGreaterThan(0);
   });
 
   it("answers a pending read, not the new file, when the agent replaces its transcript by atomic rename between the settle and the page read", async () => {

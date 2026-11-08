@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import { appendFileSync, closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { forgetTranscriptState, HistoryChanged, transcriptPage } from "./conversation.ts";
+import { ConversationReadPending, forgetTranscriptState, HistoryChanged, transcriptPage } from "./conversation.ts";
 import { grokImage, grokToolOutput, grokProjection, GrokUnavailable, parseGrokTranscript } from "./grok.ts";
 import { darwinProcess } from "./claude-store.ts";
 import { grokHeldSessionsFromLsof, grokHomeFromEnvironment, grokLsofEvidence, grokPaneProcesses, grokTranscriptPath, isGrokExecutable, resolveGrokStore } from "./grok-store.ts";
@@ -235,6 +235,32 @@ describe("shared pager projection", () => {
     appendFileSync(path, bytes.subarray(split));
     expect(page().turns.at(-1)!.parts).toEqual([{ kind: "text", text: "hello 🌍" }]);
     expect(page().metadata.model).toBe("fictional-model");
+  });
+  test("projects nothing from another session that a folder swap puts at the path around the projection's open", () => {
+    writeFileSync(path, user(0, "the pane's prompt") + answer("the pane's answer"));
+    const folder = dirname(path);
+    const elsewhere = join(root, "elsewhere");
+    const away = join(root, "away");
+    mkdirSync(elsewhere);
+    writeFileSync(join(elsewhere, "updates.jsonl"), user(0, "FOREIGN prompt...") + answer("FOREIGN answer..."));
+    // only the first open of the path, the projection's, meets the other session's folder
+    let opens = 0;
+    const real = fs.openSync;
+    const spy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+      if (args[0] !== path || opens++ > 0) return real(...args);
+      renameSync(folder, away);
+      renameSync(elsewhere, folder);
+      try { return real(...args); }
+      finally {
+        renameSync(folder, elsewhere);
+        renameSync(away, folder);
+      }
+    }) as typeof fs.openSync);
+    let answered: unknown;
+    try { answered = page(); } catch (error) { answered = error; } finally { spy.mockRestore(); }
+    expect(opens).toBeGreaterThan(0);
+    expect(JSON.stringify(answered)).not.toContain("FOREIGN");
+    expect(answered).toBeInstanceOf(ConversationReadPending);
   });
   test("truncation resets history and tool refs; refs cannot cross stores", () => {
     writeFileSync(path, user(0) + tool() + update("a".repeat(6000)));

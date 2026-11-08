@@ -14,6 +14,7 @@ import { CODEX_TOOL_IMAGE_REF, codexImageParts, codexOutputPictures } from "./co
 import { codexReadCall, codexReadSkills, selectedSkill } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
 import type { TranscriptParser } from "./transcript-records.ts";
+import { openBound } from "./conversation-shared.ts";
 import type { AgentInfo } from "../shared/herdr-api.generated.ts";
 import { agentGet, HerdrError, paneGet, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { kiroCodexProcess, kiroNested, kiroWrapper } from "./kiro-terminal.ts";
@@ -711,7 +712,8 @@ export function codexRolloutPath(path: string, codexHome: string): string | null
 
 /** Bytes [start, end) of a file as text; a cut first line is dropped. */
 export function readRange(path: string, start: number, end: number): string {
-  const fd = openSync(path, "r");
+  // refused where a read bound the path to another file (openBound)
+  const fd = openBound(path);
   try {
     const buffer = Buffer.alloc(Math.max(0, end - start));
     const length = readSync(fd, buffer, 0, buffer.length, start);
