@@ -530,7 +530,8 @@ const BASE: Record<string, string> = {
   "Ready · not in the account yet": "就绪 · 尚未加入账户",
   "Adding it to your account…": "正在添加到账户…",
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
-  "Every device of your account can open it": "你账户中的每台设备都能打开它",
+  "In your account": "已加入你的账户",
+  "Devices added: {count}": "已添加的设备：{count}台",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

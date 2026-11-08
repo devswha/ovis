@@ -89,8 +89,8 @@ describe("account pairing completion", () => {
   it("reports account completion only after enrollment resolves", async () => {
     const run = await pairing();
     run.enrollment.resolve(Response.json({ results: [] }));
-    await until(() => { const state = run.current().state; return state.kind === "ready" && state.enrollment === "complete"; });
-    expect(run.current().state).toMatchObject({ kind: "ready", enrollment: "complete" });
+    await until(() => { const state = run.current().state; return state.kind === "ready" && typeof state.enrollment === "object" && state.enrollment.state === "complete"; });
+    expect(run.current().state).toMatchObject({ kind: "ready", enrollment: { state: "complete", admitted: 0 } });
     expect(run.apps()).toBe(0);
   });
 
@@ -103,7 +103,7 @@ describe("account pairing completion", () => {
       });
       run.enrollment.resolve(Response.json({ results: [] }));
       await until(async () => (await run.rows())[0]?.enrollment !== "pending");
-      expect(run.current().state).toMatchObject({ kind: "ready", enrollment: "complete" });
+      expect(run.current().state).toMatchObject({ kind: "ready", enrollment: { state: "complete", admitted: 0 } });
     } finally { clock.mockRestore(); }
   });
 
@@ -117,7 +117,7 @@ describe("account pairing completion", () => {
     expect(JSON.stringify(state)).not.toContain("private enrollment diagnostic");
     run.retrySuccess();
     run.current().onRetry();
-    await until(() => { const current = run.current().state; return current.kind === "ready" && current.enrollment === "complete"; });
+    await until(() => { const current = run.current().state; return current.kind === "ready" && typeof current.enrollment === "object" && current.enrollment.state === "complete"; });
     expect(run.apps()).toBe(0);
   });
 
