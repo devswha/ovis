@@ -1,311 +1,259 @@
 import "./RelayMap.css";
 
-import { Lock, Monitor, MonitorSmartphone, RadioTower } from "lucide-react";
+import { Lock, MonitorSmartphone, RadioTower } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { relayHost, type dashboardModel } from "../lib/relay/dashboard.ts";
-import { useT } from "../lib/i18n.ts";
+import { relayHost } from "../lib/relay/dashboard.ts";
+import { currentLocale, useT } from "../lib/i18n.ts";
 import type { Translate } from "../lib/i18n.ts";
+import { lastSeen } from "../lib/lastSeen.ts";
+import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
+import {
+  checkingWirePaths, clip, hubWireState, isRegionalRelay, layoutRelayMap,
+  nodeStatusDotState, nodeWireState, placeLabel, relayHandshake, relayHandshakeMs, wire,
+} from "./relayMapLayout.ts";
+import type { LabelSide, PlacedHub, PlacedPc, RelayHandshake, RelayMapLayout, RelayMapModel, RelayMapNode, WireState } from "./relayMapLayout.ts";
 
-/*
- * The dashboard's connection map: this device on the left, one hub per relay (the first large, the
- * others small), the account's PCs on an orbit, wires between them. The technique follows GOAT's
- * FleetGraph (goat-si/goat @ cf6fbaee, apps/web/src/components/fleet/FleetGraph.tsx and
- * apps/web/src/index.css): a dashed orbit ellipse, cubic wires, a flowing stepped dash and SMIL
- * animateMotion particles on live wires. No code of it is used. The data is only what the front
- * page has (lib/relay/dashboard.ts): a PC's state and whether the account directory saw it lately.
- * A flowing wire means "seen lately", never an open session or a live connection; a paired PC the
- * directory never saw keeps a still wire and says so.
- */
+export { clip, layoutRelayMap, placeLabel, relayHandshake, relayHandshakeMs, wire };
+export type { LabelSide, PlacedHub, PlacedPc, RelayHandshake, RelayMapLayout, RelayMapModel, RelayMapNode, WireState };
 
-export type RelayMapModel = ReturnType<typeof dashboardModel>["map"];
-export type RelayMapNode = RelayMapModel["hubs"][number]["nodes"][number];
-
-export type LabelSide = "right" | "above" | "below";
-type Placed = { x: number; y: number; r: number; side: LabelSide };
-export type PlacedPc = Placed & { kind: "pc"; node: RelayMapNode; hub: number };
-export type PlacedHub = Placed & { kind: "hub"; hub: number; origin: string };
-export type RelayMapLayout = {
-  width: number;
-  height: number;
-  orbit: { cx: number; cy: number; rx: number; ry: number };
-  me: Placed;
-  primary: PlacedHub;
-  items: (PlacedPc | PlacedHub)[];
-};
-
-const NODE_R = 22;
-const HUB_R = 34;
-const SMALL_HUB_R = 18;
-/** degrees of the orbit the items share, the gap left of it being this device's */
-const ARC = 300;
-const MAX_STEP = 60;
-/** within this many degrees of the orbit's right vertex the words sit beside the node; elsewhere they face away from the hub, clear of the wire */
-const RIGHT_ZONE = 60;
-/** from this many orbit items the orbit grows (a wider viewBox: smaller type, more room between words) */
-const DENSE_FROM = 9;
-const MAX_DOTS = 8;
-/** a name longer than this (CJK counted double) is cut: the whole name stays in the node's title and in the route list */
-const NAME_UNITS = 18;
-
-type Slot = { kind: "pc"; node: RelayMapNode; hub: number } | { kind: "hub"; hub: number; origin: string };
-
-/**
- * Where everything sits, by index alone, clockwise from the upper left: the first relay's PCs in
- * the middle of the arc (the right side), the other relays at the arc's ends nearest this device,
- * each after (or before) its own PCs so it is the end. One relay centres its fan on the right; a
- * second relay packs the sequence towards the lower left. `null` with no PC at all.
- */
-export function layoutRelayMap(map: RelayMapModel): RelayMapLayout | null {
-  const [first, ...others] = map.hubs;
-  if (first === undefined) return null;
-  const pcSlots = (hub: RelayMapModel["hubs"][number], at: number): Slot[] => hub.nodes.map((node) => ({ kind: "pc", node, hub: at }));
-  const head: Slot[] = [];
-  const tail: Slot[] = [];
-  others.forEach((hub, i) => {
-    const own: Slot = { kind: "hub", hub: i + 1, origin: hub.origin };
-    if (i % 2 === 0) tail.push(...pcSlots(hub, i + 1), own);
-    else head.unshift(own, ...pcSlots(hub, i + 1));
-  });
-  const slots = [...head, ...pcSlots(first, 0), ...tail];
-  const n = slots.length;
-  const dense = n >= DENSE_FROM;
-  const rx = dense ? 430 : 300;
-  const ry = dense ? 180 : 128;
-  const cx = dense ? 640 : 480;
-  const cy = ry + NODE_R + 36;
-  const step = n > 1 ? Math.min(MAX_STEP, ARC / (n - 1)) : 0;
-  const start = tail.length > 0 && head.length === 0 ? ARC / 2 - step * (n - 1) : -step * (n - 1) / 2;
-  const items = slots.map((slot, i): PlacedPc | PlacedHub => {
-    const degrees = start + step * i;
-    const angle = degrees * Math.PI / 180;
-    return {
-      ...slot,
-      r: slot.kind === "pc" ? NODE_R : SMALL_HUB_R,
-      x: Math.round(cx + rx * Math.cos(angle)),
-      y: Math.round(cy + ry * Math.sin(angle)),
-      side: Math.abs(degrees) < RIGHT_ZONE ? "right" : degrees < 0 ? "above" : "below",
-    };
-  });
-  return {
-    width: cx * 2,
-    height: cy + ry + NODE_R + 44,
-    orbit: { cx, cy, rx, ry },
-    me: { x: 110, y: cy, r: NODE_R, side: "below" },
-    primary: { kind: "hub", hub: 0, origin: first.origin, x: cx, y: cy, r: HUB_R, side: "below" },
-    items,
-  };
+export interface RelayMapProps {
+  readonly map: RelayMapModel;
+  readonly selectedPcId?: string | null;
+  readonly onSelectPc?: (serverId: string) => void;
+  readonly onSelectRelay?: (origin: string) => void;
+  readonly standalone?: boolean;
 }
 
-/** The baseline of a node's first line and its anchor; the second line sits 14 under it. */
-export function placeLabel({ x, y, r, side }: Placed, lines: 1 | 2): { x: number; y: number; anchor: "start" | "middle" } {
-  if (side === "right") return { x: x + r + 12, y: lines === 2 ? y - 1 : y + 4, anchor: "start" };
-  if (side === "above") return { x, y: y - r - (lines === 2 ? 22 : 8), anchor: "middle" };
-  return { x, y: y + r + 16, anchor: "middle" };
-}
-
-/**
- * A wire from one ring to another. From the hub it leaves early, bends, and arrives level, as
- * GOAT's edges do; between two nodes on the orbit it keeps near its chord, bowed a little towards
- * `bow` (the orbit's centre), so it neither runs along the dashed orbit nor loops through the middle.
- */
-function wire(from: Placed, to: Placed, bow: { x: number; y: number } | null = null): string {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const sx = from.x + dx / length * from.r;
-  const sy = from.y + dy / length * from.r;
-  const ex = to.x - dx / length * to.r;
-  const ey = to.y - dy / length * to.r;
-  const at = (v: number) => Math.round(v);
-  if (bow === null) {
-    return `M${at(sx)} ${at(sy)} C${at(sx + (ex - sx) * 0.32)} ${at(sy + (ey - sy) * 0.66)}, ${at(sx + (ex - sx) * 0.62)} ${at(sy + (ey - sy) * 0.94)}, ${at(ex)} ${at(ey)}`;
-  }
-  const pull = Math.min(36, Math.hypot(ex - sx, ey - sy) * 0.15);
-  const control = (px: number, py: number): string => {
-    const toBow = Math.hypot(bow.x - px, bow.y - py) || 1;
-    return `${at(px + (bow.x - px) / toBow * pull)} ${at(py + (bow.y - py) / toBow * pull)}`;
-  };
-  return `M${at(sx)} ${at(sy)} C${control(sx + (ex - sx) / 3, sy + (ey - sy) / 3)}, ${control(sx + (ex - sx) * 2 / 3, sy + (ey - sy) * 2 / 3)}, ${at(ex)} ${at(ey)}`;
-}
-
-/** Text cut to `max` units, a CJK character counting two, with an ellipsis when cut. */
-export function clip(text: string, max = NAME_UNITS): string {
-  let units = 0;
-  let end = 0;
-  for (const ch of text) {
-    units += /[\u2E80-\uFFFF]/.test(ch) ? 2 : 1;
-    if (units > max) return `${text.slice(0, end)}…`;
-    end += ch.length;
-  }
-  return text;
-}
-
-function keyOf(node: RelayMapNode): "lately" | RelayMapNode["state"] {
-  return node.seen === "lately" ? "lately" : node.state;
-}
-
-/** The words under a PC: seen lately, paired but never seen, or what it waits for. */
 function wordOf(node: RelayMapNode, t: Translate): string {
-  if (node.seen === "lately") return t("Seen lately");
+  if (node.check?.kind === "checking") return t("Checking…");
+  if (node.state === "offline") return t("Offline");
+  if (node.state === "needs-approval" || node.state === "needs-update") return t("Needs you");
+  if (node.check?.kind === "offline") return t("Offline");
+  if (node.check?.kind === "answered") return `${t("Answers")} · ${t("{n} ms", { n: node.check.rttMs })}`;
+  return node.seen === "lately" ? t("Seen lately") : t("Paired · not checked");
+}
+
+function detailOf(node: RelayMapNode, t: Translate): string {
   switch (node.state) {
-    case "paired": return t("Paired · status unknown");
-    case "needs-approval": return t("Needs approval");
-    case "needs-update": return t("Update Ovis on it");
+    case "needs-approval": return `${t("Needs you")} · ${t("Needs approval")}`;
+    case "needs-update": return `${t("Needs you")} · ${t("Update Ovis on it")}`;
     case "offline": return t("Offline");
+    case "paired": return wordOf(node, t);
   }
 }
 
-function wireOf(seen: RelayMapNode["seen"]): "live" | "still" | "off" {
-  return seen === "lately" ? "live" : seen === "stale" ? "off" : "still";
+function seenTitleOf(node: RelayMapNode, t: Translate): string {
+  return node.last_seen_at === null ? t("Last seen: unknown") : `${t("Last seen")} · ${lastSeen(node.last_seen_at)}`;
 }
 
-const isHub = (item: PlacedPc | PlacedHub): item is PlacedHub => item.kind === "hub";
-const isPc = (item: PlacedPc | PlacedHub): item is PlacedPc => item.kind === "pc";
-
-/** The map of the account's PCs; nothing at all without a PC (the dashboard shows its empty state). */
-export function RelayMap({ map }: { map: RelayMapModel }) {
-  const layout = layoutRelayMap(map);
-  if (layout === null) return null;
-  return <RelayMapFigure map={map} layout={layout} />;
+function NodeTooltip({ node, detail, t }: { readonly node: RelayMapNode; readonly detail: string; readonly t: Translate }) {
+  const iso = node.last_seen_at ?? null;
+  return (
+    <span className="relay-map-tooltip" role="tooltip">
+      <strong>{node.name}</strong>
+      <span>{detail}</span>
+      <span className="relay-map-tooltip-seen">
+        {iso !== null
+          ? <>{t("Last seen")} · <time dateTime={iso} title={new Date(iso).toLocaleString(currentLocale())}>{lastSeen(iso)}</time></>
+          : t("Last seen: unknown")}
+      </span>
+    </span>
+  );
 }
 
-function RelayMapFigure({ map, layout }: { map: RelayMapModel; layout: RelayMapLayout }) {
+function activatePc(serverId: string, onSelectPc?: (id: string) => void): void {
+  if (onSelectPc) { onSelectPc(serverId); return; }
+  if (typeof window !== "undefined") window.location.hash = `#pcs?pc=${encodeURIComponent(serverId)}`;
+}
+
+function activateRelay(origin: string, onSelectRelay?: (relayOrigin: string) => void): void {
+  if (onSelectRelay) { onSelectRelay(origin); return; }
+  if (typeof window !== "undefined") window.location.hash = `#pcs?relay=${encodeURIComponent(relayHost(origin))}`;
+}
+
+export function RelayMap({ map, selectedPcId = null, onSelectPc, onSelectRelay, standalone = false }: RelayMapProps) {
+  const t = useT();
+  const totalPcs = map.hubs.reduce((sum, hub) => sum + hub.nodes.length, 0);
+  if (totalPcs === 0) {
+    if (!standalone) return null;
+    return (
+      <div className="relay-map-empty" data-map-empty="">
+        <RadioTower className="relay-map-empty-icon" aria-hidden="true" />
+        <p className="relay-map-empty-copy">{t("No relays in use yet.")}</p>
+      </div>
+    );
+  }
+  return <RelayMapFigure map={map} layout={layoutRelayMap(map)} selectedPcId={selectedPcId} {...(onSelectPc ? { onSelectPc } : {})} {...(onSelectRelay ? { onSelectRelay } : {})} />;
+}
+
+function RelayMapFigure({ map, layout, selectedPcId, onSelectPc, onSelectRelay }: {
+  readonly map: RelayMapModel;
+  readonly layout: RelayMapLayout | null;
+  readonly selectedPcId: string | null;
+  readonly onSelectPc?: (serverId: string) => void;
+  readonly onSelectRelay?: (origin: string) => void;
+}) {
   const t = useT();
   const svg = useRef<SVGSVGElement>(null);
   const [paused, setPaused] = useState(false);
 
-  // nothing moves off screen: the SMIL particles pause with the svg, the flowing dash through data-paused
   useEffect(() => {
     const node = svg.current;
-    if (node === null) return;
+    if (node === null || typeof IntersectionObserver === "undefined") return;
     const watch = new IntersectionObserver(([entry]) => setPaused(entry !== undefined && !entry.isIntersecting));
     watch.observe(node);
     return () => watch.disconnect();
-  }, []);
-  useEffect(() => {
-    const node = svg.current;
-    if (node === null) return;
-    if (paused) node.pauseAnimations();
-    else node.unpauseAnimations();
-  }, [paused]);
+  }, [layout]);
 
   const nodes = map.hubs.flatMap((hub) => hub.nodes);
-  const count = (test: (node: RelayMapNode) => boolean) => nodes.filter(test).length;
-  const counts = {
-    lately: count((node) => node.seen === "lately"),
-    ready: count((node) => node.state === "paired"),
-    approval: count((node) => node.state === "needs-approval"),
-    update: count((node) => node.state === "needs-update"),
-    offline: count((node) => node.state === "offline"),
-  };
+  const dotStates = new Set(nodes.map(nodeStatusDotState));
+  const hasLiveWire = nodes.some((node) => nodeWireState(node) === "live");
+  const hasUnchecked = nodes.some((node) => node.state === "paired" && node.seen === "unknown" && node.check === null);
   const summary = t("Connection map: {me}. Relays: {relays}. PCs: {pcs}. Seen lately: {lately}. Ready: {ready}. Needs you: {needsYou}. Offline: {offline}.", {
     me: map.me.label,
     relays: map.hubs.map((hub) => relayHost(hub.origin)).join(", "),
     pcs: nodes.length,
-    lately: counts.lately,
-    ready: counts.ready,
-    needsYou: counts.approval + counts.update,
-    offline: counts.offline,
+    lately: nodes.filter((node) => node.seen === "lately").length,
+    ready: nodes.filter((node) => node.state === "paired").length,
+    needsYou: nodes.filter((node) => node.state === "needs-approval" || node.state === "needs-update").length,
+    offline: nodes.filter((node) => node.state === "offline").length,
   });
-  const legend: [key: string, label: string][] = [
-    ...(counts.lately > 0 ? [["lately", t("Seen lately")] as [string, string]] : []),
-    ...(counts.ready > 0 ? [["paired", t("Ready")] as [string, string]] : []),
-    ...(counts.approval > 0 ? [["needs-approval", t("Needs approval")] as [string, string]] : []),
-    ...(counts.update > 0 ? [["needs-update", t("Update Ovis on it")] as [string, string]] : []),
-    ...(counts.offline > 0 ? [["offline", t("Offline")] as [string, string]] : []),
+
+  const legendItems: { readonly key: string; readonly dot?: StatusDotState; readonly wire?: WireState; readonly label: string }[] = [
+    ...(hasLiveWire ? [{ key: "lately", wire: "live" as const, label: t("Seen lately") }] : []),
+    ...(dotStates.has("ready") ? [{ key: "ready", dot: "ready" as const, label: t("Ready") }] : []),
+    ...(dotStates.has("needs-you") ? [{ key: "needs-you", dot: "needs-you" as const, label: t("Needs you") }] : []),
+    ...(dotStates.has("checking") ? [{ key: "checking", dot: "checking" as const, label: t("Checking…") }] : []),
+    ...(hasUnchecked ? [{ key: "unchecked", dot: "offline" as const, label: t("Paired · not checked") }] : []),
+    ...(nodes.some((node) => node.state === "offline" || node.check?.kind === "offline") ? [{ key: "offline", dot: "offline" as const, label: t("Offline") }] : []),
   ];
 
-  const hubs = [layout.primary, ...layout.items.filter(isHub)].sort((a, b) => a.hub - b.hub);
-  const pcs = layout.items.filter(isPc);
-  const pcsOf = (hub: number) => pcs.filter((pc) => pc.hub === hub);
-  const { width, height, orbit, me } = layout;
-  const wireTo = (pc: PlacedPc) => wire(hubs[pc.hub]!, pc, pc.hub === 0 ? null : { x: orbit.cx, y: orbit.cy });
-  const liveWires = pcs.filter((pc) => pc.node.seen === "lately").map(wireTo);
+  const checkingWires = checkingWirePaths(map, layout);
+  const pos = (x: number, y: number, w: number, h: number) => ({ left: `${(x / w) * 100}%`, top: `${(y / h) * 100}%` });
 
   return (
-    <figure className="relay-map">
-      {legend.length > 0 && (
-        <ul className="relay-map-legend">
-          {legend.map(([key, label]) => <li key={key}><span className="relay-map-key" data-state={key} aria-hidden="true" />{label}</li>)}
-        </ul>
-      )}
-      <svg ref={svg} className="relay-map-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={summary} data-paused={paused ? "" : undefined}>
-        <ellipse className="relay-map-orbit" cx={orbit.cx} cy={orbit.cy} rx={orbit.rx} ry={orbit.ry} />
-        {hubs.map((hub) => {
-          const own = pcsOf(hub.hub);
-          const live = own.some((pc) => pc.node.seen === "lately");
-          const off = own.every((pc) => pc.node.seen === "stale");
-          return <path key={hub.origin} className="relay-map-edge" data-wire={live ? "live" : off ? "off" : "still"} data-hub={hub.origin} d={wire(me, hub)} />;
-        })}
-        {pcs.map((pc) => <path key={pc.node.server_id} className="relay-map-edge" data-wire={wireOf(pc.node.seen)} data-pc={pc.node.server_id} d={wireTo(pc)} />)}
-        {liveWires.map((d, i) => <path key={i} className="relay-map-flow" d={d} />)}
-        {liveWires.slice(0, MAX_DOTS).map((d, i) => (
-          <circle key={i} className="relay-map-dot" r={3.5}>
-            <animateMotion dur="2.6s" begin={`${-(i * 0.37)}s`} repeatCount="indefinite" path={d} calcMode="spline" keyTimes="0;1" keyPoints="1;0" keySplines="0.45 0 0.35 1" />
-          </circle>
-        ))}
-        {hubs.map((hub) => {
-          const label = placeLabel(hub, 1);
-          return (
-            <g key={hub.origin} className={hub.hub === 0 ? "relay-map-hub" : "relay-map-hub relay-map-hub-small"} transform={`translate(${hub.x} ${hub.y})`} data-hub={hub.origin}>
-              <circle className="relay-map-hub-disc" r={hub.r} />
-              {hub.hub === 0 ? <>
-                <RadioTower className="relay-map-glyph" x={-12} y={-12} width={24} height={24} strokeWidth={1.8} />
-                <rect className="relay-map-lock" x={16} y={16} width={20} height={20} rx={6} />
-                <Lock className="relay-map-lock-glyph" x={20} y={20} width={12} height={12} strokeWidth={2.2} />
-                <text className="relay-map-caption" y={56} textAnchor="middle">{`${relayHost(hub.origin)} · ${t("sees sizes, not content")}`}</text>
-              </> : <>
-                <RadioTower className="relay-map-glyph" x={-9} y={-9} width={18} height={18} strokeWidth={1.8} />
-                <text className="relay-map-caption" x={label.x - hub.x} y={label.y - hub.y} textAnchor={label.anchor}>{clip(relayHost(hub.origin), 24)}</text>
-              </>}
-            </g>
-          );
-        })}
-        <g className="relay-map-node" transform={`translate(${me.x} ${me.y})`} data-me="">
-          <circle className="relay-map-ring" r={me.r} />
-          <MonitorSmartphone className="relay-map-glyph" x={-10} y={-10} width={20} height={20} strokeWidth={1.8} />
-          <text className="relay-map-name" y={placeLabel(me, 1).y - me.y} textAnchor="middle">{clip(map.me.label)}</text>
-        </g>
-        {pcs.map((pc) => {
-          const label = placeLabel(pc, 2);
-          return (
-            <g key={pc.node.server_id} className="relay-map-node" transform={`translate(${pc.x} ${pc.y})`} data-pc-state={pc.node.state} data-seen={pc.node.seen}>
-              <title>{pc.node.name}</title>
-              <circle className="relay-map-ring" r={pc.r} />
-              <Monitor className="relay-map-glyph" x={-10} y={-10} width={20} height={20} strokeWidth={1.8} />
-              <text className="relay-map-name" x={label.x - pc.x} y={label.y - pc.y} textAnchor={label.anchor}>{clip(pc.node.name)}</text>
-              <text className="relay-map-word" x={label.x - pc.x} y={label.y - pc.y + 14} textAnchor={label.anchor}>{wordOf(pc.node, t)}</text>
-            </g>
-          );
-        })}
-      </svg>
-      <ol className="relay-map-routes" aria-label={summary}>
-        {map.hubs.map((hub, at) => (
-          <li key={hub.origin} className="relay-map-route">
-            {at === 0 && <>
-              <div className="relay-map-hop">
-                <span className="relay-map-hop-mark"><MonitorSmartphone aria-hidden="true" /></span>
-                <span className="relay-map-hop-name">{map.me.label}</span>
-              </div>
-              <div className="relay-map-link" data-live={counts.lately > 0 ? "" : undefined} aria-hidden="true" />
-            </>}
-            <div className="relay-map-hop relay-map-hop-hub">
-              <span className="relay-map-hop-mark"><RadioTower aria-hidden="true" /></span>
-              <span className="relay-map-host">{relayHost(hub.origin)}</span>
-              {at === 0 && <small className="relay-map-hop-note"><Lock aria-hidden="true" />{t("sees sizes, not content")}</small>}
+    <figure className="relay-map" data-diagram={layout !== null ? "true" : "false"}>
+      <figcaption className="relay-map-head">
+        <div className="relay-map-title-group">
+          <span className="relay-map-heading">{t("Connection map")}</span>
+          <small className="relay-map-security"><Lock aria-hidden="true" /><span>{t("sees sizes, not content")}</span></small>
+        </div>
+        {legendItems.length > 0 && (
+          <ul className="relay-map-legend" aria-hidden="true">
+            {legendItems.map((item) => (
+              <li key={item.key} data-legend-key={item.key}>
+                {item.wire !== undefined ? <span className="relay-map-wire-swatch" data-wire={item.wire} aria-hidden="true" /> : <StatusDot state={item.dot ?? "offline"} />}
+                <span>{item.label}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </figcaption>
+
+      {layout !== null && (
+        <div className="relay-map-diagram">
+          <svg ref={svg} className="relay-map-svg" viewBox={`0 0 ${layout.width} ${layout.height}`} role="img" aria-label={summary} aria-hidden="true" focusable="false" data-paused={paused ? "" : undefined}>
+            {layout.hubs.map((hub) => (
+              <path key={hub.origin} className="relay-map-edge" data-wire={hubWireState(map.hubs[hub.hub]?.nodes ?? [])} data-hub={hub.origin} d={wire(layout.me, hub)} />
+            ))}
+            {layout.pcs.flatMap((pc) => {
+              const hub = layout.hubs[pc.hub];
+              return hub ? [<path key={pc.node.server_id} className="relay-map-edge" data-wire={nodeWireState(pc.node)} data-pc={pc.node.server_id} d={wire(hub, pc)} />] : [];
+            })}
+            {checkingWires.map((d, i) => <path key={i} className="relay-map-flow" d={d} />)}
+          </svg>
+
+          <div className="relay-map-nodes" aria-hidden="true">
+            <div className="relay-map-me-card" style={pos(layout.me.x, layout.me.y, layout.width, layout.height)} data-me="" title={map.me.label}>
+              <span className="relay-map-me-mark"><MonitorSmartphone aria-hidden="true" /></span>
+              <span className="relay-map-me-label">{clip(map.me.label)}</span>
             </div>
-            <ul className="relay-map-fan">
-              {hub.nodes.map((node) => (
-                <li key={node.server_id} className="relay-map-hop" data-pc-state={node.state} data-seen={node.seen}>
-                  <span className="relay-map-key" data-state={keyOf(node)} aria-hidden="true" />
-                  <span className="relay-map-hop-name">{node.name}</span>
-                  <small className="relay-map-hop-note">{wordOf(node, t)}</small>
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
+
+            {layout.hubs.map((hub) => {
+              const host = relayHost(hub.origin);
+              const countText = hub.pcCount === 1 ? t("1 PC") : t("{count} PCs", { count: hub.pcCount });
+              const scopeText = hub.regional ? t("regional") : t("global");
+              const hsText = hub.handshake !== null ? `${t("Fastest PC handshake")} · ${t("{n} ms", { n: hub.handshake.rttMs })}` : null;
+              return (
+                <button key={hub.origin} type="button" className="relay-map-hub-btn" style={pos(hub.x, hub.y, layout.width, layout.height)} tabIndex={-1} data-hub={hub.origin} title={`${host} · ${countText} · ${scopeText}${hsText !== null && hub.handshake !== null ? ` · ${hsText} (${hub.handshake.pcName})` : ""}`} onClick={() => activateRelay(hub.origin, onSelectRelay)}>
+                  <span className="relay-map-hub-mark"><RadioTower aria-hidden="true" /></span>
+                  <span className="relay-map-hub-body">
+                    <span className="pill relay-map-host">{host}</span>
+                    <span className="relay-map-hub-meta">
+                      {countText} · {scopeText}
+                      {hsText !== null && <> · <span className="relay-map-rtt">{hsText}</span></>}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+
+            {layout.pcs.map((pc) => {
+              const detailWord = detailOf(pc.node, t);
+              return (
+                <button key={pc.node.server_id} type="button" className="relay-map-pc-btn" style={pos(pc.x, pc.y, layout.width, layout.height)} tabIndex={-1} data-pc-node={pc.node.server_id} data-pc-state={pc.node.state} data-seen={pc.node.seen} data-selected={selectedPcId === pc.node.server_id ? "" : undefined} title={`${pc.node.name} · ${detailWord} · ${seenTitleOf(pc.node, t)}`} onClick={() => activatePc(pc.node.server_id, onSelectPc)}>
+                  <StatusDot state={nodeStatusDotState(pc.node)} />
+                  <span className="relay-map-pc-body">
+                    <span className="relay-map-name">{clip(pc.node.name)}</span>
+                    <span className="relay-map-word">{wordOf(pc.node, t)}</span>
+                  </span>
+                  <NodeTooltip node={pc.node} detail={detailWord} t={t} />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <ol className="relay-map-routes" aria-label={t("Relays")}>
+        <li className="relay-map-origin">
+          <div className="relay-map-hop" data-me="">
+            <span className="relay-map-hop-mark"><MonitorSmartphone aria-hidden="true" /></span>
+            <span className="relay-map-hop-name" title={map.me.label}>{map.me.label}</span>
+          </div>
+        </li>
+        {map.hubs.map((hub) => {
+          const host = relayHost(hub.origin);
+          const scopeText = isRegionalRelay(hub.origin) ? t("regional") : t("global");
+          const countText = hub.nodes.length === 1 ? t("1 PC") : t("{count} PCs", { count: hub.nodes.length });
+          const hs = relayHandshake(hub);
+          const hsText = hs !== null ? `${t("Fastest PC handshake")} · ${t("{n} ms", { n: hs.rttMs })}` : null;
+          const linkWire = hubWireState(hub.nodes);
+          return (
+            <li key={hub.origin} className="relay-map-route">
+              <div className="relay-map-link" data-wire={linkWire} data-live={linkWire === "live" ? "" : undefined} aria-hidden="true" />
+              <div className="relay-map-hop relay-map-hop-hub">
+                <button type="button" className="relay-map-hop-btn relay-map-hop-hub-btn" data-relay-origin={hub.origin} title={`${host} · ${countText} · ${scopeText}${hsText !== null && hs !== null ? ` · ${hsText} (${hs.pcName})` : ""}`} onClick={() => activateRelay(hub.origin, onSelectRelay)}>
+                  <span className="relay-map-hop-mark relay-map-hop-hub-mark"><RadioTower aria-hidden="true" /></span>
+                  <span className="relay-map-hop-hub-body">
+                    <span className="pill relay-map-host">{host}</span>
+                    <small className="relay-map-hop-meta">
+                      <span>{countText}</span><span>·</span><span>{scopeText}</span>
+                      {hsText !== null && <><span>·</span><span className="relay-map-rtt">{hsText}</span></>}
+                    </small>
+                  </span>
+                </button>
+              </div>
+              <ul className="relay-map-fan">
+                {hub.nodes.map((node) => {
+                  const detailWord = detailOf(node, t);
+                  const selected = selectedPcId === node.server_id;
+                  return (
+                    <li key={node.server_id} className="relay-map-hop" data-pc-state={node.state} data-seen={node.seen}>
+                      <button type="button" className="relay-map-hop-btn" data-pc-id={node.server_id} data-selected={selected ? "" : undefined} aria-current={selected ? "true" : undefined} title={`${node.name} · ${detailWord} · ${seenTitleOf(node, t)}`} onClick={() => activatePc(node.server_id, onSelectPc)}>
+                        <StatusDot state={nodeStatusDotState(node)} />
+                        <span className="relay-map-hop-name" title={node.name}>{node.name}</span>
+                        <small className="relay-map-hop-note">{wordOf(node, t)}</small>
+                        <NodeTooltip node={node} detail={detailWord} t={t} />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </li>
+          );
+        })}
       </ol>
     </figure>
   );

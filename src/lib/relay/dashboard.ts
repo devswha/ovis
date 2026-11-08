@@ -107,6 +107,7 @@ export function dashboardModel(pcs: readonly DashboardPc[], me: DashboardViewer,
           server_id: pc.server_id,
           name: pc.name,
           state: pc.state,
+          last_seen_at: pc.last_seen_at,
           seen: pc.state === "offline" ? "stale" as const
             : pc.state === "paired" && pc.last_seen_at !== null ? "lately" as const : "unknown" as const,
           check: pc.check,
