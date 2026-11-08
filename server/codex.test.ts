@@ -4,7 +4,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, realpat
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -1521,5 +1521,72 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits (
 
   it("never takes the conversation only a title points to, from another folder", () => {
     expect(footedShortTranscript(shortAnswerScreen(prompt, "ok"), candidates, path, owners, null)).toBeNull();
+  });
+});
+
+/**
+ * A Codex screen with one finished turn as Codex 0.164 draws it on macOS, for the cases in #3262 where herdr
+ * reports no thread for the pane and only the screen binds it.
+ */
+const codexTurnScreen = (asked: string, body: readonly string[]): string => [
+  "  >_ OpenAI Codex (v0.164.0)",
+  "     /tmp/proj",
+  "",
+  `› ${asked}`,
+  "",
+  ...body,
+  "",
+  "  Worked for 12s • 7:05 PM",
+  "",
+  "",
+  "",
+  "› Ask Codex to do anything",
+  "",
+  "  GPT-6-Luna low · /tmp/proj · Write a script",
+  "  ← for agents · ? for shortcuts",
+].join("\n");
+
+/** A rollout read that records one finished turn with that answer. */
+const finishedOn = (answer: string): string => JSON.stringify({ timestamp: ts, type: "event_msg", payload: { type: "task_complete", last_agent_message: answer } });
+
+describe("a Codex pane whose last answer the screen never shows whole (#3262 case 1)", () => {
+  // a code block Codex draws indented, without its fences and without a bullet, 60 lines long: the screen read
+  // is 40 rows, so only its tail is on screen when the turn finishes
+  const script = Array.from({ length: 60 }, (_, at) => `value_${at} = compute_step(${at}) + carried_${at}`).join("\n");
+  const tail = script.split("\n").slice(-14).map((line) => `  ${line}`);
+  const candidates = [{ path: "/tmp/rollouts/aa.jsonl", text: finishedOn(script) }];
+  const owners = new Set(["/tmp/rollouts/aa.jsonl"]);
+
+  it("binds the one conversation whose finished answer ends above the footer", () => {
+    const screen = codexTurnScreen("Print a Python script of about 60 lines in one fenced code block and nothing else.", tail);
+    expect(footedTailTranscript(screen, candidates, null, owners, null)).toBe("/tmp/rollouts/aa.jsonl");
+  });
+
+  it("leaves the terminal standing when the screen shows another answer", () => {
+    const other = tail.map((line) => line.replace(/compute_step/g, "describe_page"));
+    const screen = codexTurnScreen("Print a Python script of about 60 lines in one fenced code block and nothing else.", other);
+    expect(footedTailTranscript(screen, candidates, null, owners, null)).toBeNull();
+  });
+
+  it("takes no conversation when two candidates finished on that same text", () => {
+    const fork = [{ path: "/tmp/rollouts/bb.jsonl", text: finishedOn(script) }, ...candidates];
+    const screen = codexTurnScreen("Print a Python script of about 60 lines in one fenced code block and nothing else.", tail);
+    expect(footedTailTranscript(screen, fork, null, new Set(["/tmp/rollouts/aa.jsonl", "/tmp/rollouts/bb.jsonl"]), null)).toBeNull();
+  });
+
+  it("never takes the conversation only a title points to, from another folder", () => {
+    const screen = codexTurnScreen("Print a Python script of about 60 lines in one fenced code block and nothing else.", tail);
+    expect(footedTailTranscript(screen, candidates, "/tmp/rollouts/aa.jsonl", owners, null)).toBeNull();
+  });
+
+  it("reads nothing from a screen whose turn has not finished", () => {
+    const screen = codexTurnScreen("Print a Python script of about 60 lines in one fenced code block and nothing else.", tail)
+      .replace("  Worked for 12s • 7:05 PM", "");
+    expect(footedTailTranscript(screen, candidates, null, owners, null)).toBeNull();
+  });
+
+  it("takes the one herdr reported even when the folder scan missed it", () => {
+    const screen = codexTurnScreen("Print a Python script of about 60 lines in one fenced code block and nothing else.", tail);
+    expect(footedTailTranscript(screen, candidates, null, new Set(), "/tmp/rollouts/aa.jsonl")).toBe("/tmp/rollouts/aa.jsonl");
   });
 });
