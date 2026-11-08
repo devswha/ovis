@@ -2844,7 +2844,18 @@ it("changes a transcript's history_id when its first bytes are rewritten while i
   } finally { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
 });
 
-it("never digests a transcript reached through a link, so its touch counts as a rewrite", () => {
+/**
+ * A link can be made here (Windows wants a privilege for one) and an open can refuse it (O_NOFOLLOW,
+ * which Windows does not have: there the transcript readers follow links alike).
+ */
+const linksRefused = fs.constants.O_NOFOLLOW !== undefined && (() => {
+  const probe = mkdtempSync(join(tmpdir(), "herdr-link-probe-"));
+  try { symlinkSync(probe, join(probe, "link")); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") return false; throw error; }
+  finally { rmSync(probe, { recursive: true, force: true }); }
+})();
+
+it.skipIf(!linksRefused)("never digests a transcript reached through a link, so its touch counts as a rewrite", () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-claude-touch-link-"));
   try {
     const path = join(root, "target.jsonl");
@@ -2855,6 +2866,91 @@ it("never digests a transcript reached through a link, so its touch counts as a 
     utimesSync(path, new Date(), new Date(Date.now() + 1000));
     expect(transcriptPage("claude-transcript", link).history_id).not.toBe(base);
   } finally { forgetTranscriptState(); rmSync(root, { recursive: true, force: true }); }
+});
+
+describe("a page read that settles its transcript's revision off the event loop", () => {
+  let root: string;
+  let path: string;
+  const pane = { pane_id: "cmd-settle", agent: "cmd", agent_status: "idle", cwd: "" } as HerdrPane;
+  const restores: { mockRestore(): void }[] = [];
+  const message = (id: string, parentId: string | null, content: string) => JSON.stringify({ type: "message", id, parentId, message: { role: "user", content } }) + "\n";
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "herdr-settle-"));
+    path = join(root, "session.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
+    pane.cwd = root;
+    restores.push(
+      spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }),
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [pane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never),
+    );
+  });
+  afterEach(() => {
+    for (const spy of restores.splice(0)) spy.mockRestore();
+    forgetTranscriptState();
+    rmSync(root, { recursive: true, force: true });
+  });
+  /** Holds the first lstat of the transcript after it read the file, until `release`. */
+  const holdFirstStat = () => {
+    const realLstat = fsp.lstat;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let held!: () => void;
+    const holding = new Promise<void>((resolve) => { held = resolve; });
+    let first = true;
+    restores.push(spyOn(fsp, "lstat").mockImplementation((async (...args: Parameters<typeof fsp.lstat>) => {
+      const stats = await realLstat(...args);
+      if (args[0] === path && first) { first = false; held(); await gate; }
+      return stats;
+    }) as typeof fsp.lstat));
+    return { holding, release: () => release() };
+  };
+
+  it("keeps the newer revision when an older stat of the transcript answers last", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const stat = holdFirstStat();
+    const older = paneConversation(pane.pane_id);
+    await stat.holding;
+    appendFileSync(path, message("u2", "u1", "again"));
+    const newer = await paneConversation(pane.pane_id);
+    expect(newer.history_id).toBe(base.history_id);
+    stat.release();
+    expect((await older).history_id).toBe(base.history_id);
+    // the append was read as one: a cursor from the newer read still names the same history
+    expect((await paneConversation(pane.pane_id, undefined, { since: newer.cursor! })).history_id).toBe(base.history_id);
+  });
+
+  it("records nothing for a pane closed while its transcript settled", async () => {
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    forgetPaneTranscriptState(pane.pane_id);
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("answers nothing from a herdr session left while its transcript settled", async () => {
+    const stat = holdFirstStat();
+    const read = paneConversation(pane.pane_id);
+    await stat.holding;
+    restores.push(spyOn(herdr, "herdrSocketPath").mockReturnValue(join(root, "other-session.sock")));
+    stat.release();
+    await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it.skipIf(!linksRefused)("never opens a transcript reached through a link off the event loop", async () => {
+    const target = join(root, "target.jsonl");
+    fs.renameSync(path, target);
+    symlinkSync(target, path);
+    const realOpen = fsp.open;
+    const opened: unknown[] = [];
+    restores.push(spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => { opened.push(args[0]); return realOpen(...args); }) as typeof fsp.open));
+    const base = (await paneConversation(pane.pane_id)).history_id;
+    utimesSync(target, new Date(), new Date(Date.now() + 1000));
+    // its digest is never read, so a touch counts as a rewrite
+    expect((await paneConversation(pane.pane_id)).history_id).not.toBe(base);
+    expect(opened).not.toContain(path);
+  });
 });
 
 it("lets the event loop run while a page read digests a touched transcript", async () => {

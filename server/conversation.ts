@@ -238,9 +238,12 @@ function transcriptGeneration(path: string, stat: RevisionStat, checkWindow = fa
  * the transcript meanwhile keeps its own result; a change after this leaves the rest to that page read.
  */
 async function settleTranscriptRevision(path: string, checkWindow: boolean): Promise<void> {
+  // what this settle builds on: a read that recorded the transcript while its stat was awaited saw it
+  // later, and an older stat checked against that newer revision would take an append for a shrink
+  const start = transcriptRevisions.get(path);
   let stat: Stats;
   try { stat = await lstat(path); } catch { return; }
-  if (!stat.isFile()) return;
+  if (!stat.isFile() || transcriptRevisions.get(path) !== start) return;
   const { previous, next } = await finishAsync(transcriptRevisionSteps(path, stat, checkWindow, true, openRevisionAsync));
   if (transcriptRevisions.get(path) === previous) remember(transcriptRevisions, path, next, 64);
 }
@@ -283,7 +286,7 @@ function* transcriptRevisionSteps(path: string, stat: RevisionStat, checkWindow:
     if (window !== undefined && window.end <= start) rewritten = true;
     const check = rewritten ? undefined : window;
     const from = check?.start ?? start;
-    const bytes = yield* windowBytes(opened, path, from, stat.size);
+    const bytes = yield* windowBytes(opened, path, stat, from);
     const digests = bytes && chunkDigests(bytes);
     if (check && (!digests || !sameOverlap(check, from, bytes!, digests))) rewritten = true;
     // an empty log keeps no window: it has no bytes to check
@@ -360,18 +363,23 @@ function* hashRange(opened: RevisionOpen, path: string, stat: { dev: number; ino
   } catch { return undefined; }
 }
 
-/** Bytes `from` to `to` of a file, or null when they cannot all be read. */
-function* windowBytes(opened: RevisionOpen, path: string, from: number, to: number): Steps<Buffer | null> {
+/**
+ * Bytes `from` to `stat.size` of a file, or null when they cannot all be read or the path no longer names
+ * the regular file `stat` saw, holding at least that many bytes, before and after the read.
+ */
+function* windowBytes(opened: RevisionOpen, path: string, stat: { dev: number; ino: number; size: number }, from: number): Steps<Buffer | null> {
+  const unchanged = (now: Stats): boolean => now.isFile() && now.dev === stat.dev && now.ino === stat.ino && now.size >= stat.size;
   try {
     const file = yield* opened(path);
     try {
-      const bytes = Buffer.allocUnsafe(to - from);
+      if (!unchanged(yield* file.stat())) return null;
+      const bytes = Buffer.allocUnsafe(stat.size - from);
       for (let got = 0; got < bytes.length;) {
         const read = yield* file.read(bytes.subarray(got), bytes.length - got, from + got);
         if (read <= 0) return null;
         got += read;
       }
-      return bytes;
+      return unchanged(yield* file.stat()) ? bytes : null;
     } finally { yield* file.close(); }
   } catch { return null; }
 }
@@ -1328,8 +1336,15 @@ export function liveTurnCacheUsage(): { paths: string[]; withinBudget: boolean }
   return { paths: [...liveTranscriptTurns.keys()], withinBudget };
 }
 
+/** How often everything, and each pane, was forgotten: a read that awaited sees whether its pane was meanwhile (paneForgets). */
+let allForgotten = 0;
+const forgottenPanes = new Map<string, number>();
+const paneForgets = (paneId: string): string => `${allForgotten}:${forgottenPanes.get(paneId) ?? 0}`;
+
 /** Forget every scan and parse kept between polls (tests compare against a cold read). */
 export function forgetTranscriptState(): void {
+  allForgotten++;
+  forgottenPanes.clear();
   launchedAgents.clear();
   cache.clear();
   commandTranscripts.clear();
@@ -1365,6 +1380,7 @@ export function forgetTranscriptState(): void {
  * of a live pane re-derives it, and a file nobody reads again costs nothing to forget.
  */
 export function forgetPaneTranscriptState(paneId: string): void {
+  remember(forgottenPanes, paneId, (forgottenPanes.get(paneId) ?? 0) + 1, PANE_READS_MAX);
   const reads = paneReads.get(paneId);
   paneReads.delete(paneId);
   copilotBindings.delete(paneId);
@@ -2281,8 +2297,11 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       throw error;
     }
   }
-  // the page read below digests the transcript (transcriptGeneration): read it here off the event loop
+  // the page read below digests the transcript (transcriptGeneration): read it here off the event loop.
+  // A pane closed meanwhile (forgetPaneTranscriptState) or a herdr session left is not read or recorded
+  const forgets = paneForgets(paneId);
   await settleTranscriptRevision(resolved.path, resolved.source === "muse-transcript");
+  if (herdrSocketPath() !== socket || paneForgets(paneId) !== forgets) throw new ConversationUnavailable("no_session_id");
   const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" || resolved.source === "letta-transcript" || resolved.source === "kimi-transcript" ? resolved.path
     : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
     : resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "omp-transcript" ? realpathSync(resolved.path) : null;
