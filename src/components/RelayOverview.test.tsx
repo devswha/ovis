@@ -7,7 +7,7 @@ import { NEW_PC_MS } from "../lib/account/myPcs.ts";
 import { dashboardModel, dashboardPcs, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { ATTENTION_LIMIT, LOADING_SPINNER_MS, relayLatencyMs, RelayOverview, SKELETON_ROWS, type RelayOverviewProps } from "./RelayOverview.tsx";
+import { relayLatencyMs, RelayOverview, type RelayOverviewProps } from "./RelayOverview.tsx";
 
 const NOW = Date.parse("2026-11-08T12:00:00Z");
 const GLOBAL = "wss://relay.ovis.sh";
@@ -281,7 +281,7 @@ describe("RelayOverview", () => {
       onSelectFilter: (f) => { filters.push(f); },
     });
     const rows = root.findAll((node) => node.type === "li" && node.props.className === "relay-overview-attention-row");
-    expect(rows).toHaveLength(ATTENTION_LIMIT);
+    expect(rows).toHaveLength(3);
     const viewAll = root.find((node) => node.type === "button" && node.props["data-action"] === "view-all-attention");
     expect(viewAll.props["data-attention-total"]).toBe(12);
     expect(textOf(viewAll)).toBe("View all 12");
@@ -289,7 +289,7 @@ describe("RelayOverview", () => {
     expect(filters).toEqual(["needs"]);
   });
 
-  it("explains fresh Add countdowns, closed Add windows, available updates, and offline durations, and triggers Details without opening a connection", async () => {
+  it("explains fresh Add countdowns, closed Add windows, available updates, and offline durations across locales without duplicated suffixes, and triggers Details without opening a connection", async () => {
     const freshPc = makePc("id_fresh", "Fresh Box", "needs-approval", {
       added_at: new Date(NOW - 2 * 60_000).toISOString(),
       join: { server_public_key: "k_fresh", relay: GLOBAL },
@@ -303,6 +303,11 @@ describe("RelayOverview", () => {
       paired: true,
       linked: true,
       last_seen_at: new Date(NOW - 2 * 3_600_000).toISOString(),
+    });
+    const offlineMins = makePc("id_off_min", "Offline Min", "offline", {
+      paired: true,
+      linked: true,
+      last_seen_at: new Date(NOW - 15 * 60_000).toISOString(),
     });
     const versions = new Map([["id_upd", { version: "0.4.0", outdated: true }]]);
     const openedSheets: [string, "new" | "join"][] = [];
@@ -320,6 +325,18 @@ describe("RelayOverview", () => {
     expect(html).toContain("new · 8 min left");
     expect(html).toContain("Add window closed · an account member must approve");
     expect(html).toContain("update to 1.9");
+
+    const enOffline = renderMarkup({ pcs: [offlinePaired, offlineMins], mode: "account", defaultRelay: GLOBAL, now: NOW }, "en");
+    expect(enOffline).toContain("offline since 2 h");
+    expect(enOffline).toContain("offline since 15 min");
+    expect(enOffline).not.toContain("ago");
+
+    for (const lang of ["ko", "ja", "zh"] as const) {
+      const localized = renderMarkup({ pcs: [offlinePaired, offlineMins], mode: "account", defaultRelay: GLOBAL, now: NOW }, lang);
+      expect(localized).not.toMatch(/전\s*전|前\s*前/);
+      expect(localized).toContain("2");
+      expect(localized).toContain("15");
+    }
 
     const root = await mount({
       pcs: [freshPc, updatePc, offlinePaired],
@@ -378,10 +395,10 @@ describe("RelayOverview", () => {
     const stripSkeletons = root.findAll((node) => node.props["data-loading-slot"] === "strip-numeral");
     const rowSkeletons = root.findAll((node) => node.props["data-loading-slot"] === "table-row");
     expect(stripSkeletons).toHaveLength(4);
-    expect(rowSkeletons).toHaveLength(SKELETON_ROWS);
+    expect(rowSkeletons).toHaveLength(4);
     expect(root.findAll((node) => node.props.className === "boot-spinner")).toHaveLength(0);
 
-    const delayTimers = [...scheduledTimers.values()].filter((t) => t.ms === LOADING_SPINNER_MS);
+    const delayTimers = [...scheduledTimers.values()].filter((t) => t.ms === 1_000);
     expect(delayTimers).toHaveLength(1);
     await act(async () => { delayTimers[0]?.fn(); });
     expect(root.findAll((node) => node.props.className === "boot-spinner")).toHaveLength(1);

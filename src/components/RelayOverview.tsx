@@ -5,8 +5,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { MIN_SERVER_VERSION } from "../../shared/relay-mux.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
-import { useT } from "../lib/i18n.ts";
-import { lastSeen } from "../lib/lastSeen.ts";
+import { currentLocale, useT } from "../lib/i18n.ts";
 import { dashboardModel, relayHost, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
@@ -71,8 +70,13 @@ export function attentionReasonText(
       return pc.added_at !== null ? t("Add window closed · an account member must approve") : t("Needs approval");
     case "needs-update":
       return t("update to {version}", { version: options.targetVersion });
-    case "offline":
-      return pc.last_seen_at === null ? t("Offline") : t("offline since {when}", { when: lastSeen(pc.last_seen_at, options.now).replace(/\s+ago$/i, "") });
+    case "offline": {
+      if (pc.last_seen_at === null) return t("Offline");
+      const minutes = Math.max(1, Math.round((options.now - Date.parse(pc.last_seen_at)) / 60_000));
+      if (minutes < 60) return t("offline since {n} min", { n: minutes });
+      if (minutes < 60 * 48) return t("offline since {n} h", { n: Math.round(minutes / 60) });
+      return t("offline since {when}", { when: new Date(pc.last_seen_at).toLocaleDateString(currentLocale()) });
+    }
     case "paired":
       return t("Ready");
   }
