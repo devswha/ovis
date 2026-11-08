@@ -117,7 +117,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
   const back = scoped ? <button type="button" className="btn btn-ghost" onClick={onBack}>{t("Back")}</button> : null;
   const progress = state.kind === "outdated" && state.update.phase === "installing" ? describeUpdate({ phase: "building", step: state.update.step }) : null;
   const retry = <button type="button" className="btn btn-primary" onClick={onRetry}>{t("Try again")}</button>;
-  const failure = state.kind === "failed" ? relayFailureText(t, state.failure, pc) : null;
+  const failure = state.kind === "failed" ? relayFailureText(t, state.failure, pc, state.detail) : null;
   const statusText = signingIn ? t("Signing in…") : state.kind === "code-looking" ? t("Looking for the PC…") : state.kind === "connecting" ? t("Connecting to {name}…", { name: pc })
     : state.kind === "compare" && state.confirmed ? t("Approve this device on {name} within 90 seconds to finish.", { name: pc })
     : state.kind === "outdated" && state.update.phase === "reading" ? t("Checking {name}…", { name: pc })
@@ -133,7 +133,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
         <>
           <h1 className="relay-shell-title relay-shell-signin-title">{t("Sign in to Ovis")}</h1>
           {signIn}
-          {saved > 0 && <button type="button" className="btn account-continue-saved" disabled={signingIn} onClick={() => setSignedOutView("saved")}>{saved === 1 ? t("Continue without an account (1 PC)") : t("Continue without an account ({count} PCs)", { count: saved })}</button>}
+          {saved > 0 && <button type="button" className="btn account-continue-saved" disabled={signingIn} data-action="continue-local" onClick={() => setSignedOutView("saved")}>{saved === 1 ? t("Continue without an account (1 PC)") : t("Continue without an account ({count} PCs)", { count: saved })}</button>}
           <hr className="account-divider" />
           <div className="relay-shell-sign-in-links"><button type="button" className="btn btn-ghost account-link" data-action="pair-qr" disabled={signingIn} onClick={() => setSignedOutView("pair")}>{t("Pair with a QR or code")}</button></div>
           <AccountFinePrint />
@@ -257,7 +257,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
           {back && <div className="relay-shell-actions">{back}</div>}
         </>
       )}
-      {state.kind === "failed" && state.detail !== null && <p className="relay-shell-detail"><code>{state.detail}</code></p>}
+      {state.kind === "failed" && failure?.detail !== null && failure?.detail !== undefined && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}
       {iosTab && scoped && <p className="relay-shell-hint">{t("Add to Home Screen to stay paired: Safari may clear this page's storage after a week without a visit.")}</p>}
     </>
   );

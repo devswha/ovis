@@ -6,6 +6,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { MIN_SERVER_VERSION } from "../../shared/relay-mux.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
+import { lastSeen } from "../lib/lastSeen.ts";
 import { dashboardModel, relayHost, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
@@ -18,6 +19,9 @@ import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 export const ATTENTION_LIMIT = 3;
 export const SKELETON_ROWS = 4;
 export const LOADING_SPINNER_MS = 1_000;
+
+/** One cell of the summary strip: Ready and Needs you partition the PCs, so Needs you carries the offline count as a note, not a peer cell. */
+type StripCell = { readonly key: string; readonly glyph: StatusDotState; readonly label: string; readonly count: number; readonly onClick: () => void; readonly pressed: boolean; readonly offline?: number };
 
 export interface RelayOverviewProps {
   readonly pcs: readonly DashboardPc[] | null;
@@ -130,17 +134,20 @@ export function RelayOverview(props: RelayOverviewProps) {
 
   const model = pcs === null ? null : dashboardModel(pcs, { label: meLabel ?? t("This device"), now, ...(pcStatus ? { status: pcStatus } : {}) }, defaultRelay);
   const byId = new Map((model?.rows ?? []).map((row) => [row.server_id, row]));
-  const stripCells: readonly [string, StatusDotState, string, number, () => void, boolean][] = model === null ? [] : mode === "local"
+  const stripCells: readonly StripCell[] = model === null ? [] : mode === "local"
     ? [
-      ["paired", "offline", t("Paired with this device"), model.counts.paired, () => selectFilter?.("all"), currentFilter === "all"],
-      ["relays", "ready", t("Relays"), model.relays.length, () => onOpenRelay?.(), false],
+      { key: "paired", glyph: "offline", label: t("Paired with this device"), count: model.counts.paired, onClick: () => selectFilter?.("all"), pressed: currentFilter === "all" },
+      { key: "relays", glyph: "ready", label: t("Relays"), count: model.relays.length, onClick: () => onOpenRelay?.(), pressed: false },
     ]
     : [
-      ["ready", "ready", t("Ready"), model.counts.ready, () => selectFilter?.("ready"), currentFilter === "ready"],
-      ["needs", "needs-you", t("Needs you"), model.counts.needsYou, () => selectFilter?.("needs"), currentFilter === "needs"],
-      ["offline", "offline", t("Offline"), model.counts.offline, () => selectFilter?.("offline"), currentFilter === "offline"],
-      ["relays", "ready", t("Relays in use"), model.relays.length, () => onOpenRelay?.(), false],
+      { key: "ready", glyph: "ready", label: t("Ready"), count: model.counts.ready, onClick: () => selectFilter?.("ready"), pressed: currentFilter === "ready" },
+      { key: "needs", glyph: "needs-you", label: t("Needs you"), count: model.counts.needsYou, onClick: () => selectFilter?.("needs"), pressed: currentFilter === "needs", offline: model.counts.offline },
+      { key: "relays", glyph: "ready", label: t("Relays in use"), count: model.relays.length, onClick: () => onOpenRelay?.(), pressed: false },
     ];
+  // the attention rows on show, with the reason each one carries; a reason they all share is said once, above them
+  const attentionRows = (model?.attention ?? []).slice(0, ATTENTION_LIMIT).flatMap(({ server_id, reason, expiresAt }) => { const pc = byId.get(server_id); return pc === undefined ? [] : [{ pc, reason, expiresAt, why: attentionReasonText(pc, expiresAt, t, { now, targetVersion }) }]; });
+  const firstAttention = attentionRows[0];
+  const sharedReason = firstAttention !== undefined && attentionRows.length > 1 && attentionRows.every((row) => row.why === firstAttention.why) ? firstAttention.why : null;
 
   return (
     <div className="relay-overview" data-overview-mode={mode}>
@@ -155,7 +162,7 @@ export function RelayOverview(props: RelayOverviewProps) {
       {loading || model === null ? (
         <div className="relay-overview-loading" data-dashboard-loading="">
           <section className="relay-overview-strip" aria-label={t("Summary")}>
-            {([["ready", "ready", t("Ready")], ["needs", "needs-you", t("Needs you")], ["offline", "offline", t("Offline")], ["relays", "ready", t("Relays in use")]] as const).map(([key, glyph, label]) => (
+            {([["ready", "ready", t("Ready")], ["needs", "needs-you", t("Needs you")], ["relays", "ready", t("Relays in use")]] as const).map(([key, glyph, label]) => (
               <div key={key} className="relay-overview-strip-btn is-skeleton" data-strip-cell={key}>
                 <span className="relay-overview-strip-label"><StatusDot state={glyph} /><span>{label}</span></span>
                 <span className="relay-overview-strip-value" data-loading-slot="strip-numeral"><Skeleton className="relay-overview-skeleton-numeral" /></span>
@@ -184,11 +191,12 @@ export function RelayOverview(props: RelayOverviewProps) {
       ) : (
         <>
           <section className="relay-overview-strip" data-local={mode === "local" ? "" : undefined} aria-label={t("Summary")}>
-            {stripCells.map(([key, glyph, label, count, onClick, pressed]) => (
-              <button key={key} type="button" className="relay-overview-strip-btn" data-strip-cell={key} data-strip-count={count}
-                aria-pressed={pressed ? true : undefined} onClick={onClick}>
-                <span className="relay-overview-strip-label"><StatusDot state={glyph} /><span>{label}</span></span>
-                <strong className="relay-overview-strip-value">{count}</strong>
+            {stripCells.map((cell) => (
+              <button key={cell.key} type="button" className="relay-overview-strip-btn" data-strip-cell={cell.key} data-strip-count={cell.count} data-strip-offline={cell.offline}
+                aria-pressed={cell.pressed ? true : undefined} onClick={cell.onClick}>
+                <span className="relay-overview-strip-label"><StatusDot state={cell.glyph} /><span>{cell.label}</span></span>
+                <strong className="relay-overview-strip-value">{cell.count}</strong>
+                {cell.offline !== undefined && cell.offline > 0 && <small className="relay-overview-strip-note">{t("incl. {count} offline", { count: cell.offline })}</small>}
               </button>
             ))}
           </section>
@@ -218,21 +226,18 @@ export function RelayOverview(props: RelayOverviewProps) {
                 );
               })}
             </ul>
-          ) : model.attention.length > 0 && (
+          ) : attentionRows.length > 0 && (
             <section className="relay-overview-attention-section" aria-label={t("Needs you")}>
+              {sharedReason !== null && <p className="relay-overview-attention-caption">{sharedReason}</p>}
               <ol className="relay-overview-attention">
-                {model.attention.slice(0, ATTENTION_LIMIT).map(({ server_id, reason, expiresAt }) => {
-                  const pc = byId.get(server_id);
-                  if (!pc) return null;
-                  return (
-                    <li key={server_id} className="relay-overview-attention-row" data-pc-state={pc.state}>
-                      <StatusDot state={reason === "offline" ? "offline" : "needs-you"} />
-                      <span className="relay-overview-attention-name" title={pc.name}>{pc.name}</span>
-                      <span className="relay-overview-attention-why">{attentionReasonText(pc, expiresAt, t, { now, targetVersion })}</span>
-                      <div className="relay-overview-attention-act">{rowAction(pc, expiresAt !== null, t, props)}</div>
-                    </li>
-                  );
-                })}
+                {attentionRows.map(({ pc, reason, expiresAt, why }) => (
+                  <li key={pc.server_id} className="relay-overview-attention-row" data-pc-state={pc.state}>
+                    <StatusDot state={reason === "offline" ? "offline" : "needs-you"} />
+                    <span className="relay-overview-attention-name" title={pc.name}>{pc.name}</span>
+                    <span className="relay-overview-attention-why">{sharedReason === null ? why : pc.relay !== null ? relayHost(pc.relay) : pc.last_seen_at !== null ? lastSeen(pc.last_seen_at, now) : "—"}</span>
+                    <div className="relay-overview-attention-act">{rowAction(pc, expiresAt !== null, t, props)}</div>
+                  </li>
+                ))}
               </ol>
               {model.attention.length > ATTENTION_LIMIT && (
                 <button type="button" className="btn btn-ghost relay-overview-view-all" data-action="view-all-attention"

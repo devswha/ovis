@@ -234,8 +234,9 @@
 }
 
 .relay-map-routes {
+  position: relative;
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -265,11 +266,27 @@
   min-width: 0;
 }
 
+.relay-map-origin {
+  position: relative;
+}
+
+.relay-map-origin::after {
+  content: "";
+  position: absolute;
+  top: calc(var(--avatar-size) / 2);
+  bottom: calc(-1 * var(--space-2));
+  left: calc(var(--avatar-size) / 2 - var(--hairline));
+  border-left: calc(2 * var(--hairline)) solid var(--accent);
+  pointer-events: none;
+}
+
 .relay-map-route {
+  position: relative;
   display: grid;
 }
 
 .relay-map-fan {
+  position: relative;
   display: grid;
   gap: var(--space-1);
   margin: var(--space-1) 0 0 calc(var(--avatar-size) + var(--space-2));
@@ -311,6 +328,8 @@
 }
 
 .relay-map-hop-mark {
+  position: relative;
+  z-index: 1;
   display: grid;
   flex: none;
   width: var(--avatar-size);
@@ -440,9 +459,16 @@
 }
 
 .relay-map-link {
-  position: relative;
+  position: absolute;
+  top: calc(-1 * var(--space-2));
+  bottom: 0;
+  left: 0;
   width: var(--avatar-size);
-  height: var(--space-3);
+  pointer-events: none;
+}
+
+.relay-map-route:last-child > .relay-map-link {
+  bottom: calc(100% - var(--avatar-size) / 2);
 }
 
 .relay-map-link::before {
@@ -565,7 +591,8 @@
     border: var(--hairline) solid CanvasText;
   }
 
-  .relay-map-link::before {
+  .relay-map-link::before,
+  .relay-map-origin::after {
     border-left-color: CanvasText;
   }
 

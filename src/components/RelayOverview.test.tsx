@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -186,7 +187,7 @@ describe("RelayOverview", () => {
   };
   const textOf = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : textOf(child)).join("");
 
-  it("renders four actionable strip buttons in account mode and routes each to its filter or the Relay view", async () => {
+  it("renders three actionable strip buttons in account mode and routes each to its filter or the Relay view", async () => {
     const pcs = freadyPcs();
     const filters: DashboardFilter[] = [];
     const openedRelays: (string | undefined)[] = [];
@@ -203,13 +204,12 @@ describe("RelayOverview", () => {
     expect(stripButtons.map((b) => [b.props["data-strip-cell"], b.props["data-strip-count"], b.props["aria-pressed"] ?? false])).toEqual([
       ["ready", 3, false],
       ["needs", 3, true],
-      ["offline", 1, false],
       ["relays", 2, false],
     ]);
     for (const btn of stripButtons) {
       await act(async () => { btn.props.onClick(); });
     }
-    expect(filters).toEqual(["ready", "needs", "offline"]);
+    expect(filters).toEqual(["ready", "needs"]);
     expect(openedRelays).toEqual([undefined]);
 
     const relayChips = root.findAll((node) => node.type === "button" && String(node.props.className ?? "").includes("relay-overview-relay-chip"));
@@ -218,17 +218,25 @@ describe("RelayOverview", () => {
     expect(openedRelays).toEqual([undefined, AP]);
   });
 
-  it("matches dashboardModel counts across F4 (0/4/1), FREADY (3/3/1) and F20 (8/12/4)", () => {
-    for (const [pcs, expected] of [
-      [f4Pcs(), { ready: 0, needs: 4, offline: 1, relays: 2 }],
-      [freadyPcs(), { ready: 3, needs: 3, offline: 1, relays: 2 }],
-      [f20Pcs(), { ready: 8, needs: 12, offline: 4, relays: 2 }],
+  it("sums Ready, Needs you and Relays in use into three cells, Ready + Needs you equal to the PC count, with the offline count as its own line under Needs you and no Offline cell", () => {
+    for (const [pcs, expected, offline, note] of [
+      [f4Pcs(), { ready: 0, needs: 4, relays: 2 }, 1, "incl. 1 offline"],
+      [freadyPcs(), { ready: 3, needs: 3, relays: 2 }, 1, "incl. 1 offline"],
+      [f20Pcs(), { ready: 8, needs: 12, relays: 2 }, 4, "incl. 4 offline"],
     ] as const) {
       const html = renderMarkup({ pcs, mode: "account", defaultRelay: GLOBAL, now: NOW });
       const cells = Object.fromEntries([...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"/g)].map(([, cell, count]) => [cell, Number(count)]));
       expect(cells).toEqual(expected);
+      expect(cells.ready + cells.needs).toBe(pcs.length);
+      expect(Number(/data-strip-cell="needs"[^>]*data-strip-offline="(\d+)"/.exec(html)?.[1])).toBe(offline);
+      expect(html).toContain(`<small class="relay-overview-strip-note">${note}</small>`);
+      expect(html).not.toContain('data-strip-cell="offline"');
       expect(html).not.toContain("relay-dash-notice");
     }
+    // nothing offline: no line under Needs you
+    const none = renderMarkup({ pcs: [makePc("id_a", "A", "paired"), makePc("id_b", "B", "needs-approval")], mode: "account", defaultRelay: GLOBAL, now: NOW });
+    expect(none).not.toContain("relay-overview-strip-note");
+    expect(renderMarkup({ pcs: f4Pcs(), mode: "account", defaultRelay: GLOBAL, now: NOW }, "ko")).toContain("오프라인 1대 포함");
   });
 
   it("shows Paired with this device N and Relays in local mode without Ready or Offline columns, and keeps Paired · not checked until a check returns", () => {
@@ -287,6 +295,23 @@ describe("RelayOverview", () => {
     expect(textOf(viewAll)).toBe("View all 12");
     await act(async () => { viewAll.props.onClick(); });
     expect(filters).toEqual(["needs"]);
+  });
+
+  it("says a reason shared by every shown attention row once, as the list caption, keeps those rows to name and relay or last seen, and draws them on the plain surface", () => {
+    const html = renderMarkup({ pcs: f4Pcs(), mode: "account", defaultRelay: GLOBAL, now: NOW });
+    const section = /<section class="relay-overview-attention-section"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
+    const reason = "Add window closed · an account member must approve";
+    expect(section.match(new RegExp(reason, "g"))).toHaveLength(1);
+    expect(section).toContain(`<p class="relay-overview-attention-caption">${reason}</p>`);
+    const rows = [...section.matchAll(/<span class="relay-overview-attention-name"[^>]*>([^<]+)<\/span><span class="relay-overview-attention-why">([^<]+)<\/span>/g)].map(([, name, why]) => [name, why]);
+    expect(rows).toEqual([["Old MacBook", "relay-ap.ovis.sh"], ["Studio desktop", "relay.ovis.sh"], ["Work laptop", "relay-ap.ovis.sh"]]);
+    // rows with different reasons keep each reason on its row, with no caption
+    const mixed = renderMarkup({ pcs: freadyPcs(), mode: "account", defaultRelay: GLOBAL, now: NOW });
+    expect(mixed).not.toContain("relay-overview-attention-caption");
+    expect(mixed).toContain('<span class="relay-overview-attention-why">new · 8 min left</span>');
+    // no tinted band behind the approval or update rows: the state dot carries the state
+    const css = readFileSync(new URL("./RelayOverview.css", import.meta.url), "utf8");
+    expect(css).not.toContain("notice-tint");
   });
 
   it("explains fresh Add countdowns, closed Add windows, available updates, and offline durations across locales without duplicated suffixes, and triggers Details without opening a connection", async () => {
@@ -392,7 +417,7 @@ describe("RelayOverview", () => {
     });
     const stripSkeletons = root.findAll((node) => node.props["data-loading-slot"] === "strip-numeral");
     const rowSkeletons = root.findAll((node) => node.props["data-loading-slot"] === "table-row");
-    expect(stripSkeletons).toHaveLength(4);
+    expect(stripSkeletons).toHaveLength(3);
     expect(rowSkeletons).toHaveLength(4);
     expect(root.findAll((node) => node.props.className === "boot-spinner")).toHaveLength(0);
 
@@ -413,7 +438,7 @@ describe("RelayOverview", () => {
     });
     expect(root.findAll((node) => node.props["data-loading-slot"] === "strip-numeral")).toHaveLength(0);
     expect(root.findAll((node) => node.props.className === "boot-spinner")).toHaveLength(0);
-    expect(root.findAll((node) => node.type === "button" && typeof node.props["data-strip-cell"] === "string")).toHaveLength(4);
+    expect(root.findAll((node) => node.type === "button" && typeof node.props["data-strip-cell"] === "string")).toHaveLength(3);
   });
 
   it("renders the centred empty state with one primary Add a PC and ghost Pair with a QR or code, plus the 44px map disclosure when populated", async () => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -195,6 +196,8 @@ describe("RelayDashboard frame and routes", () => {
         addEventListener: events.addEventListener.bind(events),
         removeEventListener: events.removeEventListener.bind(events),
         dispatchEvent: events.dispatchEvent.bind(events),
+        requestAnimationFrame: (cb: FrameRequestCallback) => { cb(0); return 1; },
+        cancelAnimationFrame() {},
         setTimeout: globalThis.setTimeout,
         clearTimeout: globalThis.clearTimeout,
       },
@@ -293,14 +296,18 @@ describe("RelayDashboard frame and routes", () => {
     const rows = () =>
       renderer!.root
         .findAll((n) => n.type === "tr" && n.props["data-pc-state"] !== undefined)
-        .map((r) => textOf(r.findByType("b")));
+        .map((r) => textOf(r.find((n) => n.props.className === "relay-pc-name-label")));
     expect(rows()).toEqual(["Home server"]);
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(1);
+    // with Details open beside it the table drops Last seen, so its cells stay on one line
+    const headers = () => renderer!.root.findAll((n) => n.type === "th").map(textOf);
+    expect(headers()).toEqual(["Name", "State", "Relay", "Action"]);
 
     // Back to Needs you filter without selection
     await navigateHash("#pcs?filter=needs", "popstate");
     expect(rows()).toEqual(["Mac mini", "Home server"]);
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
+    expect(headers()).toEqual(["Name", "State", "Relay", "Last seen", "Action"]);
 
     // Missing PC id in route renders no details panel
     await navigateHash("#pcs?pc=missing_pc_id", "popstate");
@@ -364,19 +371,96 @@ describe("RelayDashboard frame and routes", () => {
   it("omits the full connection map from Overview, renders a 44px Connection map disclosure after the table that navigates to #relay, and renders the map on #relay", async () => {
     const html = renderStatic(baseProps());
     expect(html).not.toContain('data-slot="relay-map"');
-    expect(html).toContain('class="relay-dash-map-disclosure"');
-    expect(html.indexOf('id="relay-dash-pcs"')).toBeLessThan(html.indexOf('class="relay-dash-map-disclosure"'));
+    expect(html).toContain('class="relay-overview-map-disclosure"');
+    expect(html.indexOf('id="relay-dash-pcs"')).toBeLessThan(html.indexOf('class="relay-overview-map-disclosure"'));
 
     await mount();
     expect(renderer!.root.findAll((n) => n.props["data-slot"] === "relay-map")).toHaveLength(0);
-    const disclosure = renderer!.root.find((n) => n.type === "a" && n.props.className === "relay-dash-map-disclosure" && n.props.href === "#relay");
+    const disclosure = renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "open-connection-map");
     expect(textOf(disclosure)).toContain("Connection map");
 
     await act(async () => {
-      disclosure.props.onClick({ preventDefault() {} });
+      disclosure.props.onClick();
     });
     expect(window.location.hash).toBe("#relay");
     expect(textOf(renderer!.root.findByType("h1"))).toBe("Relay");
     expect(renderer!.root.findAll((n) => n.props["data-slot"] === "relay-map")).toHaveLength(1);
+  });
+
+  it("mounts RelayOverview, RelayPcTable, RelayPcDetails and RelayMap with at most three attention rows, matching Needs filter counts, truthful local words, live map checks, and Details selection without a connection attempt", async () => {
+    const extra1 = pc("e".repeat(32), "Build box", "needs-update", { paired: true });
+    const extra2 = pc("f".repeat(32), "Test rig", "needs-approval", { join: { server_public_key: "k2", relay: GLOBAL } });
+    const fleet = dashboardPcs([
+      ...fourPcs(),
+      extra1,
+      extra2,
+    ], [
+      { server_id: IDS.desk, relay: AP },
+      { server_id: IDS.mac, relay: AP },
+      { server_id: IDS.home, relay: GLOBAL },
+      { server_id: extra1.server_id, relay: GLOBAL },
+    ]);
+    const liveStatus = new Map([
+      [IDS.desk, { kind: "checking" } as const],
+      [IDS.home, { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 24 } as const],
+    ]);
+    await mount(baseProps({ pcs: fleet, pcStatus: liveStatus, onCheckPcs: () => {} }));
+
+    // 1. Overview shows strip (Ready 2, Needs you 4 incl. 1 offline, Relays in use 2), at most 3 attention rows, the PC table, and the 44px map disclosure
+    const stripBtns = renderer!.root.findAll((n) => n.type === "button" && typeof n.props["data-strip-cell"] === "string");
+    expect(stripBtns.map((b) => [b.props["data-strip-cell"], b.props["data-strip-count"], textOf(b)])).toEqual([
+      ["ready", 2, "Ready2"],
+      ["needs", 4, "Needs you4incl. 1 offline"],
+      ["relays", 2, "Relays in use2"],
+    ]);
+    const attentionRows = renderer!.root.findAll((n) => n.type === "li" && n.props.className === "relay-overview-attention-row");
+    expect(attentionRows).toHaveLength(3);
+    const viewAll = renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "view-all-attention");
+    expect(textOf(viewAll)).toBe("View all 4");
+
+    // 2. Clicking Needs you strip button navigates to #pcs?filter=needs where table row count equals the Overview Needs you count (4)
+    await act(async () => { stripBtns[1]!.props.onClick(); });
+    expect(window.location.hash).toBe("#pcs?filter=needs");
+    const needsTableRows = renderer!.root.findAll((n) => n.type === "tr" && n.props["data-pc-id"] !== undefined);
+    expect(needsTableRows).toHaveLength(4);
+
+    // 3. Selecting a PC in the table opens RelayPcDetails in-page without a connection attempt
+    const homeRow = needsTableRows.find((r) => r.props["data-pc-id"] === IDS.home)!;
+    const detailsBtn = homeRow.find((n) => n.props["data-pc-action"] === "details");
+    await act(async () => { detailsBtn.props.onClick({ stopPropagation() {} }); });
+    expect(window.location.hash).toContain(`pc=${IDS.home}`);
+    const detailsPane = renderer!.root.find((n) => n.props["data-pc-details"] === IDS.home);
+    expect(textOf(detailsPane)).toContain("Home server");
+    expect(textOf(detailsPane)).toContain("This device: answered · 24 ms");
+
+    // 4. Relay route passes live pcStatus into RelayMap (only checking wire animates, answered/no-answer reflected) and selecting a PC in the map opens Details
+    await navigateHash("#relay");
+    const flows = renderer!.root.findAll((n) => n.type === "path" && n.props.className === "relay-map-flow");
+    expect(flows.length).toBeGreaterThan(0);
+    const deskMapNode = renderer!.root.find((n) => n.type === "button" && n.props["data-pc-id"] === IDS.desk);
+    await act(async () => { deskMapNode.props.onClick(); });
+    expect(window.location.hash).toContain(`#pcs`);
+    expect(window.location.hash).toContain(`pc=${IDS.desk}`);
+    expect(renderer!.root.find((n) => n.props["data-pc-details"] === IDS.desk)).toBeDefined();
+
+    // 5. Local mode's Overview shows no account-availability words (Ready/Needs you/Offline)
+    window.location.hash = "#overview";
+    const localHtml = renderStatic(baseProps({
+      account: null,
+      pcs: dashboardPcs([pc(IDS.desk, "Desk PC", "paired", { listed: false, linked: false })], [{ server_id: IDS.desk, relay: AP }]),
+    }));
+    expect(localHtml).toContain("Paired with this device");
+    expect(localHtml).toContain("Paired · not checked");
+    expect(localHtml).not.toContain('data-strip-cell="ready"');
+    expect(localHtml).not.toContain(">Ready<");
+  });
+
+  it("suppresses the focus ring on the non-interactive page heading and draws a continuous phone connector rail in RelayMap.css", () => {
+    const dashCss = readFileSync(new URL("./RelayDashboard.css", import.meta.url), "utf8");
+    expect(dashCss).toMatch(/\.relay-dash-title:focus\s*,\s*\.relay-dash-title:focus-visible\s*\{\s*outline:\s*none;\s*\}/);
+
+    const mapCss = readFileSync(new URL("./RelayMap.css", import.meta.url), "utf8");
+    expect(mapCss).toMatch(/\.relay-map-link\s*\{[^}]*position:\s*absolute;[^}]*top:\s*calc\(-1\s*\*\s*var\(--space-2\)\);[^}]*bottom:\s*0;/);
+    expect(mapCss).toMatch(/\.relay-map-route:last-child\s*>\s*\.relay-map-link\s*\{[^}]*bottom:\s*calc\(100%\s*-\s*var\(--avatar-size\)\s*\/\s*2\);/);
   });
 });

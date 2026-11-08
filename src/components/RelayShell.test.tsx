@@ -14,7 +14,7 @@ const none = () => {};
 const props = (state: RelayShellProps["state"]): RelayShellProps => ({ state, scoped: true, iosTab: false, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none });
 /** The dashboard's table row for the PC named `name`, as rendered. */
 const rowOf = (html: string, name: string): string => {
-  const row = [...html.matchAll(/<tr data-pc-state="[^"]+">[\s\S]*?<\/tr>/g)].map((m) => m[0]).find((r) => r.includes(`>${name}</b>`));
+  const row = [...html.matchAll(/<tr[^>]*data-pc-state="[^"]+"[^>]*>[\s\S]*?<\/tr>/g)].map((m) => m[0]).find((r) => r.includes(`>${name}</span>`) || r.includes(`>${name}</b>`));
   if (row === undefined) throw new Error(`no row for ${name}`);
   return row;
 };
@@ -58,6 +58,7 @@ describe("the front page's account part", () => {
   it("keeps saved PCs off the sign-in, directly under the providers before the divider, counted", () => {
     const two = render({ ...props({ kind: "list", devices: [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
     expect(two).toContain("Continue with GitHub");
+    expect(two).toContain('data-action="continue-local"');
     expect(signInAlternatives(two)).toEqual(["Continue without an account (2 PCs)", "Pair with a QR or code"]);
     expect(two.indexOf("Continue without an account (2 PCs)")).toBeLessThan(two.indexOf("account-divider"));
     expect(two.indexOf("account-divider")).toBeLessThan(two.indexOf("Pair with a QR or code"));
@@ -106,11 +107,11 @@ describe("the front page's account part", () => {
     expect(html.indexOf("Check now")).toBeLessThan(html.indexOf("home"));
     // a check stops before signing in: the PC answering is all it knows, never that this device is connected
     expect(text).not.toContain("Connected");
-    // signed in, the dashboard's row for a ready PC says the same in its State cell (an offline one says Offline: the dashboard's case below)
+    // signed in, the dashboard's row for a ready PC keeps Ready as the directory state until Check now is pressed (V-023)
     const signedIn = render({ ...props({ kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [pc("a".repeat(32), "home", "paired")] } }), scoped: false, onSignIn: none, pcStatus, onCheckPcs: none });
     const row = rowOf(signedIn, "home").replace(/<[^>]+>/g, "");
-    expect(row).toContain("Answers · Same Wi-Fi, direct · 9 ms");
-    expect(row).not.toContain("Ready");
+    expect(row).toContain("Ready");
+    expect(row).not.toContain("This device: answered");
     expect(signedIn).toContain("Check now");
   });
 
@@ -122,7 +123,7 @@ describe("the front page's account part", () => {
     expect(row).not.toContain("in your account");
   });
 
-  it("offers Add for a PC new in the account, Join for an older one that has not approved this device, and nothing for one with no way to join", () => {
+  it("offers Add for a PC new in the account, Join for an older one that has not approved this device, and Details for one with no way to join", () => {
     const fresh = { ...pc("b".repeat(32), "desk2", "needs-approval"), added_at: new Date().toISOString(), join: { server_public_key: "k", relay: "wss://relay.example" } };
     const old = { ...fresh, server_id: "c".repeat(32), name: "nuc", added_at: new Date(Date.now() - 3_600_000).toISOString() };
     const { join: _join, ...waiting } = { ...old, server_id: "d".repeat(32), name: "attic" };
@@ -131,13 +132,12 @@ describe("the front page's account part", () => {
     const html = render({ ...props({ kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [fresh, old, waiting, stale] } }), scoped: false, onSignIn: none, onJoin: none });
     expect(actionsOf(rowOf(html, "cabin"))).toEqual(["Join"]);
     expect(actionsOf(rowOf(html, "desk2"))).toEqual(["Add"]);
-    expect(rowOf(html, "desk2")).toContain("new in your account");
+    expect(rowOf(html, "desk2")).toContain("new · 10 min left");
     expect(actionsOf(rowOf(html, "nuc"))).toEqual(["Join"]);
-    expect(actionsOf(rowOf(html, "attic"))).toEqual([]);
-    // the notice names the first PC waiting, with its own action
-    const notice = /<div class="relay-dash-notice">[\s\S]*?<\/div>/.exec(html)![0];
-    expect(notice.replace(/<[^>]+>/g, "")).toContain("desk2 is new in your account. Type the number it shows on its own screen to add it.");
-    expect(actionsOf(notice)).toEqual(["Add"]);
+    expect(actionsOf(rowOf(html, "attic"))).toEqual(["Details"]);
+    // the attention list names the waiting PCs without a redundant top notice banner (V-040)
+    expect(html).not.toContain("relay-dash-notice");
+    expect(html).toContain('class="relay-overview-attention"');
     expect(html).not.toContain("Add desk2 to your account?");
   });
 
@@ -151,15 +151,16 @@ describe("the front page's account part", () => {
     expect(wrong).not.toContain('name="digits"');
   });
 
-  it("opens a paired PC and leaves one that has not approved this device as a plain row", () => {
+  it("opens a paired PC and routes an offline or unpaired PC to Details instead of a doomed connection", () => {
     const html = render({ ...props({ kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null,
       pcs: [pc("a".repeat(32), "p620", "paired"), pc("b".repeat(32), "nuc", "needs-approval"), pc("c".repeat(32), "old-desktop", "offline", false), pc("d".repeat(32), "laptop", "offline", true)] } }), scoped: false, onSignIn: none });
     expect(html).toContain(`href="/s/${"a".repeat(32)}/"`);
     expect(html).not.toContain(`href="/s/${"b".repeat(32)}/"`);
-    // offline says nothing about pairing: only the PC this device is paired with opens
+    // offline rows open in-page Details (button), never an anchor to /s/<id>/ (V-015)
     expect(html).not.toContain(`href="/s/${"c".repeat(32)}/"`);
-    expect(html).toContain(`href="/s/${"d".repeat(32)}/"`);
-    expect(html).toContain("Needs approval");
+    expect(html).not.toContain(`href="/s/${"d".repeat(32)}/"`);
+    expect(actionsOf(rowOf(html, "laptop"))).toEqual(["Details"]);
+    expect(html).toContain("Needs you");
     expect(html).not.toContain("Continue with GitHub");
   });
 
@@ -187,24 +188,23 @@ describe("the dashboard", () => {
     expect(html).toContain('data-dashboard-mode="account"');
     // IS-FRAME-06: no subtitle in the page header (the count lives in the strip and sidebar)
     expect(html).not.toContain("relay-dash-sub");
-    const counts = [...html.matchAll(/<li><svg class="status-dot"[^>]*>[\s\S]*?<\/svg>([^<]+)<b>(\d+)<\/b>/g)].map(([, label, n]) => [label, Number(n)]);
-    expect(counts).toEqual([["Ready", 2], ["Needs you", 2], ["Offline", 1]]);
-    const relays = [...html.matchAll(/<code class="relay-dash-host">([^<]+)<\/code><span>([^<]+)<\/span><span>([^<]+)<\/span>/g)].map(([, host, n, kind]) => [host, n, kind]);
+    const counts = [...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"[\s\S]*?<span class="relay-overview-strip-label"><svg[\s\S]*?<\/svg><span>([^<]+)<\/span><\/span>/g)].map(([, cell, n, label]) => [cell, label, Number(n)]);
+    expect(counts).toEqual([["ready", "Ready", 2], ["needs", "Needs you", 2], ["relays", "Relays in use", 2]]);
+    const relays = [...html.matchAll(/<button type="button" class="pill relay-overview-relay-chip">([^<]+)<\/button><span class="relay-overview-relay-count">([^<]+)<\/span><span class="relay-overview-relay-scope">([^<]+)<\/span>/g)].map(([, host, n, kind]) => [host, n, kind]);
     expect(relays).toEqual([["relay-ap.ovis.sh", "3 PCs", "regional"], ["relay.ovis.sh", "1 PC", "global"]]);
-    expect(html).toContain("Needs attention · 2");
-    const attention = [...html.matchAll(/<span class="relay-dash-attention-name"[^>]*>([^<]+)<\/span><small>([^<]+)<\/small>/g)].map(([, name, why]) => [name, why]);
-    expect(attention).toEqual([["Mac mini", "Needs approval"], ["Home server", "Offline · 20 h ago"]]);
+    const attention = [...html.matchAll(/<span class="relay-overview-attention-name"[^>]*>([^<]+)<\/span><span class="relay-overview-attention-why">([^<]+)<\/span>/g)].map(([, name, why]) => [name, why]);
+    expect(attention).toEqual([["Mac mini", "new · 10 min left"], ["Home server", "offline since 20 h"]]);
     // Overview ends with the Connection map disclosure to #relay; the nav counts the PCs
     expect(html).not.toContain('data-slot="relay-map"');
-    expect(html).toContain('class="relay-dash-map-disclosure"');
+    expect(html).toContain('class="relay-overview-map-disclosure"');
     expect(html).toContain('<span class="relay-dash-nav-count">4</span>');
   });
 
   it("places a Connection map disclosure after the table on Overview, draws the full map on #relay, and omits both for an empty account", () => {
     const overview = render(signedIn(four()));
     expect(overview).not.toContain('data-slot="relay-map"');
-    expect(overview.indexOf('class="relay-dash-summary"')).toBeLessThan(overview.indexOf('id="relay-dash-pcs"'));
-    expect(overview.indexOf('id="relay-dash-pcs"')).toBeLessThan(overview.indexOf('class="relay-dash-map-disclosure"'));
+    expect(overview.indexOf('class="relay-overview-strip"')).toBeLessThan(overview.indexOf('id="relay-dash-pcs"'));
+    expect(overview.indexOf('id="relay-dash-pcs"')).toBeLessThan(overview.indexOf('class="relay-overview-map-disclosure"'));
     const prevWin = Object.getOwnPropertyDescriptor(globalThis, "window");
     Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "#relay" } } });
     try {
@@ -224,41 +224,37 @@ describe("the dashboard", () => {
 
   it("gives each row its state, relay, last seen and the one action its state allows", () => {
     const html = render(signedIn(four()));
-    expect(text(rowOf(html, "Desk PC"))).toContain("in your account");
+    expect(text(rowOf(html, "Desk PC"))).toContain("Ready");
     expect(text(rowOf(html, "Desk PC"))).toContain("just now");
     expect(actionsOf(rowOf(html, "Desk PC"))).toEqual(["Open"]);
     expect(rowOf(html, "Desk PC")).toContain(`href="/s/${ids.desk}/"`);
-    expect(text(rowOf(html, "MacBook"))).toContain("paired by QR · not in the account yet");
+    expect(text(rowOf(html, "MacBook"))).toContain("Paired · not checked");
     expect(text(rowOf(html, "MacBook"))).toContain("—");
     expect(actionsOf(rowOf(html, "Mac mini"))).toEqual(["Add"]);
     expect(rowOf(html, "Home server")).toContain('data-pc-state="offline"');
     expect(actionsOf(rowOf(html, "Home server"))).toEqual(["Details"]);
-    expect(rowOf(html, "Home server")).toContain(`href="/s/${ids.home}/"`);
+    expect(rowOf(html, "Home server")).not.toContain(`href="/s/${ids.home}/"`);
     expect(text(rowOf(html, "Home server"))).toContain("20 h ago");
-    const hosts = [...html.matchAll(/<td class="relay-dash-relay">([^<]+)<\/td>/g)].map(([, host]) => host);
-    expect(hosts).toEqual(["relay-ap.ovis.sh", "relay-ap.ovis.sh", "relay-ap.ovis.sh", "relay.ovis.sh"]);
-    // an offline PC this device is not paired with has nothing to do, and the directory's relay wins over the pairing's
+    const hosts = [...html.matchAll(/<td class="relay-dash-relay relay-pc-cell-relay"><code class="relay-pc-relay-chip">([^<]+)<\/code><\/td>/g)].map(([, host]) => host);
+    expect(hosts).toEqual(["relay-ap.ovis.sh", "relay.ovis.sh", "relay-ap.ovis.sh", "relay-ap.ovis.sh"]);
+    // an offline PC this device is not paired with offers Details when it has no join route, and the directory's relay wins over the pairing's
     const unpaired = render(signedIn([pc(ids.home, "Home server", "offline")], { directoryRelays: [{ server_id: ids.home, relay: AP }] }));
-    expect(actionsOf(rowOf(unpaired, "Home server"))).toEqual([]);
+    expect(actionsOf(rowOf(unpaired, "Home server"))).toEqual(["Details"]);
     expect(rowOf(unpaired, "Home server")).toContain("relay-ap.ovis.sh");
   });
 
-  it("says Offline in the row of a PC the directory has not seen lately, as the strip and the map do, even when this device's check got an answer", () => {
+  it("says Offline in the row of a PC the directory has not seen lately, as the strip and the map do, and shows the probe result only after explicit Check now", () => {
     const answered = { kind: "answered", route: "relay", rttMs: 13 } as const;
     const html = render(signedIn(four(), { pcStatus: new Map([[ids.home, answered], [ids.desk, answered]]), onCheckPcs: none }));
-    const cell = (name: string) => /<td class="relay-dash-state-cell">([\s\S]*?)<\/td>/.exec(rowOf(html, name))?.[1] ?? "";
-    expect(cell("Home server")).toContain('<svg class="status-dot" data-state="offline"');
-    const state = (html: string) => /<span class="relay-dash-state">([\s\S]*?)<\/span>(?=<small|$)/.exec(html)?.[1] ?? "";
-    expect(text(state(cell("Home server")))).toBe("Offline · 20 h ago");
+    const cell = (name: string) => /<td class="relay-dash-state-cell[^"]*">([\s\S]*?)<\/td>/.exec(rowOf(html, name))?.[1] ?? "";
+    expect(rowOf(html, "Home server")).toContain('<svg class="status-dot" data-state="offline"');
+    expect(text(cell("Home server"))).toBe("Offline · 20 h ago");
     expect(cell("Home server")).not.toContain("connection-line");
-    expect(cell("Home server")).toContain('class="relay-dash-state-note"');
-    // a PC the directory calls ready keeps the check's own line
-    expect(text(cell("Desk PC"))).toBe("Answers · Through the relay · 13 ms");
-    // a check that did not answer adds nothing to Offline
+    // automatic probes do not replace Ready or add a second line until Check now
+    expect(text(cell("Desk PC"))).toBe("Ready");
     const down = render(signedIn(four(), { pcStatus: new Map([[ids.home, { kind: "offline", reason: "pc" }]] as const), onCheckPcs: none }));
-    const downCell = /<td class="relay-dash-state-cell">([\s\S]*?)<\/td>/.exec(rowOf(down, "Home server"))?.[1] ?? "";
+    const downCell = /<td class="relay-dash-state-cell[^"]*">([\s\S]*?)<\/td>/.exec(rowOf(down, "Home server"))?.[1] ?? "";
     expect(text(downCell)).toBe("Offline · 20 h ago");
-    expect(downCell).not.toContain("relay-dash-state-note");
   });
 
   it("gives both the sidebar and a phone's tab bar the five real routes: Overview, PCs, Devices, Relay and Settings", () => {
@@ -277,26 +273,24 @@ describe("the dashboard", () => {
     expect([...side.matchAll(/<(a|span) class="relay-dash-nav-item"([^>]*)>/g)].map(([, tag, attrs]) => [tag, attrs!.trim()])).toEqual([
       ["a", 'href="#overview" aria-current="page"'], ["a", 'href="#pcs"'], ["a", 'href="#devices"'], ["a", 'href="#relay"'], ["a", 'href="#settings"'],
     ]);
-    expect(rowOf(html, "Desk PC")).toContain('<td class="relay-dash-state-cell">');
+    expect(rowOf(html, "Desk PC")).toContain('<td class="relay-dash-state-cell relay-pc-cell-state">');
   });
 
   it("keeps a PC paired by QR alone marked as not in the account while counting every PC in the sidebar and strip", () => {
-    const countsOf = (html: string) => [...html.matchAll(/<li><svg class="status-dot"[^>]*>[\s\S]*?<\/svg>([^<]+)<b>(\d+)<\/b>/g)].map(([, label, n]) => [label, Number(n)]);
-    // the directory empty, this device paired with one PC by QR: a row, marked not in the account yet
+    const countsOf = (html: string) => [...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"/g)].map(([, cell, n]) => [cell, Number(n)]);
+    // the directory empty, this device paired with one PC by QR: a row, marked not checked / not in the account yet
     const alone = render(signedIn([pc(ids.mac, "MacBook", "paired", { listed: false, linked: false })]));
     expect(alone).not.toContain("relay-dash-sub");
-    expect(text(rowOf(alone, "MacBook"))).toContain("paired by QR · not in the account yet");
+    expect(text(rowOf(alone, "MacBook"))).toContain("Paired · not checked");
     expect(text(rowOf(alone, "MacBook"))).not.toContain("in your account");
     expect(alone).toContain('<span class="relay-dash-nav-count">1</span>');
-    expect(countsOf(alone)).toEqual([["Ready", 1], ["Needs you", 0], ["Offline", 0]]);
-    // one listed in the account + one paired by QR alone: only the listed row says "in your account"
-    const both = render(signedIn([pc(ids.desk, "Desk PC", "paired"), pc(ids.mac, "MacBook", "paired", { listed: false, linked: false })]));
-    expect(text(rowOf(both, "Desk PC"))).toContain("in your account");
-    expect(text(rowOf(both, "MacBook"))).toContain("paired by QR · not in the account yet");
-    expect([...both.matchAll(/<small>in your account<\/small>/g)]).toHaveLength(1);
-    expect([...both.matchAll(/<small>paired by QR · not in the account yet<\/small>/g)]).toHaveLength(1);
+    expect(countsOf(alone)).toEqual([["ready", 1], ["needs", 0], ["relays", 1]]);
+    // one listed in the account + one listed but paired by QR alone: only the unlinked row says "Ready · not in the account yet"
+    const both = render(signedIn([pc(ids.desk, "Desk PC", "paired"), pc(ids.mac, "MacBook", "paired", { listed: true, linked: false })]));
+    expect(text(rowOf(both, "Desk PC"))).toContain("Ready");
+    expect(text(rowOf(both, "MacBook"))).toContain("Ready · not in the account yet");
     expect(both).toContain('<span class="relay-dash-nav-count">2</span>');
-    expect(countsOf(both)).toEqual([["Ready", 2], ["Needs you", 0], ["Offline", 0]]);
+    expect(countsOf(both)).toEqual([["ready", 2], ["needs", 0], ["relays", 1]]);
   });
 
   it("says who is signed in at the sidebar's foot with Sign out, while keeping device removal in Devices", () => {
@@ -308,15 +302,15 @@ describe("the dashboard", () => {
     expect(html).toContain("Overview");
   });
 
-  it("shows one sentence and Add a PC for an empty account, and waits while the directory loads", () => {
+  it("shows one sentence, Add a PC and Pair with a QR or code for an empty account, and skeleton rows while the directory loads", () => {
     const empty = render(signedIn([]));
     expect(text(empty)).toContain("No PCs yet. Sign in on a PC, or scan the QR code it shows, to see it here.");
-    expect(actionsOf(empty)).toEqual(["Add a PC", "Add a PC"]);
+    expect(actionsOf(empty)).toEqual(["Add a PC", "Add a PC", "Pair with a QR or code"]);
     expect(empty).not.toContain("<table");
     expect(empty).not.toContain('data-slot="relay-map"');
     expect(empty).not.toContain("relay-dash-nav-count");
     const loading = render(signedIn(null));
-    expect(loading).toContain("Loading your PCs…");
+    expect(loading).toContain('data-dashboard-loading=""');
     expect(loading).not.toContain("<table");
   });
 
@@ -375,7 +369,7 @@ describe("the dashboard", () => {
     const textOf = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : textOf(child)).join("");
     const buttons = (label: string) => renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label);
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
-    const rows = () => renderer!.root.findAll((node) => node.type === "tr" && node.props["data-pc-state"] !== undefined).map((row) => textOf(row.find((node) => node.type === "b")));
+    const rows = () => renderer!.root.findAll((node) => node.type === "tr" && node.props["data-pc-state"] !== undefined).map((row) => textOf(row.find((node) => node.props.className === "relay-pc-name-label")));
 
     it("keeps the account foot in the desktop sidebar and moves account controls to the Devices view on a phone", async () => {
       const stops = () => renderer!.root.findAll((node) => node.type === "button" || (node.type === "a" && node.props.href !== undefined)).map((node) => textOf(node).trim());
@@ -390,57 +384,75 @@ describe("the dashboard", () => {
       expect(renderer!.root.findAll((node) => node.props.className === "relay-dash-foot")).toHaveLength(0);
     });
 
-    it("narrows the table: Needs you hides the ready and offline rows, Ready the others, All brings them back", async () => {
+    it("narrows the table: Needs you hides the ready rows while keeping offline, Ready hides the others, All brings them back", async () => {
       await mount(signedIn(four()));
-      expect(rows()).toEqual(["Desk PC", "MacBook", "Mac mini", "Home server"]);
-      await act(async () => { button("Needs you").props.onClick(); });
+      expect(rows()).toEqual(["Mac mini", "Home server", "Desk PC", "MacBook"]);
+      const seg = () => renderer!.root.findByProps({ className: "segmented" });
+      const segBtn = (label: string) => seg().find((n) => n.type === "button" && textOf(n).trim() === label);
+      await act(async () => { segBtn("Needs you").props.onClick(); });
       expect(rows()).toEqual(["Mac mini", "Home server"]);
-      expect(button("Needs you").props["aria-pressed"]).toBe(true);
-      await act(async () => { button("Ready").props.onClick(); });
+      expect(segBtn("Needs you").props["aria-pressed"]).toBe(true);
+      await act(async () => { segBtn("Ready").props.onClick(); });
       expect(rows()).toEqual(["Desk PC", "MacBook"]);
-      await act(async () => { button("All").props.onClick(); });
-      expect(rows()).toEqual(["Desk PC", "MacBook", "Mac mini", "Home server"]);
+      await act(async () => { segBtn("All").props.onClick(); });
+      expect(rows()).toEqual(["Mac mini", "Home server", "Desk PC", "MacBook"]);
     });
 
-    it("opens the Add-a-PC sheet from Add and Join in the matching mode, whose own button starts the join and names the sheet", async () => {
+    it("opens the Add-a-PC sheet from Add and Join in the matching mode over an inert dashboard, whose own button starts the join and names the sheet", async () => {
       const old = pc("e".repeat(32), "nuc", "needs-approval", { added_at: new Date(Date.now() - 3_600_000).toISOString(), join: { server_public_key: "k", relay: AP } });
       const joined: [string, unknown][] = [];
       await mount(signedIn([...four(), old], { onJoin: (target, options) => { joined.push([target.name, options]); } }));
       expect(dialogs()).toHaveLength(0);
-      // the notice offers Add for the first PC waiting, and its row again: both open the one sheet
+      expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(0);
+      // the attention list offers Add for the waiting PC, and its table row again: both open the one sheet over an inert dashboard
       expect(buttons("Add")).toHaveLength(2);
-      await act(async () => { buttons("Add")[1]!.props.onClick(); });
+      await act(async () => { buttons("Add")[1]!.props.onClick({ stopPropagation() {} }); });
       expect(dialog().props["data-add-pc-mode"]).toBe("new");
       expect(dialog().props["data-add-pc-phase"]).toBe("start");
+      expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(1);
       expect(textOf(dialog())).toContain("Add Mac mini to your account");
       await act(async () => { button("Add this PC").props.onClick(); });
       expect(joined).toEqual([["Mac mini", { typed: true, sheet: "new" }]]);
       await act(async () => { button("Cancel").props.onClick(); });
       expect(dialogs()).toHaveLength(0);
-      await act(async () => { buttons("Add")[0]!.props.onClick(); });
+      expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(0);
+      await act(async () => { buttons("Add")[0]!.props.onClick({ stopPropagation() {} }); });
       expect(dialog().props["data-add-pc-mode"]).toBe("new");
       await act(async () => { button("Cancel").props.onClick(); });
-      await act(async () => { button("Join").props.onClick(); });
+      await act(async () => { buttons("Join")[0]!.props.onClick({ stopPropagation() {} }); });
       expect(dialog().props["data-add-pc-mode"]).toBe("join");
+      expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(1);
       expect(textOf(dialog())).toContain("Add this device to nuc");
       await act(async () => { button("Ask to join").props.onClick(); });
       expect(joined[1]).toEqual(["nuc", { sheet: "join" }]);
     });
 
-    it("takes Add a PC to the sheet's add mode, its QR route to the pairing screen, and Back to the dashboard", async () => {
+    it("takes Add a PC to the sheet's add mode, opens Pair with a QR or code as a dialog over the inert dashboard, and returns focus to its trigger on close", async () => {
+      const H = globalThis.HTMLElement as unknown as new () => { isConnected: boolean; focus: () => void };
+      const opener = new H();
+      let openerFocused = 0;
+      opener.focus = () => { openerFocused += 1; };
+      Object.defineProperty(document, "activeElement", { configurable: true, value: opener });
       await mount(signedIn(four()));
       await act(async () => { button("Add a PC").props.onClick(); });
       expect(dialog().props["data-add-pc-mode"]).toBe("add");
+      expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(1);
       await act(async () => { button("Pair with a QR or code").props.onClick(); });
-      expect(dialogs()).toHaveLength(0);
-      expect(textOf(renderer!.root.findByType("h1"))).toBe("Scan the QR code on your PC");
-      expect(renderer!.root.findAll((instance) => instance.type === "table")).toHaveLength(0);
+      expect(dialogs()).toHaveLength(1);
+      expect(dialog().props["data-pair-dialog"]).toBe("qr");
+      expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(1);
+      expect(textOf(dialog())).toContain("Scan the QR code on your PC");
+      expect(renderer!.root.findAll((instance) => instance.type === "table")).toHaveLength(1);
+      openerFocused = 0;
       await act(async () => { button("Back").props.onClick(); });
+      expect(dialogs()).toHaveLength(0);
+      expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(0);
+      expect(openerFocused).toBeGreaterThanOrEqual(1);
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Overview");
       expect(rows()).toHaveLength(4);
     });
 
-    it("goes on in the sheet over the PC's own page for the join it started: the link's question, then the digits; a plain visit keeps the screens", async () => {
+    it("goes on in the sheet over the PC's own page for the join it started: the link's question, the digits, and the sheet's own Step 4 of 4 ready phase; a plain visit keeps the screens", async () => {
       const offer = { v: 1 as const, server_id: ids.mini, server_public_key: "k", relay: AP, name: "Mac mini" };
       let paired = 0;
       await mount({ ...props({ kind: "confirm", offer }), onPair: () => { paired += 1; }, sheetJoin: { mode: "new", server_id: ids.mini } });
@@ -456,26 +468,38 @@ describe("the dashboard", () => {
       await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: "123 456" }) } } }); });
       expect(typed).toEqual(["123456"]);
       await act(async () => { renderer!.unmount(); });
+      // Ready state in continued mode renders AddPcSheet phase="ready" with Step 4 of 4 and all four steps done, not ReadyCheckpoint
+      let openedPc = 0;
+      await mount({ ...props({ kind: "ready", name: "Mac mini", server_id: ids.mini }), onOpenPc: () => { openedPc += 1; }, sheetJoin: { mode: "new", server_id: ids.mini } });
+      expect(dialog().props["data-add-pc-mode"]).toBe("new");
+      expect(dialog().props["data-add-pc-phase"]).toBe("ready");
+      expect(textOf(dialog())).toContain("Step 4 of 4");
+      expect(dialog().findAll((n) => n.type === "li").map((n) => n.props["data-step"])).toEqual(["done", "done", "done", "done"]);
+      await act(async () => { button("Open PC").props.onClick(); });
+      expect(openedPc).toBe(1);
+      await act(async () => { renderer!.unmount(); });
       // the same screen without the sheet's join, or with another PC's: the shell's own screen, as before
       await mount({ ...props({ kind: "confirm", offer }), sheetJoin: { mode: "join", server_id: ids.desk } });
       expect(dialogs()).toHaveLength(0);
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Pair with Mac mini?");
     });
 
-    it("shows how the sheet's join failed in the sheet, with Try again, only for that PC; a new identity keeps the shell's own screen", async () => {
+    it("shows how the sheet's join failed in the sheet, with Try again, only for that PC, and suppresses raw close-code details in the RelayShell failure path", async () => {
       let retried = 0;
-      const offline = { kind: "failed", failure: "pc-offline", name: "Mac mini", detail: null } as const;
+      const offline = { kind: "failed", failure: "pc-offline", name: "Mac mini", detail: "The relay closed the connection (0)" } as const;
       await mount({ ...props({ ...offline, server_id: ids.mini }), onRetry: () => { retried += 1; }, sheetJoin: { mode: "join", server_id: ids.mini } });
       expect(dialog().props["data-add-pc-phase"]).toBe("failed");
       expect(textOf(dialog())).toContain("Mac mini is offline");
+      expect(textOf(dialog())).not.toContain("The relay closed the connection (0)");
       await act(async () => { button("Try again").props.onClick(); });
       expect(retried).toBe(1);
       await act(async () => { renderer!.unmount(); });
-      // another PC's failure, or one with no PC named: the shell's own screen
+      // another PC's failure, or one with no PC named: the shell's own screen, also filtering raw close-code details
       for (const state of [{ ...offline, server_id: ids.desk }, offline]) {
         await mount({ ...props(state), sheetJoin: { mode: "join", server_id: ids.mini } });
         expect(dialogs()).toHaveLength(0);
         expect(textOf(renderer!.root.findByType("h1"))).toBe("Mac mini is offline");
+        expect(textOf(renderer!.root)).not.toContain("The relay closed the connection (0)");
         await act(async () => { renderer!.unmount(); });
       }
       await mount({ ...props({ kind: "failed", failure: "identity-changed", name: "Mac mini", detail: null, server_id: ids.mini }), sheetJoin: { mode: "join", server_id: ids.mini } });
@@ -483,20 +507,25 @@ describe("the dashboard", () => {
       expect(button("Forget this PC")).toBeDefined();
     });
 
-    it("lists this device's own pairings behind Continue without an account, and offers the sign-in at the foot", async () => {
+    it("lists this device's own pairings behind Continue without an account without account-availability words, and offers the sign-in at the foot", async () => {
       await mount({ ...props({ kind: "list", devices: [device(ids.desk, "p620", AP), device(ids.mac, "nuc", GLOBAL)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
       await act(async () => { button("Continue without an account (2 PCs)").props.onClick(); });
       const main = renderer!.root.findByType("main");
       expect(main.props["data-account-state"]).toBe("signed-out");
       expect(renderer!.root.findByProps({ className: "relay-dash" }).props["data-dashboard-mode"]).toBe("local");
       expect(rows()).toEqual(["nuc", "p620"]);
-      expect(renderer!.root.findAll((node) => node.type === "a" && node.props.className === "btn btn-primary").map((link) => link.props.href)).toEqual([`/s/${ids.mac}/`, `/s/${ids.desk}/`]);
+      expect(renderer!.root.findAll((node) => node.type === "a" && node.props["data-pc-action"] === "open").map((link) => link.props.href)).toEqual([`/s/${ids.mac}/`, `/s/${ids.desk}/`]);
       const foot = renderer!.root.findByProps({ className: "relay-dash-foot" });
       expect(textOf(foot)).toContain("Without an account");
       expect(textOf(foot)).not.toContain("Sign out");
       expect(renderer!.root.findAll((node) => node.type === "p" && node.props.className === "relay-dash-sub")).toHaveLength(0);
-      // the strip counts them ready, both on their own relays
-      expect(renderer!.root.findAll((node) => node.type === "code").map(textOf)).toEqual(["relay-ap.ovis.sh", "relay.ovis.sh"]);
+      const allText = textOf(renderer!.root);
+      expect(allText).toContain("Paired with this device");
+      expect(allText).toContain("Paired · not checked");
+      expect(allText).not.toContain("Needs you");
+      expect(allText).not.toContain("Ready");
+      // the overview lists both relays
+      expect(renderer!.root.findAll((node) => node.type === "button" && String(node.props.className ?? "").includes("relay-overview-relay-chip")).map(textOf)).toEqual(["relay-ap.ovis.sh", "relay.ovis.sh"]);
       await act(async () => { foot.find((node) => node.type === "button").props.onClick(); });
       expect(textOf(renderer!.root.findByType("h1"))).toBe("Sign in to Ovis");
     });

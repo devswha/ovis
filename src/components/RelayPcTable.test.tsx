@@ -418,4 +418,26 @@ describe("RelayPcTable", () => {
     expect(uncheckedRow).toContain("Ready");
     expect(uncheckedRow).toContain("Not checked");
   });
+
+  it("names the specific state in the State cell (Needs approval, Needs update, Offline · when, Ready) with the full text in a title, while the filter chip keeps Needs you", () => {
+    const html = renderHtml(buildProps());
+    const stateOf = (id: string) => /<span class="relay-pc-state-word" title="([^"]+)">([^<]+)<\/span>/.exec(new RegExp(`<tr[^>]*data-pc-id="${id}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "")?.slice(1);
+    expect(stateOf(IDS.fresh)).toEqual(["Needs approval", "Needs approval"]);
+    expect(stateOf(IDS.update)).toEqual(["Needs update", "Needs update"]);
+    expect(stateOf(IDS.offlinePaired)).toEqual(["Offline · 2 h ago", "Offline · 2 h ago"]);
+    expect(stateOf(IDS.ready)).toEqual(["Ready", "Ready"]);
+    expect(html).not.toContain(">Needs you</span>");
+    const chips = /<div class="segmented"[\s\S]*?<\/div>/.exec(html)?.[0] ?? "";
+    expect(chips).toContain(">Needs you</button>");
+  });
+
+  it("drops the Last seen column when asked (Details open beside it) and rebalances the remaining four columns", () => {
+    const html = renderHtml(buildProps(sampleFleet(), { showLastSeen: false }));
+    expect(html.match(/<th scope="col"/g)).toHaveLength(4);
+    expect(html).not.toContain("Last seen");
+    expect(html).not.toContain("relay-pc-col-seen");
+    expect(html).not.toContain("relay-pc-cell-seen");
+    expect(html).toContain('class="relay-dash-table relay-pc-table is-without-seen"');
+    expect(renderHtml(buildProps()).match(/<th scope="col"/g)).toHaveLength(5);
+  });
 });

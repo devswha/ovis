@@ -68,11 +68,11 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     shell ??= (mount.createRoot ?? createRoot)(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null, createElement(RelayShell, {
       state, scoped, iosTab, pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
+      onForgetPc: async (serverId: string) => { await forgetSavedPc(serverId, store); await account.refresh(); if (frontUp()) await showFront(); },
       onUpdate: updates.update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc, defaultRelay: GLOBAL_RELAY, meLabel: label,
       directoryRelays: account.directory, sheetJoin, continuedAccount: sheetJoin ? account.state : null, observedVersions: observedVersions(),
       ...(account.enabled ? { onSignIn: account.signIn, accountProviders: account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onRefreshAccount: () => void account.refresh() } : {}),
-    }))));
-    account.armRefresh();
+    })))); account.armRefresh();
   };
   const showFront = async (): Promise<void> => {
     const before = shown;
