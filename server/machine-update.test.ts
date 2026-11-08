@@ -31,7 +31,7 @@ describe("approved bridge replacement", () => {
         method: body === undefined ? "GET" : "POST",
         headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json" },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }), manager);
+      }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
       expect(response.ok).toBe(true);
       return response.json() as Promise<SetupJob>;
     };

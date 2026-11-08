@@ -85,8 +85,9 @@ export interface PcUpdateOffer {
   revision?: string | null;
 }
 /**
- * POST /api/machines/:id/update, with an optional JSON body: `revision`, the offer's as shown. When the PC offers
- * another release by then, nothing is installed: 409 `update_unavailable`, and the person looks again.
+ * POST /api/machines/:id/update, with an optional JSON body: `revision`, the offer's as shown. When the offer this
+ * server holds names another release, nothing is installed: 409 `update_unavailable`. When the PC itself offers
+ * another one by the time it is asked, the 202 update ends with `update_error` saying so, and nothing is installed.
  */
 export interface PcUpdateRequest { revision?: string }
 /**

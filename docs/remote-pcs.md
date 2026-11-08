@@ -156,7 +156,10 @@ reached, and refuses one that cannot run with 409 `update_unavailable` and the s
 PC's own offer names its release as `revision` (a connected PC's, or the one an SSH PC's own
 Ovis older than this app told at its last connect); a body `{ "revision": … }` with the one shown
 makes sure only that release is installed: one the PC offers instead by then is refused, never installed
-unseen. Update all installs each PC's release as this server last read it. A
+unseen. Update all installs each PC's release as this server last read it when it was asked, also for
+a PC that waits its turn. The 409 comes from the offer this server holds; when the PC itself offers
+another release by the time it is asked (or already installs one), the 202 job ends with
+`update_error` saying so, and nothing is installed. A
 connected PC's own Ovis is asked to install the release it offers, by revision, through its
 connection (no redirect is followed); its connection drops while it restarts, the PC reconnects as
 any PC does, and the update ends once it answers on that release (at most 15 minutes, or a minute
@@ -175,7 +178,10 @@ Only this PC's owner may start or cancel these updates, as only they may switch 
 driving sign-in on this PC, its token, a paired driving device or its Tailscale login, from this
 app's own page (the `X-Herdr-Update: 1` header, same origin, no query). A watching device, a
 visitor of an open install, a Portal visitor and a device connected through the relay are refused
-(403 `forbidden`), whatever their role.
+(403 `forbidden`), whatever their role; a watching device is refused as on every change (403
+`read_only`). The older ways in to the same updates, `POST /api/machines/:id/update-bridge` and a
+setup with `update_remote`, are the owner's only too (this app's own page does not send the update
+header on them yet).
 
 ## Runtime and endpoints
 

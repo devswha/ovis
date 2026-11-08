@@ -317,7 +317,13 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       }
     }
     if (parts[0] === "setup") {
-      if (parts.length === 1 && request.method === "POST") { setRequestRoute("/api/machines/setup"); return jsonResponse(manager.setup(await request.json() as SetupRequest), 202); }
+      if (parts.length === 1 && request.method === "POST") {
+        setRequestRoute("/api/machines/setup");
+        const body = await request.json() as SetupRequest;
+        // a setup that updates what runs there is an update of that PC: the owner's only, as above
+        if (isJsonObject(body) && body.update_remote === true && !owner) return fail("forbidden", OWNER_ONLY, 403);
+        return jsonResponse(manager.setup(body), 202);
+      }
       if (parts.length === 2) {
         setRequestRoute("/api/machines/setup/:job_id");
         const job = manager.job(parts[1]!);
@@ -364,6 +370,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         throw error;
       }
     }
+    // the older way in to the same updates: the owner's too (this app's own page does not send the update header here yet)
+    if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST" && !owner) return fail("forbidden", OWNER_ONLY, 403);
     if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST") { setRequestRoute("/api/machines/:machine_id/update-bridge"); return jsonResponse(manager.updateBridge(id), 202); }
     if (parts.length === 1 && request.method === "PATCH") {
       setRequestRoute("/api/machines/:machine_id");

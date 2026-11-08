@@ -101,6 +101,13 @@ describe("followOwnUpdate", () => {
     expect(pc.installs).toEqual([{ expected_revision: OFFERED }]);
   });
 
+  it("does not follow an install of another release than the one shown that already runs there", async () => {
+    const pc = remote(offered({ phase: "building", step: "build", latest_revision: "b".repeat(40) }), []);
+    await expect(followOwnUpdate({ endpoint: () => pc.endpoint, revision: OFFERED, signal: new AbortController().signal, onStep: () => {}, ...fast }))
+      .rejects.toThrow("offers another release now than the one shown");
+    expect(pc.installs).toEqual([]);
+  });
+
   it("asks again once a check for releases that made it answer busy has ended, instead of waiting for an install never asked for", async () => {
     const installs: unknown[] = [];
     let busy = true, asked = false, reads = 0;

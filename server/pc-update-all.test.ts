@@ -166,3 +166,35 @@ it("runs at most a few PCs' own updates at once with Update all, starting the ne
   await until(() => asked.length === OWN_UPDATES_AT_ONCE + 1);
   expect(asked.at(-1)).toBe(ids[OWN_UPDATES_AT_ONCE]);
 });
+
+it("cancels an automatic bridge update still waiting its turn, so it never starts", async () => {
+  const { manager, internals, request } = fixture();
+  internals.autoQueued.add(A);
+  expect(await (await request(`${A}/update`, "DELETE")).json()).toEqual({ cancelled: true });
+  expect((internals.machines.get(A) as unknown as { updateCancelled?: boolean }).updateCancelled).toBe(true);
+  expect(manager.list().length).toBeGreaterThan(0);
+});
+
+it("counts an SSH PC's own update through its setup against the same limit, and installs only the release it was queued for", async () => {
+  const { manager, internals, asked, ends, pc, until } = fixture();
+  // A and B: SSH PCs whose own Ovis, older than this app, offers a release (an own update through their setup)
+  for (const [id, revision] of [[A, "a".repeat(40)], [B, "b".repeat(40)]] as const) {
+    const runtime = internals.machines.get(id)! as Runtime & { remoteRevision?: string };
+    runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+    runtime.remoteRevision = revision;
+  }
+  // three places of the four are taken already, by other PCs' own updates
+  const spare = OWN_UPDATES_AT_ONCE - 1;
+  (manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup = new Set(Array.from({ length: spare }, (_, i) => `other-${i}`));
+  const all = manager.updateAll();
+  expect(all.started.map((entry) => entry.machine_id)).toEqual([A]);
+  expect(all.queued).toEqual([B]);
+  expect(asked).toEqual([A]);
+  expect(pc(B).updating).toMatchObject({ queued: true });
+  // B offers another release before its turn: it is told, and nothing is installed there
+  (internals.machines.get(B)! as Runtime & { remoteRevision?: string }).remoteRevision = "c".repeat(40);
+  ends.get(A)!();
+  await until(() => typeof pc(B).update_error === "string");
+  expect(pc(B).update_error).toContain("another release now than the one shown");
+  expect(asked).toEqual([A]);
+});

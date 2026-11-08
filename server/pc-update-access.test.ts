@@ -57,6 +57,19 @@ describe("the update routes", () => {
     expect((await ask(pcs, path, true)).status).not.toBe(403);
   });
 
+  it("refuses the older ways in to an update to anyone but the owner: update-bridge, and a setup that updates", async () => {
+    const pcs = manager();
+    const id = "00000000-0000-4000-8000-000000000001";
+    const send = (path: string, owner: boolean, body?: unknown) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method: "POST",
+      headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }), pcs, undefined, undefined, false, undefined, undefined, undefined, undefined, owner);
+    expect((await send(`${id}/update-bridge`, false)).status).toBe(403);
+    expect((await send("setup", false, { destination: "me@pc.invalid", machine_id: id, update_remote: true })).status).toBe(403);
+    // a first setup that installs nothing over what runs there stays a driving device's, as before
+    expect((await send("setup", false, { destination: "me@other.invalid" })).status).not.toBe(403);
+    // the owner passes the guard (the PC itself is not known here)
+    expect((await send(`${id}/update-bridge`, true)).status).not.toBe(403);
+  });
+
   it("refuses an open-LAN visitor through the server, and lets this PC's owner in", async () => {
     const state = mkdtempSync(join(tmpdir(), "ovis-update-open-"));
     const open = createServer({ port: 0, hostname: "0.0.0.0", stateDir: state, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false });
