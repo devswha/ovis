@@ -50,6 +50,8 @@ interface Pc {
   addressTaken?: boolean;
   /** Settings -> Experimental -> PCs: start a replaced server again; on in these tests unless said */
   restoreOff?: boolean;
+  /** pids that run another program than Ovis now (a registration left behind, its pid reused) */
+  otherPrograms?: number[];
   /** the stop signal does not end the server */
   killIgnored?: boolean;
   /** the server ends this many liveness checks after the stop signal (Ovis takes a moment to stop) */
@@ -117,6 +119,7 @@ function fixture(pc: Pc) {
     }
     if (script.includes("uname -s") && script.includes("bundle-ready")) return `Linux\nx86_64\n/home/fx\n/home/fx/.config\n/usr/bin/herdr\n${listed.map((d) => JSON.stringify(d)).join("\n")}\n`;
     if (script.includes("socket=")) return SOCKET;
+    if (script.startsWith("ps -o args=") && pc.otherPrograms?.includes(Number(/-p (\d+)/.exec(script)![1]))) return "/usr/bin/vim notes.txt";
     if (script.startsWith("ps -o args=")) return pc.command ?? "/home/fx/.bun/bin/bun /home/fx/ovis/server/index.ts";
     if (script.includes("kill -0")) {
       const pid = Number(/kill -0 (\d+)/.exec(script)![1]);
@@ -538,6 +541,25 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
   });
 
+  it("does not take a registration left behind, its pid now another program's, for a server in its place, before or after the restore", async () => {
+    // a registration of an Ovis long gone, whose pid (4300) now runs an editor
+    const leftover = descriptor(4300, false, "e".repeat(64));
+    const restored = fixture({ descriptors: [descriptor(4242), leftover], otherPrograms: [4300], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const one = await restored.settled(restored.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(one.error).toContain("has been started again as it was");
+    // the restarted server never registers: the leftover is not taken for it
+    const silent = fixture({ descriptors: [descriptor(4242), leftover], otherPrograms: [4300], restoreFails: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const two = await silent.settled(silent.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(two.error).toContain("starting it again as it was failed: it did not start within");
+  });
+
+  it("says another may have been installed when the installer fails after its download, the setting off", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)], restoreOff: true, installer: { exit: 1, output: "Ovis: building failed" } });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "installer_failed" });
+    expect(job.error).toContain("another may have been installed in its place");
+  });
+
   it("starts nothing beside a live server that holds the address, and says so", async () => {
     const pc = fixture({ descriptors: [descriptor(4242)], addressTaken: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
     const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
@@ -794,5 +816,21 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     const lost = Bun.spawn(["sh", "-c", 'sh -c "$1" | true', "ssh", captureServer(server.pid, identity)], { env: { PATH: process.env.PATH!, TMPDIR: dir }, stdout: "ignore", stderr: "ignore" });
     await lost.exited;
     expect(readdirSync(dir).filter((name) => name.startsWith("ovis-restore."))).toEqual([]);
+  });
+
+  it("fails the restore, never says taken, when its address cannot be used at all", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-server-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    // an address this PC does not have (TEST-NET-1)
+    const server = Bun.spawn([process.execPath, "-e", 'console.log("up"); setInterval(() => {}, 1000);'], { cwd: dir, env: { PATH: process.env.PATH!, HOME: dir, HOST: "192.0.2.1", PORT: String(await freePort()) }, stdout: "pipe", stderr: "ignore" });
+    cleanups.push(() => server.kill());
+    await server.stdout.getReader().read();
+    const saved = await shell(captureServer(server.pid, await shell(processIdentity(server.pid), {})), { HOME: dir, TMPDIR: dir });
+    server.kill(); await server.exited;
+    const run = Bun.spawn(["sh", "-c", restoreServer(saved)], { env: { PATH: process.env.PATH!, HOME: dir, XDG_STATE_HOME: join(dir, "state") }, stdout: "pipe", stderr: "pipe" });
+    const [said, why, code] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited]);
+    expect([said.trim(), code]).toEqual(["", 1]);
+    expect(why).toContain("cannot be used");
+    expect(existsSync(saved)).toBe(false);
   });
 });

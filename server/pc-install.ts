@@ -71,13 +71,15 @@ export const processIdentity = (pid: number): string =>
 /** a shell test that the process is still the one with that identity */
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, takes its address first, starts the program, and removes the copy */
-const RESTORE_LAUNCHER = "const { readFileSync, readlinkSync, rmSync, openSync, fstatSync, fchmodSync, closeSync, mkdirSync, constants } = require(\"node:fs\");\nconst { spawn } = require(\"node:child_process\");\nconst { createServer } = require(\"node:net\");\nconst d = process.argv.at(-1);\nconst parts = (name) => { const b = readFileSync(d + \"/\" + name); const out = []; let at = 0; for (let i = 0; i < b.length; i++) if (b[i] === 0) { out.push(b.subarray(at, i).toString()); at = i + 1; } if (at < b.length) out.push(b.subarray(at).toString()); return out; };\n(async () => {\n  try {\n    const argv = parts(\"cmdline\"); const env = {};\n    for (const entry of parts(\"environ\")) { const eq = entry.indexOf(\"=\"); if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1); }\n    const exe = readlinkSync(d + \"/exe\"), cwd = readlinkSync(d + \"/cwd\");\n    const host = env.HOST || \"127.0.0.1\", port = Number(env.PORT || __DEFAULT_PORT__);\n    const free = await new Promise((resolve) => { const probe = createServer(); probe.once(\"error\", () => resolve(false)); probe.listen({ host, port, exclusive: true }, () => probe.close(() => resolve(true))); });\n    if (!free) { console.log(\"taken\"); return; }\n    const logs = (process.env.XDG_STATE_HOME || process.env.HOME + \"/.local/state\") + \"/ovis\";\n    mkdirSync(logs, { recursive: true, mode: 0o700 });\n    const log = openSync(logs + \"/restored-server.log\", constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);\n    const info = fstatSync(log);\n    if (!info.isFile() || info.uid !== process.getuid()) { closeSync(log); throw new Error(\"its log is not this account's own file\"); }\n    fchmodSync(log, 0o600);\n    const child = spawn(exe, argv.slice(1), { argv0: argv[0], cwd, env, detached: true, stdio: [\"ignore\", log, log] });\n    await new Promise((resolve, reject) => { child.once(\"spawn\", resolve); child.once(\"error\", reject); });\n    child.unref(); console.log(child.pid);\n  } catch (error) { console.error(String(error && error.message || error)); process.exitCode = 1; }\n  finally { rmSync(d, { recursive: true, force: true }); }\n})();".replace("__DEFAULT_PORT__", String(DEFAULT_PORT));
+const RESTORE_LAUNCHER = "const { readFileSync, readlinkSync, rmSync, openSync, fstatSync, fchmodSync, closeSync, mkdirSync, constants } = require(\"node:fs\");\nconst { spawn } = require(\"node:child_process\");\nconst { createServer } = require(\"node:net\");\nconst d = process.argv.at(-1);\nconst parts = (name) => { const b = readFileSync(d + \"/\" + name); const out = []; let at = 0; for (let i = 0; i < b.length; i++) if (b[i] === 0) { out.push(b.subarray(at, i).toString()); at = i + 1; } if (at < b.length) out.push(b.subarray(at).toString()); return out; };\n(async () => {\n  try {\n    const argv = parts(\"cmdline\"); const env = {};\n    for (const entry of parts(\"environ\")) { const eq = entry.indexOf(\"=\"); if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1); }\n    const exe = readlinkSync(d + \"/exe\"), cwd = readlinkSync(d + \"/cwd\");\n    const host = env.HOST || \"127.0.0.1\", port = Number(env.PORT || __DEFAULT_PORT__);\n    const free = await new Promise((resolve) => { const probe = createServer(); probe.once(\"error\", (error) => resolve(error.code === \"EADDRINUSE\" ? false : error)); probe.listen({ host, port, exclusive: true }, () => probe.close(() => resolve(true))); });\n    if (free === false) { console.log(\"taken\"); return; }\n    if (free !== true) throw new Error(\"its address \" + host + \":\" + port + \" cannot be used: \" + (free.code || free.message));\n    const logs = (process.env.XDG_STATE_HOME || process.env.HOME + \"/.local/state\") + \"/ovis\";\n    mkdirSync(logs, { recursive: true, mode: 0o700 });\n    const log = openSync(logs + \"/restored-server.log\", constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);\n    const info = fstatSync(log);\n    if (!info.isFile() || info.uid !== process.getuid()) { closeSync(log); throw new Error(\"its log is not this account's own file\"); }\n    fchmodSync(log, 0o600);\n    const child = spawn(exe, argv.slice(1), { argv0: argv[0], cwd, env, detached: true, stdio: [\"ignore\", log, log] });\n    await new Promise((resolve, reject) => { child.once(\"spawn\", resolve); child.once(\"error\", reject); });\n    child.unref(); console.log(child.pid);\n  } catch (error) { console.error(String(error && error.message || error)); process.exitCode = 1; }\n  finally { rmSync(d, { recursive: true, force: true }); }\n})();".replace("__DEFAULT_PORT__", String(DEFAULT_PORT));
 /**
  * Starts the server captureServer copied again, as it was: its own program, the same arguments, in the same folder, with
  * exactly its environment, given to the new process directly (never on any command line, where another account could
  * read the token), in a session of its own so it outlives this SSH connection, its output in a log only this account
  * reads. Its address (HOST, PORT) is bound first: one already taken means a live server is there, its replacement among
- * them, and nothing is started ("taken"); a replacement that comes up meanwhile cannot bind it beside the restored one.
+ * them, and nothing is started ("taken"); any other failure to use the address fails the restore. The address is free only
+ * when it is checked: a replacement starting in the moment before the restored server binds it is caught by that
+ * server's own bind, which fails.
  * It prints the new process's id. The copy is removed whatever happens.
  */
 export const restoreServer = (dir: string): string =>
@@ -242,7 +244,7 @@ export class PcInstaller {
    */
   private async startAgain(state: State, request: { target: SshTarget; machine_id?: string }, saved: string, socket: string, before: Set<string>, restore: number | null | false): Promise<string> {
     const job = state.public;
-    job.step = restore === false ? "Removing the copy of that PC's Ovis…" : "Starting that PC's Ovis again as it was…";
+    job.step = restore === false ? "Removing the copy of that PC's Ovis…" : "Starting that PC's Ovis again as it was (this can take a few minutes, and is not cancelled)…";
     this.options.onChange?.(job);
     let ssh: SshConnection | undefined;
     try {
@@ -261,18 +263,24 @@ export class PcInstaller {
           await Bun.sleep(this.pollMs);
         }
       }
-      const fresh = async () => {
+      // the live Ovis servers registered on this herdr socket, managed or not, on any port: a registration whose pid
+      // now runs another program is none (its pid reused; see #3385 for its start identity)
+      const serving = async (): Promise<string[]> => {
+        const live: string[] = [];
         for (const d of await posixHost.descriptors(at)) {
-          // any live server on this herdr socket, managed or not, on any port: the old one is never started beside it
-          if (d.socket_path === socket && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== restore && await posixHost.alive(at, d.pid)) return true;
+          if (d.socket_path !== socket || !Number.isSafeInteger(d.pid) || d.pid <= 0 || d.pid === restore || !await posixHost.alive(at, d.pid)) continue;
+          if (OVIS_COMMAND.test(await at.run(`ps -o args= -p ${d.pid} 2>/dev/null || true`))) live.push(d.token);
         }
-        return false;
+        return live;
       };
       // one already there: never a second server for the same socket
-      if (await fresh()) return await forgotten("replaced");
-      // its address taken: a live server is there (its replacement, say), and nothing is started beside it
+      const there = await serving();
+      if (there.length > 0) return await forgotten("replaced");
+      // its address taken (in use): a live server is there, its replacement say, and nothing is started beside it
       if ((await at.run(restoreServer(saved))).trim() === "taken") return "replaced";
-      for (const until = Date.now() + this.startMs; !(await fresh());) {
+      // started: once a registration that was not there before answers, with a new token, as the restarted server's is
+      const known = new Set([...before, ...there]);
+      for (const until = Date.now() + this.startMs; !(await serving()).some((token) => !known.has(token));) {
         if (Date.now() >= until) return `it did not start within ${Math.round(this.startMs / 1000)} seconds (its output is in ~/.local/state/ovis/restored-server.log there).`;
         await Bun.sleep(this.pollMs);
       }
