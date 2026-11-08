@@ -38,8 +38,8 @@ describe("a Letta pane's status from its local messages", () => {
     const titled = (id: string, status: HerdrPane["agent_status"], title: string, agent = "letta") => ({ ...pane(id, agent, status), terminal_title: title } as HerdrPane);
     const panes = [titled("t1", "unknown", "⠋ Tutor"), titled("t2", "unknown", "Tutor"), titled("t3", "unknown", "⠋ Tutor"), titled("t4", "blocked", "⠋ Tutor"), titled("t5", "unknown", "⠋ x", "claude")];
     const last = new Map<string, HerdrPane["agent_status"]>();
-    // the first look tells nobody
-    expect(lettaTitleStatus(panes, (paneId) => paneId === "t3", last)).toEqual([]);
+    // a first look at rest tells nobody; one at work does, so its end is a finish
+    expect(lettaTitleStatus(panes, (paneId) => paneId === "t3", last)).toEqual([{ paneId: "t1", status: "working" }]);
     expect(panes.map((p) => p.agent_status)).toEqual(["working", "idle", "unknown", "blocked", "unknown"]);
     // a turn ends in t1 and starts in t2: both are told, as a tracked pane's turns are
     const next = [titled("t1", "unknown", "Tutor"), titled("t2", "unknown", "⠙ Tutor")];
@@ -47,6 +47,14 @@ describe("a Letta pane's status from its local messages", () => {
     // a pane gone, or given a status by a report, is forgotten: its next title is a first look again
     expect(lettaTitleStatus([titled("t2", "working", "Tutor")], () => false, last)).toEqual([]);
     expect([...last.keys()]).toEqual([]);
+  });
+
+  it("goes on from the status a tracked messages file gave when the file stops speaking", () => {
+    const titled = (id: string, status: HerdrPane["agent_status"], title: string) => ({ ...pane(id, "letta", status), terminal_title: title } as HerdrPane);
+    const last = new Map<string, HerdrPane["agent_status"]>();
+    // the file said working; then it is no longer tracked and the title rests: that is the turn's end
+    expect(lettaTitleStatus([titled("t1", "working", "⠋ Tutor")], () => true, last)).toEqual([]);
+    expect(lettaTitleStatus([titled("t1", "unknown", "Tutor")], () => false, last)).toEqual([{ paneId: "t1", status: "idle" }]);
   });
 
   it("keeps a cloud conversation, whose messages are on the server, without a file", async () => {

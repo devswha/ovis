@@ -442,7 +442,7 @@ describe("herdr-core adapter", () => {
     const { socket, cores } = await setup([terminal("t1"), terminal("t2")], {
       "events.subscribe": () => {
         channel = cores.at(-1)!.channel();
-        return { channel, seq: 1, terminals: [terminal("t1", { foreground: letta, title: "Tutor" }), terminal("t2", { foreground: letta, title: "Tutor", status: { app: "letta", state: "idle" } })] };
+        return { channel, seq: 1, terminals: [terminal("t1", { foreground: letta, title: "Tutor" }), terminal("t2", { foreground: letta, title: "Tutor", status: { app: "letta", state: "idle" } }), terminal("t3", { foreground: letta, title: "Tutor", status: { app: "letta", state: "error" } })] };
       },
     });
     const frames: EventFrame[] = [];
@@ -458,11 +458,14 @@ describe("herdr-core adapter", () => {
     title(4, "t1", "Tutor");
     // a Letta that reports its own status keeps it: its title asks for nothing
     title(5, "t2", "⠋ Tutor");
+    // a report whose word says nothing (an error) gives no status: the title still speaks
+    title(6, "t3", "⠋ Tutor");
     core.notify(channel, "missed", { seq: 9, terminals: [] });
     await ended.promise;
     expect(frames).toEqual([
       { event: "pane.updated", data: { type: "pane_updated", pane_id: "t1" } },
       { event: "pane.updated", data: { type: "pane_updated", pane_id: "t1" } },
+      { event: "pane.updated", data: { type: "pane_updated", pane_id: "t3" } },
     ]);
   });
 

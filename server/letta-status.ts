@@ -51,14 +51,23 @@ export function lettaTitleStatus(panes: HerdrPane[], tracks: (paneId: string) =>
   const changed: { paneId: string; status: AgentStatus }[] = [];
   const titled = new Set<string>();
   for (const pane of panes) {
-    if (pane.agent !== "letta" || pane.agent_status !== "unknown" || tracks(pane.pane_id)) continue;
+    if (pane.agent !== "letta") continue;
+    if (tracks(pane.pane_id)) {
+      // the messages file speaks: what it said is where the title goes on from if the file stops
+      if (pane.agent_status === "working" || pane.agent_status === "idle" || pane.agent_status === "done") {
+        last.set(pane.pane_id, pane.agent_status === "working" ? "working" : "idle");
+        titled.add(pane.pane_id);
+      }
+      continue;
+    }
+    if (pane.agent_status !== "unknown") continue;
     const status = titleStatus(pane.agent, pane.terminal_title ?? pane.title);
     if (status === null) continue;
     pane.agent_status = status;
     titled.add(pane.pane_id);
-    // the first look is no change: a pane found at work or at rest tells nobody, as a tracker's first read
+    // a pane first found at rest tells nobody; one found at work does, so that its end is a finish
     const before = last.get(pane.pane_id);
-    if (before !== undefined && before !== status) changed.push({ paneId: pane.pane_id, status });
+    if (before === undefined ? status === "working" : before !== status) changed.push({ paneId: pane.pane_id, status });
     last.set(pane.pane_id, status);
   }
   for (const paneId of [...last.keys()]) if (!titled.has(paneId)) last.delete(paneId);

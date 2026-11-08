@@ -1412,7 +1412,8 @@ async function subscribe(hc: HcConnection, socket: Socket<ConnectionState>, requ
         const entry = paneId ? known.get(paneId) : undefined;
         if (!entry) return;
         const title = typeof event.data?.["title"] === "string" ? event.data["title"] : null;
-        const agent = entry.status === null ? agentOf({ status: null, foreground: entry.front }) : null;
+        // only where no report gives a status: none, or a word that says nothing (an error)
+        const agent = agentStatusOf(entry.status) === "unknown" ? agentOf({ status: entry.status, foreground: entry.front }) : null;
         const before = titleStatus(agent, entry.title);
         entry.title = title;
         if (titleStatus(agent, title) !== before) lifecycle("pane.updated", "pane_updated", paneId);
