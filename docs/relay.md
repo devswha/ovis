@@ -708,7 +708,9 @@ run yourself need no account and no pass.
   next one after 12 hours, backing off (and honoring `Retry-After`) when the service does not answer.
   A new pass goes to the relay on the open control socket; nothing reconnects.
 - **Sending it.** In the `x-ovis-relay-pass` header of every socket the PC opens to Ovis's relays,
-  never in the address, and never to any other relay (`OVIS_RELAY_URL` naming your own).
+  never in the address, and never to any other relay (`OVIS_RELAY_URL` naming your own), unless
+  `OVIS_RELAY_STAGING=1` says the relay it names is a staging copy of Ovis's, for testing only
+  ([relay/README.md](../relay/README.md#staging)).
 - **When it is refused.** A relay that asks for a pass closes a PC socket without one `4402`. The PC
   then stops reconnecting until it gets a pass, and reconnects as soon as it does. `GET /api/relay`
   says where it stands in `pass`: `state` (`ok`, `no_account`, `not_listed`, `limit` or

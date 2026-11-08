@@ -55,7 +55,10 @@ export interface RelayServiceOptions {
   readonly accountService?: string | Error;
   readonly accountFetch?: (request: Request) => Promise<Response>;
   readonly passClock?: RelayPassClock;
-  /** The relays that count as Ovis's own, the only ones a pass goes to: GLOBAL_RELAY and REGIONAL_RELAYS unless tests name theirs. */
+  /**
+   * The relays that count as Ovis's own, the only ones a pass goes to: GLOBAL_RELAY and REGIONAL_RELAYS (and the
+   * staging copy OVIS_RELAY_URL names with OVIS_RELAY_STAGING=1) unless tests name theirs.
+   */
   readonly ovisRelays?: readonly string[];
 }
 
@@ -108,6 +111,7 @@ export class RelayService {
   private readonly regionalRelays: readonly string[];
   /** A regional relay named by OVIS_RELAY_URL: used with no measuring, and still beside the global one. */
   private readonly pinned: string | null;
+  private readonly ovisRelays: readonly string[];
   private services: RequestServices | undefined;
   private port = 0;
   private identity: RelayIdentity | undefined;
@@ -140,6 +144,9 @@ export class RelayService {
     // A phone falls back from Ovis's regional relays to the global one, so a PC on one is always on both.
     this.pinned = origin !== undefined && REGIONAL_RELAYS.includes(origin) ? origin : null;
     this.relay = origin === undefined || this.pinned ? GLOBAL_RELAY : origin;
+    // a test PC on a staging copy of Ovis's relay (relay/README.md, "Staging") gets and sends its pass there
+    const staging = origin !== undefined && process.env["OVIS_RELAY_STAGING"] === "1" ? [origin] : [];
+    this.ovisRelays = options.ovisRelays ?? [GLOBAL_RELAY, ...REGIONAL_RELAYS, ...staging];
     this.app = relayEndpoint(options.app ?? process.env["OVIS_RELAY_APP_URL"] ?? "https://app.ovis.sh", "https:");
     this.regionalRelays = this.pinned ? [this.pinned]
       : (options.regionalRelays ?? (origin === undefined ? REGIONAL_RELAYS : []))
@@ -222,7 +229,7 @@ export class RelayService {
 
   /** Whether `relay` is one of Ovis's own: the only relays a pass goes to. */
   private isOvisRelay(relay: string | null): boolean {
-    return relay !== null && (this.options.ovisRelays ?? [GLOBAL_RELAY, ...REGIONAL_RELAYS]).includes(relay);
+    return relay !== null && this.ovisRelays.includes(relay);
   }
 
   private startPass(identity: RelayIdentity): void {

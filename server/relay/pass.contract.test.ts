@@ -151,6 +151,19 @@ test("a relay that is not Ovis's gets no pass, and the account service is never 
   expect(f.service.status().pass).toBeUndefined();
 });
 
+test("a test PC on a staging copy of Ovis's relay (OVIS_RELAY_STAGING=1 with OVIS_RELAY_URL) sends it the pass as to Ovis's own", async () => {
+  const f = await fixture();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  const previous = process.env["OVIS_RELAY_STAGING"];
+  process.env["OVIS_RELAY_STAGING"] = "1";
+  cleanup.push(() => { if (previous === undefined) delete process.env["OVIS_RELAY_STAGING"]; else process.env["OVIS_RELAY_STAGING"] = previous; });
+  // no list of Ovis's relays named by the test: the relay counts as Ovis's for the setting alone
+  await f.restart({ ovisRelays: undefined });
+  await f.start();
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
+});
+
 test("a pass the relay refuses is dropped and a new one asked for at once", async () => {
   const f = await fixture();
   expect((await f.nameAccount("acct_1")).status).toBe(204);
