@@ -11,6 +11,8 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 
 async function checkState(page: Page, visible: boolean, height: number, inset: number, correction = false): Promise<void> {
+  // lib/viewport.ts applies a shrinking visual viewport only once it lasted SHRINK_SETTLE_MS: the page's clock runs past it
+  await page.clock.runFor(50);
   const state = await page.evaluate((visible) => {
     const composer = document.querySelector(".composer")!;
     const root = document.documentElement;
@@ -96,6 +98,7 @@ try {
         } else Object.defineProperty(navigator, "virtualKeyboard", { configurable: true, value: undefined });
       }, { mobile, virtualKeyboard: scenario === "virtual-keyboard", scenario });
       const page = await context.newPage();
+      await page.clock.install();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${server.port}/?inset=${mobile ? 34 : 0}${scenario === "standalone" || scenario === "browser-short" ? "&short" : ""}`);
@@ -113,6 +116,13 @@ try {
       }
       await page.getByRole("textbox", { name: "Message", exact: true }).focus();
       await checkState(page, false, mobile ? scenario === "standalone" ? 852 : scenario === "browser-short" ? 793 : 852 : 800, mobile ? 34 : 0, scenario === "standalone"); // hardware keyboard / focus without soft keyboard
+      if (scenario === "mobile") {
+        // a hardware keyboard's one-frame shrink on each key (iPadOS 26) is not applied in its frame, and gone by the next
+        await geometry(page, 472, 852, 852);
+        assert.equal(await page.evaluate(() => document.documentElement.hasAttribute("data-keyboard")), false, "a shrink waits before it counts");
+        await geometry(page, 793, 852, 852);
+        await checkState(page, false, 852, 34);
+      }
       if (scenario === "split-view") {
         await page.setViewportSize({ width: 393, height: 1000 });
         await geometry(page, 976, 1000, 1000);
@@ -219,5 +229,5 @@ try {
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry");
+  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink");
 } finally { await browser?.close(); server.stop(); }

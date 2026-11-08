@@ -57,7 +57,25 @@ root.append(topInset);
 // viewport while leaving only its ordinary visual inset.
 const unobstructedHeights = new Map<number, { large: number; height: number }>();
 const typing = keyboardTypingField;
+// An iPad home-screen app with a hardware keyboard (iPadOS 26, Magic Keyboard) reports a visual viewport
+// shrunk for a single frame on every keystroke and whole again on the next. Applied at once, that frame
+// collapsed the shell to a keyboard-sized height and the page flashed on each key. A shrink is read again
+// a moment later and applied only where it lasted; a viewport growing back is applied at once, so a
+// keyboard going away never waits.
+const SHRINK_SETTLE_MS = 40;
+let shrinkTimer: number | undefined;
 const syncKeyboard = (): void => {
+  if (document.querySelector(".app") !== null) window.scrollTo(0, 0);
+  const height = viewport?.height ?? window.innerHeight;
+  const published = parseFloat(root.style.getPropertyValue("--app-height"));
+  const shrinking = root.hasAttribute("data-keyboard")
+    ? Number.isFinite(published) && height < published - 1
+    : viewport !== null && height < largeViewport.getBoundingClientRect().height - 1;
+  window.clearTimeout(shrinkTimer);
+  if (!shrinking) { applyKeyboard(); return; }
+  shrinkTimer = window.setTimeout(applyKeyboard, SHRINK_SETTLE_MS);
+};
+const applyKeyboard = (): void => {
   const width = window.innerWidth;
   const height = viewport?.height ?? window.innerHeight;
   const large = largeViewport.getBoundingClientRect().height;
@@ -86,7 +104,6 @@ const syncKeyboard = (): void => {
       root.style.setProperty("--app-height", `${Math.round(window.screen.height)}px`);
     else root.style.removeProperty("--app-height");
   }
-  if (document.querySelector(".app") !== null) window.scrollTo(0, 0);
 };
 viewport?.addEventListener("resize", syncKeyboard);
 viewport?.addEventListener("scroll", syncKeyboard);
