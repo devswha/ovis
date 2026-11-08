@@ -49,6 +49,8 @@ const FREE: Record<string, string[]> = {
   'a draft with a status-shaped line over key hints': ['› note', '  gpt default · test', '  enter select · esc back', STATUS],
 };
 // /statusline in a narrow pane wraps its hints, the separator left at the end of the first row
+// a folder whose name ends in the separator ends the status row in it: the transcript view's keys under it still hold
+HELD['the transcript view in a folder named with a separator'] = ['» Ask Codex to do anything', '  GPT-6.1-Sol default · ~/dir ·', 'Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ^t details · ↵ rewind · esc back'];
 HELD['/statusline at 16 columns'] = ['Configure Status', '› [x] model', '↓', '  m low · /fixt…', '', '  enter save ·', '  esc cancel'];
 // a list's screen whose last row reads as the composer's footer: the footer is the composer's only under its status row
 HELD['a list over a footer-shaped row'] = [...HELD['/permissions']!, ROWS];
@@ -138,6 +140,19 @@ describe('a message sent to a Codex pane', () => {
     prompt.mockRejectedValue(new client.HerdrError('agent_blocked', 'blocked'));
     // /permissions opens once the paste is in
     typed.mockImplementation(async () => { read.mockResolvedValue({ text: screen(HELD['/permissions']!) } as Awaited<ReturnType<typeof client.paneRead>>); });
+    const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
+    expect((failed as client.HerdrError | null)?.code).toBe('submit_partial');
+    expect(typed).toHaveBeenCalledTimes(1);
+    expect(keys).not.toHaveBeenCalled();
+  });
+
+  it('reads a failed look after the paste past a collapsed queue as not confirmed, with no Enter', async () => {
+    const queue = ['• Queued follow-up inputs', '  ? 1 question', '    alt+↑ to answer'];
+    const { read, prompt, typed, keys } = spies([...queue, ...FREE['its composer']!]);
+    spyOn(client, 'paneGet').mockResolvedValue({ ...pane, agent_status: 'blocked' });
+    prompt.mockRejectedValue(new client.HerdrError('agent_blocked', 'blocked'));
+    // herdr stops answering once the paste is in
+    typed.mockImplementation(async () => { read.mockRejectedValue(new client.HerdrError('connect_failed', 'cannot reach herdr')); });
     const failed = await submitter()(pane.pane_id, 'Carry on', 'Carry on', Date.now()).then(() => null, (error: unknown) => error);
     expect((failed as client.HerdrError | null)?.code).toBe('submit_partial');
     expect(typed).toHaveBeenCalledTimes(1);

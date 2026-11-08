@@ -289,8 +289,8 @@ const CODEX_STATUS_ROW_RE = /^(?!enter\s)\S.*\s(?:default|minimal|none|low|mediu
  * (/resume), so a whole hint there holds the input, also over a footer-shaped last row. With it (the last
  * status-shaped row: a draft above may read like one), only a row of several hints under the status row
  * holds it (the transcript view, /statusline), a row ending in ` ·` going on in the next one (hints wrapped
- * by a narrow pane): a single `esc back` going on from the status row is a wrapped folder or thread name,
- * and the draft above the status row is the user's.
+ * by a narrow pane), never joined to the status row itself, whose last field may end in ` ·` (a folder named
+ * so): a single `esc back` under it is a wrapped folder or thread name, and the draft above it is the user's.
  */
 export function codexInputHeld(screen: string): boolean {
   const rows = screen.split(/\r?\n/).map(cleanLine).filter((row) => row && !isDivider(row));
@@ -298,12 +298,12 @@ export function codexInputHeld(screen: string): boolean {
   const composer = findLastIndex(rows, (row) => /^[›»]/.test(row));
   const status = findLastIndex(rows, (row, index) => index > composer && CODEX_STATUS_ROW_RE.test(row));
   if (composer < 0 || status < 0) return rows.slice(-2).some((row) => !/^[›»]/.test(row) && hints(row).some((hint) => CODEX_HOLD_HINT_RE.test(hint)));
-  // the rows under the status row, each joined to the next while it ends in a separator; those going on from the status row are its own
+  // the rows under the status row, each joined to the next while it ends in a separator
   const lines: string[] = [];
-  let joined = /\s·$/.test(rows[status]!);
+  let joined = false;
   for (const row of rows.slice(status + 1)) {
-    if (joined && lines.length > 0) lines[lines.length - 1] += ` ${row}`;
-    else if (!joined) lines.push(row);
+    if (joined) lines[lines.length - 1] += ` ${row}`;
+    else lines.push(row);
     joined = /\s·$/.test(row);
   }
   return lines.some((line) => {

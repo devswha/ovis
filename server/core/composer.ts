@@ -670,8 +670,11 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       // fixed wait: a TUI busy with the paste takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)
       await Bun.sleep(options.submitDelayMs ?? SUBMIT_DELAY_MS);
       // and its Enter: one of Codex's own screens that opened over the paste would take it for a row
-      if (pastCodexQueue && registry.holdsInput("codex", (await paneRead({ paneId, source: "detection", format: "text" })).text)) {
-        throw new HerdrError("submit_partial", "The message was pasted into Codex, but one of its own screens opened before its Enter, so it was not sent. Your chat text stayed here. Check the terminal before sending again.");
+      if (pastCodexQueue) {
+        // the paste is in: a read that fails leaves the send as unconfirmed as a screen that opened over it
+        const unsent = new HerdrError("submit_partial", "The message was pasted into Codex, but its Enter was not sent. Your chat text stayed here. Check the terminal before sending again.");
+        const screen = await paneRead({ paneId, source: "detection", format: "text" }).catch(() => { throw unsent; });
+        if (registry.holdsInput("codex", screen.text)) throw unsent;
       }
       authorize();
       const sentAt = Date.now();
