@@ -5730,6 +5730,24 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     }
   });
 
+  describe("Letta's /model search, typed a key at a time", () => {
+    // letta-code 0.34.31's picker on its Recents tab, with what the search line shows
+    const recents = readFileSync(new URL("./fixtures/letta/model-recents-0.34.31.txt", import.meta.url), "utf8");
+    const lettaModels = (search: string) => search === "" ? recents : recents.replace("(type to filter)", search);
+
+    test("refuses a search with a control character before any key", async () => {
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        // Enter would pick the top row, Esc close the picker and leave the rest to Letta's input
+        for (const text of ["son\rnet", "so\u001bhi", "a\tb", "a\u007fb", "a\u0085b"]) {
+          expect(await answer(prompt.id, { custom_text: text })).toEqual({ status: 400, code: "invalid_answer" });
+        }
+        expect(pane.sent).toEqual([]);
+      });
+    });
+
+  });
+
   // a refusal waits out the answer's own 1.5 s for the picker to show the row
   test("sends no further arrow into omp's input once its model picker closes under the moves", async () => {
     await withPane("omp", "idle", ompPicker(0), async (pane) => {

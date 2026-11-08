@@ -481,6 +481,11 @@ export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer,
     if ((parsed.responder === "pi-ask-question" || parsed.responder === "pi-questionnaire-question") && /[\u0000-\u001f\u007f-\u009f]/.test(answer.custom_text)) {
       throw new InvalidAnswer("Pi custom answers must be one line without control characters.");
     }
+    // Letta's model search takes each character as a key: a control one is a command there (Enter picks, Esc closes
+    // the picker), and one past U+FFFF (or half of one) is not the one unit a key of Letta's search holds (dialogs/letta.ts)
+    if (parsed.responder === "letta-model" && /[\u0000-\u001f\u007f-\u009f\u{d800}-\u{dfff}\u{10000}-\u{10ffff}]/u.test(answer.custom_text)) {
+      throw new InvalidAnswer("A model search must be one line of plain characters.");
+    }
     const text = answer.custom_text.trim();
     if (!text || parsed.customMenuIndex === null || (parsed.multi_select && parsed.responder !== "claude-question")) throw new InvalidAnswer("This prompt does not accept a custom answer.");
     if (parsed.responder === "fallback-gjc-menu") {

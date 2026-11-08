@@ -55,6 +55,14 @@ describe("Letta Code's /model", () => {
     expect(answerKeys(prompt, { option_index: 1 })).toEqual([{ keys: [KEY.escape] }]);
   });
 
+  it("refuses a search Letta would not type: control characters, and characters it drops", () => {
+    const prompt = parseInteractivePrompt("letta", screen("model-recents"))!;
+    // Letta's search takes one UTF-16 unit per key: an emoji never reaches it, and a cut one is a lone surrogate
+    for (const text of ["son\rnet", "so\u001bhi", "a\u0000b", "a\u009fb", `${"a".repeat(39)}🙂`]) {
+      expect(() => answerKeys(prompt, { custom_text: text }), JSON.stringify(text)).toThrow();
+    }
+  });
+
   it("reads no picker once output follows it, nor another agent's screen", () => {
     expect(parseInteractivePrompt("letta", `${screen("model-recents")}\n• Model switched\n`)).toBeNull();
     expect(parseInteractivePrompt("letta", `${screen("effort")}\n› \n`)).toBeNull();
