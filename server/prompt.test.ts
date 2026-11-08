@@ -5757,6 +5757,20 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       });
     });
 
+    test("serves no second model card for a pick while Letta redraws after it", async () => {
+      const effort = readFileSync(new URL("./fixtures/letta/effort-0.34.31.txt", import.meta.url), "utf8");
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        // Letta draws the reasoning step a few reads after the Enter
+        let reads = -1;
+        pane.onSent = (sent) => { if (sent === "enter") reads = 0; };
+        pane.onRead = () => { if (reads >= 0 && ++reads === 5) pane.screen = effort; };
+        expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+        // the card read right after the answer: a model list again would take a second tap's Enter
+        expect((await card())?.question).toStartWith("Select reasoning level");
+      });
+    });
+
     test("refuses a search with a control character before any key", async () => {
       await withPane("letta", "idle", lettaModels(""), async (pane) => {
         const prompt = (await card())!;

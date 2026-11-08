@@ -2142,7 +2142,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       if (responder === "claude-question" || responder === "claude-submit"
         || responder === "claude-approval" || responder === "claude-plan" || responder === "claude-confirm") form.still = claudeStepStill(parsedByPublicPrompt.get(target)!);
       else if (target.steps) form.still = sameContent(contentId(target));
-      else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model") form.still = sameContent(lastSeen ?? contentId(target));
+      else if (responder === "claude-model" || responder === "claude-effort" || responder === "codex-model"
+        || responder === "letta-model" || responder === "letta-effort") form.still = sameContent(lastSeen ?? contentId(target));
       return jsonResponse({ ok: true });
     });
     // the wait for the form's next step only reads the pane: after the pane's turn, so a message
