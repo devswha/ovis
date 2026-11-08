@@ -9,7 +9,7 @@ export function EnrollmentStatus({ state, retry }: { readonly state: EnrollmentS
   switch (state) {
     case "pending": return <div className="relay-shell-wait" role="status"><span className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Adding it to your account…")}</p></div>;
     case "complete": return <p className="relay-shell-detail" role="status">{t("In your account")}</p>;
-    case "failed": return <div role="status"><p className="relay-shell-detail">{t("Ready · not in the account yet")}</p>{retry && <button type="button" className="btn" data-action="retry-enrollment" onClick={retry}>{t("Try again")}</button>}</div>;
+    case "failed": return <div role="status"><p className="relay-shell-detail">{t("Account setup is incomplete.")}</p>{retry && <button type="button" className="btn" data-action="retry-enrollment" onClick={retry}>{t("Try again")}</button>}</div>;
     case "local": case undefined: return null;
   }
 }

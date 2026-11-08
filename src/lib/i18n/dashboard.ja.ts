@@ -87,4 +87,5 @@ export const DASHBOARD_JA: Record<string, string> = {
   "No PCs yet": "まだ PC がありません",
   "1 relay": "リレー 1 か所",
   "{count} relays": "リレー {count} か所",
+  "Account setup is incomplete. Open it to try again.": "アカウントの設定が完了していません。開くともう一度試します。",
 };

@@ -92,9 +92,9 @@ describe("dashboard state provenance across rendered surfaces", () => {
     expect(update).toContain('data-pc-action="update">Update</a>');
     expect(offline).toMatch(/class="relay-pc-state-word"[^>]*>Offline/);
     expect(offline).toContain('data-pc-action="details">Details</button>');
-    expect(update).toContain(enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account.");
-    expect(offline).toContain(enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account.");
-    const enrollmentText = enrollment === "pending" ? "Adding it to your account…" : "This PC could not be listed in your account. Try again.";
+    expect(update).toContain(enrollment === "pending" ? "Adding it to your account…" : "Account setup is incomplete.");
+    expect(offline).toContain(enrollment === "pending" ? "Adding it to your account…" : "Account setup is incomplete.");
+    const enrollmentText = enrollment === "pending" ? "Adding it to your account…" : "Account setup is incomplete.";
     const lines = (rowHtml: string) => [...rowHtml.matchAll(/class="relay-pc-probe-line"[^>]*>([^<]+)</g)].map((match) => match[1]);
     // the enrollment line is added under the state; the PC's next action stays beside it
     expect(lines(update)).toEqual([enrollmentText, "Update Ovis on it"]);

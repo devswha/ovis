@@ -87,4 +87,5 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "No PCs yet": "还没有电脑",
   "1 relay": "1 个中继",
   "{count} relays": "{count} 个中继",
+  "Account setup is incomplete. Open it to try again.": "账户设置尚未完成。打开它即可重试。",
 };

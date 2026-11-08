@@ -80,7 +80,7 @@ export function RelayPcDetails({
       case "offline": return t("Offline");
       case "paired":
         if (mode === "local" || !pc.listed) return localStateWord(pc.check, t);
-        return pc.linked ? t("Ready") : t("Ready · not in the account yet");
+        return pc.linked || pc.enrollment === "failed" ? t("Ready") : t("Ready · not in the account yet");
     }
   })();
 
@@ -133,6 +133,7 @@ export function RelayPcDetails({
             <dt>{t("State")}</dt>
             <dd>
               <span className="relay-pc-details-value">{stateLabel}</span>
+              {pc.enrollment === "failed" && <small className="relay-pc-details-sub">{t("Account setup is incomplete.")}</small>}
               {stateReason !== null && <small className="relay-pc-details-sub">{stateReason}</small>}
             </dd>
           </div>

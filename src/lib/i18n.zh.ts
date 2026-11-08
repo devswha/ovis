@@ -528,6 +528,7 @@ const BASE: Record<string, string> = {
   "The PC is off, or Ovis is not running on it.": "电脑已关机，或其上的 Ovis 未运行。",
   "The relay did not answer. Check this device's network.": "中继没有响应。请检查此设备的网络。",
   "Ready · not in the account yet": "就绪 · 尚未加入账户",
+  "Account setup is incomplete.": "账户设置尚未完成。",
   "Adding it to your account…": "正在添加到账户…",
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
   "In your account": "已加入你的账户",
