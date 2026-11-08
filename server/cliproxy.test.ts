@@ -132,6 +132,34 @@ describe("CLIProxyAPI v8", () => {
     expect(shown[1]).toBe(first[1]);
   });
 
+  it("keeps every Hub row when the read after an account is shown again fails", async () => {
+    // Given
+    await configure();
+    const first = await service.report(false, new Set(["claude:cliproxy:claude-a.json"]));
+    fake.setKey("another-key");
+    // When
+    const shown = await service.report();
+    // Then
+    expect(shown).toEqual(first);
+  });
+
+  it("does not read an account shown again a second time at the scheduled read that follows", async () => {
+    // Given
+    await configure();
+    const start = Date.now();
+    const reads = () => fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index);
+    try {
+      await service.report(false, new Set(["claude:cliproxy:claude-a.json"]));
+      setSystemTime(start + FRESH_MS - 1000);
+      await service.report();
+      // When
+      setSystemTime(start + FRESH_MS);
+      await service.report();
+      // Then
+      expect(reads()).toEqual(["a", "b", "a", "b"]);
+    } finally { setSystemTime(); }
+  });
+
   it("keeps hidden accounts unread across an invalidate, as after a Hub sign-in or a saved configuration", async () => {
     // Given
     await configure();

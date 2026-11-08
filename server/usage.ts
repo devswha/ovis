@@ -1058,8 +1058,10 @@ export class UsageService {
    */
   invalidate(provider: UsageProviderId): void {
     this.searches.delete(provider);
+    // the hidden list as it is now: hiding an account starts no report, so the last report's may not name it yet
+    const skipped = this.skipped();
     for (const [source, entry] of this.entries) {
-      if (source.startsWith(`${provider}|`) && !(entry.usage && this.lastSkipped.has(entry.usage.key))) this.entries.delete(source);
+      if (source.startsWith(`${provider}|`) && !(entry.usage && skipped.has(entry.usage.key))) this.entries.delete(source);
     }
   }
   /** Whether Claude's status line is wrapped here (server/statusline-install.ts), on this server's home and CLAUDE_CONFIG_DIR. */
