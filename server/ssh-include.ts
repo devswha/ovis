@@ -5,8 +5,11 @@
  * check stands in for it: Linux names the opened object itself (/proc/self/fd) and lists a folder through its open
  * descriptor (getdents64), a bounded read at a time; elsewhere a file's path is resolved again once open and must
  * still name the same object. Without getdents64 (macOS, Windows, a Linux without glibc) Bun has no descriptor-relative
- * listing, so a wildcard's folders are listed by path, which a swap after the check can redirect: every file reached
- * that way comes back marked `unclaimed`, and the hosts it brings are listed but claim no Tailscale PC.
+ * listing, so a wildcard's folders are listed by path, which a swap after the check can redirect. Such a listing only
+ * gives names: a name from a folder out of home can be listed (its file is still opened and checked), and a file can be
+ * hidden. So every file reached that way comes back marked `unclaimed` (its hosts are listed but claim no Tailscale
+ * PC), and the Include also leaves the unread marker after them, whatever the listing found, so no host whose options
+ * were still unset there (any host after it) claims one either.
  */
 import { constants } from "node:fs";
 import { open, readdir, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
@@ -118,8 +121,9 @@ function entriesOf(fd: number, read: Getdents, budget: Budget): Listing {
       // a name whose bytes are not UTF-8 cannot be opened by the name decoded: what that file sets is unknown
       if (!Buffer.from(name).equals(buffer.subarray(at + 19, end))) return "unread";
       at += length;
-      if (name === "." || name === "..") continue;
+      // every record counts against the budget, `.` and `..` too
       if (budget.entries-- <= 0) return "unread";
+      if (name === "." || name === "..") continue;
       names.push(name);
     }
   }
@@ -140,6 +144,8 @@ async function listInside(dir: string, roots: readonly string[], budget: Budget)
   const real = await realpath(dir).catch(() => null);
   if (real === null) return null;
   if (!inside(real, roots)) return "unread";
+  // Bun has no listing that stops early: opendir's first read loads the whole folder too, and it ignores a buffer
+  // encoding (so a name that is not UTF-8 could not be told apart); readdir is used, and a folder past the budget is unread
   let raw: Buffer[];
   try { raw = await readdir(real, { encoding: "buffer" }); } catch (error) {
     // a match that is a file (`conf.d/*/x`) or gone is nothing, as for ssh; a folder it could not list is unread
@@ -213,6 +219,6 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
         texts.push(text === null || !byPath ? text : { text, unclaimed: true });
       } finally { await handle.close(); }
     }
-    return [...(scanCut ? [null] : []), ...texts, ...(truncated ? [null] : [])];
+    return [...(scanCut ? [null] : []), ...texts, ...(truncated || byPath ? [null] : [])];
   };
 }

@@ -246,6 +246,18 @@ it("claims no PC for a host whose options a wildcard Include listed by path sets
   } finally { delete includeTestOnly.getdents; }
 });
 
+it("claims no PC for a host after a wildcard Include listed by path, whether the listing found files or none", async () => {
+  const after = "Host lab\n  HostName 100.64.0.1\n";
+  const empty = sshDir({ config: `Include conf.d/*\n${after}` });
+  mkdirSync(join(empty, "conf.d"));
+  includeTestOnly.getdents = null;
+  try {
+    expect(await rowsOf({ "conf.d/a.conf": "Host listed\n", config: `Include conf.d/*\n${after}` })).toEqual([["listed", undefined], ["lab", undefined], ...unclaimed]);
+    const rows = await sshCandidates({ sshDir: empty, home: empty, readStatus: async () => twoPeers });
+    expect(rows.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["lab", undefined], ...unclaimed]);
+  } finally { delete includeTestOnly.getdents; }
+});
+
 it.skipIf(process.platform === "win32")("never reads a literally named Include file swapped for a link out of home after it was opened, where the opened file is checked by its path", async () => {
   const { home, ssh, outside } = homeAndOutside({ "conf.d/x.conf": "Host own\n", config: "Include conf.d/x.conf\nHost box\n  HostName 100.64.0.1\n" });
   writeFileSync(join(outside, "secret"), "Host leaked\n");

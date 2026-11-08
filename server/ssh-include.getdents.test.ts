@@ -40,3 +40,9 @@ it.skipIf(process.platform === "win32")("leaves a getdents64 answer it cannot tr
 it.skipIf(process.platform === "win32")("leaves an Include unread when getdents64 fails, never as an empty folder", async () => {
   expect(await withGetdents(answering([-1]), { "conf.d/x.conf": "Host listed\n" })).toEqual(unread);
 });
+
+it.skipIf(process.platform === "win32")("counts every record getdents64 answers, `.` and `..` too, against the folder-entry budget", async () => {
+  const records = [".", "..", // dot-names, which `*` never matches, so only the entry budget can cut the listing
+    ...Array.from({ length: 1023 }, (_, index) => `.n${String(index).padStart(4, "0")}`)].map((name) => record(name, 32));
+  expect(await withGetdents(answering([Buffer.concat(records.slice(0, 1000)), Buffer.concat(records.slice(1000))]), { "conf.d/x.conf": "" })).toEqual(unread);
+});
