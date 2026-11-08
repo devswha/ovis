@@ -483,11 +483,15 @@ export class PendingMessageStore {
     this.write(owner, this.read(owner).map((message) => {
       if (message.id !== id) return message;
       if (attemptedGeneration !== undefined && (message.resendGeneration ?? 0) > attemptedGeneration) return message;
-      const { resendInFlight: _, ...settled } = message;
+      const { resendInFlight: _, heldUntil, ...settled } = message;
+      // a saved copy refused with nothing typed is held again only while its receipt's proof lasts: after a
+      // disconnect ended that proof, the refusal leaves it uncertain until a receipt proves it again
+      const proven = !uncertain && !message.serverOwned && freshReceipt(heldUntil);
       return { ...settled, error,
         ...(uncertain ? { resendInFlight: true as const } : {}),
+        ...(proven ? { heldUntil } : {}),
         ...(attemptedGeneration !== undefined ? { resendGeneration: uncertain ? attemptedGeneration : attemptedGeneration + 1 } : {}),
-        state: uncertain ? "uncertain" : attemptedGeneration !== undefined ? "held" : message.serverOwned ? message.state : "held" };
+        state: uncertain ? "uncertain" : message.serverOwned ? (attemptedGeneration !== undefined ? "held" : message.state) : proven ? "held" : "uncertain" };
     }));
   }
   /**

@@ -263,6 +263,13 @@ describe("pending message ownership", () => {
     // only a receipt on the new connection holds it again
     tab.publish("p", [], frameRemovals(heldFrame({ x: 60_000 })), "c3");
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["x", "held"], ["early", "uncertain"]]);
+    // a Send now that leaves while the connection drops, refused with nothing typed: not held again without a new receipt
+    expect(tab.begin("p", "x")).toBe(true);
+    expect(tab.unconfirm("p", "x")).toBe(true);
+    tab.suspendScope("c3");
+    tab.fail("p", "x", { code: "not_transmitted", message: "the connection dropped before this message was sent" }, false, 0);
+    tab.end("p", "x");
+    expect(tab.read("p").find((row) => row.id === "x")?.state).toBe("uncertain");
   });
   it("never offers a discarded copy again: a later resumed held ID leaves another tab's stale copy or a late acceptance uncertain", () => {
     const port = storage(), tab = new PendingMessageStore(() => port);
@@ -497,8 +504,8 @@ describe("pending message ownership", () => {
     expect(new PendingMessageStore(() => port).read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["h", "uncertain"]]);
     restored.fail("pc:pane", "h", { code: "agent_blocked", message: "menu" }, false);
     restored.end("pc:pane", "h");
-    // the not-confirmed mark comes off: saved held again, which a page shows uncertain until a receipt proves it
-    expect(JSON.parse(port.getItem("ovis:pending:pc:pane")!).messages.map(({ id, state, resendInFlight }: { id: string; state: string; resendInFlight?: true }) => [id, state, resendInFlight ?? false])).toEqual([["h", "held", false]]);
+    // the not-confirmed mark comes off; a copy with no receipt's proof is not held again by a refusal: uncertain
+    expect(JSON.parse(port.getItem("ovis:pending:pc:pane")!).messages.map(({ id, state, resendInFlight }: { id: string; state: string; resendInFlight?: true }) => [id, state, resendInFlight ?? false])).toEqual([["h", "uncertain", false]]);
     expect(new PendingMessageStore(() => port).read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["h", "uncertain"]]);
   });
   it("keeps a copy being sent again not confirmed through another row's write", () => {
