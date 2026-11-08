@@ -717,15 +717,42 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
           }
         }
       }
+      const vw = document.documentElement.clientWidth;
       const clipped: string[] = [];
-      for (const el of document.querySelectorAll<HTMLElement>(".relay-overview-strip *, .relay-pc-details-bar *, .relay-dash-tabs *")) {
-        if (el.closest(".visually-hidden")) continue;
+      for (const el of document.querySelectorAll<HTMLElement>("body *")) {
+        if (el.closest(".visually-hidden, [aria-hidden=true] svg *")) continue;
+        const text = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent ?? "").join("").trim();
+        if (!text) continue;
         const cs = getComputedStyle(el);
         if (cs.display === "none" || cs.visibility === "hidden" || cs.position === "absolute" || el.clientWidth <= 1) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const cls = el.className ? `.${String(el.className).trim().split(/\s+/).join(".")}` : "";
+        const desc = `${el.tagName.toLowerCase()}${cls} "${text.slice(0, 36)}"`;
+        if (r.right > vw + 1 || r.left < -1) {
+          clipped.push(`${desc} [x=${Math.round(r.left)}..${Math.round(r.right)} vs vw=${vw}]`);
+          continue;
+        }
         const hidden = (v: string) => v === "hidden" || v === "clip";
         if ((hidden(cs.overflowX) && el.scrollWidth > el.clientWidth + 1) || (hidden(cs.overflowY) && el.scrollHeight > el.clientHeight + 1)) {
-          clipped.push(`${el.tagName.toLowerCase()}.${el.className} "${(el.textContent ?? "").trim().slice(0, 30)}"`);
+          const isPcName = el.classList.contains("relay-pc-name-label") || el.classList.contains("relay-overview-attention-name");
+          const titled = el.closest("[title]")?.getAttribute("title")?.trim() ?? "";
+          if (isPcName && cs.textOverflow === "ellipsis" && titled === text) continue;
+          clipped.push(`${desc} [scroll=${el.scrollWidth}x${el.scrollHeight} > client=${el.clientWidth}x${el.clientHeight}]`);
         }
+      }
+      const disclosureSummary = document.querySelector<HTMLElement>(".relay-overview-map-summary");
+      let disclosureSummaryLines = 0;
+      if (disclosureSummary && disclosureSummary.getClientRects().length > 0) {
+        const range = document.createRange();
+        range.selectNodeContents(disclosureSummary);
+        const lines: DOMRect[] = [];
+        for (const r of range.getClientRects()) {
+          if (r.width <= 0.5 || r.height <= 0.5) continue;
+          const prev = lines.at(-1);
+          if (prev === undefined || Math.abs(r.top - prev.top) > 4) lines.push(r);
+        }
+        disclosureSummaryLines = lines.length;
       }
       const tabs = [...document.querySelectorAll<HTMLElement>(".relay-dash-tab")].map((tab) => {
         const r = tab.getBoundingClientRect();
@@ -744,6 +771,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       return {
         splits,
         clipped,
+        disclosureSummaryLines,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         tabsOk: tabs.length === 5 && tabs.every((t) => t.name.length > 0 && t.height >= 44 && t.inViewport && (!expectIconOnlyTabs || t.labelVisuallyHidden)),
         stripColumns,
@@ -756,32 +784,37 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
         ["195px-zoom", 195, 1, true],
         ["320-text140", 320, 1.4, false],
       ] as const) {
-        const { page } = await open({ fleet: "FREADY", width, locale, textScale });
-        const ov = await inspectSurface(page, locale, iconOnly);
-        if (width === 195 && ov.stripColumns !== 1) problems.push(`${locale} ${label} overview: strip columns ${ov.stripColumns}, want 1`);
-        if (ov.splits.length > 0) problems.push(`${locale} ${label} overview splits: ${ov.splits.join("; ")}`);
-        if (ov.clipped.length > 0) problems.push(`${locale} ${label} overview clipped: ${ov.clipped.join("; ")}`);
-        if (ov.overflow) problems.push(`${locale} ${label} overview horizontal overflow`);
-        if (!ov.tabsOk) problems.push(`${locale} ${label} overview tabs failed contract`);
+        for (const fleet of ["F4", "FREADY"] as const) {
+          const { page } = await open({ fleet, width, locale, textScale });
+          const tag = `${locale} ${label} ${fleet}`;
+          const ov = await inspectSurface(page, locale, iconOnly);
+          if (width === 195 && ov.stripColumns !== 1) problems.push(`${tag} overview: strip columns ${ov.stripColumns}, want 1`);
+          if (ov.splits.length > 0) problems.push(`${tag} overview splits: ${ov.splits.join("; ")}`);
+          if (ov.clipped.length > 0) problems.push(`${tag} overview clipped: ${ov.clipped.join("; ")}`);
+          if (ov.disclosureSummaryLines > 2) problems.push(`${tag} overview disclosure summary wraps to ${ov.disclosureSummaryLines} lines (want <=2)`);
+          if (ov.overflow) problems.push(`${tag} overview horizontal overflow`);
+          if (!ov.tabsOk) problems.push(`${tag} overview tabs failed contract`);
 
-        await listedRows(page).filter({ hasText: "Home server" }).locator(".relay-pc-name-btn").click();
-        await page.locator("[data-pc-details]").waitFor();
-        const det = await inspectSurface(page, locale, iconOnly);
-        if (det.splits.length > 0) problems.push(`${locale} ${label} details splits: ${det.splits.join("; ")}`);
-        if (det.clipped.length > 0) problems.push(`${locale} ${label} details clipped: ${det.clipped.join("; ")}`);
-        if (det.overflow) problems.push(`${locale} ${label} details horizontal overflow`);
-        if (!det.tabsOk) problems.push(`${locale} ${label} details tabs failed contract`);
+          await listedRows(page).filter({ hasText: "Home server" }).locator(".relay-pc-name-btn").click();
+          await page.locator("[data-pc-details]").waitFor();
+          const det = await inspectSurface(page, locale, iconOnly);
+          if (det.splits.length > 0) problems.push(`${tag} details splits: ${det.splits.join("; ")}`);
+          if (det.clipped.length > 0) problems.push(`${tag} details clipped: ${det.clipped.join("; ")}`);
+          if (det.overflow) problems.push(`${tag} details horizontal overflow`);
+          if (!det.tabsOk) problems.push(`${tag} details tabs failed contract`);
 
-        for (const [href, view] of [["# overview", "overview"], ["#pcs", "pcs"], ["#devices", "devices"], ["#relay", "relay"], ["#settings", "settings"]] as const) {
-          const target = href.replace(" ", "");
-          await page.locator(`.relay-dash-tabs a[href="${target}"]`).click();
-          await page.locator(`.relay-dash[data-dashboard-view="${view}"]`).waitFor();
+          if (fleet === "FREADY") {
+            for (const [href, view] of [["#overview", "overview"], ["#pcs", "pcs"], ["#devices", "devices"], ["#relay", "relay"], ["#settings", "settings"]] as const) {
+              await page.locator(`.relay-dash-tabs a[href="${href}"]`).click();
+              await page.locator(`.relay-dash[data-dashboard-view="${view}"]`).waitFor();
+            }
+          }
+          await page.context().close();
         }
-        await page.context().close();
       }
     }
     expect(problems.length === 0, problems.join(" | "));
-    return "195px zoom and 320 +40% text in en/ja: 0 mid-word splits, 0 clipped, 1-col strip at 195px, 5 reachable >=44px tabs";
+    return "195px zoom and 320 +40% text in en/ja (F4 & FREADY): 0 mid-word splits, 0 clipped/off-viewport text, disclosure summary <=2 lines, 1-col strip at 195px, 5 reachable >=44px tabs";
   });
 
   // ---- the Add a PC sheet (todo 5) ----

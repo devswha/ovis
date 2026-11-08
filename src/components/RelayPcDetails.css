@@ -120,6 +120,12 @@
   letter-spacing: var(--tracking-code);
 }
 
+@media (max-width: 319px) {
+  .relay-pc-details-key .key-id {
+    grid-template-columns: repeat(2, max-content);
+  }
+}
+
 .relay-pc-details-actions {
   display: flex;
   flex-wrap: wrap;
