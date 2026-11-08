@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { isValidElement, type ReactNode } from "react";
 import { ACCOUNT_FEATURE, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { encodeOffer } from "../../../shared/relay-offer.ts";
@@ -24,7 +24,7 @@ describe("account pairing completion", () => {
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
   afterEach(() => { for (const transport of transports.splice(0)) transport.close(); setTransport(nativeTransport); browser.dispose(); });
 
-  async function pairing() {
+  async function pairing(introduction?: () => Response) {
     const identity = generateKeyPair();
     const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.ovis.sh", name: "Desk" };
     const accountStore = memoryAccountStore();
@@ -49,7 +49,7 @@ describe("account pairing completion", () => {
           case "/api/account/status": return Response.json({ account: linked ? "acct-test" : null, unlinked: [], removals: [], enrolling: true });
           case "/api/account/link": linked = true; return Response.json({});
           case "/api/account/enroll": requested = true; return response;
-          case "/api/account/introduction": return Response.json({ pcs: [{ ...offer, server_id: deriveServerId(other.publicKey), server_public_key: exportPublicKey(other.publicKey) }] });
+          case "/api/account/introduction": return introduction?.() ?? Response.json({ pcs: [{ ...offer, server_id: deriveServerId(other.publicKey), server_public_key: exportPublicKey(other.publicKey) }] });
           default: throw new TypeError(`Unexpected PC request: ${path}`);
         }
       }
@@ -92,6 +92,19 @@ describe("account pairing completion", () => {
     await until(() => { const state = run.current().state; return state.kind === "ready" && state.enrollment === "complete"; });
     expect(run.current().state).toMatchObject({ kind: "ready", enrollment: "complete" });
     expect(run.apps()).toBe(0);
+  });
+
+  it("completes a successful enrollment when there are no peer PCs to introduce", async () => {
+    const clock = spyOn(Date, "now");
+    try {
+      const run = await pairing(() => {
+        clock.mockReturnValue(Date.now() + 60_001);
+        return Response.json({ pcs: [] });
+      });
+      run.enrollment.resolve(Response.json({ results: [] }));
+      await until(async () => (await run.rows())[0]?.enrollment !== "pending");
+      expect(run.current().state).toMatchObject({ kind: "ready", enrollment: "complete" });
+    } finally { clock.mockRestore(); }
   });
 
   it.each(["rejection", "timeout"] as const)("keeps the local pairing Ready on %s and retries enrollment", async (failure) => {

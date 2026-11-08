@@ -227,8 +227,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // the approver hands the introduction over once this device's row exists, which may be a moment after it
       const deadline = Date.now() + (fresh ? INTRODUCTION_WAIT_MS : 0);
       for (;;) {
-        if ((await takeIntroduction({ fetch, key, label, store, relay: device.relay })).length > 0 || !fresh) break;
-        if (Date.now() >= deadline) throw new AccountPcError(408, "enrolling");
+        if ((await takeIntroduction({ fetch, key, label, store, relay: device.relay })).length > 0 || Date.now() >= deadline) break;
         await wait(INTRODUCTION_POLL_MS);
       }
       await record("complete");
