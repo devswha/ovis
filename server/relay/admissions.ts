@@ -64,11 +64,13 @@ export class SignedInSessions {
     // with every place taken, a device at its share still gets in (once used, its own oldest gives way) with its own racing
     // carriers, counted per device above: another device's carriers never use up its way in (#3243), and past every place
     // there are at most `perDeviceCandidates` for each device at its share. A device below its share gets in while sessions
-    // in use leave a place: other devices' unused carriers give way, the oldest first. Nothing else ends an unused carrier:
+    // in use leave a place: the unused carriers of devices at their share (the ones past every place) give way, the oldest
+    // first; never another device's below its share, which got its place within them. Nothing else ends an unused carrier:
     // the app keeps the one that won its race, which may open no stream for a while.
     if (this.entries.size > this.max && this.chosenOf(deviceId) < this.perDevice) {
       const used = [...this.entries].filter((other) => other.chosen).length;
-      const spare = [...this.entries].filter((other) => !other.chosen && other.deviceId !== deviceId).sort((left, right) => left.order - right.order);
+      const spare = [...this.entries].filter((other) => !other.chosen && other.deviceId !== deviceId && this.chosenOf(other.deviceId) >= this.perDevice)
+        .sort((left, right) => left.order - right.order);
       for (const oldest of used < this.max ? spare.slice(0, this.entries.size - this.max) : []) {
         this.entries.delete(oldest);
         oldest.close();

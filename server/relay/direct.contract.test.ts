@@ -467,6 +467,31 @@ describe("signed-in sessions over every way in", () => {
     expect(sessions.size).toBe(8);
   });
 
+  it("never let two devices below their share close each other's kept carriers in turn", () => {
+    // Given seven sessions in use across three devices below their share, and one place free
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (let index = 1; index <= 3; index++) sessions.admit("a", () => closed.push(`a${index}`));
+    for (let index = 1; index <= 3; index++) sessions.admit("c", () => closed.push(`c${index}`));
+    sessions.admit("b", () => closed.push("b1"));
+    // When each of two of them signs in a carrier its app keeps without using it yet, taking turns
+    sessions.candidate("a", () => closed.push("a-keep"));
+    sessions.candidate("c", () => closed.push("c-keep"));
+    sessions.candidate("a", () => closed.push("a-keep2"));
+    // Then neither closes the other's: the one past every place is turned away itself
+    expect(closed).toEqual(["c-keep", "a-keep2"]);
+  });
+
+  it("turn a device below its share away while every place is in use, leaving other devices' carriers be", () => {
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
+    for (let index = 1; index <= 3; index++) sessions.candidate("a", () => closed.push(`a-c${index}`));
+    sessions.candidate("c", () => closed.push("c-c1"));
+    expect(closed).toEqual(["c-c1"]);
+    expect(sessions.size).toBe(11);
+  });
+
   it("name each device's connection: its nearest way in, with the latest round trip, until released", () => {
     const sessions = new SignedInSessions(8, 4);
     const mux = (rttMs: number | undefined, active = true) => ({ active, rttMs, measure: async () => rttMs });

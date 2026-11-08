@@ -843,7 +843,8 @@ plugin ([native-app.md](native-app.md#direct-on-the-same-network)); a browser st
   then it may be one of the app's racing carriers, which makes nothing give way, and past three of those for one
   device key the oldest of them does. With every place taken, a device already at its share still gets its racing
   carriers in (used, one replaces its own oldest; three past every place for each such device at most), and a device
-  below its share gets in while sessions in use leave a place, other devices' unused carriers giving way. Peers outside private IPv4 are refused before upgrade, and on the Tailscale address
+  below its share gets in while sessions in use leave a place, the unused carriers of devices at their share giving
+  way, the oldest first (one an app kept but has not used yet included: it signs in again). Peers outside private IPv4 are refused before upgrade, and on the Tailscale address
   every peer outside Tailscale's range (each listener takes only its own network's peers). Removing a device, stopping
   the relay, resetting its identity or turning direct connections off ends them.
 - **The app moves on its own.** An app with a socket for it (`RelayTransport` `directSocket`)
