@@ -524,6 +524,9 @@ const BASE: Record<string, string> = {
   "The PC is off, or Ovis is not running on it.": "PC가 꺼져 있거나 Ovis가 실행 중이 아닙니다.",
   "The relay did not answer. Check this device's network.": "릴레이가 답하지 않습니다. 이 기기의 네트워크를 확인하세요.",
   "Ready · not in the account yet": "준비됨 · 아직 계정에 없음",
+  "Adding it to your account…": "계정에 추가하는 중…",
+  "{name} is ready to open on this device.": "이제 이 기기에서 {name}에 연결할 준비가 됐습니다.",
+  "Every device of your account can open it": "계정의 모든 기기가 이 PC를 열 수 있습니다",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

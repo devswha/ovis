@@ -3,7 +3,6 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const RELAY_JA: Record<string, string> = {
-  "Adding it to your account…": "アカウントに追加中…",
   "Your PCs": "あなたのPC",
   "Unnamed PC": "名前のないPC",
   "To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).": "別のPCを追加するには、そのPCの「デバイスと PC」（古い Ovis では「スマートフォンとデバイス」）に表示されるQRコードをスキャンしてください。",

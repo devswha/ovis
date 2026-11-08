@@ -528,6 +528,9 @@ const BASE: Record<string, string> = {
   "The PC is off, or Ovis is not running on it.": "电脑已关机，或其上的 Ovis 未运行。",
   "The relay did not answer. Check this device's network.": "中继没有响应。请检查此设备的网络。",
   "Ready · not in the account yet": "就绪 · 尚未加入账户",
+  "Adding it to your account…": "正在添加到账户…",
+  "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",
+  "Every device of your account can open it": "你账户中的每台设备都能打开它",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

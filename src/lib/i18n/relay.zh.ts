@@ -3,7 +3,6 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const RELAY_ZH: Record<string, string> = {
-  "Adding it to your account…": "正在添加到账户…",
   "Your PCs": "我的电脑",
   "Unnamed PC": "未命名的电脑",
   "To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).": "要添加另一台电脑，请扫描它在“设备和电脑”（旧版 Ovis 中为“手机和设备”）中显示的二维码。",
