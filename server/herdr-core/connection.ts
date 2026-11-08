@@ -166,9 +166,11 @@ function userCore(env: Record<string, string | undefined>): boolean {
 /**
  * This server's own variables (its port and address, OVIS_* settings and tokens, the plugin launch's):
  * a core that `hc connect` starts keeps its environment for every pane, where a dev server would take
- * Ovis's PORT. The rest is the user's (LANG, SHELL, SSH_AUTH_SOCK, Windows' own) and stays.
+ * Ovis's PORT. So is the herdr pane Ovis was started from (HERDR_ENV, its pane, tab, workspace and
+ * socket): an agent in a core's pane would take that pane's reports (#3260). The rest is the user's
+ * (LANG, SHELL, SSH_AUTH_SOCK, Windows' own) and stays.
  */
-const SERVER_ENV = /^(?:PORT|HOST|OVIS_.*|HERDR_WEB_.*|HERDR_PLUGIN_.*)$/i;
+const SERVER_ENV = /^(?:PORT|HOST|OVIS_.*|HERDR_WEB_.*|HERDR_PLUGIN_.*|HERDR_(?:ENV|PANE_ID|TAB_ID|WORKSPACE_ID|SOCKET_PATH|AGENT|BIN_PATH))$/i;
 
 /** `hc connect` as a child process (in `env`, else this process's, either without SERVER_ENV); a program that cannot be started is an HcError (`closed`). */
 export function spawnHcConnect(bin: string, env?: Record<string, string | undefined>): HcTransport {
