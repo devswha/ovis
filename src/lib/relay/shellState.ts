@@ -25,6 +25,7 @@ import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinati
 import { ServerIdentityChangedError } from "./device.ts";
 import type { TypedCodeFailure } from "./pairCode.ts";
 import type { RelayDevice } from "./device.ts";
+import { formatDashboardHash, isDashboardHash, parseDashboardHash } from "./dashboardRoute.ts";
 
 /** Where a relay key the phone holds came from: the link it opened, or the pairing it saved. */
 export type KeySource = "link" | "saved";
@@ -242,7 +243,7 @@ export interface SheetJoin {
   readonly returnHash?: string;
 }
 export function dashboardHash(hash: string): string {
-  return /^#(?:relay-dash-(?:overview|pcs|devices|device|relay|relays|settings)|(?:overview|pcs|devices|relay|settings))(?:[?&]filter=(?:all|ready|needs|offline))?$/.test(hash) ? hash : "";
+  return isDashboardHash(hash) ? formatDashboardHash(parseDashboardHash(hash)) : "";
 }
 export function sheetContext(serverId?: string): SheetJoin | null {
   try {

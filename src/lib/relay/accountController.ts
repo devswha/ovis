@@ -9,7 +9,7 @@ import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
 import type { AccountProvider } from "../account/store.ts";
-import { enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
@@ -206,13 +206,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           // PCs the directory lists that this device cannot read: their removals are unknown here
           // the directory unread counts as one more PC this device cannot read
           const listed = await account.listPcs().then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, () => 1);
-          await enrollOnPc({
+          const enrollment = await enrollOnPc({
             fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId, pc, listed,
             // a PC that could not be opened is one more that was not checked
             others: reached.map((result) => result.status === "fulfilled" ? result.value : { serverId: "", fetch: () => Promise.reject(result.reason) }),
           });
-        } catch (error) { console.warn("Ovis: this PC did not get the account's devices yet", error instanceof Error ? error.name : error); }
-        finally {
+          if (enrollment?.finished !== true) throw new AccountPcError(409, "enrolling");
+        } finally {
           if (signedIn !== opened) signedIn.close();
           for (const peer of peers) peer.close();
         }
@@ -223,8 +223,6 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if ((await takeIntroduction({ fetch, key, label, store, relay: device.relay })).length > 0 || Date.now() >= deadline) break;
         await wait(INTRODUCTION_POLL_MS);
       }
-    } catch (error) {
-      console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
     } finally {
       own?.close();
     }
