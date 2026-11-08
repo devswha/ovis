@@ -164,7 +164,7 @@ describe("the Add-a-PC sheet", () => {
   it.each(["pending", "complete", "failed"] as const)("keeps Open PC available and reports %s account enrollment truthfully", async (enrollment) => {
     await mount(props("new", pcOf(), { kind: "ready", name: "desk2", server_id: SERVER_ID, enrollment }));
     expect(all()).toContain("desk2 is ready to open on this device.");
-    expect(all().includes("Every device of your account can open it")).toBe(enrollment === "complete");
+    expect(all().includes("In your account")).toBe(enrollment === "complete");
     expect(all().includes("Adding it to your account…")).toBe(enrollment === "pending");
     expect(all().includes("Ready · not in the account yet")).toBe(enrollment === "failed");
     if (enrollment === "failed") { await click("Try again"); expect(calls.retries).toBe(1); }

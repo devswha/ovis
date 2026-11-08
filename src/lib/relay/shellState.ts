@@ -80,13 +80,16 @@ export type AccountView =
   | { kind: "signing-in"; provider?: AccountProvider }
   | { kind: "signed-in"; provider: AccountProvider; pcs: MyPc[] | null; error: string | null };
 
+/** Counts only devices this enrollment confirmed, never every member of the account. */
+export interface EnrollmentCompletion { readonly state: "complete"; readonly admitted?: number }
+
 export type RelayShellState =
   | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null }
   | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
   | { kind: "empty"; account?: AccountView | null }
   | { kind: "confirm"; offer: RelayOffer }
   | { kind: "connecting"; name: string | null }
-  | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" }
+  | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
   /** Pair with a code: the field to type it in, with why the last code gave no PC */
   | { kind: "code-entry"; failure: TypedCodeFailure | null }
   | { kind: "code-looking" }

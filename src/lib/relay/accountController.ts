@@ -15,9 +15,9 @@ import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
 import { t } from "../i18n.ts";
 import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
-import { indexedDeviceStore, type SavedDevice, type EnrollmentState } from "./device.ts";
+import { indexedDeviceStore, type SavedDevice, type EnrollmentState, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { offerOf } from "./shellState.ts";
-import type { AccountView } from "./shellState.ts";
+import type { AccountView, EnrollmentCompletion } from "./shellState.ts";
 import type { RelayShellMount } from "./shell.tsx";
 import { openRelayTransport, type RelayTransport } from "./transport.ts";
 
@@ -39,6 +39,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const account = new AccountService({ store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
   const open = mount.open ?? openRelayTransport;
+  const forgotten = new Map<string, number>();
+  const cancelEnrollment = (id: string): void => { forgotten.set(id, (forgotten.get(id) ?? 0) + 1); };
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
   let directory: readonly DirectoryPc[] = [];
   let generation = 0;
@@ -148,33 +150,56 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     signal.throwIfAborted();
     return key ? { accountKey: key, intent } : {};
   };
-  const enroll = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | "complete"> => {
+  const enroll = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | EnrollmentCompletion> => {
+    const epoch = forgotten.get(serverId);
     if (accountService === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
     const session = await account.session();
     if (session === undefined) return "local";
     const saved = await store.get(serverId);
     if (saved === undefined || saved.device_id === null) return "local";
+    let pairing = saved;
+    const assertPairing = (current: RelayDevice | undefined): RelayDevice => {
+      if (epoch !== forgotten.get(serverId) || current === undefined || current.device_id !== pairing.device_id || current.public_spki !== pairing.public_spki || current.server_public_key !== pairing.server_public_key) throw new DOMException("The pairing was forgotten or replaced", "AbortError");
+      return current;
+    };
+    // Every enrollment writer, including linking and introductions, loses ownership on Forget.
+    const enrollmentStore: RelayDeviceStore = {
+      ...store,
+      update: async (id, change) => {
+        assertPairing(await store.get(serverId));
+        return store.update(id, (current) => {
+          if (id === serverId) { pairing = change(assertPairing(current)); return pairing; }
+          return change(current);
+        });
+      },
+    };
     const record = async (state: EnrollmentState): Promise<void> => {
-      await store.update(serverId, (current) => ({ ...(current ?? saved), account_enrollment: { account: session.account, state } } satisfies SavedDevice));
+      await enrollmentStore.update(serverId, (current) => ({ ...assertPairing(current), account_enrollment: { account: session.account, state } } satisfies SavedDevice));
       await refresh();
     };
     if (fresh) await record("pending");
     // a session that just paired has not proved its key to the PC, which then refuses a link and
     // keeps an introduction from it: the account's steps take a connection of their own, signed in
     let own: RelayTransport | null = null;
+    let admitted: number | undefined;
     try {
       const key = await accountStore.key();
       let device = await store.get(serverId);
       if (device === undefined || device.device_id === null) return "local";
-      if (fresh) own = await open(offerOf(device), { store, label });
+      if (fresh) own = await open(offerOf(device), { store: enrollmentStore, label });
       const through = own ?? opened;
-      const fetch = (path: string, init?: RequestInit) => through.fetch(path, init);
+      const fetch = async (path: string, init?: RequestInit) => {
+        assertPairing(await store.get(serverId));
+        const response = await through.fetch(path, init);
+        assertPairing(await store.get(serverId));
+        return response;
+      };
       const status = await pcAccountStatus(fetch);
       const linking = needsLink(status, device, session.account);
       // a PC this link brings into the account, or one still waiting for the member that linked it (who may be gone),
       // gets this client's enrollment: the account's removals first, read from its other PCs
       if (linking && (status.account === null || status.enrolling === true)) await planEnroll(accountStore, serverId, session.account);
-      if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store });
+      if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store: enrollmentStore });
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
       if (linking || fresh) {
         const renewed = opened.renew();
@@ -187,8 +212,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       if (!linking) await keepRemovals({ store: accountStore, account: session.account, removals: status.removals });
       // the PC lists this row as a member: only now does it count as in the account here
       if (!linking && device.account !== session.account && device.device_id !== null && !status.unlinked.includes(device.device_id)) {
-        const known = device;
-        device = await store.update(serverId, (current) => ({ ...(current ?? known), account: session.account }));
+        device = await enrollmentStore.update(serverId, (current) => ({ ...assertPairing(current), account: session.account }));
       }
       const publicKey = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
       await account.putPc(serverId, { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay });
@@ -199,7 +223,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         // the account's other PCs this device is in, read first for what they keep out (docs/account.md, "Enrolling a PC")
         const peers: RelayTransport[] = [];
         try {
-          if (linking || fresh) signedIn = await open(offerOf(device), { store, label });
+          if (linking || fresh) signedIn = await open(offerOf(device), { store: enrollmentStore, label });
           const others = (await store.list()).filter((other) => other.server_id !== serverId && other.device_id !== null && other.account === session.account && other.public_spki === key.public_spki);
           const reached = await Promise.allSettled(others.map(async (other) => {
             const controller = new AbortController();
@@ -214,11 +238,17 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           // the directory unread counts as one more PC this device cannot read
           const listed = await account.listPcs().then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, () => 1);
           const enrollment = await enrollOnPc({
-            fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId, pc, listed,
+            fetch: async (path, init) => {
+              assertPairing(await store.get(serverId));
+              const response = await signedIn.fetch(path, init);
+              assertPairing(await store.get(serverId));
+              return response;
+            }, store: accountStore, account: session.account, serverId, pc, listed,
             // a PC that could not be opened is one more that was not checked
             others: reached.map((result) => result.status === "fulfilled" ? result.value : { serverId: "", fetch: () => Promise.reject(result.reason) }),
           });
           if (enrollment?.finished !== true) throw new AccountPcError(409, "enrolling");
+          admitted = new Set(enrollment.admitted).size;
         } finally {
           if (signedIn !== opened) signedIn.close();
           for (const peer of peers) peer.close();
@@ -227,12 +257,13 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // the approver hands the introduction over once this device's row exists, which may be a moment after it
       const deadline = Date.now() + (fresh ? INTRODUCTION_WAIT_MS : 0);
       for (;;) {
-        if ((await takeIntroduction({ fetch, key, label, store, relay: device.relay })).length > 0 || Date.now() >= deadline) break;
+        if ((await takeIntroduction({ fetch, key, label, store: enrollmentStore, relay: device.relay })).length > 0 || Date.now() >= deadline) break;
         await wait(INTRODUCTION_POLL_MS);
       }
       await record("complete");
-      return "complete";
+      return { state: "complete", ...(admitted === undefined ? {} : { admitted }) };
     } catch (error) {
+      assertPairing(await store.get(serverId));
       await record("failed");
       throw error;
     } finally {
@@ -240,5 +271,5 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     }
   };
 
-  return { get state() { return accountView; }, get directory() { return directory; }, enabled: accountService !== null, providers, load, refresh, signIn, signOut, leave, prepare, enroll, armRefresh };
+  return { get state() { return accountView; }, get directory() { return directory; }, enabled: accountService !== null, providers, load, refresh, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
 }

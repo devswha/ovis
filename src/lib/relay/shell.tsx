@@ -80,7 +80,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     shell ??= (mount.createRoot ?? createRoot)(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null, createElement(RelayShell, {
       state, scoped, iosTab, pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onCheckPc: (serverId: string) => void sweep.checkOne(serverId), onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
-      onForgetPc: async (serverId: string) => { await forgetSavedPc(serverId, store); await account.refresh(); if (frontUp()) await showFront(); },
+      onForgetPc: async (serverId: string) => { account.cancelEnrollment(serverId); await forgetSavedPc(serverId, store); await account.refresh(); if (frontUp()) await showFront(); },
       onUpdate: updates.update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc, defaultRelay: GLOBAL_RELAY, meLabel: label,
       directoryRelays: account.directory, sheetJoin, continuedAccount: sheetJoin ? account.state : null, observedVersions: observedVersions(),
       ...(account.enabled ? { onSignIn: account.signIn, accountProviders: account.providers, onJoin: joinPc, onSignOut: account.signOut, onLeave: account.leave, onRefreshAccount: () => void account.refresh() } : {}),
@@ -253,7 +253,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const forget = (): void => {
     const serverId = last?.offer.server_id ?? entry.serverId, name = last?.offer.name ?? null;
     cancelAttempt(); entry = { ...entry, offer: null };
-    void (async () => { if (serverId !== null) await forgetSavedPc(serverId, store); show({ kind: "forgotten", name }); })();
+    void (async () => { if (serverId !== null) { account.cancelEnrollment(serverId); await forgetSavedPc(serverId, store); } show({ kind: "forgotten", name }); })();
   };
   const arrived = (): boolean => {
     const confirmedPc = takeConfirmedPc();
