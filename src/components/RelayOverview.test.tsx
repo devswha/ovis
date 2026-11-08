@@ -326,17 +326,15 @@ describe("RelayOverview", () => {
     expect(html).toContain("Add window closed · an account member must approve");
     expect(html).toContain("update to 1.9");
 
-    const enOffline = renderMarkup({ pcs: [offlinePaired, offlineMins], mode: "account", defaultRelay: GLOBAL, now: NOW }, "en");
-    expect(enOffline).toContain("offline since 2 h");
-    expect(enOffline).toContain("offline since 15 min");
-    expect(enOffline).not.toContain("ago");
+    const offlineReasons = (lang: "en" | "ko" | "ja" | "zh"): string[] => [
+      ...renderMarkup({ pcs: [offlinePaired, offlineMins], mode: "account", defaultRelay: GLOBAL, now: NOW }, lang)
+        .matchAll(/<span class="relay-overview-attention-why">([^<]+)<\/span>/g),
+    ].map(([, text]) => text ?? "");
 
-    for (const lang of ["ko", "ja", "zh"] as const) {
-      const localized = renderMarkup({ pcs: [offlinePaired, offlineMins], mode: "account", defaultRelay: GLOBAL, now: NOW }, lang);
-      expect(localized).not.toMatch(/전\s*전|前\s*前/);
-      expect(localized).toContain("2");
-      expect(localized).toContain("15");
-    }
+    expect(offlineReasons("en")).toEqual(["offline since 2 h", "offline since 15 min"]);
+    expect(offlineReasons("ko")).toEqual(["2시간 전부터 오프라인", "15분 전부터 오프라인"]);
+    expect(offlineReasons("ja")).toEqual(["2 時間前からオフライン", "15 分前からオフライン"]);
+    expect(offlineReasons("zh")).toEqual(["已离线 2 小时", "已离线 15 分钟"]);
 
     const root = await mount({
       pcs: [freshPc, updatePc, offlinePaired],
