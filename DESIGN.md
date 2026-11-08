@@ -3193,8 +3193,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   neither matching text nor an empty queue clears it. A changed terminal or session also makes
   confirmation unavailable. Ovis does not claim that Pi queued or consumed
   the message until the transcript proves it. Next-turn delivery and an explicit Send
-  now action claim the same server ID. Connection loss never resumes automatic input. Previously
-  held browser messages retain their explicit Send now/Discard recovery.
+  now action claim the same server ID. Connection loss never resumes automatic input. A held copy
+  offers **Send now** only on live proof: its own live connection, or the bridge's held receipt for this
+  browser within the receipt's window (below). A saved held copy (after a reload, in another tab, after the
+  connection that held it ended, or one an older release saved) shows as uncertain until such a receipt
+  proves it again, so it is never sent on the word of storage alone. This is a deliberate change: a held
+  copy on a remote PC (whose relay strips the resume ID), after a server restart or update, past the ten
+  minutes, or one held for another reason once its connection is gone, keeps only Copy and **Discard**.
   Any other follow-up's exact `sent`, `discarded` or `held` receipt is kept the same way (ten minutes, 1024,
   same browser resume ID and device, local machine only) and replayed with `resumed: true` on its
   browser's reattach, or to that browser's already attached successor when the Enter's reply or the
@@ -3204,7 +3209,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   typed again (#2421). `held` is kept only once the connection that queued the message is gone
   (while it lives, it alone sends the copy), travels in the frame's own `held` field (clients that
   predate it remove a copy for any resumed removal), and applies once, to the copy saved when it
-  comes: a later send of that copy, from any tab, is never offered again.
+  comes: a later send of that copy, from any tab, is never offered again. Each held ID carries how long
+  the bridge still keeps its receipt (`held_ms`, 0 < ms <= ten minutes, else it proves nothing) and when
+  that ends on the PC's clock (`held_until`); the connection's `features` frame carries the PC's clock
+  (`server_time`). The page holds the copy until the sooner of its arrival plus `held_ms` and `held_until`
+  on its own clock, on this page only (saved, the copy stays uncertain), then shows it uncertain again;
+  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. A resend
+  checks and claims the receipt in the pane's serialized turn, by its original ID and for its own pane and
+  browser only, so two resends of one copy type it once.
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to
   the PC's socket) is the placeholder while the box is empty and moves into the status content once
   there is a draft (`composerStatusHint`), on a phone too; it says no more (nothing is queued, and
