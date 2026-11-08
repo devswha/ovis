@@ -132,6 +132,8 @@ interface JobState {
 const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
 /** an update asked for one release while the PC offers another by now: nothing of it is installed */
 const CHANGED_OFFER = "That PC offers another release now than the one shown. Look at it again, then update.";
+/** why Update all leaves out a PC whose update is an install over SSH */
+const INSTALL_FROM_CARD = "This PC needs Ovis installed again over SSH, which changes more on it than an update: read its steps and start it from its card.";
 /** how many PCs' own updates Update all runs at once: each downloads, installs and builds on its PC, and is followed from here */
 export const OWN_UPDATES_AT_ONCE = 4;
 /** a setup job's phases once it has ended */
@@ -929,6 +931,8 @@ export class MachineManager {
     if (ended && runtime.machine.updating?.job_id === job.id) runtime.machine.updating = null;
     if (job.phase === "failed") runtime.machine.update_error = job.error;
     this.emit();
+    // one of Update all's own updates or installs ended: the next waiting one starts
+    if (ended) queueMicrotask(() => this.nextOwn());
   }
   /** Update all (POST /api/machines/update-all): every PC with an update on offer, each as `update` would. */
   updateAll(): PcUpdateAll {
@@ -939,7 +943,8 @@ export class MachineManager {
       if (!offer) continue;
       if (this.updateRunning(runtime)) { result.skipped.push({ machine_id: id, reason: "This PC is already updating." }); continue; }
       if (!offer.updatable) { result.skipped.push({ machine_id: id, reason: offer.reason ?? "This PC cannot take its update from here." }); continue; }
-      if (offer.how === "install") { result.started.push({ machine_id: id, job_id: this.install({ ...runtime.machine.target!, machine_id: id }).id }); continue; }
+      // an install over SSH changes more on that PC than an update (its steps say what): its card starts it, once read
+      if (offer.how === "install") { result.skipped.push({ machine_id: id, reason: INSTALL_FROM_CARD }); continue; }
       // every own update counts against one limit, a connected PC's and an SSH PC's asked through its setup alike
       const own = runtime.machine.state === "connected" || offer.how === "own";
       const shown = offer.revision ?? undefined;
@@ -983,7 +988,7 @@ export class MachineManager {
   private mayStartOwn(runtime: Runtime): boolean {
     return this.ownRunning() < OWN_UPDATES_AT_ONCE && (runtime.machine.state === "connected" || this.ownViaSetup.size < SETUP_JOBS_AT_ONCE - 1);
   }
-  private ownRunning(): number { let running = this.ownViaSetup.size; for (const runtime of this.machines.values()) if (runtime.ownJob) running++; return running; }
+  private ownRunning(): number { let running = this.ownViaSetup.size; for (const runtime of this.machines.values()) if (runtime.ownJob || this.installer.runningFor(runtime.machine.id)) running++; return running; }
   /**
    * One own update of Update all: a connected PC's through its connection, an SSH PC's own Ovis older than this app
    * through its setup, holding a place among OWN_UPDATES_AT_ONCE until that ends.

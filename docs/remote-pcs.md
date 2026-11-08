@@ -231,7 +231,8 @@ and herdr's default session only.
   `unsupported`, `missing_tool` (no curl, git or tar), `disk` (under 1 GB free in the home folder),
   `permission`, `bridge_there`, `ovis_there`, `changed` (the process to stop is no longer the one
   shown, or its pid now runs another program: nothing is stopped), `not_stopped`, `installer_failed` (with the installer's last words),
-  `no_launcher`, `not_started`, `connect_failed`. Only the process named is ever stopped, only after
+  `no_launcher`, `not_started`, `connect_failed`. These routes are this PC's owner's only, with the
+  `X-Herdr-Update: 1` header on a change, as updates are ([Updating PCs from here](#updating-pcs-from-here)). Only the process named is ever stopped, only after
   it is checked to be that PC's own Ovis server. While an install runs, no other setup or install
   connects to that PC from here, and its final connect uses keys only too.
 

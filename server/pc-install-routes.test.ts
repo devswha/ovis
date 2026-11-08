@@ -34,8 +34,9 @@ function fixture() {
   SshConnection.prototype.close = function (this: SshConnection) { (this as unknown as { refuse?: () => void }).refuse?.(); };
   const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
   cleanups.push(() => { manager.stop(); Object.assign(SshConnection.prototype, real); reconnect.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
-  const call = (path: string, method = "POST", body?: unknown, readOnly = false) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`,
-    { method, headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), manager, undefined, undefined, readOnly);
+  /** as this PC's owner from this app's own page, unless the test says otherwise */
+  const call = (path: string, method = "POST", body?: unknown, readOnly = false, owner = !readOnly, headers: Record<string, string> = { "x-herdr-update": "1" }) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`,
+    { method, headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json", ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), manager, undefined, undefined, readOnly, undefined, undefined, undefined, undefined, owner);
   const until = async (done: () => boolean) => { const deadline = Date.now() + 2000; while (!done()) { if (Date.now() > deadline) throw new Error("condition timed out"); await Bun.sleep(5); } };
   return { manager, internals: manager as unknown as Internals, waiting, call, until };
 }
@@ -43,6 +44,11 @@ function fixture() {
 it("starts an install on a PC not added here, tells its job, refuses a watching device and an address already added", async () => {
   const { manager, waiting, call, until } = fixture();
   expect((await call("install", "POST", { destination: "me@new.invalid" }, true)).status).toBe(403);
+  // running the installer on another PC is the owner's only (access.ts ownerAccess), from this app's own page
+  for (const refused of [await call("install", "POST", { destination: "me@new.invalid" }, false, false), await call("install", "POST", { destination: "me@new.invalid" }, false, true, {}), await call("install/any-job", "GET", undefined, false, false)]) {
+    expect(refused.status).toBe(403);
+    expect((await refused.json() as { error: { code: string } }).error.code).toBe("forbidden");
+  }
   const added = await call("install", "POST", { destination: "me@lab.invalid" });
   expect(added.status).toBe(409);
   expect((await added.json() as { error: { code: string } }).error.code).toBe("install_unavailable");
