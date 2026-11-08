@@ -183,8 +183,8 @@ it("counts an SSH PC's own update through its setup against the same limit, and 
     runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
     runtime.remoteRevision = revision;
   }
-  // three places of the four are taken already, by other PCs' own updates
-  const spare = OWN_UPDATES_AT_ONCE - 1;
+  // two places are taken already by other SSH PCs' own updates through setup: one more of those may start (one setup slot stays free)
+  const spare = 2;
   (manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup = new Set(Array.from({ length: spare }, (_, i) => `other-${i}`));
   const all = manager.updateAll();
   expect(all.started.map((entry) => entry.machine_id)).toEqual([A]);
@@ -258,4 +258,34 @@ it("binds an SSH PC's own update asked through update-bridge to the release its 
   const setup = spyOn(manager, "setup").mockImplementation(() => ({ id: "job" }) as ReturnType<MachineManager["setup"]>);
   manager.updateBridge(A);
   expect(setup.mock.calls[0]![1]).toMatchObject({ expectedRevision: "a".repeat(40) });
+});
+
+it("never offers an SSH PC's own update to a release newer than this app, which would leave the PC unreachable from here", async () => {
+  const { manager, internals, pc } = fixture();
+  const ahead = (major: number) => `${major}.0.0`;
+  const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
+  runtime.machine.remote_ovis = { version: "0.4.9", latest_version: ahead(999), updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+  runtime.remoteRevision = "a".repeat(40);
+  expect(pc(A).ovis_update).toMatchObject({ how: "own", updatable: false, reason: expect.stringContaining("newer than this app") });
+  // connected, as its own Ovis tells it through its tunnel: the same
+  const connected = internals.machines.get(B)!;
+  Object.assign(connected.machine, { state: "connected", action_required: null, error: null });
+  connected.ownOffer = { how: "own", current_version: "0.5.0", latest_version: ahead(999), updatable: true, reason: null };
+  expect(pc(B).ovis_update).toMatchObject({ how: "own", updatable: false, reason: expect.stringContaining("newer than this app") });
+  expect(manager.updateAll().started).toEqual([]);
+});
+
+it("leaves a setup slot free: SSH own updates through setup run fewer at once than the setup jobs allowed", async () => {
+  const { manager, internals } = fixture();
+  for (const id of [A, B]) {
+    const runtime = internals.machines.get(id)! as Runtime & { remoteRevision?: string };
+    runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+    runtime.remoteRevision = "a".repeat(40);
+  }
+  // two of the four places held by other SSH own updates through setup: one more may start, not two
+  const slots = (manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup;
+  slots.add("other-1"); slots.add("other-2");
+  const all = manager.updateAll();
+  expect(all.started.map((entry) => entry.machine_id)).toEqual([A]);
+  expect(all.queued).toEqual([B]);
 });

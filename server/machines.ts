@@ -132,6 +132,18 @@ export const OWN_UPDATES_AT_ONCE = 4;
 const TERMINAL = new Set<SetupJob["phase"]>(["connected", "failed", "cancelled"]);
 const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis, which updates itself: use Update on its card.";
 const JOBS_FULL = "Finish or cancel the current connection jobs first";
+/** connection jobs (setups and bridge updates) that may run at once */
+const SETUP_JOBS_AT_ONCE = 4;
+const NEWER_THAN_APP = "That release is newer than this app, which would then refuse to connect to that PC: update this app first, then this PC.";
+/** this app's own release (package.json), the newest an SSH PC's own Ovis may be updated to from here */
+const APP_VERSION = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
+/** a release version (`0.5.1`) newer than this app's */
+function newerThanThisApp(version: string | null | undefined): boolean {
+  if (!version) return false;
+  const [a, b] = [version, APP_VERSION].map((v) => v.split(".").map(Number));
+  for (let i = 0; i < 3; i++) if ((a![i] ?? 0) !== (b![i] ?? 0)) return (a![i] ?? 0) > (b![i] ?? 0);
+  return false;
+}
 const NOT_CONNECT_APPROVED = "Connect this PC first: it was added from herdr, and connecting it here was not approved yet.";
 const NOT_BRIDGE_APPROVED = "Review the bridge update in this PC's dialog first: it was added from herdr without approving this app's bridge.";
 /** a PC of herdr-core's machines is the core's: Ovis neither renames, removes nor sets it up */
@@ -611,11 +623,16 @@ export class MachineManager {
     const machine = runtime.machine;
     // a disabled PC is not this app's to touch: updating it would connect it again (setup enables what it connects)
     if (machine.kind === "hc" || !machine.enabled) return null;
-    if (machine.state === "connected") return runtime.ownOffer ? { ...runtime.ownOffer, revision: runtime.offerRevision ?? null } : null;
+    if (machine.state === "connected") {
+      if (!runtime.ownOffer) return null;
+      const offer = { ...runtime.ownOffer, revision: runtime.offerRevision ?? null };
+      // an SSH PC on a release newer than this app is refused by it (a newer bridge): updating it would cut it off from here
+      return machine.kind === "ssh" && offer.updatable && newerThanThisApp(offer.latest_version) ? { ...offer, updatable: false, reason: NEWER_THAN_APP } : offer;
+    }
     const own = machine.remote_ovis;
     if (machine.kind === "ssh" && own) {
       // its own update runs through this app's setup there, which needs the same approvals as a bridge update
-      const unapproved = !own.updatable ? null : !this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null;
+      const unapproved = !own.updatable ? null : newerThanThisApp(own.latest_version) ? NEWER_THAN_APP : !this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null;
       return { how: "own", current_version: own.version, latest_version: own.latest_version, updatable: own.updatable && !unapproved, reason: unapproved ?? own.reason, revision: runtime.remoteRevision ?? null };
     }
     if (machine.kind === "ssh" && machine.action_required === "update_bridge") {
@@ -849,7 +866,7 @@ export class MachineManager {
       const shown = offer.revision ?? undefined;
       // one PC whose update cannot start (no setup slot free, say) is told under skipped; the others go on
       try {
-        if (own && this.ownRunning() < OWN_UPDATES_AT_ONCE) { result.started.push({ machine_id: id, job_id: this.startOwn(runtime, shown) }); continue; }
+        if (own && this.mayStartOwn(runtime)) { result.started.push({ machine_id: id, job_id: this.startOwn(runtime, shown) }); continue; }
         if (own) this.queueOwn(runtime, shown); else this.queueUpdate(runtime);
         result.queued.push(id);
       } catch (error) { result.skipped.push({ machine_id: id, reason: error instanceof Error ? error.message : String(error) }); }
@@ -879,6 +896,10 @@ export class MachineManager {
     // an automatic bridge update already waiting for this PC counts too: Update all would only repeat it
     return !!runtime.ownJob || this.updateQueued.has(runtime.machine.id) || this.autoQueued.has(runtime.machine.id) || [...this.jobs.values()].some((j) => j.public.machine_id === runtime.machine.id && !TERMINAL.has(j.public.phase));
   }
+  /** room for one more own update: four at once, and those through setup leave one setup slot of the four free */
+  private mayStartOwn(runtime: Runtime): boolean {
+    return this.ownRunning() < OWN_UPDATES_AT_ONCE && (runtime.machine.state === "connected" || this.ownViaSetup.size < SETUP_JOBS_AT_ONCE - 1);
+  }
   private ownRunning(): number { let running = this.ownViaSetup.size; for (const runtime of this.machines.values()) if (runtime.ownJob) running++; return running; }
   /**
    * One own update of Update all: a connected PC's through its connection, an SSH PC's own Ovis older than this app
@@ -903,9 +924,12 @@ export class MachineManager {
     runtime.machine.updating = { job_id: "", step: "Waiting for the PCs before it to finish updating…", progress: null, queued: true };
   }
   private nextOwn(): void {
-    while (!this.stopped && this.ownRunning() < OWN_UPDATES_AT_ONCE && this.ownWaiting.length > 0) {
-      const { id, shown, token } = this.ownWaiting.shift()!;
+    for (let i = 0; !this.stopped && this.ownRunning() < OWN_UPDATES_AT_ONCE && i < this.ownWaiting.length;) {
+      const { id, shown, token } = this.ownWaiting[i]!;
       const runtime = this.machines.get(id);
+      // one through setup waits while the setup slots it may take are held; one after it may go meanwhile
+      if (runtime && this.updateQueued.get(id) === token && !this.mayStartOwn(runtime)) { i++; continue; }
+      this.ownWaiting.splice(i, 1);
       // cancelled, disabled or removed meanwhile, or queued again since (that later entry is the one that runs)
       if (this.updateQueued.get(id) !== token || !runtime) continue;
       this.updateQueued.delete(id);
@@ -990,7 +1014,7 @@ export class MachineManager {
     const waiting = existing && [...this.jobs.values()].find((j) => j.public.machine_id === existing.machine.id && j.public.phase === "starting" && (j.public.action_required === "windows_login" || j.public.action_required === "windows_start_failed"));
     if (waiting && !request.update_remote && sameSshSession(target, waiting.public.target) && target.identity_file === waiting.public.target.identity_file) return waiting.public;
     // an update that asks for a setup slot when none is free cannot run now: told as any update that cannot (409)
-    if ([...this.jobs.values()].filter((j) => !["connected", "failed", "cancelled"].includes(j.public.phase)).length >= 4) throw (request.update_remote ? new PcUpdateRefused(JOBS_FULL) : new Error(JOBS_FULL));
+    if ([...this.jobs.values()].filter((j) => !["connected", "failed", "cancelled"].includes(j.public.phase)).length >= SETUP_JOBS_AT_ONCE) throw (request.update_remote ? new PcUpdateRefused(JOBS_FULL) : new Error(JOBS_FULL));
     if (request.machine_id && !existing) throw new Error("PC not found");
     if (existing?.machine.kind === "relay") throw new Error(RELAY_PC_UPDATES);
     if (existing?.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);

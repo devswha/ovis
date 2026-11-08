@@ -174,11 +174,11 @@ and show `updating.queued` until their turn; a PC with an update it cannot take 
 why. Up-to-date PCs are not listed. At most four PCs' own updates run at once; the others show
 `updating.queued` and start as one ends.
 
-Only this PC's owner may start or cancel these updates, as only they may switch its own runtime: a
-driving sign-in on this PC, its token, a paired driving device or its Tailscale login, from this
-app's own page (the `X-Herdr-Update: 1` header, same origin, no query). A watching device, a
-visitor of an open install, a Portal visitor and a device connected through the relay are refused
-(403 `forbidden`), whatever their role; a watching device is refused as on every change (403
+Only the owner may start or cancel these updates, from any device he signed in or paired himself:
+a driving sign-in on this PC, its token, its Tailscale login, or a driving device paired with this
+install, directly or over the relay (his phone, his other PCs). It comes from this app's own page
+(the `X-Herdr-Update: 1` header, same origin, no query). A visitor of an open install (nothing
+paired), a Portal visitor, and any device that only watches are refused (403 `forbidden`); a watching device is refused as on every change (403
 `read_only`). The other ways a PC's software is changed from here are the owner's only in the same
 way, with the update header: `POST /api/machines/:id/update-bridge` (optionally `{ "revision" }`; without
 one, the release its card shows), a setup with `update_remote`, approving a setup's changes

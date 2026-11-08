@@ -248,12 +248,13 @@ export function portalLogin(input: Pick<AccessInput, "portal">): PortalLogin | n
 }
 
 /**
- * This PC's owner, for actions that reach every PC from here (updating them, server/machine-api.ts): a driving
- * sign-in on this PC itself, its token, a paired device or its Tailscale login. Never an open install's visitor, a
- * Portal visitor or a relay peer, whatever role they were given: those drive panes, not this PC's other PCs.
+ * The owner, from any device he signed in or paired himself, for actions that change what runs on this PC's PCs
+ * (updates, installs, approving a setup, server/machine-api.ts): a driving sign-in on this PC, its token, its
+ * Tailscale login, or a driving device paired with this install, directly or over the relay (his phone, his other
+ * PCs). Never a visitor of an open install (nothing paired), a Portal visitor, or a device that only watches.
  */
 export function ownerAccess(access: Access): boolean {
-  return access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal" && access.via !== "relay";
+  return access.level === "full" && access.role === "drive" && access.via !== "open" && access.via !== "portal";
 }
 
 export function decideAccess(input: AccessInput): Access {
