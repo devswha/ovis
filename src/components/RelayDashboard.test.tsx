@@ -490,27 +490,29 @@ describe("RelayDashboard frame and routes", () => {
     ]);
     await mount(baseProps({ pcs: fleet, pcStatus: liveStatus, onCheckPcs: () => {} }));
 
-    // 1. Overview shows strip (Ready 2, Needs you 4 incl. 1 offline, Relays in use 2), at most 3 attention rows, the PC table, and the 44px map disclosure
+    // 1. The live answer replaces stale Offline; the unchecked QR pairing counts in neither group.
     const stripBtns = renderer!.root.findAll((n) => n.type === "button" && typeof n.props["data-strip-cell"] === "string");
     expect(stripBtns.map((b) => [b.props["data-strip-cell"], b.props["data-strip-count"], textOf(b)])).toEqual([
       ["ready", 2, "Ready2"],
-      ["needs", 4, "Needs you4incl. 1 offline"],
+      ["needs", 3, "Needs you3"],
       ["relays", 2, "Relays in use2"],
     ]);
     const attentionRows = renderer!.root.findAll((n) => n.type === "li" && n.props.className === "relay-overview-attention-row");
     expect(attentionRows).toHaveLength(3);
-    const viewAll = renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "view-all-attention");
-    expect(textOf(viewAll)).toBe("View all 4");
+    const viewAll = renderer!.root.findAll((n) => n.type === "button" && n.props["data-action"] === "view-all-attention");
+    expect(viewAll).toHaveLength(0);
 
-    // 2. Clicking Needs you strip button navigates to #pcs?filter=needs where table row count equals the Overview Needs you count (4)
+    // 2. Needs you contains exactly the three PCs still needing action, excluding the answered PC.
     await act(async () => { stripBtns[1]!.props.onClick(); });
     expect(window.location.hash).toBe("#pcs?filter=needs");
     const needsTableRows = renderer!.root.findAll((n) => n.type === "tr" && n.props["data-pc-id"] !== undefined);
-    expect(needsTableRows).toHaveLength(4);
+    expect(needsTableRows.map((row) => row.props["data-pc-id"])).toEqual([extra1.server_id, IDS.mini, extra2.server_id]);
 
-    // 3. Selecting a PC in the table opens RelayPcDetails in-page without a connection attempt
-    const homeRow = needsTableRows.find((r) => r.props["data-pc-id"] === IDS.home)!;
-    const detailsBtn = homeRow.find((n) => n.props["data-pc-action"] === "details");
+    // 3. The answered PC belongs to Ready; its name opens Details without opening the PC.
+    const readyFilter = renderer!.root.find((n) => n.type === "button" && textOf(n) === "Ready");
+    await act(async () => { readyFilter.props.onClick(); });
+    const homeRow = renderer!.root.find((n) => n.type === "tr" && n.props["data-pc-id"] === IDS.home);
+    const detailsBtn = homeRow.find((n) => n.type === "button" && n.props.className === "relay-pc-name-btn");
     await act(async () => { detailsBtn.props.onClick({ stopPropagation() {} }); });
     expect(window.location.hash).toContain(`pc=${IDS.home}`);
     const detailsPane = renderer!.root.find((n) => n.props["data-pc-details"] === IDS.home);

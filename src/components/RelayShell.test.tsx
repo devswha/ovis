@@ -172,7 +172,7 @@ describe("the dashboard", () => {
   const AP = "wss://relay-ap.ovis.sh";
   const GLOBAL = "wss://relay.ovis.sh";
   const ids = { desk: "a".repeat(32), mac: "b".repeat(32), mini: "c".repeat(32), home: "d".repeat(32) };
-  /** the mockup's four PCs: two ready on the Seoul relay (one paired by QR, not in the account), one waiting there, one offline on the global relay */
+  /** Four PCs: one ready, one unchecked QR pairing, one waiting, and one offline. */
   const four = (): MyPc[] => [
     pc(ids.desk, "Desk PC", "paired", { last_seen_at: new Date().toISOString() }),
     pc(ids.mac, "MacBook", "paired", { listed: false, linked: false }),
@@ -189,7 +189,7 @@ describe("the dashboard", () => {
     // IS-FRAME-06: no subtitle in the page header (the count lives in the strip and sidebar)
     expect(html).not.toContain("relay-dash-sub");
     const counts = [...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"[\s\S]*?<span class="relay-overview-strip-label"><svg[\s\S]*?<\/svg><span>([^<]+)<\/span><\/span>/g)].map(([, cell, n, label]) => [cell, label, Number(n)]);
-    expect(counts).toEqual([["ready", "Ready", 2], ["needs", "Needs you", 2], ["relays", "Relays in use", 2]]);
+    expect(counts).toEqual([["ready", "Ready", 1], ["needs", "Needs you", 2], ["relays", "Relays in use", 2]]);
     const relays = [...html.matchAll(/<button type="button" class="pill relay-overview-relay-chip">([^<]+)<\/button><span class="relay-overview-relay-count">([^<]+)<\/span><span class="relay-overview-relay-scope">([^<]+)<\/span>/g)].map(([, host, n, kind]) => [host, n, kind]);
     expect(relays).toEqual([["relay-ap.ovis.sh", "3 PCs", "regional"], ["relay.ovis.sh", "1 PC", "global"]]);
     const attention = [...html.matchAll(/<span class="relay-overview-attention-name"[^>]*>([^<]+)<\/span><span class="relay-overview-attention-why">([^<]+)<\/span>/g)].map(([, name, why]) => [name, why]);
@@ -211,7 +211,7 @@ describe("the dashboard", () => {
       const relayHtml = render(signedIn(four()));
       const map = /<section class="relay-dash-map" data-slot="relay-map"[\s\S]*?<\/section>/.exec(relayHtml)?.[0] ?? "";
       expect(text(map)).toContain("Connection map");
-      expect(map).toMatch(/<svg class="relay-map-svg" viewBox="[^"]+" role="img" aria-label="Connection map: This device\. Relays: relay-ap\.ovis\.sh, relay\.ovis\.sh\. PCs: 4\. Seen lately: 1\. Ready: 2\. Needs you: 1\. Offline: 1\."/);
+      expect(map).toMatch(/<svg class="relay-map-svg" viewBox="[^"]+" role="img" aria-label="Connection map: This device\. Relays: relay-ap\.ovis\.sh, relay\.ovis\.sh\. PCs: 4\. Seen lately: 1\. Ready: 1\. Needs you: 2\. Offline: 1\."/);
       expect(map).toContain('class="relay-map-routes"');
     } finally {
       if (prevWin) Object.defineProperty(globalThis, "window", prevWin);
@@ -280,7 +280,7 @@ describe("the dashboard", () => {
     expect(rowOf(html, "Desk PC")).toContain('<td class="relay-dash-state-cell relay-pc-cell-state">');
   });
 
-  it("keeps a PC paired by QR alone marked as not in the account while counting every PC in the sidebar and strip", () => {
+  it("counts an unchecked QR pairing in the sidebar but not the Ready strip", () => {
     const countsOf = (html: string) => [...html.matchAll(/data-strip-cell="(\w+)"[^>]*data-strip-count="(\d+)"/g)].map(([, cell, n]) => [cell, Number(n)]);
     // the directory empty, this device paired with one PC by QR: a row, marked not checked / not in the account yet
     const alone = render(signedIn([pc(ids.mac, "MacBook", "paired", { listed: false, linked: false })]));
@@ -288,7 +288,7 @@ describe("the dashboard", () => {
     expect(text(rowOf(alone, "MacBook"))).toContain("Paired · not checked");
     expect(text(rowOf(alone, "MacBook"))).not.toContain("in your account");
     expect(alone).toContain('<span class="relay-dash-nav-count">1</span>');
-    expect(countsOf(alone)).toEqual([["ready", 1], ["needs", 0], ["relays", 1]]);
+    expect(countsOf(alone)).toEqual([["ready", 0], ["needs", 0], ["relays", 1]]);
     // one listed in the account + one listed but paired by QR alone: only the unlinked row says "Ready · not in the account yet"
     const both = render(signedIn([pc(ids.desk, "Desk PC", "paired"), pc(ids.mac, "MacBook", "paired", { listed: true, linked: false })]));
     expect(text(rowOf(both, "Desk PC"))).toContain("Ready");
@@ -397,7 +397,7 @@ describe("the dashboard", () => {
       expect(rows()).toEqual(["Mac mini", "Home server"]);
       expect(segBtn("Needs you").props["aria-pressed"]).toBe(true);
       await act(async () => { segBtn("Ready").props.onClick(); });
-      expect(rows()).toEqual(["Desk PC", "MacBook"]);
+      expect(rows()).toEqual(["Desk PC"]);
       await act(async () => { segBtn("All").props.onClick(); });
       expect(rows()).toEqual(["Mac mini", "Home server", "Desk PC", "MacBook"]);
     });
@@ -489,7 +489,7 @@ describe("the dashboard", () => {
       await act(async () => { button("Close").props.onClick(); });
       expect(dialogs()).toHaveLength(0);
       expect(segBtn("Ready").props["aria-pressed"]).toBe(true);
-      expect(rows()).toEqual(["Desk PC", "MacBook"]);
+      expect(rows()).toEqual(["Desk PC"]);
     });
 
     it("goes on in the sheet over the PC's own page for the join it started: the link's question, the digits, and the sheet's own Step 4 of 4 ready phase; a plain visit keeps the screens", async () => {

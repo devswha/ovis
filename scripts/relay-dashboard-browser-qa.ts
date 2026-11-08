@@ -272,7 +272,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
 
   // ---- truthful counts (todo 2) and the overview (todo 9) ----
 
-  const counts: [FleetName, number, number, number][] = [["F4", 0, 4, 1], ["FREADY", 3, 3, 1], ["F20", 8, 12, 4]];
+  const counts: [FleetName, number, number, number][] = [["F4", 0, 4, 1], ["FREADY", 2, 3, 1], ["F20", 8, 12, 4]];
   for (const [fleet, ready, needs, offline] of counts) {
     await check(`dashboard-${fleet}-counts`, async () => {
       const { page } = await open({ fleet });
@@ -371,7 +371,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
 
   // ---- filters (todos 2, 7): the Needs filter lists what the strip counts ----
 
-  const filters: [string, FleetName, string, number][] = [["filter-needs", "FREADY", "needs", 3], ["filter-ready", "FREADY", "ready", 3], ["filter-offline", "FREADY", "offline", 1], ["filter-empty", "F4", "ready", 0]];
+  const filters: [string, FleetName, string, number][] = [["filter-needs", "FREADY", "needs", 3], ["filter-ready", "FREADY", "ready", 2], ["filter-offline", "FREADY", "offline", 1], ["filter-empty", "F4", "ready", 0]];
   for (const [name, fleet, filter, want] of filters) {
     await check(name, async () => {
       const { page } = await open({ fleet });
@@ -518,7 +518,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     const lost = known.filter((id) => !shown.includes(id));
     await shot(page, "dashboard-directory-error-1440-dark", true);
     expect(lost.length === 0, `the PCs this device holds stay listed through the failure (${lost.length} of ${known.length} gone)`);
-    return `alert + Try again, ${known.length} known rows kept`;
+    expect((await strip(page))["ready"]?.count === 0, "unchecked pairings do not claim Ready when the directory fails");
+    await page.getByRole("button", { name: "Ready", exact: true }).click();
+    expect(await listedRows(page).count() === 0, "the Ready filter agrees with the zero Ready count");
+    return `alert + Try again, ${known.length} known rows kept; Ready 0 and empty Ready filter`;
   });
 
   // ---- devices (todo 6) ----
@@ -536,16 +539,42 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
 
   // ---- large fleets (todo 7) ----
 
-  for (const [fleet, total] of [["FLEET200", 200], ["FLEET1000", 1000]] as const) {
-    await check(`fleet-${total}`, async () => {
-      const { page } = await open({ fleet });
-      const cells = await strip(page);
-      await go(page, "#pcs", "pcs");
-      const rows = await listedRows(page).count();
-      expect(rows === total, `${rows} rows, want ${total}`);
-      expect(await page.locator(".relay-pc-list-region.is-large-fleet").count() === 1, "the large-fleet table");
-      return `${rows} rows, strip ${JSON.stringify(cells)}, ${await noOverflow(page)}`;
-    });
+  // from 200 rows each row's box skips rendering off screen (content-visibility: auto); 50 rows stay fully rendered
+  for (const [fleet, total] of [["FLEET50", 50], ["FLEET200", 200], ["FLEET1000", 1000]] as const) {
+    for (const width of [1440, 390] as const) {
+      await check(`fleet-${total}-${width}-content-visibility`, async () => {
+        const large = total >= 200;
+        const { page } = await open({ fleet, width });
+        const cells = await strip(page);
+        await go(page, "#pcs", "pcs");
+        await page.evaluate(() => window.scrollTo(0, 0));
+        const rows = await listedRows(page).count();
+        expect(rows === total, `${rows} rows, want ${total}`);
+        const boxes = await page.evaluate(() => {
+          const all = [...document.querySelectorAll<HTMLElement>("[data-pc-list] [data-pc-id] :is(.relay-pc-row-box, .relay-pc-phone-body)")];
+          const tally = (values: readonly string[]) => Object.fromEntries([...new Set(values)].map((value) => [value, values.filter((v) => v === value).length]));
+          return {
+            count: all.length,
+            visibility: tally(all.map((box) => getComputedStyle(box).contentVisibility)),
+            intrinsic: tally(all.map((box) => getComputedStyle(box).containIntrinsicSize.startsWith("auto ") ? "auto <length>" : getComputedStyle(box).containIntrinsicSize)),
+            // the box itself is never skipped, its contents are: ask about the name button inside it
+            firstRendered: all[0]?.querySelector(".relay-pc-name-btn")?.checkVisibility({ contentVisibilityAuto: true }) ?? false,
+            lastRendered: all.at(-1)?.querySelector(".relay-pc-name-btn")?.checkVisibility({ contentVisibilityAuto: true }) ?? true,
+          };
+        });
+        const want = large ? "auto" : "visible";
+        expect(boxes.count === total, `${boxes.count} row boxes, want ${total}`);
+        expect(JSON.stringify(boxes.visibility) === JSON.stringify({ [want]: total }), `computed content-visibility ${JSON.stringify(boxes.visibility)}, want ${want} on all ${total}`);
+        expect(JSON.stringify(boxes.intrinsic) === JSON.stringify({ [large ? "auto <length>" : "none"]: total }), `computed contain-intrinsic-size ${JSON.stringify(boxes.intrinsic)}`);
+        expect(boxes.firstRendered, "the first row, on screen, is rendered");
+        expect(boxes.lastRendered === !large, large ? "the off-screen last row skips rendering" : "the last of 50 rows is rendered off screen");
+        const last = listedRows(page).last();
+        const id = await last.getAttribute("data-pc-id");
+        await last.locator(".relay-pc-name-btn").click();
+        await page.locator(`[data-pc-details="${id}"]`).waitFor();
+        return `${rows} rows, content-visibility ${JSON.stringify(boxes.visibility)}, last row skipped off screen: ${!boxes.lastRendered}, last row opens Details, strip ${JSON.stringify(cells)}, ${await noOverflow(page)}`;
+      });
+    }
   }
 
   // ---- glyphs, motion, forced colours, focus (todo 1) ----

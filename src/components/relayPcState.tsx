@@ -5,25 +5,40 @@ import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { StatusDotState } from "./StatusDot.tsx";
 
 export type DashboardRow = ReturnType<typeof dashboardModel>["rows"][number];
+type MapNode = ReturnType<typeof dashboardModel>["map"]["hubs"][number]["nodes"][number];
 
-/**
- * The state a PC's surfaces follow (the table, Details and the map alike): the directory's, except
- * that a live answer from this device beats the directory's stale Offline, since the PC is reachable
- * now. Needs approval and Needs update stay even when it answered: both are true, and the route
- * cell carries the answer.
- */
-export function liveState(pc: Pick<DashboardRow, "state" | "check">): DashboardRow["state"] {
-  return pc.state === "offline" && pc.check?.kind === "answered" ? "paired" : pc.state;
+/** The model's state, with the answering route when known. Needs you stays the group's name. */
+export function mapStateWord(node: MapNode, t: Translate): string {
+  if (node.check?.kind === "checking") return t("Checking…");
+  switch (node.state) {
+    case "unchecked": return localStateWord(node.check, t);
+    case "needs-approval": return t("Needs approval");
+    case "needs-update": return t("Needs update");
+    case "offline": return t("Offline");
+    case "paired":
+      if (node.check?.kind === "answered") return routeText(node.check, t);
+      return node.seen === "lately" ? t("Seen lately") : t("Ready");
+  }
 }
 
-/** The glyph follows the live state; only a paired PC the account does not list falls back to this device's own check, the one fact there is about it. */
-export function pcDotState(row: DashboardRow, updating = false, mode: "account" | "local" = "account"): StatusDotState {
+/** The tooltip's detail: the state word with what to do and the measured answering route. */
+export function mapStateDetail(node: MapNode, t: Translate): string {
+  const route = node.check?.kind === "answered" ? ` · ${routeText(node.check, t)}` : "";
+  switch (node.state) {
+    case "needs-approval": return t("Needs approval") + route;
+    case "needs-update": return `${t("Needs update")} · ${t("Update Ovis on it")}${route}`;
+    case "offline": case "paired": case "unchecked": return mapStateWord(node, t);
+  }
+}
+
+/** The glyph uses the model's state, with transient work shown while it runs. */
+export function pcDotState(row: DashboardRow, updating = false): StatusDotState {
   if (updating) return "updating";
   if (row.check?.kind === "checking") return "checking";
-  switch (liveState(row)) {
+  switch (row.displayState) {
     case "needs-approval": case "needs-update": return "needs-you";
-    case "offline": return "offline";
-    case "paired": return mode === "local" || !row.listed ? (row.check?.kind === "answered" ? "ready" : "offline") : "ready";
+    case "offline": case "unchecked": return "offline";
+    case "paired": return "ready";
   }
 }
 

@@ -13,7 +13,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { KeyId } from "./KeyId.tsx";
-import { formatAbsoluteTime, formatProbeLine, liveState, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
+import { formatAbsoluteTime, formatProbeLine, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 
 const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
@@ -69,11 +69,12 @@ export function RelayPcDetails({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, confirmForget]);
 
-  const dot = pcDotState(pc, updating, mode);
+  const dot = pcDotState(pc, updating);
   const fresh = newPcs([pc], now).length > 0;
   const stateLabel = ((): string => {
     if (updating) return t("Updating");
-    switch (liveState(pc)) {
+    switch (pc.displayState) {
+      case "unchecked": return localStateWord(pc.check, t);
       case "needs-approval": return t("Needs approval");
       case "needs-update": return t("Needs update");
       case "offline": return t("Offline");

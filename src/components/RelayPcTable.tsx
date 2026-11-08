@@ -3,13 +3,13 @@ import type { MouseEvent, ReactNode } from "react";
 import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
-import { relayHost, type DashboardFilter, type dashboardModel } from "../lib/relay/dashboard.ts";
+import { inDashboardFilter, relayHost, type DashboardFilter, type dashboardModel } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { CheckPcsButton } from "./AccountPcs.tsx";
-import { formatAbsoluteTime, formatProbeLine, liveState, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
+import { formatAbsoluteTime, formatProbeLine, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 
 export type DashboardAttention = ReturnType<typeof dashboardModel>["attention"][number];
@@ -43,12 +43,7 @@ export interface RelayPcTableProps {
 
 function matchesFilter(row: DashboardRow, filter: DashboardFilter, filters?: Readonly<Record<DashboardFilter, readonly string[]>>): boolean {
   if (filters) return filters[filter].includes(row.server_id);
-  switch (filter) {
-    case "all": return true;
-    case "ready": return row.state === "paired";
-    case "needs": return row.state !== "paired";
-    case "offline": return row.state === "offline";
-  }
+  return inDashboardFilter(row.displayState, filter);
 }
 
 export function RelayPcTable({
@@ -65,10 +60,9 @@ export function RelayPcTable({
 
   const listedRow = (row: DashboardRow): boolean => mode === "account" && row.listed;
   const stateHeadline = (row: DashboardRow, updating: boolean): string => {
-    if (mode === "account" && row.enrollment === "pending") return t("Adding it to your account…");
-    if (mode === "account" && row.enrollment === "failed") return t("Ready · not in the account yet");
     if (updating) return t("Updating");
-    switch (liveState(row)) {
+    switch (row.displayState) {
+      case "unchecked": return localStateWord(row.check, t);
       case "needs-approval": return t("Needs approval");
       case "needs-update": return t("Needs update");
       case "offline": return row.last_seen_at === null ? t("Offline") : t("Offline · {when}", { when: lastSeen(row.last_seen_at, now) });
@@ -88,6 +82,13 @@ export function RelayPcTable({
     }
     return null;
   };
+  /** Account enrollment in progress or failed: its own line under the state, so the PC's state and next action stay. */
+  const enrollmentLine = (row: DashboardRow): string | null => {
+    if (mode !== "account") return null;
+    if (row.enrollment === "pending") return t("Adding it to your account…");
+    if (row.enrollment === "failed") return t("This PC could not be listed in your account. Try again.");
+    return null;
+  };
   /** The state word beside the dot; on a Join row whose 10-minute window closed, the title adds why (the Attention caption and Details say it in full, while the table cell stays one line). */
   const stateWord = (row: DashboardRow, updating: boolean): ReactNode => {
     const word = stateHeadline(row, updating);
@@ -103,9 +104,8 @@ export function RelayPcTable({
         onClick={(event) => { event.stopPropagation(); if (onOpenPc) { event.preventDefault(); onOpenPc(row); } }}>{label}</a>
     );
     const detailsBtn = <button type="button" className="btn relay-pc-action-btn" data-pc-action="details" onClick={(e) => { stop(e); onSelect(row.server_id); }}>{t("Details")}</button>;
-    if (mode === "account" && row.enrollment === "failed") return openLink("open", t("Try again"));
-    switch (row.state) {
-      case "paired": return openLink("open", t("Open"));
+    switch (row.displayState) {
+      case "paired": case "unchecked": return openLink("open", t("Open"));
       case "needs-update": return row.paired ? openLink("update", t("Update")) : detailsBtn;
       case "needs-approval":
         if (row.join === undefined) return detailsBtn;
@@ -157,12 +157,13 @@ export function RelayPcTable({
         <ul className="relay-pc-phone-list" data-pc-list="phone" aria-label={t("PCs")}>
           {filtered.map((row) => {
             const updating = updatingIds?.has(row.server_id) === true;
-            const dot = pcDotState(row, updating, mode);
+            const dot = pcDotState(row, updating);
             const selected = selectedPcId === row.server_id;
             const sub = stateSubline(row, updating, true);
+            const enrollment = enrollmentLine(row);
             return (
               <li key={row.server_id} className={selected ? "relay-pc-phone-row is-selected" : "relay-pc-phone-row"}
-                data-pc-state={updating ? "updating" : row.state} data-pc-id={row.server_id} onClick={() => onSelect(row.server_id)}>
+                data-pc-state={updating ? "updating" : row.displayState} data-pc-id={row.server_id} onClick={() => onSelect(row.server_id)}>
                 <div className="relay-pc-phone-body">
                   <div className="relay-pc-phone-top">
                     <span className="relay-pc-name">
@@ -179,6 +180,7 @@ export function RelayPcTable({
                     {renderRelay(row)}<span aria-hidden="true">·</span>
                     <span className="relay-pc-seen">{renderSeen(row)}</span>
                   </div>
+                  {enrollment !== null && <p className="relay-pc-probe-line" data-pc-enrollment="">{enrollment}</p>}
                   {sub !== null && <p className="relay-pc-probe-line">{sub}</p>}
                 </div>
               </li>
@@ -195,12 +197,13 @@ export function RelayPcTable({
           <tbody>
             {filtered.map((row) => {
               const updating = updatingIds?.has(row.server_id) === true;
-              const dot = pcDotState(row, updating, mode);
+              const dot = pcDotState(row, updating);
               const selected = selectedPcId === row.server_id;
               const sub = stateSubline(row, updating);
+              const enrollment = enrollmentLine(row);
               return (
                 <tr key={row.server_id} className={selected ? "relay-pc-row is-selected" : "relay-pc-row"}
-                  data-pc-state={updating ? "updating" : row.state} data-pc-id={row.server_id} onClick={() => onSelect(row.server_id)}>
+                  data-pc-state={updating ? "updating" : row.displayState} data-pc-id={row.server_id} onClick={() => onSelect(row.server_id)}>
                   <td className="relay-pc-cell-name">
                     <div className="relay-pc-row-box">
                       <StatusDot state={dot} />
@@ -213,6 +216,7 @@ export function RelayPcTable({
                   <td className="relay-dash-state-cell relay-pc-cell-state">
                     <div className="relay-pc-state-stack">
                       {stateWord(row, updating)}
+                      {enrollment !== null && <small className="relay-pc-probe-line" data-pc-enrollment="">{enrollment}</small>}
                       {sub !== null && <small className="relay-pc-probe-line">{sub}</small>}
                     </div>
                   </td>
