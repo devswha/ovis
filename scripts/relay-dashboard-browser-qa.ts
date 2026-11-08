@@ -358,14 +358,14 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
   });
 
   await check("local-dashboard", async () => {
-    const { page } = await open({ fleet: "FREADY", signedIn: false });
+    const { page, fleet } = await open({ fleet: "FREADY", signedIn: false });
     const keys = await page.locator(".relay-overview-strip [data-strip-cell]").evaluateAll((cells) => cells.map((cell) => cell.getAttribute("data-strip-cell")));
     expect(JSON.stringify(keys) === JSON.stringify(["paired", "relays"]), `local strip ${JSON.stringify(keys)}: no account Ready/Needs you`);
     const labels = Object.values(await strip(page)).map((cell) => cell.label);
     expect(JSON.stringify(labels) === JSON.stringify(["Paired with this device", "Relays"]), `local strip reads ${JSON.stringify(labels)}: no account Ready/Needs you`);
     // the PC table's state word carries this device's own check (u14 dropped the duplicate local check list above it)
     const words = await page.locator(".relay-pc-state-word").allInnerTexts();
-    expect(words.length > 0 && words.every((word) => /^(Paired · not checked|Checking…|Answers|No answer)$/.test(word)), `local rows report this device's checks only ${JSON.stringify(words)}`);
+    expect(words.length === fleet.seeds.length && words.every((word) => /^(Paired · not checked|No answer)$/.test(word)), `local rows report this device's checks only ${JSON.stringify(words)}`);
     return `strip ${JSON.stringify(keys)}, rows ${JSON.stringify([...new Set(words)])}`;
   });
 
