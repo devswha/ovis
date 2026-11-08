@@ -977,6 +977,57 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `two columns, focus on the row, no scroll`;
   });
 
+  // Forget's confirmation is modal: the dashboard behind it is inert (no tab stop, no focus) while it is up, Cancel gives
+  // the focus back to Forget this PC, and a confirmed Forget leaves the focus on the page, never on <body>
+  for (const width of [1440, 390] as const) {
+    for (const theme of ["dark", "light"] as const) {
+      await check(`details-forget-confirm-${width}-${theme}`, async () => {
+        const { page } = await open({ fleet: "FREADY", width, theme });
+        await go(page, "#pcs", "pcs");
+        await listedRows(page).filter({ hasText: "Home server" }).locator(".relay-pc-name-btn").click();
+        const forget = page.locator("[data-pc-details]").getByRole("button", { name: "Forget this PC" });
+        const dialog = page.getByRole("alertdialog");
+        await forget.focus();
+        await page.keyboard.press("Enter");
+        await dialog.waitFor();
+        // the phone sheet slides up: capture it docked, once its entrance is over
+        await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running"));
+        await shot(page, `details-forget-confirm-${width}-${theme}`);
+        const behind = await page.evaluate(() => {
+          const dash = document.querySelector<HTMLElement>(".relay-dash");
+          const forgetButton = [...document.querySelectorAll<HTMLButtonElement>("[data-pc-details] button")].find((button) => button.textContent?.trim() === "Forget this PC");
+          forgetButton?.focus();
+          const tookFocus = forgetButton !== undefined && document.activeElement === forgetButton;
+          return { inert: dash !== null && dash.closest("[inert]") !== null, tookFocus, focusInDialog: document.activeElement?.closest("[role='alertdialog']") !== null };
+        });
+        expect(behind.inert && !behind.tookFocus, `the dashboard behind the confirmation is inert and its controls refuse the focus (${JSON.stringify(behind)})`);
+        const stops: string[] = [];
+        for (let index = 0; index < 4; index += 1) {
+          await page.keyboard.press("Tab");
+          stops.push(await page.evaluate(() => document.activeElement?.closest("[role='alertdialog']") !== null ? "dialog" : String(document.activeElement?.textContent ?? "").trim().slice(0, 30)));
+        }
+        expect(stops.every((stop) => stop === "dialog"), `Tab stays in the confirmation (${JSON.stringify(stops)})`);
+        await dialog.getByRole("button", { name: "Cancel" }).click();
+        await dialog.waitFor({ state: "detached" });
+        const afterCancel = await page.evaluate(() => ({
+          inert: document.querySelector(".relay-dash")?.closest("[inert]") !== null,
+          focus: document.activeElement?.textContent?.trim() ?? null,
+          inDetails: document.activeElement?.closest("[data-pc-details]") !== null,
+        }));
+        expect(!afterCancel.inert && afterCancel.focus === "Forget this PC" && afterCancel.inDetails, `Cancel lifts inert and gives the focus back to Forget this PC (${JSON.stringify(afterCancel)})`);
+        await page.keyboard.press("Enter");
+        await dialog.waitFor();
+        await dialog.getByRole("button", { name: "Forget", exact: true }).click();
+        await dialog.waitFor({ state: "detached" });
+        await page.locator("[data-pc-details]").waitFor({ state: "detached" });
+        const afterForget = await focused(page);
+        const stillInert = await page.evaluate(() => document.querySelector(".relay-dash")?.closest("[inert]") !== null);
+        expect(!stillInert && afterForget !== null && afterForget.inView, `after Forget the dashboard is live and the focus is on screen in it (${JSON.stringify(afterForget)})`);
+        return `inert behind the confirmation, Tab stays in it, Cancel returns to Forget this PC, Forget leaves the focus on ${afterForget?.className.includes("relay-pc-name-btn") ? "the row" : afterForget?.tag}`;
+      });
+    }
+  }
+
   // the QR and code dialog is named by the heading of its current screen, sits over the visible scrimmed dashboard, and docks as a bottom sheet on phones
   for (const width of [1440, 390] as const) {
     await check(`pair-dialog-name-${width}`, async () => {

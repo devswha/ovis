@@ -218,6 +218,30 @@ describe("RelayPcDetails", () => {
     expect(forgotten).toEqual([SERVER_ID]);
   });
 
+  it("makes the dashboard behind the Forget confirmation inert while it is up, and live again after Cancel and after Forget", async () => {
+    const dashboard = { inert: false };
+    const row = makeRow({ state: "paired" });
+    await act(async () => {
+      renderer = create(createElement(SettingsProvider, { children: createElement(RelayPcDetails, { pc: row, onClose: none, onForget: async () => {} }) }), {
+        createNodeMock: (element) => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: (selector: string) => element.type === "aside" && selector === ".relay-dash" ? dashboard : null, addEventListener() {}, removeEventListener() {} }),
+      });
+    });
+    const forgetBtn = rootOf(renderer).find((n) => n.type === "button" && textOf(n) === "Forget this PC");
+    const dialogButton = (label: string) => rootOf(renderer).find((n) => n.props.role === "alertdialog").find((n) => n.type === "button" && textOf(n) === label);
+
+    expect(dashboard.inert).toBe(false);
+    await act(async () => { forgetBtn.props.onClick(); });
+    expect(dashboard.inert).toBe(true);
+    await act(async () => { dialogButton("Cancel").props.onClick(); });
+    expect(dashboard.inert).toBe(false);
+
+    await act(async () => { forgetBtn.props.onClick(); });
+    expect(dashboard.inert).toBe(true);
+    await act(async () => { await dialogButton("Forget").props.onClick(); });
+    expect(rootOf(renderer).findAll((n) => n.props.role === "alertdialog")).toHaveLength(0);
+    expect(dashboard.inert).toBe(false);
+  });
+
   it("shows Back in the location bar below 1100px and closes on Escape", async () => {
     wideMatches = false;
     let closed = 0;
