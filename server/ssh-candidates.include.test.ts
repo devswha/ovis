@@ -1,9 +1,10 @@
 import { expect, it, spyOn } from "bun:test";
-import { mkdirSync, type PathLike, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, type PathLike, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { sshCandidates } from "./ssh-candidates.ts";
+import { includeHooks } from "./ssh-include.ts";
 import { sshDir, twoPeers } from "./ssh-candidates.fixture.ts";
 
 // the files an Include of the ssh config names: which ones are read, how far a wildcard goes, and the read budget
@@ -167,4 +168,71 @@ it("claims nothing for a host an Include of another user's home (~user) may set"
   const dir = sshDir({ config: "Include ~someone/.ssh/hosts\nHost box\n  HostName 100.64.0.1\n" });
   const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
   expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+});
+
+/** what the list makes of `config` beside a `box` host at 100.64.0.1, with getdents64 standing as `getdents` */
+async function withGetdents(getdents: typeof includeHooks.getdents, files: Record<string, string>): Promise<(string | undefined)[][]> {
+  const dir = sshDir({ ...files, config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
+  includeHooks.getdents = getdents;
+  try {
+    return (await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers })).map((candidate) => [candidate.name, candidate.tailnet]);
+  } finally { delete includeHooks.getdents; }
+}
+const unread = [["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]];
+
+/** a getdents64 answering `chunks` one call at a time, then the end of the folder */
+const answering = (chunks: (Buffer | number)[]) => (_fd: number, buffer: Buffer): number => {
+  const chunk = chunks.shift() ?? 0;
+  if (typeof chunk === "number") return chunk;
+  chunk.copy(buffer);
+  return chunk.length;
+};
+/** one linux_dirent64 record naming `name`: its d_reclen says `reclen`, its bytes are `bytes` long */
+const record = (name: string, reclen: number, bytes = Math.max(reclen, 20 + name.length)): Buffer => {
+  const written = Buffer.alloc(bytes);
+  written.writeUInt16LE(reclen, 16);
+  written.write(name, 19);
+  return written;
+};
+
+it.skipIf(process.platform === "win32")("leaves a getdents64 answer it cannot trust unread, never a listing", async () => {
+  const files = { "conf.d/x.conf": "Host listed\n" };
+  for (const chunks of [[record("x.conf", 200, 26)], [record("x.conf", 0, 32)], [record("x.conf", 24)], [32 * 1024 + 8]]) {
+    expect(await withGetdents(answering(chunks), files)).toEqual(unread);
+  }
+});
+
+it.skipIf(process.platform === "win32")("leaves an Include unread when getdents64 fails, never as an empty folder", async () => {
+  expect(await withGetdents(answering([-1]), { "conf.d/x.conf": "Host listed\n" })).toEqual(unread);
+});
+
+it.skipIf(process.platform === "win32")("lists no folder without getdents64, leaving its Include unread, even across a swap and restore between checks", async () => {
+  const { home, ssh, outside } = homeAndOutside({ "conf.d/x.conf": "Host own\n", config: "Include conf.d/*\nHost box\n  HostName 100.64.0.1\n" });
+  const folder = join(ssh, "conf.d");
+  const [stat, realpath, readdir] = [fsPromises.stat, fsPromises.realpath, fsPromises.readdir];
+  const listed: string[] = [];
+  let stage = 0;
+  const spies = [
+    // swapped for a link out of home just after the folder's identity is first taken, put back before it is checked again
+    spyOn(fsPromises, "stat").mockImplementation((async (looked: PathLike, options?: { bigint: true }) => {
+      const found = await stat(looked, options);
+      if (stage === 0 && String(looked) === folder) { stage = 1; renameSync(folder, `${folder}.old`); symlinkSync(outside, folder); }
+      return found;
+    }) as typeof stat),
+    spyOn(fsPromises, "realpath").mockImplementation((async (looked: PathLike) => {
+      if (stage === 1 && String(looked) === folder) { stage = 2; unlinkSync(folder); renameSync(`${folder}.old`, folder); }
+      return realpath(looked);
+    }) as typeof realpath),
+    spyOn(fsPromises, "readdir").mockImplementation((async (looked: PathLike) => {
+      const names = await readdir(looked);
+      listed.push(...names);
+      return names;
+    }) as typeof readdir),
+  ];
+  includeHooks.getdents = null;
+  try {
+    const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => twoPeers });
+    expect(listed).not.toContain("evil");
+    expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual(unread);
+  } finally { delete includeHooks.getdents; for (const spy of spies) spy.mockRestore(); }
 });

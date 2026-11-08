@@ -3,12 +3,12 @@
  * really is inside the home or ssh folder, within one budget of files, bytes, folder entries and matching work per
  * config. A file or folder is opened first and what was opened is checked, so nothing swapped in on the way after a
  * check stands in for it: Linux names the opened object itself (/proc/self/fd) and lists a folder through its open
- * descriptor (getdents64), a bounded read at a time; elsewhere the path is resolved again once open (a folder once
- * listed) and must still name the same object, and a folder whose size says it holds more than the entry budget is
- * left unlisted.
+ * descriptor (getdents64), a bounded read at a time; elsewhere a file's path is resolved again once open and must
+ * still name the same object. Without getdents64 (macOS, Windows, a Linux without glibc) no folder is listed: Bun has no
+ * descriptor-relative listing, so a wildcard's folders are left unread rather than listed by a path a swap can redirect.
  */
 import { constants } from "node:fs";
-import { open, readdir, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
+import { open, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { dlopen, FFIType } from "bun:ffi";
 
@@ -24,13 +24,12 @@ const MAX_INCLUDED_BYTES = 1024 * 1024;
 const MAX_SCANNED_ENTRIES = 1024;
 /** characters every Include of one config together tries a pattern on */
 const MAX_MATCH_STEPS = 1_000_000;
-/** the largest folder size (st_size) listed where entries cannot be read a few at a time: about the entry budget */
-const MAX_FOLDER_BYTES = 64 * 1024;
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 const FOLDER_FLAGS = constants.O_RDONLY | (constants.O_DIRECTORY ?? 0);
 
 type Budget = { files: number; bytes: number; entries: number; steps: number };
-type Listing = string[] | "refused" | "cut" | null;
+/** a folder's names; "unread" for one left unlisted (out of reach, past the budget, or not listed safely); null for none there */
+type Listing = string[] | "unread" | null;
 
 /** a regular file's text when it is at most `cap` bytes, read from the open handle; null for anything else */
 async function readHandle(handle: FileHandle, cap: number): Promise<string | null> {
@@ -72,49 +71,56 @@ async function openInside(path: string, roots: readonly string[], flags: number)
   return "refused";
 }
 
+/** getdents64(2): fills `buffer` with a folder's entries from its descriptor and answers the bytes written, or -1 */
+type Getdents = (fd: number, buffer: Buffer, length: number) => number | bigint;
+
 /** glibc's getdents64(2), which reads a folder's entries from its descriptor a buffer at a time; null without glibc */
-const getdents = (() => {
+const getdents: Getdents | null = (() => {
   if (process.platform !== "linux") return null;
   try { return dlopen("libc.so.6", { getdents64: { args: [FFIType.i32, FFIType.ptr, FFIType.u64], returns: FFIType.i64 } }).symbols.getdents64; } catch { return null; }
 })();
 
-/** the names in a folder open at `fd`, each one charged to `budget.entries`; "cut" once it runs out */
-function entriesOf(fd: number, read: NonNullable<typeof getdents>, budget: Budget): Listing {
+/** tests stand in for getdents64 here: a fake one, or null for a platform without it */
+export const includeHooks: { getdents?: Getdents | null } = {};
+
+/**
+ * The names in a folder open at `fd`, each one charged to `budget.entries`; "unread" once it runs out, when getdents64
+ * fails, or when what it answers is not well formed (a byte count past the buffer, a record that is empty, runs past
+ * the bytes answered, or holds no terminated name)
+ */
+function entriesOf(fd: number, read: Getdents, budget: Budget): Listing {
   const buffer = Buffer.alloc(32 * 1024);
   const names: string[] = [];
-  let got = Number(read(fd, buffer, buffer.byteLength));
-  for (; got > 0; got = Number(read(fd, buffer, buffer.byteLength))) {
+  for (;;) {
+    const got = Number(read(fd, buffer, buffer.byteLength));
+    if (!Number.isInteger(got) || got < 0 || got > buffer.byteLength) return "unread";
+    if (got === 0) return names;
     // struct linux_dirent64: d_ino (8), d_off (8), d_reclen (2), d_type (1), then the name and its NUL
-    for (let at = 0; at < got; at += buffer.readUInt16LE(at + 16)) {
-      const name = buffer.toString("utf8", at + 19, buffer.indexOf(0, at + 19));
+    for (let at = 0; at < got;) {
+      if (at + 20 > got) return "unread";
+      const length = buffer.readUInt16LE(at + 16);
+      const end = buffer.indexOf(0, at + 19);
+      if (length < 20 || at + length > got || end <= at + 19 || end >= at + length) return "unread";
+      const name = buffer.toString("utf8", at + 19, end);
+      at += length;
       if (name === "." || name === "..") continue;
-      if (budget.entries-- <= 0) return "cut";
+      if (budget.entries-- <= 0) return "unread";
       names.push(name);
     }
   }
-  return got < 0 ? null : names;
 }
 
-/** the names in folder `dir` when it really is inside `roots`, each charged to `budget.entries` */
+/** the names in folder `dir` when it really is inside `roots`, listed through its open descriptor; "unread" without getdents64 */
 async function listInside(dir: string, roots: readonly string[], budget: Budget): Promise<Listing> {
-  if (getdents !== null) {
+  const read = includeHooks.getdents === undefined ? getdents : includeHooks.getdents;
+  if (read !== null) {
     const folder = await openInside(dir, roots, FOLDER_FLAGS);
-    if (folder === null || folder === "refused") return folder;
-    try { return entriesOf(folder.fd, getdents, budget); } finally { await folder.close(); }
+    if (folder === null) return null;
+    if (folder === "refused") return "unread";
+    try { return entriesOf(folder.fd, read, budget); } finally { await folder.close(); }
   }
-  const real = await realpath(dir).catch(() => null);
-  if (real === null) return null;
-  if (!inside(real, roots)) return "refused";
-  try {
-    const before = await stat(real, { bigint: true });
-    if (!before.isDirectory()) return null;
-    if (before.size > MAX_FOLDER_BYTES) return "cut";
-    const names = await readdir(real);
-    if (names.length > budget.entries) return "cut";
-    budget.entries -= names.length;
-    const after = await stat(await realpath(dir), { bigint: true });
-    return after.dev === before.dev && after.ino === before.ino ? names : "refused";
-  } catch { return null; }
+  // a folder that is not there is nothing, as for ssh; any other is left unread
+  return (await realpath(dir).catch(() => null)) === null ? null : "unread";
 }
 
 /**
@@ -151,7 +157,7 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
         for (const dir of level) {
           if ("name" in component) { next.push(join(dir, component.name)); continue; }
           const names = await listInside(dir, allowed, budget);
-          if (names === "refused" || names === "cut") { scanCut = true; continue; }
+          if (names === "unread") { scanCut = true; continue; }
           for (const name of names ?? []) {
             const matched = matchComponent(component.tokens, name, budget);
             if (matched === null || (matched && next.length >= budget.files)) { scanCut = true; break; }
