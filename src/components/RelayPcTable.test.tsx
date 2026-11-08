@@ -379,12 +379,14 @@ describe("RelayPcTable", () => {
     expect(text).toContain("just now");
   });
 
-  it("truncates long PC names with a title attribute on the native button and marks 200+ / 1000 rows for content-visibility", () => {
+  it("keeps the full name of a long PC name in the name button's title", () => {
     const longName = "Workstation on the third floor lab bench with a very long name";
     const longPc = makePc(IDS.ready, longName, "paired");
     const html = renderHtml(buildProps([longPc]));
     expect(html).toContain(`title="${longName}"`);
+  });
 
+  it("flags a list of 200 rows or more as a large fleet and one of 199 not, and renders every one of 1000 rows", () => {
     const fleet200 = Array.from({ length: 200 }, (_, i) =>
       makePc(`${String(i).padStart(32, "0")}`, `Node ${i}`, "paired"),
     );

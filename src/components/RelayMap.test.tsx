@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
@@ -226,11 +225,10 @@ describe("the connection map", () => {
     expect(html).toContain(`title="${longName}"`);
     expect(clip(longName)).toBe("Workstation on the…");
     expect(placeLabel({ x: 100, y: 100, r: 18, side: "right" }, 2).anchor).toBe("start");
-    // PF-7: hub host pills keep their intrinsic width without overflow:hidden, so they do not measure as clipped inside the visually-hidden route list
-    const css = readFileSync(new URL("./RelayMap.css", import.meta.url), "utf8");
-    const hostRule = /\.relay-map-host\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
-    expect(hostRule).toContain("width: max-content;");
-    expect(hostRule).not.toContain("overflow: hidden");
+    // PF-7: each hub's host is one pill span holding the host text whole, in the diagram and in the route list, so the only width it can take is its own (the capture matrix measures it unclipped at 1440)
+    const pills = [...html.matchAll(/<span class="pill relay-map-host">([^<]*)<\/span>/g)].map(([, host]) => host);
+    expect(pills).toEqual(["relay.ovis.sh", "relay.ovis.sh"]);
+    expect(html).not.toMatch(/relay-map-host[^>]*title=/);
   });
 
   it("lets a live answer from this device beat the directory's stale Offline on every map surface, and keeps Needs update with the measured route beside it", () => {
