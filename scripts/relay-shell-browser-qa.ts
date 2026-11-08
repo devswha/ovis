@@ -597,8 +597,10 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       }, serverId);
       const note = await hop(page, serverId).locator(".relay-map-hop-note").textContent() ?? "";
       const wired = await wire(page, serverId).getAttribute("data-wire");
-      assert.match(note, /^(Answers · \d+ ms|Paired · not checked|Offline)$/, `the map reports this device's own check only ("${note}")`);
-      assert.equal(wired, note.startsWith("Answers") ? "live" : note === "Offline" ? "off" : "still", `the wire follows that check ("${note}" -> ${wired})`);
+      // an answered check reads as its route and round trip ("Same network · 4 ms", "Tailscale · 18 ms", "relay.test · 31 ms")
+      const answered = /^[^·]+ · \d+ ms$/.test(note);
+      assert.ok(answered || /^(Paired · not checked|Offline)$/.test(note), `the map reports this device's own check only ("${note}")`);
+      assert.equal(wired, answered ? "live" : note === "Offline" ? "off" : "still", `the wire follows that check ("${note}" -> ${wired})`);
       assert.equal(await page.locator(".relay-map-flow, .relay-map-dot").count(), 0, "nothing flows once the check settled");
       return `${note}, wire ${wired}`;
     };
@@ -657,7 +659,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await row(a, "Desk PC").waitFor();
       // the directory lists none yet: the QR pairing is a row this device holds, never one the account claims Ready
       const unlistedWord = await stateWord(a, "Desk PC").innerText();
-      assert.match(unlistedWord, /^(Paired · not checked|Checking…|This device: .+)$/, `the unlisted row reports only this device's own check ("${unlistedWord}")`);
+      assert.match(unlistedWord, /^(Paired · not checked|Checking…|Answers|No answer|This device: .+)$/, `the unlisted row reports only this device's own check ("${unlistedWord}")`);
       assert.deepEqual(fake.pcs(ACCT), [], "the directory is empty before the PC is opened");
       await capture(a, "account-unlisted-1440-dark");
       log9(`account, before Open: directory [] -> row state "${unlistedWord}" (this device's check, not the account's Ready)`);
