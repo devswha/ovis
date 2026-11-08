@@ -21,6 +21,7 @@ import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { failureText, openOwnOffer, RelayPairing, statusText } from "./RelayPanel.tsx";
+import { RelaySignIn } from "./RelaySignIn.tsx";
 import { SettingsQuery, Toggle } from "./SettingsControls.tsx";
 import { PortalPanel } from "./PortalPanel.tsx";
 import { usePortal } from "../lib/portal.ts";
@@ -56,6 +57,16 @@ export function connectTabs({ sshOffered, relay, readOnly }: { sshOffered: boole
   return [...(sshOffered ? ["ssh" as const] : []), "devices", ...(relayOffered(relay) && !readOnly ? ["relay" as const] : [])];
 }
 
+/** The Ovis account as the relay tab uses it: signed out, its sign-in on the link page; signed in, the account in Settings. */
+export interface RelayAccount {
+  /** the account service this page signs in with */
+  service: string;
+  /** the account's place in Settings, where this PC is added to it */
+  onOpen: () => void;
+  /** a sign-in from the relay tab finished: the page reads the account again */
+  onSignedIn: () => void;
+}
+
 export interface ConnectPhoneDialogProps {
   plan: PhonePlan;
   /** an address a phone can open now, for the pairing code's QR code; null shows the code alone */
@@ -75,8 +86,8 @@ export interface ConnectPhoneDialogProps {
    * (AccountApprovals, docs/account.md "Who may admit a device").
    */
   joinBySignIn: boolean;
-  /** the Ovis sign-in and account, where this page offers them: the relay is used through it */
-  onAccount: (() => void) | null;
+  /** the Ovis account, where this page offers it: the relay is used through it */
+  account: RelayAccount | null;
   /** the Add PC dialog, its address filled in when a found PC was picked; null where PCs are not added from here */
   onAddPc: ((preset?: AddPcPreset) => void) | null;
   /** the roster: which found PCs are added already, and the PCs saved in herdr that wait for Connect */
@@ -94,7 +105,7 @@ export interface ConnectPhoneDialogProps {
  * The Ovis relay is used through the Ovis account, so its tab is the sign-in, or once signed in how a new device
  * joins. The relay and Tailscale stay apart: nothing on the SSH tab goes through the relay.
  */
-export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate, canPair, signedIn, joinBySignIn, onAccount, onAddPc, machines, onConnectMachine, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate, canPair, signedIn, joinBySignIn, account, onAddPc, machines, onConnectMachine, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -153,7 +164,7 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
             <div className="connect-tab" data-tab-panel="relay" hidden={tab !== "relay"}>
-              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} joinBySignIn={joinBySignIn} onAccount={onAccount} phone={phone} />
+              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} joinBySignIn={joinBySignIn} account={account} phone={phone} />
             </div>
           )}
         </div>
@@ -296,8 +307,8 @@ function DevicesTab({ plan, pairUrl, readOnly, canPair, phone }: { plan: PhonePl
  * type. One short line at most: what a blocked relay or the device gate means stays in More settings, or in the
  * switch's tooltip.
  */
-export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, onAccount, phone }: {
-  relay: RelayState; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; onAccount: (() => void) | null; phone: boolean;
+export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, phone }: {
+  relay: RelayState; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; account: RelayAccount | null; phone: boolean;
 }) {
   const t = useT();
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -316,7 +327,7 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, onAccount,
     </div>
   );
   const switchFailure = switchError !== null && <p className="settings-hint relay-error" role="alert">{switchError}</p>;
-  if (onAccount === null) return (
+  if (account === null) return (
     <>
       {relaySwitch}
       {switchFailure}
@@ -325,8 +336,7 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, onAccount,
   );
   if (!signedIn) return (
     <div className="connect-signin" data-testid="connect-signin">
-      <p className="settings-description">{t("Connect from anywhere through your Ovis account.")}</p>
-      <button type="button" className="btn btn-primary connect-signin-button" onClick={onAccount}>{t("Sign in to Ovis")}</button>
+      <RelaySignIn service={account.service} onSignedIn={account.onSignedIn} />
     </div>
   );
   return (
@@ -338,7 +348,7 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, onAccount,
           {switchFailure}
           {/* a start that failed before the link existed: the server answers phase off with its reason, and nothing retries it */}
           {switchError === null && startError !== null && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: startError })}</p>}
-          <button type="button" className="btn connect-signin-button" onClick={onAccount}>{t("Open the account")}</button>
+          <button type="button" className="btn connect-signin-button" onClick={account.onOpen}>{t("Open the account")}</button>
         </>
       )}
     </div>
