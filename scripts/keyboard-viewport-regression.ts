@@ -229,5 +229,40 @@ try {
       assert.deepEqual(errors, []);
     } finally { await context.close(); }
   }
-  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink");
+  // an iPad home-screen app in landscape: the visual viewport stops above the status bar while the shell would be
+  // 100dvh tall, so the page could scroll by that band whenever a field takes the focus. The shell fits the visual
+  // viewport, also at Safari's page zoom; a pinch, a keyboard-sized gap, a Safari tab or a phone keep the rules above
+  for (const [name, size, visual, scale, pinched, standalone, fits] of [
+    ["iPad landscape", { width: 1180, height: 820 }, 796, 1, false, true, true],
+    ["iPad landscape at 85% page zoom", { width: 1180, height: 820 }, 796, 0.85, false, true, true],
+    ["iPad landscape pinched", { width: 1180, height: 820 }, 796, 2, true, true, false],
+    ["iPad landscape, keyboard-sized gap", { width: 1180, height: 820 }, 500, 1, false, true, false],
+    ["iPad landscape Safari tab", { width: 1180, height: 820 }, 796, 1, false, false, false],
+    ["phone landscape", { width: 852, height: 393 }, 372, 1, false, true, false],
+  ] as const) {
+    const context = await browser.newContext({ viewport: size, screen: size, isMobile: true, hasTouch: true });
+    try {
+      await context.addInitScript(({ layout, visual, scale, pinched, standalone }) => {
+        const fake = new EventTarget();
+        Object.defineProperty(fake, "height", { get: () => visual });
+        Object.defineProperty(fake, "scale", { get: () => scale });
+        Object.defineProperty(fake, "width", { get: () => document.documentElement.clientWidth / (pinched ? scale : 1) });
+        Object.defineProperty(window, "visualViewport", { configurable: true, value: fake });
+        Object.defineProperty(window, "innerHeight", { configurable: true, get: () => layout });
+        const originalMatchMedia = window.matchMedia.bind(window);
+        window.matchMedia = (query) => query === "(display-mode: standalone)" ? ({ matches: standalone } as MediaQueryList) : originalMatchMedia(query);
+        const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+        HTMLElement.prototype.getBoundingClientRect = function () {
+          if (this.style.height === "100lvh") return new DOMRect(0, 0, 0, layout);
+          if (this.style.height === "env(safe-area-inset-top, 0px)") return new DOMRect(0, 0, 0, 24);
+          return nativeRect.call(this);
+        };
+      }, { layout: size.height, visual, scale, pinched, standalone });
+      const page = await context.newPage();
+      await page.goto(`http://127.0.0.1:${server.port}/`);
+      const shell = await page.evaluate(() => ({ published: document.documentElement.style.getPropertyValue("--app-height"), height: document.querySelector(".app")!.getBoundingClientRect().height }));
+      assert.deepEqual(shell, fits ? { published: `${visual}px`, height: visual } : { published: "", height: size.height }, `${name}: the shell ${fits ? "fits the visual viewport" : "keeps 100dvh"}`);
+    } finally { await context.close(); }
+  }
+  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell");
 } finally { await browser?.close(); server.stop(); }

@@ -99,9 +99,21 @@ const applyKeyboard = (): void => {
     // agrees with the measured top safe area.
     const inset = topInset.getBoundingClientRect().height;
     const missing = window.screen.height - largeViewport.getBoundingClientRect().height;
-    if (window.matchMedia("(display-mode: standalone)").matches && inset > 0
+    const standalone = window.matchMedia("(display-mode: standalone)").matches;
+    if (standalone && inset > 0
       && Math.abs(missing - inset) < 2 && window.screen.height > window.innerWidth)
       root.style.setProperty("--app-height", `${Math.round(window.screen.height)}px`);
+    // An iPad home-screen app in landscape draws the shell 100dvh tall while the visual viewport stops
+    // above the status bar. The page can then scroll by that band, and iOS does so to reveal a field that
+    // gets the focus: the whole shell slid up and back on every tap into the composer. With no keyboard and
+    // no browser chrome, the visual viewport is the whole usable screen, so the shell fits it. Only a small
+    // band counts; a larger gap is a keyboard or a split view, which the rules above own. iPads only (the
+    // smallest is 744px on its short side); a phone keeps the rule above. Safari's page zoom reports as a
+    // scale below 1 with the visual viewport as wide as the layout, a pinch zoom narrows it: the width test
+    // keeps this on at a page zoom and off while pinched.
+    else if (standalone && Math.min(window.innerWidth, window.innerHeight) >= 744 && viewport
+      && Math.abs(viewport.width - document.documentElement.clientWidth) < 2 && large - height > 0 && large - height < reference * 0.2)
+      root.style.setProperty("--app-height", `${Math.round(height)}px`);
     else root.style.removeProperty("--app-height");
   }
 };
