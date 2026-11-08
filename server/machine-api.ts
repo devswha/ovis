@@ -351,8 +351,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       return jsonResponse(manager.updateSettings(patch));
     }
     if (parts[0] === "install" && parts.length <= 2) {
-      // runs the official installer on another PC: the owner's only, from this app's own page, as its updates are
-      if (!owner || (request.method !== "GET" && !updateRequestAllowed(request))) return fail("forbidden", "Only this PC's owner can install Ovis on its PCs, from this app's own page.", 403);
+      // its jobs name SSH addresses and PCs: read by the owner only (the change itself takes the guard above)
+      if (!owner) return fail("forbidden", OWNER_ONLY, 403);
       if (parts.length === 1) {
         setRequestRoute("/api/machines/install");
         if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
