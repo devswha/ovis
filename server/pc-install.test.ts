@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createReadStream, createWriteStream, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
-import { installerRun, installPlanFor, PcInstaller, type InstallConnect } from "./pc-install.ts";
+import { captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, restoreServer, SAVED_SERVER } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
 // A PC reached over SSH, as a script-answering stand-in: every command this app would run there is answered here,
@@ -33,6 +33,10 @@ interface Pc {
   installer?: { exit: number; output: string };
   /** the installed Ovis never registers */
   neverStarts?: boolean;
+  /** its server's command, folder and environment cannot be copied (macOS has no /proc) */
+  uncapturable?: boolean;
+  /** the copied server, started again, never registers */
+  restoreFails?: boolean;
   /** its launcher's start fails there, with these words */
   launcherFails?: string;
   /** the installer's SSH command ends without its answer, with these words (a dropped connection, its time up) */
@@ -64,6 +68,10 @@ function fixture(pc: Pc) {
       return [`os=${pc.os ?? "Linux"}`, "arch=x86_64", ...tools.map((tool) => `has=${tool}`), ...(pc.writable === false ? [] : ["writable=1"]), `free_kb=${pc.freeKb ?? 50_000_000}`,
         "herdr=1", ...(pc.herdrRunning === false ? [] : ["herdr_running=1"]), `launcher=${pc.launcher ?? "none"}`].join("\n") + "\n";
     }
+    // the copy of a server before it is stopped, its start again, and its removal
+    if (script.includes("ovis-restore.XXXXXXXX")) return pc.uncapturable ? "" : "/tmp/ovis-restore.Ab12Cd34\n";
+    if (script.includes("xargs -0 -x")) { if (!pc.restoreFails) { const back = descriptor(4243, false, "d".repeat(64)); listed.push(back); alive.add(back.pid); } return ""; }
+    if (script.startsWith("rm -rf '") && script.includes("ovis-restore.")) return "";
     // the installer's run first: its watcher's own `kill -TERM 0` is no stop of a process
     if (script.includes("/install.sh -o")) {
       if (pc.installerHeld) { pc.installerHeld.started(); await pc.installerHeld.gate; }
@@ -98,7 +106,7 @@ function fixture(pc: Pc) {
   const installer = new PcInstaller({ sshDir: join(dir, "ssh"), connect, release: "v9.9.9", pollMs: 1, startMs: 200, stopMs: 100, onChange });
   cleanups.push(() => installer.stop());
   const settled = async (job: PcInstallJob) => { await installer.finished(job.id); return installer.job(job.id)!; };
-  return { installer, commands, challenges, connects, settled, alive, failConnect: (words: string) => { answer = words; }, holdConnect: (gate: Promise<void>) => { held = gate; }, cancelled: () => cancelled, reached, followUps, installerAnswer: (answer: { exit: number; output: string }) => { pc.installer = answer; } };
+  return { installer, commands, challenges, connects, settled, alive, registerNew: register, failConnect: (words: string) => { answer = words; }, holdConnect: (gate: Promise<void>) => { held = gate; }, cancelled: () => cancelled, reached, followUps, installerAnswer: (answer: { exit: number; output: string }) => { pc.installer = answer; } };
 }
 
 const target = { destination: "me@lab.invalid" };
@@ -257,7 +265,8 @@ describe("installing Ovis on a PC over SSH", () => {
   });
 
   it("says the server it stopped is gone when the install then fails, and installs on a retry with nothing left to stop", async () => {
-    const pc = fixture({ descriptors: [descriptor(4242)], installer: { exit: 1, output: "Ovis: could not download Ovis v9.9.9 from github.com." } });
+    // a server that cannot be copied (macOS): it stays stopped, as the job says
+    const pc = fixture({ descriptors: [descriptor(4242)], uncapturable: true, installer: { exit: 1, output: "Ovis: could not download Ovis v9.9.9 from github.com." } });
     const failed = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(failed).toMatchObject({ phase: "failed", error_code: "installer_failed" });
     expect(failed.error).toContain("already stopped, so none runs there now");
@@ -317,7 +326,8 @@ describe("installing Ovis on a PC over SSH", () => {
 
   it("says another may have been installed when it is cancelled while the installer still runs there", async () => {
     const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
-    const pc = fixture({ descriptors: [descriptor(4242)], installerHeld: { started: () => started.resolve(), gate: gate.promise } });
+    // a server that cannot be copied (macOS): nothing is started again, and the words say what may be there
+    const pc = fixture({ descriptors: [descriptor(4242)], uncapturable: true, installerHeld: { started: () => started.resolve(), gate: gate.promise } });
     const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
     await started.promise;
     pc.installer.cancel(job.id);
@@ -327,6 +337,57 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(ended.phase).toBe("cancelled");
     expect(ended.error).not.toContain("none runs there now");
     expect(ended.error).toContain("being installed in its place");
+  });
+
+  it("starts the server it stopped again as it was when the installer then fails", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "installer_failed" });
+    expect(job.error).toContain("has been started again as it was");
+    // copied before it was stopped, and started again from that copy
+    const at = (pattern: RegExp) => pc.commands.findIndex((command) => pattern.test(command));
+    expect(at(/ovis-restore\.XXXXXXXX/)).toBeLessThan(at(/kill -TERM 4242/));
+    expect(at(/xargs -0 -x/)).toBeGreaterThan(at(/install\.sh -o/));
+    expect(pc.alive.has(4243)).toBe(true);
+  });
+
+  it("starts the server it stopped again as it was when the install is cancelled, over a new connection", async () => {
+    const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const pc = fixture({ descriptors: [descriptor(4242)], installerHeld: { started: () => started.resolve(), gate: gate.promise } });
+    const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
+    await started.promise;
+    pc.installer.cancel(job.id);
+    gate.reject(new Error("Connection cancelled"));
+    const ended = await pc.settled(job);
+    expect(ended.phase).toBe("cancelled");
+    expect(ended.error).toBe("Cancelled. The Ovis started by hand on that PC was stopped for the install, and has been started again as it was.");
+    expect(pc.alive.has(4243)).toBe(true);
+  });
+
+  it("removes the copy and starts nothing again once the new Ovis is installed", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)] });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job.phase).toBe("connected");
+    expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(true);
+    expect(pc.commands.some((command) => command.includes("xargs -0 -x"))).toBe(false);
+  });
+
+  it("starts nothing beside an Ovis that already came up in its place, and says when starting it again fails", async () => {
+    // cancelled while the installer ran, which had already started its Ovis there
+    const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const pc = fixture({ descriptors: [descriptor(4242)], installerHeld: { started: () => started.resolve(), gate: gate.promise } });
+    const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
+    await started.promise;
+    pc.registerNew();
+    pc.installer.cancel(job.id);
+    gate.reject(new Error("Connection cancelled"));
+    const ended = await pc.settled(job);
+    expect(ended.error).toContain("being installed in its place");
+    expect(pc.commands.some((command) => command.includes("xargs -0 -x"))).toBe(false);
+    // started again, but it never comes up: the job says so
+    const failing = fixture({ descriptors: [descriptor(4242)], restoreFails: true, installer: { exit: 1, output: "Ovis: could not download the installer" } });
+    const failed = await failing.settled(failing.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(failed.error).toContain("starting it again as it was failed: it did not start within");
   });
 
   it("starts herdr headless for an installed plugin when herdr is not running, instead of a plugin action that needs it", async () => {
@@ -443,4 +504,52 @@ describe.skipIf(!Bun.which("setsid") || !Bun.which("curl"))("the installer's run
     await run.exited;
     expect(existsSync(join(dir, "ran"))).toBe(false);
   }, 20_000);
+});
+
+// the copy of a server started by hand, made before it is stopped, and its start again after an install that failed or was
+// cancelled: real shells on this PC's own /proc (Linux), with a stand-in server in a folder and environment of its own
+describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("starting a stopped server again as it was", () => {
+  const shell = async (script: string, env: Record<string, string>) => {
+    const run = Bun.spawn(["sh", "-c", script], { env: { PATH: process.env.PATH!, ...env }, stdout: "pipe", stderr: "pipe" });
+    const out = await new Response(run.stdout).text();
+    expect(await run.exited).toBe(0);
+    return out.trim();
+  };
+
+  it("copies a server's command, folder and environment before it is stopped, and starts it again exactly so", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-server-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const home = join(dir, "home"), work = join(dir, "work"), mark = join(dir, "mark");
+    mkdirSync(home); mkdirSync(work);
+    // its token has a space and a quote; it tells who it is, then says it is up
+    const env = { PATH: process.env.PATH!, HOME: home, OVIS_TOKEN: "tok'en with space", MARK: mark };
+    const script = 'printf "%s|%s|%s" "$$" "$OVIS_TOKEN" "$(pwd)" > "$MARK"; printf up; sleep 60; :';
+    const server = Bun.spawn(["sh", "-c", script], { cwd: work, env, stdout: "pipe", stderr: "ignore" });
+    cleanups.push(() => server.kill());
+    await server.stdout.getReader().read();
+    const environ = readFileSync(join("/proc", String(server.pid), "environ"));
+    const saved = await shell(captureServer(server.pid), { HOME: home, TMPDIR: dir });
+    expect(saved).toMatch(SAVED_SERVER);
+    expect(statSync(saved).mode & 0o777).toBe(0o700);
+    server.kill();
+    await server.exited;
+    // the started-again server tells the same through a pipe this test reads
+    rmSync(mark);
+    expect(await Bun.spawn(["mkfifo", mark]).exited).toBe(0);
+    const told = new Promise<string>((resolve) => { let said = ""; createReadStream(mark).on("data", (chunk) => { said += chunk; }).on("close", () => resolve(said)); });
+    await shell(restoreServer(saved), { HOME: home, XDG_STATE_HOME: join(dir, "state") });
+    const [pid, token, where] = (await told).split("|");
+    cleanups.push(() => { try { process.kill(Number(pid)); } catch { /* gone already */ } });
+    expect(token).toBe("tok'en with space");
+    expect(where).toBe(realpathSync(work));
+    // exactly its environment, nothing of the SSH session's added; and the copy holding its token is gone
+    expect(readFileSync(join("/proc", pid!, "environ"))).toEqual(environ);
+    expect(existsSync(saved)).toBe(false);
+  });
+
+  it("saves nothing where the server's environment cannot be read, so it is never started again with a guess", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-server-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    expect(await shell(captureServer(2 ** 22 + 1), { TMPDIR: dir })).toBe("");
+  });
 });
