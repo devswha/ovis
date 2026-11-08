@@ -7,7 +7,7 @@ import { relayHost } from "../lib/relay/dashboard.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
 import type { Translate } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
-import { routeText } from "./RelayPcTable.tsx";
+import { liveState, routeText } from "./relayPcState.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 import {
   checkingWirePaths, clip, hubRoutedNodes, hubWireState, isDirectRoute, isRegionalRelay, layoutRelayMap,
@@ -26,22 +26,26 @@ export interface RelayMapProps {
   readonly standalone?: boolean;
 }
 
+/** The node's state word, the PC table's: the state to act on, else how this device's check reached it; a live answer beats a stale Offline (liveState). Needs you stays the group's name. */
 function wordOf(node: RelayMapNode, t: Translate): string {
   if (node.check?.kind === "checking") return t("Checking…");
-  if (node.state === "offline") return t("Offline");
-  if (node.state === "needs-approval") return t("Needs approval");
-  if (node.state === "needs-update") return t("Needs update");
-  if (node.check?.kind === "offline") return t("Offline");
-  if (node.check?.kind === "answered") return routeText(node.check, t);
-  return node.seen === "lately" ? t("Seen lately") : t("Paired · not checked");
+  switch (liveState(node)) {
+    case "needs-approval": return t("Needs approval");
+    case "needs-update": return t("Needs update");
+    case "offline": case "paired":
+      if (node.check?.kind === "answered") return routeText(node.check, t);
+      if (node.state === "offline" || node.check?.kind === "offline") return t("Offline");
+      return node.seen === "lately" ? t("Seen lately") : t("Paired · not checked");
+  }
 }
 
+/** The tooltip's detail: the state word with what to do, and the measured route when this device's check answered. */
 function detailOf(node: RelayMapNode, t: Translate): string {
-  switch (node.state) {
-    case "needs-approval": return t("Needs approval");
-    case "needs-update": return `${t("Needs update")} · ${t("Update Ovis on it")}`;
-    case "offline": return t("Offline");
-    case "paired": return wordOf(node, t);
+  const route = node.check?.kind === "answered" ? ` · ${routeText(node.check, t)}` : "";
+  switch (liveState(node)) {
+    case "needs-approval": return t("Needs approval") + route;
+    case "needs-update": return `${t("Needs update")} · ${t("Update Ovis on it")}${route}`;
+    case "offline": case "paired": return wordOf(node, t);
   }
 }
 
@@ -50,7 +54,7 @@ function seenTitleOf(node: RelayMapNode, t: Translate): string {
 }
 
 function NodeTooltip({ node, detail, t }: { readonly node: RelayMapNode; readonly detail: string; readonly t: Translate }) {
-  const iso = node.last_seen_at ?? null;
+  const iso = node.last_seen_at;
   return (
     <span className="relay-map-tooltip" role="tooltip">
       <strong>{node.name}</strong>
@@ -78,13 +82,13 @@ function PcHop({ node, selected, onSelectPc, t }: { readonly node: RelayMapNode;
 }
 
 function activatePc(serverId: string, onSelectPc?: (id: string) => void): void {
-  if (onSelectPc) { onSelectPc(serverId); return; }
-  if (typeof window !== "undefined") window.location.hash = `#pcs?pc=${encodeURIComponent(serverId)}`;
+  if (onSelectPc) onSelectPc(serverId);
+  else if (typeof window !== "undefined") window.location.hash = `#pcs?pc=${encodeURIComponent(serverId)}`;
 }
 
 function activateRelay(origin: string, onSelectRelay?: (relayOrigin: string) => void): void {
-  if (onSelectRelay) { onSelectRelay(origin); return; }
-  if (typeof window !== "undefined") window.location.hash = `#pcs?relay=${encodeURIComponent(relayHost(origin))}`;
+  if (onSelectRelay) onSelectRelay(origin);
+  else if (typeof window !== "undefined") window.location.hash = `#pcs?relay=${encodeURIComponent(relayHost(origin))}`;
 }
 
 export function RelayMap({ map, selectedPcId = null, onSelectPc, onSelectRelay, standalone = false }: RelayMapProps) {

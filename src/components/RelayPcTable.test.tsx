@@ -318,7 +318,9 @@ describe("RelayPcTable", () => {
     const html = renderHtml(buildProps());
     const readyRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.ready}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "";
     expect(readyRow).toMatch(/<time[^>]*dateTime="2026-11-08T11:59:00\.000Z"[^>]*title="[^"]+"[^>]*>just now<\/time>/);
-    expect(readyRow).toContain('<code class="relay-pc-relay-chip">relay.ovis.sh</code>');
+    // a PC this device cannot check (no pairing) keeps the relay the directory assigns it
+    const joinRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.join}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "";
+    expect(joinRow).toContain('<code class="relay-pc-relay-chip">relay-ap.ovis.sh</code>');
 
     // Routeless / unknown relay and last_seen_at renders — instead of assuming defaultRelay (V-084)
     const unknownRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.routeless}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "";
@@ -373,7 +375,7 @@ describe("RelayPcTable", () => {
     expect(text).toContain("Studio desktop");
     expect(text).toContain("Open");
     expect(text).toContain("Ready");
-    expect(text).toContain("relay.ovis.sh");
+    expect(text).toContain("Not checked");
     expect(text).toContain("just now");
   });
 
@@ -406,20 +408,59 @@ describe("RelayPcTable", () => {
     const uncheckedPaired = makePc(IDS.ready, "Render node", "paired", { paired: true, linked: true });
     const status = new Map<string, PcStatus>([[IDS.offlinePaired, { kind: "answered", route: "lan", rttMs: 9 }]]);
 
-    // Automatic probe (checkedByUser = false): offline row keeps directory Offline without a second probe line
+    const stateCellOf = (html: string, id: string) => /<td class="relay-dash-state-cell[^"]*">([\s\S]*?)<\/td>/.exec(new RegExp(`<tr[^>]*data-pc-id="${id}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "")?.[1] ?? "";
+    // Automatic probe (checkedByUser = false): no second line under the state word; the answered row reads Ready (a live answer beats a stale Offline)
     const autoHtml = renderHtml(buildProps([offline, uncheckedPaired], { checkedByUser: false }, status));
-    expect(autoHtml).toContain("Offline");
+    expect(autoHtml).not.toContain("relay-pc-probe-line");
     expect(autoHtml).not.toContain("This device: answered");
-    expect(autoHtml).not.toContain("Not checked");
+    expect(stateCellOf(autoHtml, IDS.offlinePaired)).toContain(">Ready</span>");
+    expect(stateCellOf(autoHtml, IDS.ready)).not.toContain("Not checked");
 
-    // Explicit Check now (checkedByUser = true): offline answered row shows the probe line, and unchecked paired row shows Not checked (V-096)
+    // Explicit Check now (checkedByUser = true): the answered row shows the probe line, and the unchecked paired row shows Not checked under its word (V-096)
     const manualHtml = renderHtml(buildProps([offline, uncheckedPaired], { checkedByUser: true }, status));
-    const offlineRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.offlinePaired}"[\\s\\S]*?<\\/tr>`).exec(manualHtml)?.[0] ?? "";
-    const uncheckedRow = new RegExp(`<tr[^>]*data-pc-id="${IDS.ready}"[\\s\\S]*?<\\/tr>`).exec(manualHtml)?.[0] ?? "";
-    expect(offlineRow).toContain("Offline");
-    expect(offlineRow).toContain("This device: answered · 9 ms");
-    expect(uncheckedRow).toContain("Ready");
-    expect(uncheckedRow).toContain("Not checked");
+    expect(stateCellOf(manualHtml, IDS.offlinePaired)).toContain("This device: answered · 9 ms");
+    expect(stateCellOf(manualHtml, IDS.ready)).toContain("Ready");
+    expect(stateCellOf(manualHtml, IDS.ready)).toContain('<small class="relay-pc-probe-line">Not checked</small>');
+  });
+
+  it("reads an answered PC as reachable whatever the directory last saw: Ready with its glyph over a stale Offline, Needs update kept with its route beside it, Offline only without an answer", () => {
+    const stale = makePc(IDS.offlinePaired, "Home server", "offline", { paired: true, linked: true, last_seen_at: new Date(NOW - 20 * 3_600_000).toISOString() });
+    const outdated = makePc(IDS.update, "Build box", "needs-update");
+    const answered = new Map<string, PcStatus>([[IDS.offlinePaired, { kind: "answered", route: "lan", rttMs: 4 }], [IDS.update, { kind: "answered", route: "tailscale", rttMs: 18 }]]);
+    const html = renderHtml(buildProps([stale, outdated], {}, answered));
+    const rowOf = (id: string) => new RegExp(`<tr[^>]*data-pc-id="${id}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "";
+    expect(rowOf(IDS.offlinePaired)).toContain('<svg class="status-dot" data-state="ready"');
+    expect(rowOf(IDS.offlinePaired)).toContain('<span class="relay-pc-state-word" title="Ready">Ready</span>');
+    expect(rowOf(IDS.offlinePaired)).not.toContain("Offline");
+    expect(rowOf(IDS.offlinePaired).replace(/<[^>]+>/g, "")).toContain("Same network · 4 ms");
+    expect(rowOf(IDS.update)).toContain('<svg class="status-dot" data-state="needs-you"');
+    expect(rowOf(IDS.update)).toContain('<span class="relay-pc-state-word" title="Needs update">Needs update</span>');
+    expect(rowOf(IDS.update).replace(/<[^>]+>/g, "")).toContain("Tailscale · 18 ms");
+    // no answer: the directory's Offline stands, with the route cell saying so
+    const unanswered = renderHtml(buildProps([stale], {}, new Map<string, PcStatus>([[IDS.offlinePaired, { kind: "offline", reason: "pc" }]])));
+    expect(unanswered).toContain('<svg class="status-dot" data-state="offline"');
+    expect(unanswered).toContain('title="Offline · 20 h ago">Offline · 20 h ago</span>');
+    expect(unanswered.replace(/<[^>]+>/g, "")).toContain("No answer");
+  });
+
+  it("keeps Needs update, its glyph and Update for a PC the account does not list once this device's check answered, with the answer in the Relay cell", () => {
+    const nuc = makePc(IDS.local, "Lab NUC", "needs-update", { listed: false, linked: false, last_seen_at: null });
+    const status = new Map<string, PcStatus>([[IDS.local, { kind: "answered", route: "lan", rttMs: 21 }]]);
+    for (const mode of ["account", "local"] as const) {
+      const html = renderHtml(buildProps([nuc], { mode }, status));
+      const row = new RegExp(`<tr[^>]*data-pc-id="${IDS.local}"[\\s\\S]*?<\\/tr>`).exec(html)?.[0] ?? "";
+      expect(row).toContain('<svg class="status-dot" data-state="needs-you"');
+      expect(row).toContain('<span class="relay-pc-state-word" title="Needs update">Needs update</span>');
+      expect(row).toContain('<small class="relay-pc-probe-line">Update Ovis on it</small>');
+      expect(row).toContain('data-pc-action="update"');
+      expect(row.replace(/<[^>]+>/g, "")).toContain("Same network · 21 ms");
+      expect(row).not.toContain("Answers");
+      expect(row).not.toContain('data-state="ready"');
+    }
+    // a paired PC the account does not list, with nothing to act on, still reads by this device's check alone
+    const quiet = renderHtml(buildProps([makePc(IDS.local, "Lab NUC", "paired", { listed: false, linked: false, last_seen_at: null })], {}, status));
+    expect(quiet).toContain('<svg class="status-dot" data-state="ready"');
+    expect(quiet).toContain('<span class="relay-pc-state-word" title="Answers">Answers</span>');
   });
 
   it("keeps a Join row's State cell to one line by putting the closed-window reason in the state word's title (while the phone list keeps the line), so rows stay 44px without clipping (PF-1)", async () => {
@@ -445,7 +486,7 @@ describe("RelayPcTable", () => {
     expect(chips).toContain(">Needs you</button>");
   });
 
-  it("shows in the Relay cell the route this device reached each PC by, with its round trip, and keeps the assigned relay's chip until a check ran", async () => {
+  it("shows in the Relay cell the route this device reached each PC by, with its round trip, Not checked for a paired PC it has not checked, and the assigned relay's chip only for a PC it cannot check", async () => {
     const studio = makePc(IDS.ready, "Studio desktop", "paired", { relay: GLOBAL });
     const laptop = makePc(IDS.update, "Work laptop", "needs-update", { relay: AP });
     const nuc = makePc(IDS.local, "Lab NUC", "paired", { relay: GLOBAL, listed: false, linked: false, last_seen_at: null });
@@ -474,8 +515,8 @@ describe("RelayPcTable", () => {
     expect(html).not.toMatch(/relay-pc-route[^>]*data-state=/);
     // the full label is the cell's title, since the cell keeps one line
     expect(cellOf(IDS.local)).toContain('title="relay-ap.ovis.sh · 62 ms"');
-    // no check yet: the relay the PC is assigned, as before; a PC this device is not paired with has no check to show either
-    expect(cellOf(IDS.join)).toBe('<code class="relay-pc-relay-chip">relay-ap.ovis.sh</code>');
+    // no check yet on a paired PC: Not checked, never the assigned relay standing in for a measurement; a PC this device is not paired with has no check to make, so its directory relay stays
+    expect(cellOf(IDS.join)).toBe('<span class="relay-pc-route" data-route="unchecked" title="Not checked"><span>Not checked</span></span>');
     expect(cellOf(IDS.fresh)).toBe('<code class="relay-pc-relay-chip">relay.ovis.sh</code>');
     expect(html).toContain('<th scope="col" class="relay-pc-head-relay">Relay</th>');
     // the phone row says the same in its summary line
@@ -486,6 +527,10 @@ describe("RelayPcTable", () => {
     expect(metaOf(IDS.ready)).toBe("Ready·Same network · 4 ms·just now");
     expect(metaOf(IDS.update)).toBe("Needs update·Tailscale · 18 ms·just now");
     expect(metaOf(IDS.offlinePaired)).toBe("Offline · just now·No answer·just now");
+    // the phone summary of a paired PC not checked yet says so too
+    await act(async () => { rootUpdate(renderer)(createElement(SettingsProvider, { children: createElement(RelayPcTable, buildProps([unchecked], {}, status)) })); });
+    const uncheckedItem = rootOf(renderer).find((n) => n.type === "li" && n.props["data-pc-id"] === IDS.join);
+    expect(textOf(uncheckedItem.find((n) => n.props.className === "relay-pc-phone-meta"))).toBe("Ready·Not checked·just now");
   });
 
   it("drops the Last seen column when asked (Details open beside it) and rebalances the remaining four columns", () => {

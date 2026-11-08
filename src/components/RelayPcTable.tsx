@@ -1,7 +1,7 @@
 import "./RelayPcTable.css";
 import type { MouseEvent, ReactNode } from "react";
 import { newPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
+import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import { relayHost, type DashboardFilter, type dashboardModel } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -9,9 +9,9 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { CheckPcsButton } from "./AccountPcs.tsx";
-import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
+import { formatAbsoluteTime, formatProbeLine, liveState, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
+import { StatusDot } from "./StatusDot.tsx";
 
-export type DashboardRow = ReturnType<typeof dashboardModel>["rows"][number];
 export type DashboardAttention = ReturnType<typeof dashboardModel>["attention"][number];
 
 const PHONE_QUERY = "(max-width: 768px)";
@@ -41,46 +41,6 @@ export interface RelayPcTableProps {
   readonly now?: number;
 }
 
-export function pcDotState(row: DashboardRow, updating = false, mode: "account" | "local" = "account"): StatusDotState {
-  if (updating) return "updating";
-  if (row.check?.kind === "checking") return "checking";
-  if (mode === "local" || !row.listed) return row.check?.kind === "answered" ? "ready" : "offline";
-  switch (row.state) {
-    case "paired": return "ready";
-    case "needs-approval": case "needs-update": return "needs-you";
-    case "offline": return "offline";
-  }
-}
-
-export function formatAbsoluteTime(iso: string): string {
-  try { return new Date(iso).toLocaleString(currentLocale()); } catch { return iso; }
-}
-
-export function formatProbeLine(check: PcStatus | null, t: ReturnType<typeof useT>): string | null {
-  if (check === null) return null;
-  if (check.kind === "checking") return t("Checking…");
-  if (check.kind === "answered") return t("This device: answered · {n} ms", { n: check.rttMs });
-  return t("This device: no answer");
-}
-
-/** One short label for how this device reaches a PC right now, as GOAT lists each environment's routes: the way (the same network, Tailscale, or the host of the relay that answered) with its round trip, or why there is none. */
-export function routeText(check: PcStatus | null, t: Translate): string {
-  if (check === null) return t("Not checked");
-  if (check.kind === "checking") return t("Checking…");
-  if (check.kind === "offline") return t("No answer");
-  const way = check.route === "lan" ? t("Same network") : check.route === "tailscale" ? "Tailscale" : check.relay === undefined ? t("Relay") : relayHost(check.relay);
-  return `${way} · ${t("{n} ms", { n: check.rttMs })}`;
-}
-
-/** routeText as a one-line cell: the answering relay's host as its chip, the round trip in tabular figures, the state colour left to the dot. */
-export function routeNode(check: PcStatus | null, t: Translate): ReactNode {
-  const text = routeText(check, t);
-  const relayed = check?.kind === "answered" && check.route === "relay" && check.relay !== undefined ? { host: relayHost(check.relay), ms: check.rttMs } : null;
-  return <span className="relay-pc-route" data-route={check === null ? "unchecked" : check.kind === "answered" ? check.route : check.kind} title={text}>
-    {relayed === null ? <span>{text}</span> : <><code className="relay-pc-relay-chip">{relayed.host}</code><span>{` · ${t("{n} ms", { n: relayed.ms })}`}</span></>}
-  </span>;
-}
-
 function matchesFilter(row: DashboardRow, filter: DashboardFilter, filters?: Readonly<Record<DashboardFilter, readonly string[]>>): boolean {
   if (filters) return filters[filter].includes(row.server_id);
   switch (filter) {
@@ -103,26 +63,24 @@ export function RelayPcTable({
   const statusMap = pcStatus ?? new Map(rows.flatMap((r) => (r.check ? [[r.server_id, r.check] as const] : [])));
   const announcement = useAnnouncedText(filtered.length === 0 ? t("No PC matches this filter.") : filtered.length === 1 ? t("1 PC shown") : t("{count} PCs shown", { count: filtered.length }));
 
+  const listedRow = (row: DashboardRow): boolean => mode === "account" && row.listed;
   const stateHeadline = (row: DashboardRow, updating: boolean): string => {
     if (updating) return t("Updating");
-    if (mode === "local" || !row.listed) {
-      const check = row.check ?? statusMap.get(row.server_id) ?? null;
-      return check === null ? t("Paired · not checked") : check.kind === "checking" ? t("Checking…") : check.kind === "answered" ? t("Answers") : t("No answer");
-    }
-    switch (row.state) {
-      case "paired": return row.linked ? t("Ready") : t("Ready · not in the account yet");
+    switch (liveState(row)) {
       case "needs-approval": return t("Needs approval");
       case "needs-update": return t("Needs update");
       case "offline": return row.last_seen_at === null ? t("Offline") : t("Offline · {when}", { when: lastSeen(row.last_seen_at, now) });
+      case "paired":
+        if (!listedRow(row)) return localStateWord(row.check ?? statusMap.get(row.server_id) ?? null, t);
+        return row.linked ? t("Ready") : t("Ready · not in the account yet");
     }
   };
   const stateSubline = (row: DashboardRow, updating: boolean, phone = false): string | null => {
     const check = row.check ?? statusMap.get(row.server_id) ?? null;
-    if (mode === "local" || !row.listed) return null;
-    if (checkedByUser && row.paired) return formatProbeLine(check, t) ?? t("Not checked");
+    if (listedRow(row) && checkedByUser && row.paired) return formatProbeLine(check, t) ?? t("Not checked");
     if (updating) return null;
     if (row.state === "needs-update") return t("Update Ovis on it");
-    if (row.state === "needs-approval") {
+    if (listedRow(row) && row.state === "needs-approval") {
       if (freshIds.has(row.server_id) && row.added_at !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((Date.parse(row.added_at) + 10 * 60_000 - now) / 60_000)) });
       if (phone && row.added_at !== null && row.join !== undefined) return t("Add window closed · an account member must approve");
     }
@@ -160,10 +118,10 @@ export function RelayPcTable({
 
   const renderSeen = (row: DashboardRow): ReactNode =>
     !row.listed || row.last_seen_at === null ? "—" : <time dateTime={row.last_seen_at} title={formatAbsoluteTime(row.last_seen_at)}>{lastSeen(row.last_seen_at, now)}</time>;
-  /** The Relay cell: how this device reaches the PC once a check ran (its route and round trip, or no answer), else the relay the PC is assigned. */
+  /** The Relay cell: how this device reaches a PC it is paired with (its route and round trip, no answer, or Not checked); a PC it cannot check keeps the relay the directory assigns it. */
   const renderRelay = (row: DashboardRow): ReactNode => {
-    const check = row.check ?? statusMap.get(row.server_id) ?? null;
-    return check !== null ? routeNode(check, t) : row.relay !== null ? <code className="relay-pc-relay-chip">{relayHost(row.relay)}</code> : "—";
+    if (row.paired) return routeNode(row.check ?? statusMap.get(row.server_id) ?? null, t);
+    return row.relay !== null ? <code className="relay-pc-relay-chip">{relayHost(row.relay)}</code> : "—";
   };
 
   return (

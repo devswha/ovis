@@ -232,6 +232,34 @@ describe("the connection map", () => {
     expect(hostRule).toContain("width: max-content;");
     expect(hostRule).not.toContain("overflow: hidden");
   });
+
+  it("lets a live answer from this device beat the directory's stale Offline on every map surface, and keeps Needs update with the measured route beside it", () => {
+    const status = new Map<string, PcStatus>([
+      ["Home server", { kind: "answered", route: "lan", rttMs: 4 }],
+      ["Old box", { kind: "answered", route: "tailscale", rttMs: 18 }],
+    ]);
+    const reached = dashboardModel(
+      [pc("Home server", "offline", GLOBAL, "2026-11-01T00:00:00Z", true), { ...pc("Old box", "needs-update", GLOBAL, "2026-11-07T00:00:00Z"), paired: true, linked: true }, pc("Dark box", "offline", GLOBAL, "2026-11-01T00:00:00Z", true)],
+      { label: "This iPhone", status },
+      GLOBAL,
+    ).map;
+    const html = render(reached);
+    const nodeOf = (name: string) => new RegExp(`data-pc-node="${name}"[^>]*title="([^"]+)"[\\s\\S]*?<span class="relay-map-word">([^<]+)</span>`).exec(html)?.slice(1) ?? [];
+    const [homeTitle, homeWord] = nodeOf("Home server");
+    expect(homeWord).toBe("Same network · 4 ms");
+    expect(homeTitle).toStartWith("Home server · Same network · 4 ms · Last seen");
+    const [boxTitle, boxWord] = nodeOf("Old box");
+    expect(boxWord).toBe("Needs update");
+    expect(boxTitle).toStartWith("Old box · Needs update · Update Ovis on it · Tailscale · 18 ms · Last seen");
+    // the glyph and the wire follow: ready and live for the reached PC, direct from this device; the unanswered one stays offline and off
+    expect(new RegExp('data-pc-node="Home server"[\\s\\S]*?<svg class="status-dot" data-state="ready"').test(html)).toBe(true);
+    expect(wires(html)).toEqual({ "Home server": "live", "Old box": "live", "Dark box": "off" });
+    expect(html).toMatch(/data-pc="Home server"[^>]*data-via="direct"/);
+    const routes = html.slice(html.indexOf('<ol class="relay-map-routes"'));
+    // both answered directly, so both are routes of their own before the relay; the unanswered PC stays behind its hub as Offline
+    expect([...routes.matchAll(/<small class="relay-map-hop-note">([^<]+)<\/small>/g)].map(([, word]) => word)).toEqual(["Needs update", "Same network · 4 ms", "Offline"]);
+    expect(/data-pc-id="Home server"[^>]*title="([^"]+)"/.exec(routes)?.[1]).not.toContain("Offline");
+  });
 });
 
 describe("interactive RelayMap in a browser", () => {

@@ -135,7 +135,7 @@ describe("RelayPcDetails", () => {
   };
 
   it("renders a 44px location bar with StatusDot glyph, PC name and Close/Back, plus state (no source line under it), relay, absolute last seen, check result, grouped key ID and observed version without opening a socket", () => {
-    const row = makeRow({}, { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 42 });
+    const row = makeRow({}, { kind: "offline", reason: "pc" });
     const html = renderHtml({
       pc: row,
       observedVersion: { version: "0.5.0", outdated: false, observedAt: "2026-11-08T11:30:00.000Z" },
@@ -150,7 +150,7 @@ describe("RelayPcDetails", () => {
     expect(/<dt>State<\/dt><dd>([\s\S]*?)<\/dd>/.exec(html)?.[1]).toBe('<span class="relay-pc-details-value">Offline</span>');
     expect(html).toContain("relay.ovis.sh");
     expect(html).toContain('dateTime="2026-11-08T10:00:00.000Z"');
-    expect(html).toContain("This device: answered · 42 ms");
+    expect(html).toContain("This device: no answer");
     // Grouped KeyId in mono
     expect(html).toContain("0123");
     expect(html).toContain("cdef");
@@ -255,7 +255,20 @@ describe("RelayPcDetails", () => {
     expect(stateOf(update)).toBe("Needs update");
     expect(update).toContain("Update Ovis on it");
     expect(approval + update).not.toContain("Needs you");
+    // a PC the account does not list reads by this device's check, as the table does: Answers / No answer, and Needs update when it is outdated even though it answered
+    const unlisted = (status: PcStatus, over: Partial<DashboardPc> = {}) => renderHtml({ pc: makeRow({ state: "paired", listed: false, linked: false, last_seen_at: null, ...over }, status), onClose: none });
+    expect(stateOf(unlisted({ kind: "answered", route: "lan", rttMs: 9 }))).toBe("Answers");
+    expect(stateOf(unlisted({ kind: "offline", reason: "pc" }))).toBe("No answer");
+    expect(stateOf(unlisted({ kind: "answered", route: "lan", rttMs: 9 }, { state: "needs-update" }))).toBe("Needs update");
+    // a live answer from this device beats the directory's stale Offline: Ready, with the answer in Route and This device
+    const reached = renderHtml({ pc: makeRow({}, { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 42 }), onClose: none });
+    expect(stateOf(reached)).toBe("Ready");
+    expect(reached).toContain('<svg class="status-dot" data-state="ready"');
+    expect(reached).not.toContain("Offline");
+    expect(reached).toContain("This device: answered · 42 ms");
+    expect(reached.replace(/<[^>]+>/g, "")).toContain("relay.ovis.sh · 42 ms");
   });
+
 
   it("renders an explicit Not checked observation time when observedVersion has no observedAt", () => {
     const html = renderHtml({ pc: makeRow(), observedVersion: { version: "0.5.0", outdated: false }, onClose: none });

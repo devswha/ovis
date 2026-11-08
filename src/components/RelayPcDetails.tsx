@@ -13,7 +13,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { KeyId } from "./KeyId.tsx";
-import { formatAbsoluteTime, formatProbeLine, pcDotState, routeNode, type DashboardRow } from "./RelayPcTable.tsx";
+import { formatAbsoluteTime, formatProbeLine, liveState, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 
 const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
@@ -70,17 +70,17 @@ export function RelayPcDetails({
 
   const dot = pcDotState(pc, updating, mode);
   const fresh = newPcs([pc], now).length > 0;
-  const stateLabel = updating
-    ? t("Updating")
-    : mode === "local" || !pc.listed
-      ? pc.check === null
-        ? t("Paired · not checked")
-        : (formatProbeLine(pc.check, t) ?? t("Paired · not checked"))
-      : pc.state === "paired"
-        ? pc.linked ? t("Ready") : t("Ready · not in the account yet")
-        : pc.state === "offline"
-          ? t("Offline")
-          : pc.state === "needs-approval" ? t("Needs approval") : t("Needs update");
+  const stateLabel = ((): string => {
+    if (updating) return t("Updating");
+    switch (liveState(pc)) {
+      case "needs-approval": return t("Needs approval");
+      case "needs-update": return t("Needs update");
+      case "offline": return t("Offline");
+      case "paired":
+        if (mode === "local" || !pc.listed) return localStateWord(pc.check, t);
+        return pc.linked ? t("Ready") : t("Ready · not in the account yet");
+    }
+  })();
 
   const stateReason = updating
     ? null
