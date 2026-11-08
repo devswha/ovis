@@ -19,7 +19,7 @@ function skill(directory: string, front: string): void {
 const skills = (cwd: string | null, home: string, env: string[] | null = null) =>
   paneCommands("letta", cwd, home, { environ: env }).filter(({ source }) => source === "skill");
 
-it("lists the rows of Letta Code 0.34.41's own menu, with its hidden commands kept typed-only", () => {
+it("lists the rows of Letta Code 0.34.44's own menu, with its hidden commands kept typed-only", () => {
   const builtins = paneCommands("letta", null, temp()).filter(({ source }) => source === "builtin");
   const shown = builtins.filter(({ visibility }) => visibility !== "agent-hidden");
   expect(shown).toHaveLength(55);
@@ -31,7 +31,10 @@ it("lists the rows of Letta Code 0.34.41's own menu, with its hidden commands ke
 
 it("puts only the commands that open one of Letta's own screens under Terminal commands", () => {
   const byName = new Map(paneCommands("letta", null, temp()).map((command) => [command.name, command]));
-  for (const name of ["agents", "model", "skills", "memory", "resume", "connect", "login"]) expect(terminalCommand(byName.get(name)!), name).toBeTrue();
+  for (const name of ["agents", "skills", "memory", "resume", "connect", "login"]) expect(terminalCommand(byName.get(name)!), name).toBeTrue();
+  // Chat answers Letta's model picker from a card
+  expect(terminalCommand(byName.get("model")!)).toBeFalse();
+  expect(byName.get("model")!.forms).toEqual([{ match: "bare", interaction: "dialog", dialog: "letta-model" }]);
   for (const name of ["new", "clear", "compact", "init", "fork", "usage", "context", "doctor"]) expect(terminalCommand(byName.get(name)!), name).toBeFalse();
   // a value given to a picker command is not the picker: /resume <id> resumes
   expect(byName.get("resume")!.forms).toEqual([{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "unknown" }]);

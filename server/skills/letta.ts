@@ -5,8 +5,8 @@ import type { AgentCommandSource } from "./index.ts";
 import { createWalkBudget, environValue, walkSkills } from "./walk.ts";
 
 /**
- * Letta Code 0.34.41: the commands of its own registry (src/cli/commands/registry.ts, the same list on
- * upstream main at 0.34.44), with its descriptions. The ones it marks `hidden` stay out of its menu but still run when typed.
+ * Letta Code 0.34.44: the commands of its own registry (src/cli/commands/registry.ts, the same list from
+ * 0.34.41 to upstream main at 0.34.45), with its descriptions. The ones it marks `hidden` stay out of its menu but still run when typed.
  */
 const descriptions = {
   agents: "Browse agents (pinned, Letta Code, all)",
@@ -79,18 +79,21 @@ const agentHidden = ["reflection", "clear-messages", "cd", "help", "stream", "se
 
 /**
  * Sent bare, these open one of Letta's own panels, pickers or a browser page and wait there for
- * keys (their handlers say so: "Opening …", or App.tsx draws an overlay). `/model` opens its model
- * picker, which only the terminal answers until a reader for it exists. `/login`, `/logout` and
- * `/exit` sign in, sign out or end the session.
+ * keys (their handlers say so: "Opening …", or App.tsx draws an overlay). `/login`, `/logout` and
+ * `/exit` sign in, sign out or end the session. `/model` opens its model picker, which Chat
+ * answers from a card (dialogs/letta.ts).
  */
 const terminalBare = [
-  "agents", "model", "skills", "memory", "palace", "sleeptime", "compaction", "connect", "toolset", "system",
+  "agents", "skills", "memory", "palace", "sleeptime", "compaction", "connect", "toolset", "system",
   "personality", "subagents", "hooks", "title", "experiments", "ade", "resume", "search", "bg", "workflows",
   "install-github-app", "terminal", "login", "logout", "exit", "pinned", "profiles",
 ] as const;
-const forms: Record<string, CommandForm[]> = Object.fromEntries(terminalBare.map((name) => [
-  name, [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "unknown" }],
-]));
+const forms: Record<string, CommandForm[]> = {
+  ...Object.fromEntries(terminalBare.map((name) => [
+    name, [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "unknown" }],
+  ])),
+  model: [{ match: "bare", interaction: "dialog", dialog: "letta-model" }],
+};
 
 /** a skill named like a builtin is left out of the menu, as Letta's own leaves it out (SlashCommandAutocomplete.tsx) */
 const builtinNames: ReadonlySet<string> = new Set(Object.keys(descriptions));
@@ -109,7 +112,7 @@ const isDirectory = (path: string): boolean => { try { return statSync(path).isD
 export const source: AgentCommandSource = {
   builtins: Object.keys(descriptions).filter((name) => !(agentHidden as readonly string[]).includes(name)),
   descriptions,
-  pin: "0.34.41",
+  pin: "0.34.44",
   agentHidden,
   forms,
   discover({ home, cwd, env }) {
