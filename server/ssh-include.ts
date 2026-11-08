@@ -2,11 +2,10 @@
  * The files an ssh config's Include lines name, read for the SSH tab's list (server/ssh-candidates.ts): only what
  * really is inside the home or ssh folder, within one budget of files, bytes, folder entries and matching work per
  * config. A file or folder is opened first and what was opened is checked, so nothing swapped in on the way after a
- * check stands in for it: Linux names the opened object itself (/proc/self/fd), macOS too (proc_pidfdinfo), and
- * Windows resolves a file's path again once open, which must still name the same object. A folder is listed through
- * its open descriptor, a bounded read at a time (glibc's getdents64, else libc's fdopendir and readdir: macOS, musl;
- * server/ssh-include-dir.ts), and what it matched is opened relative to that folder, still held (openat), never
- * through a path a swap could redirect. Without those calls (Windows) Bun has no descriptor-relative
+ * check stands in for it: Linux names the opened object itself (/proc/self/fd); elsewhere a file's path is resolved
+ * again once open and must still name the same object. With glibc a folder is listed through its open descriptor
+ * (getdents64), a bounded read at a time, and what it matched is opened relative to that folder, still held (openat:
+ * server/ssh-include-dir.ts). Without them (macOS, Windows, a Linux without glibc) Bun has no descriptor-relative
  * listing, so a wildcard's folders are listed by path, which a swap after the check can redirect. Such a listing only
  * gives names: a name from a folder out of home can be listed (its file is still opened and checked), and a file can be
  * hidden. So every file reached that way comes back marked `unclaimed` (its hosts are listed but claim no Tailscale
@@ -18,10 +17,9 @@ import { open, readdir, readlink, realpath, stat, type FileHandle } from "node:f
 import { constants as os } from "node:os";
 import { promisify } from "node:util";
 import { isAbsolute, relative, sep } from "node:path";
-import { dlopen, FFIType } from "bun:ffi";
 
 import type { Included } from "./ssh-config.ts";
-import { entriesOf, platformDirStream, streamEntries, type DirStream, type Getdents } from "./ssh-include-dir.ts";
+import { entriesOf, glibcGetdents, glibcOpenAt, type Getdents, type OpenAt } from "./ssh-include-dir.ts";
 import { matchComponent, parseComponent, type Token } from "./ssh-include-glob.ts";
 
 /** an ssh config is a few kilobytes; past this it is not read on */
@@ -77,9 +75,7 @@ const inside = (path: string, roots: readonly string[]): boolean => roots.some((
 async function openedInside(fd: number, path: string, roots: readonly string[]): Promise<boolean> {
   const platform = includeTestOnly.platform ?? process.platform;
   if (platform === "linux") return inside(await readlink(`/proc/self/fd/${fd}`), roots);
-  // the kernel's name for what is open on macOS; a path resolved again elsewhere, which a swap between two looks could fool
-  const real = platform === "darwin" ? streamListing()?.pathOf?.(fd) ?? null : await realpath(path);
-  if (real === null) return false;
+  const real = await realpath(path);
   const [opened, named] = await Promise.all([fstatOf(fd, { bigint: true }), stat(real, { bigint: true })]);
   return inside(real, roots) && opened.dev === named.dev && opened.ino === named.ino;
 }
@@ -90,10 +86,10 @@ async function openedInside(fd: number, path: string, roots: readonly string[]):
  * entry that fails (gone, a link that loops or leads nowhere, refused) is unread, as it may have been swapped meanwhile
  */
 async function openInside({ path, base, listed }: Entry, roots: readonly string[], flags: number): Promise<Handle | "refused" | null> {
-  const stream = streamListing();
+  const openAt = openAtCall();
   let handle: Handle;
-  if (base !== undefined && stream !== null) {
-    const fd = stream.openAt(base.fd, base.rest, flags);
+  if (base !== undefined && openAt !== null) {
+    const fd = openAt(base.fd, base.rest, flags);
     if (fd < 0) return listed !== true && (-fd === os.errno.ENOENT || -fd === os.errno.ENOTDIR) ? null : "refused";
     handle = { fd, close: () => closeOf(fd) };
   } else {
@@ -107,50 +103,42 @@ async function openInside({ path, base, listed }: Entry, roots: readonly string[
   return "refused";
 }
 
-/**
- * glibc's getdents64(2), which reads a folder's entries from its descriptor a buffer at a time; null without glibc. It is
- * called synchronously through bun:ffi, so a folder on a stalled network mount (an NFS or SMB home) blocks the server's
- * event loop, every request with it, until the mount answers, while the SSH list is built.
- */
-const getdents: Getdents | null = (() => {
-  if (process.platform !== "linux") return null;
-  try { return dlopen("libc.so.6", { getdents64: { args: [FFIType.i32, FFIType.ptr, FFIType.u64], returns: FFIType.i64 } }).symbols.getdents64; } catch { return null; }
-})();
+/** glibc's getdents64 (server/ssh-include-dir.ts); null without glibc */
+const getdents: Getdents | null = glibcGetdents();
 
-/** libc's openat, and its fdopendir and readdir where getdents64 is not there; null without them (Windows) */
-const dirStream: DirStream | null = platformDirStream();
+/** glibc's openat, which opens what a listing matched relative to the folder it holds; null without glibc */
+const openAtGlibc: OpenAt | null = glibcOpenAt();
 
-/** whether a wildcard Include's folders are listed through their descriptor; without it, by path, unclaimed */
-export const wildcardIncludesRead = getdents !== null || dirStream !== null;
+/** whether a wildcard Include's folders are listed through their descriptor (getdents64); without it, by path, unclaimed */
+export const wildcardIncludesRead = getdents !== null;
 
 /**
- * for tests only: getdents64 and fdopendir/readdir stood in for (a fake, or null for a platform without it), and the
- * platform openedInside checks on
+ * for tests only: getdents64 and openat stood in for (a fake, or null for a platform without them), and the platform
+ * openedInside checks on
  */
-export const includeTestOnly: { getdents?: Getdents | null; dirStream?: DirStream | null; platform?: NodeJS.Platform } = {};
+export const includeTestOnly: { getdents?: Getdents | null; openAt?: OpenAt | null; platform?: NodeJS.Platform } = {};
 const descriptorListing = (): Getdents | null => includeTestOnly.getdents === undefined ? getdents : includeTestOnly.getdents;
-const streamListing = (): DirStream | null => includeTestOnly.dirStream === undefined ? dirStream : includeTestOnly.dirStream;
+const openAtCall = (): OpenAt | null => includeTestOnly.openAt === undefined ? openAtGlibc : includeTestOnly.openAt;
 
 /**
- * The names in folder `dir` when it really is inside `roots`: through its open descriptor where getdents64 or
- * fdopendir is, the folder then `held` open (the caller closes it) where openat is, else by the path its realpath
+ * The names in folder `dir` when it really is inside `roots`: through its open descriptor where getdents64 is, the
+ * folder then `held` open (the caller closes it) where openat is, else by the path its realpath
  * checked, read whole (Bun has no listing that stops early) and then charged to `budget.entries`
  */
 async function listInside(dir: Entry, roots: readonly string[], budget: Budget): Promise<{ names: Listing; held?: Handle }> {
-  const [getdentsCall, stream] = [descriptorListing(), streamListing()];
-  const list = getdentsCall !== null ? (fd: number) => entriesOf(fd, getdentsCall, budget) : stream !== null ? (fd: number) => streamEntries(fd, stream, budget) : null;
-  if (list !== null) {
+  const getdentsCall = descriptorListing();
+  if (getdentsCall !== null) {
     // opened as any file: a match that is no folder is nothing, as for ssh, not a failed open
     const folder = await openInside(dir, roots, READ_FLAGS);
     if (folder === null) return { names: null };
     if (folder === "refused") return { names: "unread" };
     let names: Listing = null;
     try {
-      if ((await fstatOf(folder.fd)).isDirectory()) names = list(folder.fd);
+      if ((await fstatOf(folder.fd)).isDirectory()) names = entriesOf(folder.fd, getdentsCall, budget);
       // still inside the home or ssh folder once listed, or what the listing gave is not trusted
       if (Array.isArray(names) && !(await openedInside(folder.fd, dir.path, roots).catch(() => false))) names = "unread";
     } catch (error) { await folder.close(); throw error; }
-    if (stream !== null && Array.isArray(names)) return { names, held: folder };
+    if (openAtCall() !== null && Array.isArray(names)) return { names, held: folder };
     await folder.close();
     return { names };
   }
@@ -230,7 +218,7 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
         paths = level.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
       }
       // without openat, what a listing matched is opened by its path, which a swap can redirect: names only
-      const byPath = first >= 0 && streamListing() === null;
+      const byPath = first >= 0 && (descriptorListing() === null || openAtCall() === null);
       const texts: Included[] = [];
       for (const entry of paths) {
         if (budget.files <= 0 || budget.bytes <= 0) { truncated = true; break; }
