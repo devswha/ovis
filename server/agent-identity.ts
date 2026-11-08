@@ -1,5 +1,5 @@
 import nodePath from "node:path";
-import { AGENT_CATALOG, type CatalogPlatform } from "../shared/agent-catalog.ts";
+import { AGENT_CATALOG, CATALOG_PLATFORMS, type CatalogPlatform } from "../shared/agent-catalog.ts";
 import type { AgentSessionInfo, AgentStatus } from "../shared/herdr-api.generated.ts";
 
 /**
@@ -12,6 +12,19 @@ export interface PaneFacts {
   reported?: string | null;
   /** the argv of the process in front of the pane; its name alone when the runtime gives no argv */
   foreground?: readonly string[] | null;
+  /** the argv the pane's terminal was started with, read only when the runtime tells no process in front */
+  launcher?: readonly string[] | null;
+}
+
+/**
+ * The platform a pane's programs run on, as far as it is known: one platform, `posix` for Linux or
+ * macOS without saying which, or null for none known.
+ */
+export type ProgramPlatform = CatalogPlatform | "posix" | null;
+
+function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
+  if (platform === null) return CATALOG_PLATFORMS;
+  return platform === "posix" ? ["linux", "macos"] : [platform];
 }
 
 /** Runtimes' names for agents herdr names otherwise: the rest of the server knows herdr's (`claude`, `agy`). */
@@ -32,7 +45,7 @@ export function reportedAgent(app: string | null | undefined): string | null {
 }
 
 /** A path's last part as `platform` names files: on Windows in any case, a program without its `.exe` or `.cmd`. */
-function fileName(word: string, platform: CatalogPlatform | null, program: boolean): string {
+function fileName(word: string, platform: CatalogPlatform, program: boolean): string {
   const name = nodePath.posix.basename(word.replace(/\\/g, "/"));
   if (platform !== "windows") return name;
   return program ? name.toLowerCase().replace(/\.(?:exe|cmd)$/, "") : name.toLowerCase();
@@ -57,12 +70,19 @@ function scriptOf(argv: readonly string[]): string | null {
  * cmd) names none there. `platform` is the one the pane's terminal runs on, not this server's: a
  * Windows terminal started directly as `letta.cmd` (npm's shim) is Letta, as Windows runs
  * `letta` from that shim, while `letta.cmd` on Linux or macOS is a file named so and names none.
+ * Where the platform is not known for sure, a name counts only when every platform it may be
+ * reads it alike: neither `cmd` nor a shim names anyone there.
  */
-export function processAgent(argv: readonly string[], platform: CatalogPlatform | null): string | null {
+export function processAgent(argv: readonly string[], platform: ProgramPlatform): string | null {
+  const named = new Set(candidatesOf(platform).map((candidate) => agentOn(argv, candidate)));
+  return named.size === 1 ? [...named][0]! : null;
+}
+
+function agentOn(argv: readonly string[], platform: CatalogPlatform): string | null {
   const first = fileName(argv[0] ?? "", platform, true);
   const program = INTERPRETERS.has(first) ? fileName(scriptOf(argv) ?? "", platform, false) : first;
   if (!program) return null;
-  const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(program) && !(platform && candidate.detect.unreliable_on?.[platform]));
+  const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(program) && !candidate.detect.unreliable_on?.[platform]);
   return entry?.id ?? null;
 }
 
@@ -118,7 +138,13 @@ export function paneSession(agent: string | null, facts: SessionFacts): AgentSes
   return titled.length === 1 && (facts.named ?? []).includes(titled[0]!) ? { agent: "opencode", source: "herdr:opencode", kind: "id", value: titled[0]! } : null;
 }
 
-/** The agent a pane runs: the program's own report first, else the process in front of it on `platform`, its terminal's; null for none. */
-export function paneAgent(facts: PaneFacts, platform: CatalogPlatform | null): string | null {
-  return reportedAgent(facts.reported) ?? (facts.foreground?.length ? processAgent(facts.foreground, platform) : null);
+/**
+ * The agent a pane runs: the program's own report first, else the process in front of it on
+ * `platform`, its terminal's. With no process in front told, the command the terminal started with,
+ * which names an agent only when it runs one directly (a shell's `-c letta` or `cmd /c letta.cmd`
+ * names none). Null for none.
+ */
+export function paneAgent(facts: PaneFacts, platform: ProgramPlatform): string | null {
+  const running = facts.foreground?.length ? facts.foreground : facts.launcher;
+  return reportedAgent(facts.reported) ?? (running?.length ? processAgent(running, platform) : null);
 }

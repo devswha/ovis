@@ -28,6 +28,13 @@ describe("which agent a pane runs", () => {
     expect(paneAgent({ foreground: ["C:\\Program Files\\Claude\\Claude.EXE"] }, "windows")).toBe("claude");
   });
 
+  // a terminal whose platform nothing tells (another machine's, without a folder), or only POSIX's (#3319)
+  it("names nothing a platform would decide when it is unknown, and no shim off Windows", () => {
+    expect([["claude"], ["node", "/home/u/.bin/letta"], ["cmd"], ["C:\\Users\\u\\letta.cmd"], ["C:\\Program Files\\Claude\\Claude.EXE"]].map((foreground) => paneAgent({ foreground }, null)))
+      .toEqual(["claude", "letta", null, null, null]);
+    expect([["cmd"], ["/mnt/c/Users/u/letta.cmd"]].map((foreground) => paneAgent({ foreground }, "posix"))).toEqual(["cmd", null]);
+  });
+
   it("names none for a shell, an unknown program, or a program merely given an agent's name", () => {
     for (const foreground of [["bash"], ["-zsh"], ["vim", "letta"], ["sh", "-c", "letta"], ["node", "/srv/app/server.js"], ["python3", "-m", "letta"], ["node", "-e", "letta"], ["node", "--", "-letta"], ["node", "/srv/project/pi.js"], ["bun", "letta.ts"], ["/opt/x/letta.cmd"], []]) {
       expect(paneAgent({ foreground }, "linux")).toBeNull();

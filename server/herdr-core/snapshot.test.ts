@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { HerdrPane } from "../../shared/protocol.ts";
-import { agentOf, buildSnapshot, type HcTerminal, keyBytes, opencodeRecords, OTHER_WORKSPACE_ID } from "./snapshot.ts";
+import type { ProgramPlatform } from "../agent-identity.ts";
+import { agentOf, buildSnapshot, type HcTerminal, keyBytes, opencodeRecords, OTHER_WORKSPACE_ID, terminalPlatform } from "./snapshot.ts";
 
 function terminal(address: string, extra: Partial<HcTerminal> = {}): HcTerminal {
   return { address, cols: 120, rows: 40, cwd: "/home/u", state: "live", ...extra };
@@ -153,13 +154,38 @@ describe("buildSnapshot", () => {
     expect(snapshot.agents.map((a) => [a.pane_id, a.agent])).toEqual([["t1", "letta"], ["t2", "devin"], ["t3", "grok"]]);
   });
 
-  // a terminal may be another machine's (machine-scope.ts), and hc names no platform (#3319)
-  it("names the process in front by the platform its terminal runs on, whatever this server runs on", () => {
-    const hosts = ["linux", "macos", "windows"] as const;
-    const letta = terminal("t1", { cwd: "C:\\Users\\u", argv: ["C:\\Users\\u\\letta.cmd"], foreground: { pid: 11, name: "letta.cmd", argv: ["C:\\Users\\u\\letta.cmd"] } });
-    const command = terminal("t2", { cwd: "/home/u", argv: ["bash"], foreground: { pid: 21, name: "cmd", argv: ["/home/u/.local/bin/cmd"] } });
-    const prompt = terminal("t3", { cwd: "C:\\Users\\u", argv: ["cmd.exe"], foreground: { pid: 31, name: "cmd.exe", argv: ["C:\\Windows\\System32\\cmd.exe"] } });
-    expect(hosts.map((here) => [agentOf(letta, here), agentOf(command, here), agentOf(prompt, here)])).toEqual(hosts.map(() => ["letta", "cmd", null]));
+  // hc names no platform, and a terminal may be another machine's (machine-scope.ts) (#3319)
+  it("takes a terminal's platform as this PC's on its own core, and by its folder's shape on another machine", () => {
+    for (const here of ["linux", "macos", "windows", null] as const) expect(terminalPlatform("C:\\Users\\u", here)).toBe(here);
+    // `//server/share` is a share to Windows and a root to POSIX: either; WSL's `/mnt/c` is Linux's
+    const shapes: Record<string, ProgramPlatform> = { "C:\\Users\\u": "windows", "c:/work": "windows", "\\\\server\\share\\x": "windows", "\\\\?\\C:\\work": "windows", "//server/share": null, "/mnt/c/Users/u": "posix", "/home/u": "posix", "": null, "work": null, "~": null };
+    expect(Object.keys(shapes).map((cwd) => terminalPlatform(cwd, "elsewhere"))).toEqual(Object.values(shapes));
+    expect(terminalPlatform(undefined, "elsewhere")).toBeNull();
+  });
+
+  it("names another machine's process in front by that machine's platform, and nothing a platform decides when its folder tells none", () => {
+    const front = (argv: string[], cwd?: string) => ({ status: null, foreground: { pid: 11, name: argv[0]!, argv, ...(cwd === undefined ? {} : { cwd }) } });
+    expect(agentOf({ cwd: "C:\\Users\\u", ...front(["C:\\Users\\u\\letta.cmd"]) }, "elsewhere")).toBe("letta");
+    expect(agentOf({ cwd: "/home/u", ...front(["/home/u/.local/bin/cmd"]) }, "elsewhere")).toBe("cmd");
+    expect(agentOf({ cwd: "C:\\Users\\u", ...front(["C:\\Windows\\System32\\cmd.exe"]) }, "elsewhere")).toBeNull();
+    // the process in front's own folder goes first
+    expect(agentOf({ cwd: "", ...front(["letta.cmd"], "C:\\Users\\u") }, "elsewhere")).toBe("letta");
+    // no folder: neither Windows' cmd nor a shim names anyone, an agent's own name still does
+    for (const argv of [["cmd"], ["letta.cmd"]]) expect(agentOf({ cwd: "", ...front(argv) }, "elsewhere")).toBeNull();
+    expect(agentOf(front(["claude"]), "elsewhere")).toBe("claude");
+    // this PC's own core: its platform, whatever the folder
+    expect(agentOf({ cwd: "C:\\Users\\u", ...front(["cmd"]) }, "linux")).toBe("cmd");
+  });
+
+  it("names a terminal started directly as an agent from its start when hc tells no process in front, and none a shell started", () => {
+    const started = (argv: string[], cwd: string) => ({ status: null, foreground: null, argv, cwd });
+    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u"), "windows")).toBe("letta");
+    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u"), "elsewhere")).toBe("letta");
+    expect(agentOf(started(["node", "/home/u/.bin/letta"], "/home/u"), "linux")).toBe("letta");
+    for (const argv of [["cmd.exe", "/c", "letta.cmd"], ["pwsh", "-c", "letta"]]) expect(agentOf(started(argv, "C:\\Users\\u"), "windows")).toBeNull();
+    expect(agentOf(started(["bash", "-lc", "letta"], "/home/u"), "linux")).toBeNull();
+    // a process in front goes first: the shell left in front is no agent
+    expect(agentOf({ ...started(["letta"], "/home/u"), foreground: { pid: 3, name: "bash", argv: ["bash"] } }, "linux")).toBeNull();
   });
 
   it("cuts the tab top down by the app's tree and weights, whatever size the terminals are, with a divider per split", () => {
