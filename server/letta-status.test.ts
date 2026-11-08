@@ -2,7 +2,10 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
-import { createLettaStatus, lettaPanes, lettaRefreshKey, lettaTitleStatus, lettaTurnAfter } from "./letta-status.ts";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { createLettaStatus, lettaMessagesFile, lettaPanes, lettaRefreshKey, lettaTitleStatus, lettaTurnAfter } from "./letta-status.ts";
 import { noTurn } from "./omo-status.ts";
 
 // One turn of letta-code 0.34.44's local backend (old-desktop, 2026-11-08): the prompt, a Bash call, its result, the answer
@@ -19,6 +22,45 @@ describe("a Letta pane's status from its local messages", () => {
     for (const line of turn) { state = lettaTurnAfter(state, { text: line }); seen.push(state.status); }
     expect(seen).toEqual(["working", "working", "working", "idle"]);
     expect(state.at).toBe(Date.parse("2026-11-08T02:29:09.323Z"));
+  });
+
+  it("takes no Letta tool for a prompt waiting on the user, whatever its name: only the approval title says Letta waits", () => {
+    const ask = JSON.stringify({ type: "message", timestamp: "2026-11-08T02:29:01.501Z", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "call-1", name: "ask", arguments: {} }] } });
+    const state = lettaTurnAfter(noTurn(), { text: ask });
+    expect(state.status).toBe("working");
+    expect(state.asks).toEqual([]);
+  });
+
+  it("reads a messages file only as a regular file of its own conversation folder, never through a link or from a FIFO, and only its tail", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "letta-messages-"));
+    try {
+      const folder = join(dir, "conversations", "key");
+      mkdirSync(folder, { recursive: true });
+      const real = join(folder, "messages.jsonl");
+      writeFileSync(real, `${"x".repeat(100)}\n${turn.join("\n")}\n`);
+      // a window a little longer than the turn's last record, much shorter than the file
+      const file = lettaMessagesFile(turn.at(-1)!.length + 50);
+      expect(file.stat(real)).not.toBeNull();
+      // the tail only: the long first line is past the window, the turn's last record is read
+      const seen: string[] = [];
+      await file.lines(real, 0, file.stat(real)!.size, (line) => { if ("text" in line) seen.push(line.text); }, () => true);
+      expect(seen.some((line) => line.startsWith("xxxx"))).toBe(false);
+      expect(seen.at(-1)).toBe(turn.at(-1));
+      // a link put where the file was, or a link for the conversation's folder, gives another conversation's status
+      const other = join(dir, "other.jsonl");
+      writeFileSync(other, turn.join("\n"));
+      const linkedFolder = join(dir, "conversations", "linked");
+      mkdirSync(linkedFolder);
+      symlinkSync(other, join(linkedFolder, "messages.jsonl"));
+      expect(file.stat(join(linkedFolder, "messages.jsonl"))).toBeNull();
+      symlinkSync(folder, join(dir, "conversations", "folder-link"));
+      expect(file.stat(join(dir, "conversations", "folder-link", "messages.jsonl"))).toBeNull();
+      // a FIFO is never waited on
+      const fifoFolder = join(dir, "conversations", "fifo");
+      mkdirSync(fifoFolder);
+      spawnSync("mkfifo", [join(fifoFolder, "messages.jsonl")]);
+      expect(file.stat(join(fifoFolder, "messages.jsonl"))).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it("finds only Letta panes no report gives a status, with the messages file of the conversation it shows", async () => {

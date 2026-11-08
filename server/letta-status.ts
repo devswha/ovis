@@ -14,10 +14,68 @@ import type { HerdrPane } from "../shared/protocol.ts";
 import { LETTA_ASKING_TITLE, LETTA_BUSY_TITLE, titleStatus } from "./agent-identity.ts";
 import { gjcTurnAfter } from "./gjc-status.ts";
 import { lettaMessagesPath, resolveLettaTranscript } from "./letta-store.ts";
-import { OmoStatus, type OmoPane, type OmoStatusDeps } from "./omo-status.ts";
+import { closeSync, constants, fstatSync, lstatSync, openSync, realpathSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { readOmoLinesCooperatively, type OmoLine } from "./omo-records.ts";
+import { OmoStatus, type OmoFile, type OmoPane, type OmoStatusDeps, type OmoTurn } from "./omo-status.ts";
 
-/** Letta's local messages share gjc's record shape: one reducer reads both. */
-export const lettaTurnAfter = gjcTurnAfter;
+/**
+ * Letta's local messages share gjc's record shape, so gjc's reducer reads their turns; but no Letta
+ * tool is a prompt waiting on the user, whatever its name (gjc's `ask` is). That Letta waits shows
+ * only in its title (titleStatus), so no question is ever opened from the file.
+ */
+export function lettaTurnAfter(turn: OmoTurn, line: OmoLine): OmoTurn {
+  return { ...gjcTurnAfter(turn, line), asks: [] };
+}
+
+/** How much of a messages file's end is read when it is read anew: a long conversation's start says nothing of its last turn. */
+export const LETTA_MESSAGES_BYTES = 4 * 1024 * 1024;
+
+/** Opened never through a link, never waiting on a FIFO. */
+const MESSAGES_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+
+/**
+ * Whether `path` (`<store>/conversations/<key>/messages.jsonl`) is a regular file in its own conversation
+ * folder: no link for the file or for the folder, so it is never another conversation's.
+ */
+function ownMessagesFile(path: string): boolean {
+  try {
+    if (!lstatSync(path).isFile()) return false;
+    const folder = dirname(path);
+    return realpathSync(folder) === join(realpathSync(dirname(folder)), basename(folder));
+  } catch { return false; }
+}
+
+/** The reader of Letta's messages files for the tracker: its own regular file only, read from its last `cap` bytes when read anew. */
+export function lettaMessagesFile(cap = LETTA_MESSAGES_BYTES): OmoFile {
+  const open = (path: string): number | null => {
+    if (!ownMessagesFile(path)) return null;
+    let fd: number;
+    try { fd = openSync(path, MESSAGES_FLAGS); } catch { return null; }
+    try { if (fstatSync(fd).isFile()) return fd; } catch { /* gone */ }
+    closeSync(fd);
+    return null;
+  };
+  return {
+    stat: (path) => {
+      const fd = open(path);
+      if (fd === null) return null;
+      try { const stat = fstatSync(fd); return { size: stat.size, id: `${stat.dev}:${stat.ino}` }; } finally { closeSync(fd); }
+    },
+    lines: (path, from, size, each, current) => {
+      const fd = open(path);
+      if (fd === null) return from;
+      // a torn first line of the window parses as no record, and says nothing
+      const start = from === 0 && size > cap ? size - cap : from;
+      try {
+        const read = readOmoLinesCooperatively(fd, start, size, each, current);
+        if (read instanceof Promise) return read.catch(() => from).finally(() => closeSync(fd));
+        closeSync(fd);
+        return read;
+      } catch { closeSync(fd); return from; }
+    },
+  };
+}
 
 /** The conversation a pane shows (letta-store.ts resolveLettaTranscript) and when its letta process started. */
 type Bound = { store: string; agent: string; conversation: string; startedAt: number };
@@ -66,7 +124,8 @@ export function lettaTitleStatus(snapshot: { panes: HerdrPane[]; agents?: { pane
         const status: AgentStatus = asking ? "blocked" : pane.agent_status === "working" ? "working" : "idle";
         const before = last.get(pane.pane_id);
         // only the approval's start and end are the title's to tell; the file tells its own turns
-        if (before !== undefined && before !== status && (status === "blocked" || (before === "blocked" && status === "working"))) changed.push({ paneId: pane.pane_id, status });
+        // a first look at an approval wait is told too, as one at work is: the user is waited on
+        if (before === undefined ? status === "blocked" : before !== status && (status === "blocked" || before === "blocked")) changed.push({ paneId: pane.pane_id, status });
         if (asking) pane.agent_status = "blocked";
         // what the file said is where the title goes on from if the file stops
         last.set(pane.pane_id, status);
@@ -107,11 +166,12 @@ export function lettaRefreshKey(pane: HerdrPane): string {
   return `${mark}\0${title.replace(LETTA_ASKING_TITLE, "").replace(LETTA_BUSY_TITLE, "")}`;
 }
 
-export function createLettaStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | "turnAfter" | "ready" | "background" | "staleIsFailure" | "refreshMs" | "refreshKey">): OmoStatus {
+export function createLettaStatus(deps: Omit<OmoStatusDeps, "agent" | "aliases" | "turnAfter" | "ready" | "background" | "staleIsFailure" | "refreshMs" | "refreshKey" | "file">): OmoStatus {
   return new OmoStatus({
     ...deps,
     // found again when its title's name or mark changes (a /resume of another agent, a turn's start or end), else as gjc's
     refreshKey: lettaRefreshKey,
+    file: lettaMessagesFile(),
     agent: "letta",
     aliases: [],
     turnAfter: lettaTurnAfter,

@@ -156,9 +156,11 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   let titleApplied = 0;
   /** Letta panes no report gives a status get it from Letta's own local messages (server/letta-status.ts) */
   const letta = createLettaStatus({
-    discover: (panes) => lettaPanes(panes),
+    // on herdr's TUI herdr gives Letta panes their status itself: only herdr-core's are Ovis's to tell
+    discover: (panes) => servingCore() ? lettaPanes(panes) : Promise.resolve(new Map()),
     snapshot: omoSnapshot,
-    onChange: (paneId, derived, _background, turn, rest) => gjcChanged(paneId, derived, turn, rest, "letta"),
+    // Letta's title says it waits for the user's approval: an answer the file reads after that was written before it
+    onChange: (paneId, derived, _background, turn, rest) => { if (lettaTitled.get(paneId) !== "blocked") gjcChanged(paneId, derived, turn, rest, "letta"); },
     onFound: (paneId) => completions.adopt(paneId, "letta", []),
   });
   /** Claude panes whose turn ended while work it started runs in the background (server/background-wait.ts) */
@@ -306,7 +308,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // reads overlap (the collector's, each client's): only one newer than every read applied before tells title turns
     const newest = titleRead > titleApplied;
     if (newest) titleApplied = titleRead;
-    for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) gjcChanged(paneId, status, true, undefined, "letta");
+    if (servingCore()) for (const { paneId, status } of lettaTitleStatus(named, (paneId) => letta.tracks(paneId), lettaTitled, newest)) gjcChanged(paneId, status, true, undefined, "letta");
     const ids = new Set(named.panes.map((pane) => pane.pane_id));
     for (const paneId of [...agentNow.keys()]) {
       if (ids.has(paneId) || (agentRead.get(paneId) ?? 0) > read) continue;

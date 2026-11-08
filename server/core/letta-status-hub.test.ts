@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as lettaStore from "../letta-store.ts";
+import * as runtime from "../herdr-core/runtime.ts";
 import { lettaMessagesPath } from "../letta-store.ts";
 import { hub, root } from "./status.fake.ts";
 
@@ -12,10 +13,43 @@ const turn = readFileSync(join(import.meta.dir, "..", "fixtures", "letta", "mess
 
 const resolved: { mockRestore(): void }[] = [];
 const resolving = () => { const spy = spyOn(lettaStore, "resolveLettaTranscript"); resolved.push(spy); return spy; };
+/** the server serves herdr-core, where Letta panes report nothing; on herdr's TUI the tracker stays out */
+const core = (serving = true) => { const spy = spyOn(runtime, "servingCore").mockReturnValue(serving); resolved.push(spy); };
 afterEach(() => { for (const spy of resolved.splice(0)) spy.mockRestore(); });
 
 describe("a Letta pane's status in the hub, where no report gives one", () => {
+  it("leaves Letta panes as herdr gives them on herdr's TUI", async () => {
+    core(false);
+    const h = hub();
+    resolving().mockResolvedValue(null);
+    h.herdrSays(letta("⠋ Tutor"));
+    const snapshot = await h.snapshot();
+    expect(snapshot.panes[0]!.agent_status).toBe("unknown");
+    expect(h.status.letta.runs("w1:p1")).toBe(false);
+  });
+
+  it("keeps an approval wait blocked when the messages file then shows an older finished answer", async () => {
+    core();
+    const store = join(root, "letta-store-stale");
+    const agent = "agent-local-c";
+    const messages = lettaMessagesPath(store, agent, "default")!;
+    mkdirSync(join(messages, ".."), { recursive: true });
+    writeFileSync(messages, `${turn.slice(0, 2).join("\n")}\n`);
+    const h = hub();
+    resolving().mockResolvedValue({ path: join(root, "t3.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 });
+    h.herdrSays(letta("[ ! ] Action Required | Tutor"));
+    await h.status.letta.refresh([letta("[ ! ] Action Required | Tutor")] as never);
+    await h.snapshot();
+    expect(h.last().status).toBe("blocked");
+    // the file now reads to an answer that was written before the approval was asked
+    appendFileSync(messages, `${turn.slice(2).join("\n")}\n`);
+    await h.status.letta.poll();
+    expect(h.last().status).toBe("blocked");
+    expect(h.alerts.filter((alert) => alert === "done")).toHaveLength(0);
+  });
+
   it("works while Letta's title spins and finishes once when it stops, from the title alone", async () => {
+    core();
     const h = hub();
     resolving().mockResolvedValue(null);
     h.herdrSays(letta("⠋ Tutor"));
@@ -28,6 +62,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
   });
 
   it("tells no turn from a read that began before one already applied and finished after it", async () => {
+    core();
     const h = hub();
     resolving().mockResolvedValue(null);
     h.herdrSays(letta("⠋ Tutor"));
@@ -43,6 +78,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
   });
 
   it("keeps a status the program reports over its title", async () => {
+    core();
     const h = hub();
     resolving().mockResolvedValue(null);
     h.herdrSays(letta("⠋ Tutor", "blocked"));
@@ -51,6 +87,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
   });
 
   it("shows a file-tracked pane as blocked while its pending call waits for the user's approval", async () => {
+    core();
     const store = join(root, "letta-store-asking");
     const agent = "agent-local-b";
     const messages = lettaMessagesPath(store, agent, "default")!;
@@ -69,6 +106,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
   });
 
   it("works through a turn in Letta's local messages and finishes once, and gives the pane back to a report", async () => {
+    core();
     const store = join(root, "letta-store");
     const agent = "agent-local-a";
     const messages = lettaMessagesPath(store, agent, "default")!;
@@ -77,6 +115,7 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     const h = hub();
     resolving().mockResolvedValue({ path: join(root, "t.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 });
     h.herdrSays(letta("Tutor"));
+    await h.status.letta.refresh([letta("Tutor")] as never);
     await h.snapshot();
     expect(h.status.letta.tracks("w1:p1")).toBe(true);
     expect(h.last().status).toBe("working");
