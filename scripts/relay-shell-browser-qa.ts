@@ -60,6 +60,7 @@ import type { CspWatch } from "./csp-violations.ts";
 import { servePagesSite } from "./pages-static.ts";
 import { relayBrowserSocket, relayServerTree } from "./relay-browser-bridge.ts";
 import { relayDashboardQa } from "./relay-dashboard-browser-qa.ts";
+import { closeMarked, whileOpen } from "./relay-qa-teardown.ts";
 import type { RelayServerTree } from "./relay-browser-bridge.ts";
 import { relayShellQaVersions } from "./relay-shell-qa-versions.ts";
 import { openSettingsPage } from "./settings-page.ts";
@@ -560,10 +561,10 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       contexts.push(context);
       const bridge = new Bridge();
       await bridgeRelay(context, bridge);
-      await context.route(/^https:\/\/app\.ovis\.sh\//, async (route) => {
+      await context.route(/^https:\/\/app\.ovis\.sh\//, whileOpen(context, async (route) => {
         const url = new URL(route.request().url());
         await route.fulfill({ response: await route.fetch({ url: `${origin}${url.pathname}${url.search}` }) });
-      });
+      }));
       await context.route(/^https:\/\/account\.ovis\.sh\//, async (route) => {
         const request = route.request();
         const cors = { "access-control-allow-origin": APP, "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE" };
@@ -649,7 +650,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           await signInScreen(page);
           assert.equal(await page.getByRole("button", { name: /Continue without an account/ }).count(), 0, "no way past the sign-in before any pairing");
           await capture(page, `signin-${width}-${theme}`);
-          await context.close();
+          await closeMarked(context);
         }
       }
       log9("sign-in: Sign in to Ovis, Continue with GitHub, Pair with a QR or code; no PC list, code field or Continue without an account before a pairing");
@@ -942,7 +943,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       keep("task-9-dashboard.txt", `# relay-shell-browser-qa (n): the sign-in screen and dashboard on ${APP} (routed to ${origin}), account service ${ACCOUNT_SERVICE} (shared/account-service-fake.ts), PCs on the Bun relay as ${RELAY}\n${lines.join("\n")}\n`);
     } finally {
       keep("task-9-console.txt", `${consoleLines.join("\n")}\n`);
-      for (const context of contexts) await context.close().catch(() => undefined);
+      for (const context of contexts) await closeMarked(context).catch(() => undefined);
       for (const pc of pcs9) await pc.stop();
     }
   }
@@ -1005,7 +1006,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       } finally {
         const paired = await saved(page, ID);
         if (paired?.device_id) devices.revoke(paired.device_id);
-        await context.close();
+        await closeMarked(context);
         await workspaceClose(workspace.workspace.workspace_id);
       }
     }
@@ -1067,7 +1068,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       } finally {
         const paired = await saved(page, ID);
         if (paired?.device_id) devices.revoke(paired.device_id);
-        await context.close();
+        await closeMarked(context);
         await workspaceClose(workspace.workspace.workspace_id);
         rmSync(folder, { recursive: true, force: true });
       }
@@ -1086,7 +1087,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         // its one action: a PC with no camera pointed at it shows a code to type instead (pairCode.ts)
         assert.deepEqual(await page.locator("main button").allInnerTexts(), ["Pair with a code"], "the front page offers Pair with a code");
         await shot(page, `empty-${device}-${theme}`);
-        await context.close();
+        await closeMarked(context);
       }
     }
     note("empty: front page without a saved PC at 390 and 1440, light and dark");
@@ -1109,7 +1110,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       keep("task-16-bad-offer-requests.txt", `# every request the page made while showing the damaged-offer screen (${requests.length}); relay sockets: ${bridge.sockets.length}\n# origin: ${origin}\n${requests.join("\n")}\n`);
       keep("task-16-fragment.txt", `# the address before boot and after it\nbefore: ${before}\nafter:  ${after}\n`);
       note(`bad-offer: ${requests.length} requests, all on ${origin}; 0 relay sockets; address after boot ${after}`);
-      await context.close();
+      await closeMarked(context);
     }
 
     // (c) connecting, then paired through the real relay to the real PC; its Settings → Phone & devices has no
@@ -1191,7 +1192,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await page.goto(scope);
       await state(page, "empty").waitFor();
       note("revoked: devices.revoke on the PC -> auth_revoked -> app unmounted, key deleted, next visit asks for a QR code");
-      await context.close();
+      await closeMarked(context);
     }
 
     // (d) PC offline: paired, the PC's relay turned off, the page reopened: the relay assigns, no PC answers, 15 s
@@ -1221,7 +1222,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await state(page, "connecting").waitFor();
       await inApp(page);
       note(`pc-offline: relay up, PC relay stopped -> assigned, silence, pc-offline at ${PC_ANSWER_MS} ms; PC relay started again -> Try again -> app`);
-      await context.close();
+      await closeMarked(context);
     }
 
     // (e) relay silent: accepted, never assigned, 10 s; relay stopped: refused at once; then the relay returns
@@ -1237,7 +1238,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(await page.locator(".relay-shell-detail").count(), 0, "a silent relay has no close code to show");
       await shot(page, "relay-silent");
       note(`relay-unreachable (silent): socket accepted, nothing assigned -> relay-unreachable at ${ASSIGNMENT_MS} ms, not pc-offline`);
-      await context.close();
+      await closeMarked(context);
     }
     {
       // the offer first: a PC whose relay is gone gives none (409 relay_offline), and its code outlives the relay
@@ -1257,7 +1258,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await inApp(page);
       assert.equal(bridge.sockets.length, 2, "Try again opened one more socket");
       note("relay-unreachable (stopped): connection refused -> relay-unreachable; relay restarted, PC reconnected, Try again -> app");
-      await context.close();
+      await closeMarked(context);
     }
 
     // (f) code expired: the PC's pending code is past its lifetime when the phone presents it
@@ -1273,7 +1274,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(await page.getByRole("button", { name: "Try again" }).count(), 0, "no retry on a dead code");
       await shot(page, "code-expired");
       note("code-expired: startPairing(now - 11 min) -> PAIR refused with auth_failed -> code-expired, nothing enrolled");
-      await context.close();
+      await closeMarked(context);
     }
 
     // (g) identity changed: a saved key for this PC that is not the offer's; forgetting it only forgets
@@ -1303,7 +1304,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await inApp(page);
       assert.equal(bridge.sockets.length, 1, "the new QR code pairs over one socket");
       note("identity-changed: stale key refused with 0 sockets; Forget this PC -> forgotten, key gone, 0 sockets; a new QR code -> paired -> app");
-      await context.close();
+      await closeMarked(context);
     }
 
     // (g2) a forged link: this PC's id with another key (an attacker's link). Refused before any
@@ -1349,7 +1350,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await state(page, "forgotten").waitFor();
       assert.equal(await saved(page, ID), null, "Forget removed the forged saved key");
       note("forged link: PC id with another key -> identity-changed (own words), no Pair, no Forget, 0 sockets, nothing saved; pasted again -> the same; the PC's own saved key untouched; a forged saved key -> identity-changed, 0 sockets, Forget removes it");
-      await context.close();
+      await closeMarked(context);
     }
 
     // (h) needs update: a PC that answers HELLO with unsupported_version
@@ -1362,7 +1363,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         await page.getByRole("heading", { name: "Update needed" }).waitFor();
         await shot(page, "needs-update");
         note("needs-update: SESSION_ERROR unsupported_version after a real handshake -> needs-update");
-        await context.close();
+        await closeMarked(context);
       } finally { pc.stop(); }
     }
 
@@ -1381,7 +1382,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         await page.getByRole("heading", { name: "Busy PC did not finish connecting" }).waitFor();
         await shot(page, "pc-unresponsive");
         note(`pc-unresponsive: handshake answered, HELLO never -> pc-unresponsive at ${ADMISSION_MS} ms, not pc-offline`);
-        await context.close();
+        await closeMarked(context);
       } finally { pc.stop(); }
     }
 
@@ -1403,7 +1404,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       await page.waitForURL(scopeOf(OTHER_ID));
       await state(page, "connecting").waitFor();
       note("list: two saved PCs listed; a row opens /s/<id>/, which starts connecting by itself");
-      await context.close();
+      await closeMarked(context);
     }
 
     // (k) a PC's scope: its own worker, its own manifest, the shell policy and the worker rewrite
@@ -1432,7 +1433,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       });
       keep("task-16-scope.txt", `# a PC's page in the hosted shell: what the browser registered and read\n${JSON.stringify(facts, null, 2)}\n`);
       note(`scope: worker ${facts.script} at ${facts.scope}; manifest ${facts.manifestHref} with id/start_url/scope ./`);
-      await context.close();
+      await closeMarked(context);
     }
 
     // (l) push alerts: two PCs paired in one shell origin, each subscribed in its own scope, each
@@ -1526,8 +1527,8 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       const fakeA2 = await startFakePushService();
       const fakeA3 = await startFakePushService();
       fakes.push(fakeA2, fakeA3);
-      await pageA.close();
-      await pageB.close();
+      await closeMarked(pageA);
+      await closeMarked(pageB);
       assert.equal(context.pages().length, 0);
       /** every registration PC A takes, per endpoint, and each endpoint's first one */
       const registrations = new Map<string, number>();
@@ -1595,7 +1596,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(registered(pushB, fakeA2, deviceB), null, "PC B never heard of PC A's new subscription");
       assert.notEqual(registered(pushB, fakeB, deviceB), null, "PC B keeps its own subscription");
       tell(`pending (permission granted): next start of ${scopeOf(A)} with Notification.permission "granted" and the browser holding ${fakeA2.subscription.endpoint} -> POST /api/push/subscribe once and DELETE ${fakeA.subscription.endpoint} over the relay, owner ${deviceA}; the app's load-time registration finished (POST /api/push/status reached PC A) with registrations of the kept subscription = ${countOf(fakeA2)}; record cleared; PC B untouched`);
-      await granted.close();
+      await closeMarked(granted);
 
       // 2. alerts no longer allowed: only the recovery runs, and it alone registers the next rotation
       const second = await rotate(fakeA3, fakeA2);
@@ -1627,7 +1628,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       assert.equal(countOf(fakeA2), 1, "the earlier one was not registered again");
       tell(`pending (permission cleared): second start registered nothing more; registrations A2 = ${countOf(fakeA2)}, A3 = ${countOf(fakeA3)}; a push to A3 reached its fake (VAPID valid ${fakeA3.received[0]!.vapidValid})`);
       keep("task-18-pending.txt", `# relay-shell-browser-qa (m): a subscription rotated with no window open, registered on the next start once\n${pending.join("\n")}\n`);
-      await context.close();
+      await closeMarked(context);
     }
 
     // (l) version skew (todo 19): more PCs on the same relay whose WELCOME names another version
@@ -1686,7 +1687,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           await page.getByRole("status").filter({ hasText: "Step 4 of 5: Building the app" }).waitFor({ state: "attached" });
           await shot19(page, "update");
           note(`pc-outdated (managed): WELCOME ${below} < ${MIN_SERVER_VERSION} -> update screen; Update now -> POST /api/updates/install over the relay -> fake service recorded ${JSON.stringify(updates.requests)}; progress from GET /api/updates`);
-          await context.close();
+          await closeMarked(context);
         } finally { await pc.stop(); }
       }
 
@@ -1717,7 +1718,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           await shot19(page, "retry");
           keep("task-19-retry.txt", `# unmanaged PC at ${below}: instructions -> Try again\nsockets: ${bridge.sockets.length}\nstate after retry: pc-outdated (code-expired count 0)\nenrolled devices before: ${JSON.stringify(enrolled)}\nenrolled devices after: ${JSON.stringify(pc.devices.list(null).map((device) => device.id))}\nphone's saved device_id: ${retried}\n`);
           note(`pc-outdated retry: Try again -> AUTH with the saved key -> instructions again; device ${enrolled[0]} still enrolled, no code-expired`);
-          await context.close();
+          await closeMarked(context);
         } finally { await pc.stop(); }
       }
 
@@ -1743,7 +1744,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
           assert.equal(loads.length, 3, `a later visit on the same stale shell connects without reloading again (loads: ${JSON.stringify(loads)})`);
           lines.push(`server ${newer} (newer than shell ${shellVersion}): paired, reloaded once (service worker update), then the app; page loads ${loads.length} = pairing + one automatic reload + one manual reload; no loop`);
           note(`server-newer: ${newer} > shell ${shellVersion} -> one reload -> app; a manual reload connects without another`);
-          await context.close();
+          await closeMarked(context);
         } finally { await pc.stop(); }
       }
       // the PC of this checkout reports the shell's own version
@@ -1757,7 +1758,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
         assert.equal(loads.length, 1, `no reload for a server at the shell's own version (loads: ${JSON.stringify(loads)})`);
         lines.push(`server ${shellVersion} (the shell's own version): paired -> app, ${loads.length} page load, no reload, no update screen`);
         note(`same version: ${shellVersion} -> app directly`);
-        await context.close();
+        await closeMarked(context);
       }
       keep("task-19-prev.txt", `${lines.join("\n")}\n`);
     }
@@ -1780,7 +1781,7 @@ export async function relayShellQa(tree: RelayServerTree): Promise<void> {
       console.log(`dashboard matrix: ${matrix.length} checks passed`);
     }
   } finally {
-    await browser?.close();
+    if (browser) await closeMarked(browser);
     site.stop(true);
     await service.shutdown();
     await service2.shutdown();

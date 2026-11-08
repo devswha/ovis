@@ -7,6 +7,7 @@ import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { chromePath } from "./chrome-path.ts";
 import { directoryOf, fleetOf } from "./relay-dashboard-fixtures.ts";
 import { servePagesSite } from "./pages-static.ts";
+import { closeMarked, whileOpen } from "./relay-qa-teardown.ts";
 
 const APP = "https://app.ovis.sh";
 const evidence = process.env["UI_EVIDENCE_DIR"];
@@ -34,10 +35,10 @@ try {
         const fake = new FakeAccountService();
         const errors: string[] = [];
         await context.route(/.*/, async (route) => { errors.push(`Unexpected host: ${new URL(route.request().url()).host}`); await route.abort(); });
-        await context.route(/^https:\/\/app\.ovis\.sh\//, async (route) => {
+        await context.route(/^https:\/\/app\.ovis\.sh\//, whileOpen(context, async (route) => {
           const url = new URL(route.request().url());
           await route.fulfill({ response: await route.fetch({ url: `http://127.0.0.1:${site.port}${url.pathname}${url.search}` }) });
-        });
+        }));
         await context.route(/^https:\/\/account\.ovis\.sh\//, async (route) => {
           const request = route.request();
           const cors = { "access-control-allow-origin": APP, "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "GET, POST, PUT, DELETE" };
@@ -100,11 +101,11 @@ try {
         await page.locator('[data-dashboard-mode="account"]').waitFor();
         if (await page.locator("[data-add-pc-phase]").count() !== 0) throw new TypeError(`${name}: Cancel retained the sheet`);
       } finally {
-        await context.close();
+        await closeMarked(context);
       }
     }
   } finally {
-    await browser.close();
+    await closeMarked(browser);
     await site.stop(true);
   }
 } finally {
