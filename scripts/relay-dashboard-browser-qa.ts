@@ -663,9 +663,9 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `h1 "Devices" focused, outline-style none`;
   });
 
-  // IS-TABLE-08: on a phone (the tab-bar layout) a selected PC's details replace the list, as a full view with Back; between
-  // the phone and 1100px they open under the list and come into view; either way the details heading takes the focus,
-  // ringless and on screen, and Back gives the focus to the row that opened it. From 1100px the side panel keeps the click's focus.
+  // IS-TABLE-08: below 1100px a selected PC's details replace the list as a full view with Back;
+  // the details heading takes the focus, ringless and on screen, and Back gives the focus to the row that opened it.
+  // From 1100px the side panel keeps the click's focus.
   /** The list's visible rows, the details' placement and the scroll position, as the page lays them out. */
   const detailsLayout = (page: Page) => page.evaluate(() => {
     const visible = (element: Element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden";
@@ -707,11 +707,11 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `details replace the list (top ${layout.top}px), heading focused without a ring, Back shows the list and focuses the row`;
   });
 
-  await check("details-1024-in-flow", async () => {
+  await check("details-1024-full-view", async () => {
     const { layout, back } = await detailsOpened(1024, "details-1024-dark");
-    expect(layout.listVisible && layout.rowsVisible >= 1, `the list stays above the details between the phone and 1100px (${JSON.stringify(layout)})`);
+    expect(!layout.listRendered, `the list is replaced by the full details view below 1100px (${JSON.stringify(layout)})`);
     await back();
-    return `details under the list, in view at top ${layout.top}px after scrolling ${layout.scrollY}px, heading focused, Back focuses the row`;
+    return `details replace the list below 1100px (top ${layout.top}px), heading focused without a ring, Back shows the list and focuses the row`;
   });
 
   await check("details-1440-side-panel", async () => {
@@ -730,29 +730,68 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `two columns, focus on the row, no scroll`;
   });
 
-  // the QR and code dialog is named by the heading of its current screen
+  // the QR and code dialog is named by the heading of its current screen, sits over the visible scrimmed dashboard, and docks as a bottom sheet on phones
   for (const width of [1440, 390] as const) {
     await check(`pair-dialog-name-${width}`, async () => {
       const { page } = await open({ fleet: "FREADY", width });
-      await page.locator('[data-action="add-pc"]').filter({ visible: true }).first().click();
+      const addTrigger = page.locator('[data-action="add-pc"]').filter({ visible: true }).first();
+      await addTrigger.focus();
+      await page.keyboard.press("Enter");
       await page.locator('[role=dialog][data-add-pc-mode="add"] [data-sheet-primary]').click();
       const dialog = page.locator("[role=dialog][data-pair-dialog]");
       await dialog.waitFor();
-      const named = () => dialog.evaluate((element) => {
+      await page.waitForFunction(() => document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState === "finished"));
+      const inspectDialog = () => dialog.evaluate((element) => {
         const labelled = element.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => document.getElementById(id)?.textContent?.trim() ?? "").filter((text) => text !== "").join(" ") ?? null;
-        return { screen: element.getAttribute("data-pair-dialog"), name: element.getAttribute("aria-label") ?? (labelled === "" ? null : labelled), heading: element.querySelector("h2")?.textContent?.trim() ?? null };
+        const scrim = element.parentElement;
+        const scrimBg = scrim ? getComputedStyle(scrim).backgroundColor : "";
+        const alphaMatch = /^rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\)$/.exec(scrimBg);
+        const scrimAlpha = alphaMatch ? Number(alphaMatch[1]) : (scrimBg === "transparent" ? 0 : 1);
+        const rect = element.getBoundingClientRect();
+        const footerBtns = [...element.querySelectorAll<HTMLElement>(".modal-footer .btn")].map((b) => ({ text: b.textContent?.trim() ?? "", rect: b.getBoundingClientRect() }));
+        const dashInert = document.querySelector(".relay-dash-screen > [inert]") !== null;
+        return {
+          screen: element.getAttribute("data-pair-dialog"),
+          name: element.getAttribute("aria-label") ?? (labelled === "" ? null : labelled),
+          heading: element.querySelector("h2")?.textContent?.trim() ?? null,
+          scrimClass: scrim?.className ?? "",
+          scrimBg,
+          scrimAlpha,
+          dashInert,
+          width: Math.round(rect.width),
+          bottom: Math.round(rect.bottom),
+          innerHeight: window.innerHeight,
+          innerWidth: window.innerWidth,
+          footerCount: footerBtns.length,
+          footerTexts: footerBtns.map((b) => b.text),
+          primaryFirstOnPhone: footerBtns.length >= 2 ? footerBtns[1]!.rect.top < footerBtns[0]!.rect.top : false,
+        };
       });
-      const qr = await named();
+      const qr = await inspectDialog();
       const qrTree = (await dialog.ariaSnapshot()).split("\n")[0] ?? "";
       await shot(page, `pair-dialog-qr-${width}-dark`);
       await dialog.getByRole("button", { name: "Pair with a code" }).click();
       await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
-      const code = await named();
+      await page.waitForFunction(() => document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState === "finished"));
+      const code = await inspectDialog();
       const codeTree = (await dialog.ariaSnapshot()).split("\n")[0] ?? "";
       await shot(page, `pair-dialog-code-${width}-dark`);
       expect(qr.name !== null && qr.name === qr.heading, `the QR screen names its dialog by its heading (${JSON.stringify(qr)}, tree ${qrTree})`);
       expect(code.name !== null && code.name === code.heading, `the code screen names its dialog by its heading (${JSON.stringify(code)}, tree ${codeTree})`);
-      return `${qrTree}; ${codeTree}`;
+      expect(qr.dashInert && qr.scrimAlpha > 0 && qr.scrimAlpha < 1 && !qr.scrimClass.includes("relay-shell-screen"), `the QR dialog sits on a translucent scrim over the inert dashboard (${JSON.stringify(qr)})`);
+      expect(code.dashInert && code.scrimAlpha > 0 && code.scrimAlpha < 1 && !code.scrimClass.includes("relay-shell-screen"), `the code dialog sits on a translucent scrim over the inert dashboard (${JSON.stringify(code)})`);
+      expect(qr.footerCount === 2 && code.footerCount === 2, `both screens place their actions in .modal-footer (${JSON.stringify({ qr: qr.footerTexts, code: code.footerTexts })})`);
+      if (width === 1440) {
+        expect(qr.width === 520 && code.width === 520, `desktop dialog is 520px wide (${JSON.stringify({ qr: qr.width, code: code.width })})`);
+      } else {
+        expect(qr.width === qr.innerWidth && Math.abs(qr.bottom - qr.innerHeight) <= 1 && qr.primaryFirstOnPhone, `phone QR dialog is a bottom sheet with docked primary-first footer (${JSON.stringify(qr)})`);
+        expect(code.width === code.innerWidth && Math.abs(code.bottom - code.innerHeight) <= 1 && code.primaryFirstOnPhone, `phone code dialog is a bottom sheet with docked primary-first footer (${JSON.stringify(code)})`);
+      }
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      const returned = await page.waitForFunction(() => document.activeElement?.getAttribute("data-action") === "add-pc", null, { timeout: 5_000 }).then(() => true, () => false);
+      expect(returned, "closing the pair dialog returns focus to the Add a PC trigger");
+      return `${qrTree}; ${codeTree}; width ${qr.width}px; scrimAlpha ${qr.scrimAlpha}`;
     });
   }
 

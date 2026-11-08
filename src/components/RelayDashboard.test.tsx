@@ -325,7 +325,7 @@ describe("RelayDashboard frame and routes", () => {
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
   });
 
-  it("on a phone the details replace the list as a full view whose Back shows the list and focuses its row; between the phone and 1100px the list stays and the details scroll into view and take the focus; from 1100px the side panel leaves the focus alone", async () => {
+  it("below 1100px the details replace the list as a full view whose Back shows the list and focuses its row; from 1100px the side panel leaves the focus alone", async () => {
     const nameButton = (id: string) => renderer!.root.find((n) => (n.type === "tr" || n.type === "li") && n.props["data-pc-id"] === id).find((n) => n.props.className === "relay-pc-name-btn");
     const details = () => renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined);
     const lists = () => renderer!.root.findAll((n) => n.props["data-pc-list"] !== undefined);
@@ -353,7 +353,7 @@ describe("RelayDashboard frame and routes", () => {
     expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
 
-    // between the phone and 1100px: the list stays, the details panel is scrolled to its start and its heading takes the focus
+    // between the phone and 1100px: the details also replace the list as a full view, started at the top, and Back restores focus to the row
     await act(async () => { renderer!.unmount(); });
     phoneMatches = false;
     focusedNodes = [];
@@ -363,13 +363,14 @@ describe("RelayDashboard frame and routes", () => {
     await mount();
     await select();
     expect(details()).toHaveLength(1);
-    expect(lists()).toHaveLength(1);
+    expect(lists()).toHaveLength(0);
     expect(focusedNodes).toEqual(["details-heading"]);
     expect(detailsHeading.tabIndex).toBe(-1);
-    expect(detailsPanel.scrolledTo).toEqual([{ block: "start" }]);
-    expect(scrolls).toEqual([]);
+    expect(detailsPanel.scrolledTo).toEqual([]);
+    expect(scrolls).toEqual([[0, 0]]);
     await back();
     expect(details()).toHaveLength(0);
+    expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
 
     // a deep link opens with the details and moves no focus
@@ -383,6 +384,7 @@ describe("RelayDashboard frame and routes", () => {
     // the side panel from 1100px: the click keeps its focus, nothing scrolls, Close moves nothing
     await act(async () => { renderer!.unmount(); });
     narrowMatches = false;
+    scrolls.length = 0;
     detailsPanel.scrolledTo = [];
     detailsHeading.tabIndex = 0;
     window.location.hash = "#pcs";

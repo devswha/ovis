@@ -19,7 +19,7 @@ import { RelayPcTable } from "./RelayPcTable.tsx";
 import { Segmented, SettingsBare, SettingsGroup, SettingsRow, SettingsSelect, Stepper } from "./SettingsControls.tsx";
 
 const PHONE_QUERY = "(max-width: 768px)";
-/** below this the details are a full view under the list (RelayPcDetails.css), not a side panel */
+/** below this the details replace the list as a full view (IS-TABLE-08, RelayPcDetails.css), not a side panel */
 const NARROW_DETAILS_QUERY = "(max-width: 1099px)";
 
 export interface RelayDashboardProps {
@@ -119,14 +119,14 @@ export function RelayDashboard({
 
   useEffect(() => { if (prevViewRef.current !== route.view) { prevViewRef.current = route.view; titleRef.current?.focus(); } }, [route.view]);
 
-  // On a phone the details replace the list (IS-TABLE-08), so the view starts at the top; between the phone and 1100px
-  // they open under the whole list, so the panel scrolls into view. Either way the details heading takes the focus
-  // (ringless, RelayDashboard.css) and leaving them focuses the row again. From 1100px the side panel opens beside the
-  // list and the focus stays where the click put it.
+  // Below 1100px the details replace the list as a full view (IS-TABLE-08), so the view starts at the top,
+  // the details heading takes the focus (ringless, RelayDashboard.css), and leaving them (Back, Escape, or browser Back)
+  // focuses the row again. From 1100px the side panel opens beside the list and the focus stays where the click put it.
   useEffect(() => {
-    if (route.pc === prevPcRef.current) return;
+    const prevPc = prevPcRef.current;
+    if (route.pc === prevPc) return;
     prevPcRef.current = route.pc;
-    const closed = closedPcRef.current;
+    const closed = closedPcRef.current ?? prevPc;
     closedPcRef.current = null;
     const split = splitRef.current;
     if (!narrow || split === null) return;
@@ -135,11 +135,11 @@ export function RelayDashboard({
       if (!details || !heading) return;
       heading.tabIndex = -1;
       heading.focus({ preventScroll: true });
-      if (phone) window.scrollTo(0, 0); else details.scrollIntoView({ block: "start" });
+      window.scrollTo(0, 0);
     } else if (closed !== null) {
       (split.querySelector<HTMLElement>(`[data-pc-id="${closed}"] .relay-pc-name-btn`) ?? titleRef.current)?.focus();
     }
-  }, [route.pc, narrow, phone]);
+  }, [route.pc, narrow]);
 
   const navigateTo = (nextHash: string) => {
     setRoute(parseDashboardHash(nextHash));
@@ -167,8 +167,8 @@ export function RelayDashboard({
   const renderTableSection = (relayFilter: string | null) => model && (
     <section className="relay-dash-pcs" id="relay-dash-pcs" aria-label={t("PCs")}>
       <div ref={splitRef} className={selectedRow ? "relay-dash-pcs-split is-selected" : "relay-dash-pcs-split"}>
-        {/* a phone shows one screen at a time: with a PC selected, its details stand in for the list until Back */}
-        {!(phone && selectedRow) && (
+        {/* below 1100px (IS-TABLE-08) the details replace the list as a full view until Back */}
+        {!(narrow && selectedRow) && (
           <div className="relay-dash-pcs-list">
             <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
               relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}
