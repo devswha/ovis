@@ -203,10 +203,6 @@
   border-top: var(--hairline) solid var(--border);
 }
 
-.account-link-danger {
-  color: var(--status-blocked);
-}
-
 /* Settings on the PC's own page: GitHub's device code, set like the pairing code (.devices-code) */
 .account-device {
   display: flex;
@@ -227,28 +223,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-/* a PC new in the account's directory, waiting for this device to add it: one card above the list */
-.account-new-pc {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin: var(--space-3) 0;
-  padding: var(--space-3);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-md);
-}
-
-.account-new-pc .account-fineprint {
-  margin: 0;
-}
-
-.account-new-pc-title {
-  margin: 0;
-  font-weight: var(--fw-semibold);
-  color: var(--text-strong);
 }
 
 /* Settings → Account: the account's ways to sign in, each with its provider's mark */
