@@ -453,18 +453,36 @@ describe("signed-in sessions over every way in", () => {
     expect(sessions.size).toBe(8);
   });
 
-  it("let a device below its share in past other devices' unused carriers while sessions in use leave a place", () => {
-    // Given a device at its share racing three carriers it does not use, and another device with one session
+  it("never close another device's carrier, its kept race winner included, to let a newcomer in", () => {
+    // Given a device at its share keeping the carrier that won its race, idle (no stream yet), and another device
     const sessions = new SignedInSessions(8, 4, 3);
     const closed: string[] = [];
-    for (let index = 1; index <= 4; index++) sessions.admit("a", () => closed.push(`a${index}`));
-    for (let index = 1; index <= 3; index++) sessions.candidate("a", () => closed.push(`a-c${index}`));
-    sessions.admit("c", () => closed.push("c1"));
-    // When that other device signs in a second session
-    sessions.admit("c", () => closed.push("c2"));
-    // Then the oldest unused carrier gives way, and both of its sessions stay
-    expect(closed).toEqual(["a-c1"]);
+    for (let index = 1; index <= 4; index++) sessions.admit("b", () => closed.push(`b${index}`));
+    sessions.candidate("b", () => closed.push("b-winner"));
+    for (let index = 1; index <= 3; index++) sessions.admit("a", () => closed.push(`a${index}`));
+    // When the other device, below its share, signs in carriers again and again
+    for (let index = 1; index <= 3; index++) sessions.candidate("a", () => closed.push(`a-new${index}`));
+    // Then only its own are turned away: the first device's winner stays
+    expect(closed).toEqual(["a-new1", "a-new2", "a-new3"]);
     expect(sessions.size).toBe(8);
+  });
+
+  it("close only the signing device's own sessions, whoever holds the places", () => {
+    // Given every place taken by devices at and below their share, some of it by unused carriers
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (let index = 1; index <= 4; index++) sessions.admit("a", () => closed.push("a"));
+    for (let index = 1; index <= 2; index++) sessions.candidate("a", () => closed.push("a"));
+    for (let index = 1; index <= 2; index++) sessions.admit("b", () => closed.push("b"));
+    sessions.candidate("b", () => closed.push("b"));
+    // When each device signs in more, used or not
+    for (const device of ["c", "b", "a", "c", "b"]) {
+      const before = closed.length;
+      const carrier = sessions.candidate(device, () => closed.push(device));
+      if (device === "a") carrier.chosen();
+      // Then whatever closes is the signing device's
+      expect(closed.slice(before).every((owner) => owner === device)).toBe(true);
+    }
   });
 
   it("never let two devices below their share close each other's kept carriers in turn", () => {
