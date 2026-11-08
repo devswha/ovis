@@ -37,8 +37,12 @@ interface Pc {
   uncapturable?: boolean;
   /** the copied server, started again, never registers */
   restoreFails?: boolean;
-  /** /proc is there, but its server could not be copied */
+  /** /proc is there, but its server could not be copied this time */
   captureFails?: boolean;
+  /** its server can never be copied faithfully (its program deleted, say) */
+  unfaithful?: boolean;
+  /** starting herdr headless fails there */
+  headlessFails?: boolean;
   /** the stop signal does not end the server */
   killIgnored?: boolean;
   /** the server ends this many liveness checks after the stop signal (Ovis takes a moment to stop) */
@@ -77,7 +81,7 @@ function fixture(pc: Pc) {
         "herdr=1", ...(pc.herdrRunning === false ? [] : ["herdr_running=1"]), `launcher=${pc.launcher ?? "none"}`].join("\n") + "\n";
     }
     // the copy of a server before it is stopped, its start again, and its removal
-    if (script.includes("ovis-restore.XXXXXXXX")) return pc.uncapturable ? "" : pc.captureFails ? "error\n" : "/tmp/ovis-restore.Ab12Cd34\n";
+    if (script.includes("ovis-restore.XXXXXXXX")) return pc.uncapturable ? "" : pc.captureFails ? "error\n" : pc.unfaithful ? "unfaithful\n" : "/tmp/ovis-restore.Ab12Cd34\n";
     if (script.includes('[ -L "$d/exe" ]')) { if (!pc.restoreFails) { const back = descriptor(4243, false, "d".repeat(64)); listed.push(back); alive.add(back.pid); } return ""; }
     if (script.startsWith("rm -rf '") && script.includes("ovis-restore.")) return "";
     // the installer's run first: its watcher's own `kill -TERM 0` is no stop of a process
@@ -102,7 +106,7 @@ function fixture(pc: Pc) {
       return "";
     }
     if (script.includes('for f in "$HOME/.config/herdr-web-ui/bridges/"')) return listed.map((d) => JSON.stringify(d)).join("\n") + "\n";
-    if (script.includes(" server </dev/null")) { register(); return ""; }
+    if (script.includes(" server </dev/null")) { if (pc.headlessFails) throw new Error("herdr: could not start the server"); register(); return ""; }
     if (pc.launcherFails && (script.includes("devswha.ovis.start") || script.includes("ovis.service"))) throw new Error(pc.launcherFails);
     if (script.includes("devswha.ovis.start") || script.includes("ovis.service")) { if (!pc.besideLauncher && (script.includes("devswha.ovis.stop") || script.includes("restart"))) for (const d of listed) alive.delete(d.pid); register(); return ""; }
     throw new Error(`Unexpected remote command: ${script}`);
@@ -282,7 +286,7 @@ describe("installing Ovis on a PC over SSH", () => {
 
   it("says the server it stopped is gone when the install then fails, and installs on a retry with nothing left to stop", async () => {
     // a server that cannot be copied (macOS): it stays stopped, as the job says
-    const pc = fixture({ descriptors: [descriptor(4242)], uncapturable: true, installer: { exit: 1, output: "Ovis: could not download Ovis v9.9.9 from github.com." } });
+    const pc = fixture({ descriptors: [descriptor(4242)], uncapturable: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
     const failed = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(failed).toMatchObject({ phase: "failed", error_code: "installer_failed" });
     expect(failed.error).toContain("already stopped, so none runs there now");
@@ -412,7 +416,7 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(ended.error).toContain("being installed in its place");
     expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
     // started again, but it never comes up: the job says so
-    const failing = fixture({ descriptors: [descriptor(4242)], restoreFails: true, installer: { exit: 1, output: "Ovis: could not download the installer" } });
+    const failing = fixture({ descriptors: [descriptor(4242)], restoreFails: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
     const failed = await failing.settled(failing.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(failed.error).toContain("starting it again as it was failed: it did not start within");
   });
@@ -448,6 +452,29 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(ended.error ?? "").not.toContain("stopped");
     expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
     expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(true);
+  });
+
+  it("replaces a server that can never be copied faithfully, as on macOS, and says it stays stopped when the install then fails", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)], unfaithful: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "installer_failed" });
+    expect(pc.commands.some((command) => command.includes("kill -TERM 4242"))).toBe(true);
+    expect(job.error).toContain("none runs there now");
+    expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+  });
+
+  it("starts nothing again when herdr was started headless for its plugin, or the installer itself failed: either may have started one", async () => {
+    // an installed plugin, herdr not running: starting it headless fails, but may have started the plugin's own Ovis
+    const headless = fixture({ descriptors: [descriptor(4242)], launcher: "plugin", herdrRunning: false, headlessFails: true });
+    const one = await headless.settled(headless.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(one.phase).toBe("failed");
+    expect(headless.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+    // the installer ran and failed later than its download
+    const late = fixture({ descriptors: [descriptor(4242)], installer: { exit: 1, output: "Ovis: building failed" } });
+    const two = await late.settled(late.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(two.phase).toBe("failed");
+    expect(late.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+    expect(late.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(true);
   });
 
   it("starts herdr headless for an installed plugin when herdr is not running, instead of a plugin action that needs it", async () => {
@@ -614,10 +641,10 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     expect(statSync(join(dir, "state", "ovis", "restored-server.log")).mode & 0o077).toBe(0);
   });
 
-  it("says it cannot be copied (so nothing is stopped) where its environment cannot be read, its program is deleted, or a byte would not survive", async () => {
+  it("says no faithful copy can be made where its environment cannot be read, its program is deleted, or a byte would not survive", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ovis-server-"));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
-    expect(await shell(captureServer(2 ** 22 + 1), { TMPDIR: dir })).toBe("error");
+    expect(await shell(captureServer(2 ** 22 + 1), { TMPDIR: dir })).toBe("unfaithful");
     const serve = async (command: string[]) => {
       const server = Bun.spawn(command, { stdout: "pipe", stderr: "ignore" });
       cleanups.push(() => server.kill());
@@ -627,13 +654,13 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     const up = 'console.log("up"); setInterval(() => {}, 1000);';
     // an environment value that is not UTF-8: JavaScript would change it
     const latin = await serve(["sh", "-c", `exec env OVIS_ODD="$(printf '\\377')" "${process.execPath}" -e '${up}'`]);
-    expect(await shell(captureServer(latin.pid), { TMPDIR: dir })).toBe("error");
+    expect(await shell(captureServer(latin.pid), { TMPDIR: dir })).toBe("unfaithful");
     // its program deleted since it started (an upgrade replaced it)
     const program = join(dir, "bun-copy");
     try { linkSync(process.execPath, program); } catch { return; }
     const orphan = await serve([program, "-e", up]);
     rmSync(program);
-    expect(await shell(captureServer(orphan.pid), { TMPDIR: dir })).toBe("error");
+    expect(await shell(captureServer(orphan.pid), { TMPDIR: dir })).toBe("unfaithful");
     // and no copy is left behind by any of them
     expect(readdirSync(dir).filter((name) => name.startsWith("ovis-restore."))).toEqual([]);
   });

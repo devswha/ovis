@@ -240,11 +240,13 @@ and herdr's default session only.
   `permission`, `bridge_there`, `ovis_there`, `changed` (the process to stop is no longer the one
   shown, or its pid now runs another program: nothing is stopped), `not_stopped`, `installer_failed` (with the installer's last words),
   `no_launcher`, `not_started`, `connect_failed`. When the install fails or is cancelled after the server started by
-  hand was stopped, before anything was installed or launched in its place (the installer failed, or
-  never ran), that server is started again as it was. Just before it is stopped, its program, arguments,
+  hand was stopped, before anything was installed or launched in its place (the installer could not be
+  downloaded, or never ran), that server is started again as it was. Just before it is stopped, its program, arguments,
   environment (its `OVIS_TOKEN` with the rest) and folder are copied from `/proc` into a folder only
-  that account can read. Nothing is stopped when that copy cannot be faithful: `/proc` unreadable, its
-  program deleted since it started, or a byte that would not survive being started again (not UTF-8).
+  that account can read. Nothing is stopped when copying fails this time (try again). When no faithful
+  copy can be made (its environment unreadable, its program deleted since it started, as after a Bun
+  upgrade, or a byte that would not survive being started again, not UTF-8), it is replaced as on macOS:
+  without a copy, and the job says it stays stopped if the install then fails.
   To start it again, its own Bun reads the copy and starts the program with exactly that environment,
   given to the process directly (never on a command line another account could read), in its own
   session, its output in `~/.local/state/ovis/restored-server.log` (this account's only). A new SSH

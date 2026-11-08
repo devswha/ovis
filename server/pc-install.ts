@@ -26,6 +26,8 @@ const MIN_FREE_KB = 1024 * 1024;
 const INSTALL_TIMEOUT_MS = 20 * 60_000;
 const STOP_WAIT_MS = 15_000;
 
+/** what installerRun says when the installer could not even be downloaded: none of it ran */
+const DOWNLOAD_FAILED = "Ovis: could not download the installer of";
 /** a folder captureServer made: only such a path is ever put back into a command (quoted) */
 export const SAVED_SERVER = /^\/[^\n\0]*\/ovis-restore\.[A-Za-z0-9]{8}$/;
 /** how long a copy may stay on that PC whatever becomes of the install (this server stopping mid-job, say) */
@@ -33,9 +35,10 @@ const SAVED_FOR_S = 2 * 60 * 60;
 /**
  * Before a server started by hand is stopped, its exact command line, environment (its OVIS_TOKEN with the rest), folder
  * and program are copied from Linux's /proc into a folder only this account can read: the folder and program as the
- * symlinks /proc has (cp -P), so no byte of their paths is lost. It prints that folder; "error" when /proc is there but the
- * copy cannot be faithful: unreadable, its program deleted, or bytes that would not survive being started again (nothing
- * is then stopped); nothing where there is no /proc (macOS: that server is never started again with a guess). The copy
+ * symlinks /proc has (cp -P), so no byte of their paths is lost. It prints that folder; "error" when copying failed this
+ * time (nothing is then stopped: try again); "unfaithful" when no copy of it can be faithful (its environment unreadable,
+ * its program deleted since it started, as after a Bun upgrade, or bytes that would not survive being started again), and
+ * nothing where there is no /proc (macOS): in both, it is stopped without a copy and never started again with a guess. The copy
  * holds a token, so it removes itself after SAVED_FOR_S whatever happens to this job (systemd-run where it can, so it
  * outlives the SSH session), and each capture sweeps this account's copies older than that.
  */
@@ -44,11 +47,13 @@ const COPY_CHECK = "const { readFileSync, readlinkSync } = require(\"node:fs\");
 export const captureServer = (pid: number): string =>
   // copies of this account's older than the lease, left by a job whose cleanup never ran, go first
   `find "${'${TMPDIR:-/tmp}'}" -maxdepth 1 -name 'ovis-restore.*' -user "$(id -u)" -mmin +${SAVED_FOR_S / 60} -exec rm -rf {} + 2>/dev/null; `
-  + `[ -d /proc/self ] || exit 0; [ -r /proc/${pid}/environ ] || { echo error; exit 0; }; umask 077; d=$(mktemp -d "${'${TMPDIR:-/tmp}'}/ovis-restore.XXXXXXXX") || { echo error; exit 0; }; `
-  + `if cp /proc/${pid}/cmdline "$d/cmdline" && cp /proc/${pid}/environ "$d/environ" && cp -P /proc/${pid}/cwd "$d/cwd" && cp -P /proc/${pid}/exe "$d/exe" && [ -s "$d/cmdline" ] `
-  + `&& case "$(readlink "$d/exe")" in *' (deleted)') false;; *) true;; esac && "$d/exe" -e ${shellQuote(COPY_CHECK)} "$d" >/dev/null 2>&1; then `
-  + `if ! { command -v systemd-run >/dev/null 2>&1 && systemd-run --user --quiet --on-active=${SAVED_FOR_S} rm -rf "$d" >/dev/null 2>&1; }; then (sh -c 'sleep ${SAVED_FOR_S}; rm -rf "$1"' ovis-restore-lease "$d" </dev/null >/dev/null 2>&1 &); fi; `
-  + `printf '%s\\n' "$d"; else rm -rf "$d"; echo error; fi`;
+  + `[ -d /proc/self ] || exit 0; [ -r /proc/${pid}/environ ] || { echo unfaithful; exit 0; }; umask 077; d=$(mktemp -d "${'${TMPDIR:-/tmp}'}/ovis-restore.XXXXXXXX") || { echo error; exit 0; }; `
+  + `if ! { cp /proc/${pid}/cmdline "$d/cmdline" && cp /proc/${pid}/environ "$d/environ" && cp -P /proc/${pid}/cwd "$d/cwd" && cp -P /proc/${pid}/exe "$d/exe" && [ -s "$d/cmdline" ]; }; then rm -rf "$d"; echo error; exit 0; fi; `
+  // lasting: its program deleted since it started (Bun upgraded), or bytes JavaScript would change
+  + `if case "$(readlink "$d/exe")" in *' (deleted)') false;; *) true;; esac && "$d/exe" -e ${shellQuote(COPY_CHECK)} "$d" >/dev/null 2>&1; then `
+  + `if ! { command -v systemd-run >/dev/null 2>&1 && systemd-run --user --quiet --on-active=${SAVED_FOR_S} rm -rf "$d" >/dev/null 2>&1; }; then `
+  + `if command -v setsid >/dev/null 2>&1; then l=setsid; else l=nohup; fi; ($l sh -c 'sleep ${SAVED_FOR_S}; rm -rf "$1"' ovis-restore-lease "$d" </dev/null >/dev/null 2>&1 &); fi; `
+  + `printf '%s\\n' "$d"; else rm -rf "$d"; echo unfaithful; fi`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, starts the program, and removes the copy */
 const RESTORE_LAUNCHER = "const { readFileSync, readlinkSync, rmSync, openSync, mkdirSync } = require(\"node:fs\");\nconst { spawn } = require(\"node:child_process\");\nconst d = process.argv.at(-1);\nconst parts = (name) => { const b = readFileSync(d + \"/\" + name); const out = []; let at = 0; for (let i = 0; i < b.length; i++) if (b[i] === 0) { out.push(b.subarray(at, i).toString()); at = i + 1; } if (at < b.length) out.push(b.subarray(at).toString()); return out; };\n(async () => {\n  try {\n    const argv = parts(\"cmdline\"); const env = {};\n    for (const entry of parts(\"environ\")) { const eq = entry.indexOf(\"=\"); if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1); }\n    const exe = readlinkSync(d + \"/exe\"), cwd = readlinkSync(d + \"/cwd\");\n    const logs = (process.env.XDG_STATE_HOME || process.env.HOME + \"/.local/state\") + \"/ovis\";\n    mkdirSync(logs, { recursive: true, mode: 0o700 });\n    const log = openSync(logs + \"/restored-server.log\", \"a\", 0o600);\n    const child = spawn(exe, argv.slice(1), { argv0: argv[0], cwd, env, detached: true, stdio: [\"ignore\", log, log] });\n    await new Promise((resolve, reject) => { child.once(\"spawn\", resolve); child.once(\"error\", reject); });\n    child.unref(); console.log(child.pid);\n  } catch (error) { console.error(String(error && error.message || error)); process.exitCode = 1; }\n  finally { rmSync(d, { recursive: true, force: true }); }\n})();";
 /**
@@ -79,7 +84,7 @@ export const samePc = (a: SshTarget, b: SshTarget): boolean => sshAddress(a) ===
 export const installerRun = (release: string, from = installerAt(release)): string =>
   `${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT; trap 'exit 143' HUP INT TERM; `
   + `( trap '' PIPE; while printf '\\n' 2>/dev/null; do sleep 2 >/dev/null 2>&1; done; kill -TERM 0 ) </dev/null 2>/dev/null & watch=$!; `
-  + `if ! curl -fsSL --max-time 120 ${from} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then kill "$watch" 2>/dev/null; echo "Ovis: could not download the installer of ${release} from github.com"; printf '\\novis-install-exit=1\\n'; exit 0; fi; `
+  + `if ! curl -fsSL --max-time 120 ${from} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then kill "$watch" 2>/dev/null; echo "${DOWNLOAD_FAILED} ${release} from github.com"; printf '\\novis-install-exit=1\\n'; exit 0; fi; `
   // a connection closed since the watcher last wrote ends the command here (SIGPIPE, or the write's error), not the installer
   + `printf '\\n' || exit 141; `
   + `OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1; status=$?; `
@@ -332,9 +337,10 @@ export class PcInstaller {
           step("stopping", `Stopping that PC's Ovis (process ${plan.pid}); herdr and its sessions keep running…`);
           // copied first, so an install that fails or is cancelled starts it again as it was
           const copy = (await ssh.run(captureServer(plan.pid)).catch(() => "error")).trim();
-          // /proc is there but it could not be copied: it is not stopped without a way back
-          if (copy && !SAVED_SERVER.test(copy)) throw new InstallFailed("not_stopped", "That PC's Ovis could not be copied first, to start it again as it was if the install fails, so nothing was stopped. Try again.");
-          saved = copy || null;
+          // copying failed this time: it is not stopped without a way back. One that cannot be copied faithfully at all is
+          // stopped as on macOS, without a copy, and the job then says it stays stopped
+          if (copy && copy !== "unfaithful" && !SAVED_SERVER.test(copy)) throw new InstallFailed("not_stopped", "That PC's Ovis could not be copied first, to start it again as it was if the install fails, so nothing was stopped. Try again.");
+          saved = SAVED_SERVER.test(copy) ? copy : null;
           signalled = plan.pid;
           await ssh.run(`kill -TERM ${plan.pid}`);
           for (const until = Date.now() + this.stopMs; await posixHost.alive(ssh, plan.pid);) {
@@ -351,7 +357,7 @@ export class PcInstaller {
         step("starting", job.mode === "restart" ? "Restarting that PC's Ovis through its own launcher…" : "Starting the Ovis already installed on that PC…");
         // a plugin's actions need a herdr server: without one, herdr is started headless and starts the plugin itself
         const plugin = facts.launcher === "plugin" || facts.launcher === "plugin-legacy";
-        if (plugin && !facts.herdrRunning) await launch(HEADLESS_HERDR);
+        if (plugin && !facts.herdrRunning) { if (stopped) replaced = "maybe"; await launch(HEADLESS_HERDR); }
         else { if (stopped) replaced = "maybe"; await launch(viaLauncher(facts.launcher, job.mode === "restart")); }
         if (stopped) replaced = "yes";
         // the launcher restarts what it runs: a planned process it did not run (started by hand beside it) is still
@@ -383,8 +389,9 @@ export class PcInstaller {
         try { out = await ssh.run(installerRun(release), undefined, INSTALL_TIMEOUT_MS); } catch (error) { if (abort.signal.aborted) throw error; throw sshFailure(error); }
         const lines = out.split("\n").map((line) => line.trim()).filter(Boolean);
         if (lines.at(-1) !== "ovis-install-exit=0") {
-          // it ended, failed: nothing was started in its place
-          replaced = "no";
+          // nothing was started in its place only when the installer never ran (its download failed); one that failed
+          // later may have started herdr or its plugin already
+          if (lines.some((line) => line.startsWith(DOWNLOAD_FAILED))) replaced = "no";
           const said = lines.filter((line) => !line.startsWith("ovis-install-exit=")).slice(-3).join(" ").slice(0, 500);
           throw new InstallFailed("installer_failed", `The Ovis installer failed on that PC: ${said || "it said nothing"}`);
         }
