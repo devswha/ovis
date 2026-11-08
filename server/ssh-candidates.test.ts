@@ -246,6 +246,31 @@ it("shares one listing between concurrent requests and keeps the lookups in flig
   expect(lookups).toBe(first);
 });
 
+it("looks up every name past the lookups in flight at once, each claiming the PC it resolves to", async () => {
+  const dir = sshDir({ config: Array.from({ length: 20 }, (_, index) => `Host n${index}`).join("\n") });
+  const looked: string[] = [];
+  const resolve = async (host: string): Promise<string[]> => { looked.push(host); return [Number(host.slice(1)) % 2 === 0 ? "100.64.0.2" : "100.64.0.1"]; };
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve });
+  expect([...looked].sort()).toEqual(Array.from({ length: 20 }, (_, index) => `n${index}`).sort());
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual(
+    Array.from({ length: 20 }, (_, index) => [`n${index}`, index % 2 === 0 ? "other.tail.ts.net" : "box.tail.ts.net"]),
+  );
+});
+
+it("keeps a name's answer for 30 seconds, so reopening the list does not look it up again", async () => {
+  const dir = sshDir({ config: "Host box\n" });
+  let clock = 0;
+  let lookups = 0;
+  const options = { sshDir: dir, readStatus: async () => twoPeers, now: () => clock, resolve: async () => { lookups++; return ["100.64.0.2"]; } };
+  expect((await sshCandidates(options))[0]!.tailnet).toBe("other.tail.ts.net");
+  clock = 29_999;
+  expect((await sshCandidates(options))[0]!.tailnet).toBe("other.tail.ts.net");
+  expect(lookups).toBe(1);
+  clock = 30_000;
+  await sshCandidates(options);
+  expect(lookups).toBe(2);
+});
+
 it("weighs each listed host against the HostName lines once, not every alias of a huge config", async () => {
   const config = [
     ...Array.from({ length: 400 }, (_, index) => `Host *.none${index}\n  HostName x`),

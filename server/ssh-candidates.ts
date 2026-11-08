@@ -24,8 +24,10 @@ const MAX_INCLUDED_BYTES = 1024 * 1024;
 const MAX_HOSTS = 200;
 /** how long the list waits on every name lookup together; a name still unanswered then is matched by its spelling */
 const RESOLVE_TIMEOUT_MS = 1500;
-/** name lookups in flight at most across every listing, so repeated listings never pile up stuck lookups */
+/** name lookups running at most across every listing, so hung ones never pile up; the rest wait for a free slot */
 const MAX_LOOKUPS = 16;
+/** how long a name's answer is kept, so reopening the list does not look everything up again */
+const ANSWER_TTL_MS = 30_000;
 
 export interface SshCandidate {
   /** the Host alias, or the Tailscale machine name */
@@ -50,6 +52,8 @@ export interface SshCandidatesOptions {
   resolve?: (host: string) => Promise<string[]>;
   /** how long the list waits on `resolve` for every name together */
   resolveTimeoutMs?: number;
+  /** the clock a name's answer is kept by; `Date.now` by default */
+  now?: () => number;
 }
 
 /**
@@ -242,28 +246,46 @@ const canonicalIp = (ip: string): string => {
 const systemResolve = async (host: string): Promise<string[]> => (await Bun.dns.lookup(host, { backend: "system" })).map(({ address }) => address);
 
 type Resolve = (host: string) => Promise<string[]>;
-/** each resolver's lookups still in flight by name; a late one stays here until it answers, holding its place */
-const inFlight = new WeakMap<Resolve, Map<string, Promise<string[]>>>();
+interface Lookup { resolve: Resolve; now: () => number; timeoutMs: number }
+/**
+ * Each resolver's lookups by name, waiting or running (a hung one stays, holding its slot), its recent answers, and
+ * the lookups waiting for one of its MAX_LOOKUPS slots
+ */
+interface Lookups { pending: Map<string, Promise<string[]>>; answers: Map<string, { addresses: string[]; at: number }>; running: number; waiting: (() => void)[] }
+const lookupsOf = new WeakMap<Resolve, Lookups>();
 
-/** the lookup of `name`: the one already in flight, a new one while fewer than MAX_LOOKUPS are, else null */
-function lookupOnce(resolve: Resolve, name: string): Promise<string[]> | null {
-  const pending = inFlight.get(resolve) ?? new Map<string, Promise<string[]>>();
-  inFlight.set(resolve, pending);
-  const known = pending.get(name);
+/** the addresses `name` resolves to: a recent answer, the lookup already pending, or a new one once a slot is free */
+function lookupOnce({ resolve, now }: Lookup, name: string): Promise<string[]> {
+  const state: Lookups = lookupsOf.get(resolve) ?? { pending: new Map(), answers: new Map(), running: 0, waiting: [] };
+  lookupsOf.set(resolve, state);
+  const answer = state.answers.get(name);
+  if (answer !== undefined && now() - answer.at < ANSWER_TTL_MS) return Promise.resolve(answer.addresses);
+  const known = state.pending.get(name);
   if (known !== undefined) return known;
-  if (pending.size >= MAX_LOOKUPS) return null;
-  const lookup = Promise.resolve().then(() => resolve(name)).catch(() => []).finally(() => pending.delete(name));
-  pending.set(name, lookup);
+  const lookup = (async () => {
+    if (state.running < MAX_LOOKUPS) state.running++; else await new Promise<void>((start) => state.waiting.push(start));
+    try {
+      const addresses = await Promise.resolve().then(() => resolve(name));
+      state.answers.set(name, { addresses, at: now() });
+      return addresses;
+    } catch { return []; } finally {
+      // the slot goes straight to the next waiting lookup
+      const next = state.waiting.shift();
+      if (next === undefined) state.running--; else next();
+      state.pending.delete(name);
+    }
+  })();
+  state.pending.set(name, lookup);
   return lookup;
 }
 
 /** the addresses each name resolves to, waiting `timeoutMs` at most for all of them; a name that fails or is late is left out */
-async function resolveWithin(names: string[], resolve: Resolve, timeoutMs: number): Promise<Map<string, string[]>> {
+async function resolveWithin(names: string[], lookup: Lookup): Promise<Map<string, string[]>> {
   const found = new Map<string, string[]>();
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<void>((done) => { timer = setTimeout(done, timeoutMs); });
+  const deadline = new Promise<void>((done) => { timer = setTimeout(done, lookup.timeoutMs); });
   const lookups = names.map(async (name) => {
-    const addresses = await (lookupOnce(resolve, name) ?? []);
+    const addresses = await lookupOnce(lookup, name);
     if (addresses.length > 0) found.set(name, addresses.map(canonicalIp));
   });
   await Promise.race([Promise.all(lookups), deadline]);
@@ -298,7 +320,7 @@ async function listCandidates(options: SshCandidatesOptions): Promise<SshCandida
   // fails or is late. A name is looked up as written (`box.example.` stays absolute). An alias alone never claims a
   // PC its HostName leads away from: one kept from before a rename names a PC it no longer reaches
   const names = peers.length === 0 ? [] : [...new Set(hosts.map(({ alias, hostname }) => hostname ?? alias).filter((name) => isIP(name) === 0))];
-  const resolved = await resolveWithin(names, options.resolve ?? systemResolve, options.resolveTimeoutMs ?? RESOLVE_TIMEOUT_MS);
+  const resolved = await resolveWithin(names, { resolve: options.resolve ?? systemResolve, now: options.now ?? Date.now, timeoutMs: options.resolveTimeoutMs ?? RESOLVE_TIMEOUT_MS });
   const peerByIp = new Map<string, (typeof peers)[number]>();
   for (const peer of peers) for (const ip of peer.ips) if (!peerByIp.has(canonicalIp(ip))) peerByIp.set(canonicalIp(ip), peer);
   const peerOf = (alias: string, hostname: string | null) => {
