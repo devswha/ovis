@@ -338,6 +338,9 @@ describe("resumable follow-up receipts (#2421)", () => {
       // and how long the bridge keeps that receipt, within its ten minutes
       expect(heldReplay.held_ms?.[row.id]).toBeGreaterThan(0);
       expect(heldReplay.held_ms?.[row.id]).toBeLessThanOrEqual(10 * 60 * 1000);
+      // and when it ends on the PC's clock, which no page may pass
+      expect(heldReplay.held_until?.[row.id]).toBeLessThanOrEqual(Date.now() + 10 * 60 * 1000);
+      expect(heldReplay.held_until?.[row.id]).toBeGreaterThan(Date.now());
       resender.send({ type: "ping", id: 987 });
       await resender.wait((frame) => frame.type === "pong" && frame.id === 987);
       expect(retained.store.list(retained.owner, f.pane)).toContainEqual(expect.objectContaining({ id: row.id, state: "held" }));

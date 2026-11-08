@@ -174,7 +174,7 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     } finally { clock.mockRestore(); }
   });
 
-it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired", "live owner's sibling tab", "held before close"] as const)(
+it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired", "concurrent resends after closed-owner expiry", "resend to another pane", "live owner's sibling tab", "held before close"] as const)(
   "replays a held follow-up receipt only while it remains unsent and held: %s", async (scenario) => {
     let now = Date.now();
     const clock = spyOn(Date, "now").mockImplementation(() => now);
@@ -189,10 +189,12 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
       };
       const first = client("device", token);
       let failResend = false;
+      // one turn at a time, as the server serializes a pane's sends
+      let turns: Promise<void> = Promise.resolve();
       const typing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
       let typed = 0;
       const delivery = createPendingDelivery({
-        options: {}, clients, attachments: new Map(), serialize: async (_pane, task) => task(), lastTyped: new Map(),
+        options: {}, clients, attachments: new Map(), serialize: (_pane, task) => { const run = turns.then(task); turns = run.then(() => {}, () => {}); return run; }, lastTyped: new Map(),
         sight: () => { throw new Error("a receipt replay takes no input lease"); },
         submitText: async () => {
           if (scenario === "attach during resend after closed-owner expiry") { typing.resolve(); await release.promise; }
@@ -200,7 +202,7 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
           typed++;
         },
         authorizeSocket: (owner) => { if (revoked.has(owner)) throw new Error("revoked"); },
-        clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
+        clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }, { pane_id: "q", terminal_id: "q", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
         omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
       const heldIds = (to: Client): string[] => frames.get(to)!.flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []);
@@ -228,8 +230,29 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
       expect(frames.get(resumed)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([]);
       // with how long the bridge keeps each: its whole window, as nothing waited since the close
       for (const id of heldIds(resumed)) expect(frames.get(resumed)!.some((frame) => frame.type === "pending-messages" && frame.held_ms?.[id] === 10 * 60 * 1000)).toBe(true);
-      expect(heldIds(resumed)).toEqual(["held on close", "held before close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired"].includes(scenario)
+      expect(heldIds(resumed)).toEqual(["held on close", "held before close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired",
+        "concurrent resends after closed-owner expiry", "resend to another pane"].includes(scenario)
         ? [item.message.id] : []);
+      if (scenario === "concurrent resends after closed-owner expiry") {
+        now += 60_001; delivery.pending.expire();
+        // the same held copy sent twice at once (two tabs, or a retry), generations 0 and 1: typed once
+        const frame = (id: number, resend_generation: number) => ({ type: "submit" as const, id, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate" as const, resend_id: item.message.id, resend_generation });
+        await Promise.all([delivery.pendingFrames.submit(resumed, frame(2, 0)), delivery.pendingFrames.submit(resumed, frame(3, 1))]);
+        expect(typed).toBe(1);
+        const results = frames.get(resumed)!.filter((frame) => frame.type === "submit-result" && (frame.id === 2 || frame.id === 3));
+        expect(results.filter((frame) => frame.type === "submit-result" && frame.typed_now === true)).toHaveLength(1);
+        return;
+      }
+      if (scenario === "resend to another pane") {
+        now += 60_001; delivery.pending.expire();
+        // a send to pane q carrying p's held ID claims nothing of p's
+        resumed.data.attached.set("q", { keepSize: false, receiptResumeId: token });
+        await delivery.pendingFrames.submit(resumed, { type: "submit", id: 2, pane_id: "q", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id });
+        const back = client("device", token);
+        delivery.attached(back, "p");
+        expect(heldIds(back)).toEqual([item.message.id]);
+        return;
+      }
       if (scenario === "resent after closed-owner expiry" || scenario === "ambiguous resend after closed-owner expiry" || scenario === "attach during resend after closed-owner expiry" || scenario === "replayed resend after its record expired") {
         now += 60_001; delivery.pending.expire();
         failResend = scenario === "ambiguous resend after closed-owner expiry";

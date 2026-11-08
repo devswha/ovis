@@ -87,7 +87,7 @@ describe("PC connection ownership", () => {
     socket.receive({ type: "features", features: ["pending-input"], connection: "reload", herdr_lifetime: "reload-herdr" });
     expect(session.scope).toBeNull();
     // Open's attach replay can finish while the server still awaits clientSnapshot().
-    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], ...(outcome === "held" ? { held: ["saved"] } : { removed: [{ id: "saved", outcome, resumed: true }] }) });
+    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], ...(outcome === "held" ? { held: ["saved"], held_ms: { saved: 60_000 } } : { removed: [{ id: "saved", outcome, resumed: true }] }) });
     expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain", serverOwned: false }]);
     socket.receive(named("reload-herdr"));
     expect(store.read(owner)).toMatchObject(outcome === "held" ? [{ id: "saved", state: "held", serverOwned: false }] : []);
@@ -403,14 +403,15 @@ describe("PC connection ownership", () => {
     session.onDisconnect(() => {
       expect(session.scope).toBeNull();
       expect(session.epoch).toBe(epoch + 1);
-      expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["held", false]]);
+      // a held row lost with its connection is uncertain until a receipt proves it again
+      expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["uncertain", false]]);
     });
     socket.disconnect();
     start(session, socket);
     expect(session.scope).not.toBe(oldScope);
     socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [] });
     session.acceptPending("w1:p1", message("queued"), epoch);
-    expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["held", false]]);
+    expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["uncertain", false]]);
     session.close();
   });
 

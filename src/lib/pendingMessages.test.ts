@@ -46,7 +46,7 @@ describe("pending message ownership", () => {
     expect(before.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
       ["queued", "uncertain", false], ["unproved", "uncertain", false],
     ]);
-    before.publish("p", [], [{ id: "queued", outcome: "held", resumed: true }, { id: "early", outcome: "held", resumed: true }], "new");
+    before.publish("p", [], [{ id: "queued", outcome: "held", resumed: true, until: Date.now() + 60_000 }, { id: "early", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "new");
     expect(before.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
       ["queued", "held", false], ["unproved", "uncertain", false],
     ]);
@@ -64,7 +64,7 @@ describe("pending message ownership", () => {
     // Once a held copy's explicit resend starts, a duplicate resumed held receipt never clears its unconfirmed mark.
     expect(before.begin("p", "queued")).toBe(true);
     expect(before.unconfirm("p", "queued")).toBe(true);
-    before.publish("p", [], [{ id: "queued", outcome: "held", resumed: true }], "new");
+    before.publish("p", [], [{ id: "queued", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "new");
     expect(new PendingMessageStore(() => port).read("p").find((row) => row.id === "queued")?.state).toBe("uncertain");
     before.end("p", "queued");
     // A terminal resumed receipt settles the held copy.
@@ -75,7 +75,7 @@ describe("pending message ownership", () => {
     const port = storage(), tab = new PendingMessageStore(() => port);
     tab.accept("p", message("saved"), "old");
     tab.suspendScope("old");
-    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true }], "new");
+    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "new");
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "held"]]);
     // the other tab sends it, and the outcome is not confirmed
     for (const state of ["sending", "uncertain"] as const) {
@@ -91,13 +91,13 @@ describe("pending message ownership", () => {
     try {
       const port = storage(), tab = new PendingMessageStore(() => port);
       // an early receipt, for a copy another tab saves only after the bridge's window has passed
-      tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true }], "new");
+      tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "new");
       now += 10 * 60 * 1000 + 1;
       port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("late", "queued")] }));
       tab.refresh("p");
       expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"]]);
       // a fresh one still holds it, and another tab's unrelated save keeps it held on this page only
-      tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true }], "newer");
+      tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "newer");
       expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"]]);
       port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("late", "uncertain"), message("other", "uncertain")] }));
       tab.refresh("p");
@@ -110,7 +110,7 @@ describe("pending message ownership", () => {
     tab.accept("p", message("late"), "old");
     tab.accept("p", message("sent"), "old");
     tab.suspendScope("old");
-    tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true }, { id: "sent", outcome: "held", resumed: true }], "new");
+    tab.publish("p", [], [{ id: "late", outcome: "held", resumed: true, until: Date.now() + 60_000 }, { id: "sent", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "new");
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"], ["sent", "held"]]);
     // the old connection's late answer says held: still no proof for the next page
     tab.accept("p", message("late", "held"), null);
@@ -182,18 +182,65 @@ describe("pending message ownership", () => {
       expect(tab.read("p").find((row) => row.id === "late")?.state).toBe("uncertain");
     } finally { clock.mockRestore(); }
   });
+  it("shows a held row without a live proof as uncertain: after its connection ends, in another tab, after a reload", () => {
+    const port = storage(), live = new PendingMessageStore(() => port);
+    live.accept("p", message("held", "held"), "connection");
+    expect(live.read("p").map(({ state }) => state)).toEqual(["held"]);
+    // another tab, or the page after a reload: the saved copy proves nothing
+    expect(new PendingMessageStore(() => port).read("p").map(({ state }) => state)).toEqual(["uncertain"]);
+    // the connection ends: no proof is left on this page either
+    live.suspendScope("connection");
+    expect(live.read("p").map(({ state }) => state)).toEqual(["uncertain"]);
+  });
+  it("takes a held ID only with a valid time left: any other shape proves nothing", () => {
+    const ids = (frame: Parameters<typeof frameRemovals>[0]) => frameRemovals(frame).map((removal) => removal.id);
+    expect(ids({ held: "held", held_ms: { held: 1_000 } })).toEqual([]);
+    expect(ids({ held: ["held", 4], held_ms: { held: 1_000 } })).toEqual([]);
+    expect(ids({ held: ["held"] })).toEqual([]);
+    expect(ids({ held: ["held"], held_ms: "1000" })).toEqual([]);
+    for (const ms of [Number.NaN, Infinity, 0, -1, 10 * 60 * 1000 + 1, "1000"]) expect(ids({ held: ["held"], held_ms: { held: ms } })).toEqual([]);
+    expect(ids({ held: ["held", "other"], held_ms: { held: 1_000 } })).toEqual(["held"]);
+    // a frame with no held proof leaves a saved copy uncertain
+    const port = storage(), tab = new PendingMessageStore(() => port);
+    tab.accept("p", message("held"), "old");
+    tab.suspendScope("old");
+    tab.publish("p", [], frameRemovals({ held: ["held"], held_ms: { held: 10 * 60 * 1000 + 1 } }), "new");
+    expect(tab.read("p").map(({ state }) => state)).toEqual(["uncertain"]);
+  });
+  it("never holds a copy past the bridge's own end: a frame that came late, a clock that differs", () => {
+    let now = Date.parse("2026-11-08T00:00:00Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const sent = now;
+      // sent with five minutes left, it arrives five minutes late: nothing is left
+      now += 5 * 60 * 1000;
+      const late = frameRemovals({ held: ["late"], held_ms: { late: 5 * 60 * 1000 }, held_until: { late: sent + 5 * 60 * 1000 } }, 0);
+      expect(late.map((removal) => removal.outcome === "held" ? removal.until : undefined)).toEqual([now]);
+      // this page's clock runs an hour ahead of the PC's: the bridge's end is reckoned on this page's clock
+      const skew = -60 * 60 * 1000;
+      const ahead = frameRemovals({ held: ["ahead"], held_ms: { ahead: 60_000 }, held_until: { ahead: now + skew + 30_000 } }, skew);
+      expect(ahead.map((removal) => removal.outcome === "held" ? removal.until : undefined)).toEqual([now + 30_000]);
+      const port = storage(), tab = new PendingMessageStore(() => port);
+      for (const id of ["late", "ahead"]) tab.accept("p", message(id), "old");
+      tab.suspendScope("old");
+      tab.publish("p", [], [...late, ...ahead], "new");
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["ahead", "held"]]);
+      now += 30_000;
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["ahead", "uncertain"]]);
+    } finally { clock.mockRestore(); }
+  });
   it("never offers a discarded copy again: a later resumed held ID leaves another tab's stale copy or a late acceptance uncertain", () => {
     const port = storage(), tab = new PendingMessageStore(() => port);
     tab.accept("p", message("saved"), "old");
     tab.suspendScope("old");
-    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true }], "new");
+    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "new");
     tab.removeCopy("p", "saved");
-    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true }], "newer");
+    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "newer");
     port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("saved", "queued")] }));
     tab.refresh("p");
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
     tab.removeCopy("p", "saved");
-    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true }], "newest");
+    tab.publish("p", [], [{ id: "saved", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "newest");
     tab.accept("p", message("saved", "sending"), null);
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["saved", "uncertain"]]);
     // nor does a stale held copy or a late held acceptance
@@ -276,7 +323,8 @@ describe("pending message ownership", () => {
     a.fail("p", "h", { code: "submit_changed", message: "old receipt" }, true, 0);
     const restored = new PendingMessageStore(() => port).read("p")[0]!;
     expect(restored.resendGeneration).toBe(1);
-    expect(restored.state).toBe("held");
+    // saved, a held copy has no proof: uncertain until a receipt proves it again
+    expect(restored.state).toBe("uncertain");
   });
   it("regression: an uncertain reply keeps its generation and survives another live owner's suspension", () => {
     const port = storage(), a = new PendingMessageStore(() => port), b = new PendingMessageStore(() => port);
@@ -342,7 +390,7 @@ describe("pending message ownership", () => {
     live.accept("pc:pane", message("s", "sending"), "connection-1");
     live.accept("pc:pane", message("h", "held"), "connection-1");
     const restored = new PendingMessageStore(() => port);
-    expect(restored.read("pc:pane").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([["q", "uncertain", false], ["s", "uncertain", false], ["h", "held", false]]);
+    expect(restored.read("pc:pane").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([["q", "uncertain", false], ["s", "uncertain", false], ["h", "uncertain", false]]);
     restored.publish("pc:pane", [], [], "connection-2");
     expect(restored.read("pc:pane")).toHaveLength(3);
   });
@@ -362,7 +410,8 @@ describe("pending message ownership", () => {
     store.accept("p", message("h", "held"), "old");
     store.suspendScope("old");
     store.accept("p", message("q"), null);
-    expect(store.read("p").map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["held", false]]);
+    // a held row lost with its connection is uncertain until a receipt proves it again
+    expect(store.read("p").map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["uncertain", false]]);
     store.publish("p", [], [{ id: "q", outcome: "sent" }], "new");
     expect(store.read("p")).toHaveLength(2);
   });
@@ -408,11 +457,14 @@ describe("pending message ownership", () => {
     const restored = new PendingMessageStore(() => port);
     expect(restored.begin("pc:pane", "h")).toBe(true);
     restored.unconfirm("pc:pane", "h");
-    expect(restored.read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["h", "held"]]);
+    // another tab's copy of a live held row proves nothing here: uncertain
+    expect(restored.read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["h", "uncertain"]]);
     expect(new PendingMessageStore(() => port).read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["h", "uncertain"]]);
     restored.fail("pc:pane", "h", { code: "agent_blocked", message: "menu" }, false);
     restored.end("pc:pane", "h");
-    expect(new PendingMessageStore(() => port).read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["h", "held"]]);
+    // the not-confirmed mark comes off: saved held again, which a page shows uncertain until a receipt proves it
+    expect(JSON.parse(port.getItem("ovis:pending:pc:pane")!).messages.map(({ id, state, resendInFlight }: { id: string; state: string; resendInFlight?: true }) => [id, state, resendInFlight ?? false])).toEqual([["h", "held", false]]);
+    expect(new PendingMessageStore(() => port).read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["h", "uncertain"]]);
   });
   it("keeps a copy being sent again not confirmed through another row's write", () => {
     const port = storage(), live = new PendingMessageStore(() => port);
@@ -422,7 +474,7 @@ describe("pending message ownership", () => {
     expect(restored.begin("pc:pane", "a")).toBe(true);
     restored.unconfirm("pc:pane", "a");
     restored.removeCopy("pc:pane", "b");
-    expect(restored.read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["a", "held"]]);
+    expect(restored.read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["a", "uncertain"]]);
     expect(new PendingMessageStore(() => port).read("pc:pane").map(({ id, state }) => [id, state])).toEqual([["a", "uncertain"]]);
   });
   it("keeps another tab's saved message when a held copy is marked before that tab's storage event", () => {
@@ -499,7 +551,7 @@ describe("a pane moved under a new ID (#1503)", () => {
     store.move("remote:pc:w1%3Ap1", "remote:pc:w2%3Ap1");
     expect(store.read("remote:pc:w1%3Ap1")).toEqual([]);
     expect(port.getItem("ovis:pending:remote:pc:w1%3Ap1")).toBeNull();
-    expect(store.read("remote:pc:w2%3Ap1").map((row) => [row.id, row.state])).toEqual([["live", "held"], ["saved", "held"]]);
+    expect(store.read("remote:pc:w2%3Ap1").map((row) => [row.id, row.state])).toEqual([["live", "held"], ["saved", "uncertain"]]);
     // its receipt under the new ID settles the live row
     store.publish("remote:pc:w2%3Ap1", [], [{ id: "live", outcome: "sent" }], "scope");
     expect(store.read("remote:pc:w2%3Ap1").map((row) => row.id)).toEqual(["saved"]);

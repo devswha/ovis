@@ -1025,8 +1025,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     return rebound;
   }
   /** held receipts as a frame tells them: their IDs, and how long the bridge keeps each (the page's proof ends with it) */
-  function heldPart(entries: ReadonlyArray<{ id: string; at: number }>): { held: string[]; held_ms: Record<string, number> } {
-    return { held: entries.map(({ id }) => id), held_ms: Object.fromEntries(entries.map(({ id, at }) => [id, Math.max(0, at + PI_RESUME_MS - Date.now())])) };
+  function heldPart(entries: ReadonlyArray<{ id: string; at: number }>): { held: string[]; held_ms: Record<string, number>; held_until: Record<string, number> } {
+    const now = Date.now();
+    return { held: entries.map(({ id }) => id), held_ms: Object.fromEntries(entries.map(({ id, at }) => [id, Math.max(0, at + PI_RESUME_MS - now)])),
+      held_until: Object.fromEntries(entries.map(({ id, at }) => [id, at + PI_RESUME_MS])) };
   }
   /** `held`: an exact ID the bridge holds untyped, in its own field so a client that predates it never reads it as a removal. */
   function pushResumed(owner: Client, paneId: string, kept: string, part: { removed: PendingRemoval[] } | ReturnType<typeof heldPart>): void {
@@ -1241,43 +1243,34 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         };
         if (message.resend_id !== undefined) {
           authorizeSocket(client);
+          const id = message.resend_id, pane = message.pane_id, key = resumeKey(client, pane);
           const hash = new Bun.CryptoHasher("sha256").update(framed.text).digest("hex");
-          // sent already to this pane (its resend record may have expired): a replay of it never types it again
-          if (completed.some((entry) => entry.id === message.resend_id && entry.outcome === "sent" && entry.paneId === message.pane_id
-            && (entry.hash === undefined || entry.hash === hash))) {
-            result(true, undefined, undefined, undefined, undefined, undefined, false, undefined);
-            return;
-          }
           // typed by this request: a replayed id, or a copy another connection sent, runs no dispatch here
           let typedNow = false;
-          const takeHeld = () => {
-            const at = completed.findIndex((entry) => entry.id === message.resend_id && entry.outcome === "held");
-            return at >= 0 ? completed.splice(at, 1)[0] : undefined;
-          };
-          let typing: (typeof completed)[number] | undefined;
-          const answer = await serialize(message.pane_id, () => pending.resend(message.pane_id, message.resend_id!,
-            hash, async () => {
-              // no longer held while it is typed: a tab attaching now is not offered it again
-              typing = takeHeld();
+          // Every check and claim on the receipts runs in the pane's serialized turn, by the original ID: two
+          // resends of one copy (any generations) see each other's claim, so the text is typed once.
+          const answer = await serialize(pane, async () => {
+            // sent already to this pane (its resend record may have expired): a replay of it never types it again
+            if (completed.some((entry) => entry.id === id && entry.outcome === "sent" && entry.paneId === pane && (entry.hash === undefined || entry.hash === hash))) return { ok: true };
+            // the held receipt is this pane's and this browser's to claim, no other's
+            const at = completed.findIndex((entry) => entry.id === id && entry.outcome === "held" && entry.paneId === pane && entry.key === key);
+            const held = at >= 0 ? completed.splice(at, 1)[0] : undefined;
+            const sent = await pending.resend(pane, id, hash, async () => {
               try { await dispatch(); typedNow = true; return { ok: true }; }
               catch (error) { return { ok: false, ...pendingFault(error) }; }
-            }, message.resend_generation));
-          const held = typing ?? takeHeld();
-          if (held) {
-            if (answer.ok) {
-              // its sent receipt only for the pane and browser the held one was kept for
-              // (unless settling its record kept that receipt already)
-              if (held.paneId === message.pane_id && held.key === resumeKey(client, message.pane_id) && !completed.some((entry) => entry.id === held.id)) {
-                completed.push({ ...held, outcome: "sent", at: Date.now(), hash });
-                pushResumed(client, message.pane_id, held.key, { removed: [{ id: message.resend_id, outcome: "sent", resumed: true }] });
-              }
-            } else if (submitNotTyped(answer.code ?? "")) {
+            }, message.resend_generation);
+            if (sent.ok && (typedNow || held)) {
+              // the claim, before the turn ends: a concurrent resend finds it sent
+              if (!completed.some((entry) => entry.id === id && entry.outcome === "sent")) completed.push({ paneId: pane, key: held?.key ?? key ?? "", id, outcome: "sent", at: Date.now(), hash });
+              if (held) pushResumed(client, pane, held.key, { removed: [{ id, outcome: "sent", resumed: true }] });
+            } else if (held && !sent.ok && submitNotTyped(sent.code ?? "")) {
               // back in its place by age, as pruning drops expired receipts from the front
-              const at = completed.findIndex((entry) => entry.at > held.at);
-              completed.splice(at < 0 ? completed.length : at, 0, held);
+              const back = completed.findIndex((entry) => entry.at > held.at);
+              completed.splice(back < 0 ? completed.length : back, 0, held);
             }
             prunePi();
-          }
+            return sent;
+          });
           result(answer.ok, answer.code, answer.message, undefined, undefined, undefined, answer.ok && typedNow, typedNow ? sendingAt : undefined);
           return;
         }
