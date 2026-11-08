@@ -9,6 +9,7 @@ import type { RelayStatus } from "../../shared/protocol.ts";
 import type { RequestServices } from "../dispatch.ts";
 import { isJsonObject } from "../http.ts";
 import { writePrivateState } from "../private-state.ts";
+import { DEFAULT_ACCOUNT_SERVICE } from "../static.ts";
 import { loadRelayIdentity, relayIdentityPath, RelayIdentityError, rotateRelayIdentity, savedServerId } from "./identity.ts";
 import type { RelayIdentity } from "./identity.ts";
 import { SignedInSessions } from "./admissions.ts";
@@ -56,7 +57,7 @@ export interface RelayServiceOptions {
   readonly accountFetch?: (request: Request) => Promise<Response>;
   readonly passClock?: RelayPassClock;
   /**
-   * The relays that count as Ovis's own, the only ones a pass goes to: GLOBAL_RELAY and REGIONAL_RELAYS (and the
+   * The relays that count as Ovis's own, the only ones a pass goes to: GLOBAL_RELAY and REGIONAL_RELAYS (or only the
    * staging copy OVIS_RELAY_URL names with OVIS_RELAY_STAGING=1) unless tests name theirs.
    */
   readonly ovisRelays?: readonly string[];
@@ -141,12 +142,16 @@ export class RelayService {
   constructor(private readonly options: RelayServiceOptions) {
     const named = options.relay ?? process.env["OVIS_RELAY_URL"];
     const origin = named === undefined ? undefined : relayEndpoint(named, "wss:");
+    // A test PC on a staging copy of Ovis's relay (relay/README.md, "Staging"), with a staging account service: that
+    // relay alone, and its passes go there only. Never with the production service, whose passes are live.
+    const asked = origin !== undefined && process.env["OVIS_RELAY_STAGING"] === "1";
+    const service = options.accountService;
+    const staging = asked && typeof service === "string" && service !== DEFAULT_ACCOUNT_SERVICE;
+    if (asked && !staging) console.error(JSON.stringify({ event: "relay.staging.ignored", reason: "OVIS_RELAY_STAGING needs OVIS_ACCOUNT_SERVICE_URL naming a staging account service" }));
     // A phone falls back from Ovis's regional relays to the global one, so a PC on one is always on both.
-    this.pinned = origin !== undefined && REGIONAL_RELAYS.includes(origin) ? origin : null;
+    this.pinned = !staging && origin !== undefined && REGIONAL_RELAYS.includes(origin) ? origin : null;
     this.relay = origin === undefined || this.pinned ? GLOBAL_RELAY : origin;
-    // a test PC on a staging copy of Ovis's relay (relay/README.md, "Staging") gets and sends its pass there
-    const staging = origin !== undefined && process.env["OVIS_RELAY_STAGING"] === "1" ? [origin] : [];
-    this.ovisRelays = options.ovisRelays ?? [GLOBAL_RELAY, ...REGIONAL_RELAYS, ...staging];
+    this.ovisRelays = options.ovisRelays ?? (staging ? [origin] : [GLOBAL_RELAY, ...REGIONAL_RELAYS]);
     this.app = relayEndpoint(options.app ?? process.env["OVIS_RELAY_APP_URL"] ?? "https://app.ovis.sh", "https:");
     this.regionalRelays = this.pinned ? [this.pinned]
       : (options.regionalRelays ?? (origin === undefined ? REGIONAL_RELAYS : []))

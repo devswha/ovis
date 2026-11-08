@@ -100,12 +100,16 @@ export class RelayPassKeeper {
     this.saved = readSaved(this.path);
   }
 
-  /** The pass to send: one for this identity that has not expired, or null. */
+  /**
+   * The pass to send: one for this identity that has not expired, from the account service in use, or null. While that
+   * service's address cannot be used, the one saved still holds (it then goes to Ovis's relays only: no staging one).
+   */
   current(): string | null {
     const saved = this.saved;
     const identity = this.options.identity();
-    if (!saved || !identity || saved.server_id !== identity.server_id || saved.service !== this.options.service || this.clock.now() >= saved.expires_at) return null;
-    return saved.pass;
+    const service = this.options.service;
+    if (!saved || !identity || saved.server_id !== identity.server_id || this.clock.now() >= saved.expires_at) return null;
+    return typeof service === "string" && saved.service !== service ? null : saved.pass;
   }
 
   start(): void {

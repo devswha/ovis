@@ -6,6 +6,8 @@ import { startBunRelay } from "../../relay/bun.ts";
 import { passPolicy } from "../../relay/pass.ts";
 import { RELAY_PASS_HEADER, signRelayPass } from "../../shared/relay-pass.ts";
 import { proofKey, serverChallenge, verifyServerProof } from "../../shared/relay-server-proof.ts";
+import { REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
+import { DEFAULT_ACCOUNT_SERVICE } from "../static.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { createServer } from "../index.ts";
 import { RelayService } from "./service.ts";
@@ -14,6 +16,15 @@ import { bounded, deferred } from "./test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+
+/** Sets environment variables for this test only. */
+function withEnv(values: Record<string, string>): void {
+  for (const [name, value] of Object.entries(values)) {
+    const previous = process.env[name];
+    process.env[name] = value;
+    cleanup.push(() => { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; });
+  }
+}
 
 const KID = "0badc0de";
 
@@ -55,6 +66,8 @@ async function fixture(mode: "grace" | "enforce" = "enforce") {
   /** what each control socket heard first after its proof, and how it closed */
   const syncs: Record<string, unknown>[] = [];
   const headers: (Record<string, string> | undefined)[] = [];
+  /** every PC socket the PC opened: the relay it named, and the pass it sent there */
+  const dialed: { origin: string; pass: string | null }[] = [];
   /** what the PC sent on its control sockets after the proof */
   const sentOnControl: string[] = [];
   const renewal = deferred<string>();
@@ -63,6 +76,7 @@ async function fixture(mode: "grace" | "enforce" = "enforce") {
   const connect = (url: string, extra?: Record<string, string>) => {
     const target = new URL(url);
     headers.push(extra);
+    dialed.push({ origin: target.origin, pass: extra?.[RELAY_PASS_HEADER] ?? null });
     const socket = new WebSocket(`ws://127.0.0.1:${relay.port}${target.pathname}${target.search}`, (extra ? { headers: extra } : undefined) as unknown as string[]);
     if (!target.searchParams.has("connection_id") && !target.searchParams.has("warm")) {
       const send = socket.send.bind(socket);
@@ -78,13 +92,13 @@ async function fixture(mode: "grace" | "enforce" = "enforce") {
     }
     return socket;
   };
-  const options = { stateDir, relay: origin, regionalRelays: [], connect, accountService: "https://account.test", accountFetch, ovisRelays: [origin] };
+  const options = { stateDir, relay: origin, regionalRelays: [], connect, accountService: "https://account.test" as string | Error, accountFetch, ovisRelays: [origin] };
   let service = new RelayService(options);
   let app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service });
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = () => `http://127.0.0.1:${app.port}`;
   return {
-    stateDir, origin, asked, headers, syncs, listed, hooks, limited, sentOnControl, renewal: renewal.promise,
+    stateDir, origin, asked, headers, dialed, syncs, listed, hooks, limited, sentOnControl, renewal: renewal.promise,
     get service() { return service; },
     get synced() { return synced.promise; },
     get refused() { return refused.promise; },
@@ -140,6 +154,17 @@ test("a restarted PC goes online on the pass it saved, without asking the accoun
   expect(f.asked).toHaveLength(asked);
 });
 
+test("a pass saved before the account service's address stopped parsing still lets the PC in while it holds", async () => {
+  const f = await fixture();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  await f.start();
+  await bounded(f.synced);
+  // restarted with an OVIS_ACCOUNT_SERVICE_URL that does not parse: no new pass can be asked for, the saved one still holds
+  await f.restart({ accountService: new Error("Invalid OVIS_ACCOUNT_SERVICE_URL") });
+  await f.start();
+  expect(await bounded(Promise.race([f.synced.then((sync) => sync["relay_pass"]), f.refused]))).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+});
+
 test("a relay that is not Ovis's gets no pass, and the account service is never asked", async () => {
   const f = await fixture();
   expect((await f.nameAccount("acct_1")).status).toBe(204);
@@ -154,16 +179,35 @@ test("a relay that is not Ovis's gets no pass, and the account service is never 
 test("a test PC on a staging copy of Ovis's relay (OVIS_RELAY_STAGING=1 with OVIS_RELAY_URL) sends it the pass as to Ovis's own", async () => {
   const f = await fixture();
   expect((await f.nameAccount("acct_1")).status).toBe(204);
-  for (const [name, value] of [["OVIS_RELAY_STAGING", "1"], ["OVIS_RELAY_URL", f.origin]] as const) {
-    const previous = process.env[name];
-    process.env[name] = value;
-    cleanup.push(() => { if (previous === undefined) delete process.env[name]; else process.env[name] = previous; });
-  }
+  withEnv({ OVIS_RELAY_STAGING: "1", OVIS_RELAY_URL: f.origin });
   // the relay from the environment, and no list of Ovis's relays named by the test: it counts as Ovis's for the setting alone
   await f.restart({ relay: undefined, ovisRelays: undefined });
   await f.start();
   expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
   expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
+});
+
+test("the staging setting is no use with Ovis's production account service: the relay it names gets no pass", async () => {
+  const f = await fixture();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  withEnv({ OVIS_RELAY_STAGING: "1", OVIS_RELAY_URL: f.origin });
+  await f.restart({ relay: undefined, ovisRelays: undefined, accountService: DEFAULT_ACCOUNT_SERVICE });
+  await f.start();
+  // a relay of anyone's: no pass is asked for or sent to it
+  expect(f.service.status().pass).toBeUndefined();
+  await bounded(f.refused);
+  expect(f.dialed.every((socket) => socket.pass === null)).toBe(true);
+});
+
+test("with the staging setting the PC uses the one relay OVIS_RELAY_URL names, a regional Ovis one included, and sends its pass there only", async () => {
+  const regional = REGIONAL_RELAYS[0]!;
+  const f = await fixture();
+  expect((await f.nameAccount("acct_1")).status).toBe(204);
+  withEnv({ OVIS_RELAY_STAGING: "1", OVIS_RELAY_URL: regional });
+  await f.restart({ relay: undefined, ovisRelays: undefined });
+  await f.start();
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect(f.dialed.map((socket) => socket.origin)).toEqual(f.dialed.map(() => regional));
 });
 
 test("a pass the relay refuses is dropped and a new one asked for at once", async () => {
