@@ -325,21 +325,50 @@ describe("RelayDashboard frame and routes", () => {
     expect(renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined).length).toBe(0);
   });
 
-  it("below 1100px, selecting a row focuses the details heading without a ring and scrolls the details into view, and Back focuses the row again; from 1100px the side panel leaves the focus alone", async () => {
+  it("on a phone the details replace the list as a full view whose Back shows the list and focuses its row; between the phone and 1100px the list stays and the details scroll into view and take the focus; from 1100px the side panel leaves the focus alone", async () => {
     const nameButton = (id: string) => renderer!.root.find((n) => (n.type === "tr" || n.type === "li") && n.props["data-pc-id"] === id).find((n) => n.props.className === "relay-pc-name-btn");
     const details = () => renderer!.root.findAll((n) => n.props["data-pc-details"] !== undefined);
+    const lists = () => renderer!.root.findAll((n) => n.props["data-pc-list"] !== undefined);
+    const select = async () => { await act(async () => { nameButton(IDS.home).props.onClick({ stopPropagation() {} }); }); };
+    const back = async () => { await act(async () => { renderer!.root.find((n) => n.type === "button" && textOf(n).trim() === "Back").props.onClick(); }); };
+    const scrolls: unknown[][] = [];
+    (window as unknown as { scrollTo: (...args: unknown[]) => void }).scrollTo = (...args) => { scrolls.push(args); };
+
+    // a phone (the tab-bar layout): the details are the whole view, started at the top; Back brings the list back under the focus
+    phoneMatches = true;
     narrowMatches = true;
     window.location.hash = "#pcs";
     await mount();
+    expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual([]);
-    await act(async () => { nameButton(IDS.home).props.onClick({ stopPropagation() {} }); });
+    await select();
     expect(details()).toHaveLength(1);
-    // the heading, made focusable, takes the focus; the details panel is scrolled to its start
+    expect(lists()).toHaveLength(0);
+    expect(focusedNodes).toEqual(["details-heading"]);
+    expect(detailsHeading.tabIndex).toBe(-1);
+    expect(scrolls).toEqual([[0, 0]]);
+    expect(detailsPanel.scrolledTo).toEqual([]);
+    await back();
+    expect(details()).toHaveLength(0);
+    expect(lists()).toHaveLength(1);
+    expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
+
+    // between the phone and 1100px: the list stays, the details panel is scrolled to its start and its heading takes the focus
+    await act(async () => { renderer!.unmount(); });
+    phoneMatches = false;
+    focusedNodes = [];
+    scrolls.length = 0;
+    detailsHeading.tabIndex = 0;
+    window.location.hash = "#pcs";
+    await mount();
+    await select();
+    expect(details()).toHaveLength(1);
+    expect(lists()).toHaveLength(1);
     expect(focusedNodes).toEqual(["details-heading"]);
     expect(detailsHeading.tabIndex).toBe(-1);
     expect(detailsPanel.scrolledTo).toEqual([{ block: "start" }]);
-    // Back leaves the details and gives the focus to the row that opened them
-    await act(async () => { renderer!.root.find((n) => n.type === "button" && textOf(n).trim() === "Back").props.onClick(); });
+    expect(scrolls).toEqual([]);
+    await back();
     expect(details()).toHaveLength(0);
     expect(focusedNodes).toEqual(["details-heading", `row:${IDS.home}`]);
 
@@ -358,13 +387,15 @@ describe("RelayDashboard frame and routes", () => {
     detailsHeading.tabIndex = 0;
     window.location.hash = "#pcs";
     await mount();
-    await act(async () => { nameButton(IDS.home).props.onClick({ stopPropagation() {} }); });
+    await select();
     expect(details()).toHaveLength(1);
+    expect(lists()).toHaveLength(1);
     await act(async () => { renderer!.root.find((n) => n.type === "button" && n.props["aria-label"] === "Close").props.onClick(); });
     expect(details()).toHaveLength(0);
     expect(focusedNodes).toEqual([]);
     expect(detailsHeading.tabIndex).toBe(0);
     expect(detailsPanel.scrolledTo).toEqual([]);
+    expect(scrolls).toEqual([]);
   });
 
   it("keeps Sign out in the desktop sidebar foot while placing Remove this device only in Devices with same-element confirmation", async () => {

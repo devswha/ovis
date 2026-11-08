@@ -181,8 +181,9 @@
   .relay-dash-pcs-split.is-selected { grid-template-columns: minmax(0, 1fr) var(--relay-detail-w); }
 }
 
-/* Below 1100px the details open under the list, so selecting a row scrolls them into view and moves the focus to
-   their heading (RelayDashboard.tsx), which shows no ring, as the page title does not: it is not interactive. */
+/* Below 1100px the details are a full view: on a phone they stand in for the list, above it they open under the list
+   and scroll into view (RelayDashboard.tsx). Their heading takes the focus and shows no ring, as the page title does
+   not: it is not interactive. */
 .relay-dash-pcs-split > .relay-pc-details { scroll-margin-top: var(--space-4); }
 
 .relay-dash-pcs-split .relay-pc-details-title:focus, .relay-dash-pcs-split .relay-pc-details-title:focus-visible { outline: none; }

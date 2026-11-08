@@ -37,7 +37,7 @@ export interface DashboardQaOptions {
   readonly evidence: string | null;
 }
 
-type Width = 390 | 1440 | 1920;
+type Width = 390 | 1024 | 1440 | 1920;
 interface OpenOptions {
   readonly fleet: FleetName;
   readonly width?: Width;
@@ -55,7 +55,7 @@ interface OpenOptions {
 }
 interface Opened { readonly context: BrowserContext; readonly page: Page; readonly fleet: Fleet; readonly sockets: string[]; readonly errors: string[]; readonly account: string[] }
 
-const HEIGHT: Record<Width, number> = { 390: 844, 1440: 900, 1920: 1080 };
+const HEIGHT: Record<Width, number> = { 390: 844, 1024: 768, 1440: 900, 1920: 1080 };
 
 export async function relayDashboardQa({ browser, origin, evidence }: DashboardQaOptions): Promise<string[]> {
   if (evidence) mkdirSync(evidence, { recursive: true });
@@ -637,31 +637,55 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `h1 "Devices" focused, outline-style none`;
   });
 
-  // below 1100px the details are a full view under the list: selecting a row moves the focus to its heading, ringless and
-  // on screen, and Back gives the focus to the row that opened it; from 1100px the side panel keeps the click's focus
-  await check("details-390-focus", async () => {
-    const { page } = await open({ fleet: "FREADY", width: 390 });
+  // IS-TABLE-08: on a phone (the tab-bar layout) a selected PC's details replace the list, as a full view with Back; between
+  // the phone and 1100px they open under the list and come into view; either way the details heading takes the focus,
+  // ringless and on screen, and Back gives the focus to the row that opened it. From 1100px the side panel keeps the click's focus.
+  /** The list's visible rows, the details' placement and the scroll position, as the page lays them out. */
+  const detailsLayout = (page: Page) => page.evaluate(() => {
+    const visible = (element: Element) => element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden";
+    const list = document.querySelector("[data-pc-list]");
+    const box = document.querySelector("[data-pc-details]")?.getBoundingClientRect() ?? null;
+    return { listRendered: list !== null, listVisible: list !== null && visible(list), rowsVisible: [...document.querySelectorAll("[data-pc-list] [data-pc-id]")].filter(visible).length,
+      top: box === null ? null : Math.round(box.top), bottom: box === null ? null : Math.round(box.bottom), inner: window.innerHeight, scrollY: Math.round(window.scrollY) };
+  });
+  const detailsOpened = async (width: 390 | 1024, shotName: string) => {
+    const { page } = await open({ fleet: "FREADY", width });
     await go(page, "#pcs", "pcs");
     await page.evaluate(() => window.scrollTo(0, 0));
     const row = listedRows(page).filter({ hasText: "Home server" });
     const id = await row.getAttribute("data-pc-id");
     await row.locator(".relay-pc-name-btn").click();
     await page.locator("[data-pc-details]").waitFor();
-    const placed = await page.evaluate(() => {
-      const box = document.querySelector("[data-pc-details]")!.getBoundingClientRect();
-      return { top: Math.round(box.top), inner: window.innerHeight, scrollY: Math.round(window.scrollY) };
-    });
+    const layout = await detailsLayout(page);
     const focus = await focused(page);
-    await shot(page, "details-390-dark");
+    await shot(page, shotName);
     expect(focus?.tag === "h2" && focus.text === "Home server", `the details heading holds the focus (${JSON.stringify(focus)})`);
     expect(focus?.outline === "none", `the heading shows no ring (outline-style ${focus?.outline})`);
-    expect(placed.top >= 0 && placed.top < placed.inner / 2, `the details start in the upper half of the screen (top ${placed.top} of ${placed.inner}, scrolled ${placed.scrollY})`);
-    await page.locator("[data-pc-details]").getByRole("button", { name: "Back" }).click();
-    await page.locator("[data-pc-details]").waitFor({ state: "detached" });
-    const back = await focused(page);
-    await shot(page, "details-390-back-dark");
-    expect(back?.row === id && back.className.includes("relay-pc-name-btn"), `Back gives the focus to the row that opened the details (${JSON.stringify(back)})`);
-    return `heading focused without a ring, details top ${placed.top}px after scrolling ${placed.scrollY}px, Back focuses the row`;
+    expect(layout.top !== null && layout.top >= 0 && layout.top < layout.inner / 2, `the details start in the upper half of the screen (${JSON.stringify(layout)})`);
+    const back = async () => {
+      await page.locator("[data-pc-details]").getByRole("button", { name: "Back" }).click();
+      await page.locator("[data-pc-details]").waitFor({ state: "detached" });
+      const after = await detailsLayout(page);
+      const at = await focused(page);
+      await shot(page, `${shotName.replace("-dark", "")}-back-dark`);
+      expect(after.listVisible && after.rowsVisible >= 6, `Back shows the list again (${JSON.stringify(after)})`);
+      expect(at?.row === id && at.className.includes("relay-pc-name-btn") && at.inView, `Back gives the focus to the row that opened the details, on screen (${JSON.stringify(at)})`);
+    };
+    return { layout, back };
+  };
+
+  await check("details-390-full-view", async () => {
+    const { layout, back } = await detailsOpened(390, "details-390-dark");
+    expect(!layout.listRendered, `the list is not rendered behind the details on a phone (${JSON.stringify(layout)})`);
+    await back();
+    return `details replace the list (top ${layout.top}px), heading focused without a ring, Back shows the list and focuses the row`;
+  });
+
+  await check("details-1024-in-flow", async () => {
+    const { layout, back } = await detailsOpened(1024, "details-1024-dark");
+    expect(layout.listVisible && layout.rowsVisible >= 1, `the list stays above the details between the phone and 1100px (${JSON.stringify(layout)})`);
+    await back();
+    return `details under the list, in view at top ${layout.top}px after scrolling ${layout.scrollY}px, heading focused, Back focuses the row`;
   });
 
   await check("details-1440-side-panel", async () => {

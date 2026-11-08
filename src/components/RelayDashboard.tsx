@@ -119,9 +119,10 @@ export function RelayDashboard({
 
   useEffect(() => { if (prevViewRef.current !== route.view) { prevViewRef.current = route.view; titleRef.current?.focus(); } }, [route.view]);
 
-  // Below 1100px the details open under the whole list, so a selection would leave the user at the row: the details
-  // heading takes the focus (ringless, RelayDashboard.css) and the panel scrolls into view; leaving them focuses the row
-  // again. From 1100px the side panel opens beside the list and the focus stays where the click put it.
+  // On a phone the details replace the list (IS-TABLE-08), so the view starts at the top; between the phone and 1100px
+  // they open under the whole list, so the panel scrolls into view. Either way the details heading takes the focus
+  // (ringless, RelayDashboard.css) and leaving them focuses the row again. From 1100px the side panel opens beside the
+  // list and the focus stays where the click put it.
   useEffect(() => {
     if (route.pc === prevPcRef.current) return;
     prevPcRef.current = route.pc;
@@ -134,11 +135,11 @@ export function RelayDashboard({
       if (!details || !heading) return;
       heading.tabIndex = -1;
       heading.focus({ preventScroll: true });
-      details.scrollIntoView({ block: "start" });
+      if (phone) window.scrollTo(0, 0); else details.scrollIntoView({ block: "start" });
     } else if (closed !== null) {
       (split.querySelector<HTMLElement>(`[data-pc-id="${closed}"] .relay-pc-name-btn`) ?? titleRef.current)?.focus();
     }
-  }, [route.pc, narrow]);
+  }, [route.pc, narrow, phone]);
 
   const navigateTo = (nextHash: string) => {
     setRoute(parseDashboardHash(nextHash));
@@ -166,12 +167,15 @@ export function RelayDashboard({
   const renderTableSection = (relayFilter: string | null) => model && (
     <section className="relay-dash-pcs" id="relay-dash-pcs" aria-label={t("PCs")}>
       <div ref={splitRef} className={selectedRow ? "relay-dash-pcs-split is-selected" : "relay-dash-pcs-split"}>
-        <div className="relay-dash-pcs-list">
-          <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
-            relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}
-            selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet} showLastSeen={selectedRow === null}
-            {...(pcStatus ? { pcStatus } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} checkedByUser={checkedByUser} mode={mode} />
-        </div>
+        {/* a phone shows one screen at a time: with a PC selected, its details stand in for the list until Back */}
+        {!(phone && selectedRow) && (
+          <div className="relay-dash-pcs-list">
+            <RelayPcTable rows={model.rows} attention={model.attention} filters={model.filters} filter={activeFilter} onFilter={setFilter}
+              relayFilter={relayFilter} onClearRelayFilter={() => navigateTo(formatDashboardHash({ view: "pcs", filter: activeFilter, relay: null, pc: route.pc }))}
+              selectedPcId={selectedRow?.server_id ?? null} onSelect={selectPc} onOpenSheet={onOpenSheet} showLastSeen={selectedRow === null}
+              {...(pcStatus ? { pcStatus } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} checkedByUser={checkedByUser} mode={mode} />
+          </div>
+        )}
         {selectedRow && (
           <RelayPcDetails pc={selectedRow} observedVersion={observedVersions?.get(selectedRow.server_id) ?? null} mode={mode}
             onClose={closeDetails} onOpenSheet={onOpenSheet} {...(onForgetPc ? { onForget: onForgetPc } : {})} {...(handleCheckPcs ? { onCheckPcs: handleCheckPcs } : {})} />
