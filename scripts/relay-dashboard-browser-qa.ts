@@ -1013,7 +1013,7 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
           innerWidth: window.innerWidth,
           footerCount: footerBtns.length,
           footerTexts: footerBtns.map((b) => b.text),
-          primaryFirstOnPhone: footerBtns.length >= 2 ? footerBtns[1]!.rect.top < footerBtns[0]!.rect.top : false,
+          primaryFirstOnPhone: footerBtns.length >= 2 ? (element.querySelector(".modal-footer .btn-primary")?.getBoundingClientRect().top ?? 0) < (element.querySelector(".modal-footer .btn:not(.btn-primary)")?.getBoundingClientRect().top ?? 0) : false,
         };
       });
       const qr = await inspectDialog();
@@ -1056,6 +1056,78 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
       return `${qrTree}; ${codeTree}; width ${qr.width}px; scrimAlpha ${qr.scrimAlpha}`;
     });
   }
+
+  // Phone dialog and sheet footers stack primary above secondary and keep DOM/Tab order equal to top-to-bottom visual order (f2-delta finding 4).
+  await check("sheet-footer-tab-order-390", async () => {
+    const { page } = await open({ fleet: "FREADY", width: 390 });
+    const tabFooter = async (label: string, expectedVisual: readonly [string, string]): Promise<string> => {
+      await page.waitForFunction(() => document.getAnimations().every((animation) => animation.effect?.getTiming().iterations === Infinity || animation.playState === "finished"));
+      const layout = await page.evaluate(() => {
+        const footer = document.querySelector<HTMLElement>("[role=dialog] .modal-footer");
+        const style = footer ? getComputedStyle(footer) : null;
+        const buttons = [...document.querySelectorAll<HTMLElement>("[role=dialog] .modal-footer .btn")].map((btn) => {
+          const rect = btn.getBoundingClientRect();
+          return { text: (btn.textContent ?? "").trim(), top: Math.round(rect.top), order: getComputedStyle(btn).order };
+        });
+        const visual = [...buttons].sort((a, b) => a.top - b.top).map((b) => b.text);
+        return { flexDirection: style?.flexDirection ?? "", dom: buttons.map((b) => b.text), visual, tops: buttons.map((b) => `${b.text}@${b.top}`), orders: buttons.map((b) => b.order) };
+      });
+      expect(JSON.stringify(layout.visual) === JSON.stringify(expectedVisual),
+        `${label}: visual top-to-bottom order ${JSON.stringify(layout.visual)}, want ${JSON.stringify(expectedVisual)} (${layout.tops.join(" > ")})`);
+      const dialog = page.locator("[role=dialog]");
+      await dialog.focus();
+      const tabSequence: { text: string; top: number }[] = [];
+      for (let step = 0; step < 8 && tabSequence.length < layout.dom.length; step += 1) {
+        await page.keyboard.press("Tab");
+        const stop = await page.evaluate(() => {
+          const active = document.activeElement as HTMLElement | null;
+          if (!active || !active.closest("[role=dialog] .modal-footer")) return null;
+          return { text: (active.textContent ?? "").trim(), top: Math.round(active.getBoundingClientRect().top) };
+        });
+        if (stop && tabSequence.at(-1)?.text !== stop.text) tabSequence.push(stop);
+      }
+      const tabTexts = tabSequence.map((s) => s.text);
+      expect(JSON.stringify(tabTexts) === JSON.stringify(layout.visual),
+        `${label}: Tab focus order ${JSON.stringify(tabTexts)} != top-to-bottom visual order ${JSON.stringify(layout.visual)} (DOM ${JSON.stringify(layout.dom)}, flex-direction ${layout.flexDirection}, tops ${layout.tops.join(" > ")})`);
+      for (let i = 1; i < tabSequence.length; i += 1) {
+        expect(tabSequence[i]!.top > tabSequence[i - 1]!.top,
+          `${label}: Tab stop ${tabSequence[i]!.text}@${tabSequence[i]!.top} is not below ${tabSequence[i - 1]!.text}@${tabSequence[i - 1]!.top}`);
+      }
+      expect(JSON.stringify(layout.dom) === JSON.stringify(layout.visual) && layout.flexDirection === "column" && layout.orders.every((o) => o === "0"),
+        `${label}: DOM order ${JSON.stringify(layout.dom)} != visual order ${JSON.stringify(layout.visual)} or uses CSS reversal (flex-direction ${layout.flexDirection}, orders ${JSON.stringify(layout.orders)})`);
+      return `${label}: ${tabSequence.map((s) => `${s.text}@${s.top}`).join(" > ")}`;
+    };
+
+    const measured: string[] = [];
+    await page.locator('[data-action="add-pc"]').filter({ visible: true }).first().click();
+    await page.locator('[role=dialog][data-add-pc-mode="add"]').waitFor();
+    measured.push(await tabFooter("sheet-add", ["Pair with a QR or code", "Close"]));
+
+    await page.locator('[role=dialog][data-add-pc-mode="add"] [data-sheet-primary]').click();
+    await page.locator('[role=dialog][data-pair-dialog="qr"]').waitFor();
+    measured.push(await tabFooter("pair-qr", ["Pair with a code", "Back"]));
+
+    await page.locator('[role=dialog][data-pair-dialog="qr"] [data-sheet-primary]').click();
+    await page.locator('[role=dialog][data-pair-dialog="code"]').waitFor();
+    measured.push(await tabFooter("pair-code", ["Pair", "Cancel"]));
+
+    await page.keyboard.press("Escape");
+    await page.locator("[role=dialog]").waitFor({ state: "detached" });
+
+    await listedRows(page).filter({ hasText: "New mini PC" }).locator('[data-pc-action="add"]').click();
+    await page.locator('[role=dialog][data-add-pc-mode="new"][data-add-pc-phase="start"]').waitFor();
+    measured.push(await tabFooter("sheet-new", ["Add this PC", "Cancel"]));
+    await page.keyboard.press("Escape");
+    await page.locator("[role=dialog]").waitFor({ state: "detached" });
+
+    await listedRows(page).filter({ hasText: "Old MacBook" }).locator('[data-pc-action="join"]').click();
+    await page.locator('[role=dialog][data-add-pc-mode="join"][data-add-pc-phase="start"]').waitFor();
+    measured.push(await tabFooter("sheet-join", ["Ask to join", "Cancel"]));
+    await page.keyboard.press("Escape");
+    await page.locator("[role=dialog]").waitFor({ state: "detached" });
+
+    return measured.join("; ");
+  });
 
   // the sidebar foot's provider mark flows inline: AccountPcs.css positions a mark absolutely only inside .account-provider
   await check("provider-mark-inline", async () => {

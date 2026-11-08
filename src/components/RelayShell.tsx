@@ -12,8 +12,9 @@ import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { AccountView, RelayShellState } from "../lib/relay/shellState.ts";
 import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
-import { useSheetSwipe } from "../lib/sheets.ts";
+import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AddPcSheet, type AddPcSheetMode } from "./AddPcSheet.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { KeyId } from "./KeyId.tsx";
@@ -87,7 +88,7 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
   readonly state: RelayShellState; readonly onCodeStart: () => void; readonly onCodeSubmit: (code: string) => void;
   readonly onCodeMatch: () => void; readonly onCancel: () => void; readonly onClose: () => void;
 }) {
-  const t = useT(), titleId = useId(), codeFormId = `${titleId}-code-form`, surface = useFocusTrap<HTMLDivElement>(true);
+  const t = useT(), titleId = useId(), codeFormId = `${titleId}-code-form`, surface = useFocusTrap<HTMLDivElement>(true), phone = useMediaQuery(SHEET_QUERY);
   const inCode = state.kind === "code-entry" || state.kind === "code-looking" || state.kind === "code-compare", looking = state.kind === "code-looking";
   const close = (): void => { if (inCode) onCancel(); onClose(); };
   const latestClose = useRef(close);
@@ -105,6 +106,12 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
   const pc = state.kind === "code-compare" ? (state.offer.name ?? t("this PC")) : t("this PC");
   const mode = state.kind === "code-entry" || state.kind === "code-looking" ? "code" : state.kind === "code-compare" ? "compare" : "qr";
   const title = mode === "code" ? t("Pair with a code") : mode === "compare" ? t("Does {name}'s screen show this ID?", { name: pc }) : t("Scan the QR code on your PC");
+  const secondary = mode === "qr" ? <button key="back" type="button" className="btn" onClick={close}>{t("Back")}</button> : <button key="cancel" type="button" className="btn" onClick={close}>{t("Cancel")}</button>;
+  const primary = mode === "code"
+    ? <button key="pair" type="submit" form={codeFormId} className="btn btn-primary" data-sheet-primary aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button>
+    : mode === "compare"
+      ? <button key="match" type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeMatch}>{t("It matches")}</button>
+      : <button key="code" type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeStart}>{t("Pair with a code")}</button>;
   return createPortal(
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
       <div ref={surface} className="modal add-pc-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} data-pair-dialog={mode}>
@@ -121,15 +128,7 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
             <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and scan the QR code.")}</p>
           )}
         </div>
-        <footer className="modal-footer add-pc-footer">
-          {mode === "code" ? (
-            <><button key="cancel" type="button" className="btn" onClick={close}>{t("Cancel")}</button><button key="pair" type="submit" form={codeFormId} className="btn btn-primary" data-sheet-primary aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button></>
-          ) : mode === "compare" ? (
-            <><button key="cancel" type="button" className="btn" onClick={close}>{t("Cancel")}</button><button key="match" type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeMatch}>{t("It matches")}</button></>
-          ) : (
-            <><button key="back" type="button" className="btn" onClick={close}>{t("Back")}</button><button key="code" type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeStart}>{t("Pair with a code")}</button></>
-          )}
-        </footer>
+        <footer className="modal-footer add-pc-footer">{phone ? <>{primary}{secondary}</> : <>{secondary}{primary}</>}</footer>
       </div>
     </div>,
     document.body,

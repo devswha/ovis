@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { act, createElement, useLayoutEffect } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
@@ -329,6 +329,41 @@ describe("the Add-a-PC sheet", () => {
     expect(calls.qr).toBe(1);
     await click("Close");
     expect(calls).toMatchObject({ closes: 1, cancels: 0 });
+  });
+
+  it("places the primary action first in DOM order on phone sheets and second on desktop across sheet phases", async () => {
+    const pc = pcOf();
+    const footerLabels = () => renderer!.root.findByType("footer").findAll((n) => n.type === "button").map(text);
+    await mount(props("new", pc, LIST));
+    expect(footerLabels()).toEqual(["Cancel", "Add this PC"]);
+    await act(async () => { renderer!.unmount(); });
+
+    const phoneMedia = (query: string) => ({ matches: query === "(max-width: 640px)", addEventListener() {}, removeEventListener() {} });
+    (window as unknown as { matchMedia: typeof phoneMedia }).matchMedia = phoneMedia;
+    jest.useFakeTimers();
+    try {
+      await mount(props("add", null, LIST));
+      expect(footerLabels()).toEqual(["Pair with a QR or code", "Close"]);
+      await update(props("new", pc, LIST));
+      expect(footerLabels()).toEqual(["Add this PC", "Cancel"]);
+      await update(props("join", pc, LIST));
+      expect(footerLabels()).toEqual(["Ask to join", "Cancel"]);
+      await update(props("new", pc, { kind: "confirm", offer: { v: 1, server_id: SERVER_ID, server_public_key: "k", relay: "wss://relay.example", name: "desk2" } }));
+      expect(footerLabels()).toEqual(["Pair", "Cancel"]);
+      await update(props("new", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false, typed: true, challenge: 1 }));
+      expect(footerLabels()).toEqual(["Add this PC", "Cancel"]);
+      await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
+      expect(footerLabels()).toEqual(["The numbers match", "Cancel"]);
+      await update(props("new", pc, { kind: "compare", name: "desk2", digits: "", confirmed: false, typed: true, wrong: true, challenge: 1 }));
+      expect(footerLabels()).toEqual(["Try again", "Cancel"]);
+      await update(props("new", pc, { kind: "ready", name: "desk2", server_id: SERVER_ID }));
+      expect(footerLabels()).toEqual(["Open PC", "Cancel"]);
+      await update(props("new", pc, { kind: "failed", failure: "pc-offline", name: "desk2", detail: null, server_id: SERVER_ID }));
+      expect(footerLabels()).toEqual(["Try again", "Close"]);
+      await act(async () => { renderer!.unmount(); jest.runAllTimers(); });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("uses device terminology instead of hardcoding phone in relayFailureText and sets aria-busy on RelayPairingPrompt", async () => {

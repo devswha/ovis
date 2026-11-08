@@ -1,4 +1,5 @@
 /** Add-a-PC modal sheet: four steps, labeled digit input, 90-second wait bound, and docked mobile footer. */
+// allow: SIZE_OK — cohesive 4-step modal sheet state machine (new/join/add modes and phases)
 import "./RelayShell.css";
 import "./AddPcSheet.css";
 
@@ -10,8 +11,9 @@ import { NEW_PC_MS, type MyPc } from "../lib/account/myPcs.ts";
 import { useLocale, useT } from "../lib/i18n.ts";
 import type { RelayFailure, RelayShellState } from "../lib/relay/shellState.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
-import { useSheetSwipe } from "../lib/sheets.ts";
+import { SHEET_QUERY, useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { relayFailureText } from "./relayFailureText.ts";
 import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 
@@ -80,7 +82,7 @@ function rememberApprover(serverId: string, approver: string | null): void {
 }
 
 export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, onOpenPc, onCancel, onClose, onPairByQr }: AddPcSheetProps) {
-  const t = useT(), locale = useLocale();
+  const t = useT(), locale = useLocale(), phone = useMediaQuery(SHEET_QUERY);
   const id = useId();
   const name = pc?.name ?? "";
   const phase = pc === null || mode === "add" ? null : addPcPhase(pc, state);
@@ -134,13 +136,14 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     onMatch((field?.value ?? "").replace(/\s/g, ""));
   };
 
-  const cancel = <button type="button" className="btn" onClick={close}>{t("Cancel")}</button>, done = <button type="button" className="btn" onClick={close}>{t("Close")}</button>;
+  const cancel = <button key="cancel" type="button" className="btn" onClick={close}>{t("Cancel")}</button>, done = <button key="close" type="button" className="btn" onClick={close}>{t("Close")}</button>;
+  const pairActions = (secondary: ReactNode, primary: ReactNode): ReactNode => phone ? <>{primary}{secondary}</> : <>{secondary}{primary}</>;
   let title: string, sub: string, body: ReactNode = null, actions: ReactNode;
   if (phase === null || pc === null) {
     title = t("Add a PC");
     sub = t("A PC joins through your account, or pairs with this device alone.");
     body = <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs to add it to your account, or pair with the QR code or pairing code it shows.")}</p>;
-    actions = <><button type="button" className="btn" onClick={onClose}>{t("Close")}</button><button type="button" className="btn btn-primary" data-sheet-primary onClick={onPairByQr}>{t("Pair with a QR or code")}</button></>;
+    actions = pairActions(<button key="close" type="button" className="btn" onClick={onClose}>{t("Close")}</button>, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={onPairByQr}>{t("Pair with a QR or code")}</button>);
   } else {
     title = mode === "new" ? t("Add {name} to your account", { name }) : t("Add this device to {name}", { name });
     sub = mode === "new"
@@ -149,12 +152,12 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     switch (phase) {
       case "start":
         actions = mode === "new"
-          ? <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc, { typed: true })}>{t("Add this PC")}</button></>
-          : <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc)}>{t("Ask to join")}</button></>;
+          ? pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc, { typed: true })}>{t("Add this PC")}</button>)
+          : pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onJoin(pc)}>{t("Ask to join")}</button>);
         break;
       case "confirm":
         body = <p className="relay-shell-copy">{t("Pair with {name}?", { name })}</p>;
-        actions = <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={onPair}>{t("Pair")}</button></>;
+        actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={onPair}>{t("Pair")}</button>);
         break;
       case "connecting":
         body = <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><p className="relay-shell-detail">{t("Connecting to {name}…", { name })}</p></div>;
@@ -174,7 +177,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
               <p className="relay-shell-detail">{freshAfterWrong ? t("A new number is shown on {name} because the previous number changed.", { name }) : t("{name} shows six digits on its own screen now. Type them here, then approve on {name}.", { name })}</p>
             </form>
           );
-          actions = <>{cancel}<button type="submit" form={`${id}-digits-form`} className="btn btn-primary" data-sheet-primary disabled={pendingTyped} aria-busy={pendingTyped ? true : undefined}>{t("Add this PC")}</button></>;
+          actions = pairActions(cancel, <button key="primary" type="submit" form={`${id}-digits-form`} className="btn btn-primary" data-sheet-primary disabled={pendingTyped} aria-busy={pendingTyped ? true : undefined}>{t("Add this PC")}</button>);
         } else {
           body = (
             <>
@@ -182,7 +185,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
               <p className="relay-shell-copy">{approver ? t("{approver} shows three numbers: pick this one there.", { approver }) : t("Another of your devices shows three numbers: pick this one there.")}</p>
             </>
           );
-          actions = <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => onMatch()}>{t("The numbers match")}</button></>;
+          actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onMatch()}>{t("The numbers match")}</button>);
         }
         break;
       }
@@ -193,7 +196,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
             <p className="relay-shell-copy">{t("Nothing was added. Try again to compare a new number, and type the one {name} shows.", { name })}</p>
           </div>
         );
-        actions = onRetry ? <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary data-action="retry" onClick={onRetry}>{t("Try again")}</button></> : done;
+        actions = onRetry ? pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary data-action="retry" onClick={onRetry}>{t("Try again")}</button>) : done;
         break;
       case "approving":
         body = (
@@ -206,7 +209,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         break;
       case "ready":
         body = <><p className="relay-shell-copy" role="status">{t("{name} is ready to open on this device.", { name })}</p><EnrollmentStatus state={state.kind === "ready" ? state.enrollment : undefined} {...(onRetry ? { retry: onRetry } : {})} /></>;
-        actions = <>{cancel}<button type="button" className="btn btn-primary" data-sheet-primary onClick={() => (onOpenPc ?? onClose)()}>{t("Open PC")}</button></>;
+        actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => (onOpenPc ?? onClose)()}>{t("Open PC")}</button>);
         break;
       case "failed": {
         const failureKind = state.kind === "failed" ? state.failure : null;
@@ -220,7 +223,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           </div>
         );
         actions = failure?.retry && onRetry
-          ? <><button type="button" className="btn" onClick={close}>{t("Close")}</button><button type="button" className="btn btn-primary" data-sheet-primary data-action="retry" onClick={onRetry}>{t("Try again")}</button></>
+          ? pairActions(done, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary data-action="retry" onClick={onRetry}>{t("Try again")}</button>)
           : done;
         break;
       }
