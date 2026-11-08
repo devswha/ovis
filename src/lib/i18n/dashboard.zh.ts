@@ -14,7 +14,6 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "A new number is shown on {name} because the previous number changed.": "之前的数字已更改，{name} 上显示了新数字。",
   "{approver} shows three numbers: pick this one there.": "{approver} 上会显示三个数字，请在那里选择这个数字。",
   "Nothing was added. Try again to compare a new number, and type the one {name} shows.": "未添加任何内容。请重试以核对新数字，并输入 {name} 显示的数字。",
-  "Approve this device on {name} within 90 seconds to finish.": "请在 90 秒内在 {name} 上批准此设备以完成。",
   "Waiting for {approver} to approve this device within 90 seconds…": "正在等待 {approver} 在 90 秒内批准此设备…",
   "Waiting for an account member to approve this device within 90 seconds…": "正在等待账户成员在 90 秒内批准此设备…",
   "{name} is ready to open on this device.": "此设备已准备好打开 {name}。",

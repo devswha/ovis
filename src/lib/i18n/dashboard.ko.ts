@@ -14,7 +14,6 @@ export const DASHBOARD_KO: Record<string, string> = {
   "A new number is shown on {name} because the previous number changed.": "이전 숫자가 바뀌어 {name} 화면에 새 숫자가 표시됩니다.",
   "{approver} shows three numbers: pick this one there.": "{approver}에 숫자 세 개가 나옵니다. 거기서 이 숫자를 고르세요.",
   "Nothing was added. Try again to compare a new number, and type the one {name} shows.": "아무것도 추가되지 않았습니다. 다시 시도해 새 숫자를 비교하고 {name} 화면에 나온 숫자를 입력하세요.",
-  "Approve this device on {name} within 90 seconds to finish.": "90초 안에 {name}에서 이 기기를 승인하면 끝납니다.",
   "Waiting for {approver} to approve this device within 90 seconds…": "90초 안에 {approver}에서 이 기기를 승인하기를 기다리는 중…",
   "Waiting for an account member to approve this device within 90 seconds…": "90초 안에 계정 구성원이 이 기기를 승인하기를 기다리는 중…",
   "{name} is ready to open on this device.": "이제 이 기기에서 {name}에 연결할 준비가 됐습니다.",

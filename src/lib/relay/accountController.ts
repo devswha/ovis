@@ -121,7 +121,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/` }).then(mount.openSignIn ?? ((url) => window.location.assign(url)));
     started.catch(async (error: unknown) => {
       console.warn("Ovis: the sign-in did not start", error);
-      accountView = { kind: "signed-out", error: signInFailure(error) };
+      accountView = { kind: "signed-out", error: signInFailure(error), provider };
       await changed();
     });
   };
@@ -131,7 +131,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       accountView = { kind: "signing-in", ...(pending ? { provider: pending.provider } : {}) };
       await changed();
       try { await finishSignIn(returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) }); }
-      catch (error) { accountView = { kind: "signed-out", error: signInFailure(error) }; await changed(); }
+      catch (error) { accountView = { kind: "signed-out", error: signInFailure(error), ...(pending ? { provider: pending.provider } : {}) }; await changed(); }
     }
     await refresh(true);
   };

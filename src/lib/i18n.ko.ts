@@ -488,6 +488,7 @@ const BASE: Record<string, string> = {
   "That is not the number {name} shows": "{name}에 나온 숫자가 아닙니다",
   "Number on {name}": "{name}에 나온 숫자",
   "{name} shows six digits on its own screen now. Type them here, then approve on {name}.": "지금 {name} 화면에 여섯 자리 숫자가 나옵니다. 여기에 입력한 뒤 {name}에서 승인하세요.",
+  "Approve this device on {name} within 90 seconds to finish.": "90초 안에 {name}에서 이 기기를 승인하면 끝납니다.",
   "Type the number {name} shows": "{name}에 나온 숫자를 입력하세요",
   "Ready": "준비됨",
   "Needs approval": "승인 필요",

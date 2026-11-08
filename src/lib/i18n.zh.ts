@@ -492,6 +492,7 @@ const BASE: Record<string, string> = {
   "That is not the number {name} shows": "这不是 {name} 显示的数字",
   "Number on {name}": "{name} 上的数字",
   "{name} shows six digits on its own screen now. Type them here, then approve on {name}.": "{name} 的屏幕上现在显示六位数字。请在此输入，然后在 {name} 上批准。",
+  "Approve this device on {name} within 90 seconds to finish.": "请在 90 秒内在 {name} 上批准此设备以完成。",
   "Type the number {name} shows": "输入 {name} 显示的数字",
   "Ready": "就绪",
   "Needs approval": "需要批准",

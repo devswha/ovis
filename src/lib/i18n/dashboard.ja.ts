@@ -14,7 +14,6 @@ export const DASHBOARD_JA: Record<string, string> = {
   "A new number is shown on {name} because the previous number changed.": "前の番号が変わったため、{name} に新しい番号が表示されています。",
   "{approver} shows three numbers: pick this one there.": "{approver} に 3 つの番号が表示されます。そこでこの番号を選んでください。",
   "Nothing was added. Try again to compare a new number, and type the one {name} shows.": "何も追加されていません。もう一度試して新しい番号を比べ、{name} に表示された番号を入力してください。",
-  "Approve this device on {name} within 90 seconds to finish.": "90 秒以内に {name} でこのデバイスを承認すると完了します。",
   "Waiting for {approver} to approve this device within 90 seconds…": "90 秒以内に {approver} がこのデバイスを承認するのを待っています…",
   "Waiting for an account member to approve this device within 90 seconds…": "90 秒以内にアカウントメンバーがこのデバイスを承認するのを待っています…",
   "{name} is ready to open on this device.": "このデバイスで {name} を開く準備ができました。",
