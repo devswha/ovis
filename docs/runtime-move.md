@@ -90,14 +90,17 @@ run on herdr-core); end those on herdr-core first, then reopen them in herdr fro
 ## One move at a time
 
 Two Ovis servers can serve one herdr session: the PC's own and a connection server's bridge, say. Only one
-moves it at a time. Before a move waits or starts, its server takes a lock the kernel alone arbitrates, for the
+moves it at a time. Before a move waits or starts, its server takes a lock the kernel alone arbitrates, in the
 real folder of that session's socket (a symlinked folder, such as a dotfiles `~/.config`, is resolved, never
-refused): on Linux a socket in the abstract namespace, named after the user and that folder (no file); on macOS
-`flock(2)` on `runtime-move.lock` there. A second server is refused (409 `already_moving`) while the holder
+refused): `flock(2)` on `runtime-move.lock` there, which every server that sees that folder shares, in any
+container. Only where no C library can be loaded for it (musl) does Linux use a socket in the abstract namespace
+instead, named after the user and that folder (no file); that one is shared only within one network namespace. A second server is refused (409 `already_moving`) while the holder
 lives, and the kernel lets go when the holder's process ends, however it ends. Nothing is ever removed to take
 it, so two servers that find a dead holder can never both go on. It then also listens on `runtime-move.sock`
 there, the lock of Ovis before this one, so a server of that version still sees the session as taken, and is
-seen: one listening there refuses the move. A socket file left there with nobody listening is removed, only
+seen: one listening there refuses the move. A server of that version can still race another in its own
+recovery of a dead holder's socket file, as it always could; once every Ovis on that PC runs this version, no
+two can. A socket file left there with nobody listening is removed, only
 while this server holds the kernel lock, and only if it is a socket of this user's. No process id or start
 time is read. The lock stays until the move ends: done, rolled back, cancelled, given up while waiting, or the
 server stopping. A folder that is not this user's or that anybody may write in, or another kind of file at

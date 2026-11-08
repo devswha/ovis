@@ -136,6 +136,17 @@ for (const kind of (process.platform === "linux" ? ["abstract", "flock"] : ["flo
   });
 }
 
+it("refuses a link or a folder at runtime-move.lock as unsafe, never following it", async () => {
+  const lockFile = join(root, "runtime-move.lock");
+  for (const make of [() => symlinkSync(join(root, "elsewhere"), lockFile), () => mkdirSync(lockFile)]) {
+    rmSync(lockFile, { recursive: true, force: true });
+    make();
+    await expect(takeMoveLock(lockPath, undefined, "flock")).rejects.toThrow(MoveLockUnsafe);
+    expect(existsSync(join(root, "elsewhere"))).toBe(false);
+  }
+  rmSync(lockFile, { recursive: true, force: true });
+});
+
 it("is refused while a server of the previous version holds only the socket, and lets go of its kernel lock then", async () => {
   // the previous version's lock: a listener at runtime-move.sock that answers with its token
   const old = listenOn((socket) => socket.end("previous-version-token"));
