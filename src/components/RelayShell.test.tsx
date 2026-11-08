@@ -308,7 +308,7 @@ describe("the dashboard", () => {
 
   it("shows one sentence, Add a PC and Pair with a QR or code for an empty account, and skeleton rows while the directory loads", () => {
     const empty = render(signedIn([]));
-    expect(text(empty)).toContain("No PCs yet. Sign in on a PC, or scan the QR code it shows, to see it here.");
+    expect(empty).toContain('<h2 class="relay-overview-empty-title">No PCs yet</h2><p class="relay-overview-empty-copy">Sign in on a PC, or scan the QR code it shows, to see it here.</p>');
     expect(actionsOf(empty)).toEqual(["Add a PC", "Add a PC", "Pair with a QR or code"]);
     expect(empty).not.toContain("<table");
     expect(empty).not.toContain('data-slot="relay-map"');
@@ -449,6 +449,8 @@ describe("the dashboard", () => {
       expect(dialog().findByType("footer").findAll((n) => n.type === "button").map(textOf)).toEqual(["Back", "Pair with a code"]);
       expect(renderer!.root.findAll((n) => n.props.inert === true)).toHaveLength(1);
       expect(textOf(dialog())).toContain("Scan the QR code on your PC");
+      expect(textOf(dialog())).toContain("Settings → Devices and PCs → Add a connection → Ovis relay");
+      expect(textOf(dialog())).not.toContain("older Ovis");
       expect(renderer!.root.findAll((instance) => instance.type === "table")).toHaveLength(1);
       openerFocused = 0;
       await act(async () => { button("Back").props.onClick(); });
@@ -624,10 +626,12 @@ describe("pairing with a typed code", () => {
     expect(html).toContain('data-relay-state="code-compare"');
   });
 
-  it("keeps the code in its field only, and says why the last one gave no PC", () => {
+  it("keeps the code in its field only, names the current path without legacy parentheticals, and says why the last one gave no PC", () => {
     const html = render(props({ kind: "code-entry", failure: "no-pc" }));
     expect(html).toMatch(/<input[^>]*name="code"/);
     expect(html).not.toMatch(/<input[^>]*name="code"[^>]*value=/);
+    expect(html).toContain("Settings → Devices and PCs → Add a connection → Ovis relay");
+    expect(html).not.toContain("older Ovis");
     expect(html).toContain("No PC shows this code");
   });
 });

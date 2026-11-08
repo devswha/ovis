@@ -51,7 +51,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "{count} PCs": "PC {count} 台",
   "incl. {count} offline": "オフライン {count} 台を含む",
   "Needs update": "更新が必要",
-  "No PCs yet. Sign in on a PC, or scan the QR code it shows, to see it here.": "まだ PC がありません。PC でサインインするか、その PC に表示される QR コードをスキャンすると、ここに表示されます。",
+  "Sign in on a PC, or scan the QR code it shows, to see it here.": "PC でサインインするか、その PC に表示される QR コードをスキャンすると、ここに表示されます。",
   "No PC matches this filter.": "この絞り込みに合う PC はありません。",
   "Without an account": "アカウントなし",
   "{name} has not approved this device yet.": "{name} はまだこのデバイスを承認していません。",

@@ -57,7 +57,7 @@
   font-size: var(--fs-md);
   line-height: var(--lh-base);
   color: var(--text-dim);
-  text-wrap: pretty;
+  text-wrap: balance;
 }
 
 .add-pc-body {
@@ -170,6 +170,7 @@
   font-size: var(--fs-md);
   font-weight: var(--fw-medium);
   overflow-wrap: anywhere;
+  text-wrap: balance;
 }
 
 .add-pc-typed {

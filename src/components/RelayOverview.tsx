@@ -175,7 +175,7 @@ export function RelayOverview(props: RelayOverviewProps) {
         <section className="relay-overview-empty" data-dashboard-empty="">
           <Monitor className="relay-overview-empty-icon" aria-hidden="true" />
           <h2 className="relay-overview-empty-title">{t("No PCs yet")}</h2>
-          <p className="relay-overview-empty-copy">{t("No PCs yet. Sign in on a PC, or scan the QR code it shows, to see it here.")}</p>
+          <p className="relay-overview-empty-copy">{t("Sign in on a PC, or scan the QR code it shows, to see it here.")}</p>
           <div className="relay-overview-empty-actions">
             {onAddPc && <button type="button" className="btn btn-primary" data-action="add-pc" onClick={onAddPc}>{t("Add a PC")}</button>}
             {onPairByQr && <button type="button" className="btn btn-ghost" data-action="pair-qr" onClick={onPairByQr}>{t("Pair with a QR or code")}</button>}

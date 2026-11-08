@@ -120,6 +120,8 @@ describe("RelayShellScreens", () => {
     expect(codeHtml).toMatch(/<label[^>]*class="relay-shell-field-label"[^>]*for="[^"]+"/);
     expect(codeHtml).toMatch(/<input[^>]*class="input relay-shell-code-input"/);
     expect(codeHtml).toMatch(/<p[^>]*class="account-error"[^>]*role="alert"/);
+    expect(codeHtml).toContain("Settings → Devices and PCs → Add a connection → Ovis relay");
+    expect(codeHtml).not.toContain("older Ovis");
 
     const digitsHtml = render(
       createElement(TypedDigits, {
