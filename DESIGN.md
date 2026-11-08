@@ -4413,53 +4413,109 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   scoped screen, the sentence per state, **Back** to the front page on a PC's page and nowhere
   else, the iPhone browser tab's line "Add to Home Screen to stay paired" (a `--fs-sm` dim line
   over a hairline at the card's foot, only there: the installed app's storage is not cleared).
-- Layout: `centred card`; the document is the one scroller; the saved-PC list is a plain column
+- Layout: `centred card` for the pairing and recovery screens (the sign-in below is an unboxed
+  column); the document is the one scroller; the saved-PC list is a plain column
   inside the card, never a scroller of its own.
 - Precedent: paseo's hosted web app (confirm a new host, remember hosts, one list to pick from)
   for the flow; the states and their words are this app's, in the token gate's own frame, so a
   phone that pairs through the relay and one that pairs with a code see the same room. Neither
   the Codex nor the Claude app has a hosted relay shell to follow.
-- Account part (components/AccountPcs.tsx, RelayDashboard.tsx, RelayMap.tsx, AddPcSheet.tsx,
-  lib/account/, lib/relay/dashboard.ts), only on the front page and only when
-  the page names an account service (`<meta name="ovis-account-service">`, account.ovis.sh unless
-  the build names another) and, in a browser, it is app.ovis.sh, the one page a sign-in comes back
-  to; otherwise the front page is the saved-PC list above, unchanged. Signed out: **Continue with GitHub** and **Continue
-  with Apple**, two equal neutral `.btn`s (App Review 4.8 wants Apple wherever another provider
-  is, and neither is the one to pick), a `--fs-xs` dim line on what the account service learns,
-  all under one **Sign in to Ovis** title (the page's one `h1`) and a line on what the relay is for.
-  Under them, quiet links: **Pair with a QR or code**, and only when this device holds pairings,
-  **Continue without an account (N PCs)**, which opens the dashboard below in local mode (this
-  device's own pairings, `data-dashboard-mode="local"`, the sidebar's foot offering the sign-in).
-- Dashboard (signed in, or local mode): the shell's one wide screen, not the card. A sidebar of
-  places (Overview, PCs, Devices, Relay; Settings a row with no page yet) with the provider, Sign
-  out and Remove this device at its foot; a top bar with the title, a count line (the PCs the
-  account's directory lists: a PC paired by QR alone is a row, not one of them) and **Add a PC**,
-  the one primary action. Under it, a notice for the first PC waiting on this device, then a
-  summary strip of three cells (PCs as Ready / Needs you / Offline counts; Relays, each host with
-  its PC count and regional or global; Needs attention, each PC and its state in words), the
-  connection map (RelayMap.tsx: this device, each relay, the PCs behind it, wires that flow only
-  for a PC seen lately; a route list instead on a phone), and the PCs table: name with a dim line
-  (new in your account, in your account, paired by QR), state in words, relay host, last seen,
-  and the one action its state allows (Open, Add for a PC new in the account, Join for another
-  one waiting on this device, Update, Details), filtered by All / Ready / Needs you. One account
-  read on load, again when the page comes into view and every 60 s while it stays in view. The
-  `<main>` adds `data-account-state` (`signed-out`, `signing-in`, `signed-in`) for scripts; each
-  row `data-pc-state`.
-- Add-a-PC sheet (AddPcSheet.tsx): a modal sheet with four segmented bars and a step list, in the
-  mode the row picked: **Add** types the six digits the new PC shows, then approves on that PC;
-  **Join** asks through the account, shows this device's digits, and an account member approves
-  on another device. **Add a PC** opens it with no PC, saying how one is added and leading to the
-  QR and code screen. It drives the shell's existing join, Pair, match and Cancel; the join goes
-  on in the sheet over the PC's own page, failure included (its words and Try again are the
-  shell's own screen's), except a new identity, which keeps the shell's screen with its ids and
-  Forget.
-- Phone (760 px and under): the sidebar becomes a bottom tab bar (Overview, PCs, Devices,
-  Settings) over the safe area, its foot the page's last section, rendered after the page so that
-  Tab follows the eye (Add a PC first, Sign out after the table); and the map its route list.
-- Precedent: GOAT's Fleet console (a telemetry strip over the machines) for the dashboard, and
-  its onboarding bars and connection steps for the sheet; Tailscale's admin machine list (every
-  machine of the account, its state in words) for the table; Signal's linked devices for keeping
-  trust on devices already linked rather than on the sign-in. No code or pixels are borrowed.
+- Account part (components/AccountPcs.tsx, RelayDashboard.tsx, RelayOverview.tsx,
+  RelayPcTable.tsx, RelayPcDetails.tsx, RelayMap.tsx, AddPcSheet.tsx, StatusDot.tsx, lib/account/,
+  lib/relay/dashboard.ts), only on the front page and only when the page names an account service
+  (`<meta name="ovis-account-service">`, account.ovis.sh unless the build names another) and, in a
+  browser, it is app.ovis.sh, the one page a sign-in comes back to; otherwise the front page is the
+  saved-PC list above, unchanged.
+- Sign-in: an unboxed column `--relay-signin-w` (368 px) wide on `--bg`, no card. The sheep mark,
+  **Sign in to Ovis** (the page's one `h1`) and a line on what the relay is for; when this device
+  holds pairings, **Continue without an account (N PCs)** comes next, above the divider, because
+  the PCs already here are the shortest way back. Then a hairline divider and the providers,
+  **Continue with GitHub** and **Continue with Apple**: equal neutral `.btn`s, `--touch-target`
+  (44 px) tall, each with its brand mark at a fixed inset (App Review 4.8 wants Apple wherever
+  another provider is, and neither is the one to pick). A `--fs-xs` dim line says what the account
+  service learns, and **Pair with a QR or code** is a quiet link at the foot. Continuing without
+  an account opens the dashboard in local mode (this device's own pairings,
+  `data-dashboard-mode="local"`, the nav's foot offering the sign-in).
+- Routes: the dashboard is one page with five hash routes, `#overview` (the default), `#pcs`,
+  `#devices`, `#relay` and `#settings`; Back and a reload keep the view. Devices lists this device
+  and the account's others, with Sign out and Remove this device; Relay lists each relay host with
+  its PCs and holds the connection map open; Settings is a real page (theme, density, interface
+  font size, language), the same rows as the app's own settings.
+- Frame: on a desktop a left nav `--relay-sidebar-w` (240 px) wide on `--bg-panel`, the five places
+  with Overview and PCs carrying their counts, the current one on `--bg-elevated`, and the provider
+  and **Sign out** at its foot. The content column stops at `--relay-content-w` (1280 px). A top
+  bar holds the view's title and **Add a PC**, the one primary action on every view. At 768 px and
+  under the nav becomes a bottom tab bar (`--tabbar-h` over the safe area) of the same places, the
+  top bar turns sticky glass with **Add a PC** as a 44 px icon button, and the foot's rows become
+  the page's last section, rendered after the page so Tab follows the eye.
+- Overview: a strip of three cells with hairlines between them, **Ready** | **Needs you** |
+  **Relays in use**, each a state dot, its word and one `--fs-xl` numeral. Needs you counts every
+  PC that wants something, offline ones included, and says so on a dim line under the numeral
+  ("incl. 1 offline"), so the cells add up to the PCs listed. The first two cells filter the table
+  below (`aria-pressed`). Under the strip, one mono chip per relay host with its PC count and
+  regional or global; a chip filters the table to that relay. Then the attention list: PCs that
+  need you, most urgent first, at most three rows of name and relay, with **View all N** below.
+  When the rows share one reason it's said once as a caption above them ("Add window closed · an
+  account member must approve") rather than on every row. Then the PC table (below), and last the
+  **Connection map**, a 44 px disclosure row with "N relays · M PCs" on its right, closed until
+  asked for. A first-time account gets one empty state instead of the strip: an icon, one title,
+  one line and **Add a PC**.
+- PCs table (RelayPcTable.tsx), filtered by All / Ready / Needs you / Offline, `--table-row-h`
+  (44 px) rows under a 36 px head. Columns: **Name** (state dot, name, a dim line for a PC new in
+  your account or paired by QR), **State** (the specific word, below), **Route** (how this device
+  reaches the PC right now and the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms",
+  "relay-ap.ovis.sh · 62 ms", or "No answer" / "Not checked"), **Relay** (the assigned host as a
+  mono chip), **Last seen**, and the one action its state allows (Open, Add, Join, Update,
+  Details). Details opens RelayPcDetails beside the table as a `--relay-detail-w` (360 px) side
+  panel at 1100 px and wider, the table dropping Last seen so rows stay on one line; below
+  1100 px the details replace the list in the flow, with a back control. Details holds the same
+  facts as labelled rows (state, route, relay, last seen, version) and the PC's actions docked
+  at its foot.
+- Connection map (RelayMap.tsx): this device, each relay hub, the PCs behind it. A PC that answered
+  by the same network or Tailscale draws its wire straight from this device and skips the hub; a
+  PC reached through a relay hangs off that hub. Wires are still lines in the state dot's tone;
+  only a wire whose PC is being checked animates. On a phone the map is a route list of hops.
+- Add-a-PC sheet (AddPcSheet.tsx): a modal sheet `--relay-sheet-w` (520 px) wide with four
+  segmented bars and a step list, in the mode the row picked, named in `data-add-pc-mode` and its
+  phase in `data-add-pc-phase`: `start`, `confirm`, `connecting`, `compare` (six digits to type
+  or match), `wrong` (a wrong number, with Try again), `approving`, `ready` and `failed`. **Add**
+  types the six digits the new PC shows, then approves on that PC; **Join** asks through the
+  account, shows this device's digits, and an account member approves on another device. **Add a
+  PC** with no PC says how one is added and leads to the QR and code screen. The sheet drives the
+  shell's existing join, Pair, match and Cancel; failure stays in the sheet in the shell's own
+  words, except a new identity, which keeps the shell's screen with its ids and Forget.
+- Status vocabulary: one state word per PC, specific to what's true: Ready, Needs approval, Needs
+  update, Checking…, Offline · {date}, Not checked; the strip groups them as Ready, Needs you and
+  Offline. The summary,
+  the attention list, the table, Details and the map read one model (lib/relay/dashboard.ts), so a
+  PC never shows two states. Color rule: color sits only on the state dot (StatusDot.tsx, `--dot-size`
+  7 px): filled `--status-done` for ready, half `--notice` for needs you, hollow `--text-dim` for
+  offline, `--status-working` for checking and `--status-blocked` for failed, so the shape alone
+  still reads in forced colors.
+  The words stay `--text`, and no row, badge or cell is tinted by state; the one tinted surface is
+  the error banner (`--danger-tint` with `--danger-text`) when the account read fails.
+- Motion: nothing enters. Hover and the pressed strip cell change background over `--dur-fast`.
+  The only loop is a checking wire's flow in the map (`--dur-spin`); every other wire is still.
+  Under `prefers-reduced-motion: reduce` the flow is hidden and the transitions stop; a checking
+  wire stays as a still line, and its dot and word still say Checking…. Loading skeletons never
+  shimmer.
+- Tokens used: `--bg`, `--bg-panel`, `--bg-elevated`, `--bg-hover`, `--border`, `--divider`,
+  `--text`, `--text-strong`, `--text-dim`, `--status-done`, `--notice`, `--status-working`,
+  `--status-blocked`, `--danger-tint`, `--danger-text`, `--fs-xs` to
+  `--fs-xl`, `--touch-target`, `--control-h`, `--table-row-h`, `--chip-h`, `--dot-size`,
+  `--tabbar-h`, and the relay sizes `--relay-sidebar-w`, `--relay-content-w`, `--relay-signin-w`,
+  `--relay-sheet-w`, `--relay-detail-w`, `--relay-table-head-h`, `--relay-control-icon-size`,
+  `--relay-fs-min` and `--relay-fs-body-min` (the floors that keep small text readable). No
+  color literal lives in the relay CSS.
+- One account read on load, again when the page comes into view and every 60 s while it stays in
+  view. The `<main>` adds `data-account-state` (`signed-out`, `signing-in`, `signed-in`) for
+  scripts; each row `data-pc-state`.
+- Precedent: Linear for the nav, the summary strip and the rows; Geist for the table, the empty
+  state and the sign-in column; Kumo for the banner and the Add-a-PC wizard; Ryu for the status
+  pairs (dot and word) and the actions docked at the foot of Details. Tailscale's admin machine
+  list (every machine of the account, its state in words) and Signal's linked devices (trust
+  kept on devices already linked, not on the sign-in) still hold for what the table and Devices
+  say. Patterns only: no code or pixels are borrowed, so THIRD_PARTY_NOTICES gains nothing.
 - Relay files keep the existing file viewer and its Paseo-style file bar, rather than adding a
   separate remote-files screen. A client without a resource-capable service worker shows the
   usual file note as an alert when the 64 MiB limit is exceeded. Copy link and new-tab actions
