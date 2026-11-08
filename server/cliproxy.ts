@@ -26,6 +26,8 @@ export class CLIProxyService {
   private requests: Promise<void> = Promise.resolve();
   /** the hidden or removed accounts of the last report: their credentials are not used (#3333) */
   private skipped: ReadonlySet<string> = new Set();
+  /** the accounts hidden or removed from Ovis now (UsageService.skipAccounts): hiding one starts no report */
+  private hidden: () => ReadonlySet<string> = () => this.skipped;
   /** when each account shown again was read on its own, so the next full read does not read it again within MIN_REFRESH_MS */
   private readonly shownAt = new Map<string, number>();
   /** the account (email, ChatGPT workspace) each row's file named when it was read; never reported */
@@ -105,10 +107,13 @@ export class CLIProxyService {
     if (moved) this.entries = [];
   }
 
+  skipAccounts(keys: () => ReadonlySet<string>): void { this.hidden = keys; }
+
   /** The next report reads the Hub anew, except the rows of the hidden or removed accounts: their credentials stay unused (#3333). */
   invalidate(): void {
     this.generation++; this.nextAt = 0; this.readAt = 0; this.pending = null; this.shownAt.clear();
-    this.entries = this.entries.filter((entry) => this.skipped.has(entry.key));
+    const hidden = this.hidden();
+    this.entries = this.entries.filter((entry) => hidden.has(entry.key));
   }
 
   call(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {

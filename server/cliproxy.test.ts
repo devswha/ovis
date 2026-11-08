@@ -188,6 +188,20 @@ describe("CLIProxyAPI v8", () => {
     expect(after).toEqual(first);
   });
 
+  it("keeps an account hidden since the last report unread across a Hub sign-in", async () => {
+    // Given
+    await configure();
+    let hidden = new Set<string>();
+    service.skipAccounts(() => hidden);
+    await service.report(false, hidden);
+    hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    // When
+    service.invalidate();
+    await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b", "b"]);
+  });
+
   it("drops hidden rows when the Hub URL changes", async () => {
     // Given
     await configure();

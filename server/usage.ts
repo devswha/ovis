@@ -1186,7 +1186,8 @@ export class UsageService {
       const current = entry !== undefined && (held || (!hidden && now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
       return [source, current ? entry : await this.read(provider, signIn, hidden ? null : entry?.usage ?? null, now)];
     }));
-    for (const source of search?.sources ?? []) if (!read.some(([found]) => found === source)) this.entries.delete(source);
+    // every place of the provider no longer found goes, a hidden one kept past invalidate (no search) included
+    for (const source of this.entries.keys()) if (source.startsWith(`${provider.id}|`) && !read.some(([found]) => found === source)) this.entries.delete(source);
     for (const [source, entry] of read) this.entries.set(source, entry);
     const sources = read.map(([source]) => source);
     // a hidden account's kept reading is past its time and is not read again, so it cannot bring the next search forward

@@ -1236,6 +1236,23 @@ describe("the service", () => {
     expect(reads).toEqual(["token-a", "token-b", "token-b"]);
   });
 
+  it("keeps no hidden reading of a place no longer found once its provider's sign-in ends", async () => {
+    let place = 0;
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() { return [{ source: `place-${place}`, token: `token-${place}`, expiresAt: null, account: { id: "a", label: "a" } }]; },
+      async read() { return { plan: "pro", windows: [] }; },
+    };
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => new Set(["copilot:a"]));
+    await service.report();
+    for (place = 1; place <= 3; place++) {
+      service.invalidate("copilot");
+      await service.report();
+    }
+    expect([...service["entries"].keys()]).toEqual(["copilot|place-3"]);
+  });
+
   it("looks a provider up again and reads it anew as soon as one of its accounts is shown again", async () => {
     let searches = 0;
     const copilot: UsageProvider = {
