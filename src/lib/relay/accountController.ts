@@ -158,7 +158,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       await store.update(serverId, (current) => ({ ...(current ?? saved), account_enrollment: { account: session.account, state } } satisfies SavedDevice));
       await refresh();
     };
-    await record("pending");
+    if (fresh) await record("pending");
     // a session that just paired has not proved its key to the PC, which then refuses a link and
     // keeps an introduction from it: the account's steps take a connection of their own, signed in
     let own: RelayTransport | null = null;
