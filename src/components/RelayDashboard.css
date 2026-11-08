@@ -181,6 +181,12 @@
   .relay-dash-pcs-split.is-selected { grid-template-columns: minmax(0, 1fr) var(--relay-detail-w); }
 }
 
+/* The PC filter's track wraps instead of widening the page: its nowrap CJK options at large text (ja at
+   +40% need 404px) would otherwise overflow sideways, and a phone grows its layout viewport to the content,
+   which puts the fixed tab bar below the screen. Rows stay a finger apart so the coarse-pointer expanders
+   (styles.css .segmented > button::before) never cover a face in the other row. */
+.relay-dash-pcs .segmented { flex-wrap: wrap; row-gap: var(--space-2); }
+
 @media (pointer: coarse) {
   .relay-dash-nav-item { min-height: var(--touch-target); }
 }
@@ -195,6 +201,10 @@
     --dash-tabs-h: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
     grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start;
     padding-bottom: calc(var(--dash-tabs-h) + var(--space-4));
+    /* nothing may widen the page: a phone would grow its layout viewport to the content and keep the fixed
+       tab bar (and the top bar's trailing side) off the screen. clip, not hidden: hidden would make this
+       the scroll container and unstick the top bar. */
+    overflow-x: clip;
   }
 
   .relay-dash-side, .relay-dash-side-box { display: contents; }
