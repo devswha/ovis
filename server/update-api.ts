@@ -70,7 +70,7 @@ export function connectUpdater(channel?: SupervisorChannel): UpdateService {
     // an install goes as a message an older supervisor does not know, never as its unbound `install`
     request: (request) => supervisor?.send(request.command === "install"
       ? { type: "update-install-revision", expected_revision: request.expected_revision }
-      : { type: "update-command", command: "check" }),
+      : request.command === "cancel" ? { type: "update-cancel" } : { type: "update-command", command: "check" }),
     // the supervisor starts the bridge in the directory it serves: the release's, or the source checkout
     ...(managed ? { servedRevision: servedRevision(process.cwd()) } : {}),
   };
@@ -145,13 +145,21 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
   }
   if (pathname === "/api/updates/notes" && request.method === "GET") { setRequestRoute(pathname); return reply(service?.notes() ?? noUpdateNotes()); }
   if (pathname === "/api/updates/installed" && request.method === "GET") { setRequestRoute(pathname); return reply(service?.installed() ?? noInstalledNotes()); }
-  if (request.method !== "POST" || (pathname !== "/api/updates/check" && pathname !== "/api/updates/install")) {
-    return fail("method_not_allowed", "Use GET /api/updates, /api/updates/notes or /api/updates/installed, or POST /api/updates/check or /install", 405);
+  if (request.method !== "POST" || (pathname !== "/api/updates/check" && pathname !== "/api/updates/install" && pathname !== "/api/updates/cancel")) {
+    return fail("method_not_allowed", "Use GET /api/updates, /api/updates/notes or /api/updates/installed, or POST /api/updates/check, /install or /cancel", 405);
   }
   setRequestRoute(pathname);
   if (!updateRequestAllowed(request)) return fail("invalid_update_request", "Use the update controls from this app.", 403);
   if (!service || !status.managed) return fail("updates_unmanaged", status.blocked_reason ?? "Updates unavailable", 409);
   const busy = () => fail("update_busy", "An update operation is already running.", 409);
+  // stops an install while it builds; one restarting onto its new release is past stopping
+  if (pathname.endsWith("/cancel")) {
+    if (status.install_cancellable !== true) return fail("update_restart_required", "Restart the app before cancelling an update from here.", 409);
+    // building, or still checking what it installs: stopped before anything is built
+    if (status.phase !== "building" && status.phase !== "checking") return fail("update_not_cancellable", "No update is building that could be cancelled.", 409);
+    service.request({ command: "cancel" });
+    return reply({ accepted: true }, 202);
+  }
   if (pathname.endsWith("/check")) {
     if (running(status)) return busy();
     service.request({ command: "check" });

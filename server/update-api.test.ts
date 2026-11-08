@@ -60,6 +60,26 @@ const answer = async (response: Response | Promise<Response>) => {
   return { status: resolved.status, code: ((await resolved.json()) as { error?: { code?: string } }).error?.code ?? null };
 };
 
+describe("a cancel", () => {
+  it("stops only an install that builds, and only where its supervisor can", async () => {
+    let status = offer({ phase: "building", install_cancellable: true });
+    const updates = service(() => status);
+    const cancel = () => answer(handleUpdateRequest(install(""), "/api/updates/cancel", updates));
+    expect(await cancel()).toEqual({ status: 202, code: null });
+    expect(updates.requests).toEqual([{ command: "cancel" }]);
+    // nothing building (restarting onto the new release, or idle): past or nothing to stop
+    // still checking what it installs: stopped before it builds
+    status = offer({ phase: "checking", install_cancellable: true });
+    expect(await cancel()).toEqual({ status: 202, code: null });
+    updates.requests.splice(1);
+    for (const phase of ["restarting", "idle"] as const) { status = offer({ phase, install_cancellable: true }); expect(await cancel()).toEqual({ status: 409, code: "update_not_cancellable" }); }
+    // an older supervisor cannot
+    status = offer({ phase: "building" });
+    expect(await cancel()).toEqual({ status: 409, code: "update_restart_required" });
+    expect(updates.requests).toHaveLength(1);
+  });
+});
+
 describe("a manual install", () => {
   it("rejects unbound manual installs", async () => {
     const updates = service(() => offer());

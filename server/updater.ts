@@ -213,6 +213,12 @@ export class Updater {
   /** What the last update brought; set with the release that runs. */
   installed: InstalledNotes = noInstalledNotes();
   private busy = false;
+  /** the install running now, which cancel() stops while it builds */
+  private installing: AbortController | null = null;
+  /** the revision a cancel stopped: the timer's automatic install leaves it until it is asked for again, or a newer one comes */
+  private cancelledRevision: string | null = null;
+  /** a cancel asked for while the run still checked: honoured before anything is built */
+  private cancelPending = false;
   private timer?: ReturnType<typeof setInterval>;
   private initialTimer?: ReturnType<typeof setTimeout>;
   private sourceRevision = "";
@@ -236,6 +242,7 @@ export class Updater {
     channel?: () => UpdateChannel;
   }) {
     this.status.auto_update = options.autoUpdate; this.status.error = options.notice ?? null;
+    this.status.install_cancellable = true;
     this.status.channel = this.channel();
   }
 
@@ -460,6 +467,14 @@ export class Updater {
     return run(this.options.root, ["git", "fetch", "--no-tags", "--unshallow", "origin"], this.controller.signal, timeout);
   }
 
+  /** Stops the install that is building now: true when there was one to stop. Once it restarts, false. */
+  cancel(): boolean {
+    if (this.installing && this.status.phase === "building") { this.installing.abort(new Error("Update cancelled")); return true; }
+    // asked while it still checks what is on offer: it stops before it builds anything
+    if (this.busy && this.status.phase === "checking") { this.cancelPending = true; return true; }
+    return false;
+  }
+
   /** `byUser`: the request came from the settings' Check or Update (through the supervisor), not
    * from the 5-minute timer; only the timer waits a failed unshallow fetch's backoff out.
    * `expectedRevision`: the release a manual install was offered; the install goes ahead only
@@ -483,15 +498,25 @@ export class Updater {
       }
       if ((command === "install" || this.options.autoUpdate) && this.status.available) {
         const revision = this.status.latest_revision!;
+        // a revision cancelled here is installed again only when asked for, never by the timer
+        if (command === "check" && revision === this.cancelledRevision) { this.patch({ phase: "idle", step: null }); return; }
+        if (command === "install") this.cancelledRevision = null;
         if (command === "check" && revision === this.failedRevision) {
           this.patch({ phase: "error", error: "Automatic installation of this revision previously failed. Use Update and restart to retry, or wait for a newer revision." });
           return;
         }
         attempted = revision;
+        if (this.cancelPending) {
+          this.cancelledRevision = revision;
+          this.patch({ phase: "error", step: null, error_code: "update_cancelled", error: "The update was cancelled before it was installed." });
+          return;
+        }
+        this.installing = new AbortController();
+        const signal = AbortSignal.any([this.controller.signal, this.installing.signal]);
         this.patch({ phase: "building", step: "download" });
         stage = mkdtempSync(join(this.options.stateDir, "release-"));
         // Network filesystems and low-memory builds can take minutes even without a network fetch.
-        const run = (args: string[], timeout = 10 * 60_000) => runCommand(stage!, args, this.controller.signal, timeout);
+        const run = (args: string[], timeout = 10 * 60_000) => runCommand(stage!, args, signal, timeout);
         await run(["git", "clone", "--quiet", "--no-checkout", "--no-hardlinks", this.options.root, "."]);
         await run(["git", "fetch", "--quiet", this.options.root, revision]);
         await run(["git", "checkout", "--quiet", "--detach", revision]);
@@ -516,7 +541,9 @@ export class Updater {
           this.patch({ blocked_reason: reason, available: false });
           throw new Error(reason);
         }
-        this.controller.signal.throwIfAborted();
+        signal.throwIfAborted();
+        // from here it restarts onto the new release: too late to cancel
+        this.installing = null;
         const previous = this.release;
         // what it replaces, on record for the supervisor the release starts: that one was not here for the install
         const next: Release = { directory: stage, revision, source_revision: this.sourceRevision,
@@ -550,6 +577,12 @@ export class Updater {
       }
       this.patch({ phase: "idle", step: null });
     } catch (error) {
+      // cancelled while it built: nothing was installed, its offer stays, and it is no failed release
+      if (this.installing?.signal.aborted && !this.controller.signal.aborted) {
+        this.cancelledRevision = attempted;
+        this.patch({ phase: "error", step: null, error_code: "update_cancelled", error: "The update was cancelled before it was installed." });
+        return;
+      }
       if (attempted && !this.controller.signal.aborted) {
         this.failedRevision = attempted;
         try {
@@ -560,6 +593,8 @@ export class Updater {
       this.patch({ phase: "error", step: null, error: error instanceof Error ? error.message : String(error), ...(checked ? {} : { available: false }) });
     } finally {
       if (stage) rmSync(stage, { recursive: true, force: true });
+      this.installing = null;
+      this.cancelPending = false;
       this.busy = false;
     }
   }

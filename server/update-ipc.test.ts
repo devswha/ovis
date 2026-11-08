@@ -68,6 +68,8 @@ describe("the update IPC between the bridge and its supervisor", () => {
     // what an older bridge sends for its Update: no revision, so no install
     expect(readUpdateIpcRequest({ type: "update-command", command: "install" })).toBeNull();
     expect(readUpdateIpcRequest({ type: "update-command", command: "check" })).toEqual({ command: "check" });
+    // a cancel goes as a type of its own, which an older supervisor ignores
+    expect(readUpdateIpcRequest({ type: "update-cancel" })).toEqual({ command: "cancel" });
   });
 
   it("reads only a full lowercase commit id, and nothing from a message out of shape", () => {
