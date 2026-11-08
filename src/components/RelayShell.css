@@ -21,6 +21,7 @@
   flex-direction: column;
   align-items: stretch;
   width: min(100%, var(--relay-signin-w));
+  min-width: 0;
   padding: var(--space-6);
   background: var(--bg-panel);
   border: var(--hairline) solid var(--border);
@@ -117,6 +118,14 @@
 
 .relay-shell-actions .btn {
   width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: var(--touch-target);
+  padding-block: var(--space-2);
+  line-height: var(--lh-tight);
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .relay-shell-wait {
