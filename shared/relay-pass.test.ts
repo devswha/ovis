@@ -18,7 +18,7 @@ async function issuer(kid = "a1b2c3d4") {
 
 const encode = (value: unknown) => btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
-test("a v2 pass says whether the relay admits new client sessions to the PC; a v1 pass always admits them", async () => {
+test("a v2 pass says whether new client sessions to the PC are allowed; a v1 pass always allows them", async () => {
   const { keys, sign, signAdmitting } = await issuer();
   const base = { kid: "a1b2c3d4", aud: "ovis-relay", sid: SID, iat: NOW, exp: NOW + RELAY_PASS_LIFETIME_S } as const;
   const closed = await checkRelayPass(await signAdmitting(false), keys, SID, NOW);

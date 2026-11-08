@@ -81,9 +81,7 @@ function isPassResult(value: unknown): value is PassResult {
   return ["ok", "missing", "invalid", "expired"].includes(result["state"] as string)
     && (result["reason"] === undefined || typeof result["reason"] === "string")
     && (result["exp"] === undefined || typeof result["exp"] === "number")
-    && (result["kid"] === undefined || typeof result["kid"] === "string")
-    && (result["iat"] === undefined || typeof result["iat"] === "number")
-    && (result["new_sessions"] === undefined || result["new_sessions"] === false);
+    && (result["kid"] === undefined || typeof result["kid"] === "string");
 }
 
 /** the key a PC's usage is kept under: not its server_id itself */
@@ -126,8 +124,6 @@ function isInfo(value: unknown): value is SocketInfo {
     && (info["usage"] === undefined || isUsage(info["usage"]))
     && (info["pass_exp"] === undefined || typeof info["pass_exp"] === "number")
     && (info["pass_kid"] === undefined || typeof info["pass_kid"] === "string")
-    && (info["pass_iat"] === undefined || typeof info["pass_iat"] === "number")
-    && (info["pass_new_sessions"] === undefined || info["pass_new_sessions"] === false)
     && (info["pass_state"] === undefined || ["ok", "missing", "invalid", "expired"].includes(info["pass_state"] as string))
     && (info["ended"] === undefined || info["ended"] === true);
 }
@@ -149,10 +145,7 @@ export class RelayRoom {
     if (this.passLoaded || !this.policy || this.policy.mode === "off") return undefined;
     this.passLoad ??= this.state.storage.get<unknown>(PASS_UNTIL).then((saved) => {
       const value = typeof saved === "object" && saved !== null ? saved as Partial<RoomAuthorization> : {};
-      const admitted = Array.isArray(value.admitted) ? value.admitted.filter((id): id is string => typeof id === "string" && /^[0-9a-f]{32}$/.test(id)) : [];
-      this.passUntil = typeof value.until === "number" && typeof value.kid === "string"
-        ? { until: value.until, kid: value.kid, ...(typeof value.issued === "number" ? { issued: value.issued } : {}),
-          ...(value.new_sessions === false ? { new_sessions: false } : {}), ...(admitted.length > 0 ? { admitted } : {}) } : null;
+      this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid } : null;
       this.passLoaded = true;
     });
     return this.passLoad;

@@ -116,12 +116,6 @@ export interface RelayChannelOptions {
   readonly offerDirect?: boolean;
   /** With offerDirect, also offer DIRECT_TAILNET: only a client that can open a carrier on a Tailscale address. */
   readonly offerTailnet?: boolean;
-  /**
-   * A reconnect of a session already up: the connection_id the relay last gave it, sent as `resume=`
-   * so a relay that admits no new client sessions to the PC still lets this one back (relay/README.md).
-   * Never on a first connect, and not on a direct carrier.
-   */
-  readonly resume?: string;
 }
 export interface RelayChannel {
   readonly mux: MuxEngine;
@@ -170,7 +164,6 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
   if (direct === undefined) {
     url.searchParams.set("server_id", offer.server_id);
     url.searchParams.set("role", "client");
-    if (options.resume !== undefined) url.searchParams.set("resume", options.resume);
   }
   url.searchParams.set("v", "1");
   options.signal?.throwIfAborted();

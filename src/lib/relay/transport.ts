@@ -163,8 +163,6 @@ export class RelayTransport implements Transport {
   private generation = 0;
   /** The relay the latest connection went through: the offer's, or the global one it falls back to. */
   private relay: string;
-  /** the connection_id the relay gave this session's latest relay channel: a reconnect names it in `resume` */
-  private resume: string | undefined;
   private opening: Promise<void> | undefined;
   private stopped = false;
   private delay = 1000;
@@ -235,7 +233,6 @@ export class RelayTransport implements Transport {
       ...this.options, signal: this.abort.signal,
       // a reconnect runs behind the app, not on a waiting screen: it waits at the relay nearly as long as the relay holds it
       ...(generation === 1 ? {} : { pcAnswerMs: RECONNECT_PC_ANSWER_MS }),
-      ...(generation === 1 || this.resume === undefined ? {} : { resume: this.resume }),
       onClose: (error) => {
         if (generation !== this.generation || this.stopped) return;
         const switching = this.switching !== undefined && this.switching === this.channel;
@@ -261,7 +258,6 @@ export class RelayTransport implements Transport {
     if (generation !== this.generation || this.stopped) { channel.close(); return; }
     if (!channel.mux.active) throw new TypeError("Relay carrier lost during admission");
     this.channel = channel;
-    if (channel.direct === undefined) this.resume = channel.connectionId;
     this.routeChanged();
     channel.mux.onStreamAvailable = () => {
       for (const pending of this.waitingHttp) if (!pending.run()) break;

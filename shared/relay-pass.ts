@@ -8,9 +8,9 @@
  * Text form: `ovp1.<payload>.<signature>`, both base64url without padding. The signature is Ed25519
  * (WebCrypto) over the ASCII bytes `ovis-relay-pass/1.` followed by the payload's base64url text.
  * The payload is JSON with exactly `v` (1), `kid`, `aud`, `sid`, `iat` and `exp` (seconds), or a v2
- * payload: those fields with `v` 2 and `new`, 1 when the relay admits new client sessions to the PC
- * and 0 when it admits none for the pass's lifetime (sessions already up are never closed for it). A
- * v1 pass admits them. The prefix and signing prefix stay `1`: the signature covers the payload's
+ * payload: those fields with `v` 2 and `new`, 1 when new client sessions to the PC are allowed and 0
+ * when they are not for the pass's lifetime. A v1 pass allows them. Relays parse and carry `new` but
+ * do not enforce it yet: that comes with a later relay change. The prefix and signing prefix stay `1`: the signature covers the payload's
  * text, `v` and `new` included, so a v2 pass cannot be passed off as v1 or have `new` edited, and a
  * relay that knows only v1 refuses a v2 pass by its shape.
  */
@@ -39,10 +39,6 @@ const HEX32 = /^[0-9a-f]{32}$/;
 const KID = /^[0-9a-f]{8}$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
 
-/** Close code for a client socket the relay admits no new session for, by its PC's pass (`new` 0), and its reason. */
-export const RELAY_ALLOWANCE_CLOSE = 4429;
-export const RELAY_ALLOWANCE_USED = "relay allowance used";
-
 interface RelayPassFields {
   readonly kid: string;
   readonly aud: typeof RELAY_PASS_AUDIENCE;
@@ -52,7 +48,7 @@ interface RelayPassFields {
 }
 export type RelayPassPayload = (RelayPassFields & { readonly v: 1 }) | (RelayPassFields & { readonly v: 2; readonly new: 0 | 1 });
 
-/** Whether the relay admits new client sessions to the PC this pass is for. */
+/** Whether this pass allows new client sessions to the PC it is for. */
 export function relayPassAdmitsNewSessions(payload: RelayPassPayload): boolean {
   return payload.v === 1 || payload.new === 1;
 }

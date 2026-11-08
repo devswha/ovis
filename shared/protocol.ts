@@ -594,7 +594,7 @@ export interface RelayStatus {
     readonly enforce_at: string | null;
     /** the relay refused this PC for its pass (4402) and it has not been let in since */
     readonly refused: boolean;
-    /** false while the pass in use says the relay admits no new client sessions to this PC (sessions already up stay); absent otherwise */
+    /** false while the pass in use says new client sessions to this PC are not allowed and the relay says it holds; absent otherwise */
     readonly new_sessions?: false;
   };
 }

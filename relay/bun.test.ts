@@ -325,24 +325,6 @@ describe("relay pass on the Bun relay", () => {
     } finally { await enforced.stop(); }
   });
 
-  test("enforced: a PC whose pass admits no new client sessions still connects, and a new client closes 4429", async () => {
-    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
-    const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
-    const pass = await passPolicy(relayPassFromArgs(["--pass-mode", "enforce", "--pass-keys", `0badc0de:${Array.from(raw, (byte) => byte.toString(16).padStart(2, "0")).join("")}`], {}));
-    const enforced = startBunRelay({ port: 0, pass });
-    try {
-      const server = newServer();
-      const urls = relayUrls(`ws://127.0.0.1:${enforced.port}`, server);
-      const token = await signRelayPass(pair.privateKey, "0badc0de", server.serverId, Math.floor(Date.now() / 1000), undefined, { newSessions: false });
-      const control = new Peer(new WebSocket(urls.control, { headers: { [RELAY_PASS_HEADER]: token } } as unknown as string[]));
-      await control.ready;
-      control.socket.send(answerChallenge(await control.next("server_challenge"), server, null)!);
-      expect((await control.json("sync"))["relay_pass"]).toEqual({ state: "ok", enforce_at: null });
-      expect(await (await Peer.open(urls.client)).closed).toEqual({ code: 4429, reason: "relay allowance used" });
-      control.socket.close();
-    } finally { await enforced.stop(); }
-  });
-
   test("enforced: PCs behind one address whose passes hold each get in after the address spent its budget", async () => {
     const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
     const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));

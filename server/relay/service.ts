@@ -226,7 +226,7 @@ export class RelayService {
   }
 
   /**
-   * `new_sessions: false` while the pass the global link sends says its relay admits no new client sessions to this PC,
+   * `new_sessions: false` while the pass the global link sends says new client sessions to this PC are not allowed,
    * and only while that relay says passes are on and this one holds (`relay` ok): a relay with passes off ignores it.
    */
   private newSessions(): { new_sessions?: false } {

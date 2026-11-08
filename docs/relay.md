@@ -640,10 +640,7 @@ socket itself with `4000` when the challenge is invalid or out of order. It retr
 `server key does not match server_id` and `invalid server key` stop retries
 ([step 1](#how-a-connection-is-made)). A phone does not receive the PC's proof close directly:
 it can instead find the PC offline or lose its carrier with `1012`. Phones can also receive the
-relay's own `1013` capacity or answer-deadline close, and `4429` (`relay allowance used`) when the
-PC's [relay pass](#relay-pass) says the relay admits no new client sessions to it. A session already
-up is not cut off by it: each reconnect through the relay names the `connection_id` the relay gave it
-last (`resume`), and the relay lets it back. The app does not show 4429 apart yet and retries it.
+relay's own `1013` capacity or answer-deadline close.
 
 The encryption closes its connection with `1008` when the other end won't use protected mode. On
 the phone's side it closes with `4002` when the handshake fails and `4003` when a record fails its
@@ -708,8 +705,9 @@ run yourself need no account and no pass.
   a minute. The service gives one only
   when that account lists the PC, so another account listing it neither charges nor blocks it.
   The request names the pass forms the PC reads (`pass_versions: [1, 2]`): the service signs a v2
-  pass (the one that can say the relay admits no new client sessions) only for a PC that names it,
-  and only once every relay runs a version that reads it. An older PC names none and gets v1.
+  pass (one that can say new client sessions to the PC are not allowed) only for a PC that names
+  it, and only once every relay runs a version that reads it. An older PC names none and gets v1.
+  Relays accept v2 but do not act on `new` yet: that is enforced by a later relay change.
 - **Keeping it.** The pass lasts 48 hours. The PC keeps it in `relay/pass.json` (readable by your user
   only), so a restart or an account service outage costs nothing while it holds, and asks for the
   next one after 12 hours, backing off (and honoring `Retry-After`) when the service does not answer.
@@ -726,10 +724,9 @@ run yourself need no account and no pass.
   then stops reconnecting until it gets a pass, and reconnects as soon as it does. `GET /api/relay`
   says where it stands in `pass`: `state` (`ok`, `no_account`, `not_listed`, `limit` or
   `unavailable`), what the relay last said of it (`relay`), and from when the relay will need it
-  (`enforce_at`). `new_sessions: false` there means the pass in use says the relay admits no new
-  client sessions to this PC for the pass's lifetime (a new phone or browser then hears `4429`;
-  sessions already up stay, reconnects included), shown only while the relay says the pass holds
-  (`relay` `ok`); it is absent otherwise. `pass` is absent on a relay that is not Ovis's, and with
+  (`enforce_at`). `new_sessions: false` there means the pass in use says new client sessions to this
+  PC are not allowed for the pass's lifetime (enforced by a later relay change), shown only while
+  the relay says passes are on and this one holds (`relay` `ok`); it is absent otherwise. `pass` is absent on a relay that is not Ovis's, and with
   `OVIS_ACCOUNT_SERVICE_URL=off`. `error_code` says which of the reasons below it is.
 
 ## Why it is not online
