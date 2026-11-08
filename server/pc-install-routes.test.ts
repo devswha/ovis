@@ -81,7 +81,7 @@ it("cancels a running install with DELETE, and with the PC's own update cancel o
   offerInstall();
   expect(manager.list().find((machine) => machine.id === SAVED)?.ovis_update).toMatchObject({ how: "install", updatable: true });
   // Update all never starts it: it changes more on that PC than an update, so its card starts it once its steps are read
-  expect(await (await call("update-all")).json()).toEqual({ started: [], queued: [], skipped: [{ machine_id: SAVED, reason: expect.stringContaining("start it from its card") }] });
+  expect(await (await call("update-all")).json()).toEqual({ started: [], queued: [], skipped: [{ machine_id: SAVED, reason: expect.stringContaining("start it for this PC alone") }] });
   expect(manager.installJob("none")).toBeUndefined();
   const byRoute = await (await call("install", "POST", { machine_id: SAVED })).json() as PcInstallJob;
   expect(byRoute).toMatchObject({ machine_id: SAVED, mode: "replace" });
@@ -97,29 +97,36 @@ it("cancels a running install with DELETE, and with the PC's own update cancel o
   expect((await ended(third.job_id)).phase).toBe("cancelled");
 });
 
-it("connects after an install without updating, and asks for the update only when that PC is still older than this app", async () => {
-  const { manager } = fixture();
-  type Job = { id: string; phase: string; error: string | null; step: string; action_required?: string | null };
-  const asked: boolean[] = [];
-  /** what each connect ends as, in turn */
-  const outcomes: Partial<Job>[] = [];
-  const jobs = (manager as unknown as { jobs: Map<string, { finished: Promise<void>; public: Job }> }).jobs;
-  spyOn(manager, "setup").mockImplementation((request) => {
-    asked.push(request.update_remote === true);
-    const job: Job = { id: `job-${asked.length}`, phase: "connecting", error: null, step: "", ...outcomes.shift() };
-    jobs.set(job.id, { finished: Promise.resolve(), public: job });
+/** installConnect with each setup it starts mocked: `outcomes` says how each ends, in turn, and the release its connect read */
+function connects(manager: MachineManager) {
+  type Job = { id: string; phase: string; error: string | null; step: string; action_required?: string | null; remote_ovis?: { latest_version: string | null } | null };
+  const asked: { update: boolean; revision: string | undefined }[] = [];
+  const outcomes: (Partial<Job> & { offeredRevision?: string })[] = [];
+  const jobs = (manager as unknown as { jobs: Map<string, { finished: Promise<void>; public: Job; offeredRevision?: string }> }).jobs;
+  spyOn(manager, "setup").mockImplementation((request, options) => {
+    asked.push({ update: request.update_remote === true, revision: options?.expectedRevision });
+    const { offeredRevision, ...outcome } = outcomes.shift() ?? {};
+    const job: Job = { id: `job-${asked.length}`, phase: "connecting", error: null, step: "", ...outcome };
+    jobs.set(job.id, { finished: Promise.resolve(), public: job, ...(offeredRevision ? { offeredRevision } : {}) });
     return job as unknown as ReturnType<MachineManager["setup"]>;
   });
-  const connect = (manager as unknown as { installConnect(request: { target: SshTarget; machine_id?: string; update: boolean }): { finished: Promise<string | null> } }).installConnect;
+  const connect = (manager as unknown as { installConnect(request: { target: SshTarget; machine_id?: string; update: boolean; revision?: string }): { finished: Promise<string | null> } }).installConnect;
+  return { asked, outcomes, connect };
+}
+const OLDER = { phase: "failed", action_required: "update_bridge", error: "older" } as const;
+
+it("connects after an install without updating, and asks for the update only when that PC is still older than this app", async () => {
+  const { manager } = fixture();
+  const { asked, outcomes, connect } = connects(manager);
   // the same version as this app once restarted: connected, and no update is asked of a PC with none to take
   outcomes.push({ phase: "connected" });
   expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true }).finished).toBeNull();
-  expect(asked).toEqual([false]);
-  // still older: its own update follows
+  expect(asked).toEqual([{ update: false, revision: undefined }]);
+  // still older: its own update follows, of the release its card showed, never another one on offer by then
   asked.length = 0;
-  outcomes.push({ phase: "failed", action_required: "update_bridge", error: "older" }, { phase: "connected" });
-  expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true }).finished).toBeNull();
-  expect(asked).toEqual([false, true]);
+  outcomes.push({ ...OLDER, remote_ovis: { latest_version: "0.5.0" }, offeredRevision: "b".repeat(40) }, { phase: "connected" });
+  expect(await connect({ target: { destination: "me@lab.invalid" }, machine_id: SAVED, update: true, revision: "c".repeat(40) }).finished).toBeNull();
+  expect(asked).toEqual([{ update: false, revision: undefined }, { update: true, revision: "c".repeat(40) }]);
 });
 
 it("installs on a PC added here only as its card offers: never one not approved for this app, or past this app's release", async () => {
@@ -142,20 +149,38 @@ it("installs on a PC added here only as its card offers: never one not approved 
   expect((await unapproved.json() as { error: { message: string } }).error.message).toContain("Review the bridge update");
 });
 
-it("updates an older Ovis a fresh install finds already installed there, as a PC added here would be", async () => {
+it("updates an older Ovis a fresh install finds already installed there, only to the release checked here", async () => {
   const { manager } = fixture();
-  type Job = { id: string; phase: string; error: string | null; step: string; action_required?: string | null; remote_ovis?: { latest_version: string | null } | null };
-  const asked: boolean[] = [];
-  const outcomes: Partial<Job>[] = [{ phase: "failed", action_required: "update_bridge", error: "older", remote_ovis: { latest_version: "0.5.0" } }, { phase: "connected" }];
-  const jobs = (manager as unknown as { jobs: Map<string, { finished: Promise<void>; public: Job }> }).jobs;
-  spyOn(manager, "setup").mockImplementation((request) => {
-    asked.push(request.update_remote === true);
-    const job: Job = { id: `job-${asked.length}`, phase: "connecting", error: null, step: "", ...outcomes.shift() };
-    jobs.set(job.id, { finished: Promise.resolve(), public: job });
-    return job as unknown as ReturnType<MachineManager["setup"]>;
-  });
-  const connect = (manager as unknown as { installConnect(request: { target: SshTarget; machine_id?: string; update: boolean }): { finished: Promise<string | null> } }).installConnect;
-  // no machine_id: a PC not added here yet, whose own Ovis the launcher started at its old release
+  const { asked, outcomes, connect } = connects(manager);
+  // no machine_id: a PC not added here yet, whose own Ovis the launcher started at its old release; its update installs
+  // the release this connect read, and was checked against this app's
+  outcomes.push({ ...OLDER, remote_ovis: { latest_version: "0.5.0" }, offeredRevision: "b".repeat(40) }, { phase: "connected" });
   expect(await connect({ target: { destination: "me@fresh.invalid" }, update: true }).finished).toBeNull();
-  expect(asked).toEqual([false, true]);
+  expect(asked).toEqual([{ update: false, revision: undefined }, { update: true, revision: "b".repeat(40) }]);
+  // a beta of a release newer than this app, one whose version it does not tell, or no release read: no update is started
+  for (const [outcome, words] of [
+    [{ ...OLDER, remote_ovis: { latest_version: "999.0.0-beta.1" }, offeredRevision: "b".repeat(40) }, "newer than this app"],
+    [{ ...OLDER, remote_ovis: { latest_version: null }, offeredRevision: "b".repeat(40) }, "does not tell its version"],
+    [{ ...OLDER, remote_ovis: { latest_version: "0.5.0" } }, "did not tell which release"],
+  ] as const) {
+    asked.length = 0;
+    outcomes.push(outcome);
+    expect(await connect({ target: { destination: "me@fresh.invalid" }, update: true }).finished).toContain(words);
+    expect(asked).toEqual([{ update: false, revision: undefined }]);
+  }
+});
+
+it("restarts a PC's Ovis from its card with the release that card showed, for the update after it", async () => {
+  const { manager, internals } = fixture();
+  const runtime = internals.machines.get(SAVED)! as typeof internals extends { machines: Map<string, infer R> } ? R & { remoteRevision?: string } : never;
+  Object.assign(runtime.machine, { state: "error", action_required: "setup", remote_ovis: { version: "0.4.9", latest_version: "0.5.0", updatable: false, reason: "too old", address: "lab.invalid:7317", url: null } });
+  runtime.installFix = { mode: "restart", pid: 4242, target: { destination: "me@lab.invalid" } };
+  runtime.remoteRevision = "d".repeat(40);
+  expect(manager.list().find((machine) => machine.id === SAVED)?.ovis_update).toMatchObject({ how: "install", updatable: true, revision: "d".repeat(40) });
+  const installer = (manager as unknown as { installer: { start(request: { revision?: string }): { id: string } } }).installer;
+  const start = spyOn(installer, "start").mockReturnValue({ id: "install-1" });
+  // another release shown than the one on offer: refused, nothing started
+  expect(() => manager.update(SAVED, "e".repeat(40))).toThrow("another release");
+  expect(manager.update(SAVED, "d".repeat(40))).toEqual({ job_id: "install-1" });
+  expect(start.mock.calls[0]![0]).toMatchObject({ revision: "d".repeat(40), plan: { mode: "restart", pid: 4242 } });
 });

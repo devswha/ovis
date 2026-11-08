@@ -174,8 +174,8 @@ there runs on).
 `POST /api/machines/update-all` starts every PC's update at once: 202 `{ started, queued, skipped }`.
 Own updates run side by side; bridge updates run one after another, sharing one bundle download,
 and show `updating.queued` until their turn; a PC with an update it cannot take is `skipped` with
-why (a PC whose update is an install over SSH is always skipped: its card starts that, once its
-steps are read). Up-to-date PCs are not listed. At most four PCs' own updates run at once; the others show
+why (a PC whose update is an install over SSH is always skipped: it is started for that PC alone,
+once its `steps` are read). Up-to-date PCs are not listed. At most four PCs' own updates run at once; the others show
 `updating.queued` and start as one ends.
 
 ### Who may change PCs from here
@@ -237,7 +237,9 @@ and herdr's default session only.
   `X-Herdr-Update: 1` header on a change, as updates are ([Updating PCs from here](#updating-pcs-from-here)). Only the process named is ever stopped, only after
   it is checked to be that PC's own Ovis server. While an install runs, no other setup or install
   connects to that PC from here, and its final connect uses keys only too. A cancelled install keeps
-  the PC busy until its own run has ended: an installer already running there may run to its end.
+  the PC busy until its own run has ended. An installer already running there is stopped with it:
+  beside it, a watcher writes an empty line to the SSH connection every two seconds, and once
+  nobody reads there (the connection was closed) it stops the installer's whole process group.
 
 ## Runtime and endpoints
 

@@ -126,6 +126,8 @@ interface JobState {
   own?: boolean;
   /** the release the person was shown: another one on offer by then is refused, never installed (runOwnUpdate) */
   expectedRevision?: string;
+  /** the release the PC's own Ovis offered at this connect (its revision): the one an install's follow-up update installs */
+  offeredRevision?: string;
   stageStartedAt: number;
   finished: Promise<void>;
 }
@@ -133,7 +135,7 @@ const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
 /** an update asked for one release while the PC offers another by now: nothing of it is installed */
 const CHANGED_OFFER = "That PC offers another release now than the one shown. Look at it again, then update.";
 /** why Update all leaves out a PC whose update is an install over SSH */
-const INSTALL_FROM_CARD = "This PC needs Ovis installed again over SSH, which changes more on it than an update: read its steps and start it from its card.";
+const INSTALL_FROM_CARD = "This PC needs Ovis installed again over SSH, which changes more on it than an update: read what it does first, then start it for this PC alone.";
 /** how many PCs' own updates Update all runs at once: each downloads, installs and builds on its PC, and is followed from here */
 export const OWN_UPDATES_AT_ONCE = 4;
 /** a setup job's phases once it has ended */
@@ -142,6 +144,7 @@ const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis, which 
 const JOBS_FULL = "Finish or cancel the current connection jobs first";
 /** connection jobs (setups and bridge updates) that may run at once */
 const SETUP_JOBS_AT_ONCE = 4;
+const UNREAD_RELEASE = "That PC's Ovis did not tell which release it would install, so it was not updated from here. Update it from its card.";
 const NEWER_THAN_APP = "That release is newer than this app, which would then refuse to connect to that PC: update this app first, then this PC.";
 /** this app's own release (package.json), the newest an SSH PC's own Ovis may be updated to from here */
 const APP_VERSION = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
@@ -659,8 +662,9 @@ export class MachineManager {
       const release = appRelease();
       // it ends with this app's setup there, which needs the same approvals as an update
       // a restart then updates it to the release its own Ovis offers: never one newer than this app
-      const unapproved = fix.mode === "restart" && newerThanThisApp(own.latest_version) ? NEWER_THAN_APP : !this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null;
+      const unapproved = (fix.mode === "restart" ? pastThisApp({ updatable: true, latest_version: own.latest_version }) : null) ?? (!this.mayConnect(runtime) ? NOT_CONNECT_APPROVED : !this.mayManageBridge(runtime) ? NOT_BRIDGE_APPROVED : null);
       return { how: "install", current_version: own.version, latest_version: fix.mode === "replace" ? release.slice(1) : own.latest_version, updatable: !unapproved, reason: unapproved,
+        ...(fix.mode === "restart" ? { revision: runtime.remoteRevision ?? null } : {}),
         steps: fix.mode === "replace"
           ? [`Stop the Ovis server started by hand on that PC (process ${fix.pid}); its settings and data stay.`, `Install Ovis ${release} there with its official installer (install.sh at ${release}, as ${INSTALLER} gives it), as a herdr plugin that updates itself; an Ovis already installed there is started and updated instead.`, "As when it is run by hand, the installer adds what is missing for this account only (herdr, Bun 1.4 or newer, which may add itself to the shell's startup file), and serves Ovis to the tailnet when Tailscale runs there.", "Start it and connect to it. herdr and its sessions keep running."]
           : [`Restart that PC's Ovis (process ${fix.pid}) through its own launcher (its herdr plugin or user service), so it runs the supervisor that installs updates.`, `Then have it install its update${own.latest_version ? ` v${own.latest_version}` : ""}. herdr and its sessions keep running.`] };
@@ -887,7 +891,7 @@ export class MachineManager {
     if (!offer.updatable) throw new PcUpdateRefused(offer.reason ?? "This PC cannot take its update from here.");
     // the release the person saw: one the PC offers instead since is shown first, never installed unseen
     if (shown !== undefined && typeof offer.revision === "string" && shown !== offer.revision) throw new PcUpdateRefused("That PC offers another release now than the one shown. Look at it again, then update.");
-    if (offer.how === "install") return { job_id: this.install({ ...runtime.machine.target!, machine_id: id }).id };
+    if (offer.how === "install") return { job_id: this.install({ ...runtime.machine.target!, machine_id: id }, shown ?? offer.revision ?? undefined).id };
     if (runtime.machine.state === "connected") return { job_id: this.updateOwn(runtime, shown ?? offer.revision ?? undefined) };
     return { job_id: this.updateBridge(id, false, shown ?? offer.revision ?? undefined).id };
   }
@@ -895,7 +899,7 @@ export class MachineManager {
    * Installs Ovis over SSH (POST /api/machines/install): on a PC not added here, which is added once it answers; or
    * on a PC added here whose own Ovis cannot update itself, as its offer's steps say. Throws PcUpdateRefused.
    */
-  install(request: PcInstallRequest): PcInstallJob {
+  install(request: PcInstallRequest, shown?: string): PcInstallJob {
     if (this.stopped) throw new Error("Server stopping");
     const name = request.name;
     if (name !== undefined && (typeof name !== "string" || name.length > 100)) throw new Error("PC name must be at most 100 characters");
@@ -909,7 +913,9 @@ export class MachineManager {
       const offer = this.updateOffer(runtime);
       if (offer?.how !== "install" || !offer.updatable) throw new PcUpdateRefused(offer?.reason ?? "Nothing on that PC needs installing from here; update it with Update.");
       runtime.machine.update_error = null;
-      return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid } });
+      // a restart's update installs the release its card showed, or none
+      const revision = fix.mode === "restart" ? shown ?? offer.revision ?? undefined : undefined;
+      return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid }, ...(revision ? { revision } : {}) });
     }
     const target = validateTarget(request);
     if ([...this.machines.values()].some((runtime) => runtime.machine.target && sameSshSession(runtime.machine.target, target))) throw new PcUpdateRefused("That PC is already added here; update it from its card.");
@@ -921,8 +927,8 @@ export class MachineManager {
   /** the connect an install ends with: the usual setup, with the update asked for when the install restarted it */
   private installConnect: InstallConnect = (request) => {
     // keys only, as the install itself: a PC that asks for a password or a new host key by now fails with why
-    const start = (update: boolean) => this.setup({ ...request.target, ...(request.name ? { name: request.name } : {}), ...(request.machine_id ? { machine_id: request.machine_id } : {}), ...(update ? { update_remote: true } : {}) },
-      { ...(update ? { auto: true } : {}), keysOnly: true, fromInstall: true });
+    const start = (update: boolean, revision?: string) => this.setup({ ...request.target, ...(request.name ? { name: request.name } : {}), ...(request.machine_id ? { machine_id: request.machine_id } : {}), ...(update ? { update_remote: true } : {}) },
+      { ...(update ? { auto: true } : {}), ...(revision ? { expectedRevision: revision } : {}), keysOnly: true, fromInstall: true });
     const ended = async (job: SetupJob) => { await this.jobs.get(job.id)?.finished; return this.jobs.get(job.id)?.public ?? job; };
     let current = start(false);
     let cancelled = false;
@@ -933,10 +939,14 @@ export class MachineManager {
       if (request.update && result.phase === "failed" && result.action_required === "update_bridge") {
         // a cancel that came while the first connect ended: nothing more is started
         if (cancelled) return "Cancelled";
-        // its update, as update-bridge asks it: never to a release newer than this app, which would then refuse it
-        const offered = result.remote_ovis?.latest_version ?? (request.machine_id ? this.machines.get(request.machine_id)?.machine.remote_ovis?.latest_version : undefined);
-        if (newerThanThisApp(offered)) return NEWER_THAN_APP;
-        current = start(true); request.onJob?.(current.id); result = await ended(current);
+        // its update, as update-bridge asks it: never to a release newer than this app (which would then refuse it), and
+        // only the release checked here: the one its card showed for a restart, else the one this connect read. Another
+        // one on offer by then is refused, never installed (runOwnUpdate)
+        const past = pastThisApp(result.remote_ovis ? { updatable: true, latest_version: result.remote_ovis.latest_version } : null);
+        if (past) return past;
+        const revision = request.revision ?? this.jobs.get(current.id)?.offeredRevision;
+        if (!revision) return UNREAD_RELEASE;
+        current = start(true, revision); request.onJob?.(current.id); result = await ended(current);
       }
       return result.phase === "connected" ? null : result.error ?? `The connection to that PC ended: ${result.step}`;
     })();
@@ -1426,7 +1436,7 @@ export class MachineManager {
         const { revision: offeredRevision, fix, ...offer } = await this.ownOffer(ssh, descriptor, target, job?.abort.signal);
         if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
         if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = installPlanFor(fix, host.kind, descriptor.pid, target); }
-        if (job) job.public.remote_ovis = offer;
+        if (job) { job.public.remote_ovis = offer; job.offeredRevision = offeredRevision; }
         // a check still running there is no refusal: the PC tries again on its own instead of waiting for a tap
         if (!offer.updatable) throw offer.reason === OWN_CHECK_RUNNING ? new Error(OWN_CHECK_RUNNING) : new MachineActionRequired(ownUpdateRefused(offer), "setup");
         if (!update) throw new MachineActionRequired(ownUpdateOffered(offer), "update_bridge");

@@ -83,7 +83,10 @@ export interface PcUpdateOffer {
   latest_version: string | null;
   updatable: boolean;
   reason: string | null;
-  /** `own`: the release on offer (its commit), which an update asked for may name; only that release is installed */
+  /**
+   * `own`, and an `install` that restarts its Ovis and then updates it: the release on offer (its commit), which an
+   * update asked for may name; only that release is installed
+   */
   revision?: string | null;
   /** `install` only: what it does on that PC, in plain words, for the person to read before they start it */
   steps?: string[];

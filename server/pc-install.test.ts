@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createReadStream, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
-import { installPlanFor, PcInstaller, type InstallConnect } from "./pc-install.ts";
+import { installerRun, installPlanFor, PcInstaller, type InstallConnect } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
 // A PC reached over SSH, as a script-answering stand-in: every command this app would run there is answered here,
@@ -58,17 +58,18 @@ function fixture(pc: Pc) {
       return [`os=${pc.os ?? "Linux"}`, "arch=x86_64", ...tools.map((tool) => `has=${tool}`), ...(pc.writable === false ? [] : ["writable=1"]), `free_kb=${pc.freeKb ?? 50_000_000}`,
         "herdr=1", ...(pc.herdrRunning === false ? [] : ["herdr_running=1"]), `launcher=${pc.launcher ?? "none"}`].join("\n") + "\n";
     }
+    // the installer's run first: its watcher's own `kill -TERM 0` is no stop of a process
+    if (script.includes("/install.sh -o")) {
+      const answer = pc.installer ?? { exit: 0, output: "Ovis: installing the herdr plugin" };
+      if (answer.exit === 0 && pc.herdrRunning !== false) register();
+      return `${answer.output}\novis-install-exit=${answer.exit}\n`;
+    }
     if (script.includes("uname -s") && script.includes("bundle-ready")) return `Linux\nx86_64\n/home/fx\n/home/fx/.config\n/usr/bin/herdr\n${listed.map((d) => JSON.stringify(d)).join("\n")}\n`;
     if (script.includes("socket=")) return SOCKET;
     if (script.startsWith("ps -o args=")) return pc.command ?? "/home/fx/.bun/bin/bun /home/fx/ovis/server/index.ts";
     if (script.includes("kill -0")) return alive.has(Number(/kill -0 (\d+)/.exec(script)![1])) ? "live" : "";
     if (script.includes("kill -TERM")) { alive.delete(Number(/kill -TERM (\d+)/.exec(script)![1])); return ""; }
     if (script.includes('for f in "$HOME/.config/herdr-web-ui/bridges/"')) return listed.map((d) => JSON.stringify(d)).join("\n") + "\n";
-    if (script.includes("/install.sh -o")) {
-      const answer = pc.installer ?? { exit: 0, output: "Ovis: installing the herdr plugin" };
-      if (answer.exit === 0 && pc.herdrRunning !== false) register();
-      return `${answer.output}\novis-install-exit=${answer.exit}\n`;
-    }
     if (script.includes(" server </dev/null")) { register(); return ""; }
     if (script.includes("devswha.ovis.start") || script.includes("ovis.service")) { if (!pc.besideLauncher && (script.includes("devswha.ovis.stop") || script.includes("restart"))) for (const d of listed) alive.delete(d.pid); register(); return ""; }
     throw new Error(`Unexpected remote command: ${script}`);
@@ -254,7 +255,7 @@ describe("installing Ovis on a PC over SSH", () => {
     pc.installerAnswer({ exit: 0, output: "Ovis: installing the herdr plugin" });
     const retried = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(retried).toMatchObject({ phase: "connected", error: null });
-    expect(pc.commands.filter((command) => command.includes("kill -TERM"))).toHaveLength(1);
+    expect(pc.commands.filter((command) => command.includes("kill -TERM 4242"))).toHaveLength(1);
   });
 
   it("starts herdr headless for an installed plugin when herdr is not running, instead of a plugin action that needs it", async () => {
@@ -308,4 +309,36 @@ describe("installing Ovis on a PC over SSH", () => {
     await pc.settled(started);
     expect(pc.installer.runningAt(target)).toBeUndefined();
   });
+});
+
+// the installer's own command, run by a real shell in a session of its own (as sshd runs a command), its output read
+// through a pipe as SSH reads it. Linux CI has setsid; elsewhere this is skipped
+describe.skipIf(!Bun.which("setsid") || !Bun.which("curl"))("the installer's run on that PC", () => {
+  const fakeInstaller = (body: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-installer-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, "install.sh");
+    writeFileSync(path, "#!/bin/sh\n" + body.replaceAll("$DIR", dir));
+    return { dir, url: "file://" + path };
+  };
+
+  it("tells the installer's exit status as its last line, and ends with it", async () => {
+    const { url } = fakeInstaller("echo installing\nexit 3\n");
+    const run = Bun.spawn(["setsid", "-w", "sh", "-c", installerRun("v0.5.1", url)], { stdout: "pipe", stderr: "ignore" });
+    const lines = (await new Response(run.stdout).text()).split("\n").map((line) => line.trim()).filter(Boolean);
+    expect(await run.exited).toBe(0);
+    expect(lines).toEqual(["installing", "ovis-install-exit=3"]);
+  });
+
+  it("stops the installer once nobody reads its output any more, as when a cancel closes the SSH connection", async () => {
+    // the installer holds a pipe open for as long as it runs: its end there is the end of what this reads
+    const { dir, url } = fakeInstaller("echo started\nexec sleep 60 3>$DIR/held\n");
+    expect(await Bun.spawn(["mkfifo", join(dir, "held")]).exited).toBe(0);
+    const held = new Promise<void>((resolve) => createReadStream(join(dir, "held")).on("close", () => resolve()).resume());
+    // the reader stands in for SSH: it goes away once the installer has started, as a cancelled connection does
+    const run = Bun.spawn(["setsid", "-w", "sh", "-c", 'sh -c "$1" | { while IFS= read -r line; do [ "$line" = started ] && break; done; }', "ssh", installerRun("v0.5.1", url)], { stdout: "ignore", stderr: "ignore" });
+    cleanups.push(() => run.kill());
+    await held;
+    await run.exited;
+  }, 20_000);
 });

@@ -25,8 +25,25 @@ const MIN_FREE_KB = 1024 * 1024;
 const INSTALL_TIMEOUT_MS = 20 * 60_000;
 const STOP_WAIT_MS = 15_000;
 
+/**
+ * The official installer's run on that PC, for one SSH command. Downloaded first, so a failed download is told as one
+ * (piped, sh would run an empty script and exit 0), then run with nothing on stdin, on herdr (a herdr plugin that updates
+ * itself, as the steps shown say). The exit status is printed rather than returned, so the installer's own last words come
+ * back either way.
+ *
+ * A command run over SSH without a terminal keeps running once the connection ends, as a cancel ends it: so a watcher
+ * beside the installer writes an empty line to the connection every two seconds, and once it cannot (nobody reads there
+ * any more) stops the installer's whole process group. It is stopped itself when the installer ends. Empty lines are no
+ * output to the reader.
+ */
+export const installerRun = (release: string, from = installerAt(release)): string =>
+  `${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT HUP INT TERM; `
+  + `if ! curl -fsSL --max-time 120 ${from} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then rm -f "$script"; echo "Ovis: could not download the installer of ${release} from github.com"; printf '\\novis-install-exit=1\\n'; exit 0; fi; `
+  + `OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1 & pid=$!; `
+  + `( trap '' PIPE; while printf '\\n' 2>/dev/null; do sleep 2 >/dev/null 2>&1; done; kill -TERM 0 ) </dev/null 2>/dev/null & watch=$!; `
+  + `wait "$pid"; status=$?; kill "$watch" 2>/dev/null; rm -f "$script"; printf '\\novis-install-exit=%s\\n' "$status"`;
 /** connects the PC once Ovis answers there (MachineManager.setup, keys only): resolves null once connected, else why not */
-export type InstallConnect = (request: { target: SshTarget; name?: string; machine_id?: string; update: boolean; onJob?(job_id: string): void }) => { job_id: string; finished: Promise<string | null>; cancel(): void };
+export type InstallConnect = (request: { target: SshTarget; name?: string; machine_id?: string; update: boolean; revision?: string; onJob?(job_id: string): void }) => { job_id: string; finished: Promise<string | null>; cancel(): void };
 /** what to put right on a PC added here whose own Ovis cannot update itself, and the process that runs it now */
 export interface InstallPlan { mode: "replace" | "restart"; pid: number }
 /**
@@ -106,7 +123,7 @@ export class PcInstaller {
     this.startMs = options.startMs ?? 180_000;
     this.stopMs = options.stopMs ?? STOP_WAIT_MS;
   }
-  start(request: { target: SshTarget; name?: string; machine_id?: string; plan?: InstallPlan }): PcInstallJob {
+  start(request: { target: SshTarget; name?: string; machine_id?: string; plan?: InstallPlan; revision?: string }): PcInstallJob {
     const id = randomUUID();
     const job: PcInstallJob = { id, machine_id: request.machine_id ?? null, target: request.target, mode: request.plan?.mode ?? "install", phase: "connecting",
       step: "Connecting with SSH keys…", error: null, error_code: null, connect_job: null };
@@ -130,8 +147,8 @@ export class PcInstaller {
     return [...this.jobs.values()].find((state) => !state.settled && sameSshSession(state.public.target, target))?.public;
   }
   /**
-   * Ends the job here, and the connect it handed over to. Its SSH connection closes; an installer already running there
-   * may still run to its end. The PC counts as busy (runningFor, runningAt) until this job's own run has ended, so no
+   * Ends the job here, and the connect it handed over to. Its SSH connection closes, which stops an installer already
+   * running there within seconds (installerRun). The PC counts as busy (runningFor, runningAt) until this job's own run has ended, so no
    * other install or setup starts beside it. A server already stopped stays stopped, as the job then says.
    */
   cancel(id: string): void {
@@ -146,7 +163,7 @@ export class PcInstaller {
   }
   stop(): void { for (const id of this.jobs.keys()) this.cancel(id); }
 
-  private async run(state: State, request: { target: SshTarget; name?: string; machine_id?: string; plan?: InstallPlan }): Promise<void> {
+  private async run(state: State, request: { target: SshTarget; name?: string; machine_id?: string; plan?: InstallPlan; revision?: string }): Promise<void> {
     const { public: job, abort } = state;
     const { target, plan } = request;
     const release = this.options.release ?? appRelease();
@@ -242,7 +259,7 @@ export class PcInstaller {
         // downloaded first, so a failed download is told as one (piped, sh would run an empty script and exit 0), then
         // run with nothing on stdin, on herdr (a herdr plugin that updates itself, as the steps shown say). The exit
         // status is printed rather than returned, so the installer's own last words come back either way
-        const out = await ssh.run(`${REMOTE_PATH}script=$(mktemp) || exit 1; trap 'rm -f "$script"' EXIT HUP INT TERM; if ! curl -fsSL --max-time 120 ${installerAt(release)} -o "$script" || ! head -n 1 "$script" | grep -q '^#!/bin/sh'; then rm -f "$script"; echo "Ovis: could not download the installer of ${release} from github.com"; printf '\\novis-install-exit=1\\n'; exit 0; fi; OVIS_REF=${release} OVIS_RUNTIME=herdr OVIS_NO_OPEN=1 sh "$script" </dev/null 2>&1; status=$?; rm -f "$script"; printf '\\novis-install-exit=%s\\n' "$status"`, undefined, INSTALL_TIMEOUT_MS);
+        const out = await ssh.run(installerRun(release), undefined, INSTALL_TIMEOUT_MS);
         const lines = out.split("\n").map((line) => line.trim()).filter(Boolean);
         if (lines.at(-1) !== "ovis-install-exit=0") {
           const said = lines.filter((line) => !line.startsWith("ovis-install-exit=")).slice(-3).join(" ").slice(0, 500);
@@ -262,7 +279,7 @@ export class PcInstaller {
       }
       ssh.close();
       step("connecting_pc", "Connecting to that PC's Ovis…");
-      const connect = this.options.connect({ target, ...(request.name ? { name: request.name } : {}), ...(request.machine_id ? { machine_id: request.machine_id } : {}), update,
+      const connect = this.options.connect({ target, ...(request.name ? { name: request.name } : {}), ...(request.machine_id ? { machine_id: request.machine_id } : {}), ...(request.revision ? { revision: request.revision } : {}), update,
         // a follow-up connect (its update after the first one found it older) is the one to follow from now on
         onJob: (id) => { job.connect_job = id; this.options.onChange?.(job); } });
       state.connect = connect;
