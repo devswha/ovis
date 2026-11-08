@@ -199,6 +199,42 @@ server's bridge token, which asks for its own install by revision.
 The request must also come from this app's own page: the `X-Herdr-Update: 1` header, same origin,
 no query. Anything else gets 403 `forbidden`. The app sends the header on every PC request.
 
+### Installing Ovis on a PC over SSH
+
+Where a PC's own Ovis cannot update itself, or a PC has none yet, Ovis is installed there from
+here over SSH with the official installer (`curl -fsSL https://ovis.sh/install.sh | sh`, as in the
+[guide](guide.md)), pinned to this app's own release (`OVIS_REF=v<version>`), so both ends run one
+version. SSH uses keys only (`BatchMode`): a PC that wants a password, or whose host key is not
+known here yet, is refused with what to do (add its key with `ssh-copy-id`, or add it once with
+**Add PC**, which checks the fingerprint and can register a key). Linux and macOS PCs (x64 or arm64)
+and herdr's default session only.
+
+- An SSH PC whose own Ovis was started by hand (`bun run server`, not its updater) offers
+  `ovis_update.how: "install"`: its `steps` name the process it stops; Ovis is installed as a herdr
+  plugin that updates itself (`OVIS_RUNTIME=herdr`), started (herdr is started headless when it is
+  not running, which starts the plugin), and the PC connected again. As when it is run by hand, the
+  installer adds what is missing for that account (herdr, Bun, which may add itself to the shell's
+  startup file) and serves Ovis to the tailnet when Tailscale runs there; the steps say so first. An
+  Ovis already installed there (a herdr plugin or its user service) is started that way and updated
+  instead, since the installer would keep its release. Its settings and data stay; herdr and its sessions
+  keep running. The desktop app's own server is never replaced: it updates with the app.
+- One whose supervisor is too old to install an update by revision is restarted through its own
+  launcher (the herdr plugin's stop and start actions, or the `ovis` user service of Ovis on
+  herdr-core), then asked for its update. Without a launcher nothing is stopped (`no_launcher`). A release before 0.4.13 cannot be updated from here this way.
+- `POST /api/machines/:id/update` runs that install as any update; `POST /api/machines/install`
+  with `{ "machine_id": … }` does the same, and with an SSH address (`destination`, `port`,
+  `identity_file`, `name`) installs on a PC not added here and adds it once Ovis answers there
+  (refused when Ovis or this app's bridge already runs there).
+- The job (`GET /api/machines/install/:id`, `DELETE` to cancel) goes `connecting`, `checking`,
+  `stopping`, `installing`, `starting`, `connecting_pc`, then `connected`, `failed` or `cancelled`.
+  A failure carries `error_code` and words: `ssh_refused`, `ssh_host_key`, `ssh_unreachable`,
+  `unsupported`, `missing_tool` (no curl, git or tar), `disk` (under 1 GB free in the home folder),
+  `permission`, `bridge_there`, `ovis_there`, `changed` (the process to stop is no longer the one
+  shown, or its pid now runs another program: nothing is stopped), `not_stopped`, `installer_failed` (with the installer's last words),
+  `no_launcher`, `not_started`, `connect_failed`. Only the process named is ever stopped, only after
+  it is checked to be that PC's own Ovis server. While an install runs, no other setup or install
+  connects to that PC from here, and its final connect uses keys only too.
+
 ## Runtime and endpoints
 
 ```
@@ -220,6 +256,7 @@ The current server keeps one status-only WebSocket per remote PC without attachi
 | `GET/POST/DELETE /api/machines/setup/:id` | Inspect, answer/approve, cancel |
 | `POST/DELETE /api/machines/:id/update` | Start or stop waiting for the PC's update ([Updating PCs from here](#updating-pcs-from-here)) |
 | `POST /api/machines/update-all` | Start every PC's update |
+| `POST /api/machines/install`, `GET/DELETE /api/machines/install/:id` | Install Ovis on a PC over SSH ([Installing Ovis on a PC over SSH](#installing-ovis-on-a-pc-over-ssh)) |
 | `PATCH /api/machines/:id` | Rename or change `enabled` |
 | `DELETE /api/machines/:id` | Forget the PC and remove its local private key |
 | `/api/machines/:id/{session,agents,pane/*,workspace/*}` | Allowlisted target API routes |

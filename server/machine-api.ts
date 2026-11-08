@@ -1,5 +1,5 @@
 import { subscribeMachineEvents } from "./machine-events.ts";
-import type { DevicePairedEvent, DeviceRemovedEvent, MachineRoster, PcUpdateAll, PcUpdateStarted, RelayPairingsEvent, RemotePairingsEvent, SetupAction, SetupRequest } from "../shared/machines.ts";
+import type { DevicePairedEvent, DeviceRemovedEvent, MachineRoster, PcInstallJob, PcInstallRequest, PcUpdateAll, PcUpdateStarted, RelayPairingsEvent, RemotePairingsEvent, SetupAction, SetupRequest } from "../shared/machines.ts";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
@@ -349,6 +349,26 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       const patch = await request.json();
       if (!isJsonObject(patch)) return fail("invalid_body", "Expected PC settings", 400);
       return jsonResponse(manager.updateSettings(patch));
+    }
+    if (parts[0] === "install" && parts.length <= 2) {
+      // runs the official installer on another PC: a driving device's, as adding a PC is
+      if (readOnly) return fail("read_only", "this device can only watch", 403);
+      if (parts.length === 1) {
+        setRequestRoute("/api/machines/install");
+        if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
+        const body: unknown = await request.json().catch(() => null);
+        if (!isJsonObject(body)) return fail("invalid_body", "Expected an SSH address, or the machine_id of a PC added here", 400);
+        try { return jsonResponse(manager.install(body as unknown as PcInstallRequest) satisfies PcInstallJob, 202); }
+        catch (error) {
+          if (error instanceof PcUpdateRefused) return fail("install_unavailable", error.message, 409);
+          throw error;
+        }
+      }
+      setRequestRoute("/api/machines/install/:job_id");
+      if (request.method === "DELETE") manager.cancelInstall(parts[1]!);
+      else if (request.method !== "GET") return fail("method_not_allowed", "Use GET or DELETE", 405);
+      const job = manager.installJob(parts[1]!);
+      return job ? jsonResponse(job) : fail("job_not_found", "Install job not found", 404);
     }
     if (parts[0] === "update-all" && parts.length === 1) {
       setRequestRoute("/api/machines/update-all");

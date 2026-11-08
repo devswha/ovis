@@ -726,14 +726,16 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(installs).toEqual([{ expected_revision: OFFERED }]);
   });
 
-  const refusals: [string, Remote, RegExp][] = [
-    ["not started by its updater", { status: { ...unmanagedUpdateStatus() } }, /does not update itself: Start with bun run start/],
-    ["blocked there", { status: managedOffer({ blocked_reason: "The source checkout changed. Restart the app before updating." }) }, /cannot update itself now: The source checkout changed/],
-    ["asks for its own token", { status: null }, /OVIS_TOKEN/],
-    ["too old to install a named revision", { status: managedOffer({ revision_bound_install: undefined }) }, /too old to take an update/],
-    ["without a newer release on offer", { status: managedOffer({ available: false, latest_revision: null }) }, /no newer release on offer than v0\.4\.16/],
+  // the install over SSH that puts it right, where one can: a server started by hand is replaced, a too-old supervisor restarted
+  const refusals: [string, Remote, RegExp, "replace" | "restart" | null][] = [
+    ["not started by its updater", { status: { ...unmanagedUpdateStatus() } }, /does not update itself: Start with bun run start/, "replace"],
+    ["the desktop app's server", { status: { ...unmanagedUpdateStatus(true) } }, /updates come with the app/, null],
+    ["blocked there", { status: managedOffer({ blocked_reason: "The source checkout changed. Restart the app before updating." }) }, /cannot update itself now: The source checkout changed/, null],
+    ["asks for its own token", { status: null }, /OVIS_TOKEN/, null],
+    ["too old to install a named revision", { status: managedOffer({ revision_bound_install: undefined }) }, /too old to take an update/, "restart"],
+    ["without a newer release on offer", { status: managedOffer({ available: false, latest_revision: null }) }, /no newer release on offer than v0\.4\.16/, null],
   ];
-  for (const [name, remote, reason] of refusals) it(`says why it cannot be updated from here when it is ${name}`, async () => {
+  for (const [name, remote, reason, fix] of refusals) it(`says why it cannot be updated from here when it is ${name}`, async () => {
     const { manager, installs, operations, until } = pc({ ...remote, access: { port: OWN_PORT, tailscale: { serving_url: "https://home-server.example.ts.net" } } });
     const waiting = await until((machine) => machine.action_required === "setup");
     expect(waiting.state).toBe("error");
@@ -741,12 +743,22 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(waiting.error).toMatch(reason);
     expect(waiting.remote_ovis).toMatchObject({ updatable: false, address: `pc.invalid:${OWN_PORT}`, url: "https://home-server.example.ts.net" });
     expect(waiting.remote_ovis?.reason).toMatch(reason);
-    // the devices list tells it the same way, and asking for the update anyway is refused with those words
-    expect(waiting.ovis_update).toMatchObject({ how: "own", updatable: false });
-    expect(waiting.ovis_update?.reason).toMatch(reason);
     const asked = await handleMachineRequest(new Request(`http://localhost:7317/api/machines/${MACHINE_ID}/update`, { method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "x-herdr-update": "1" } }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
-    expect(asked.status).toBe(409);
-    expect((await asked.json() as { error: { code: string; message: string } }).error).toMatchObject({ code: "update_unavailable", message: expect.stringMatching(reason) });
+    if (fix) {
+      // the devices list offers the install over SSH, naming what it does and the very process it stops or restarts
+      expect(waiting.ovis_update).toMatchObject({ how: "install", updatable: true, reason: null });
+      expect(waiting.ovis_update?.steps?.[0]).toContain("process 4242");
+      expect(asked.status).toBe(202);
+      const { job_id } = await asked.json() as { job_id: string };
+      expect(manager.installJob(job_id)).toMatchObject({ machine_id: MACHINE_ID, mode: fix, target: { destination: "fixture@pc.invalid" } });
+      manager.cancelInstall(job_id);
+    } else {
+      // the devices list tells it the same way, and asking for the update anyway is refused with those words
+      expect(waiting.ovis_update).toMatchObject({ how: "own", updatable: false });
+      expect(waiting.ovis_update?.reason).toMatch(reason);
+      expect(asked.status).toBe(409);
+      expect((await asked.json() as { error: { code: string; message: string } }).error).toMatchObject({ code: "update_unavailable", message: expect.stringMatching(reason) });
+    }
     expect(installs).toEqual([]);
     expect(operations).toEqual([]);
   });
