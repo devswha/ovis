@@ -158,25 +158,30 @@ export class CLIProxyService {
     }
   }
 
-  /** `skipped`: accounts hidden or removed from Ovis, whose last rows stay without asking the Hub to use their credentials; one shown again is read now. */
+  /** `skipped`: accounts hidden or removed from Ovis, whose last rows stay without asking the Hub to use their credentials; one shown again is read now, alone. */
   report(refresh = false, skipped: ReadonlySet<string> = new Set()): Promise<readonly ProviderUsage[]> {
     if (!this.config) return Promise.resolve([]);
     if (this.pending) return this.pending;
     const now = Date.now();
-    const shownAgain = this.entries.some((entry) => this.skipped.has(entry.key) && !skipped.has(entry.key));
+    const due = now >= this.nextAt || (refresh && now - this.readAt >= MIN_REFRESH_MS);
+    const shown = this.entries.filter((entry) => this.skipped.has(entry.key) && !skipped.has(entry.key)).map((entry) => entry.key);
     this.skipped = skipped;
-    if (now < this.nextAt && !shownAgain && !(refresh && now - this.readAt >= MIN_REFRESH_MS)) return Promise.resolve(this.entries);
+    if (!due && shown.length === 0) return Promise.resolve(this.entries);
+    // before their time only the accounts shown again are read: every other row is still fresh and stays
+    const kept = due ? skipped : new Set(this.entries.map((entry) => entry.key).filter((key) => !shown.includes(key)));
     const generation = this.generation;
-    const pass = this.collect(skipped).then((entries) => {
+    const pass = this.collect(kept).then((entries) => {
       if (generation !== this.generation) return [];
-      this.entries = entries; this.readAt = now; this.nextAt = now + FRESH_MS;
+      this.entries = entries;
+      if (due) { this.readAt = now; this.nextAt = now + FRESH_MS; }
       return entries;
     }).finally(() => { if (this.pending === pass) this.pending = null; });
     this.pending = pass;
     return pass;
   }
 
-  private async collect(skipped: ReadonlySet<string>): Promise<readonly ProviderUsage[]> {
+  /** `kept`: the accounts whose last rows stay unread (while their file still names the same account) */
+  private async collect(kept: ReadonlySet<string>): Promise<readonly ProviderUsage[]> {
     try {
       const body = await this.call("/credentials");
       if (!Array.isArray(body["files"])) throw new CLIProxyError("cliproxy_response", 502, "Hub returned an unreadable response");
@@ -195,8 +200,8 @@ export class CLIProxyService {
         // a hidden or removed account keeps its last row; one never read yet is read once, so it can be listed
         // only while the file still names that account: another one under the same name is read anew
         const holder = JSON.stringify([typeof file["email"] === "string" ? file["email"] : null, workspace]);
-        const kept = skipped.has(entry.key) ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
-        if (kept) return [Promise.resolve(kept)];
+        const last = kept.has(entry.key) ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
+        if (last) return [Promise.resolve(last)];
         const held = (row: ProviderUsage): ProviderUsage => { this.holders.set(row, holder); return row; };
         if (file["disabled"] === true || file["unavailable"] === true) return [Promise.resolve(held(entry))];
         return [(async (): Promise<ProviderUsage> => {

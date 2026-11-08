@@ -1203,6 +1203,22 @@ describe("the service", () => {
     expect([tokenReads(), claudeSearches]).toEqual([1, 2]);
   });
 
+  it("keeps a provider's hidden accounts unread when its own sign-in ends", async () => {
+    const reads: string[] = [];
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() { return ["a", "b"].map((id) => ({ source: id, token: `token-${id}`, expiresAt: null, account: { id, label: id } })); },
+      async read(_ctx, signIn) { reads.push(signIn.token); return { plan: "pro", windows: [] }; },
+    };
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => new Set(["copilot:a"]));
+    await service.report();
+    service.invalidate("copilot");
+    const report = await service.report();
+    expect(reads).toEqual(["token-a", "token-b", "token-b"]);
+    expect(report.providers.map((usage) => usage.key)).toEqual(["copilot:a", "copilot:b"]);
+  });
+
   it("looks a provider up again and reads it anew as soon as one of its accounts is shown again", async () => {
     let searches = 0;
     const copilot: UsageProvider = {
