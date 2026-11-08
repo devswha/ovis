@@ -391,7 +391,7 @@ export async function enrollPc(options: {
   const planned = (await options.store.get("enrolls"))?.[options.serverId];
   if (planned === undefined || planned.account !== options.account) return { finished: true, checked: 0, of: others.length, admitted: [] };
   // enrolled already: only introductions some PCs did not take are left
-  if (planned.introduce !== undefined) return { finished: await introduceLeft(options.store, options.serverId, others), checked: 0, of: others.length, admitted: [] };
+  if (planned.introduce !== undefined) return { finished: await introduceLeft(options.store, options.serverId, others), checked: 0, of: others.length, admitted: planned.introduce.keys };
   const answered: AccountPeer[] = [];
   const seen: PcAccountStatus[] = [];
   /** PCs that cannot say they read their whole mailbox (from before enrollments, or whose read failed): their removals are relayed, and no add goes */
@@ -441,7 +441,7 @@ export async function enrollPc(options: {
   if (options.legacyTarget) return enrollLegacy({ ...options, removes });
   const records: (AddRecord | RemoveRecord)[] = [...removes, ...adds];
   const done: string[] = [];
-  const admitted: string[] = [];
+  const admitted: string[] = [...planned.admitted ?? []];
   // an unvouched PC keeps the new PC waiting: this enrollment is sent, but not as the last part
   let sent = unvouched === 0;
   // through the enrollment, which also ends the PC's wait for this client: sent even with nothing in it

@@ -10,7 +10,7 @@ import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts"
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
 import type { AddRecord } from "../../../shared/account-records.ts";
-import { planEnroll, rememberDevice } from "../account/join.ts";
+import { enrollPc, planEnroll, rememberDevice } from "../account/join.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { AccountService } from "../account/service.ts";
 import { myPcs } from "../account/myPcs.ts";
@@ -144,6 +144,37 @@ describe("account enrollment ownership", () => {
       expect(markup).toContain(translate(language, surface.text));
       expect(markup).not.toContain(translate(language, "Ready · not in the account yet"));
     }
+  });
+
+  it("retains confirmed admissions when an introduction-only retry adds none", async () => {
+    const run = await fixture("unused");
+    const introducing = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<Response>();
+    let introductions = 0;
+    let enrollments = 0;
+    const options = {
+      store: run.accountStore, account: "account", serverId: run.original.server_id,
+      pc: { ...run.original, name: "Desk" },
+      fetch: async (path: string) => { enrollments++; return run.answer(path); },
+      others: [{ serverId: "peer", fetch: async (path: string) => {
+        switch (path) {
+          case "/api/account/status?fresh=1": return Response.json({ account: "account", fresh: true, removals: [], adds: [], blocked: [] });
+          case "/api/account/introduce":
+            if (++introductions === 1) { introducing.resolve(); return release.promise; }
+            return Response.json({});
+          default: throw new TypeError("Unexpected peer request: " + path);
+        }
+      } }],
+    };
+    const first = enrollPc(options);
+    await introducing.promise;
+    release.resolve(Response.json({ error: { code: "unavailable" } }, { status: 503 }));
+    expect(await first).toMatchObject({ finished: false, admitted: run.records.map((record) => record.key) });
+    const admittedBeforeRetry = enrollments;
+    const again = await enrollPc(options);
+    expect(again.finished).toBe(true);
+    expect(enrollments).toBe(admittedBeforeRetry);
+    expect(again.admitted).toEqual(run.records.map((record) => record.key));
   });
 
   it.each([
