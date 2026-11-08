@@ -87,11 +87,49 @@ describe("PC connection ownership", () => {
     socket.receive({ type: "features", features: ["pending-input"], connection: "reload", herdr_lifetime: "reload-herdr" });
     expect(session.scope).toBeNull();
     // Open's attach replay can finish while the server still awaits clientSnapshot().
-    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], ...(outcome === "held" ? { held: ["saved"], held_ms: { saved: 60_000 } } : { removed: [{ id: "saved", outcome, resumed: true }] }) });
+    socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], ...(outcome === "held" ? { held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: Date.now() + 60_000 }, server_time: Date.now() } : { removed: [{ id: "saved", outcome, resumed: true }] }) });
     expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain", serverOwned: false }]);
     socket.receive(named("reload-herdr"));
     expect(store.read(owner)).toMatchObject(outcome === "held" ? [{ id: "saved", state: "held", serverOwned: false }] : []);
     session.close();
+  });
+  it("holds a resumed copy only until the bridge's end, whichever frame came late, and never past a later disconnect", () => {
+    let now = Date.parse("2026-11-08T00:00:00Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const { session, socket, store } = setup("held-clock");
+      const owner = paneStorageId(session.machineId, "w1:p1");
+      store.accept(owner, message("saved"), null);
+      // the PC's clock is this page's; the bridge kept the receipt until bridgeEnd
+      const bridgeEnd = now + 10 * 60 * 1000;
+      session.connect();
+      // the features frame took 60 s to arrive
+      const featuresSent = now;
+      now += 60_000;
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c1", herdr_lifetime: "clock-herdr", server_time: featuresSent });
+      socket.receive(named("clock-herdr"));
+      // a held frame sent just before the end that arrives on time: held until the end, not 60 s past it
+      now = bridgeEnd - 10_000;
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 10_000 }, held_until: { saved: bridgeEnd }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
+      now = bridgeEnd + 1;
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      // a held frame sent 5 s before the end that arrives after it: nothing to send
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 5_000 }, held_until: { saved: bridgeEnd }, server_time: bridgeEnd - 5_000 });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      // a fresh receipt holds it; the connection then drops and the next one is to a restarted bridge with none
+      now += 1_000;
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["saved"], held_ms: { saved: 60_000 }, held_until: { saved: now + 60_000 }, server_time: now });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "held" }]);
+      socket.disconnect();
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: "c2", herdr_lifetime: "clock-herdr", server_time: now });
+      socket.receive(named("clock-herdr"));
+      socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [] });
+      expect(store.read(owner)).toMatchObject([{ id: "saved", state: "uncertain" }]);
+      session.close();
+    } finally { clock.mockRestore(); }
   });
   it("settles durable reload state only after the lifetime fence exposes that herdr's storage", () => {
     withStorage(() => {

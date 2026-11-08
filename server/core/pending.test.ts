@@ -10,6 +10,7 @@ import * as pi from "../pi.ts";
 import type { SightingFacts } from "../input-guard.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
+import { PendingInputError } from "../pending-input.ts";
 import { isDshProcess } from "../dsh.ts";
 import { SHELL_AGENTS } from "../shell-agent.ts";
 import type { TerminalSighting } from "./terminals.ts";
@@ -174,7 +175,7 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     } finally { clock.mockRestore(); }
   });
 
-it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired", "concurrent resends after closed-owner expiry", "resend to another pane", "live owner's sibling tab", "held before close"] as const)(
+it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired", "concurrent resends after closed-owner expiry", "resend to another pane", "resend refused at its limit", "live owner's sibling tab", "held before close"] as const)(
   "replays a held follow-up receipt only while it remains unsent and held: %s", async (scenario) => {
     let now = Date.now();
     const clock = spyOn(Date, "now").mockImplementation(() => now);
@@ -231,8 +232,21 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
       // with how long the bridge keeps each: its whole window, as nothing waited since the close
       for (const id of heldIds(resumed)) expect(frames.get(resumed)!.some((frame) => frame.type === "pending-messages" && frame.held_ms?.[id] === 10 * 60 * 1000)).toBe(true);
       expect(heldIds(resumed)).toEqual(["held on close", "held before close", "overlapping reload", "held after reattach", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired",
-        "concurrent resends after closed-owner expiry", "resend to another pane"].includes(scenario)
+        "concurrent resends after closed-owner expiry", "resend to another pane", "resend refused at its limit"].includes(scenario)
         ? [item.message.id] : []);
+      if (scenario === "resend refused at its limit") {
+        now += 60_001; delivery.pending.expire();
+        // the bridge refuses the resend before anything is typed: the copy's held receipt is still its own
+        const refuse = spyOn(delivery.pending, "resend").mockImplementation(() => { throw new PendingInputError("pending_limit", "Too many held-copy sends are still retained; try again later"); });
+        try {
+          await delivery.pendingFrames.submit(resumed, { type: "submit", id: 2, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: item.message.id });
+        } finally { refuse.mockRestore(); }
+        expect(typed).toBe(0);
+        const back = client("device", token);
+        delivery.attached(back, "p");
+        expect(heldIds(back)).toEqual([item.message.id]);
+        return;
+      }
       if (scenario === "concurrent resends after closed-owner expiry") {
         now += 60_001; delivery.pending.expire();
         // the same held copy sent twice at once (two tabs, or a retry), generations 0 and 1: typed once

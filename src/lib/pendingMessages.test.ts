@@ -6,6 +6,9 @@ const storage = () => {
   const data = new Map<string, string>();
   return { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
 };
+/** a held receipt frame as the bridge sends it now (its clock = this page's): each ID with the ms it has left */
+const heldFrame = (left: Record<string, unknown>, sentAt = Date.now()) => ({ held: Object.keys(left), held_ms: left, server_time: sentAt,
+  held_until: Object.fromEntries(Object.entries(left).map(([id, ms]) => [id, typeof ms === "number" ? sentAt + ms : ms])) });
 const message = (id: string, state: PendingMessage["state"] = "queued", text = "check the tests"): PendingMessage => ({ id, request_id: 1, text, state, created_at: "2026-10-06T00:00:00Z" });
 
 describe("pending message ownership", () => {
@@ -138,7 +141,7 @@ describe("pending message ownership", () => {
       tab.subscribe(() => { told++; });
       for (const id of ["read", "timed", "discarded"]) tab.accept("p", message(id), "old");
       tab.suspendScope("old");
-      tab.publish("p", [], frameRemovals({ held: ["read", "timed", "discarded"], held_ms: { read: 60_000, timed: 90_000, discarded: 120_000 } }), "new");
+      tab.publish("p", [], frameRemovals(heldFrame({ read: 60_000, timed: 90_000, discarded: 120_000 })), "new");
       expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["read", "held"], ["timed", "held"], ["discarded", "held"]]);
       // one timer, to the first proof's end
       expect(active().map(({ ms }) => ms)).toEqual([60_000]);
@@ -169,12 +172,12 @@ describe("pending message ownership", () => {
       for (const id of ["late", "short", "waited"]) tab.accept("p", message(id), "old");
       tab.suspendScope("old");
       // a frame that waited 20 s (for its snapshot) still ends when the bridge's receipt does
-      const waited = frameRemovals({ held: ["waited"], held_ms: { waited: 30_000 } });
+      const waited = frameRemovals(heldFrame({ waited: 30_000 }));
       now += 20_000;
-      tab.publish("p", [], [...frameRemovals({ held: ["late", "short"], held_ms: { late: 1_000, short: 60_000 } }), ...waited], "new");
+      tab.publish("p", [], [...frameRemovals(heldFrame({ late: 1_000, short: 60_000 })), ...waited], "new");
       expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"], ["short", "held"], ["waited", "held"]]);
       // a replay that ends sooner shortens the proof
-      tab.publish("p", [], frameRemovals({ held: ["short"], held_ms: { short: 5_000 } }), "newer");
+      tab.publish("p", [], frameRemovals(heldFrame({ short: 5_000 })), "newer");
       now += 10_001;
       expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["short", "uncertain"], ["waited", "uncertain"]]);
       // the old connection's late held answer for an ended proof is no proof
@@ -197,40 +200,69 @@ describe("pending message ownership", () => {
   });
   it("takes a held ID only with a valid time left: any other shape proves nothing", () => {
     const ids = (frame: Parameters<typeof frameRemovals>[0]) => frameRemovals(frame).map((removal) => removal.id);
-    expect(ids({ held: "held", held_ms: { held: 1_000 } })).toEqual([]);
-    expect(ids({ held: ["held", 4], held_ms: { held: 1_000 } })).toEqual([]);
+    expect(ids({ ...heldFrame({ held: 1_000 }), held: "held" })).toEqual([]);
+    expect(ids({ ...heldFrame({ held: 1_000 }), held: ["held", 4] })).toEqual([]);
     expect(ids({ held: ["held"] })).toEqual([]);
-    expect(ids({ held: ["held"], held_ms: "1000" })).toEqual([]);
-    for (const ms of [Number.NaN, Infinity, 0, -1, 10 * 60 * 1000 + 1, "1000"]) expect(ids({ held: ["held"], held_ms: { held: ms } })).toEqual([]);
-    expect(ids({ held: ["held", "other"], held_ms: { held: 1_000 } })).toEqual(["held"]);
+    expect(ids({ ...heldFrame({ held: 1_000 }), held_ms: "1000" })).toEqual([]);
+    for (const ms of [Number.NaN, Infinity, 0, -1, 10 * 60 * 1000 + 1, "1000"]) expect(ids({ ...heldFrame({ held: 1_000 }), held_ms: { held: ms } })).toEqual([]);
+    // no end on the PC's clock, or no clock to reckon it by (a bridge that names neither): no proof
+    const { held_until: _until, ...noEnd } = heldFrame({ held: 1_000 });
+    const { server_time: _time, ...noClock } = heldFrame({ held: 1_000 });
+    expect(ids(noEnd)).toEqual([]);
+    expect(ids(noClock)).toEqual([]);
+    expect(ids({ ...heldFrame({ held: 1_000 }), held_until: { held: Date.now() + 10 * 60 * 1000 + 1 } })).toEqual([]);
+    expect(ids({ ...heldFrame({ held: 1_000 }), held: ["held", "other"] })).toEqual(["held"]);
     // a frame with no held proof leaves a saved copy uncertain
     const port = storage(), tab = new PendingMessageStore(() => port);
     tab.accept("p", message("held"), "old");
     tab.suspendScope("old");
-    tab.publish("p", [], frameRemovals({ held: ["held"], held_ms: { held: 10 * 60 * 1000 + 1 } }), "new");
+    tab.publish("p", [], frameRemovals(heldFrame({ held: 10 * 60 * 1000 + 1 })), "new");
     expect(tab.read("p").map(({ state }) => state)).toEqual(["uncertain"]);
   });
-  it("never holds a copy past the bridge's own end: a frame that came late, a clock that differs", () => {
+  it("never holds a copy past the bridge's own end: a late features frame, a late held frame, one that came after the end", () => {
     let now = Date.parse("2026-11-08T00:00:00Z");
     const clock = spyOn(Date, "now").mockImplementation(() => now);
     try {
-      const sent = now;
-      // sent with five minutes left, it arrives five minutes late: nothing is left
-      now += 5 * 60 * 1000;
-      const late = frameRemovals({ held: ["late"], held_ms: { late: 5 * 60 * 1000 }, held_until: { late: sent + 5 * 60 * 1000 } }, 0);
-      expect(late.map((removal) => removal.outcome === "held" ? removal.until : undefined)).toEqual([now]);
-      // this page's clock runs an hour ahead of the PC's: the bridge's end is reckoned on this page's clock
-      const skew = -60 * 60 * 1000;
-      const ahead = frameRemovals({ held: ["ahead"], held_ms: { ahead: 60_000 }, held_until: { ahead: now + skew + 30_000 } }, skew);
-      expect(ahead.map((removal) => removal.outcome === "held" ? removal.until : undefined)).toEqual([now + 30_000]);
+      // the PC's clock runs an hour behind this page's; the bridge's receipt ends at bridgeEnd on its clock
+      const behind = 60 * 60 * 1000, pc = () => now - behind, bridgeEnd = pc() + 10 * 60 * 1000;
+      const until = (removals: ReturnType<typeof frameRemovals>) => removals.map((removal) => removal.outcome === "held" ? removal.until : undefined);
+      // a features frame that took 60 s gives an offset 60 s too high: a held frame on time gives the true one, and the least wins
+      const lateFeatures = behind + 60_000;
+      now += 9 * 60 * 1000;
+      expect(until(frameRemovals({ held: ["a"], held_ms: { a: 60_000 }, held_until: { a: bridgeEnd }, server_time: pc() }, lateFeatures))).toEqual([bridgeEnd + behind]);
+      // a held frame that took 60 s, after a features frame on time: the features frame's offset wins
+      const sent = pc();
+      now += 60_000;
+      expect(until(frameRemovals({ held: ["b"], held_ms: { b: 60_000 }, held_until: { b: bridgeEnd }, server_time: sent }, behind))).toEqual([bridgeEnd + behind]);
+      // with nothing better, never later than its arrival plus the time the bridge said was left
+      expect(until(frameRemovals({ held: ["c"], held_ms: { c: bridgeEnd - sent }, held_until: { c: bridgeEnd }, server_time: sent }))).toEqual([now + (bridgeEnd - sent)]);
+      // a held frame sent 30 s before the end that arrives after it: nothing to send
       const port = storage(), tab = new PendingMessageStore(() => port);
-      for (const id of ["late", "ahead"]) tab.accept("p", message(id), "old");
+      tab.accept("p", message("d"), "old");
       tab.suspendScope("old");
-      tab.publish("p", [], [...late, ...ahead], "new");
-      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["ahead", "held"]]);
-      now += 30_000;
-      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["ahead", "uncertain"]]);
+      const sentLate = bridgeEnd - 30_000;
+      now = bridgeEnd + behind + 1_000;
+      tab.publish("p", [], frameRemovals({ held: ["d"], held_ms: { d: 30_000 }, held_until: { d: bridgeEnd }, server_time: sentLate }, behind), "new");
+      expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["d", "uncertain"]]);
     } finally { clock.mockRestore(); }
+  });
+  it("ends every receipt's proof with any disconnect: a reconnect to a bridge that kept no receipt leaves the copy uncertain", () => {
+    const port = storage(), tab = new PendingMessageStore(() => port);
+    tab.accept("p", message("x"), "c1");
+    tab.suspendScope("c1");
+    tab.publish("p", [], frameRemovals(heldFrame({ x: 60_000, early: 60_000 })), "c2");
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["x", "held"]]);
+    // the second connection drops; the next one is to a restarted bridge, which kept no receipt
+    tab.suspendScope("c2");
+    tab.publish("p", [], [], "c3");
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["x", "uncertain"]]);
+    // the remembered early ID ended with it: another tab's copy saved now is not held either
+    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("x", "uncertain"), message("early", "queued")] }));
+    tab.refresh("p");
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["x", "uncertain"], ["early", "uncertain"]]);
+    // only a receipt on the new connection holds it again
+    tab.publish("p", [], frameRemovals(heldFrame({ x: 60_000 })), "c3");
+    expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["x", "held"], ["early", "uncertain"]]);
   });
   it("never offers a discarded copy again: a later resumed held ID leaves another tab's stale copy or a late acceptance uncertain", () => {
     const port = storage(), tab = new PendingMessageStore(() => port);

@@ -2748,7 +2748,7 @@ class DemoSocket extends EventTarget {
     if (held.length === 0) return;
     this.push({ type: "pending-messages", pane_id: paneId, messages: [], held: held.map(([id]) => id),
       held_ms: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS - now])),
-      held_until: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS])) });
+      held_until: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS])), server_time: now });
   }
 
   private pendingTargetError(paneId: string): string | null {

@@ -10,21 +10,24 @@ export type Removal = PendingRemoval | { id: string; outcome: "held"; resumed: t
 const byId = (value: unknown, id: string): unknown => typeof value === "object" && value !== null && Object.hasOwn(value, id) ? Reflect.get(value, id) : undefined;
 /**
  * A pending-messages frame's removals and its resumed `held` IDs, as `publish` takes them. A held ID is a proof only
- * with a valid time left (held_ms, 0 < ms <= ten minutes); anything else proves nothing. Its end is the sooner of its
- * arrival plus that time and the bridge's own end (held_until, on the bridge's clock) moved onto this page's clock by
- * `skew` (the bridge's clock less this page's, from the connection's features frame): a frame that came late, or a
- * clock that differs, never lengthens it.
+ * when the frame names its end on the PC's clock (`held_until`) and that clock as it sent the frame (`server_time`),
+ * no more than ten minutes apart (and a valid `held_ms`); anything else proves nothing. The end is reckoned on this
+ * page's clock by `offset` (this page's clock less the PC's), the least of this frame's own arrival offset and
+ * `lowest`, the least any earlier frame of the connection gave: a frame's delay only raises its offset, so the end is
+ * never later than this frame's arrival plus the time the bridge said was left.
  */
-export const frameRemovals = (frame: { removed?: PendingRemoval[]; held?: unknown; held_ms?: unknown; held_until?: unknown }, skew?: number): Removal[] => {
+export const frameRemovals = (frame: { removed?: PendingRemoval[]; held?: unknown; held_ms?: unknown; held_until?: unknown; server_time?: unknown }, lowest?: number): Removal[] => {
   const ids: unknown = frame.held;
   const held = Array.isArray(ids) && ids.every((id): id is string => typeof id === "string") ? ids : [];
-  return [...frame.removed ?? [], ...held.flatMap((id) => {
-    const left = byId(frame.held_ms, id);
+  const sentAt = frame.server_time;
+  const own = typeof sentAt === "number" && Number.isFinite(sentAt) ? Date.now() - sentAt : undefined;
+  const offset = own === undefined ? undefined : lowest !== undefined && Number.isFinite(lowest) ? Math.min(own, lowest) : own;
+  return [...frame.removed ?? [], ...(offset === undefined ? [] : held.flatMap((id) => {
+    const left = byId(frame.held_ms, id), until = byId(frame.held_until, id);
     if (typeof left !== "number" || !Number.isFinite(left) || left <= 0 || left > HELD_RECEIPT_MS) return [];
-    const bridge = byId(frame.held_until, id);
-    const until = Math.min(Date.now() + left, typeof bridge === "number" && Number.isFinite(bridge) && skew !== undefined && Number.isFinite(skew) ? bridge - skew : Infinity);
-    return [{ id, outcome: "held" as const, resumed: true as const, until }];
-  })];
+    if (typeof until !== "number" || !Number.isFinite(until) || until - (sentAt as number) <= 0 || until - (sentAt as number) > HELD_RECEIPT_MS) return [];
+    return [{ id, outcome: "held" as const, resumed: true as const, until: until + offset }];
+  }))];
 };
 const PREFIX = "ovis:pending:";
 /** the bridge keeps a held receipt this long (server/core/pending.ts PI_RESUME_MS), at most: a bridge that names no time gets this */
@@ -333,7 +336,14 @@ export class PendingMessageStore {
     this.refresh(owner);
     const proofs = this.scopes.get(owner);
     let changed = false;
+    // a connection ended: every receipt's proof ends with it, and only a receipt on the next connection proves a copy again
+    this.heldResumed.delete(owner);
     const next = this.read(owner).map((message) => {
+      if (message.heldUntil !== undefined && proofs?.get(message.id) === undefined) {
+        changed = true;
+        const { heldUntil: _, ...rest } = message;
+        return rest.state === "held" ? { ...rest, state: "uncertain" as const } : rest;
+      }
       if (proofs?.get(message.id) !== scope) return message;
       proofs.delete(message.id);
       changed = true;
@@ -422,7 +432,11 @@ export class PendingMessageStore {
     this.write(to, [...target, ...carried]);
     this.write(from, this.read(from).filter((message) => !gone.has(message.id)));
   }
-  suspendScope(scope: string): void { for (const owner of this.rows.keys()) this.suspend(owner, scope); }
+  suspendScope(scope: string): void {
+    // remembered held IDs of owners not read yet end too
+    for (const owner of [...this.heldResumed.keys()]) if (!this.rows.has(owner)) this.heldResumed.delete(owner);
+    for (const owner of this.rows.keys()) this.suspend(owner, scope);
+  }
   begin(owner: string, id: string): boolean {
     if (this.isBusy(owner, id) || !this.read(owner).some((message) => message.id === id)) return false;
     this.busy.add(`${owner}\0${id}`);

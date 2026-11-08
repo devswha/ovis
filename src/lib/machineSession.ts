@@ -27,8 +27,13 @@ export class MachineSession {
   private currentConnection: string | null = null;
   private currentEpoch = 0;
   private announcedLifetime: string | undefined;
-  /** this connection's PC clock less this page's (features' server_time) */
-  private skew: number | undefined;
+  /** the least (this page's clock less the PC's) any frame carrying server_time gave: delay only raises it */
+  private offset: number | undefined;
+  private noteClock(serverTime: unknown): void {
+    if (typeof serverTime !== "number" || !Number.isFinite(serverTime)) return;
+    const seen = Date.now() - serverTime;
+    this.offset = this.offset === undefined ? seen : Math.min(this.offset, seen);
+  }
   private resumedReceipts: Array<{ paneId: string; lifetime: string; removal: Removal }> = [];
   /** rows seen going out (`sending`), each with when and what its pane's chat held then (lib/sentWaiting.ts); a row
    * back as queued or held leaves it, so the next attempt (Send now) is timed from itself */
@@ -52,9 +57,9 @@ export class MachineSession {
       if (this.closed) return;
       if (message.type === "features") {
         this.announcedLifetime = message.herdr_lifetime; setPasteFolder(this.machineId, message.paste_dir);
-        // the PC's clock less this page's, for held receipts' ends; a bridge that does not say leaves only their time left
-        this.skew = typeof message.server_time === "number" && Number.isFinite(message.server_time) ? message.server_time - Date.now() : undefined;
+        this.noteClock(message.server_time);
       }
+      if (message.type === "pending-messages") this.noteClock(message.server_time);
       // a connection that came back to a replaced herdr, or to one it cannot prove, can say so before
       // the roster does: the earlier herdr's drafts and lenses leave the reused pane IDs before any
       // pane hears of it
@@ -67,7 +72,7 @@ export class MachineSession {
       if (message.type === "pending-messages" && this.currentScope === null && this.announcedLifetime !== undefined) {
         // Open replays attaches before the first snapshot. Keep only exact resumed receipts,
         // tagged with this connection's announced herdr, never its live queue or ordinary removals.
-        for (const removal of frameRemovals(message, this.skew)) if (removal.resumed === true) {
+        for (const removal of frameRemovals(message, this.offset)) if (removal.resumed === true) {
           this.resumedReceipts.push({ paneId: message.pane_id, lifetime: this.announcedLifetime, removal });
           if (this.resumedReceipts.length > 128) this.resumedReceipts.shift();
         }
@@ -102,7 +107,7 @@ export class MachineSession {
         sent = typed.length > 0;
         // the rows' words, read before the publish lets them go
         const rows = this.store.read(owner);
-        this.store.publish(owner, message.messages, frameRemovals(message, this.skew), scope);
+        this.store.publish(owner, message.messages, frameRemovals(message, this.offset), scope);
         if (sent) {
           const memory = greetingMemory(owner);
           rememberGreeting(owner, afterSettled(afterSend(memory), true, memory.history));

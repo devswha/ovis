@@ -1025,10 +1025,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     return rebound;
   }
   /** held receipts as a frame tells them: their IDs, and how long the bridge keeps each (the page's proof ends with it) */
-  function heldPart(entries: ReadonlyArray<{ id: string; at: number }>): { held: string[]; held_ms: Record<string, number>; held_until: Record<string, number> } {
+  function heldPart(entries: ReadonlyArray<{ id: string; at: number }>): { held: string[]; held_ms: Record<string, number>; held_until: Record<string, number>; server_time: number } {
     const now = Date.now();
     return { held: entries.map(({ id }) => id), held_ms: Object.fromEntries(entries.map(({ id, at }) => [id, Math.max(0, at + PI_RESUME_MS - now)])),
-      held_until: Object.fromEntries(entries.map(({ id, at }) => [id, at + PI_RESUME_MS])) };
+      held_until: Object.fromEntries(entries.map(({ id, at }) => [id, at + PI_RESUME_MS])), server_time: now };
   }
   /** `held`: an exact ID the bridge holds untyped, in its own field so a client that predates it never reads it as a removal. */
   function pushResumed(owner: Client, paneId: string, kept: string, part: { removed: PendingRemoval[] } | ReturnType<typeof heldPart>): void {
@@ -1255,19 +1255,27 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             // the held receipt is this pane's and this browser's to claim, no other's
             const at = completed.findIndex((entry) => entry.id === id && entry.outcome === "held" && entry.paneId === pane && entry.key === key);
             const held = at >= 0 ? completed.splice(at, 1)[0] : undefined;
-            const sent = await pending.resend(pane, id, hash, async () => {
-              try { await dispatch(); typedNow = true; return { ok: true }; }
-              catch (error) { return { ok: false, ...pendingFault(error) }; }
-            }, message.resend_generation);
+            const restore = (receipt: (typeof completed)[number]): void => {
+              // back in its place by age, as pruning drops expired receipts from the front
+              const back = completed.findIndex((entry) => entry.at > receipt.at);
+              completed.splice(back < 0 ? completed.length : back, 0, receipt);
+            };
+            let sent: Awaited<ReturnType<typeof pending.resend>>;
+            try {
+              sent = await pending.resend(pane, id, hash, async () => {
+                try { await dispatch(); typedNow = true; return { ok: true }; }
+                catch (error) { return { ok: false, ...pendingFault(error) }; }
+              }, message.resend_generation);
+            } catch (error) {
+              // refused before anything was typed (its limit, a reused ID): the receipt stays the copy's
+              if (held) restore(held);
+              throw error;
+            }
             if (sent.ok && (typedNow || held)) {
               // the claim, before the turn ends: a concurrent resend finds it sent
               if (!completed.some((entry) => entry.id === id && entry.outcome === "sent" && entry.paneId === pane)) completed.push({ paneId: pane, key: held?.key ?? key ?? "", id, outcome: "sent", at: Date.now(), hash });
               if (held) pushResumed(client, pane, held.key, { removed: [{ id, outcome: "sent", resumed: true }] });
-            } else if (held && !sent.ok && submitNotTyped(sent.code ?? "")) {
-              // back in its place by age, as pruning drops expired receipts from the front
-              const back = completed.findIndex((entry) => entry.at > held.at);
-              completed.splice(back < 0 ? completed.length : back, 0, held);
-            }
+            } else if (held && !sent.ok && submitNotTyped(sent.code ?? "")) restore(held);
             prunePi();
             return sent;
           });
