@@ -203,6 +203,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
       if (linking || fresh) {
         await opened.renew();
+        assertPairing(await store.get(serverId));
         // a Devices panel open since before the link reads the list again, over the session that proved the new key
         if (linking) window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT));
       }
@@ -215,6 +216,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         device = await enrollmentStore.update(serverId, (current) => ({ ...assertPairing(current), account: session.account }));
       }
       const publicKey = Array.from(importPublicKey(device.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      assertPairing(await store.get(serverId));
       await account.putPc(serverId, { label: (device.name ?? serverId.slice(0, 8)).slice(0, 48), public_key: publicKey, relay: device.relay });
       // listed first, so a removal this client signs from now on reaches it by mailbox too
       if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
