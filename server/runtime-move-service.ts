@@ -46,7 +46,7 @@ export interface MoveServiceOptions {
    * the herdr session's move lock (runtime-move-lock.ts) and this server lifetime's boot id: another Ovis
    * serving the same session (a connection server's bridge, say) cannot move it at the same time
    */
-  lock: { path: string; bootId: string };
+  lock: { path: string };
   /** installs herdr-core where the PC has none (server/herdr-core/install.ts), so the move can be offered */
   installer?: HcInstaller;
   /** what a stop of a busy pane reads and signals; herdr and this PC unless a test stands in */

@@ -90,16 +90,18 @@ run on herdr-core); end those on herdr-core first, then reopen them in herdr fro
 ## One move at a time
 
 Two Ovis servers can serve one herdr session: the PC's own and a connection server's bridge, say. Only one
-moves it at a time. Before a move waits or starts, its server listens on a unix socket,
-`runtime-move.sock`, in the real folder of that session's socket (a symlinked folder, such as a dotfiles
-`~/.config`, is resolved, never refused). The kernel lets one process bind it while that process listens,
-so a second server is refused (409 `already_moving`), and frees it when the holder's process ends, however it
-ends. A socket file left with nobody listening is removed only after a connection to it is refused, and
-only if it is a socket of this user's. Of two servers that both remove one, the one whose own token answers
-at the name after binding holds it. No process id or start time is read. The lock stays until the move ends:
-done, rolled back, cancelled, given up while waiting, or the server stopping. A folder that is not this
-user's or that anybody may write in, or another kind of file at that name, is refused (409
-`move_lock_unsafe`, in plain words). Moves run on Linux and macOS only.
+moves it at a time. Before a move waits or starts, its server takes a lock the kernel alone arbitrates, for the
+real folder of that session's socket (a symlinked folder, such as a dotfiles `~/.config`, is resolved, never
+refused): on Linux a socket in the abstract namespace, named after the user and that folder (no file); on macOS
+`flock(2)` on `runtime-move.lock` there. A second server is refused (409 `already_moving`) while the holder
+lives, and the kernel lets go when the holder's process ends, however it ends. Nothing is ever removed to take
+it, so two servers that find a dead holder can never both go on. It then also listens on `runtime-move.sock`
+there, the lock of Ovis before this one, so a server of that version still sees the session as taken, and is
+seen: one listening there refuses the move. A socket file left there with nobody listening is removed, only
+while this server holds the kernel lock, and only if it is a socket of this user's. No process id or start
+time is read. The lock stays until the move ends: done, rolled back, cancelled, given up while waiting, or the
+server stopping. A folder that is not this user's or that anybody may write in, or another kind of file at
+`runtime-move.sock` or `runtime-move.lock`, is refused (409 `move_lock_unsafe`, in plain words). Moves run on Linux and macOS only.
 
 ## On another PC
 
