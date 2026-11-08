@@ -509,6 +509,13 @@ const BASE: Record<string, string> = {
   "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "仅从这台 PC 移除。要同时取消它的访问权限，请在那台 PC 的 手机和设备 中撤销。",
   "Added": "新增",
   "Sign in to Ovis": "登录 Ovis",
+  "Forget this PC?": "忘记这台电脑？",
+  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "此手机上的对应密钥将被删除；在电脑上撤销之前，它仍会列出这部手机。重新配对需要电脑上新的二维码。",
+  "Forget": "忘记",
+  "Offline · {when}": "离线 · {when}",
+  "The PC is off, or Ovis is not running on it.": "电脑已关机，或其上的 Ovis 未运行。",
+  "The relay did not answer. Check this device's network.": "中继没有响应。请检查此设备的网络。",
+  "Ready · not in the account yet": "就绪 · 尚未加入账户",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

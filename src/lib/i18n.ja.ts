@@ -507,6 +507,13 @@ const BASE: Record<string, string> = {
   "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "この PC からだけ削除します。アクセスも止めるには、その PC の スマートフォンとデバイス で取り消してください。",
   "Added": "追加",
   "Sign in to Ovis": "Ovis にサインイン",
+  "Forget this PC?": "このPCを削除しますか？",
+  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "このスマホ側のキーを削除します。PC側ではそこで取り消すまでこのスマホが一覧に残ります。再度ペアリングするにはPCの新しいQRコードが必要です。",
+  "Forget": "削除",
+  "Offline · {when}": "オフライン · {when}",
+  "The PC is off, or Ovis is not running on it.": "PCの電源が切れているか、Ovisが動いていません。",
+  "The relay did not answer. Check this device's network.": "リレーが応答しません。このデバイスのネットワークを確認してください。",
+  "Ready · not in the account yet": "準備完了 · まだアカウント外",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

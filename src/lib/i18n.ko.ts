@@ -505,6 +505,13 @@ const BASE: Record<string, string> = {
   "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "이 PC에서만 지웁니다. 접근까지 끊으려면 그 PC의 폰 및 기기에서 취소하세요.",
   "Added": "추가됨",
   "Sign in to Ovis": "Ovis에 로그인",
+  "Forget this PC?": "이 PC를 잊을까요?",
+  "This phone's key for it is deleted here, and the PC keeps listing this phone until it is revoked there. Pairing again takes a new QR code from the PC.": "이 폰에서 해당 키를 삭제합니다. PC에서는 폐기하기 전까지 이 폰이 목록에 남습니다. 다시 페어링하려면 PC의 새 QR 코드가 필요합니다.",
+  "Forget": "잊기",
+  "Offline · {when}": "오프라인 · {when}",
+  "The PC is off, or Ovis is not running on it.": "PC가 꺼져 있거나 Ovis가 실행 중이 아닙니다.",
+  "The relay did not answer. Check this device's network.": "릴레이가 답하지 않습니다. 이 기기의 네트워크를 확인하세요.",
+  "Ready · not in the account yet": "준비됨 · 아직 계정에 없음",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
