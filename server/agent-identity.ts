@@ -1,6 +1,6 @@
 import nodePath from "node:path";
 import { AGENT_CATALOG, catalogPlatform, type CatalogPlatform } from "../shared/agent-catalog.ts";
-import type { AgentSessionInfo } from "../shared/herdr-api.generated.ts";
+import type { AgentSessionInfo, AgentStatus } from "../shared/herdr-api.generated.ts";
 
 /**
  * Which agent a pane runs, decided in one place from the facts a runtime gives about it, so the
@@ -62,6 +62,39 @@ export function processAgent(argv: readonly string[], platform: CatalogPlatform 
   if (!program) return null;
   const entry = AGENT_CATALOG.find((candidate) => candidate.detect.binaries.includes(program) && !(platform && candidate.detect.unreliable_on?.[platform]));
   return entry?.id ?? null;
+}
+
+/**
+ * The status a program's own report says (herdr-core keeps its OSC 7501 word: idle, working, done,
+ * blocked, error, …), in herdr's narrower words: an error says nothing about the turn having
+ * finished, so it shows as no status, like a word neither knows.
+ */
+export function reportedStatus(state: string | null | undefined): AgentStatus {
+  switch (state) {
+    case "working":
+    case "blocked":
+    case "idle":
+    case "done":
+      return state;
+    default:
+      return "unknown";
+  }
+}
+
+/** Letta Code's terminal title while a turn runs: a braille spinner frame, then its agent's name ("⠋ Tutor"; at rest "Tutor"; letta-code 0.34.44). */
+export const LETTA_BUSY_TITLE = /^[\u2800-\u28FF] /;
+/** Letta Code's title while a tool call waits for the user's approval, blinking between the two marks ("[ ! ] Action Required | Tutor"; letta-code 0.34.44, standard permission mode). */
+export const LETTA_ASKING_TITLE = /^\[ [.!] \] Action Required \| /;
+
+/**
+ * The status an agent's own terminal title says, for an agent known to set one: Letta's spinner
+ * prefix while it works, its "Action Required" mark while it waits for the user's approval. The
+ * program writes the title itself; nothing is read off the screen. Null for another agent or no title.
+ */
+export function titleStatus(agent: string | null, title: string | null | undefined): "working" | "idle" | "blocked" | null {
+  if (agent !== "letta" || typeof title !== "string" || title === "") return null;
+  if (LETTA_ASKING_TITLE.test(title)) return "blocked";
+  return LETTA_BUSY_TITLE.test(title) ? "working" : "idle";
 }
 
 /** What a runtime tells about which conversation a pane's agent shows. */
