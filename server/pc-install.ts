@@ -5,6 +5,7 @@ import type { PcInstallFailure, PcInstallJob, SshTarget } from "../shared/machin
 import type { BridgeDescriptor } from "./bridge.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { shellQuote } from "./machine-security.ts";
+import type { ProcessBirth } from "./process-owner.ts";
 import { posixHost, REMOTE_PATH } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { sshAddress } from "./ssh-address.ts";
@@ -68,6 +69,16 @@ export const captureServer = (pid: number, identity: string): string =>
  */
 export const processIdentity = (pid: number): string =>
   `id_of=${pid}; if [ -r /proc/$id_of/stat ]; then printf '%s %s' "$(sed 's/.*) //' /proc/$id_of/stat | cut -d' ' -f20)" "$(stat -c %u /proc/$id_of)"; else ps -o lstart= -o uid= -p $id_of 2>/dev/null | sed 's/^ *//;s/ *$//'; fi`;
+/**
+ * A shell test that the process at that pid is the very one a bridge registration recorded (its birth, as
+ * server/process-owner.ts reads it: on Linux this boot's id and its start in clock ticks, on macOS ps's start time in UTC),
+ * not another that took the pid after it ended. No birth recorded (an older server's registration): nothing to test.
+ */
+export const bornAs = (pid: number, birth: ProcessBirth | undefined): string =>
+  !birth ? "true"
+  : birth.platform === "linux" ? `[ "$(born_of=${pid}; printf '%s:%s' "$(cat /proc/sys/kernel/random/boot_id)" "$(sed 's/.*) //' /proc/$born_of/stat 2>/dev/null | cut -d' ' -f20)")" = ${shellQuote(birth.value)} ]`
+  : birth.platform === "darwin" ? `[ "$(born_of=${pid}; LC_ALL=C TZ=UTC ps -o lstart= -p $born_of 2>/dev/null | sed 's/^ *//;s/ *$//;s/  */ /g')" = ${shellQuote(birth.value)} ]`
+  : "false";
 /** a shell test that the process is still the one with that identity */
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, takes its address first, starts the program, and removes the copy */
@@ -263,24 +274,18 @@ export class PcInstaller {
           await Bun.sleep(this.pollMs);
         }
       }
-      // the live Ovis servers registered on this herdr socket, managed or not, on any port: a registration whose pid
-      // now runs another program is none (its pid reused; see #3385 for its start identity)
-      const serving = async (): Promise<string[]> => {
-        const live: string[] = [];
+      const fresh = async () => {
         for (const d of await posixHost.descriptors(at)) {
-          if (d.socket_path !== socket || !Number.isSafeInteger(d.pid) || d.pid <= 0 || d.pid === restore || !await posixHost.alive(at, d.pid)) continue;
-          if (OVIS_COMMAND.test(await at.run(`ps -o args= -p ${d.pid} 2>/dev/null || true`))) live.push(d.token);
+          // any live server on this herdr socket, managed or not, on any port: the old one is never started beside it
+          if (d.socket_path === socket && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== restore && await posixHost.alive(at, d.pid)) return true;
         }
-        return live;
+        return false;
       };
       // one already there: never a second server for the same socket
-      const there = await serving();
-      if (there.length > 0) return await forgotten("replaced");
+      if (await fresh()) return await forgotten("replaced");
       // its address taken (in use): a live server is there, its replacement say, and nothing is started beside it
       if ((await at.run(restoreServer(saved))).trim() === "taken") return "replaced";
-      // started: once a registration that was not there before answers, with a new token, as the restarted server's is
-      const known = new Set([...before, ...there]);
-      for (const until = Date.now() + this.startMs; !(await serving()).some((token) => !known.has(token));) {
+      for (const until = Date.now() + this.startMs; !(await fresh());) {
         if (Date.now() >= until) return `it did not start within ${Math.round(this.startMs / 1000)} seconds (its output is in ~/.local/state/ovis/restored-server.log there).`;
         await Bun.sleep(this.pollMs);
       }
@@ -364,7 +369,9 @@ export class PcInstaller {
         const identity = shown ? (await ssh.run(processIdentity(plan.pid))).trim() : "";
         const command = shown ? await ssh.run(`ps -o args= -p ${plan.pid} 2>/dev/null || true`) : "";
         const still = shown ? (await ssh.run(processIdentity(plan.pid))).trim() : "";
-        if (!gone && (!shown || !OVIS_COMMAND.test(command) || !identity || identity !== still)) throw new InstallFailed("changed", CHANGED_WORDS);
+        // the very server its registration recorded (its birth), not another Ovis that took its pid after it ended
+        const born = shown ? (await ssh.run(`${bornAs(plan.pid, shown.birth)} && echo born || true`)).trim() === "born" : false;
+        if (!gone && (!shown || !born || !OVIS_COMMAND.test(command) || !identity || identity !== still)) throw new InstallFailed("changed", CHANGED_WORDS);
         if (gone && plan.mode === "replace") stopped = true;
         // a restart goes through the launcher that runs it, which must be there before anything is stopped
         if (plan.mode === "restart" && !installed) throw new InstallFailed("no_launcher", "That PC's Ovis was not installed as a herdr plugin or a user service, so it cannot be restarted from here. Restart it on that PC (Settings → Updates there tells how), then update it.");
@@ -380,7 +387,8 @@ export class PcInstaller {
           saved = SAVED_SERVER.test(copy) ? copy : null;
           // the stop, in the same command as the check that it is still that process
           signalled = plan.pid;
-          if ((await ssh.run(`${sameProcess(plan.pid, identity)} && kill -TERM ${plan.pid} && echo stopping || echo changed`)).trim() !== "stopping") { signalled = null; throw new InstallFailed("changed", CHANGED_WORDS); }
+          // ... and only the very server its registration names (its birth): never another that took the pid after it ended
+          if ((await ssh.run(`${bornAs(plan.pid, shown?.birth)} && ${sameProcess(plan.pid, identity)} && kill -TERM ${plan.pid} && echo stopping || echo changed`)).trim() !== "stopping") { signalled = null; throw new InstallFailed("changed", CHANGED_WORDS); }
           for (const until = Date.now() + this.stopMs; await posixHost.alive(ssh, plan.pid);) {
             if (Date.now() >= until) throw new InstallFailed("not_stopped", `That PC's Ovis (process ${plan.pid}) did not stop within ${Math.round(this.stopMs / 1000)} seconds, so nothing was installed.`);
             await pause();

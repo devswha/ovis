@@ -2,15 +2,16 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as listenOn } from "node:net";
 import { tmpdir } from "node:os";
+import { readProcessBirth } from "./process-owner.ts";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
-import { captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, SAVED_SERVER } from "./pc-install.ts";
+import { bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, SAVED_SERVER } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
 // A PC reached over SSH, as a script-answering stand-in: every command this app would run there is answered here,
 // and none reaches a real PC, the user's herdr or the network. An unexpected command fails the test.
 const SOCKET = "/home/fx/.config/herdr/herdr.sock";
-interface Descriptor { pid: number; port: number; token: string; socket_path: string; managed_remote: boolean; bridge_protocol: number; bundle_version: string }
+interface Descriptor { pid: number; port: number; token: string; socket_path: string; managed_remote: boolean; bridge_protocol: number; bundle_version: string; birth?: { platform: string; value: string } }
 const descriptor = (pid: number, managed = false, token = "a".repeat(64)): Descriptor => ({ pid, port: 7317, token, socket_path: SOCKET, managed_remote: managed, bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION });
 interface Pc {
   /** what ssh says when it cannot get in with keys, or nothing */
@@ -50,6 +51,8 @@ interface Pc {
   addressTaken?: boolean;
   /** Settings -> Experimental -> PCs: start a replaced server again; on in these tests unless said */
   restoreOff?: boolean;
+  /** the birth each pid's process has now, where it differs from what its registration recorded (a pid reused) */
+  births?: Record<number, string>;
   /** pids that run another program than Ovis now (a registration left behind, its pid reused) */
   otherPrograms?: number[];
   /** the stop signal does not end the server */
@@ -86,6 +89,8 @@ function fixture(pc: Pc) {
   let identityReads = 0;
   const identity = (pid: number) => pid === 4242 && pc.reusedAfterReads !== undefined && identityReads > pc.reusedAfterReads ? "Mon Nov  9 09:00:00 2026 1000" : `Sun Nov  8 08:00:00 2026 1000 ${pid}`;
   /** whether a script's sameProcess gate holds for that pid now */
+  /** whether a script's bornAs gates hold: the process at that pid has the birth its registration recorded */
+  const bornAsShown = (script: string) => [...script.matchAll(/born_of=(\d+);[\s\S]*?\)" = '([^']*)' \]/g)].every((m) => (pc.births?.[Number(m[1])] ?? m[2]) === m[2]);
   const sameAsShown = (script: string) => { const m = /\[ "\$\(id_of=(\d+);[\s\S]*?fi\)" = '([^']*)' \]/.exec(script); if (!m) return true; identityReads++; return identity(Number(m[1])) === m[2]; };
   /** signalled servers still stopping, and how many liveness checks each has left */
   const dying = new Map<number, number>();
@@ -126,9 +131,10 @@ function fixture(pc: Pc) {
       if (dying.has(pid)) { const left = dying.get(pid)! - 1; if (left <= 0) { dying.delete(pid); alive.delete(pid); } else dying.set(pid, left); }
       return alive.has(pid) ? "live" : "";
     }
+    if (script.endsWith("&& echo born || true")) return bornAsShown(script) ? "born\n" : "";
     if (script.includes("kill -TERM")) {
       const pid = Number(/kill -TERM (\d+)/.exec(script)![1]);
-      if (!sameAsShown(script)) return "changed\n";
+      if (!bornAsShown(script) || !sameAsShown(script)) return "changed\n";
       if (pc.exitAfterChecks) dying.set(pid, pc.exitAfterChecks); else if (!pc.killIgnored) alive.delete(pid);
       return script.includes("echo stopping") ? "stopping\n" : "";
     }
@@ -386,6 +392,22 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(ended.error).toContain("being installed in its place");
   });
 
+  it("stops nothing when the shown server ended and another Ovis took its pid, the setting off: its registration's birth differs", async () => {
+    // the registration that was shown, of a server long gone; the pid now runs another Ovis server
+    const pc = fixture({ descriptors: [{ ...descriptor(4242), birth: { platform: "linux", value: "boot-1:100" } }], births: { 4242: "boot-1:900" }, restoreOff: true });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "changed" });
+    expect(pc.commands.some((command) => /kill -TERM 4242$/.test(command) || command.includes("&& kill -TERM 4242"))).toBe(false);
+    expect(pc.alive.has(4242)).toBe(true);
+  });
+
+  it("stops the shown server when its birth still matches its registration", async () => {
+    const pc = fixture({ descriptors: [{ ...descriptor(4242), birth: { platform: "linux", value: "boot-1:100" } }], restoreOff: true });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job.phase).toBe("connected");
+    expect(pc.alive.has(4242)).toBe(false);
+  });
+
   it("never copies or starts again the server it stopped while that setting is off (the default): it stays stopped, as before", async () => {
     for (const how of ["failed", "cancelled"] as const) {
       const started = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
@@ -539,18 +561,6 @@ describe("installing Ovis on a PC over SSH", () => {
     const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(job.error).toContain("another already runs in its place");
     expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
-  });
-
-  it("does not take a registration left behind, its pid now another program's, for a server in its place, before or after the restore", async () => {
-    // a registration of an Ovis long gone, whose pid (4300) now runs an editor
-    const leftover = descriptor(4300, false, "e".repeat(64));
-    const restored = fixture({ descriptors: [descriptor(4242), leftover], otherPrograms: [4300], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
-    const one = await restored.settled(restored.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
-    expect(one.error).toContain("has been started again as it was");
-    // the restarted server never registers: the leftover is not taken for it
-    const silent = fixture({ descriptors: [descriptor(4242), leftover], otherPrograms: [4300], restoreFails: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
-    const two = await silent.settled(silent.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
-    expect(two.error).toContain("starting it again as it was failed: it did not start within");
   });
 
   it("says another may have been installed when the installer fails after its download, the setting off", async () => {
@@ -832,5 +842,15 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     expect([said.trim(), code]).toEqual(["", 1]);
     expect(why).toContain("cannot be used");
     expect(existsSync(saved)).toBe(false);
+  });
+
+  it("tells a process's birth as server/process-owner.ts records it, and another birth from it", async () => {
+    const server = Bun.spawn([process.execPath, "-e", 'console.log("up"); setInterval(() => {}, 1000);'], { stdout: "pipe", stderr: "ignore" });
+    cleanups.push(() => server.kill());
+    await server.stdout.getReader().read();
+    const reading = readProcessBirth(server.pid);
+    if (reading.state !== "identified") throw new Error("no birth here");
+    expect(await shell(`${bornAs(server.pid, reading.birth)} && echo born || true`, {})).toBe("born");
+    expect(await shell(`${bornAs(server.pid, { ...reading.birth, value: reading.birth.value + "0" })} && echo born || true`, {})).toBe("");
   });
 });

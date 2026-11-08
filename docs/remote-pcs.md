@@ -243,7 +243,10 @@ and herdr's default session only.
   hand was stopped, before anything was installed or launched in its place (the installer could not be
   downloaded, or never ran), that server is started again as it was. Just before it is stopped, its program, arguments,
   environment (its `OVIS_TOKEN` with the rest) and folder are copied from `/proc` into a folder only
-  that account can read. The copy and the stop each go ahead only while that pid is still the process
+  that account can read. The stop goes ahead only while that pid is still the very server its bridge
+  registration recorded (its birth: this boot's id and start ticks on Linux, `ps`'s start time on macOS),
+  so another Ovis that took the pid after it ended is never stopped (`changed`), whether or not the
+  restore is on. The copy and the stop each go ahead only while that pid is still the process
   shown (on Linux its start in clock ticks since boot from `/proc/<pid>/stat` and its owner; on macOS `ps`'s start time to the second and owner, where a pid reused within that second stays a residual; checked in the same command): one that took
   its pid since is never copied or signalled (`changed`). A copy cut short removes itself. Nothing is stopped when copying fails this time (try again). When no faithful
   copy can be made (its environment unreadable, its program or folder deleted since it started, as after
