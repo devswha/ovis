@@ -22,8 +22,14 @@ function sshDir(files: Record<string, string>): string {
 const status = (peers: string[]): string => JSON.stringify({
   BackendState: "Running",
   Self: { DNSName: "self.tail.ts.net.", UserID: 1 },
-  Peer: Object.fromEntries(peers.map((name, index) => [`k${index}`, { DNSName: `${name}.tail.ts.net.`, UserID: 1, Online: true, OS: "linux" }])),
+  Peer: Object.fromEntries(peers.map((name, index) => [`k${index}`, { DNSName: `${name}.tail.ts.net.`, UserID: 1, Online: true, OS: "linux", TailscaleIPs: [`100.64.1.${index + 1}`] }])),
 });
+
+/** answers each named peer's name and MagicDNS name with its address in `status(peers)`, as MagicDNS does */
+const magicDns = (peers: string[]) => async (host: string): Promise<string[]> => {
+  const index = peers.findIndex((name) => host === name || host === `${name}.tail.ts.net`);
+  return index < 0 ? [] : [`100.64.1.${index + 1}`];
+};
 
 it("lists the hosts a config names with their first HostName and User, leaving out patterns and Match", async () => {
   const hosts = await sshConfigHosts([
@@ -80,7 +86,7 @@ it("stops a line at a word that starts a comment", async () => {
 
 it("reads an Include inside a Host block as part of that block", async () => {
   const dir = sshDir({ config: "Host lab\n  Include lab.conf\nHost after\n", "lab.conf": "HostName lab-pc.tail.ts.net\nUser alice\n" });
-  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc"]), resolve: async () => [] });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc"]), resolve: magicDns(["lab-pc"]) });
   expect(candidates.map((candidate) => [candidate.name, candidate.detail, candidate.source])).toEqual([
     ["lab", "alice@lab-pc.tail.ts.net", "ssh_config"], ["after", null, "ssh_config"],
   ]);
@@ -137,7 +143,7 @@ it("lists 200 PCs at most, Tailscale PCs included", async () => {
 
 it("adds the Tailscale PCs no config host already names, and names the Tailscale PC a config host is", async () => {
   const dir = sshDir({ config: "Host lab\n  HostName lab-pc.tail.ts.net\nHost eamac\nHost build\n  HostName build.example\n" });
-  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc", "eamac", "winvm"]), resolve: async () => [] });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["lab-pc", "eamac", "winvm"]), resolve: magicDns(["lab-pc", "eamac", "winvm"]) });
   expect(candidates).toEqual([
     { name: "lab", destination: "lab", detail: "lab-pc.tail.ts.net", source: "ssh_config", tailnet: "lab-pc.tail.ts.net" },
     { name: "eamac", destination: "eamac", detail: null, source: "ssh_config", tailnet: "eamac.tail.ts.net" },
@@ -236,7 +242,7 @@ it("shares one listing between concurrent requests and keeps the lookups in flig
   const dir = sshDir({ config: Array.from({ length: 40 }, (_, index) => `Host n${index}`).join("\n") });
   let statusReads = 0;
   let lookups = 0;
-  const options = { sshDir: dir, readStatus: async () => { statusReads++; return twoPeers; }, resolve: () => { lookups++; return new Promise<string[]>(() => {}); }, resolveTimeoutMs: 0 };
+  const options = { sshDir: dir, readStatus: async () => { statusReads++; return twoPeers; }, resolve: () => { lookups++; return new Promise<string[]>(() => {}); }, resolveTimeoutMs: 0, lookupDeadline: () => new Promise<void>(() => {}) };
   await Promise.all([sshCandidates(options), sshCandidates(options)]);
   expect(statusReads).toBe(1);
   const first = lookups;
@@ -284,10 +290,64 @@ it("weighs each listed host against the HostName lines once, not every alias of 
   } finally { lowered.mockRestore(); }
 });
 
-it("stops waiting on a lookup at the deadline and falls back to the name", async () => {
+it("leaves a host whose lookup is late or fails unclaimed, never matched by its name", async () => {
   const dir = sshDir({ config: "Host box\n" });
-  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve: () => new Promise<string[]>(() => {}), resolveTimeoutMs: 0 });
-  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+  for (const resolve of [() => new Promise<string[]>(() => {}), async (): Promise<string[]> => { throw new Error("no answer"); }]) {
+    const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve, resolveTimeoutMs: 0 });
+    expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+  }
+});
+
+it("gives up a hung lookup at its own deadline, so the names waiting behind it are looked up", async () => {
+  const dir = sshDir({ config: Array.from({ length: 17 }, (_, index) => `Host n${index}`).join("\n") });
+  const looked: string[] = [];
+  const expire: (() => void)[] = [];
+  const options = { sshDir: dir, readStatus: async () => twoPeers, resolveTimeoutMs: 0, lookupDeadline: () => new Promise<void>((done) => expire.push(done)),
+    resolve: (host: string) => { looked.push(host); return host === "n16" ? Promise.resolve(["100.64.0.2"]) : new Promise<string[]>(() => {}); } };
+  await sshCandidates(options);
+  expect(looked).toHaveLength(16);
+  expect(looked).not.toContain("n16");
+  for (const done of expire.splice(0)) done();
+  const candidates = await sshCandidates(options);
+  expect(looked).toContain("n16");
+  expect(candidates.find((candidate) => candidate.name === "n16")?.tailnet).toBe("other.tail.ts.net");
+});
+
+it("applies the directives an Include brings into a Host block only to the hosts that block matches", async () => {
+  const dir = sshDir({
+    config: "Host a\n  HostName 192.0.2.1\nHost a\n  Include inc\nHost b\n  HostName 192.0.2.2\nHost c\n  Include inc\n",
+    inc: "Host *\n  HostName 100.64.0.1\n",
+  });
+  const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers, resolve: async () => [] });
+  expect(candidates.map((candidate) => [candidate.name, candidate.detail, candidate.tailnet])).toEqual([
+    ["a", "192.0.2.1", undefined], ["b", "192.0.2.2", undefined], ["c", "100.64.0.1", "box.tail.ts.net"], ["other", "other.tail.ts.net", "other.tail.ts.net"],
+  ]);
+});
+
+it("keeps only the answers of the AddressFamily ssh would use", async () => {
+  const dir = sshDir({ config: [
+    "Host four", "  HostName four.lan", "  AddressFamily inet", "Host six", "  HostName six.lan", "  AddressFamily inet6",
+    "Host mixed", "  HostName mixed.lan", "  AddressFamily inet", "Host any4", "  HostName any4.lan", "Host *", "  AddressFamily inet",
+  ].join("\n") });
+  const resolve = resolver({ "four.lan": ["100.64.0.1", "fd00::9"], "six.lan": ["192.168.1.9", "fd7a:115c:a1e0::2"], "mixed.lan": ["192.168.1.9", "fd7a:115c:a1e0::2"], "any4.lan": ["fd00::9", "100.64.0.1"] });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
+    ["four", "box.tail.ts.net"], ["six", "other.tail.ts.net"], ["mixed", undefined], ["any4", "box.tail.ts.net"],
+  ]);
+});
+
+it("never claims a proxied host by the addresses a local lookup gives, only by its name", async () => {
+  const dir = sshDir({ config: [
+    "Host jump", "  ProxyJump bastion", "Host cmd", "  HostName cmd.lan", "  ProxyCommand ssh -W %h:%p bastion",
+    "Host other", "  ProxyJump bastion", "Host direct", "  HostName direct.lan", "  ProxyJump none",
+  ].join("\n") });
+  const looked: string[] = [];
+  const answers = resolver({ jump: ["100.64.0.2"], "cmd.lan": ["100.64.0.2"], other: ["100.64.0.1"], "direct.lan": ["100.64.0.1"] });
+  const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => twoPeers, resolve: async (host) => { looked.push(host); return answers(host); } });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([
+    ["jump", undefined], ["cmd", undefined], ["other", "other.tail.ts.net"], ["direct", "box.tail.ts.net"],
+  ]);
+  expect(looked).toEqual(["direct.lan"]);
 });
 
 it("lists only the other source when one is missing", async () => {
