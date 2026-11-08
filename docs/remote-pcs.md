@@ -179,9 +179,13 @@ driving sign-in on this PC, its token, a paired driving device or its Tailscale 
 app's own page (the `X-Herdr-Update: 1` header, same origin, no query). A watching device, a
 visitor of an open install, a Portal visitor and a device connected through the relay are refused
 (403 `forbidden`), whatever their role; a watching device is refused as on every change (403
-`read_only`). The older ways in to the same updates, `POST /api/machines/:id/update-bridge` and a
-setup with `update_remote`, are the owner's only too (this app's own page does not send the update
-header on them yet).
+`read_only`). The other ways a PC's software is changed from here are the owner's only in the same
+way, with the update header: `POST /api/machines/:id/update-bridge` (optionally `{ "revision" }`; without
+one, the release its card shows), a setup with `update_remote`, approving a setup's changes
+(`POST /api/machines/setup/:id` with `{ "action": "approve" }`), and turning a PC on
+(`PATCH /api/machines/:id` with `{ "enabled": true }`), which reconnects it and, with automatic
+bridge updates on, may update it. Renaming or turning a PC off, and answering or cancelling a setup,
+stay a driving device's. This app's page sends the header on every PC request.
 
 ## Runtime and endpoints
 

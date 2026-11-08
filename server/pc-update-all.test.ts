@@ -226,3 +226,36 @@ it("offers an SSH PC's own update only where this app may connect and manage it,
   expect(pc(A).ovis_update).toMatchObject({ how: "own", updatable: false, reason: expect.stringContaining("Review") });
   expect(manager.updateAll().skipped.map((entry) => entry.machine_id)).toContain(A);
 });
+
+it("lets a PC cancelled and queued again run on its new entry, not on the stale one", async () => {
+  const { manager, internals, asked, pc } = fixture();
+  for (const id of [A, B]) {
+    const runtime = internals.machines.get(id)! as Runtime & { remoteRevision?: string };
+    runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+    runtime.remoteRevision = "a".repeat(40);
+  }
+  const slots = (manager as unknown as { ownViaSetup: Set<string> }).ownViaSetup;
+  for (let i = 0; i < OWN_UPDATES_AT_ONCE; i++) slots.add(`other-${i}`);
+  expect(manager.updateAll().queued).toEqual([A, B]);
+  // B: cancelled, its offer moves on to another release, and it is queued again for that one
+  manager.cancelUpdate(B);
+  (internals.machines.get(B)! as Runtime & { remoteRevision?: string }).remoteRevision = "b".repeat(40);
+  expect(manager.updateAll().queued).toEqual([B]);
+  // places free up: the stale entry asks nothing and tells nothing, the new one runs
+  slots.clear();
+  (manager as unknown as { nextOwn(): void }).nextOwn();
+  expect(asked).toEqual([A, B]);
+  expect(pc(B).update_error ?? null).toBeNull();
+});
+
+it("binds an SSH PC's own update asked through update-bridge to the release its card shows", async () => {
+  const { manager, internals } = fixture();
+  const runtime = internals.machines.get(A)! as Runtime & { remoteRevision?: string };
+  runtime.machine.remote_ovis = { version: "0.4.9", latest_version: "0.5.1", updatable: true, reason: null, address: "pc.invalid:7317", url: null };
+  runtime.remoteRevision = "a".repeat(40);
+  const bridge = manager.updateBridge as unknown as { mockRestore(): void };
+  bridge.mockRestore();
+  const setup = spyOn(manager, "setup").mockImplementation(() => ({ id: "job" }) as ReturnType<MachineManager["setup"]>);
+  manager.updateBridge(A);
+  expect(setup.mock.calls[0]![1]).toMatchObject({ expectedRevision: "a".repeat(40) });
+});

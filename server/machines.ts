@@ -345,11 +345,12 @@ export class MachineManager {
   /** how often a connected PC's own Ovis is asked what it offers: its own check for releases runs every 5 minutes */
   private ownOfferMs: number;
   /** connected PCs Update all queued for their own update, in order, while OWN_UPDATES_AT_ONCE run */
-  private ownWaiting: { id: string; shown?: string }[] = [];
+  private ownWaiting: { id: string; shown?: string; token: symbol }[] = [];
   /** SSH PCs whose own update Update all runs through their setup, each holding a place among OWN_UPDATES_AT_ONCE */
   private ownViaSetup = new Set<string>();
   /** PCs Update all queued for a bridge update, waiting for their turn on autoChain */
-  private updateQueued = new Set<string>();
+  /** each PC waiting in Update all's queue, by the token of its one entry there: a stale entry (cancelled, then queued again) is not it */
+  private updateQueued = new Map<string, symbol>();
   /** how a relay PC's connection reaches the relay; tests point it at a local one */
   private relaySocket?: (url: string) => RelaySocket;
   /** how a relay PC's connection dials that PC's direct carriers; tests point it at a local one */
@@ -813,7 +814,9 @@ export class MachineManager {
     if (!this.mayManageBridge(runtime)) throw new MachineActionRequired("Review the bridge update for this machine", "update_bridge");
     // the user's own Update bridge takes back an earlier Cancel; a scheduled one does not
     if (!scheduled) runtime.updateCancelled = false;
-    return this.setup({ ...runtime.machine.target!, machine_id: id, update_remote: true }, { auto: true, ...(expectedRevision ? { expectedRevision } : {}) });
+    // the release its card shows (the offer its last connect read), when the caller names none
+    const revision = expectedRevision ?? runtime.remoteRevision;
+    return this.setup({ ...runtime.machine.target!, machine_id: id, update_remote: true }, { auto: true, ...(revision ? { expectedRevision: revision } : {}) });
   }
   /**
    * Updates a PC from here, whichever way it is reached (POST /api/machines/:id/update): a connected PC's own Ovis
@@ -894,16 +897,18 @@ export class MachineManager {
   }
   /** an own update of Update all past the ones running at once: started as one of them ends (nextOwn) */
   private queueOwn(runtime: Runtime, shown?: string): void {
-    this.updateQueued.add(runtime.machine.id);
-    this.ownWaiting.push({ id: runtime.machine.id, shown });
+    const token = Symbol(runtime.machine.id);
+    this.updateQueued.set(runtime.machine.id, token);
+    this.ownWaiting.push({ id: runtime.machine.id, shown, token });
     runtime.machine.updating = { job_id: "", step: "Waiting for the PCs before it to finish updating…", progress: null, queued: true };
   }
   private nextOwn(): void {
     while (!this.stopped && this.ownRunning() < OWN_UPDATES_AT_ONCE && this.ownWaiting.length > 0) {
-      const { id, shown } = this.ownWaiting.shift()!;
+      const { id, shown, token } = this.ownWaiting.shift()!;
       const runtime = this.machines.get(id);
-      // cancelled, disabled or removed meanwhile
-      if (!this.updateQueued.delete(id) || !runtime) continue;
+      // cancelled, disabled or removed meanwhile, or queued again since (that later entry is the one that runs)
+      if (this.updateQueued.get(id) !== token || !runtime) continue;
+      this.updateQueued.delete(id);
       runtime.machine.updating = null;
       // still offered, and still connected: an update before its turn may have done it, or the PC went away
       const offer = this.updateOffer(runtime);
@@ -918,11 +923,13 @@ export class MachineManager {
   private queueUpdate(runtime: Runtime): void {
     const id = runtime.machine.id;
     const shown = this.updateOffer(runtime)?.revision ?? undefined;
-    this.updateQueued.add(id);
+    const token = Symbol(id);
+    this.updateQueued.set(id, token);
     runtime.machine.updating = { job_id: "", step: "Waiting for the PCs before it to finish updating…", progress: null, queued: true };
     this.autoChain = this.autoChain.then(async () => {
-      // cancelled, removed or stopped meanwhile
-      if (!this.updateQueued.delete(id) || this.stopped || this.machines.get(id) !== runtime) return;
+      // cancelled, removed or stopped meanwhile, or queued again since (that later entry is the one that runs)
+      if (this.updateQueued.get(id) !== token || this.stopped || this.machines.get(id) !== runtime) return;
+      this.updateQueued.delete(id);
       runtime.machine.updating = null;
       // still needed: an update before its turn (an automatic one, or one asked for by hand) may have done it
       const offer = this.updateOffer(runtime);

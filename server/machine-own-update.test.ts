@@ -539,7 +539,7 @@ describe("a PC whose own Ovis is away (#2047)", () => {
     await until((machine) => machine.action_required === "update_bridge");
     ovis.stop("removed");
     const response = await handleMachineRequest(new Request(`http://localhost:7317/api/machines/${MACHINE_ID}/update-bridge`, {
-      method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1" } }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
+      method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "x-herdr-update": "1" } }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
     expect(response.status).toBeLessThan(300);
     // the PC waits for it as for one that cannot be reached, and asks again once it answers
     const waiting = await until((machine) => machine.state === "reconnecting" && !machine.updating && /own Ovis is not running/.test(machine.error ?? ""));
@@ -568,7 +568,7 @@ describe("a PC whose own Ovis is older than this app", () => {
     expect(waiting.error).toContain("own Ovis v0.4.16");
     expect(installs).toEqual([]);
     const response = await handleMachineRequest(new Request(`http://localhost:7317/api/machines/${MACHINE_ID}/update-bridge`, {
-      method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1" } }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
+      method: "POST", headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "x-herdr-update": "1" } }), manager, undefined, undefined, false, undefined, undefined, undefined, undefined, true);
     expect(response.status).toBeLessThan(300);
     await until((machine) => machine.state === "connected");
     expect(installs).toEqual([{ expected_revision: OFFERED }]);

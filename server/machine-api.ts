@@ -143,6 +143,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
   /** this PC's owner (access.ts ownerAccess): only they may start or stop updates of its PCs */
   owner = false): Promise<Response> {
   const url = new URL(request.url);
+  /** this PC's owner, from this app's own page (the update header, same origin, no query) */
+  const ownerAsks = (asked: Request) => owner && updateRequestAllowed(asked);
   // A PC's file opens as this PC's /api/fs/file does, from any navigation: reading it changes
   // nothing, and Chrome on Android shows a PDF in the viewer's frame as an "Open" button whose
   // navigation is cross-site. Every other PC route still answers only this app.
@@ -321,15 +323,17 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         setRequestRoute("/api/machines/setup");
         const body = await request.json() as SetupRequest;
         // a setup that updates what runs there is an update of that PC: the owner's only, as above
-        if (isJsonObject(body) && body.update_remote === true && !owner) return fail("forbidden", OWNER_ONLY, 403);
+        if (isJsonObject(body) && body.update_remote === true && !ownerAsks(request)) return fail("forbidden", OWNER_ONLY, 403);
         return jsonResponse(manager.setup(body), 202);
       }
       if (parts.length === 2) {
         setRequestRoute("/api/machines/setup/:job_id");
+        const action = request.method === "POST" ? await request.json().catch(() => null) as SetupAction | null : null;
+        // approving installs this app's bridge (or herdr) on that PC: the owner's only, from this app's own page
+        if (isJsonObject(action) && action.action === "approve" && !ownerAsks(request)) return fail("forbidden", "Only this PC's owner can approve installing on another PC, from this app's own page.", 403);
         const job = manager.job(parts[1]!);
         if (!job) return fail("job_not_found", "Setup job not found", 404);
         if (request.method === "POST") {
-          const action = await request.json() as SetupAction;
           if (!isJsonObject(action)) return fail("invalid_body", "Expected a setup action", 400);
           if (action.action === "answer" && job.challenge?.kind === "secret" && !canSendSecret(request)) return fail("https_required", "Passwords and key passphrases require HTTPS or localhost", 403);
           manager.action(parts[1]!, action);
@@ -348,14 +352,14 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
     }
     if (parts[0] === "update-all" && parts.length === 1) {
       setRequestRoute("/api/machines/update-all");
-      if (!owner || !updateRequestAllowed(request)) return fail("forbidden", OWNER_ONLY, 403);
+      if (!ownerAsks(request)) return fail("forbidden", OWNER_ONLY, 403);
       if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
       return jsonResponse(manager.updateAll() satisfies PcUpdateAll, 202);
     }
     const id = parts[0]!;
     if (parts.length === 2 && parts[1] === "update") {
       setRequestRoute("/api/machines/:machine_id/update");
-      if (!owner || !updateRequestAllowed(request)) return fail("forbidden", OWNER_ONLY, 403);
+      if (!ownerAsks(request)) return fail("forbidden", OWNER_ONLY, 403);
       if (request.method === "DELETE") return jsonResponse({ cancelled: manager.cancelUpdate(id) });
       if (request.method !== "POST") return fail("method_not_allowed", "Use POST or DELETE", 405);
       const text = await request.text();
@@ -371,12 +375,22 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       }
     }
     // the older way in to the same updates: the owner's too (this app's own page does not send the update header here yet)
-    if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST" && !owner) return fail("forbidden", OWNER_ONLY, 403);
-    if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST") { setRequestRoute("/api/machines/:machine_id/update-bridge"); return jsonResponse(manager.updateBridge(id), 202); }
+    if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST" && !ownerAsks(request)) return fail("forbidden", OWNER_ONLY, 403);
+    if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST") {
+      setRequestRoute("/api/machines/:machine_id/update-bridge");
+      // the release the card showed, when the client names it; otherwise the PC's last read offer (MachineManager.updateBridge)
+      const text = await request.text();
+      const body: unknown = text.trim() === "" ? {} : (() => { try { return JSON.parse(text); } catch { return null; } })();
+      const shown = isJsonObject(body) ? body.revision : undefined;
+      if (!isJsonObject(body) || shown !== undefined && typeof shown !== "string") return fail("invalid_body", "Expected nothing, or { revision } of the offer shown", 400);
+      return jsonResponse(manager.updateBridge(id, false, shown as string | undefined), 202);
+    }
     if (parts.length === 1 && request.method === "PATCH") {
       setRequestRoute("/api/machines/:machine_id");
       const patch = await request.json();
       if (!isJsonObject(patch)) return fail("invalid_body", "Expected a PC update", 400);
+      // turning a PC on connects it, and with automatic bridge updates on that may update it: the owner's only
+      if (patch.enabled === true && !ownerAsks(request)) return fail("forbidden", "Only this PC's owner can turn its PCs on, from this app's own page.", 403);
       manager.patch(id, patch); return jsonResponse({ ok: true });
     }
     if (parts.length === 1 && request.method === "DELETE") { setRequestRoute("/api/machines/:machine_id"); manager.remove(id); return jsonResponse({ ok: true }); }

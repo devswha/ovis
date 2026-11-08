@@ -66,8 +66,36 @@ describe("the update routes", () => {
     expect((await send("setup", false, { destination: "me@pc.invalid", machine_id: id, update_remote: true })).status).toBe(403);
     // a first setup that installs nothing over what runs there stays a driving device's, as before
     expect((await send("setup", false, { destination: "me@other.invalid" })).status).not.toBe(403);
-    // the owner passes the guard (the PC itself is not known here)
-    expect((await send(`${id}/update-bridge`, true)).status).not.toBe(403);
+    // the owner, but not from this app's own page (no update header): refused too
+    expect((await send(`${id}/update-bridge`, true)).status).toBe(403);
+    expect((await send("setup", true, { destination: "me@pc.invalid", machine_id: id, update_remote: true })).status).toBe(403);
+    // the owner from this app's own page passes the guard (the PC itself is not known here)
+    expect((await ask(pcs, `${id}/update-bridge`, true)).status).not.toBe(403);
+  });
+
+  // turning a PC on reconnects it, and with automatic bridge updates on that starts its update; approving a setup installs on it
+  for (const [what, path, method, body] of [
+    ["turning a PC on", "00000000-0000-4000-8000-000000000001", "PATCH", { enabled: true }],
+    ["approving a setup's changes", "setup/no-such-job", "POST", { action: "approve" }],
+  ] as const) it(`refuses ${what} to anyone but the owner, and without the update header`, async () => {
+    const pcs = manager();
+    const call = (owner: boolean, headers: Record<string, string>) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method,
+      headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json", ...headers }, body: JSON.stringify(body) }), pcs, undefined, undefined, false, undefined, undefined, undefined, undefined, owner);
+    const refused = await call(false, { "x-herdr-update": "1" });
+    expect(refused.status).toBe(403);
+    expect((await refused.json() as { error: { code: string } }).error.code).toBe("forbidden");
+    expect((await call(true, {})).status).toBe(403);
+    // the owner from this app's own page gets past the guard (the PC or job is not known here)
+    expect((await call(true, { "x-herdr-update": "1" })).status).not.toBe(403);
+  });
+
+  it("still lets a driving device rename or turn off a PC, and answer or cancel a setup", async () => {
+    const pcs = manager();
+    const call = (path: string, method: string, body: unknown) => handleMachineRequest(new Request(`http://localhost:7317/api/machines/${path}`, { method,
+      headers: { origin: "http://localhost:7317", "x-herdr-machine": "1", "content-type": "application/json" }, body: JSON.stringify(body) }), pcs, undefined, undefined, false, undefined, undefined, undefined, undefined, false);
+    for (const [path, method, body] of [["00000000-0000-4000-8000-000000000001", "PATCH", { name: "Lab" }], ["00000000-0000-4000-8000-000000000001", "PATCH", { enabled: false }], ["setup/no-such-job", "POST", { action: "cancel" }]] as const) {
+      expect((await call(path, method, body)).status).not.toBe(403);
+    }
   });
 
   it("refuses an open-LAN visitor through the server, and lets this PC's owner in", async () => {
@@ -77,5 +105,9 @@ describe("the update routes", () => {
     const post = (headers: Record<string, string>) => fetch(`http://127.0.0.1:${open.port}/api/machines/update-all`, { method: "POST", headers: { "x-herdr-machine": "1", "x-herdr-update": "1", ...headers } });
     expect((await post({ "x-forwarded-for": "192.168.0.20" })).status).toBe(403);
     expect((await post({})).status).toBe(202);
+    // the same visitor may not turn a PC on or approve a setup's changes either
+    const as = (path: string, method: string, body: unknown) => fetch(`http://127.0.0.1:${open.port}/api/machines/${path}`, { method, headers: { "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json", "x-forwarded-for": "192.168.0.20" }, body: JSON.stringify(body) });
+    expect((await as("00000000-0000-4000-8000-000000000001", "PATCH", { enabled: true })).status).toBe(403);
+    expect((await as("setup/no-such-job", "POST", { action: "approve" })).status).toBe(403);
   });
 });
