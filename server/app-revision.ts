@@ -3,18 +3,22 @@ import { join } from "node:path";
 import { REVISION } from "../shared/update.ts";
 
 /**
- * The commit this app's own build was made from, in every runtime: OVIS_REVISION where a supervisor runs a release of it,
- * else the build.json vite wrote into dist/ beside the server (the desktop app's server, which no supervisor runs, and a
- * built checkout's). Undefined for a build that names none (a dev server, or a build outside git).
+ * The commit this app's own server build is, where that can be told: OVIS_REVISION where a supervisor runs a release of
+ * it; else, in the desktop app (OVIS_DESKTOP_APP), whose server and client are staged from one build, the build.json vite
+ * wrote into dist/ beside the server, only when that build was made from a clean tree (dirty: false). Undefined anywhere
+ * else (a checkout run by hand may have rebuilt dist/ apart from the server it runs).
  */
 export function buildRevision(root = join(import.meta.dir, ".."), env: Record<string, string | undefined> = process.env): string | undefined {
   const named = env["OVIS_REVISION"];
   if (named && REVISION.test(named)) return named;
+  if (env["OVIS_DESKTOP_APP"] !== "1") return undefined;
   try {
-    const revision = (JSON.parse(readFileSync(join(root, "dist", "build.json"), "utf8")) as { revision?: unknown }).revision;
-    return typeof revision === "string" && REVISION.test(revision) ? revision : undefined;
+    const build = JSON.parse(readFileSync(join(root, "dist", "build.json"), "utf8")) as { revision?: unknown; dirty?: unknown };
+    return typeof build.revision === "string" && REVISION.test(build.revision) && build.dirty === false ? build.revision : undefined;
   } catch { return undefined; }
 }
 
+/** what it was when this server started: a dist/ rebuilt since is not the server that runs */
+const atStart = buildRevision();
 /** This app's build, replaceable in tests. */
-export const appBuild = { revision: (): string | undefined => buildRevision() };
+export const appBuild = { revision: (): string | undefined => atStart };

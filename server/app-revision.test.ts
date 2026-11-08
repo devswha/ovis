@@ -6,22 +6,26 @@ import { buildRevision } from "./app-revision.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-/** an app folder whose dist/ holds a build.json naming that revision (or the given text), as vite writes it */
-function app(build?: string): string {
+/** an app folder whose dist/ holds that build.json, as vite writes it */
+function app(build?: unknown): string {
   const root = mkdtempSync(join(tmpdir(), "ovis-app-"));
   roots.push(root);
-  if (build !== undefined) { mkdirSync(join(root, "dist")); writeFileSync(join(root, "dist", "build.json"), build); }
+  if (build !== undefined) { mkdirSync(join(root, "dist")); writeFileSync(join(root, "dist", "build.json"), typeof build === "string" ? build : JSON.stringify(build)); }
   return root;
 }
 const A = "a".repeat(40), B = "b".repeat(40);
+const desktop = { OVIS_DESKTOP_APP: "1" };
 
-it("names the build's own revision where no supervisor sets OVIS_REVISION, as in the desktop app", () => {
-  expect(buildRevision(app(JSON.stringify({ revision: B })), {})).toBe(B);
+it("names the desktop app's own build, from a clean tree, where no supervisor sets OVIS_REVISION", () => {
+  expect(buildRevision(app({ revision: B, dirty: false }), desktop)).toBe(B);
 });
 
-it("takes the release the supervisor runs first, and names none for a build that names none", () => {
-  expect(buildRevision(app(JSON.stringify({ revision: B })), { OVIS_REVISION: A })).toBe(A);
-  for (const build of [undefined, "", "not json", JSON.stringify({}), JSON.stringify({ revision: "abc" })]) expect(buildRevision(app(build), {})).toBeUndefined();
-  // an OVIS_REVISION out of shape is no revision either
+it("takes the release the supervisor runs first, and names no build it cannot vouch for", () => {
+  expect(buildRevision(app({ revision: B, dirty: false }), { ...desktop, OVIS_REVISION: A })).toBe(A);
+  // a build from a dirty tree, or one that does not say (an older build), is not that revision
+  for (const build of [{ revision: B, dirty: true }, { revision: B }]) expect(buildRevision(app(build), desktop)).toBeUndefined();
+  // outside the desktop app a dist/ may have been rebuilt apart from the server that runs
+  expect(buildRevision(app({ revision: B, dirty: false }), {})).toBeUndefined();
+  for (const build of [undefined, "", "not json", {}, { revision: "abc", dirty: false }]) expect(buildRevision(app(build), desktop)).toBeUndefined();
   expect(buildRevision(app(), { OVIS_REVISION: "main" })).toBeUndefined();
 });

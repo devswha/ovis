@@ -55,6 +55,10 @@ interface Pc {
   births?: Record<number, string>;
   /** pids whose process started after its birth-less registration was written (a pid reused later) */
   startedLate?: number[];
+  /** pids whose process has ended but is not yet reaped (a zombie) */
+  zombies?: number[];
+  /** run on each probe of who serves the socket (a test stops the installer there) */
+  onProbe?: () => void;
   /** another server registers on the socket (pid 4500) when the restore runs, its own and not the one restored */
   otherRegistersOnRestore?: boolean;
   /** pids that run another program than Ovis now (a registration left behind, its pid reused) */
@@ -119,10 +123,18 @@ function fixture(pc: Pc) {
     if (script.includes('[ -L "$d/exe" ]') && pc.addressTaken) return "taken\n";
     // the launcher tells the pid it started (4243), whether or not that server then registers
     if (script.includes('[ -L "$d/exe" ]') && pc.otherRegistersOnRestore) { const other = descriptor(4500, true, "f".repeat(64)); listed.push(other); alive.add(other.pid); }
-    if (script.includes('[ -L "$d/exe" ]')) { if (!pc.restoreFails) { const back = descriptor(4243, false, "d".repeat(64)); listed.push(back); alive.add(back.pid); } return "4243\n"; }
+    if (script.includes('[ -L "$d/exe" ]')) { if (!pc.restoreFails) { const back = { ...descriptor(4243, false, "d".repeat(64)), birth: { platform: "linux", value: pc.births?.[4243] ?? "1b4e28ba-2fa1-41d2-883f-0016d3cca427:4243" } }; listed.push(back); alive.add(back.pid); } return "4243 1b4e28ba-2fa1-41d2-883f-0016d3cca427:4243\n"; }
     // whether a registration is still the very process it names (registeredAs), and alive
-    if (script.endsWith("&& echo live || true") && script.startsWith("false")) return "";
-    if (script.endsWith("&& echo live || true")) { const pid = Number(/(?:born_of|reg_of)=(\d+)/.exec(script)?.[1]); return bornAsShown(script) && alive.has(pid) ? "live\n" : ""; }
+    // who serves the socket: a process that runs (not a zombie) whose recorded birth, if any, still holds
+    if (script.endsWith("&& echo live || true")) {
+      pc.onProbe?.();
+      if (script.includes(" && false && ")) return "";
+      const pid = Number((/ps -o stat= -p (\d+)/.exec(script) ?? /born_of=(\d+)/.exec(script))?.[1]);
+      // a zombie shows only to ps's state: a probe that does not ask it takes one as running
+      const zombie = /ps -o stat= -p /.test(script) && pc.zombies?.includes(pid);
+      return alive.has(pid) && !zombie && bornAsShown(script) ? "live\n" : "";
+    }
+    if (script.endsWith("&& echo same || true")) { const pid = Number(/born_of=(\d+)/.exec(script)?.[1]); return alive.has(pid) && bornAsShown(script) ? "same\n" : ""; }
     if (script.startsWith("rm -rf '") && script.includes("ovis-restore.")) return "";
     // the installer's run first: its watcher's own `kill -TERM 0` is no stop of a process
     if (script.includes("/install.sh -o")) {
@@ -447,6 +459,29 @@ describe("installing Ovis on a PC over SSH", () => {
     const other = fixture({ descriptors: [descriptor(4242)], restoreFails: true, otherRegistersOnRestore: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
     const three = await other.settled(other.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
     expect(three.error).toContain("starting it again as it was failed: it did not start within");
+  });
+
+  it("fails closed on a registration whose identity cannot be told: it counts as a server there", async () => {
+    // a live registration on the socket with a birth out of its shape: never taken as gone
+    const unknown = { ...descriptor(4300, true, "e".repeat(64)), birth: { platform: "linux", value: 7 } as unknown as { platform: string; value: string } };
+    const pc = fixture({ descriptors: [descriptor(4242), unknown], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job.error).toContain("another already runs in its place");
+    expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+  });
+
+  it("never says started for the one it started once that ended (a zombie), or once another took its pid", async () => {
+    for (const options of [{ zombies: [4243] }, { births: { 4243: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:9999" } }]) {
+      const pc = fixture({ descriptors: [descriptor(4242)], ...options, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+      const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+      expect(job.error).toContain("starting it again as it was failed: it did not start within");
+    }
+  });
+
+  it("starts nothing when this app stops while the restore looks at who serves the socket", async () => {
+    const pc = fixture({ descriptors: [descriptor(4242)], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" }, onProbe: () => pc.installer.stop() });
+    await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
   });
 
   it("only removes the copy when this app stops during an install, starting nothing there", async () => {
@@ -787,7 +822,8 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     rmSync(mark);
     expect(await Bun.spawn(["mkfifo", mark]).exited).toBe(0);
     const told = new Promise<string>((resolve) => { let said = ""; createReadStream(mark).on("data", (chunk) => { said += chunk; }).on("close", () => resolve(said)); });
-    const pid = await shell(restoreServer(saved), { HOME: home, XDG_STATE_HOME: join(dir, "state") });
+    // the launcher tells the pid it started and that process's birth
+    const pid = (await shell(restoreServer(saved), { HOME: home, XDG_STATE_HOME: join(dir, "state") })).split(" ")[0]!;
     cleanups.push(() => { try { process.kill(Number(pid)); } catch { /* gone already */ } });
     const [toldPid, token, where] = (await told).split("|");
     expect(toldPid).toBe(pid);
@@ -861,7 +897,7 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     // a log anybody could read is made this account's alone; a link in its place is never followed
     mkdirSync(join(state, "ovis"), { recursive: true });
     writeFileSync(join(state, "ovis", "restored-server.log"), "", { mode: 0o644 });
-    const pid = await shell(restoreServer(await copy()), { HOME: home, XDG_STATE_HOME: state });
+    const pid = (await shell(restoreServer(await copy()), { HOME: home, XDG_STATE_HOME: state })).split(" ")[0]!;
     cleanups.push(() => { try { process.kill(Number(pid)); } catch { /* gone already */ } });
     expect(statSync(join(state, "ovis", "restored-server.log")).mode & 0o777).toBe(0o600);
     process.kill(Number(pid));
@@ -934,5 +970,29 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     // and none at all holds its token
     rmSync(file);
     expect(await check()).toBe("");
+  });
+
+  it("probes its own PORT, not its registration's port, for a server bound to another address than loopback", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-server-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const port = await freePort();
+    // a server bound to every address registers a loopback relay port of its own: here one that something else holds
+    const relay = listenOn(() => {});
+    await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", () => resolve()));
+    cleanups.push(() => { relay.close(); });
+    const registered = (relay.address() as { port: number }).port;
+    const server = Bun.spawn([process.execPath, "-e", 'console.log("up"); setInterval(() => {}, 1000);'], { cwd: dir, env: { PATH: process.env.PATH!, HOME: dir, HOST: "0.0.0.0", PORT: String(port) }, stdout: "pipe", stderr: "ignore" });
+    cleanups.push(() => server.kill());
+    await server.stdout.getReader().read();
+    const saved = await shell(captureServer(server.pid, await shell(processIdentity(server.pid), {})), { HOME: dir, TMPDIR: dir });
+    server.kill(); await server.exited;
+    const said = await shell(restoreServer(saved, registered), { HOME: dir, XDG_STATE_HOME: join(dir, "state") });
+    const [pid, birth] = said.split(" ");
+    cleanups.push(() => { try { process.kill(Number(pid)); } catch { /* gone already */ } });
+    expect(said).not.toBe("taken");
+    expect(Number(pid)).toBeGreaterThan(0);
+    // and it tells the started process's birth, as server/process-owner.ts records it
+    const reading = readProcessBirth(Number(pid));
+    expect(reading.state === "identified" ? reading.birth.value : null).toBe(birth!);
   });
 });
