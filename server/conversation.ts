@@ -53,7 +53,7 @@ import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
 import { coreSocket } from "./herdr-core/discovery.ts";
 import { coreSocketPath, servingCore } from "./herdr-core/runtime.ts";
-import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
+import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptFileForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
 import { processAlive, processStartedAtAsync } from "./process-start.ts";
 import { ompBlobStore, ompHeldOpen, ompPaneRoute, ompRouteOwns, ompRouteStore, ompRouteTranscript } from "./omp.ts";
@@ -1604,9 +1604,14 @@ function parseCursor(stream: TranscriptStream, cursor: string): number {
 
 /** gjc's resolver answers null; the chat lens reports why it fell back to scrollback. */
 export async function gjcTranscriptPath(paneId: string, cwd: string, home?: string, known?: KnownProcesses): Promise<string> {
-  const path = known === undefined ? await gjcTranscriptForPane(paneId, cwd, home) : await gjcTranscriptForPane(paneId, cwd, home, { known });
-  if (!path) throw new ConversationUnavailable("no_session_path");
-  return path;
+  return (await gjcTranscriptFile(paneId, cwd, home, known)).path;
+}
+
+/** gjcTranscriptPath, with the exact dev:ino of the file the resolver proved (`identity`). */
+async function gjcTranscriptFile(paneId: string, cwd: string, home?: string, known?: KnownProcesses): Promise<{ path: string; identity: string }> {
+  const found = known === undefined ? await gjcTranscriptFileForPane(paneId, cwd, home) : await gjcTranscriptFileForPane(paneId, cwd, home, { known });
+  if (!found) throw new ConversationUnavailable("no_session_path");
+  return found;
 }
 
 /**
@@ -2118,7 +2123,11 @@ type ResolvedTranscript =
     /** omp: the exact dev:ino of the file its resolver authorized (ompTranscriptPath) */
     ompFile?: string;
     /** pi: the exact dev:ino of the file its resolver authorized (piTranscriptPath) */
-    piFile?: string; letta?: { store: string; agent: string; conversation: string } } & (
+    piFile?: string;
+    /** gjc: the exact dev:ino of the file whose header its resolver read (gjcTranscriptFileForPane) */
+    gjcFile?: string;
+    /** omo: the exact dev:ino of the session file its lookup read (omoSessionForPane) */
+    omoFile?: string; letta?: { store: string; agent: string; conversation: string } } & (
     | { source: Exclude<StreamSource, "copilot-transcript"> }
     | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
@@ -2173,7 +2182,8 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   // a Muse, Letta, dsh or Kiro pane's processes are asked for once, for omo and for its own binding
   if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui" || agent === "kiro") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
   if (await paneRunsOmo(paneId, known)) {
-    return { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
+    const found = await omoTranscriptPath(paneId, cwd, panes);
+    return { source: "omo-transcript", path: found.path, ...(found.identity === undefined ? {} : { omoFile: found.identity }) };
   }
   // omp and GJC can change their own cwd without changing the pane's shell directory; their
   // session headers name the one they run in
@@ -2229,7 +2239,10 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       const authorized = await ompTranscriptPath(paneId, sessionCwd, known);
       return { source: "omp-transcript", path: authorized.path, ompBlobs: authorized.blobs, ompFile: authorized.identity };
     }
-    if (agent === "gjc") return { source: "gjc-transcript", path: await gjcTranscriptPath(paneId, sessionCwd, undefined, known) };
+    if (agent === "gjc") {
+      const found = await gjcTranscriptFile(paneId, sessionCwd, undefined, known);
+      return { source: "gjc-transcript", path: found.path, gjcFile: found.identity };
+    }
     // pi's own label only routes pi: an omo pane was taken above, by its process tree.
     if (agent === "pi") {
       const found = await piTranscriptPath(paneId, undefined, known === undefined ? {} : { processes: known?.foreground_processes ?? [] });
@@ -2265,15 +2278,17 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   } catch (error) {
     if (error instanceof AgyUnavailable) throw new ConversationUnavailable("transcript_missing");
     if (!(error instanceof ConversationUnavailable) || !(await paneRunsOmo(paneId, known))) throw error;
-    return { source: "omo-transcript", path: await omoTranscriptPath(paneId, cwd, panes) };
+    const found = await omoTranscriptPath(paneId, cwd, panes);
+    return { source: "omo-transcript", path: found.path, ...(found.identity === undefined ? {} : { omoFile: found.identity }) };
   }
 }
 
-async function omoTranscriptPath(paneId: string, cwd: string, panes?: HerdrPane[]): Promise<string> {
+/** `identity`: the exact dev:ino of the session file omo's lookup read its header through. */
+async function omoTranscriptPath(paneId: string, cwd: string, panes?: HerdrPane[]): Promise<{ path: string; identity?: string }> {
   const session = await omoSessionForPane(paneId, cwd, panes ?? (await sessionSnapshot()).panes);
   if (session.pending !== null) throw new ConversationNotStarted(session.pending);
   if (!session.path) throw new ConversationUnavailable("no_session_path");
-  return session.path;
+  return { path: session.path, ...(session.identity === undefined ? {} : { identity: session.identity }) };
 }
 
 /**
@@ -2664,12 +2679,14 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   const { source, path } = resolved;
   if (source !== "claude-transcript" && source !== "codex-transcript" && source !== "pi-transcript"
     && source !== "omp-transcript" && source !== "omo-transcript" && source !== "gjc-transcript") return null;
-  // one exact stat: a file the resolver itself authorized (omp, pi) is the only one read, compared whole as
-  // Windows' file indexes need; the read below is then held to this stat's file (#3398)
+  // one exact stat: a file the resolver itself authorized (omp, pi, gjc, omo) is the only one read, compared whole as
+  // Windows' file indexes need; omp's answer for a file it could not authorize names none, and is not read.
+  // The read below is held to this stat's exact file (#3398)
   const exact = statSync(path, { bigint: true });
-  const authorized = resolved.source === "omp-transcript" ? resolved.ompFile : resolved.source === "pi-transcript" ? resolved.piFile : undefined;
-  if (authorized !== undefined && authorized !== `${exact.dev}:${exact.ino}`) return null;
-  const stat = { dev: Number(exact.dev), ino: Number(exact.ino), size: Number(exact.size), mtimeMs: Number(exact.mtimeNs) / 1e6 };
+  const authorized = resolved.source === "omp-transcript" ? resolved.ompFile : resolved.source === "pi-transcript" ? resolved.piFile
+    : resolved.source === "gjc-transcript" ? resolved.gjcFile : resolved.source === "omo-transcript" ? resolved.omoFile : undefined;
+  if ((authorized !== undefined || source === "omp-transcript") && authorized !== `${exact.dev}:${exact.ino}`) return null;
+  const stat = { dev: exact.dev, ino: exact.ino, size: Number(exact.size), mtimeMs: Number(exact.mtimeNs) / 1e6 };
   const file = `${source}:${stat.dev}:${stat.ino}`;
   const signature = `${source}\0${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
   const cached = commandTranscripts.get(path);

@@ -6,6 +6,8 @@ import * as conversation from "./conversation.ts";
 import * as client from "./herdr/client.ts";
 import { commandInvocations, commandOutcome } from "./outcome.ts";
 import { handlePromptRequest, noteSubmitted } from "./prompt.ts";
+import { processStartedAtAsync } from "./process-start.ts";
+import { GJC_NATIVE_DIRECTORY } from "../shared/gjc-native.ts";
 import type { HerdrPane, PanePromptResponse, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
 
 it("shares unchanged snapshots and parses only verified appends within the read budget", async () => {
@@ -91,7 +93,9 @@ it.each(["claude-transcript", "omp-transcript"] as const)("reads clear boundarie
     : { type: "custom", customType: "context_clear" };
   fs.writeFileSync(path, [{ type: "model_change", modelId: "before" }, clear, { type: "model_change", modelId: "after" }]
     .map((entry) => JSON.stringify(entry)).join("\n"));
-  const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source, path });
+  // omp's resolver names the file it authorized
+  const written = fs.statSync(path, { bigint: true });
+  const binding = spyOn(conversation, "paneTranscript").mockResolvedValue(source === "omp-transcript" ? { source, path, ompFile: `${written.dev}:${written.ino}` } : { source, path });
   const reads = spyOn(fs, "readSync");
   try {
     const snapshot = await conversation.readCommandTranscript("viewer");
@@ -301,6 +305,184 @@ it("does not observe a pi command from a transcript renamed over the one its res
     rpc.mockRestore();
     snapshot.mockRestore();
     for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    conversation.forgetTranscriptState();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it("does not observe an omp command from a transcript its resolver could not authorize (#3398)", async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), "command-omp-unauthorized-"));
+  const path = join(root, "held.jsonl");
+  const at = Date.parse("2026-10-20T00:00:00Z");
+  fs.writeFileSync(path, JSON.stringify({ type: "thinking_level_change", timestamp: new Date(at + 10).toISOString(), thinkingLevel: "high" }) + "\n");
+  // ompTranscriptPath's answer for a held path authorizedTranscript refused (a link out of the store): no identity
+  const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "omp-transcript", path, ompBlobs: null });
+  const thinking: SlashCommand = { name: "thinking", source: "builtin", description: "",
+    forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
+  const sent = { id: "omp-unauthorized", text: "/thinking high", at, agent: "omp", identity: "fixture", screen: "", form: null,
+    invocations: commandInvocations("omp", "/thinking high", [thinking]) };
+  try {
+    const read = await conversation.readCommandTranscript("pane-omp");
+    expect(commandOutcome("pane-omp", sent, { now: at + 30, transcript: read?.records })).toMatchObject({ state: "accepted", evidence: [] });
+  } finally {
+    binding.mockRestore();
+    conversation.forgetTranscriptState();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("does not observe /context from an opened file whose exact identity only rounds to the stat's (#3398)", async () => {
+  const root = fs.mkdtempSync(join(tmpdir(), "command-exact-identity-"));
+  const path = join(root, "session.jsonl");
+  const foreign = join(root, "foreign.jsonl");
+  const at = Date.parse("2026-10-20T00:00:00Z");
+  const echo = JSON.stringify({ type: "system", subtype: "local_command", timestamp: new Date(at + 10).toISOString(),
+    content: "<command-name>/context</command-name>\n<command-message>command</command-message>" }) + "\n";
+  const stdout = JSON.stringify({ type: "system", subtype: "local_command", timestamp: new Date(at + 20).toISOString(),
+    content: "<local-command-stdout>foreign-context-output</local-command-stdout>" }) + "\n";
+  const filler = (row: string) => JSON.stringify({ type: "progress", uuid: "x".repeat(Buffer.byteLength(row) - 30) }) + "\n";
+  fs.writeFileSync(path, filler(echo) + filler(stdout));
+  fs.writeFileSync(foreign, echo + stdout);
+  // two 64-bit file indexes (as on Windows) a double cannot tell apart: 2^60 and 2^60 + 1
+  const own = 2n ** 60n;
+  const other = own + 1n;
+  expect(Number(other)).toBe(Number(own));
+  const open = fs.openSync;
+  const stat = fs.statSync;
+  const fstat = fs.fstatSync;
+  let swappedFd: number | null = null;
+  const binding = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "claude-transcript", path });
+  const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    if (args[0] !== path) return open(...args);
+    swappedFd = open(foreign, ...args.slice(1) as [fs.OpenMode]);
+    return swappedFd;
+  }) as typeof fs.openSync);
+  const stats = spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+    const value = stat(...args);
+    return args[0] === path && value !== undefined ? Object.assign(value, typeof value.ino === "bigint" ? { dev: 7n, ino: own } : { dev: 7, ino: Number(own) }) : value;
+  }) as typeof fs.statSync);
+  const fstats = spyOn(fs, "fstatSync").mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => {
+    const value = fstat(...args);
+    return args[0] === swappedFd ? Object.assign(value, typeof value.ino === "bigint" ? { dev: 7n, ino: other } : { dev: 7, ino: Number(other) }) : value;
+  }) as typeof fs.fstatSync);
+  const sent = { id: "exact-identity", text: "/context", at, agent: "claude", identity: "fixture", screen: "", form: null,
+    invocations: commandInvocations("claude", "/context", []) };
+  try {
+    const read = await conversation.readCommandTranscript("pane-claude");
+    expect(swappedFd).not.toBeNull();
+    expect(commandOutcome("pane-claude", sent, { now: at + 30, transcript: read?.records })).toMatchObject({ state: "accepted", evidence: [] });
+  } finally {
+    fstats.mockRestore();
+    stats.mockRestore();
+    opens.mockRestore();
+    binding.mockRestore();
+    conversation.forgetTranscriptState();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("does not observe a gjc command from a transcript renamed over the one its resolver read (#3398)", async () => {
+  const home = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "command-gjc-swap-")));
+  const savedHome = process.env["HOME"];
+  process.env["HOME"] = home;
+  const cwd = join(home, "work");
+  const sessions = join(home, ".gjc/agent/sessions/v2-project");
+  fs.mkdirSync(cwd);
+  fs.mkdirSync(sessions, { recursive: true });
+  fs.mkdirSync(join(home, ".gjc/agent", GJC_NATIVE_DIRECTORY), { recursive: true });
+  const path = join(sessions, "session-a.jsonl");
+  const foreign = join(home, "foreign.jsonl");
+  const at = Date.parse("2026-10-20T00:00:00Z");
+  const header = JSON.stringify({ type: "session", id: "session-a", cwd }) + "\n";
+  fs.writeFileSync(path, header);
+  fs.writeFileSync(foreign, header + JSON.stringify({ type: "thinking_level_change", timestamp: new Date(at + 10).toISOString(), thinkingLevel: "high" }) + "\n");
+  // this test process stands in for the pane's gjc: its own pid and start, and the binding its extension publishes
+  const birth = await processStartedAtAsync(process.pid);
+  fs.writeFileSync(join(home, ".gjc/agent", GJC_NATIVE_DIRECTORY, `${process.pid}.json`), JSON.stringify({ version: 1, pid: process.pid,
+    processStartedAt: birth, instanceId: "extension-test", sequence: 1, updatedAt: Date.now(), session: { id: "session-a", path, cwd } }));
+  const pane = { pane_id: "pane-gjc", cwd, foreground_cwd: cwd, agent: "gjc" } as HerdrPane;
+  const snapshot = spyOn(client, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] } as SessionSnapshot));
+  const rpc = spyOn(client, "herdrRpc").mockImplementation(async (method: string) => {
+    if (method === "pane.process_info") return { process_info: { foreground_processes: [{ pid: process.pid, argv: ["/usr/bin/gjc"] }] } } as never;
+    throw new Error(`unexpected RPC: ${method}`);
+  });
+  // the resolver's last proof ends with its lstat of the session file (readSessionHeader, run once per binding read):
+  // the foreign file is renamed over it right after the second
+  const lstat = fs.lstatSync;
+  let proofs = 0;
+  const lstats = spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof fs.lstatSync>) => {
+    const value = lstat(...args);
+    if (args[0] === path && ++proofs === 2) fs.renameSync(foreign, path);
+    return value;
+  }) as typeof fs.lstatSync);
+  const thinking: SlashCommand = { name: "thinking", source: "builtin", description: "",
+    forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
+  const sent = { id: "gjc-thinking", text: "/thinking high", at, agent: "gjc", identity: "fixture", screen: "", form: null,
+    invocations: commandInvocations("gjc", "/thinking high", [thinking]) };
+  try {
+    const read = await conversation.readCommandTranscript(pane.pane_id);
+    expect(proofs).toBe(2);
+    expect(fs.existsSync(foreign)).toBe(false);
+    expect(commandOutcome(pane.pane_id, sent, { now: at + 30, transcript: read?.records })).toMatchObject({ state: "accepted", evidence: [] });
+  } finally {
+    lstats.mockRestore();
+    rpc.mockRestore();
+    snapshot.mockRestore();
+    if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome;
+    conversation.forgetTranscriptState();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it("does not observe an omo command from a transcript renamed over the one its lookup read (#3398)", async () => {
+  const home = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "command-omo-swap-")));
+  const savedHome = process.env["HOME"];
+  process.env["HOME"] = home;
+  const cwd = join(home, "work");
+  const sessions = join(home, ".omo/agent/sessions", `--${cwd.replace(/^\//, "").replaceAll("/", "-")}--`);
+  fs.mkdirSync(cwd);
+  fs.mkdirSync(sessions, { recursive: true });
+  const path = join(sessions, "2026-10-20_session-a.jsonl");
+  const foreign = join(home, "foreign.jsonl");
+  const at = Date.parse("2026-10-20T00:00:00Z");
+  const header = JSON.stringify({ type: "session", id: "session-a", cwd, timestamp: new Date(at).toISOString() }) + "\n";
+  fs.writeFileSync(path, header);
+  fs.writeFileSync(foreign, header + JSON.stringify({ type: "thinking_level_change", timestamp: new Date(at + 10).toISOString(), thinkingLevel: "high" }) + "\n");
+  // the pane's omo: a stand-in holding its session file open, as omo does, with no store of the test runner's own
+  const holder = Bun.spawn([process.execPath, "-e", `require("node:fs").openSync(${JSON.stringify(path)}, "r"); console.log("ready"); setInterval(() => {}, 1000);`],
+    { cwd, env: { HOME: home, PATH: process.env["PATH"] ?? "" }, stdout: "pipe", stderr: "ignore", stdin: "ignore" });
+  const ready = await holder.stdout.getReader().read();
+  expect(new TextDecoder().decode(ready.value)).toContain("ready");
+  const pane = { pane_id: "pane-omo", cwd, foreground_cwd: cwd, agent: "pi" } as HerdrPane;
+  const snapshot = spyOn(client, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] } as SessionSnapshot));
+  const rpc = spyOn(client, "herdrRpc").mockImplementation(async (method: string) => {
+    if (method === "pane.process_info") return { process_info: { foreground_processes: [{ pid: holder.pid, argv: ["/usr/bin/omo"], cwd }] } } as never;
+    throw new Error(`unexpected RPC: ${method}`);
+  });
+  // the lookup's proof is the header it reads through its own open of the session file: the foreign file is renamed
+  // over it right after that open
+  const open = fs.openSync;
+  let swapped = false;
+  const opens = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    const fd = open(...args);
+    if (!swapped && args[0] === path) { swapped = true; fs.renameSync(foreign, path); }
+    return fd;
+  }) as typeof fs.openSync);
+  const thinking: SlashCommand = { name: "thinking", source: "builtin", description: "",
+    forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
+  const sent = { id: "omo-thinking", text: "/thinking high", at, agent: "omo", identity: "fixture", screen: "", form: null,
+    invocations: commandInvocations("omo", "/thinking high", [thinking]) };
+  try {
+    const read = await conversation.readCommandTranscript(pane.pane_id);
+    expect(swapped).toBe(true);
+    expect(commandOutcome(pane.pane_id, sent, { now: at + 30, transcript: read?.records })).toMatchObject({ state: "accepted", evidence: [] });
+  } finally {
+    opens.mockRestore();
+    rpc.mockRestore();
+    snapshot.mockRestore();
+    holder.kill();
+    await holder.exited;
+    if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome;
     conversation.forgetTranscriptState();
     fs.rmSync(home, { recursive: true, force: true });
   }
