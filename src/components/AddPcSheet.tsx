@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import { Check, X } from "lucide-react";
 
 import { NEW_PC_MS, type MyPc } from "../lib/account/myPcs.ts";
-import { useT } from "../lib/i18n.ts";
+import { useLocale, useT } from "../lib/i18n.ts";
 import type { RelayFailure, RelayShellState } from "../lib/relay/shellState.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
@@ -80,7 +80,7 @@ function rememberApprover(serverId: string, approver: string | null): void {
 }
 
 export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, onOpenPc, onCancel, onClose, onPairByQr }: AddPcSheetProps) {
-  const t = useT();
+  const t = useT(), locale = useLocale();
   const id = useId();
   const name = pc?.name ?? "";
   const phase = pc === null || mode === "add" ? null : addPcPhase(pc, state);
@@ -144,7 +144,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
   } else {
     title = mode === "new" ? t("Add {name} to your account", { name }) : t("Add this device to {name}", { name });
     sub = mode === "new"
-      ? (windowExpired ? t("Add window closed · an account member must approve.") : t("Type the number {name} shows on its own screen, then approve there.", { name }))
+      ? (windowExpired && phase !== "failed" ? t("Add window closed · an account member must approve.") : t("Type the number {name} shows on its own screen, then approve there.", { name }))
       : approver ? t("Add window closed · an account member must approve on {approver}.", { approver }) : t("Add window closed · an account member must approve.");
     switch (phase) {
       case "start":
@@ -244,7 +244,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
 
   return createPortal(
     <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
-      <div ref={surface} className="modal add-pc-sheet" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-sub`} tabIndex={-1} data-add-pc-mode={mode} {...(phase === null ? {} : { "data-add-pc-phase": phase })}>
+      <div ref={surface} className="modal add-pc-sheet" lang={locale} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} aria-describedby={`${id}-sub`} tabIndex={-1} data-add-pc-mode={mode} {...(phase === null ? {} : { "data-add-pc-phase": phase })}>
         <header className="modal-header add-pc-head">
           {steps && <div className="add-pc-bars" aria-hidden="true">{steps.map(({ status }, step) => <span key={step} data-bar={status} />)}</div>}
           {stepNumber !== null && <p className="add-pc-step-count">{t("Step {n} of {total}", { n: stepNumber, total: 4 })}</p>}

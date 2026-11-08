@@ -69,7 +69,7 @@ export function KeyIds({ mismatch, named }: { readonly mismatch: KeyMismatch; re
         <dt>{received}</dt>
         <dd>{mismatch.received === null ? <span className="relay-shell-copy">{t("Not a valid key")}</span> : <KeyId id={mismatch.received} against={mismatch.expected} label={received} />}</dd>
       </dl>
-      <p className="relay-shell-detail">{t("Only the PC itself shows its ID, at the top of Settings → Devices and PCs (My devices, or under the code, on an older Ovis). Marked groups differ.")}</p>
+      <p className="relay-shell-detail">{t("Only the PC itself shows its ID, at the top of Settings → Devices and PCs. Marked groups differ.")}</p>
     </>
   );
 }
@@ -159,14 +159,14 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
               );
             })}
           </ul>
-          <p className="relay-shell-copy">{t("To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).")}</p>
+          <p className="relay-shell-copy">{t("To add another PC, open Settings → Devices and PCs → Add a connection → Ovis relay on it and scan the QR code.")}</p>
           <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCodeStart}>{t("Pair with a code")}</button></div>
         </>
       )}
       {(account === null ? state.kind === "empty" : view === "pair" || addingPc) && (
         <>
           <h1 className="relay-shell-title">{t("Scan the QR code on your PC")}</h1>
-          <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs (Phone & devices on an older Ovis) and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.")}</p>
+          <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and scan the QR code.")}</p>
           <div className="relay-shell-actions">
             <button type="button" className="btn btn-primary" onClick={onCodeStart}>{t("Pair with a code")}</button>
             {back}
@@ -182,7 +182,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
       {state.kind === "code-compare" && (
         <>
           <h1 className="relay-shell-title">{t("Does {name}'s screen show this ID?", { name: pc })}</h1>
-          <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs (My devices, or under the code, on an older Ovis). Pair only if every group matches.")}</p>
+          <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs. Pair only if every group matches.")}</p>
           <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this code found")} /></p>
           <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onCodeMatch}>{t("It matches")}</button><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
         </>
@@ -190,7 +190,7 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
       {state.kind === "confirm" && (
         <>
           <h1 className="relay-shell-title">{t("Pair with {name}?", { name: pc })}</h1>
-          <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Devices and PCs (Phone & devices on an older Ovis), where it can be removed.", { name: pc })}</p>
+          <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>
           <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onPair}>{t("Pair")}</button><button type="button" className="btn" onClick={onCancel}>{t("Not now")}</button></div>
         </>
       )}

@@ -51,7 +51,7 @@ export const DASHBOARD_KO: Record<string, string> = {
   "{count} PCs": "PC {count}대",
   "incl. {count} offline": "오프라인 {count}대 포함",
   "Needs update": "업데이트 필요",
-  "No PCs yet. Sign in on a PC, or scan the QR code it shows, to see it here.": "아직 PC가 없습니다. PC에서 로그인하거나 그 PC에 나오는 QR 코드를 스캔하면 여기에 나타납니다.",
+  "Sign in on a PC, or scan the QR code it shows, to see it here.": "PC에서 로그인하거나 그 PC에 나오는 QR 코드를 스캔하면 여기에 나타납니다.",
   "No PC matches this filter.": "이 필터에 맞는 PC가 없습니다.",
   "Without an account": "계정 없이",
   "{name} has not approved this device yet.": "{name}에서 아직 이 기기를 승인하지 않았습니다.",

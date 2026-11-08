@@ -51,7 +51,7 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "{count} PCs": "{count} 台 PC",
   "incl. {count} offline": "含 {count} 台离线",
   "Needs update": "需要更新",
-  "No PCs yet. Sign in on a PC, or scan the QR code it shows, to see it here.": "还没有电脑。在电脑上登录，或扫描它显示的二维码，它就会出现在这里。",
+  "Sign in on a PC, or scan the QR code it shows, to see it here.": "在电脑上登录，或扫描它显示的二维码，它就会出现在这里。",
   "No PC matches this filter.": "没有符合此筛选的电脑。",
   "Without an account": "未使用账户",
   "{name} has not approved this device yet.": "{name} 尚未批准此设备。",

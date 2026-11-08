@@ -72,7 +72,7 @@ export function CodeEntry({ failure, looking = false, onSubmit, back, titleTag: 
   return (
     <>
       {!omitHeading && <Title className="relay-shell-title" id={titleId}>{t("Pair with a code")}</Title>}
-      <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay (Connect, or Show a code to type, on an older Ovis). Type the code it shows here. Where the PC uses the Ovis account, sign in to the same account instead.")}</p>
+      <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and type the code it shows.")}</p>
       <form id={formId} className="relay-shell-code-form" onSubmit={submit}>
         <label className="relay-shell-field-label" htmlFor={`${id}-code`}>{label}</label>
         <input id={`${id}-code`} name="code" className="input relay-shell-code-input" aria-label={label} placeholder="XXXXX-XXXXX" disabled={looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
@@ -114,11 +114,11 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
             <CodeEntry omitHeading formId={codeFormId} failure={state.kind === "code-entry" ? state.failure : null} looking={looking} onSubmit={onCodeSubmit} />
           ) : mode === "compare" && state.kind === "code-compare" ? (
             <>
-              <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs (My devices, or under the code, on an older Ovis). Pair only if every group matches.")}</p>
+              <p className="relay-shell-copy">{t("The PC shows its ID at the top of Settings → Devices and PCs. Pair only if every group matches.")}</p>
               <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this code found")} /></p>
             </>
           ) : (
-            <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs (Phone & devices on an older Ovis) and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.")}</p>
+            <p className="relay-shell-copy">{t("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay and scan the QR code.")}</p>
           )}
         </div>
         <footer className="modal-footer add-pc-footer">

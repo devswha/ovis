@@ -497,6 +497,8 @@ describe("RelayOverview", () => {
       onAddPc: () => { added += 1; },
       onPairByQr: () => { pairedQr += 1; },
     });
+    const emptyCopy = root.find((node) => node.type === "p" && node.props.className === "relay-overview-empty-copy");
+    expect(textOf(emptyCopy)).toBe("Sign in on a PC, or scan the QR code it shows, to see it here.");
     const primaries = root.findAll((node) => node.type === "button" && String(node.props.className ?? "").includes("btn-primary"));
     const ghosts = root.findAll((node) => node.type === "button" && String(node.props.className ?? "").includes("btn-ghost"));
     expect(primaries).toHaveLength(1);

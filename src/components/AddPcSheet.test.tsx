@@ -254,7 +254,7 @@ describe("the Add-a-PC sheet", () => {
     expect(all()).toContain("changed");
   });
 
-  it("says why a join failed without raw close-code details, and offers Try again where that can help", async () => {
+  it("says why a join failed without raw close-code details, offers Try again where that can help, and never repeats the problem line in the subtitle across any sheet state", async () => {
     await mount(props("new", pcOf(), { kind: "failed", failure: "pc-offline", name: "desk2", detail: "The relay closed the connection (0)", server_id: SERVER_ID }));
     expect(renderer!.root.findByProps({ role: "dialog" }).props["data-add-pc-phase"]).toBe("failed");
     expect(all()).toContain("desk2 is offline");
@@ -263,6 +263,31 @@ describe("the Add-a-PC sheet", () => {
     expect(steps()).toEqual(["done", "failed", "todo", "todo"]);
     await click("Try again");
     expect(calls.retries).toBe(1);
+
+    const normalize = (value: string): string => value.trim().replace(/[.。]+$/, "");
+    const freshPc = pcOf({ added_at: new Date().toISOString() });
+    const expiredPc = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
+    const states: RelayShellState[] = [
+      LIST,
+      { kind: "confirm", offer: { v: 1, server_id: SERVER_ID, server_public_key: "k", relay: "wss://relay.example", name: "desk2" } },
+      { kind: "connecting", name: "desk2" },
+      { kind: "compare", name: "desk2", digits: "123456", confirmed: false, typed: true, challenge: 1 },
+      { kind: "compare", name: "desk2", digits: "", confirmed: false, typed: true, wrong: true, challenge: 1 },
+      { kind: "compare", name: "desk2", digits: "123456", confirmed: true, challenge: 1 },
+      { kind: "ready", name: "desk2", server_id: SERVER_ID },
+      { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID },
+      { kind: "failed", failure: "pc-offline", name: "desk2", detail: null, server_id: SERVER_ID },
+      { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID },
+    ];
+    for (const [mode, target] of [["new", freshPc], ["new", expiredPc], ["join", expiredPc]] as const) {
+      for (const st of states) {
+        await update(props(mode, target, st));
+        const subText = text(renderer!.root.findByProps({ className: "add-pc-sub" }));
+        for (const problem of renderer!.root.findAll((n) => n.props.className === "add-pc-problem")) {
+          expect(normalize(text(problem))).not.toBe(normalize(subText));
+        }
+      }
+    }
   });
 
   it("closes on Escape, swipe-down, and scrim click, ending a comparison in progress, and gives the focus back to what opened it", async () => {
