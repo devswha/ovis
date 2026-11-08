@@ -7,6 +7,7 @@ import { join, win32 } from "node:path";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as cmd from "./cmd.ts";
+import * as piTree from "./pi-tree.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { MAX_TURNS, parseOmpTranscript } from "./transcript-records.ts";
 import { turnStarts } from "./transcript-turns.ts";
@@ -2873,15 +2874,18 @@ describe("a page read that settles its transcript's revision off the event loop"
   let path: string;
   const pane = { pane_id: "cmd-settle", agent: "cmd", agent_status: "idle", cwd: "" } as HerdrPane;
   const restores: { mockRestore(): void }[] = [];
+  let snapshots: { mock: { calls: unknown[] } };
   const message = (id: string, parentId: string | null, content: string) => JSON.stringify({ type: "message", id, parentId, message: { role: "user", content } }) + "\n";
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "herdr-settle-"));
     path = join(root, "session.jsonl");
     writeFileSync(path, JSON.stringify({ type: "session", id: "cmd-settle", version: 3 }) + "\n" + message("u1", null, "hello"));
     pane.cwd = root;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [pane] } as unknown as SessionSnapshot);
+    snapshots = snapshot;
     restores.push(
       spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path }),
-      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [pane], agents: [pane] } as unknown as SessionSnapshot),
+      snapshot,
       spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never),
     );
   });
@@ -2958,10 +2962,46 @@ describe("a page read that settles its transcript's revision off the event loop"
     const stat = holdFirstStat();
     const read = paneConversation(pane.pane_id);
     await stat.holding;
-    // a new session in the pane: it writes another file now
+    // a new session in the pane: it writes another file now, which another look at the pane sees
     restores.push(spyOn(cmd, "cmdTranscriptPath").mockResolvedValue({ path: other }));
+    expect((await paneTranscript(pane.pane_id)).path).toBe(other);
     stat.release();
     await expect(read).rejects.toMatchObject({ name: "ConversationUnavailable", message: "no_session_id" });
+  });
+
+  it("asks herdr for the pane once per read when nothing rebound it while its transcript settled", async () => {
+    await paneConversation(pane.pane_id);
+    appendFileSync(path, message("u2", "u1", "again"));
+    const before = snapshots.mock.calls.length;
+    await paneConversation(pane.pane_id);
+    expect(snapshots.mock.calls.length - before).toBe(1);
+  });
+
+  it("parses an actively written transcript only once its revision settled", async () => {
+    const base = await paneConversation(pane.pane_id);
+    const { open } = fsp;
+    let writes = 0;
+    const parses = spyOn(piTree, "piAbandonedTurns");
+    restores.push(
+      parses,
+      // a settle's last stat of the transcript: an append lands right after it, before the page read, twice
+      spyOn(fsp, "open").mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== path) return handle;
+        const stat = handle.stat.bind(handle);
+        let stats = 0;
+        handle.stat = (async (...rest: Parameters<typeof stat>) => {
+          const taken = await stat(...rest);
+          if (++stats === 2 && writes < 2) { writes++; appendFileSync(path, message(`w${writes}`, writes === 1 ? "u1" : "w1", "more")); }
+          return taken;
+        }) as typeof handle.stat;
+        return handle;
+      }) as typeof fsp.open),
+    );
+    const answer = await paneConversation(pane.pane_id);
+    expect(writes).toBe(2);
+    expect(answer.history_id).toBe(base.history_id);
+    expect(parses).toHaveBeenCalledTimes(1);
   });
 
   it("never digests another agent's transcript that a folder swapped in after authorization puts at the path", async () => {
@@ -3064,6 +3104,27 @@ describe("a page read that settles its transcript's revision off the event loop"
     const output = toolOutput(omoPane.pane_id, "call_1");
     await stat.holding;
     forgetPaneTranscriptState(omoPane.pane_id);
+    stat.release();
+    expect(await output).toBeNull();
+  });
+
+  it("answers no tool output for an OmO pane seen bound to another session while its transcript settled", async () => {
+    const omoPane = { pane_id: "omo-rebound", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old session" }] } }) + "\n");
+    writeFileSync(other, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "new session" }] } }) + "\n");
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null }),
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+    const stat = holdFirstStat();
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await stat.holding;
+    // OmO started another session in the pane, and another look at the pane saw it
+    restores.push(spyOn(omo, "omoSessionForPane").mockResolvedValue({ path: other, pending: null }));
+    expect((await paneTranscript(omoPane.pane_id)).path).toBe(other);
     stat.release();
     expect(await output).toBeNull();
   });

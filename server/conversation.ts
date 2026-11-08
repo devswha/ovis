@@ -232,12 +232,11 @@ function transcriptGeneration(path: string, stat: RevisionStat, checkWindow = fa
   let wanted = false as boolean;
   const opened: RevisionOpen = deferred === null ? openRevisionNow : function* () { wanted = true; throw new Error("left to settleTranscriptRevision"); };
   const { next } = finish(transcriptRevisionSteps(path, stat, checkWindow, read && reads.mode !== "none", opened));
-  // what it answers from a revision it could not check is thrown away (readSettled): it records nothing, and
-  // names the generation recorded, so what it derived meanwhile (a Copilot prefix) is the one it had
+  // a revision it could not check: the read stops here, before it parses anything, records nothing, and
+  // readSettled settles again off the loop
   if (deferred !== null && wanted) {
     deferred.unsettled = true;
-    const previous = transcriptRevisions.get(path);
-    return previous?.identity === `${stat.dev}:${stat.ino}` && previous.generation ? `-${previous.generation}` : "";
+    throw new Error("transcript revision left to settleTranscriptRevision");
   }
   remember(transcriptRevisions, path, next, 64);
   return next.generation ? `-${next.generation}` : "";
@@ -1053,6 +1052,25 @@ function rememberPaneDevin(paneId: string, sessionId: string, cwd: string, dbPat
   remember(paneReads, paneId, reads, PANE_READS_MAX);
 }
 
+/**
+ * The transcript each pane was last resolved to, numbered: a resolution naming another one than the last
+ * takes a new number, and a forgotten pane has none. A read that awaited after its resolution compares
+ * the number it was resolved under with the pane's (rebound), so it learns whether the pane was seen bound
+ * elsewhere meanwhile without asking herdr again.
+ */
+let bindingCount = 0;
+const paneBindings = new Map<string, { key: string; generation: number }>();
+const resolvedGenerations = new WeakMap<object, number>();
+function noteBinding<T extends NativeTranscript>(paneId: string, resolved: T): T {
+  const key = `${resolved.source}\0${resolved.path}`;
+  const previous = paneBindings.get(paneId);
+  const generation = previous?.key === key ? previous.generation : ++bindingCount;
+  remember(paneBindings, paneId, { key, generation }, PANE_READS_MAX);
+  resolvedGenerations.set(resolved, generation);
+  return resolved;
+}
+const rebound = (paneId: string, resolved: NativeTranscript): boolean => paneBindings.get(paneId)?.generation !== resolvedGenerations.get(resolved);
+
 /** Pi retains at most four small parsed pages per cache; oversized pages remain readable uncached. */
 function rememberPage<T extends { source: RecognizedConversation["source"] }>(map: Map<string, T>, key: string, value: T, limit: number): void {
   map.delete(key);
@@ -1432,6 +1450,7 @@ export function forgetTranscriptState(): void {
   clearScans.clear();
   pictureChecks.clear();
   paneReads.clear();
+  paneBindings.clear();
   copilotBindings.clear();
   forgetCopilotForeground();
   forgetAllCodexState();
@@ -1459,6 +1478,7 @@ export function forgetPaneTranscriptState(paneId: string): void {
   }
   const reads = paneReads.get(paneId);
   paneReads.delete(paneId);
+  paneBindings.delete(paneId);
   copilotBindings.delete(paneId);
   launchedAgents.forget(paneId);
   forgetGjcPane(paneId);
@@ -2215,11 +2235,11 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
         const again = devinLockProof(foreground.pid!, storePath);
         if (again.session !== proof.session || again.binding !== proof.binding) throw new ConversationUnavailable("no_session_id");
       }
-      return { source: "devin-transcript", path: storePath, session, cwd, binding: JSON.stringify([socket, proof?.binding ?? null]) };
+      return noteBinding(paneId, { source: "devin-transcript", path: storePath, session, cwd, binding: JSON.stringify([socket, proof?.binding ?? null]) });
     }
   }
 
-  return resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known);
+  return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known));
 }
 
 /**
@@ -2422,10 +2442,14 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     throw new ConversationReadPending();
   }
   // settling awaited after the transcript was resolved: a pane bound to another one since (a new session,
-  // another agent) has not this answer. Copilot's binding is checked after its read below, as it was before
+  // another agent) has not this answer. Only a pane seen bound elsewhere meanwhile is resolved again, and
+  // that resolution's own failure is the answer. Copilot's binding is checked after its read below.
   if (transcript.source !== "copilot-transcript") {
-    const rebound = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData).catch(() => null);
-    if (rebound === null || rebound.source !== transcript.source || rebound.path !== transcript.path || !live()) throw new ConversationUnavailable("no_session_id");
+    if (!live()) throw new ConversationUnavailable("no_session_id");
+    if (rebound(paneId, transcript)) {
+      const fresh = await paneTranscript(paneId, codexHome, undefined, devinDbPath, opencodeDb, hermesHome, grokHome, museData);
+      if (fresh.source !== transcript.source || fresh.path !== transcript.path || !live()) throw new ConversationUnavailable("no_session_id");
+    }
   }
   const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" || resolved.source === "letta-transcript" || resolved.source === "kimi-transcript" ? resolved.path
     : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
@@ -3456,7 +3480,7 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
   let resolved: ResolvedTranscript;
-  try { resolved = await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome, museData); }
+  try { resolved = noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, snapshot.panes, opencodeDb, hermesHome, grokHome, museData)); }
   catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
   if (resolved.source === "opencode-transcript") {
     const output = opencodeToolOutput(resolved.path, resolved.session, ref);
@@ -3483,7 +3507,8 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   // the sources whose lookup digests the transcript (transcriptGeneration) read that off the event loop first
   if (resolved.source === "copilot-transcript" || resolved.source === "omo-transcript") {
     const settled = await readSettled({ path: resolved.path, checkWindow: false, live }, lookup);
-    if (settled === null) return null;
+    // a pane seen bound to another transcript while this settled (another OmO session) has not this output
+    if (settled === null || rebound(paneId, transcript)) return null;
     output = settled.value;
   } else output = resolved.source === "agy-transcript" ? await agyToolOutput(resolved.path, ref) : lookup();
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;
@@ -3665,7 +3690,6 @@ export function piTranscriptImage(path: string, ref: string): { mediaType: strin
  * large transcript never holds the bridge for more than a window's work.
  */
 export async function ompTranscriptImage(path: string, ref: string, anchor?: string | null): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
-  await settleTranscriptRevision({ path, checkWindow: false });
   try { return await finishAsync(ompTranscriptImageSteps(path, ref, anchor)); } catch { return null; }
 }
 
@@ -3776,7 +3800,6 @@ function* ompPictureSteps(stream: TranscriptStream, shape: RecordShape, content:
  * windows (finishAsync).
  */
 export async function codexToolImage(path: string, ref: string, codexHome: string): Promise<{ mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null> {
-  await settleTranscriptRevision({ path, checkWindow: false });
   try { return await finishAsync(codexToolImageSteps(path, ref, codexHome)); } catch { return null; }
 }
 
