@@ -123,11 +123,11 @@ function PairQrDialog({ state, onCodeStart, onCodeSubmit, onCodeMatch, onCancel,
         </div>
         <footer className="modal-footer add-pc-footer">
           {mode === "code" ? (
-            <><button type="button" className="btn" onClick={close}>{t("Cancel")}</button><button type="submit" form={codeFormId} className="btn btn-primary" data-sheet-primary aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button></>
+            <><button key="cancel" type="button" className="btn" onClick={close}>{t("Cancel")}</button><button key="pair" type="submit" form={codeFormId} className="btn btn-primary" data-sheet-primary aria-busy={looking ? "true" : undefined} disabled={looking}>{looking ? t("Looking for the PC…") : t("Pair")}</button></>
           ) : mode === "compare" ? (
-            <><button type="button" className="btn" onClick={close}>{t("Cancel")}</button><button type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeMatch}>{t("It matches")}</button></>
+            <><button key="cancel" type="button" className="btn" onClick={close}>{t("Cancel")}</button><button key="match" type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeMatch}>{t("It matches")}</button></>
           ) : (
-            <><button type="button" className="btn" onClick={close}>{t("Back")}</button><button type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeStart}>{t("Pair with a code")}</button></>
+            <><button key="back" type="button" className="btn" onClick={close}>{t("Back")}</button><button key="code" type="button" className="btn btn-primary" data-sheet-primary onClick={onCodeStart}>{t("Pair with a code")}</button></>
           )}
         </footer>
       </div>
