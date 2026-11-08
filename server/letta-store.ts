@@ -357,11 +357,15 @@ const sameChain = (a: readonly string[] | null, b: readonly string[] | null): bo
   return a.every((at, step) => at === b[step]);
 };
 
-/** Whether an error says only that nothing is there (a missing entry, or a folder on its way), not that it cannot be read. */
-const absent = (error: unknown): boolean => {
-  const code = (error as NodeJS.ErrnoException | null)?.code;
-  return code === "ENOENT" || code === "ENOTDIR";
-};
+/**
+ * Whether an error says only that nothing is there, not that it cannot be read. A file standing where a
+ * folder should be (ENOTDIR) is something there, not absence.
+ */
+const absent = (error: unknown): boolean => (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+
+/** Whether what a lookup found missing is still missing on a second look: one gone only for a moment is there. */
+const stillAbsent = async (error: unknown, again: () => Promise<unknown>): Promise<boolean> =>
+  absent(error) && await again().then(() => false, absent);
 
 /**
  * Whether a peer folder's record names the conversation, read without blocking (the folder may be on a
@@ -377,14 +381,16 @@ const absent = (error: unknown): boolean => {
  */
 async function folderClaims(folder: string, own: string | null, bound: { agent: string; conversation: string }): Promise<boolean> {
   let real: string;
-  try { real = await realpath(folder); } catch (error) { return !absent(error); }
+  try { real = await realpath(folder); } catch (error) { return !await stillAbsent(error, () => realpath(folder)); }
   if (real === own) return false;
   const letta = join(real, ".letta");
   const path = join(letta, "settings.local.json");
   let before: string[] | null;
-  try { before = await folderChain(letta); } catch (error) { return !absent(error); }
+  try { before = await folderChain(letta); } catch (error) { return !await stillAbsent(error, () => folderChain(letta)); }
   if (before === null) return true;
   const held: FileHandle[] = [];
+  // once the record is open, any failure claims: only a record missing as it is opened can be absent
+  let recordOpened = false;
   try {
     const hold = async (at: string, flags: number): Promise<FileHandle> => { const handle = await open(at, flags); held.push(handle); return handle; };
     let record: FileHandle;
@@ -396,6 +402,7 @@ async function folderClaims(folder: string, own: string | null, bound: { agent: 
       if (deviceInode(await hidden.stat({ bigint: true })) !== before.at(-1)) return true;
       record = await hold(join(FD_DIR, `${hidden.fd}`, "settings.local.json"), RECORD_FLAGS);
     } else record = await hold(path, RECORD_FLAGS);
+    recordOpened = true;
     // a record whose own stat fails is not proven the folder's own: it claims
     const found = await record.stat({ bigint: true }).catch(() => null);
     if (found === null) return true;
@@ -414,11 +421,16 @@ async function folderClaims(folder: string, own: string | null, bound: { agent: 
     // a record rewritten in place while it was read (a short read, or a new size or time) is not what was read: it claims
     const after = await record.stat({ bigint: true });
     if (bytesRead !== buffer.length || after.size !== found.size || after.mtimeNs !== found.mtimeNs) return true;
-    const opened = lettaOpenedSessions(buffer.subarray(0, bytesRead).toString("utf8"));
-    return opened?.some((ref) => ref.agent === bound.agent && ref.conversation === bound.conversation) === true;
+    // an equal size and time do not prove the same bytes (a coarse mtime, or one put back): read it again, and any change claims
+    const again = Buffer.alloc(buffer.length + 1);
+    const reread = await record.read(again, 0, again.length, 0);
+    if (reread.bytesRead !== bytesRead || !again.subarray(0, bytesRead).equals(buffer)) return true;
+    // a record that does not read as one Letta writes (empty, cut short, malformed, another shape) may be one mid-write: it claims
+    const opened = lettaOpenedSessions(buffer.toString("utf8"));
+    return opened === null || opened.some((ref) => ref.agent === bound.agent && ref.conversation === bound.conversation);
   } catch (error) {
-    // gone only for a moment (moved away and back, or a file in its place) is no absence: only a record still gone claims nothing
-    return !absent(error) || await lstat(path).then(() => true, (again: unknown) => !absent(again));
+    // gone only for a moment (moved away and back) is no absence: only a record still gone as it is opened claims nothing
+    return recordOpened || !await stillAbsent(error, () => lstat(path));
   } finally { for (const handle of held) await handle.close().catch(() => {}); }
 }
 
