@@ -244,13 +244,13 @@ and herdr's default session only.
   downloaded, or never ran), that server is started again as it was. Just before it is stopped, its program, arguments,
   environment (its `OVIS_TOKEN` with the rest) and folder are copied from `/proc` into a folder only
   that account can read. The copy and the stop each go ahead only while that pid is still the process
-  shown (its start time and owner, `ps -o lstart= -o uid=`, checked in the same command): one that took
+  shown (on Linux its start in clock ticks since boot from `/proc/<pid>/stat` and its owner; on macOS `ps`'s start time to the second and owner, where a pid reused within that second stays a residual; checked in the same command): one that took
   its pid since is never copied or signalled (`changed`). A copy cut short removes itself. Nothing is stopped when copying fails this time (try again). When no faithful
   copy can be made (its environment unreadable, its program or folder deleted since it started, as after
   a Bun upgrade, or a byte that would not survive being started again, not UTF-8), it is replaced as on macOS:
   without a copy, and the job says it stays stopped if the install then fails.
   To start it again, its own Bun first binds the server's own address (`HOST`, `PORT`): one already
-  taken means a live server is there, its replacement among them, and nothing is started beside it. It
+  taken means a live server is there, its replacement among them, and nothing is started beside it; so does any live Ovis registered for that herdr session, managed or not, on any port. It
   then reads the copy and starts the program with exactly that environment,
   given to the process directly (never on a command line another account could read), in its own
   session, its output in `~/.local/state/ovis/restored-server.log` (opened without following a link, this

@@ -82,7 +82,7 @@ function fixture(pc: Pc) {
   let identityReads = 0;
   const identity = (pid: number) => pid === 4242 && pc.reusedAfterReads !== undefined && identityReads > pc.reusedAfterReads ? "Mon Nov  9 09:00:00 2026 1000" : `Sun Nov  8 08:00:00 2026 1000 ${pid}`;
   /** whether a script's sameProcess gate holds for that pid now */
-  const sameAsShown = (script: string) => { const m = /\[ "\$\(ps -o lstart= -o uid= -p (\d+)[^)]*\)" = '([^']*)' \]/.exec(script); if (!m) return true; identityReads++; return identity(Number(m[1])) === m[2]; };
+  const sameAsShown = (script: string) => { const m = /\[ "\$\(id_of=(\d+);[\s\S]*?fi\)" = '([^']*)' \]/.exec(script); if (!m) return true; identityReads++; return identity(Number(m[1])) === m[2]; };
   /** signalled servers still stopping, and how many liveness checks each has left */
   const dying = new Map<number, number>();
   const commands: string[] = [];
@@ -99,7 +99,7 @@ function fixture(pc: Pc) {
         "herdr=1", ...(pc.herdrRunning === false ? [] : ["herdr_running=1"]), `launcher=${pc.launcher ?? "none"}`].join("\n") + "\n";
     }
     // the copy of a server before it is stopped, its start again, and its removal
-    if (script.startsWith("ps -o lstart= -o uid=")) { identityReads++; return identity(Number(/-p (\d+)/.exec(script)![1])) + "\n"; }
+    if (script.startsWith("id_of=")) { identityReads++; return identity(Number(/^id_of=(\d+)/.exec(script)![1])) + "\n"; }
     if (script.includes("ovis-restore.XXXXXXXX") && !sameAsShown(script)) return "changed\n";
     if (script.includes("ovis-restore.XXXXXXXX")) return pc.uncapturable ? "" : pc.captureFails ? "error\n" : pc.unfaithful ? "unfaithful\n" : "/tmp/ovis-restore.Ab12Cd34\n";
     if (script.includes('[ -L "$d/exe" ]') && pc.addressTaken) return "taken\n";
@@ -512,6 +512,14 @@ describe("installing Ovis on a PC over SSH", () => {
     }
   });
 
+  it("starts nothing beside any live server on the session's socket, a managed bridge on another port included", async () => {
+    // a connection server's bridge serves this herdr session too, on its own port
+    const pc = fixture({ descriptors: [descriptor(4242), descriptor(4300, true, "e".repeat(64))], installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
+    expect(job.error).toContain("another already runs in its place");
+    expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
+  });
+
   it("starts nothing beside a live server that holds the address, and says so", async () => {
     const pc = fixture({ descriptors: [descriptor(4242)], addressTaken: true, installer: { exit: 1, output: "Ovis: could not download the installer of v9.9.9 from github.com" } });
     const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } }));
@@ -752,5 +760,21 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     const linked = Bun.spawn(["sh", "-c", restoreServer(await copy())], { env: { PATH: process.env.PATH!, HOME: home, XDG_STATE_HOME: state }, stdout: "pipe", stderr: "ignore" });
     expect(await linked.exited).not.toBe(0);
     expect(existsSync(join(dir, "elsewhere"))).toBe(false);
+  });
+
+  it("tells a process by its start in clock ticks and its owner, and leaves no copy when nobody reads its path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-server-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const server = Bun.spawn([process.execPath, "-e", 'console.log("up"); setInterval(() => {}, 1000);'], { stdout: "pipe", stderr: "ignore" });
+    cleanups.push(() => server.kill());
+    await server.stdout.getReader().read();
+    const stat = readFileSync(join("/proc", String(server.pid), "stat"), "utf8");
+    const ticks = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19];
+    const identity = await shell(processIdentity(server.pid), {});
+    expect(identity).toBe(`${ticks} ${process.getuid!()}`);
+    // the SSH connection gone before the copy's path was told: the copy removes itself
+    const lost = Bun.spawn(["sh", "-c", 'sh -c "$1" | true', "ssh", captureServer(server.pid, identity)], { env: { PATH: process.env.PATH!, TMPDIR: dir }, stdout: "ignore", stderr: "ignore" });
+    await lost.exited;
+    expect(readdirSync(dir).filter((name) => name.startsWith("ovis-restore."))).toEqual([]);
   });
 });

@@ -53,15 +53,21 @@ export const captureServer = (pid: number, identity: string): string =>
   + `${sameProcess(pid, identity)} || { echo changed; exit 0; }; `
   + `[ -d /proc/self ] || exit 0; [ -r /proc/${pid}/environ ] || { echo unfaithful; exit 0; }; umask 077; d=$(mktemp -d "${'${TMPDIR:-/tmp}'}/ovis-restore.XXXXXXXX") || { echo error; exit 0; }; `
   // a copy cut short (this SSH connection lost) leaves nothing behind
-  + `trap '[ -n "$kept" ] || rm -rf "$d"' EXIT HUP INT TERM; `
+  + `trap 'rm -rf "$d"' HUP INT TERM PIPE; trap '[ -n "$kept" ] || rm -rf "$d"' EXIT; `
   + `if ! { cp /proc/${pid}/cmdline "$d/cmdline" && cp /proc/${pid}/environ "$d/environ" && cp -P /proc/${pid}/cwd "$d/cwd" && cp -P /proc/${pid}/exe "$d/exe" && [ -s "$d/cmdline" ]; }; then echo error; exit 0; fi; `
   // lasting: its program or folder deleted since it started (Bun upgraded, say), or bytes JavaScript would change
   + `if case "$(readlink "$d/exe")$(readlink "$d/cwd")" in *' (deleted)'*) false;; *) true;; esac && [ -d "$d/cwd/" ] && "$d/exe" -e ${shellQuote(COPY_CHECK)} "$d" >/dev/null 2>&1; then `
   + `if ! { command -v systemd-run >/dev/null 2>&1 && systemd-run --user --quiet --on-active=${SAVED_FOR_S} rm -rf "$d" >/dev/null 2>&1; }; then `
   + `if command -v setsid >/dev/null 2>&1; then l=setsid; else l=nohup; fi; ($l sh -c 'sleep ${SAVED_FOR_S}; rm -rf "$1"' ovis-restore-lease "$d" </dev/null >/dev/null 2>&1 &); fi; `
-  + `kept=1; printf '%s\\n' "$d"; else echo unfaithful; fi`;
-/** what tells one process from another that took its pid since: when it started, and whose it is (Linux and macOS ps) */
-export const processIdentity = (pid: number): string => `ps -o lstart= -o uid= -p ${pid} 2>/dev/null | sed 's/^ *//;s/ *$//'`;
+  // kept only once its path is told: an SSH connection closed before that leaves no copy behind
+  + `printf '%s\\n' "$d" && kept=1; else echo unfaithful; fi`;
+/**
+ * what tells one process from another that took its pid since: on Linux its start in clock ticks since boot (/proc/<pid>/stat)
+ * and its owner; on macOS, which has no /proc, ps's start time to the second and owner (a pid reused within that second
+ * stays the residual there)
+ */
+export const processIdentity = (pid: number): string =>
+  `id_of=${pid}; if [ -r /proc/$id_of/stat ]; then printf '%s %s' "$(sed 's/.*) //' /proc/$id_of/stat | cut -d' ' -f20)" "$(stat -c %u /proc/$id_of)"; else ps -o lstart= -o uid= -p $id_of 2>/dev/null | sed 's/^ *//;s/ *$//'; fi`;
 /** a shell test that the process is still the one with that identity */
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, takes its address first, starts the program, and removes the copy */
@@ -254,7 +260,8 @@ export class PcInstaller {
       }
       const fresh = async () => {
         for (const d of await posixHost.descriptors(at)) {
-          if (d.socket_path === socket && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0 && await posixHost.alive(at, d.pid)) return true;
+          // any live server on this herdr socket, managed or not, on any port: the old one is never started beside it
+          if (d.socket_path === socket && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== restore && await posixHost.alive(at, d.pid)) return true;
         }
         return false;
       };
