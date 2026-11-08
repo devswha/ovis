@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import type { MyPc } from "../account/myPcs.ts";
+import { NEW_PC_MS, type MyPc } from "../account/myPcs.ts";
+import type { PcStatus } from "./pcStatus.ts";
 import type { DashboardPc } from "./dashboard.ts";
 import { dashboardModel, dashboardPcs, relayHost } from "./dashboard.ts";
+
+const NOW = Date.parse("2026-11-08T12:00:00Z");
+const GLOBAL = "wss://relay.ovis.sh";
 
 function pc(server_id: string, state: DashboardPc["state"], relay: string | null = null, last_seen_at: string | null = null): DashboardPc {
   return {
@@ -10,80 +14,150 @@ function pc(server_id: string, state: DashboardPc["state"], relay: string | null
   };
 }
 
-describe("dashboardModel", () => {
-  it("counts each PC state in its dashboard category", () => {
-    const model = dashboardModel([
-      pc("paired", "paired"), pc("approval", "needs-approval"),
-      pc("update", "needs-update"), pc("offline", "offline"),
-    ], { label: "Me" }, "wss://relay.ovis.sh");
-    expect(model.counts).toEqual({ ready: 1, needsYou: 2, offline: 1 });
+/** A PC new in the directory `ago` ms before NOW that this device can add (it has a join route). */
+function fresh(server_id: string, ago: number): DashboardPc {
+  return { ...pc(server_id, "needs-approval"), added_at: new Date(NOW - ago).toISOString(), join: { server_public_key: "k", relay: GLOBAL } };
+}
+
+const model = (pcs: readonly DashboardPc[], status?: ReadonlyMap<string, PcStatus>) =>
+  dashboardModel(pcs, { label: "Me", now: NOW, ...(status ? { status } : {}) }, GLOBAL);
+
+describe("dashboardModel counts and filters", () => {
+  it("counts Needs you as approval, update and offline together, overlapping Offline", () => {
+    const m = model([pc("paired", "paired"), pc("approval", "needs-approval"), pc("update", "needs-update"), pc("offline", "offline")]);
+    expect(m.counts).toEqual({ ready: 1, needsYou: 3, offline: 1, paired: 1 });
+    expect(m.filters.needs).toEqual(["approval", "update", "offline"]);
+    expect(m.filters.offline).toEqual(["offline"]);
   });
 
-  it("groups PCs by relay and orders hubs by descending PC count", () => {
-    const global = "wss://relay.ovis.sh";
-    const regional = "wss://relay-ap.ovis.sh";
-    const model = dashboardModel([
-      pc("c", "paired", regional), pc("a", "paired", global), pc("b", "offline", global),
-    ], { label: "Me" }, global);
-    expect(model.relays).toEqual([
-      { origin: regional, regional: true, pcs: ["c"] },
-      { origin: global, regional: false, pcs: ["a", "b"] },
+  it("derives every count, the attention list and the Needs filter from one membership", () => {
+    const m = model([pc("a", "needs-approval"), pc("b", "offline"), pc("c", "paired"), pc("d", "needs-update"), pc("e", "offline")]);
+    expect(m.counts.needsYou).toBe(m.filters.needs.length);
+    expect(m.counts.ready).toBe(m.filters.ready.length);
+    expect(m.counts.offline).toBe(m.filters.offline.length);
+    expect(m.attention.map(({ server_id }) => server_id).sort()).toEqual([...m.filters.needs].sort());
+    expect(m.filters.all).toEqual(m.rows.map(({ server_id }) => server_id));
+  });
+
+  it("reads 0/4/1 for the preview fleet of four unpaired PCs, one of them offline", () => {
+    const m = model([pc("Studio desktop", "needs-approval"), pc("Work laptop", "needs-approval"), pc("Home server", "offline"), pc("Old MacBook", "needs-approval")]);
+    expect([m.counts.ready, m.counts.needsYou, m.counts.offline]).toEqual([0, 4, 1]);
+  });
+
+  it("returns zero counts, empty filters and no relay groups for an empty fleet", () => {
+    expect(model([])).toMatchObject({
+      counts: { ready: 0, needsYou: 0, offline: 0, paired: 0 },
+      filters: { all: [], ready: [], needs: [], offline: [] },
+      attention: [], relays: [], map: { hubs: [] },
+    });
+  });
+
+  it("asks nothing of an all-ready fleet", () => {
+    const m = model([pc("a", "paired"), pc("b", "paired")]);
+    expect(m.counts).toEqual({ ready: 2, needsYou: 0, offline: 0, paired: 2 });
+    expect(m.attention).toEqual([]);
+  });
+});
+
+describe("dashboardModel provenance", () => {
+  it("says a PC the directory does not list is known to this device alone, and not checked until a check returns", () => {
+    // local mode: myPcs without a directory makes every pairing a "paired" row nobody has vouched for
+    const local = { ...pc("qr", "paired"), listed: false };
+    const [row] = model([local]).rows;
+    expect(row).toMatchObject({ source: "this-device", check: null });
+    expect(model([local], new Map([["qr", { kind: "checking" }]])).rows[0]?.check).toEqual({ kind: "checking" });
+  });
+
+  it("keeps the directory's word for a stale PC that answered this device's check, the answer beside it", () => {
+    const answered: PcStatus = { kind: "answered", route: "relay", relay: GLOBAL, rttMs: 42 };
+    const stale = { ...pc("home", "offline", null, "2026-11-01T00:00:00Z"), paired: true };
+    const m = model([stale], new Map([["home", answered]]));
+    expect(m.rows[0]).toMatchObject({ state: "offline", source: "directory", check: answered });
+    expect([m.counts.offline, m.counts.needsYou, m.counts.ready]).toEqual([1, 1, 0]);
+    expect(m.map.hubs[0]?.nodes[0]).toMatchObject({ seen: "stale", check: answered });
+  });
+
+  it("puts no probe on a PC this device is not paired with", () => {
+    const m = model([pc("join", "needs-approval")], new Map([["join", { kind: "offline", reason: "pc" }]]));
+    expect(m.rows[0]?.check).toBeNull();
+  });
+});
+
+describe("dashboardModel urgency", () => {
+  it("orders attention by nearest Add expiry, then updates, other approvals and offline, names breaking ties", () => {
+    const m = model([
+      pc("z-offline", "offline"), pc("b-approval", "needs-approval"), pc("a-approval", "needs-approval"),
+      pc("update", "needs-update"), fresh("new-late", 2 * 60_000), fresh("new-soon", 8 * 60_000), pc("ready", "paired"),
     ]);
-    expect(model.map.hubs.map((hub) => hub.origin)).toEqual([global, regional]);
+    expect(m.attention.map(({ server_id, reason }) => [server_id, reason])).toEqual([
+      ["new-soon", "needs-approval"], ["new-late", "needs-approval"], ["update", "needs-update"],
+      ["a-approval", "needs-approval"], ["b-approval", "needs-approval"], ["z-offline", "offline"],
+    ]);
+    expect(m.attention[0]?.expiresAt).toBe(NOW + 2 * 60_000);
+    expect(m.attention.find(({ server_id }) => server_id === "a-approval")?.expiresAt).toBeNull();
   });
 
-  it("places a PC without a relay under the default relay", () => {
-    const model = dashboardModel([pc("a", "paired")], { label: "Me" }, "wss://relay.ovis.sh");
-    expect(model.relays).toEqual([{ origin: "wss://relay.ovis.sh", regional: false, pcs: ["a"] }]);
+  it("closes the Add window at exactly ten minutes", () => {
+    const m = model([fresh("closed", NEW_PC_MS), fresh("open", NEW_PC_MS - 1)]);
+    expect(m.attention.map(({ server_id, expiresAt }) => [server_id, expiresAt])).toEqual([["open", NOW + 1], ["closed", null]]);
   });
 
-  it("returns zero counts and no relay groups for an empty list", () => {
-    expect(dashboardModel([], { label: "Me" }, "wss://relay.ovis.sh")).toMatchObject({
-      counts: { ready: 0, needsYou: 0, offline: 0 },
-      relays: [],
-      map: { hubs: [] },
+  it("offers no Add window to a new PC without a join route, and puts a PC without a relay under the default one", () => {
+    const routeless: DashboardPc = { ...pc("routeless", "needs-approval"), added_at: new Date(NOW - 60_000).toISOString() };
+    const m = model([routeless, pc("update", "needs-update")]);
+    expect(m.attention.map(({ server_id, expiresAt }) => [server_id, expiresAt])).toEqual([["update", null], ["routeless", null]]);
+    expect(m.relays).toEqual([{ origin: GLOBAL, regional: false, pcs: ["routeless", "update"] }]);
+  });
+
+  it("orders the table action-required, offline, ready, by name then server id within a group", () => {
+    const twin = (id: string): DashboardPc => ({ ...pc(id, "paired"), name: "Twin" });
+    const m = model([twin("id-b"), pc("Alpha", "paired"), pc("Zed", "offline"), pc("Mid", "needs-update"), twin("id-a"), pc("Beta", "needs-approval")]);
+    expect(m.filters.all).toEqual(["Beta", "Mid", "Zed", "Alpha", "id-a", "id-b"]);
+  });
+
+  it("gives the same order for any input order across a thousand PCs", () => {
+    const states = ["paired", "needs-approval", "offline", "needs-update"] as const;
+    const fleet = Array.from({ length: 1000 }, (_, i) => ({ ...pc(`pc-${String(i).padStart(4, "0")}`, states[i % 4] ?? "paired"), name: `PC ${i % 37}` }));
+    const forward = model(fleet);
+    const backward = model([...fleet].reverse());
+    expect(backward.filters).toEqual(forward.filters);
+    expect(backward.attention).toEqual(forward.attention);
+    expect(forward.counts).toEqual({ ready: 250, needsYou: 750, offline: 250, paired: 250 });
+    const groups = forward.rows.map(({ state }) => (state === "paired" ? 2 : state === "offline" ? 1 : 0));
+    expect(groups).toEqual([...groups].sort((a, b) => a - b));
+  });
+});
+
+describe("dashboardModel relays and map", () => {
+  it("groups PCs by relay, the busiest first, in table order inside each", () => {
+    const regional = "wss://relay-ap.ovis.sh";
+    const m = model([pc("c", "paired", regional), pc("a", "paired", GLOBAL), pc("b", "offline", GLOBAL)]);
+    expect(m.relays).toEqual([
+      { origin: GLOBAL, regional: false, pcs: ["b", "a"] },
+      { origin: regional, regional: true, pcs: ["c"] },
+    ]);
+    expect(m.map.hubs.map((hub) => hub.origin)).toEqual([GLOBAL, regional]);
+  });
+
+  it("marks only configured regional relay origins as regional", () => {
+    const m = model([pc("regional", "paired", "wss://relay-ap.ovis.sh"), pc("self-hosted", "paired", "wss://relay.example.test")]);
+    expect(Object.fromEntries(m.relays.map(({ origin, regional }) => [origin, regional]))).toEqual({
+      "wss://relay-ap.ovis.sh": true,
+      "wss://relay.example.test": false,
     });
   });
 
   it("marks paired, unknown, and offline sightings", () => {
-    const model = dashboardModel([
+    const m = model([
       pc("seen", "paired", null, "2026-11-07T00:00:00Z"),
       pc("never-seen", "paired"),
       pc("old", "offline", null, "2026-11-01T00:00:00Z"),
       pc("approval-seen", "needs-approval", null, "2026-11-07T00:00:00Z"),
       pc("approval-unknown", "needs-approval"),
-    ], { label: "Me" }, "wss://relay.ovis.sh");
-    expect(model.map.hubs[0]?.nodes.map((node) => [node.server_id, node.seen])).toEqual([
-      ["seen", "lately"], ["never-seen", "unknown"], ["old", "stale"],
-      ["approval-seen", "unknown"], ["approval-unknown", "unknown"],
     ]);
-  });
-
-  it("matches the four-PC relay homepage mockup", () => {
-    const regional = "wss://relay-ap.ovis.sh";
-    const global = "wss://relay.ovis.sh";
-    const model = dashboardModel([
-      pc("Desk PC", "paired", regional, "2026-11-07T00:00:00Z"),
-      pc("MacBook", "paired", regional),
-      pc("Mac mini", "needs-approval", regional, "2026-11-07T00:00:00Z"),
-      pc("Home server", "offline", global, "2026-11-01T00:00:00Z"),
-    ], { label: "Me" }, global);
-    expect(model.counts).toEqual({ ready: 2, needsYou: 1, offline: 1 });
-    expect(model.map.hubs.map((hub) => hub.origin)).toEqual([regional, global]);
-    expect(model.map.hubs[0]?.nodes.map(({ server_id, seen }) => [server_id, seen])).toEqual([
-      ["Desk PC", "lately"], ["MacBook", "unknown"], ["Mac mini", "unknown"],
-    ]);
-  });
-
-  it("marks only configured regional relay origins as regional", () => {
-    const model = dashboardModel([
-      pc("regional", "paired", "wss://relay-ap.ovis.sh"),
-      pc("self-hosted", "paired", "wss://relay.example.test"),
-    ], { label: "Me" }, "wss://relay.ovis.sh");
-    expect(model.relays.map(({ origin, regional }) => [origin, regional])).toEqual([
-      ["wss://relay-ap.ovis.sh", true],
-      ["wss://relay.example.test", false],
-    ]);
+    expect(Object.fromEntries(m.map.hubs[0]?.nodes.map((node) => [node.server_id, node.seen]) ?? [])).toEqual({
+      seen: "lately", "never-seen": "unknown", old: "stale", "approval-seen": "unknown", "approval-unknown": "unknown",
+    });
   });
 
   it("names a relay by its host, and an origin that is not a URL as it is", () => {
@@ -93,21 +167,11 @@ describe("dashboardModel", () => {
     // the map, the strip and the table name one origin alike: a default port is the same relay
     expect(relayHost("wss://relay.example:443")).toBe("relay.example");
   });
-
-  it("preserves myPcs order for every PC needing attention", () => {
-    const model = dashboardModel([
-      pc("one", "needs-update"), pc("ready", "paired"), pc("two", "offline"), pc("three", "needs-approval"),
-    ], { label: "Me" }, "wss://relay.ovis.sh");
-    expect(model.attention).toEqual([
-      { server_id: "one", reason: "needs-update" },
-      { server_id: "two", reason: "offline" },
-      { server_id: "three", reason: "needs-approval" },
-    ]);
-  });
 });
 
 describe("dashboardPcs", () => {
   const row = (server_id: string, state: MyPc["state"], extra: Partial<MyPc> = {}): MyPc => ({ server_id, name: server_id, state, last_seen_at: null, added_at: null, listed: false, paired: state === "paired", linked: false, ...extra });
+  const relayOf = (pcs: readonly DashboardPc[]) => Object.fromEntries(pcs.map(({ server_id, relay }) => [server_id, relay]));
 
   it("takes the directory's relay for a PC the account lists, its join route's for one this device is not paired with, and the pairing's for one paired without the account", () => {
     const pcs = dashboardPcs(
@@ -115,9 +179,9 @@ describe("dashboardPcs", () => {
       [{ server_id: "listed", relay: "wss://relay.old.example" }, { server_id: "qr", relay: "wss://relay.example" }],
       [{ server_id: "listed", relay: "wss://relay.ovis.sh" }, { server_id: "joinable", relay: "wss://relay-ap.ovis.sh" }],
     );
-    expect(pcs.map(({ server_id, relay }) => [server_id, relay])).toEqual([["listed", "wss://relay.ovis.sh"], ["joinable", "wss://relay-ap.ovis.sh"], ["qr", "wss://relay.example"]]);
+    expect(relayOf(pcs)).toEqual({ listed: "wss://relay.ovis.sh", joinable: "wss://relay-ap.ovis.sh", qr: "wss://relay.example" });
     // the rows keep everything myPcs said of them
-    expect(pcs[0]).toMatchObject({ state: "paired", listed: true, paired: true });
+    expect(pcs.find(({ server_id }) => server_id === "listed")).toMatchObject({ state: "paired", listed: true, paired: true });
   });
 
   it("falls back from a directory entry without a relay to the pairing's, and to null when neither knows one", () => {
@@ -126,9 +190,9 @@ describe("dashboardPcs", () => {
       [{ server_id: "paired", relay: "wss://relay.example" }],
       [{ server_id: "paired", relay: null }, { server_id: "unknown", relay: null }],
     );
-    expect(pcs.map(({ relay }) => relay)).toEqual(["wss://relay.example", null]);
+    expect(relayOf(pcs)).toEqual({ paired: "wss://relay.example", unknown: null });
     // the model then puts the unknown one under the shell's default relay
-    expect(dashboardModel(pcs, { label: "Me" }, "wss://relay.ovis.sh").relays.map(({ origin, pcs: ids }) => [origin, ids])).toEqual([["wss://relay.example", ["paired"]], ["wss://relay.ovis.sh", ["unknown"]]]);
+    expect(model(pcs).relays.map(({ origin, pcs: ids }) => [origin, ids])).toEqual([["wss://relay.example", ["paired"]], ["wss://relay.ovis.sh", ["unknown"]]]);
   });
 
   it("works without a directory: every saved pairing is a local PC on its own relay", () => {

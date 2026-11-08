@@ -1,7 +1,38 @@
-import type { MyPc, MyPcState } from "../account/myPcs.ts";
+import { newPcs, NEW_PC_MS, type MyPc, type MyPcState } from "../account/myPcs.ts";
+import type { PcStatus } from "./pcStatus.ts";
 import { REGIONAL_RELAYS } from "../../../shared/relay-regions.ts";
 
 export type DashboardPc = MyPc & { relay: string | null };
+
+/** The PCs table's filters; the strip's Ready, Needs you and Offline cells select the same three. */
+export type DashboardFilter = "all" | "ready" | "needs" | "offline";
+
+/**
+ * Needs you: whatever the owner has to act on, an approval, an update or a PC gone offline. It
+ * overlaps Offline on purpose, so the counts are never added up as a partition.
+ */
+function needsYou(state: MyPcState): boolean {
+  switch (state) {
+    case "needs-approval": case "needs-update": case "offline": return true;
+    case "paired": return false;
+  }
+}
+
+function inFilter(state: MyPcState, filter: DashboardFilter): boolean {
+  switch (filter) {
+    case "all": return true;
+    case "ready": return state === "paired";
+    case "needs": return needsYou(state);
+    case "offline": return state === "offline";
+  }
+}
+
+/** The table's triage groups: what needs an action, then what is offline, then what is ready. */
+const TABLE_GROUP: Record<MyPcState, number> = { "needs-approval": 0, "needs-update": 0, offline: 1, paired: 2 };
+
+const byId = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+const byNameThenId = (a: MyPc, b: MyPc): number => a.name.localeCompare(b.name) || byId(a.server_id, b.server_id);
+const byTableOrder = (a: MyPc, b: MyPc): number => TABLE_GROUP[a.state] - TABLE_GROUP[b.state] || byNameThenId(a, b);
 
 /**
  * The PCs with the relay each one goes through: the account directory's `relay` for a PC it lists
@@ -20,47 +51,67 @@ export function relayHost(origin: string): string {
   try { return new URL(origin).host; } catch { return origin; }
 }
 
-export function dashboardModel(pcs: readonly DashboardPc[], me: { label: string }, defaultRelay: string) {
-  const relays = new Map<string, string[]>();
-  const hubs = new Map<string, DashboardPc[]>();
-  const counts = { ready: 0, needsYou: 0, offline: 0 };
-  const attention: { server_id: string; reason: MyPcState }[] = [];
+/** This device as the dashboard sees from it: its name, its clock, and how each saved PC answered its own latest check. */
+export interface DashboardViewer {
+  readonly label: string;
+  /** defaults to the wall clock; Add windows close against it */
+  readonly now?: number;
+  readonly status?: ReadonlyMap<string, PcStatus>;
+}
 
-  for (const pc of pcs) {
-    if (pc.state === "paired") counts.ready++;
-    else if (pc.state === "offline") counts.offline++;
-    else counts.needsYou++;
+/** Attention order: fresh Add windows first (nearest expiry first), then updates, other approvals, offline. */
+const ATTENTION_RANK: Record<Exclude<MyPcState, "paired">, number> = { "needs-update": 1, "needs-approval": 2, offline: 3 };
 
-    if (pc.state !== "paired") attention.push({ server_id: pc.server_id, reason: pc.state });
+/**
+ * Everything the dashboard shows, from one membership: the counts are the filters' lengths and the
+ * attention list is the Needs filter in urgency order, so the strip, the filter and the list cannot
+ * disagree. Two facts stay apart on every row: `state`/`source` is what the account directory says
+ * (or, for a PC it does not list, only that this device holds a pairing), and `check` is this
+ * device's own probe (pcStatus.ts), null until one ran; a probe never stands in for the directory.
+ */
+export function dashboardModel(pcs: readonly DashboardPc[], me: DashboardViewer, defaultRelay: string) {
+  const now = me.now ?? Date.now();
+  const expiries = new Map(newPcs(pcs, now).flatMap((pc) => pc.added_at === null ? [] : [[pc.server_id, Date.parse(pc.added_at) + NEW_PC_MS] as const]));
+  const rows = [...pcs].sort(byTableOrder).map((pc) => ({
+    ...pc,
+    origin: pc.relay ?? defaultRelay,
+    source: pc.listed ? "directory" as const : "this-device" as const,
+    check: (pc.paired ? me.status?.get(pc.server_id) : undefined) ?? null,
+  }));
 
-    const origin = pc.relay ?? defaultRelay;
-    const relayPcs = relays.get(origin) ?? [];
-    relayPcs.push(pc.server_id);
-    relays.set(origin, relayPcs);
+  const ids = (filter: DashboardFilter): string[] => rows.filter((pc) => inFilter(pc.state, filter)).map((pc) => pc.server_id);
+  const filters: Record<DashboardFilter, readonly string[]> = { all: ids("all"), ready: ids("ready"), needs: ids("needs"), offline: ids("offline") };
 
-    const hubPcs = hubs.get(origin) ?? [];
-    hubPcs.push(pc);
-    hubs.set(origin, hubPcs);
-  }
+  const attention = rows
+    .flatMap((pc) => pc.state === "paired" ? [] : [{ pc, reason: pc.state, expiresAt: expiries.get(pc.server_id) ?? null }])
+    .sort((a, b) => (a.expiresAt === null ? ATTENTION_RANK[a.reason] : 0) - (b.expiresAt === null ? ATTENTION_RANK[b.reason] : 0)
+      || (a.expiresAt ?? 0) - (b.expiresAt ?? 0)
+      || byNameThenId(a.pc, b.pc))
+    .map(({ pc, reason, expiresAt }) => ({ server_id: pc.server_id, reason, expiresAt }));
+
+  const hubs = new Map<string, typeof rows>();
+  for (const row of rows) hubs.set(row.origin, [...(hubs.get(row.origin) ?? []), row]);
+  const busiestFirst = [...hubs].sort(([a, pcsA], [b, pcsB]) => pcsB.length - pcsA.length || a.localeCompare(b));
 
   return {
-    counts,
-    relays: [...relays].map(([origin, ids]) => ({ origin, regional: REGIONAL_RELAYS.includes(origin), pcs: ids })),
+    counts: { ready: filters.ready.length, needsYou: filters.needs.length, offline: filters.offline.length, paired: rows.filter((pc) => pc.paired).length },
+    filters,
+    rows,
     attention,
+    relays: busiestFirst.map(([origin, members]) => ({ origin, regional: REGIONAL_RELAYS.includes(origin), pcs: members.map((pc) => pc.server_id) })),
     map: {
       me: { label: me.label },
-      hubs: [...hubs]
-        .sort(([a, pcsA], [b, pcsB]) => pcsB.length - pcsA.length || a.localeCompare(b))
-        .map(([origin, members]) => ({
-          origin,
-          nodes: members.map((pc) => ({
-            server_id: pc.server_id,
-            name: pc.name,
-            state: pc.state,
-            seen: pc.state === "offline" ? "stale" as const
-              : pc.state === "paired" && pc.last_seen_at !== null ? "lately" as const : "unknown" as const,
-          })),
+      hubs: busiestFirst.map(([origin, members]) => ({
+        origin,
+        nodes: members.map((pc) => ({
+          server_id: pc.server_id,
+          name: pc.name,
+          state: pc.state,
+          seen: pc.state === "offline" ? "stale" as const
+            : pc.state === "paired" && pc.last_seen_at !== null ? "lately" as const : "unknown" as const,
+          check: pc.check,
         })),
+      })),
     },
   };
 }

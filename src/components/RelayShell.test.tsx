@@ -186,7 +186,7 @@ describe("the dashboard", () => {
     expect(html).toContain("3 PCs in your account");
     expect(html).not.toContain("4 PCs in your account");
     const counts = [...html.matchAll(/<li><span class="relay-dash-dot" data-pc-state="[^"]+" aria-hidden="true"><\/span>([^<]+)<b>(\d+)<\/b>/g)].map(([, label, n]) => [label, Number(n)]);
-    expect(counts).toEqual([["Ready", 2], ["Needs you", 1], ["Offline", 1]]);
+    expect(counts).toEqual([["Ready", 2], ["Needs you", 2], ["Offline", 1]]);
     const relays = [...html.matchAll(/<code class="relay-dash-host">([^<]+)<\/code><span>([^<]+)<\/span><span>([^<]+)<\/span>/g)].map(([, host, n, kind]) => [host, n, kind]);
     expect(relays).toEqual([["relay-ap.ovis.sh", "3 PCs", "regional"], ["relay.ovis.sh", "1 PC", "global"]]);
     expect(html).toContain("Needs attention · 2");
