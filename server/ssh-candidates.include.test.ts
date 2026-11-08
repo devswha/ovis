@@ -127,18 +127,6 @@ it.skipIf(!wildcardIncludesRead)("never lists a folder swapped for a link out of
   } finally { restore(); }
 });
 
-// off Linux the opened file is checked by its path again, so a file swapped after it was opened is left unread instead
-it.skipIf(process.platform !== "linux" || !wildcardIncludesRead)("never reads a file swapped for a link out of the home folder after it was checked", async () => {
-  const { home, ssh, outside } = homeAndOutside({ "conf.d/x.conf": "Host own\n", config: "Include conf.d/*.conf\n" });
-  writeFileSync(join(outside, "secret"), "Host leaked\n");
-  const file = join(ssh, "conf.d", "x.conf");
-  const restore = swapAfterFirstLook(file, () => { renameSync(file, `${file}.old`); symlinkSync(join(outside, "secret"), file); });
-  try {
-    const candidates = await sshCandidates({ sshDir: ssh, home, readStatus: async () => null });
-    expect(candidates.map((candidate) => candidate.name)).toEqual(["own"]);
-  } finally { restore(); }
-});
-
 it("claims nothing for a later host once the folder entries every Include looks at pass their budget, matching or not", async () => {
   const files: Record<string, string> = { config: "Include conf.d/*.conf\nInclude conf.d/*.conf\nHost box\n  HostName 100.64.0.1\n" };
   for (let index = 0; index < 600; index++) files[`conf.d/n${String(index).padStart(3, "0")}`] = "";

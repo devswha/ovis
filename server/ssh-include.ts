@@ -42,8 +42,11 @@ type Budget = { files: number; bytes: number; entries: number; steps: number };
 type Listing = string[] | "unread" | null;
 /** something open: a FileHandle, or a descriptor openat answered */
 type Handle = { readonly fd: number; close: () => Promise<void> };
-/** a path, and where a listing reached it from: the folder it held open and the rest of the path below it */
-type Entry = { path: string; base?: { fd: number; rest: string } };
+/**
+ * a path, and where a listing reached it from: the folder it held open and the rest of the path below it; `listed` when
+ * its last name came from a listing, so it was there when listed
+ */
+type Entry = { path: string; base?: { fd: number; rest: string }; listed?: true };
 const [fstatOf, readOf, closeOf] = [promisify(fstat), promisify(read), promisify(close)];
 
 /** a regular file's text when it is at most `cap` bytes, read from the open descriptor; "folder" for one; null for anything else */
@@ -84,19 +87,19 @@ async function openedInside(fd: number, path: string, roots: readonly string[]):
 
 /**
  * An entry opened, links followed as ssh does, relative to the folder a listing held when it has one, when what was
- * opened is inside `roots`; null when nothing is there
+ * opened is inside `roots`; null when nothing is there, unless it was listed: one gone since may have been swapped away
  */
-async function openInside({ path, base }: Entry, roots: readonly string[], flags: number): Promise<Handle | "refused" | null> {
+async function openInside({ path, base, listed }: Entry, roots: readonly string[], flags: number): Promise<Handle | "refused" | null> {
   const stream = streamListing();
   let handle: Handle;
   if (base !== undefined && stream !== null) {
     const fd = stream.openAt(base.fd, base.rest, flags);
-    if (fd < 0) return -fd === os.errno.ENOENT || -fd === os.errno.ENOTDIR ? null : "refused";
+    if (fd < 0) return (-fd === os.errno.ENOENT && listed !== true) || -fd === os.errno.ENOTDIR ? null : "refused";
     handle = { fd, close: () => closeOf(fd) };
   } else {
     try { handle = await open(path, flags); } catch (error) {
       // only a path that is not there is nothing, as for ssh; one it could not open (EACCES, EMFILE, ELOOP) is unread
-      return error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR") ? null : "refused";
+      return error instanceof Error && "code" in error && ((error.code === "ENOENT" && listed !== true) || error.code === "ENOTDIR") ? null : "refused";
     }
   }
   if (await openedInside(handle.fd, path, roots).catch(() => false)) return handle;
@@ -242,7 +245,7 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
             for (const name of names ?? []) {
               const matched = matchComponent(component.tokens, name, budget);
               if (matched === null || (matched && next.length >= budget.files)) { scanCut = true; break; }
-              if (matched) next.push({ path: `${dir.path}${sep}${name}`, ...(folder ? { base: { fd: folder.fd, rest: name } } : {}) });
+              if (matched) next.push({ path: `${dir.path}${sep}${name}`, listed: true, ...(folder ? { base: { fd: folder.fd, rest: name } } : {}) });
             }
           }
           if ("tokens" in component) {
@@ -254,7 +257,8 @@ export function includer(sshDir: string, home: string): (pattern: string) => Pro
         // ssh reads the files glob(3) returns, sorted by their spelling's bytes (strcmp)
         paths = level.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
       }
-      const byPath = first >= 0 && descriptorListing() === null && streamListing() === null;
+      // without openat, what a listing matched is opened by its path, which a swap can redirect: names only
+      const byPath = first >= 0 && streamListing() === null;
       const texts: Included[] = [];
       for (const entry of paths) {
         if (budget.files <= 0 || budget.bytes <= 0) { truncated = true; break; }

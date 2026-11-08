@@ -3,8 +3,9 @@
  * glibc's getdents64 is not there (macOS, a Linux with musl). Each record is copied out at the platform's struct dirent
  * layout and checked before its name is used; the listing stops at the folder-entry budget, so a huge folder is never
  * read whole. The same libc (glibc's too) opens what a listing matched relative to the folder still held (openat), and
- * names what a descriptor holds on macOS. Like getdents64 it is called synchronously through bun:ffi, so a stalled
- * network mount blocks the event loop until it answers.
+ * names what a descriptor holds on macOS. Like getdents64 every call is synchronous through bun:ffi and cannot be cut
+ * short, so a folder on a stalled network mount (an NFS or SMB home) blocks the server's event loop, every request with
+ * it, until the mount answers, while the SSH list is built.
  */
 import { dlopen, FFIType, read, toArrayBuffer, type Pointer } from "bun:ffi";
 import { constants } from "node:fs";

@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test";
 import { ptr } from "bun:ffi";
-import { mkdirSync, readlinkSync, renameSync, symlinkSync } from "node:fs";
+import { mkdirSync, readlinkSync, renameSync, symlinkSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { sshCandidates } from "./ssh-candidates.ts";
@@ -55,6 +55,37 @@ it.skipIf(windows)("reads what a listing matched from the folder it listed, even
     return record;
   } };
   expect(await rowsWith(swapping, dir)).toEqual(fromFile);
+});
+
+it.skipIf(windows)("leaves an Include unread when a file it listed is gone before it is opened", async () => {
+  const dir = box({ "conf.d/x.conf": "Host box\n  HostName 100.64.0.2\n" });
+  const removing: DirStream = { ...calls(), openAt: (at, rest, flags) => {
+    if (rest === "x.conf") unlinkSync(join(dir, "conf.d", "x.conf"));
+    return calls().openAt(at, rest, flags);
+  } };
+  expect(await rowsWith(removing, dir)).toEqual(unread);
+});
+
+it.skipIf(windows)("never reads a file swapped for a link out of the home folder after it was listed, just before it is opened", async () => {
+  const home = sshDir({ ".ssh/conf.d/x.conf": "Host own\n", ".ssh/config": "Include conf.d/*.conf\n" });
+  const outside = sshDir({ secret: "Host leaked\n" });
+  const file = join(home, ".ssh", "conf.d", "x.conf");
+  let swaps = 0;
+  const swapping: DirStream = { ...calls(), openAt: (at, rest, flags) => {
+    if (rest === "x.conf") { swaps++; renameSync(file, `${file}.old`); symlinkSync(join(outside, "secret"), file); }
+    return calls().openAt(at, rest, flags);
+  } };
+  expect(await rowsWith(swapping, home, join(home, ".ssh"))).toEqual(claimed);
+  expect(swaps).toBe(1);
+});
+
+it.skipIf(process.platform !== "linux")("claims no PC from a listing whose matches are opened by path, without openat", async () => {
+  Object.assign(includeTestOnly, { dirStream: null, platform: "linux" });
+  try {
+    const dir = box({ "conf.d/x.conf": "Host box\n  HostName 100.64.0.2\n" });
+    const rows = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
+    expect(rows.map((candidate) => [candidate.name, candidate.tailnet])).toEqual(unread);
+  } finally { for (const key of ["dirStream", "platform"] as const) delete includeTestOnly[key]; }
 });
 
 it.skipIf(windows)("leaves an Include unread when the kernel names the opened folder outside home", async () => {
