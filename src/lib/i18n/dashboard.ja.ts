@@ -81,4 +81,13 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Not checked": "未確認",
   "Key ID": "キー ID",
   "Version": "バージョン",
+  "Relays in use": "使用中のリレー",
+  "update to {version}": "{version} に更新",
+  "offline since {n} min": "{n} 分前からオフライン",
+  "offline since {n} h": "{n} 時間前からオフライン",
+  "offline since {when}": "{when} からオフライン",
+  "View all {count}": "すべて表示 ({count})",
+  "No PCs yet": "まだ PC がありません",
+  "1 relay": "リレー 1 か所",
+  "{count} relays": "リレー {count} か所",
 };

@@ -81,4 +81,13 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "Not checked": "未检查",
   "Key ID": "密钥 ID",
   "Version": "版本",
+  "Relays in use": "使用中的中继",
+  "update to {version}": "更新到 {version}",
+  "offline since {n} min": "已离线 {n} 分钟",
+  "offline since {n} h": "已离线 {n} 小时",
+  "offline since {when}": "自 {when} 起离线",
+  "View all {count}": "查看全部 {count} 台",
+  "No PCs yet": "还没有电脑",
+  "1 relay": "1 个中继",
+  "{count} relays": "{count} 个中继",
 };

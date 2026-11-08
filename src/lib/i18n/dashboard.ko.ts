@@ -81,4 +81,13 @@ export const DASHBOARD_KO: Record<string, string> = {
   "Not checked": "확인 안 됨",
   "Key ID": "키 ID",
   "Version": "버전",
+  "Relays in use": "사용 중인 릴레이",
+  "update to {version}": "{version} 버전으로 업데이트",
+  "offline since {n} min": "{n}분 전부터 오프라인",
+  "offline since {n} h": "{n}시간 전부터 오프라인",
+  "offline since {when}": "{when}부터 오프라인",
+  "View all {count}": "{count}대 모두 보기",
+  "No PCs yet": "아직 PC가 없습니다",
+  "1 relay": "릴레이 1곳",
+  "{count} relays": "릴레이 {count}곳",
 };
