@@ -42,8 +42,9 @@ describe("running herdr discovery", () => {
 
   it("finds a listening herdr socket of this account by /proc/net/unix, any program and any XDG root, only outside a sandbox", async () => {
     const f = fixture();
-    // a desktop herdr under an XDG root outside HOME, served by a program not named herdr: no process line names it
-    const outside = mkdtempSync(join(tmpdir(), "herdr-discovery-xdg-"));
+    // a desktop herdr under an XDG root outside HOME (its path holding a space), served by a program not named herdr: no
+    // process line names it
+    const outside = mkdtempSync(join(tmpdir(), "herdr discovery xdg-"));
     roots.push(outside);
     const socket = join(outside, "herdr/sessions/work/herdr.sock");
     listening(socket);

@@ -26,6 +26,8 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const [job, setJob] = useState<SetupJob | null>(null);
   const mounted = useRef(true);
   const jobRef = useRef(job); jobRef.current = job;
+  // the identity the form shows now: an answer sent for another one never offers its choices here
+  const identityRef = useRef(""); identityRef.current = [destination.trim(), port, session].join("\0");
   const [secret, setSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -73,8 +75,10 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     if (choice && machine?.herdr_profile_id) choice = { ...choice, session: machine.target?.session };
     // a PC saved in herdr keeps its catalog name, which the server does not read from here
     if (choice) { if ("session" in choice) setSession(choice.session ?? ""); setHerdrSocket(choice.herdr_socket ?? ""); setStartNewHerdr(choice.start_new_herdr === true); }
+    const sentFor = [destination.trim(), port, choice && "session" in choice ? choice.session ?? "" : session].join("\0");
     try { const next = await startMachineSetup({ destination: destination.trim(), ...(name.trim() && !machine?.herdr_profile_id ? { name: name.trim() } : {}), ...(port ? { port: Number(port) } : {}), ...(key.trim() ? { identity_file: key.trim() } : {}), ...(session.trim() ? { session: session.trim() } : {}), ...(herdrSocket ? { herdr_socket: herdrSocket } : {}), ...(startNewHerdr ? { start_new_herdr: true } : {}), ...choice, ...(machine ? { machine_id: machine.id } : {}), ...(needsBridgeUpdate || updateRemote ? { update_remote: true } : {}) });
-      if (mounted.current) setJob(next);
+      // the address, port or session edited while it was in flight: that PC's sessions are never offered for this one
+      if (mounted.current) setJob(next.action_required === "choose_herdr" && sentFor !== identityRef.current ? { ...next, action_required: null, found_herdr_sessions: undefined } : next);
       else if (!["connected", "failed", "cancelled"].includes(next.phase) && (next.windows_startup || !["installing", "starting"].includes(next.phase))) await answerMachineSetup(next.id, { action: "cancel" });
     }
     catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : String(e)); }

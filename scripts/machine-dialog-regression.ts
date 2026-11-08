@@ -160,6 +160,37 @@ try {
             await page.unroute("**/api/machines/setup**");
           }
           console.log(`PASS ${width}px: failed choices lose consent and socket on address, port or session edits`);
+          {
+            // an address edited while the first request is still in flight: its answer never offers that PC's sessions here
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            const sent: SetupRequest[] = [];
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                const target = route.request().postDataJSON() as SetupRequest;
+                sent.push(target);
+                if (sent.length === 1) await held;
+                job = { id: "inflight", machine_id: "fixture", target, phase: "failed", step: sent.length === 1 ? "Choose a session" : "Attempt failed",
+                  action_required: sent.length === 1 ? "choose_herdr" : null,
+                  found_herdr_sessions: [{ socket_path: "/home/fixture/desktop/herdr/sessions/work/herdr.sock", session: "work", label: "work" }],
+                  installations: [], challenge: null, error: null, ssh_output: null };
+              }
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await page.reload(); await destination.fill("fixture-only");
+            const requested = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/api/machines/setup");
+            const answered = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/machines/setup");
+            await destination.press("Enter");
+            await requested;
+            await destination.fill("another-pc");
+            release();
+            await answered;
+            await dialog.getByText("Choose a session", { exact: true }).waitFor();
+            assert.equal(await dialog.getByRole("button", { name: "Use work", exact: true }).count(), 0, "in-flight edit: no sessions of the PC it was sent for");
+            assert.equal(await dialog.getByRole("button", { name: "Start a new herdr here", exact: true }).count(), 0, "in-flight edit: no new-start choice for the edited PC");
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: an address edited in flight never receives the choices of the PC it was sent for`);
           for (const decision of ["early_close", "cancel", "close", "start_headless"] as const) {
             const actions: unknown[] = [];
             await page.route("**/api/machines/setup**", async (route) => {

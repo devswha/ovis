@@ -63,7 +63,8 @@ function candidates(host: HerdrDiscoveryHost): string[] {
       for (const line of readFileSync(join(host.procRoot, "net/unix"), "utf8").split("\n").slice(1)) {
         const fields = line.trim().split(/\s+/);
         // Flags 00010000: a listening socket (__SO_ACCEPTCON)
-        const path = fields[7];
+        // the path is the rest of the line: it may hold spaces
+        const path = fields.slice(7).join(" ");
         if (fields[3] === "00010000" && path?.startsWith("/") && path.endsWith("/herdr.sock")) paths.push(path);
       }
     } catch { /* no /proc/net/unix: the roots and processes above are all there is */ }
@@ -79,6 +80,12 @@ function passwdHome(uid: number | undefined): string | undefined {
       if (fields.length >= 7 && Number(fields[2]) === uid && fields[2] !== "") return fields[5];
     }
   } catch { /* no /etc/passwd */ }
+  // an account from LDAP or SSSD is not in /etc/passwd: ask NSS
+  try {
+    const entry = Bun.spawnSync(["getent", "passwd", String(uid)], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const fields = entry.stdout.toString().trim().split(":");
+    if (entry.exitCode === 0 && fields.length >= 7 && Number(fields[2]) === uid) return fields[5];
+  } catch { /* no getent (macOS): discovery stays confined to HOME and its XDG root */ }
   return undefined;
 }
 
