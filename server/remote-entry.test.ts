@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { join as winJoin } from "node:path/win32";
@@ -142,6 +142,26 @@ describe("remote entry startup lock", () => {
     expect(JSON.parse(readFileSync(resultFile, "utf8"))).toEqual({ code: "herdr_session_gone", sessions: [] });
     expect(result.output).not.toContain(join(home, "missing-herdr"));
   }, 60_000);
+
+  it.each(["symlink", "parent symlink", "outside", "file"])("refuses a chosen %s before any bridge connection", async (kind) => {
+    const actual = join(home, kind === "outside" ? "other" : "config/herdr", "herdr.sock");
+    mkdirSync(dirname(actual), { recursive: true });
+    let connections = 0;
+    const listener = kind === "file" ? undefined : Bun.listen({ unix: actual, socket: { open(socket) { connections++; socket.end(); }, data() {} } });
+    if (!listener) writeFileSync(actual, "not a socket");
+    let selected = actual;
+    if (kind === "symlink") { selected = join(home, "config/herdr/sessions/link/herdr.sock"); mkdirSync(dirname(selected), { recursive: true }); symlinkSync(actual, selected); }
+    if (kind === "parent symlink") { symlinkSync(dirname(actual), join(home, "alias")); selected = join(home, "alias/herdr.sock"); }
+    const resultFile = join(home, "refused.result");
+    try {
+      const result = await start(undefined, { HERDR_REMOTE_SOCKET: selected, HERDR_REMOTE_RESULT: resultFile });
+      expect(result.code).toBe(2);
+      expect(existsSync(resultFile)).toBe(true);
+      expect(result.output).not.toContain(join(home, "missing-herdr"));
+      // Only the explicit rejection may be reported; a ping to the untrusted target already violates the boundary.
+      if (kind === "outside" || kind === "file") expect(connections).toBe(0);
+    } finally { listener?.stop(true); }
+  });
 
   it("reclaims a startup lock whose PID another process now holds", async () => {
     // regression (fails on main, which waited for any live PID): a reused PID is not a starter

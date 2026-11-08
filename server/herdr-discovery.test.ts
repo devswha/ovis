@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { discoverHerdrSessions } from "./herdr-discovery.ts";
+import { discoverHerdrSessions, parseFoundHerdrSessions } from "./herdr-discovery.ts";
 
 const roots: string[] = [];
 const listeners: ReturnType<typeof Bun.listen>[] = [];
@@ -40,7 +40,7 @@ describe("running herdr discovery", () => {
     expect(await discoverHerdrSessions(f)).toEqual([]);
   });
 
-  it("finds a listening herdr socket of this account by /proc/net/unix, any program and any XDG root, only outside a sandbox", async () => {
+  it("confines proc unix candidates even when HOME is the account home", async () => {
     const f = fixture();
     // a desktop herdr under an XDG root outside HOME (its path holding a space), served by a program not named herdr: no
     // process line names it
@@ -53,9 +53,70 @@ describe("running herdr discovery", () => {
 0000000000000000: 00000002 00000000 00010000 0001 01 4242 ${socket}
 0000000000000000: 00000002 00000000 00000000 0001 03 4243 ${join(outside, "other/herdr.sock")}
 `);
-    expect(await discoverHerdrSessions({ ...f, accountHome: f.home })).toEqual([{ socket_path: socket, session: "work", label: "work" }]);
-    // a sandbox HOME never reaches it
-    expect(await discoverHerdrSessions({ ...f, accountHome: "/home/someone-else" })).toEqual([]);
+    expect(await discoverHerdrSessions(f)).toEqual([]);
+    // An explicit XDG root authorizes only its herdr directory, including paths containing spaces.
+    expect(await discoverHerdrSessions({ ...f, xdg: outside })).toEqual([{ socket_path: socket, session: "work", label: "work" }]);
+    expect(await discoverHerdrSessions({ ...f, home: join(f.home, "sandbox") })).toEqual([]);
+  });
+
+  it("keeps configured sessions when proc is unavailable", async () => {
+    const f = fixture();
+    const socket = join(f.home, ".config/herdr/herdr.sock"); listening(socket);
+    expect(await discoverHerdrSessions({ ...f, procRoot: join(f.home, "missing") })).toEqual([{ socket_path: socket, label: "Default session" }]);
+  });
+
+  it("never offers socket or parent symlinks even inside an allowed root", async () => {
+    const f = fixture();
+    const actual = join(f.home, ".config/herdr/actual.sock"); listening(actual);
+    symlinkSync(actual, join(f.home, ".config/herdr/herdr.sock"));
+    const named = join(f.home, ".config/herdr/sessions/real/herdr.sock"); listening(named);
+    symlinkSync(dirname(named), join(f.home, ".config/herdr/sessions/alias"));
+    const found = await discoverHerdrSessions(f);
+    expect(found).toEqual([{ socket_path: named, session: "real", label: "real" }]);
+    expect(parseFoundHerdrSessions(found)).toEqual(found);
+  });
+
+  it("accepts only a server process with matching HOME as authority for desktop XDG", async () => {
+    const f = fixture(), outside = fixture();
+    const socket = join(outside.home, "herdr/herdr.sock"); listening(socket);
+    mkdirSync(join(f.procRoot, "100"));
+    writeFileSync(join(f.procRoot, "100/cmdline"), "/usr/bin/herdr-real\0server\0");
+    writeFileSync(join(f.procRoot, "100/environ"), `HOME=${f.home}\0XDG_CONFIG_HOME=${outside.home}\0`);
+    expect(await discoverHerdrSessions(f)).toEqual([{ socket_path: socket, label: "Default session" }]);
+    writeFileSync(join(f.procRoot, "100/environ"), `HOME=${outside.home}\0XDG_CONFIG_HOME=${outside.home}\0`);
+    expect(await discoverHerdrSessions(f)).toEqual([]);
+  });
+
+  it("preserves whitespace in macOS process HOME and XDG values", async () => {
+    const f = fixture();
+    const home = join(f.home, "My Home"), xdg = join(f.home, "My Config");
+    mkdirSync(home);
+    const socket = join(xdg, "herdr/sessions/work/herdr.sock"); listening(socket);
+    const processList = Bun.spawn([process.execPath, "-e", `console.log(${JSON.stringify(`/usr/local/bin/herdr-real --session work server HOME=${home} XDG_CONFIG_HOME=${xdg} USER=fixture`)})`], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const ps = spyOn(Bun, "spawn").mockReturnValue(processList);
+    try { expect(await discoverHerdrSessions({ ...f, home, platform: "darwin" })).toEqual([{ socket_path: socket, session: "work", label: "work" }]); }
+    finally { ps.mockRestore(); }
+  });
+
+  it("caps discovery at 256 candidates and probes them together", async () => {
+    const f = fixture();
+    for (let i = 0; i < 260; i++) listening(join(f.home, `.config/herdr/sessions/s${i}/herdr.sock`));
+    const release = Promise.withResolvers<boolean>();
+    let calls = 0;
+    const discovery = discoverHerdrSessions({ ...f, probe: () => { calls++; if (calls === 256) release.resolve(true); return release.promise; } });
+    const deadline = setTimeout(() => release.reject(new Error(`only ${calls} probes started; expected 256 in parallel`)), 1500);
+    try { expect(await discovery).toHaveLength(256); expect(calls).toBe(256); }
+    finally { clearTimeout(deadline); release.resolve(false); }
+  });
+
+  it("times out an unsettled probe without losing another live session", async () => {
+    const f = fixture();
+    const stalled = join(f.home, ".config/herdr/herdr.sock"), live = join(f.home, ".config/herdr/sessions/work/herdr.sock");
+    listening(stalled); listening(live);
+    const discovery = discoverHerdrSessions({ ...f, probe: (socket) => socket === stalled ? new Promise(() => {}) : Promise.resolve(true) });
+    let deadline: ReturnType<typeof setTimeout>;
+    try { expect(await Promise.race([discovery, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("discovery never bounded the probe")), 2500); })])).toEqual([{ socket_path: live, session: "work", label: "work" }]); }
+    finally { clearTimeout(deadline!); }
   });
 
   it("rejects sockets owned by another uid even in the inherited XDG root", async () => {

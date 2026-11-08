@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { delimiter, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { discoverHerdrSessions, validHerdrSocket } from "./herdr-discovery.ts";
+import { discoverHerdrSessions, validChosenHerdrSocket, validHerdrSocket } from "./herdr-discovery.ts";
 
 process.env["OVIS_REMOTE"] = "1";
 const windows = process.platform === "win32";
@@ -44,6 +44,15 @@ function staleWindowsMarker(path: string): boolean {
 const descriptor = descriptorPath();
 mkdirSync(dirname(descriptor), { recursive: true, mode: 0o700 });
 async function startBridge(): Promise<void> {
+const report = (code: "herdr_sessions_found" | "herdr_session_gone", sessions: Awaited<ReturnType<typeof discoverHerdrSessions>>) => {
+  const result = JSON.stringify({ code, sessions });
+  const resultPath = process.env["HERDR_REMOTE_RESULT"];
+  if (resultPath) { writeFileSync(resultPath + ".tmp", result, { mode: 0o600 }); renameSync(resultPath + ".tmp", resultPath); }
+  console.error(code === "herdr_session_gone" ? "The chosen herdr session is no longer running or cannot be used safely. Choose a running session on this PC again." : "A herdr session is already running on this PC. Choose it or start a new one.");
+  process.exitCode = 2;
+};
+// Validate before even pinging it or accepting an existing bridge descriptor for it.
+if (chosenSocket && !await validChosenHerdrSocket(chosenSocket)) return report("herdr_session_gone", []);
 if (windows) rmSync(windowsStartupStatus(dirname(descriptor), session), { force: true });
 // the lock records its owner's birth: a PID that now belongs to another process does not block this start
 const lock = acquireOwnerDirectory(descriptor + ".lock", { running: "Another bridge is starting; retry shortly", starting: "Another bridge is starting; retry shortly" });
@@ -59,14 +68,6 @@ try {
     // leaves the socket file, and a refused connection says nobody listens on it
     const socket = process.env["HERDR_SOCKET"]!;
     if (existsSync(socket) && !(windows ? staleWindowsMarker(socket) : await refusedSocket(socket))) throw error;
-    // what setup reads back to ask the owner (a choice on the card), instead of starting a herdr nobody chose
-    const report = (code: "herdr_sessions_found" | "herdr_session_gone", sessions: Awaited<ReturnType<typeof discoverHerdrSessions>>) => {
-      const result = JSON.stringify({ code, sessions });
-      const resultPath = process.env["HERDR_REMOTE_RESULT"];
-      if (resultPath) { writeFileSync(resultPath + ".tmp", result, { mode: 0o600 }); renameSync(resultPath + ".tmp", resultPath); }
-      console.error(code === "herdr_session_gone" ? `The chosen herdr session is no longer running. Start it on that PC, then reconnect. ${result}` : result);
-      process.exitCode = 2;
-    };
     // A selected socket is an existing daemon's identity, never permission to create its replacement: the owner
     // chooses again, among the sessions running now
     if (chosenSocket) return report("herdr_session_gone", await discoverHerdrSessions());

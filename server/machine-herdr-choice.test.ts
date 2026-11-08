@@ -10,6 +10,70 @@ import { posixHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { herdrMachineId } from "./herdr-profile-state.ts";
 
+it.each(["socket success", "socket failure", "session success", "session failure", "stale independent socket"])("keeps the old connection and workspaces until %s settles", async (outcome) => {
+  const dir = mkdtempSync(join(tmpdir(), "machine-herdr-move-"));
+  const id = "12345678-1234-1234-1234-123456789abe";
+  const a = { destination: "fixture-only", session: "a", herdr_socket: "/home/fixture/.config/herdr/sessions/a/herdr.sock" };
+  const b = { ...a, ...(outcome.startsWith("session") ? { session: "b" } : {}), herdr_socket: "/home/fixture/desktop/herdr/sessions/b/herdr.sock" };
+  const descriptor = (socket: string) => ({ socket_path: socket, pid: 4242, port: socket === a.herdr_socket ? 12345 : 12346, token: "a".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true });
+  const reached = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: a }]));
+  const relays: ReturnType<typeof Bun.serve>[] = [];
+  let firstSsh: SshConnection | undefined, oldClosed = false;
+  const mocks = [
+    spyOn(SshConnection.prototype, "start").mockImplementation(async function(this: SshConnection) { firstSsh ??= this; }),
+    spyOn(SshConnection.prototype, "close").mockImplementation(function(this: SshConnection) { if (this === firstSsh) oldClosed = true; }),
+    spyOn(posixHost, "inspect").mockImplementation(async (_ssh, _session, selected) => {
+      if (selected === b.herdr_socket) { reached.resolve(); await release.promise; }
+      if (selected === b.herdr_socket && outcome.endsWith("failure")) throw new Error("B refused connection");
+      return { platform: "linux-x64", home: "/home/fixture", herdrPath: "", expectedSocket: selected!, bundleReady: true, bundleOlder: false,
+        descriptors: [{ ...descriptor(selected!), ...(selected === b.herdr_socket && outcome === "stale independent socket" ? { managed_remote: false, pid: 9898 } : {}) }], runtimeDir: "/runtime", registryDir: "/registry" };
+    }),
+    spyOn(posixHost, "alive").mockImplementation(async (_ssh, pid) => pid !== 9898),
+    spyOn(posixHost, "start").mockRejectedValue(new Error("B could not start")),
+    spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
+    spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {
+      const socket = remotePort === 12345 ? a.herdr_socket : b.herdr_socket;
+      relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
+        const path = new URL(request.url).pathname;
+        if (path === "/api/bridge") return Response.json({ ...descriptor(socket), socket_id: socket, herdr: { protocol: 22, version: "0.9.3" } });
+        if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [{ id: socket, name: socket }] } });
+        if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
+        return new Response("absent", { status: 404 });
+      }, websocket: { message() {} } }));
+    }),
+  ];
+  const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+  const run = (target: SshTarget) => new Promise<SetupJob>((resolve, reject) => {
+    let job: SetupJob | undefined;
+    const deadline = setTimeout(() => { off(); reject(new Error("setup did not settle")); }, 5000);
+    const off = manager.subscribe(() => { if (job && ["failed", "connected"].includes(job.phase)) { off(); clearTimeout(deadline); resolve(job); } });
+    job = manager.setup({ ...target, machine_id: id, update_remote: true }, { auto: true });
+  });
+  let moving: Promise<SetupJob> | undefined;
+  try {
+    expect((await run(a)).phase).toBe("connected");
+    const previous = structuredClone(manager.list().find((pc) => pc.id === id)?.snapshot);
+    const endpoint = manager.endpoint(id);
+    moving = run(b); await reached.promise;
+    expect(oldClosed).toBe(false);
+    expect(manager.endpoint(id)).toEqual(endpoint);
+    expect(manager.list().find((pc) => pc.id === id)?.snapshot).toEqual(previous);
+    release.resolve();
+    expect((await moving).phase).toBe(outcome.endsWith("success") ? "connected" : "failed");
+    const pc = manager.list().find((pc) => pc.id === id);
+    expect(pc?.target).toEqual(outcome.endsWith("success") ? b : a);
+    expect(pc?.state).toBe("connected");
+    expect(oldClosed).toBe(outcome.endsWith("success"));
+    if (!outcome.endsWith("success")) { expect(manager.endpoint(id)).toEqual(endpoint); expect(pc?.snapshot).toEqual(previous); }
+  } finally {
+    release.resolve(); await moving?.catch(() => {}); manager.stop();
+    for (const mock of mocks) mock.mockRestore();
+    for (const relay of relays) relay.stop(true);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it.each(["manual", "catalog socket", "catalog new"])("remembers %s choice through refresh, restart and reconnect", async (kind) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-herdr-choice-"));
   const catalog = kind !== "manual";

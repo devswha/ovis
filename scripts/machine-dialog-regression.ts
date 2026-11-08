@@ -191,6 +191,27 @@ try {
             await page.unroute("**/api/machines/setup**");
           }
           console.log(`PASS ${width}px: an address edited in flight never receives the choices of the PC it was sent for`);
+          {
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => { release = resolve; });
+            await page.route("**/api/machines/setup**", async (route) => {
+              if (route.request().method() === "POST") {
+                const target = route.request().postDataJSON() as SetupRequest;
+                await held;
+                job = { id: "polled", machine_id: "fixture", target, phase: "checking", step: "Checking the old PC", action_required: null, installations: [], challenge: null, error: null, ssh_output: null };
+              } else job = { ...job!, phase: "failed", step: "Polled session choices", action_required: "choose_herdr", found_herdr_sessions: [{ socket_path: "/home/fixture/.config/herdr/herdr.sock", label: "Default session" }] };
+              await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(job!) });
+            });
+            await page.reload(); await destination.fill("fixture-only");
+            const requested = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/api/machines/setup");
+            await destination.press("Enter"); await requested;
+            await destination.fill("another-pc"); release();
+            await dialog.getByText("Polled session choices", { exact: true }).waitFor();
+            assert.equal(await dialog.getByRole("button", { name: "Use Default session", exact: true }).count(), 0, "poll: old PC sessions never appear for the edited identity");
+            assert.equal(await dialog.getByRole("button", { name: "Start a new herdr here", exact: true }).count(), 0, "poll: old PC never grants new-start consent");
+            await page.unroute("**/api/machines/setup**");
+          }
+          console.log(`PASS ${width}px: polling never restores session choices for a different form identity`);
           for (const decision of ["early_close", "cancel", "close", "start_headless"] as const) {
             const actions: unknown[] = [];
             await page.route("**/api/machines/setup**", async (route) => {

@@ -52,7 +52,11 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     let cancelled = false;
     let timer = 0;
     const poll = async () => {
-      try { const next = await fetchMachineSetup(job.id); if (!cancelled) { setJob(next); setError(null); } }
+      try {
+        const next = await fetchMachineSetup(job.id);
+        const sentFor = [next.target.destination.trim(), String(next.target.port ?? ""), next.target.session ?? ""].join("\0");
+        if (!cancelled) { setJob(next.action_required === "choose_herdr" && sentFor !== identityRef.current ? { ...next, action_required: null, found_herdr_sessions: undefined } : next); setError(null); }
+      }
       catch (e) { if (!cancelled) setError(e instanceof Error ? e.message : String(e)); }
       if (!cancelled) timer = window.setTimeout(poll, 750);
     };
