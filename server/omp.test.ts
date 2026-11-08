@@ -660,11 +660,14 @@ describe("an omp pane's chat", () => {
       expect(lsofCalls).toHaveLength(2);
     });
 
-    it("reads a held name lsof printed escaped", async () => {
+    it("refuses a held name that decodes to control characters, and reads a plain one", async () => {
       // a session file whose name holds a newline, a tab and a DEL, which lsof's -F n writes as \n, \t and \x7f
-      const session = storeTranscript(pane.cwd!, "2026-10-01_s\n1\t\x7f.jsonl");
-      listing = listed([session.replaceAll("\n", "\\n").replaceAll("\t", "\\t").replaceAll("\x7f", "\\x7f")]);
-      expect(await held()).toBe(session);
+      const control = storeTranscript(pane.cwd!, "2026-10-01_s\n1\t\x7f.jsonl");
+      listing = listed([control.replaceAll("\n", "\\n").replaceAll("\t", "\\t").replaceAll("\x7f", "\\x7f")]);
+      expect(await held()).toBeNull();
+      const plain = storeTranscript(pane.cwd!, "2026-10-01_s 1 é.jsonl");
+      listing = listed([plain]);
+      expect(await held()).toBe(plain);
     });
 
     it("keeps the live process's listing when another pid is gone and lsof exits 1", async () => {
@@ -694,6 +697,20 @@ describe("an omp pane's chat", () => {
       listing = listed([continued]);
       expect(await held()).toBe(continued);
       expect(lsofCalls).toHaveLength(3);
+    });
+
+    it("drops a reused listing whose pid's start changed by the time it is returned", async () => {
+      const continued = storeTranscript(pane.cwd!);
+      listing = listed([continued]);
+      expect(await held()).toBe(continued);
+      // within the freshness window an omp the pane started since is listed: the first pid's listing is reused,
+      // and that pid is taken by another process while lsof runs
+      const added = pid + 1;
+      processes = [{ pid, name: "omp", argv: ["omp", "-c"] }, { pid: added, name: "omp", argv: ["omp"] }];
+      startOf = (asked, read) => asked === added ? 7_000_000n : asked === pid ? (read <= 3 ? 1_000_000n : 2_000_000n) : null;
+      listing = `p${added}\nfcwd\nn${pane.cwd}\n`;
+      expect(await ompHeldTranscript(pane.pane_id, pane.cwd!, true)).toBeNull();
+      expect(lsofCalls.at(-1)).toEqual(["/usr/sbin/lsof", "-nPbw", "-a", "-p", String(added), "-Fpn"]);
     });
 
     it("kills lsof and binds nothing when its listing passes the byte cap", async () => {

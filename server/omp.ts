@@ -338,21 +338,24 @@ function lsofName(field: string): string {
  * than LSOF_MAX_BYTES; an exit of 1 with the whole listing printed means only that some pid was gone,
  * and the others' listings stand. A process counts only when its start is the same before and after
  * the run: herdr named it a moment ago, and a pid reused meanwhile lists another omp's session (as
- * #3324 checks).
+ * #3324 checks); every one, a listing reused too, is checked again after the last wait, just before
+ * the listing is returned. A name holding a control character once decoded is no held path.
  */
 async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, string[]>> {
   const open = new Map<number, string[]>();
   const now = performance.now();
   for (const [pid, entry] of listed) if (now - entry.at >= LSOF_FRESH_MS) listed.delete(pid);
   const unlisted: { pid: number; identity: number }[] = [];
+  const identities = new Map<number, number>();
   for (const pid of pids) {
     const identity = processStartIdentity(pid);
     if (identity === null) continue;
+    identities.set(pid, identity);
     const entry = listed.get(pid);
     if (entry?.identity === identity) open.set(pid, entry.files);
     else unlisted.push({ pid, identity });
   }
-  if (unlisted.length === 0) return open;
+  if (unlisted.length === 0) return sameStarts(open, identities);
   let child: Bun.Subprocess<"ignore", "pipe", "ignore">;
   try { child = Bun.spawn(["/usr/sbin/lsof", "-nPbw", "-a", "-p", unlisted.map(({ pid }) => pid).join(","), "-Fpn"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" }); }
   catch { return open; }
@@ -368,19 +371,32 @@ async function darwinOpenFiles(pids: readonly number[]): Promise<Map<number, str
     }
     // a listing cut off by its size or its deadline proves nothing, whatever lsof exits with
     const code = whole ? await child.exited : null;
-    if (code !== 0 && code !== 1 || !whole) return open;
-  } catch { return open; } finally { clearTimeout(deadline); }
+    if (code !== 0 && code !== 1 || !whole) return sameStarts(open, identities);
+  } catch { return sameStarts(open, identities); } finally { clearTimeout(deadline); }
   const fresh = new Map<number, string[]>();
   let files: string[] | undefined;
   for (const line of Buffer.concat(chunks).toString("utf8").split("\n")) {
     if (line.startsWith("p")) fresh.set(Number(line.slice(1)), files = []);
-    else if (line.startsWith("n")) files?.push(lsofName(line.slice(1)));
+    else if (line.startsWith("n")) {
+      const name = lsofName(line.slice(1));
+      if (!/[\x00-\x1f\x7f]/.test(name)) files?.push(name);
+    }
   }
   for (const { pid, identity } of unlisted) {
     const held = fresh.get(pid);
-    if (held === undefined || processStartIdentity(pid) !== identity) continue;
+    if (held === undefined) continue;
     open.set(pid, held);
     listed.set(pid, { identity, files: held, at: now });
+  }
+  return sameStarts(open, identities);
+}
+
+/** The listings of the processes whose start is still the one read before them; a changed one is forgotten. */
+function sameStarts(open: Map<number, string[]>, identities: ReadonlyMap<number, number>): Map<number, string[]> {
+  for (const pid of open.keys()) {
+    if (processStartIdentity(pid) === identities.get(pid)) continue;
+    open.delete(pid);
+    listed.delete(pid);
   }
   return open;
 }
