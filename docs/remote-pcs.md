@@ -95,7 +95,8 @@ an address the latest look found in the last 10 minutes, including a PC it left 
 it was already added).
 
 Its workspaces then join the sidebar as an SSH PC's do. Nothing is installed on that PC: it runs
-its own Ovis, which updates itself, so it has no bridge controls. Its connection carries the PC's
+its own Ovis, which updates itself, so it has no bridge controls; its update can still be started
+from here ([Updating PCs from here](#updating-pcs-from-here)). Its connection carries the PC's
 status, its API routes and its terminals as streams of one relay session, which holds at most 8
 WebSockets, so about 7 of its terminals can be open at once. A dropped connection comes back with
 the same backoff as an SSH PC's and signs in with the saved key; nothing typed is sent again.
@@ -135,6 +136,36 @@ code, `POST /api/machines/relay/code` with `{ "code": "<code>" }` runs one excha
 `unreachable`, `forged`); then `POST /api/machines/relay` with `{ "found": "<ticket>" }` adds
 that PC, once.
 
+## Updating PCs from here
+
+Every PC added here, through the relay (direct or relayed) or over SSH, is updated from the PC in
+use, without going to it. Each PC in `GET /api/machines` (and the machine events) carries
+`ovis_update` when it has an update it can take from here, unasked:
+
+- `how: "own"`: the PC runs its own Ovis (a relay PC, or an SSH PC's own server) and its updater
+  offers a newer release. A connected PC is asked through its connection (`GET /api/updates`
+  there) when it connects and every 5 minutes; an SSH PC whose own Ovis is older than this app
+  says so on its connect.
+- `how: "bridge"`: an SSH PC's bridge from this app is of another version.
+- `updatable: false` with `reason`, in plain words, when an update is on offer but cannot run from
+  here (not started by its updater, blocked there, too old to install by revision, a saved herdr
+  machine whose bridge was never approved). Absent or null: up to date, or not known yet.
+
+`POST /api/machines/:id/update` starts that update (202 `{ job_id }`), whichever way the PC is
+reached, and refuses one that cannot run with 409 `update_unavailable` and the same words. A
+connected PC's own Ovis is asked to install the release it offers, by revision, through its
+connection (no redirect is followed); its connection drops while it restarts, the PC reconnects as
+any PC does, and the update ends once it answers on that release (at most 15 minutes, or a minute
+for the install to start). Anything else runs the bridge update above. While it runs, the PC's
+`updating` shows its steps; a failed one leaves `update_error`, in plain words, until the next try
+starts or one succeeds. `DELETE /api/machines/:id/update` ends the wait (an install already running
+there runs on).
+
+`POST /api/machines/update-all` starts every PC's update at once: 202 `{ started, queued, skipped }`.
+Own updates run side by side; bridge updates run one after another, sharing one bundle download,
+and show `updating.queued` until their turn; a PC with an update it cannot take is `skipped` with
+why. Up-to-date PCs are not listed. A watching device may do none of this.
+
 ## Runtime and endpoints
 
 ```
@@ -154,6 +185,8 @@ The current server keeps one status-only WebSocket per remote PC without attachi
 | `GET /api/machines/events` | SSE roster and machine-scoped status events |
 | `POST /api/machines/setup` | Create an interactive setup job |
 | `GET/POST/DELETE /api/machines/setup/:id` | Inspect, answer/approve, cancel |
+| `POST/DELETE /api/machines/:id/update` | Start or stop waiting for the PC's update ([Updating PCs from here](#updating-pcs-from-here)) |
+| `POST /api/machines/update-all` | Start every PC's update |
 | `PATCH /api/machines/:id` | Rename or change `enabled` |
 | `DELETE /api/machines/:id` | Forget the PC and remove its local private key |
 | `/api/machines/:id/{session,agents,pane/*,workspace/*}` | Allowlisted target API routes |

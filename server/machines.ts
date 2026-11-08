@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync
 import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
 import { basename, join } from "node:path";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -28,6 +28,7 @@ import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "..
 import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
 import { TailnetPcError, TailnetPcs, type TailnetPcsOptions } from "./tailnet-pcs.ts";
 import { sshCandidates, type SshCandidatesOptions } from "./ssh-candidates.ts";
+import { followOwnUpdate, offerFromStatus, readOwnStatus } from "./pc-update.ts";
 
 import type { RelaySocket } from "../shared/relay-channel.ts";
 import { newRouteProbes, openRelayPcTunnel, RelayPcKey, RelayPcRefused, relayPcLabel, removeRelayPcKey, type RelayPcTunnel, type RouteProbes } from "./relay-pc.ts";
@@ -86,7 +87,15 @@ interface Runtime {
   move?: { herdr?: Machine["herdr"]; snapshot?: SessionSnapshot; snapshotServer?: string; ownOvisAt?: SshTarget | null };
   /** which of the PC's herdr runs this server knows have ended (finishEnded) */
   finishes: FinishEpochLedger;
+  /** what the PC's own Ovis offers of its own update while connected (watchOwnOffer); undefined: not read yet */
+  ownOffer?: PcUpdateOffer | null;
+  offerTimer?: ReturnType<typeof setInterval>;
+  offerReading?: boolean;
+  /** its own Ovis updating itself, asked from here through its connection (updateOwn) */
+  ownJob?: { id: string; abort: AbortController };
 }
+/** An update asked for that the PC cannot take now: answered 409 `update_unavailable` with these words. */
+export class PcUpdateRefused extends Error {}
 interface JobState {
   update: boolean;
   /** Explicit consent for the next Windows cold-start attempt only. Never persisted. */
@@ -108,6 +117,8 @@ interface JobState {
   finished: Promise<void>;
 }
 const DEFAULT_SETTINGS: MachineSettings = { auto_update_bridges: true };
+/** a setup job's phases once it has ended */
+const TERMINAL = new Set<SetupJob["phase"]>(["connected", "failed", "cancelled"]);
 const RELAY_PC_UPDATES = "A PC added through the relay runs its own Ovis: update it on that PC.";
 /** a PC of herdr-core's machines is the core's: Ovis neither renames, removes nor sets it up */
 const HC_MACHINE_MANAGED = "This PC is a machine of herdr-core: add, rename or remove it with `hc machine` or in the Herdr app.";
@@ -317,6 +328,10 @@ export class MachineManager {
   private ownUpdatePollMs: number;
   private ownUpdateStartMs: number;
   private ownUpdateCheckMs: number;
+  /** how often a connected PC's own Ovis is asked what it offers: its own check for releases runs every 5 minutes */
+  private ownOfferMs: number;
+  /** PCs Update all queued for a bridge update, waiting for their turn on autoChain */
+  private updateQueued = new Set<string>();
   /** how a relay PC's connection reaches the relay; tests point it at a local one */
   private relaySocket?: (url: string) => RelaySocket;
   /** how a relay PC's connection dials that PC's direct carriers; tests point it at a local one */
@@ -334,7 +349,7 @@ export class MachineManager {
   private readonly sshCandidateOptions: SshCandidatesOptions;
 
   constructor(readonly stateDir: string, private push: PushService, private completions: CompletionTracker, private readLocal: () => Promise<SessionSnapshot> = () => this.completions.readSnapshot(sessionSnapshot, labelOmoPanes),
-    options: { bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number }; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions; sshCandidates?: SshCandidatesOptions } = {}) {
+    options: { bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number }; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions; sshCandidates?: SshCandidatesOptions } = {}) {
     this.bootId = options.bootId;
     this.tailnet = new TailnetPcs(options.tailnet);
     this.sshCandidateOptions = options.sshCandidates ?? (options.tailnet?.readStatus === undefined ? {} : { readStatus: options.tailnet.readStatus });
@@ -345,6 +360,7 @@ export class MachineManager {
     this.ownUpdatePollMs = options.ownUpdate?.pollMs ?? OWN_UPDATE_POLL_MS;
     this.ownUpdateStartMs = options.ownUpdate?.startMs ?? OWN_UPDATE_START_MS;
     this.ownUpdateCheckMs = options.ownUpdate?.checkMs ?? OWN_CHECK_WAIT_MS;
+    this.ownOfferMs = options.ownUpdate?.offerMs ?? 5 * 60_000;
     this.now = options.now ?? (() => performance.now());
     if (this.bootId) this.local.source_boot_id = this.bootId;
     this.profileState = new HerdrProfileState(stateDir);
@@ -561,7 +577,48 @@ export class MachineManager {
   private runtime(machine: Machine): Runtime { return { machine, attempts: 0, generation: 0, refreshing: false, refreshQueued: false, snapshotRevision: 0, terminals: new Set(), finishes: new FinishEpochLedger(machine.snapshot) }; }
   list(): Machine[] {
     const own = this.serverId?.();
+    // ovis_update is derived from the PC's state at each read; the roster hands out its live PCs
+    for (const runtime of this.machines.values()) if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
     return [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
+  }
+  /**
+   * The update a PC can take from here (Machine.ovis_update): a connected PC's own Ovis's offer, else what its last
+   * try to connect was refused for (a bridge of another version, or an own Ovis older than this app).
+   */
+  private updateOffer(runtime: Runtime): PcUpdateOffer | null {
+    const machine = runtime.machine;
+    if (machine.kind === "hc") return null;
+    if (machine.state === "connected") return runtime.ownOffer ?? null;
+    const own = machine.remote_ovis;
+    if (machine.kind === "ssh" && own) return { how: "own", current_version: own.version, latest_version: own.latest_version, updatable: own.updatable, reason: own.reason };
+    if (machine.kind === "ssh" && machine.action_required === "update_bridge") {
+      const approved = this.mayManageBridge(runtime);
+      return { how: "bridge", current_version: null, latest_version: null, updatable: approved, reason: approved ? null : "Review the bridge update in this PC's dialog first: it was added from herdr without approving this app's bridge." };
+    }
+    return null;
+  }
+  /**
+   * A connected PC's own Ovis (a relay PC's, or an SSH PC's own server), asked what it offers now and every few
+   * minutes while connected. A bridge this app installed never updates itself, so it is not asked.
+   */
+  private watchOwnOffer(runtime: Runtime, generation: number): void {
+    const target = runtime.machine.target;
+    const own = runtime.machine.kind === "relay" || runtime.machine.kind === "ssh" && !!target && !!runtime.ownOvisAt && sameSshSession(runtime.ownOvisAt, target);
+    if (!own) return;
+    const read = async () => {
+      const endpoint = runtime.endpoint;
+      if (runtime.offerReading || !endpoint || generation !== runtime.generation || this.stopped) return;
+      runtime.offerReading = true;
+      let offer: PcUpdateOffer | null = null;
+      // a server too old to answer the bridge token here offers nothing
+      try { offer = offerFromStatus(await readOwnStatus(endpoint)); } catch { /* none known until the next read */ }
+      finally { runtime.offerReading = false; }
+      if (generation !== runtime.generation || this.stopped) return;
+      if (JSON.stringify(offer) !== JSON.stringify(runtime.ownOffer ?? null)) { runtime.ownOffer = offer; this.emit(); }
+    };
+    void read();
+    runtime.offerTimer = setInterval(() => void read(), this.ownOfferMs);
+    runtime.offerTimer.unref();
   }
   /**
    * Whether this server knows a PC's herdr run (finish epoch) has ended (server/seen.ts). This server's own PC is in
@@ -724,6 +781,102 @@ export class MachineManager {
     if (!scheduled) runtime.updateCancelled = false;
     return this.setup({ ...runtime.machine.target!, machine_id: id, update_remote: true }, { auto: true });
   }
+  /**
+   * Updates a PC from here, whichever way it is reached (POST /api/machines/:id/update): a connected PC's own Ovis
+   * installs its offered release (updateOwn), anything else goes through the bridge update (updateBridge), which
+   * also asks an own Ovis older than this app. Throws PcUpdateRefused, in plain words, when there is none to take.
+   */
+  update(id: string): { job_id: string } {
+    const runtime = this.machines.get(id);
+    if (!runtime) throw new Error("PC not found");
+    if (this.updateRunning(runtime)) throw new PcUpdateRefused("This PC is already updating.");
+    const offer = this.updateOffer(runtime);
+    if (!offer) throw new PcUpdateRefused(runtime.machine.state === "connected" ? "This PC's Ovis is up to date." : "This PC is not connected; its update is offered once it is.");
+    if (!offer.updatable) throw new PcUpdateRefused(offer.reason ?? "This PC cannot take its update from here.");
+    if (runtime.machine.state === "connected") return { job_id: this.updateOwn(runtime) };
+    return { job_id: this.updateBridge(id).id };
+  }
+  /** Update all (POST /api/machines/update-all): every PC with an update on offer, each as `update` would. */
+  updateAll(): PcUpdateAll {
+    const result: PcUpdateAll = { started: [], queued: [], skipped: [] };
+    for (const runtime of this.machines.values()) {
+      const id = runtime.machine.id;
+      const offer = this.updateOffer(runtime);
+      if (!offer) continue;
+      if (this.updateRunning(runtime)) { result.skipped.push({ machine_id: id, reason: "This PC is already updating." }); continue; }
+      if (!offer.updatable) { result.skipped.push({ machine_id: id, reason: offer.reason ?? "This PC cannot take its update from here." }); continue; }
+      if (runtime.machine.state === "connected") { result.started.push({ machine_id: id, job_id: this.updateOwn(runtime) }); continue; }
+      this.queueUpdate(runtime);
+      result.queued.push(id);
+    }
+    this.emit();
+    return result;
+  }
+  /** Ends the wait of this PC's update, or takes it out of Update all's queue; an install already running there runs on. */
+  cancelUpdate(id: string): boolean {
+    const runtime = this.machines.get(id);
+    if (!runtime) throw new Error("PC not found");
+    if (runtime.ownJob) { runtime.ownJob.abort.abort(); return true; }
+    if (this.updateQueued.delete(id)) { runtime.machine.updating = null; this.emit(); return true; }
+    const job = [...this.jobs.values()].find((j) => j.runtime === runtime && j.update && !TERMINAL.has(j.public.phase));
+    if (!job) return false;
+    this.cancelJob(job.public.id);
+    return true;
+  }
+  /** a PC disabled or removed: no update of it is waited for any more */
+  private dropUpdate(runtime: Runtime): void {
+    runtime.ownJob?.abort.abort();
+    if (this.updateQueued.delete(runtime.machine.id)) runtime.machine.updating = null;
+  }
+  private updateRunning(runtime: Runtime): boolean {
+    return !!runtime.ownJob || this.updateQueued.has(runtime.machine.id) || [...this.jobs.values()].some((j) => j.public.machine_id === runtime.machine.id && !TERMINAL.has(j.public.phase));
+  }
+  /** a bridge update of Update all, after the ones before it: they share one bundle download */
+  private queueUpdate(runtime: Runtime): void {
+    const id = runtime.machine.id;
+    this.updateQueued.add(id);
+    runtime.machine.updating = { job_id: "", step: "Waiting for the PCs before it to finish updating…", progress: null, queued: true };
+    this.autoChain = this.autoChain.then(async () => {
+      // cancelled, removed or stopped meanwhile
+      if (!this.updateQueued.delete(id) || this.stopped || this.machines.get(id) !== runtime) return;
+      runtime.machine.updating = null;
+      try { const job = this.updateBridge(id); await this.jobs.get(job.id)?.finished; }
+      catch (error) { runtime.machine.update_error = error instanceof Error ? error.message : String(error); this.emit(); }
+    });
+  }
+  /**
+   * A connected PC's own Ovis installs the release it offers, asked through its connection (server/pc-update.ts),
+   * and is followed through its restart until it answers on that release. Its steps show on `updating`, a failure on
+   * `update_error`.
+   */
+  private updateOwn(runtime: Runtime): string {
+    const id = randomUUID();
+    const abort = new AbortController();
+    runtime.ownJob = { id, abort };
+    runtime.machine.update_error = null;
+    const show = (step: string) => {
+      if (runtime.ownJob?.id !== id) return;
+      runtime.machine.updating = { job_id: id, step, progress: null, ovis: true };
+      this.emit();
+    };
+    show("Asking this PC's own Ovis to update itself…");
+    const machineId = runtime.machine.id;
+    void followOwnUpdate({
+      endpoint: () => this.endpoint(machineId),
+      // it came back on a version this app refuses, or was turned away: it no longer reconnects by itself
+      refused: () => runtime.machine.state === "error" ? runtime.machine.error ?? "This PC stopped reconnecting." : null,
+      signal: abort.signal, onStep: show,
+      pollMs: this.ownUpdatePollMs, startMs: this.ownUpdateStartMs, checkMs: this.ownUpdateCheckMs,
+    }).then(() => { runtime.ownOffer = null; }, (error: unknown) => {
+      if (!abort.signal.aborted && !this.stopped) runtime.machine.update_error = error instanceof Error ? error.message : String(error);
+    }).finally(() => {
+      if (runtime.ownJob?.id !== id) return;
+      runtime.ownJob = undefined;
+      runtime.machine.updating = null;
+      this.emit();
+    });
+    return id;
+  }
   setup(request: SetupRequest, options: { auto?: boolean } = {}): SetupJob {
     if (this.stopped) throw new Error("Server stopping");
     let target = validateTarget(request);
@@ -751,7 +904,7 @@ export class MachineManager {
     const moving = !!existing && !sameSshSession(target, existing.machine.target!);
     const resumeRetry = existing?.machine.state === "reconnecting";
     const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: "Connecting with SSH keys and ssh-agent…", challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
-    if (job.update && existing) job.runtime = existing;
+    if (job.update && existing) { job.runtime = existing; existing.machine.update_error = null; }
     if (job.update && existing && !auto) existing.updateCancelled = false;
     job.timer.unref();
     this.jobs.set(id, job);
@@ -857,6 +1010,8 @@ export class MachineManager {
           // check has no machine to carry action_required, and an interrupted update keeps
           // offering itself even when the PC was never registered
           job.public.action_required = e instanceof MachineActionRequired ? e.action : job.update ? "update_bridge" : null;
+          // the devices list says why this PC's update failed, whichever way it was started
+          if (ownsRuntime && job.runtime) job.runtime.machine.update_error = error;
           this.emit();
         }
       } finally {
@@ -1431,6 +1586,7 @@ export class MachineManager {
     // told only for a connected PC (shared/machines.ts)
     if (runtime.tunnel) runtime.machine.route = runtime.tunnel.route;
     this.openObserver(runtime, generation);
+    this.watchOwnOffer(runtime, generation);
     if (runtime.ssh) runtime.ssh.onExit = () => this.lost(runtime, generation, new Error("SSH connection ended"));
     runtime.poll = setInterval(() => void this.refresh(runtime).catch((e) => this.lost(runtime, generation, e)), 5000);
     runtime.poll.unref();
@@ -1606,6 +1762,7 @@ export class MachineManager {
     runtime.generation++;
     runtime.refreshQueued = false;
     clearTimeout(runtime.retry); runtime.retry = undefined; clearInterval(runtime.poll);
+    clearInterval(runtime.offerTimer); runtime.offerTimer = undefined; runtime.ownOffer = undefined;
     runtime.abort?.abort(); runtime.abort = undefined;
     runtime.observer?.close(); runtime.observer = undefined;
     for (const close of runtime.terminals) close(); runtime.terminals.clear();
@@ -1743,6 +1900,7 @@ export class MachineManager {
       if (!patch.enabled && runtime.machine.action_required === "windows_login") { runtime.machine.action_required = null; runtime.machine.error = null; }
       this.disconnect(runtime);
       for (const [id, job] of this.jobs) if (job.public.machine_id === runtime.machine.id) this.cancelJob(id);
+      if (!patch.enabled) this.dropUpdate(runtime);
       if (patch.enabled) void this.reconnect(runtime);
     }
     this.persist(); this.emit();
@@ -1754,6 +1912,7 @@ export class MachineManager {
     if (runtime.machine.kind === "hc") throw new Error(HC_MACHINE_MANAGED);
     runtime.machine.enabled = false; this.disconnect(runtime);
     for (const [jobId, job] of this.jobs) if (job.public.machine_id === id) this.cancelJob(jobId);
+    this.dropUpdate(runtime);
     // the key goes first: a registration saved without the PC must not leave its credential behind
     if (runtime.machine.kind === "relay") removeRelayPcKey(this.relayKeyPath(id));
     this.machines.delete(id); this.persist();
@@ -1867,7 +2026,7 @@ export class MachineManager {
   stop(): void {
     this.stopped = true; clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
     for (const id of this.jobs.keys()) this.cancelJob(id);
-    for (const runtime of this.machines.values()) this.disconnect(runtime);
+    for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }
     this.listeners.clear();
   }
 }

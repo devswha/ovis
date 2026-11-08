@@ -1,10 +1,10 @@
 import { subscribeMachineEvents } from "./machine-events.ts";
-import type { DevicePairedEvent, DeviceRemovedEvent, MachineRoster, RelayPairingsEvent, RemotePairingsEvent, SetupAction, SetupRequest } from "../shared/machines.ts";
+import type { DevicePairedEvent, DeviceRemovedEvent, MachineRoster, PcUpdateAll, PcUpdateStarted, RelayPairingsEvent, RemotePairingsEvent, SetupAction, SetupRequest } from "../shared/machines.ts";
 import type { AgentRowTokens } from "../shared/pane-tokens.ts";
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
 import type { SeenFinish } from "../shared/seen.ts";
-import { MachineManager } from "./machines.ts";
+import { MachineManager, PcUpdateRefused } from "./machines.ts";
 import { TypedCodeError, type TypedCodeFailure } from "../shared/relay-code-offer.ts";
 import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
@@ -332,7 +332,24 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       if (!isJsonObject(patch)) return fail("invalid_body", "Expected PC settings", 400);
       return jsonResponse(manager.updateSettings(patch));
     }
+    if (parts[0] === "update-all" && parts.length === 1) {
+      setRequestRoute("/api/machines/update-all");
+      if (readOnly) return fail("read_only", "this device can only watch", 403);
+      if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
+      return jsonResponse(manager.updateAll() satisfies PcUpdateAll, 202);
+    }
     const id = parts[0]!;
+    if (parts.length === 2 && parts[1] === "update") {
+      setRequestRoute("/api/machines/:machine_id/update");
+      if (readOnly) return fail("read_only", "this device can only watch", 403);
+      if (request.method === "DELETE") return jsonResponse({ cancelled: manager.cancelUpdate(id) });
+      if (request.method !== "POST") return fail("method_not_allowed", "Use POST or DELETE", 405);
+      try { return jsonResponse(manager.update(id) satisfies PcUpdateStarted, 202); }
+      catch (error) {
+        if (error instanceof PcUpdateRefused) return fail("update_unavailable", error.message, 409);
+        throw error;
+      }
+    }
     if (parts.length === 2 && parts[1] === "update-bridge" && request.method === "POST") { setRequestRoute("/api/machines/:machine_id/update-bridge"); return jsonResponse(manager.updateBridge(id), 202); }
     if (parts.length === 1 && request.method === "PATCH") {
       setRequestRoute("/api/machines/:machine_id");
