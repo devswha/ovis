@@ -96,6 +96,22 @@ it("claims nothing for a host an Include left unread may set, whether too deep o
   }
 });
 
+it("takes the final pass a `Match final` in an Include asks for, even when the Include's block does not apply, as ssh does", async () => {
+  const config = "Host other\n  Include inc\nHost box\n  HostName lab.example\nHost *.example\n  ProxyJump bastion\n";
+  expect(await sshConfigHosts(config, async () => ["Match final\n"])).toEqual([
+    { alias: "other", hostname: null, user: null },
+    { alias: "box", hostname: "lab.example", user: null, proxied: true },
+  ]);
+});
+
+it("claims nothing for a host whose final pass an unread Include may ask for, even when the Include's block does not apply", async () => {
+  const config = "Host other\n  Include inc\nHost box\n  HostName lab.example\nHost *.example\n  ProxyJump bastion\n";
+  expect(await sshConfigHosts(config, async () => [null])).toEqual([
+    { alias: "other", hostname: null, user: null, undetermined: true },
+    { alias: "box", hostname: "lab.example", user: null, undetermined: true },
+  ]);
+});
+
 it("stops a line at a word that starts a comment", async () => {
   expect(await sshConfigHosts("Host lab # work machine\n  HostName lab.example # the desk\n")).toEqual([{ alias: "lab", hostname: "lab.example", user: null }]);
 });

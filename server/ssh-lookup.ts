@@ -7,7 +7,8 @@ import { isIP } from "node:net";
 /** how long the list waits on every name lookup together; a name still unanswered then claims no PC */
 export const RESOLVE_TIMEOUT_MS = 1500;
 /** name lookups running at most across every listing; a lookup holds its slot until the resolver answers, since a
- * system lookup cannot be cancelled, and the rest wait for a free slot */
+ * system lookup cannot be cancelled, and the rest wait for a free slot. A held slot relies on getaddrinfo's own timeout
+ * (resolv.conf's timeout and attempts) to come back when a name server never answers */
 const MAX_LOOKUPS = 16;
 
 export type Resolve = (host: string) => Promise<string[]>;

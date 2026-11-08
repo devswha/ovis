@@ -112,6 +112,14 @@ it("reads at most 64 included files across every Include", async () => {
   expect(await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => null })).toHaveLength(64);
 });
 
+it("claims nothing for a later host once a glob Include goes past the included-file budget", async () => {
+  const files: Record<string, string> = { config: "Include a/*\nHost box\n  HostName 100.64.0.1\n" };
+  for (let index = 0; index < 65; index++) files[`a/${String(index).padStart(2, "0")}`] = "# nothing here\n";
+  const dir = sshDir(files);
+  const candidates = await sshCandidates({ sshDir: dir, home: dir, readStatus: async () => twoPeers });
+  expect(candidates.map((candidate) => [candidate.name, candidate.tailnet])).toEqual([["box", undefined], ["box", "box.tail.ts.net"], ["other", "other.tail.ts.net"]]);
+});
+
 it("lists 200 PCs at most, Tailscale PCs included", async () => {
   const dir = sshDir({ config: Array.from({ length: 200 }, (_, index) => `Host h${index}`).join("\n") });
   const candidates = await sshCandidates({ sshDir: dir, readStatus: async () => status(["extra"]), resolve: async () => [] });

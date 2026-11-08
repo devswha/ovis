@@ -140,9 +140,9 @@ function pass(entries: Entry[], weighing: Weighing): void {
   for (const entry of entries) {
     switch (entry.kind) {
       case "match": {
-        // ssh reads every condition of a Match line it reaches, so an unnegated `final` anywhere on it asks for the final pass
-        const reached = entry.block.within === undefined ? true : applies(weighing, entry.block.within);
-        if (reached !== false && entry.block.criteria.some((criterion) => criterion.on === "final" && criterion.asksFinal)) weighing.wantsFinal = reached === true || weighing.wantsFinal === true ? true : null;
+        // ssh reads every condition of every Match line, an included file's too when its Include's block does not apply
+        // (read as never matching), so an unnegated `final` anywhere asks for the final pass
+        if (entry.block.criteria.some((criterion) => criterion.on === "final" && criterion.asksFinal)) weighing.wantsFinal = true;
         applies(weighing, entry.block);
         break;
       }
@@ -153,7 +153,12 @@ function pass(entries: Entry[], weighing: Weighing): void {
         if (verdict !== false) weighing.effective.set(entry.key, verdict === true ? entry.value : null);
         break;
       }
-      case "unread": if (applies(weighing, entry.block) !== false) leaveUnknown(weighing.effective); break;
+      case "unread": {
+        if (applies(weighing, entry.block) !== false) leaveUnknown(weighing.effective);
+        // ssh reads it even when its block does not apply, and a `Match final` in it would ask for the final pass
+        else if (weighing.wantsFinal === false) weighing.wantsFinal = null;
+        break;
+      }
       default: { const unreachable: never = entry; throw new Error(`unknown config entry ${JSON.stringify(unreachable)}`); }
     }
   }
