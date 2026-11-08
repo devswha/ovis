@@ -403,9 +403,14 @@ async function imageBytes(value: string, cwd: string): Promise<Buffer | null> {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_IMAGE_BYTES) return null;
     const bytes = Buffer.alloc(stat.size);
-    // read off the event loop, as the open file it is
-    const bytesRead = await new Promise<number>((done, fail) => read(fd, bytes, 0, bytes.length, 0, (error, got) => error ? fail(error) : done(got)));
-    return bytes.subarray(0, bytesRead);
+    // read off the event loop, as the open file it is, until whole: a short read is read on, and an end before
+    // the size it had serves nothing rather than a cut picture
+    for (let got = 0; got < bytes.length;) {
+      const more = await new Promise<number>((done, fail) => read(fd, bytes, got, bytes.length - got, got, (error, count) => error ? fail(error) : done(count)));
+      if (more === 0) return null;
+      got += more;
+    }
+    return bytes;
   } finally { closeSync(fd); }
 }
 

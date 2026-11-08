@@ -523,3 +523,63 @@ it("serves no local attachment from another folder swapped in around the attachm
     expect(image !== null && Buffer.from(image.bytes).equals(otherPng) ? "FOREIGN" : image).toBeNull();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+it("serves a local attachment only whole: short reads are read on, and an early end serves nothing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-codex-attachment-short-"));
+  try {
+    mkdirSync(join(root, "assets"));
+    writeFileSync(join(root, "assets", "shot.png"), png);
+    const path = join(root, "rollout.jsonl");
+    const record = event("", ["assets/shot.png"]);
+    writeFileSync(path, `${jsonl(record)}\n`);
+    const segments = [{ path, end: Buffer.byteLength(`${jsonl(record)}\n`) }];
+    const ref = codexImageParts(record)[0]!.ref;
+    // the attachment's reads (into a buffer its size) answer 16 bytes at most; `ending`: none after the first
+    const shortReads = (ending: boolean) => {
+      let reads = 0;
+      const real = fs.read;
+      return spyOn(fs, "read").mockImplementation(((...args: unknown[]) => {
+        const [fd, buffer, offset, length, position, done] = args as [number, Buffer, number, number, number, (error: Error | null, got: number) => void];
+        if (!Buffer.isBuffer(buffer) || buffer.length !== png.length) return (real as (...rest: unknown[]) => void)(...args);
+        if (ending && reads++ > 0) { done(null, 0); return; }
+        real(fd, buffer, offset, Math.min(length, 16), position, done);
+      }) as typeof fs.read);
+    };
+    const short = shortReads(false);
+    let whole: Awaited<ReturnType<typeof codexTranscriptImage>>;
+    try { whole = await codexTranscriptImage(segments, ref, root); } finally { short.mockRestore(); }
+    expect(whole === null ? null : Buffer.from(whole.bytes).length).toBe(png.length);
+    const ended = shortReads(true);
+    let cut: Awaited<ReturnType<typeof codexTranscriptImage>>;
+    try { cut = await codexTranscriptImage(segments, ref, root); } finally { ended.mockRestore(); }
+    expect(cut === null ? null : Buffer.from(cut.bytes).length).toBeNull();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("serves no prompt picture from the parent a replaced rollout's remembered chain still names", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-codex-chain-replaced-"));
+  try {
+    const home = join(root, "codex");
+    const thread = "01a0a337-19e8-7712-92f5-aa0883392afd";
+    const meta = (extra = {}) => JSON.stringify({ type: "session_meta", payload: { source: "cli", thread_source: "user", ...extra } });
+    const parentDay = join(home, "sessions", "2026", "09", "15");
+    const liveDay = join(home, "sessions", "2026", "09", "23");
+    mkdirSync(parentDay, { recursive: true });
+    mkdirSync(liveDay, { recursive: true });
+    const kept = `${meta()}\n${jsonl(response("", otherUrl))}\n`;
+    writeFileSync(join(parentDay, `rollout-2026-09-15T12-58-12-${thread}.jsonl`), kept);
+    const path = join(liveDay, `rollout-2026-09-23T10-46-43-${thread}_01a0cbf1-9b0e-7383-a345-80974b279c68.jsonl`);
+    const turn = jsonl(response("the live turn", data));
+    writeFileSync(path, `${meta({ history_base: { thread_id: thread, end_ordinal_exclusive: 2, end_byte_offset: Buffer.byteLength(kept) } })}\n${turn}\n`);
+    const ref = codexImageParts(response("", otherUrl))[0]!.ref;
+    forgetHistoryChains();
+    // the rollout continues the parent: its picture is the conversation's
+    expect((await codexPromptImage(path, ref, "/", home))?.mediaType).toBe("image/png");
+    // another rollout replaces it at the same path, continuing nothing
+    writeFileSync(`${path}.new`, `${meta()}\n${turn}\n`);
+    renameSync(`${path}.new`, path);
+    let image: Awaited<ReturnType<typeof codexPromptImage>>;
+    try { image = await codexPromptImage(path, ref, "/", home); } finally { forgetHistoryChains(); }
+    expect(image !== null && Buffer.from(image.bytes).equals(otherPng) ? "FROM THE OLD PARENT" : image).toBeNull();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
