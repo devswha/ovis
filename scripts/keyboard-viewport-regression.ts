@@ -280,7 +280,7 @@ try {
       const size = (selector: string) => page.locator(selector).evaluate((el) => getComputedStyle(el).fontSize);
       const body = await size(".fixture-label");
       const where = `${ios ? "iOS" : "desktop"} ${width}px`;
-      for (const selector of [".input", ".select"]) {
+      for (const selector of ['.input[aria-label="Field"]', ".select"]) {
         assert.equal(await size(selector), body, `${where} ${selector}: the interface size at rest`);
         await page.locator(selector).dispatchEvent("pointerdown");
         await page.locator(selector).focus();
@@ -288,6 +288,15 @@ try {
         await page.locator(selector).blur();
         assert.equal(await size(selector), body, `${where} ${selector}: the interface size again after the blur`);
       }
+      // a press on a field's label arms the field it focuses; a press a scroll cancels leaves no armed field behind
+      await page.evaluate(() => document.querySelector(".app")!.insertAdjacentHTML("afterbegin", '<label for="fixture-dir">Directory</label><input id="fixture-dir" class="input">'));
+      await page.locator('label[for="fixture-dir"]').dispatchEvent("pointerdown");
+      await page.locator('label[for="fixture-dir"]').click();
+      assert.equal(await size("#fixture-dir"), ios ? "16px" : body, `${where}: ${ios ? "16px from a press on its label" : "a label press leaves the size"}`);
+      await page.locator("#fixture-dir").blur();
+      await page.locator('.input[aria-label="Field"]').dispatchEvent("pointerdown");
+      await page.locator('.input[aria-label="Field"]').dispatchEvent("pointercancel");
+      assert.equal(await size('.input[aria-label="Field"]'), body, `${where}: a cancelled press disarms the field`);
     } finally { await context.close(); }
   }
   console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell, field size on iOS");

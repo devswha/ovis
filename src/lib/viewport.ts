@@ -119,13 +119,28 @@ const applyKeyboard = (): void => {
 };
 // iOS Safari zooms the page into a field whose text is under 16px when it gets the focus. Fields draw at
 // the interface size (styles.css .input/.select), like the labels beside them; on iOS the press that
-// precedes the focus arms the field to --fs-input, and the blur disarms it. Keyboard focus without a press
-// (Tab on a hardware keyboard) is left to iOS, which does not zoom for it.
+// precedes the focus arms the field to --fs-input, and the field keeps it while it has the focus. A press
+// on a field's label arms the field the label focuses. A press the browser cancels (a scroll) disarms a
+// field that did not take the focus. Keyboard focus without a press (Tab on a hardware keyboard) is left
+// to iOS, which does not zoom for it.
 const ios = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 if (ios) {
-  const field = (target: EventTarget | null): HTMLElement | null =>
-    target instanceof Element ? target.closest<HTMLElement>(".input, .select") : null;
-  document.addEventListener("pointerdown", (event) => field(event.target)?.setAttribute("data-armed", ""), true);
+  const field = (target: EventTarget | null): HTMLElement | null => {
+    if (!(target instanceof Element)) return null;
+    const own = target.closest<HTMLElement>(".input, .select");
+    if (own) return own;
+    const control = target.closest("label")?.control;
+    return control instanceof HTMLElement && control.matches(".input, .select") ? control : null;
+  };
+  let pressed: HTMLElement | null = null;
+  document.addEventListener("pointerdown", (event) => {
+    pressed = field(event.target);
+    pressed?.setAttribute("data-armed", "");
+  }, true);
+  document.addEventListener("pointercancel", () => {
+    if (pressed && document.activeElement !== pressed) pressed.removeAttribute("data-armed");
+    pressed = null;
+  }, true);
   document.addEventListener("focusout", (event) => field(event.target)?.removeAttribute("data-armed"), true);
 }
 viewport?.addEventListener("resize", syncKeyboard);
