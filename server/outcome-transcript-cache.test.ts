@@ -6,7 +6,7 @@ import * as conversation from "./conversation.ts";
 import * as client from "./herdr/client.ts";
 import { commandInvocations, commandOutcome } from "./outcome.ts";
 import { handlePromptRequest, noteSubmitted } from "./prompt.ts";
-import type { PanePromptResponse } from "../shared/protocol.ts";
+import type { HerdrPane, PanePromptResponse, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
 
 it("shares unchanged snapshots and parses only verified appends within the read budget", async () => {
   const root = fs.mkdtempSync(join(tmpdir(), "command-transcript-cache-"));
@@ -159,10 +159,10 @@ it.each(["plain", "unchanged-row", "reserved-echo"] as const)("does not complete
   }
 });
 
-it("does not observe /context from a foreign transcript swapped in for the outcome read's open (#3398)", async () => {
+it.each(["foreign", "fifo"] as const)("does not observe /context from a file swapped in for the outcome read's open (#3398): %s", async (swap) => {
   const root = fs.mkdtempSync(join(tmpdir(), "command-route-swap-"));
   const path = join(root, "session.jsonl");
-  const foreign = join(root, "foreign.jsonl");
+  const foreign = join(root, swap === "fifo" ? "fifo" : "foreign.jsonl");
   const at = Date.parse("2026-10-20T00:00:00Z");
   const echo = JSON.stringify({ type: "system", subtype: "local_command", timestamp: new Date(at + 10).toISOString(),
     content: "<command-name>/context</command-name>\n<command-message>command</command-message>" }) + "\n";
@@ -172,7 +172,9 @@ it("does not observe /context from a foreign transcript swapped in for the outco
   const filler = (row: string) => JSON.stringify({ type: "progress", uuid: "x".repeat(Buffer.byteLength(row) - 30) }) + "\n";
   fs.writeFileSync(path, filler(echo) + filler(stdout));
   expect(fs.statSync(path).size).toBe(Buffer.byteLength(echo + stdout));
-  fs.writeFileSync(foreign, echo + stdout);
+  // a FIFO no one writes to: an open that waits on it would hang the server
+  if (swap === "fifo") expect(Bun.spawnSync(["mkfifo", foreign]).exitCode).toBe(0);
+  else fs.writeFileSync(foreign, echo + stdout);
   const pane = { pane_id: root, terminal_id: "term", workspace_id: "w", tab_id: "t", focused: false, revision: 0,
     agent: "claude", agent_status: "idle", cwd: root };
   const clock = spyOn(Date, "now").mockReturnValue(at + 30);
@@ -200,7 +202,7 @@ it("does not observe /context from a foreign transcript swapped in for the outco
     swaps = 1;
     const swapped = await (await handlePromptRequest(new Request(url), url))?.json() as PanePromptResponse;
     expect(swaps).toBe(0);
-    expect(swapped.outcomes?.at(-1)?.state).not.toBe("result-observed");
+    expect(swapped.outcomes?.at(-1)).toMatchObject({ state: "accepted", evidence: [] });
   } finally {
     opens.mockRestore();
     screen.mockRestore();
@@ -209,6 +211,47 @@ it("does not observe /context from a foreign transcript swapped in for the outco
     clock.mockRestore();
     conversation.forgetTranscriptState();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("does not observe an omp command from a transcript swapped in after its resolver authorized one (#3398)", async () => {
+  const home = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "command-omp-swap-")));
+  const savedHome = process.env["HOME"];
+  process.env["HOME"] = home;
+  const cwd = join(home, "project");
+  fs.mkdirSync(cwd);
+  const store = join(home, ".omp/agent/sessions", cwd.replaceAll("/", "-"));
+  fs.mkdirSync(store, { recursive: true });
+  const path = join(store, "2026-10-01_s1.jsonl");
+  const foreign = join(home, "foreign.jsonl");
+  const at = Date.parse("2026-10-20T00:00:00Z");
+  const header = JSON.stringify({ type: "session", version: 3, id: "s1", cwd }) + "\n";
+  fs.writeFileSync(path, header);
+  fs.writeFileSync(foreign, header + JSON.stringify({ type: "thinking_level_change", timestamp: new Date(at + 10).toISOString(), thinkingLevel: "high" }) + "\n");
+  const pane = { pane_id: "pane-omp", cwd, foreground_cwd: cwd, agent: "omp" } as HerdrPane;
+  const snapshot = spyOn(client, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane] } as SessionSnapshot));
+  const rpc = spyOn(client, "herdrRpc").mockImplementation(async (method: string) => {
+    if (method === "agent.get") return { agent: { agent_session: { kind: "path", value: path } } } as never;
+    if (method === "pane.process_info") return { process_info: { foreground_processes: [] } } as never;
+    throw new Error(`unexpected RPC: ${method}`);
+  });
+  // the resolver has authorized the pane's own file when another is renamed over it
+  conversation.betweenAuthorizationForTests((stage) => { if (stage === "after") fs.renameSync(foreign, path); });
+  const thinking: SlashCommand = { name: "thinking", source: "builtin", description: "",
+    forms: [{ match: "bare", interaction: "none" }, { match: "other", interaction: "none" }] };
+  const sent = { id: "omp-thinking", text: "/thinking high", at, agent: "omp", identity: "fixture", screen: "", form: null,
+    invocations: commandInvocations("omp", "/thinking high", [thinking]) };
+  try {
+    const read = await conversation.readCommandTranscript(pane.pane_id);
+    expect(fs.existsSync(foreign)).toBe(false);
+    expect(commandOutcome(pane.pane_id, sent, { now: at + 30, transcript: read?.records })).toMatchObject({ state: "accepted", evidence: [] });
+  } finally {
+    conversation.betweenAuthorizationForTests(null);
+    rpc.mockRestore();
+    snapshot.mockRestore();
+    if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome;
+    conversation.forgetTranscriptState();
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 

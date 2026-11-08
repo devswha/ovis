@@ -1953,7 +1953,8 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
   } catch { return null; } finally { for (const entry of held) entry.close(); }
 }
 
-export async function ompTranscriptPath(paneId: string, cwd: string, known?: KnownProcesses): Promise<{ path: string; blobs: string | null }> {
+/** `identity`: the authorized file's exact dev:ino (authorizedTranscript), so later reads can be held to it. */
+export async function ompTranscriptPath(paneId: string, cwd: string, known?: KnownProcesses): Promise<{ path: string; blobs: string | null; identity?: string }> {
   const info = await herdrRpc<{ agent: { agent_session?: { kind?: unknown; value?: unknown } } }>("agent.get", { target: paneId });
   const session = info.agent.agent_session;
   const path = session?.kind === "path" && typeof session.value === "string" ? session.value : null;
@@ -1971,7 +1972,7 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
     if (unwritten !== null) throw new ConversationNotStarted(unwritten.id, "omp-transcript", unwritten.path);
     // the check above is lexical: a link out of the store is no transcript of this pane
     const inStore = authorizedTranscript(path, store);
-    if (inStore !== null && (route === null || ompRouteOwns(route, inStore.path, cwd))) return ompAuthorizedTranscript(inStore);
+    if (inStore !== null && (route === null || ompRouteOwns(route, inStore.path, cwd))) return { ...ompAuthorizedTranscript(inStore), identity: inStore.identity };
     if (route === null) throw new ConversationUnavailable("no_session_path");
   }
   // herdr names no session of this store (or another agent's): the pane's omp process does
@@ -1979,7 +1980,7 @@ export async function ompTranscriptPath(paneId: string, cwd: string, known?: Kno
   if (held === null) throw new ConversationUnavailable("no_session_path");
   // the held transcript is the pane's own, in the store its process keeps: authorized there, and read so
   const authorized = authorizedTranscript(held, route!.layout.sessions);
-  return authorized === null ? { path: held, blobs: null } : ompAuthorizedTranscript(authorized);
+  return authorized === null ? { path: held, blobs: null } : { ...ompAuthorizedTranscript(authorized), identity: authorized.identity };
 }
 
 /** The process's live API selection, lifecycle registration, or trusted report plus a unique held marker. */
@@ -2113,7 +2114,9 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
 type ResolvedTranscript =
-  | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null; ompBlobs?: string | null; letta?: { store: string; agent: string; conversation: string } } & (
+  | ({ path: string; codexHome?: string; agy?: AgyStore; piAgentDir?: string | null; ompBlobs?: string | null;
+    /** omp: the exact dev:ino of the file its resolver authorized (ompTranscriptPath) */
+    ompFile?: string; letta?: { store: string; agent: string; conversation: string } } & (
     | { source: Exclude<StreamSource, "copilot-transcript"> }
     | { source: "copilot-transcript"; binding: string; peerClaims: ReadonlySet<string> }
   ))
@@ -2222,7 +2225,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     }
     if (agent === "omp") {
       const authorized = await ompTranscriptPath(paneId, sessionCwd, known);
-      return { source: "omp-transcript", path: authorized.path, ompBlobs: authorized.blobs };
+      return { source: "omp-transcript", path: authorized.path, ompBlobs: authorized.blobs, ompFile: authorized.identity };
     }
     if (agent === "gjc") return { source: "gjc-transcript", path: await gjcTranscriptPath(paneId, sessionCwd, undefined, known) };
     // pi's own label only routes pi: an omo pane was taken above, by its process tree.
@@ -2659,7 +2662,11 @@ export async function readCommandTranscript(paneId: string, codexHome?: string, 
   const { source, path } = resolved;
   if (source !== "claude-transcript" && source !== "codex-transcript" && source !== "pi-transcript"
     && source !== "omp-transcript" && source !== "omo-transcript" && source !== "gjc-transcript") return null;
-  const stat = statSync(path);
+  // one exact stat: a file the resolver itself authorized (omp) is the only one read, compared whole as
+  // Windows' file indexes need; the read below is then held to this stat's file (#3398)
+  const exact = statSync(path, { bigint: true });
+  if (resolved.source === "omp-transcript" && resolved.ompFile !== undefined && resolved.ompFile !== `${exact.dev}:${exact.ino}`) return null;
+  const stat = { dev: Number(exact.dev), ino: Number(exact.ino), size: Number(exact.size), mtimeMs: Number(exact.mtimeNs) / 1e6 };
   const file = `${source}:${stat.dev}:${stat.ino}`;
   const signature = `${source}\0${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
   const cached = commandTranscripts.get(path);
