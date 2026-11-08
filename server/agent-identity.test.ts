@@ -46,10 +46,12 @@ describe("which agent a pane runs", () => {
 
   // hc tells a terminal's own pid and the pid in front of it, never a process start (#3319 review)
   it("names a terminal from its start only while that same process is still in front", () => {
-    // a foreground the runtime names but cannot name an agent from: the start does, while the pids match
-    expect(paneAgent({ foreground: ["node"], foregroundPid: 7, launcher: { argv: ["node", "/home/u/.bin/letta"], pid: 7 } }, "linux")).toBe("letta");
-    // a Windows terminal started directly as the shim: cmd.exe is in front of it, as the very pid it started
-    expect(paneAgent({ foreground: ["cmd.exe"], foregroundPid: 7, launcher: { argv: ["C:\\Users\\u\\letta.cmd"], pid: 7 } }, "windows")).toBe("letta");
+    // the runtime names no foreground program: the start does, while the pids match
+    expect(paneAgent({ foregroundPid: 7, launcher: { argv: ["node", "/home/u/.bin/letta"], pid: 7 } }, "linux")).toBe("letta");
+    expect(paneAgent({ foreground: [], foregroundPid: 7, launcher: { argv: ["C:\\Users\\u\\letta.cmd"], pid: 7 } }, "windows")).toBe("letta");
+    // a foreground the runtime names wins, even as the same pid: a claude start that exec()ed bash is bash now
+    expect(paneAgent({ foreground: ["bash"], foregroundPid: 7, launcher: { argv: ["claude"], pid: 7 } }, "linux")).toBeNull();
+    expect(paneAgent({ foreground: ["cmd.exe"], foregroundPid: 7, launcher: { argv: ["C:\\Users\\u\\letta.cmd"], pid: 7 } }, "windows")).toBeNull();
     // a terminal started as claude that now runs codex: what is in front is no longer that start
     expect(paneAgent({ launcher: { argv: ["claude"], pid: 7 }, foreground: ["codex"], foregroundPid: 9 }, "linux")).toBe("codex");
     expect(paneAgent({ launcher: { argv: ["claude"], pid: 7 }, foreground: ["bash"], foregroundPid: 9 }, "linux")).toBeNull();

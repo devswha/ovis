@@ -179,10 +179,14 @@ describe("buildSnapshot", () => {
 
   // hc tells a terminal's own pid and the pid in front of it, never a process start (#3319 review)
   it("names a terminal started directly as an agent while the process it started is still in front, and none a shell started", () => {
-    const started = (argv: string[], cwd: string, front = "bash") => ({ status: null, pid: 7, foreground: { pid: 7, name: front, argv: [front] }, argv, cwd });
-    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u", "cmd.exe"), "windows")).toBe("letta");
-    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u", "cmd.exe"), "elsewhere")).toBe("letta");
+    // the core names the pid in front but no program for it: the start names it while the pids match
+    const started = (argv: string[], cwd: string, front: string | null = null) => ({ status: null, pid: 7, foreground: { pid: 7, name: front ?? "", argv: front ? [front] : [] }, argv, cwd });
+    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u"), "windows")).toBe("letta");
+    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u"), "elsewhere")).toBe("letta");
     expect(agentOf(started(["node", "/home/u/.bin/letta"], "/home/u"), "linux")).toBe("letta");
+    // a program the core names in front wins, even as the start's pid: a claude start that exec()ed bash is bash
+    expect(agentOf(started(["claude"], "/home/u", "bash"), "linux")).toBeNull();
+    expect(agentOf(started(["C:\\Users\\u\\letta.cmd"], "C:\\Users\\u", "cmd.exe"), "windows")).toBeNull();
     for (const argv of [["cmd.exe", "/c", "letta.cmd"], ["pwsh", "-c", "letta"]]) expect(agentOf(started(argv, "C:\\Users\\u", "cmd.exe"), "windows")).toBeNull();
     expect(agentOf(started(["bash", "-lc", "letta"], "/home/u"), "linux")).toBeNull();
     // the process in front is no longer the one the terminal started, so the start names nobody

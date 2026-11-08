@@ -132,7 +132,7 @@ export function terminalPlatform(cwd: string | undefined, host: CoreHost): Progr
 export function agentOf(terminal: Pick<HcTerminal, "status" | "foreground"> & { cwd?: string | undefined; argv?: readonly string[] | undefined; pid?: number | null }, host: CoreHost): string | null {
   const front = terminal.foreground;
   const platform = terminalPlatform(front?.cwd || terminal.cwd, host);
-  return paneAgent({ reported: terminal.status?.app, foreground: front ? (front.argv?.length ? front.argv : [front.name]) : null, foregroundPid: front?.pid ?? null, launcher: terminal.argv?.length ? { argv: terminal.argv, pid: terminal.pid ?? null } : null }, platform);
+  return paneAgent({ reported: terminal.status?.app, foreground: front?.argv?.length ? front.argv : front?.name ? [front.name] : null, foregroundPid: front?.pid ?? null, launcher: terminal.argv?.length ? { argv: terminal.argv, pid: terminal.pid ?? null } : null }, platform);
 }
 
 /** hc's record of the process in front of a terminal (a record's `foreground`, a `foreground` event's data); null for none or another shape. */

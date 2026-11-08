@@ -143,8 +143,8 @@ export function paneSession(agent: string | null, facts: SessionFacts): AgentSes
 
 /**
  * The agent a pane runs: the program's own report first, else the process in front of it on
- * `platform`, its terminal's. With that naming none, the command the terminal was started with,
- * which names an agent only when it runs one directly (a shell's `-c letta` or `cmd /c letta.cmd`
+ * `platform`, its terminal's. Only when the runtime names no program in front, the command the
+ * terminal was started with, which names an agent only when it runs one directly (a shell's `-c letta` or `cmd /c letta.cmd`
  * names none) and only while the process it started is still the one in front: a terminal started
  * as `claude` whose pane now runs `codex` names Codex, never Claude. No runtime tells a process's
  * start time (hc names a terminal's own pid and the pid in front, herdr's process rows pids), so
@@ -153,8 +153,8 @@ export function paneSession(agent: string | null, facts: SessionFacts): AgentSes
 export function paneAgent(facts: PaneFacts, platform: ProgramPlatform): string | null {
   const reported = reportedAgent(facts.reported);
   if (reported) return reported;
-  const front = facts.foreground?.length ? processAgent(facts.foreground, platform) : null;
-  if (front) return front;
+  // a foreground the runtime names is the program in front, even as the start's pid (a start that exec()ed a shell)
+  if (facts.foreground?.length) return processAgent(facts.foreground, platform);
   const launcher = facts.launcher;
   if (!launcher?.argv.length || !startedInFront(facts.foregroundPid, launcher.pid)) return null;
   return processAgent(launcher.argv, platform);
