@@ -2961,6 +2961,9 @@ Which approach?
     // only the last line is omp's status row: one shaped like it inside the question is read as written
     const asking = (line: string) => [line, "", "❯ 1. Yes", "  2. No", "", "Enter to select · ↑/↓ to navigate · Esc to cancel"].join("\n");
     expect(ompId(asking(row("⠋ 1m 0s")))).not.toBe(ompId(asking(row("⠋ 2m 0s"))));
+    // a question line written exactly as the status row is: neither is blanked, so a change to both is another card
+    const echoed = (status: string) => [status, "", "❯ 1. Yes", "  2. No", "", "Enter to select · ↑/↓ to navigate · Esc to cancel", "", status].join("\n");
+    expect(ompId(echoed(row("⠋ 1m 0s")))).not.toBe(ompId(echoed(row("⠋ 2m 0s"))));
   });
 
   test("makes another card of anything else that changed, on a working line too", () => {

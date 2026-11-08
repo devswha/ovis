@@ -70,9 +70,11 @@ const WORKING_LINE_RE = /^[·✢✳✶✻✽*] (\S(?:.*\S)?…) \((?:\d+h )?(?:\
  */
 function steadyReader(agent: string, shown: string[]): SteadyReader {
   const pattern = agent === "claude" ? WORKING_LINE_RE : agent === "omp" ? OMP_STATUS_ROW_RE : null;
-  // omp draws its status row last, under the panel: a status-shaped line anywhere else is read as written (#3412)
+  // omp draws its status row last, under the panel: a status-shaped line anywhere else is read as written, and a
+  // row whose exact text another shown line also has is not blanked at all, as `read` goes by the text (#3412)
+  const last = shown.at(-1);
   const working = pattern === null ? []
-    : agent === "omp" ? (shown.length > 0 && pattern.test(shown.at(-1)!) ? [shown.length - 1] : [])
+    : agent === "omp" ? (last !== undefined && pattern.test(last) && shown.indexOf(last) === shown.length - 1 ? [shown.length - 1] : [])
     : shown.flatMap((line, at) => pattern.test(line) ? [at] : []);
   const [at] = working;
   if (working.length !== 1 || at === undefined) return { read: (other) => other, working: null };
