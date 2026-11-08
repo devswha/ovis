@@ -5,10 +5,10 @@
 export const RELAY_ZH: Record<string, string> = {
   "Your PCs": "我的电脑",
   "Unnamed PC": "未命名的电脑",
-  "To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).": "要添加另一台电脑，请扫描它在“手机与设备”中显示的二维码。",
+  "To add another PC, scan the QR code it shows under Devices and PCs (Phone & devices on an older Ovis).": "要添加另一台电脑，请扫描它在“设备和电脑”（旧版 Ovis 中为“手机和设备”）中显示的二维码。",
   "Scan the QR code on your PC": "请扫描电脑上的二维码",
-  "On the PC, open Settings → Devices and PCs (Phone & devices on an older Ovis) and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.": "在电脑上打开设置 → 手机与设备，开启通过 Ovis 中继的远程访问。那里显示的二维码会以与该电脑配对的状态打开此应用。",
-  "This device gets a key of its own for {name}. The PC lists it under Devices and PCs (Phone & devices on an older Ovis), where it can be removed.": "此设备将获得一把专用于 {name} 的密钥。电脑会在“设备和电脑”（旧版 Ovis 中为“手机与设备”）中列出它，并可在那里移除。",
+  "On the PC, open Settings → Devices and PCs (Phone & devices on an older Ovis) and turn on remote access through the Ovis relay. The QR code there opens this app paired with that PC.": "在电脑上打开设置 → 设备和电脑（旧版 Ovis 中为“手机和设备”），开启通过 Ovis 中继的远程访问。那里显示的二维码会以与该电脑配对的状态打开此应用。",
+  "This device gets a key of its own for {name}. The PC lists it under Devices and PCs (Phone & devices on an older Ovis), where it can be removed.": "此设备将获得一把专用于 {name} 的密钥。电脑会在“设备和电脑”（旧版 Ovis 中为“手机和设备”）中列出它，并可在那里移除。",
   "Its Ovis is not connected to the relay right now. Start Ovis on the PC, or check its connection, then try again.": "该电脑的 Ovis 当前未连接到中继。请在电脑上启动 Ovis 或检查其网络连接，然后重试。",
   "The PC answered through the relay but did not complete the connection. Try again; if it keeps happening, restart Ovis on the PC.": "电脑已通过中继作出应答，但未完成连接。请重试；如果持续出现，请在电脑上重新启动 Ovis。",
   "Check this device's connection, then try again.": "请检查此设备的网络连接，然后重试。",
