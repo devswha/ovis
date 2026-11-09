@@ -1041,6 +1041,8 @@ interface Entry {
   nextAt: number;
   /** whose sign-in the place held when this was read (holderOf) */
   holder: string;
+  /** a hidden account's kept reading that the last completed search did not find: the next such search drops it (#3391) */
+  gone?: true;
 }
 
 /** when a provider's sign-ins were last looked for, and the sources found then */
@@ -1103,6 +1105,8 @@ export class UsageService {
   private skipped: () => ReadonlySet<string> = () => new Set();
   /** what `skipped` gave the last pass: an account no longer in it was shown again */
   private lastSkipped: ReadonlySet<string> = new Set();
+  /** the hidden accounts whose kept reading a search dropped (#3391), by key, with their provider: while still hidden */
+  private dropped = new Map<string, UsageProviderId>();
 
   constructor(private readonly ctx: UsageContext = systemUsageContext(), private readonly providers: readonly UsageProvider[] = USAGE_PROVIDERS,
     private readonly additional: (refresh: boolean, skipped: ReadonlySet<string>) => Promise<readonly ProviderUsage[]> = async () => []) {}
@@ -1138,6 +1142,12 @@ export class UsageService {
     const shownAgain = new Set([...this.lastSkipped].filter((key) => !skipped.has(key)));
     for (const [source, entry] of this.entries) {
       if (entry.usage && shownAgain.has(entry.usage.key)) { this.searches.delete(entry.usage.id); this.entries.delete(source); }
+    }
+    // one whose kept reading was dropped (#3391) is known by its key alone, never by a prefix: a Hub account's key
+    // starts with its provider's id too, and must not send a fully hidden provider to its credentials
+    for (const [key, provider] of this.dropped) {
+      if (shownAgain.has(key)) this.searches.delete(provider);
+      if (!skipped.has(key)) this.dropped.delete(key);
     }
     this.lastSkipped = skipped;
     const usages = await Promise.all(this.providers.map((provider) => {
@@ -1185,7 +1195,8 @@ export class UsageService {
     const read = await Promise.all(found.map(async (signIn): Promise<[string, Entry]> => {
       const source = `${provider.id}|${signIn.source}`;
       const kept = keptFor(signIn);
-      if (kept) return [source, kept];
+      // found: no longer a reading gone for a search
+      if (kept) return [source, { usage: kept.usage, readAt: kept.readAt, nextAt: kept.nextAt, holder: kept.holder }];
       const entry = this.entries.get(source);
       // a hidden or removed account keeps its last reading: its credentials are not used (#3333)
       const key = entry?.usage?.key;
@@ -1193,18 +1204,28 @@ export class UsageService {
       // only while the place still holds that account: another one there is read anew, without the hidden one's row
       const held = hidden && entry?.holder === holderOf(signIn);
       const current = entry !== undefined && (held || (!hidden && now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
-      return [source, current ? entry : await this.read(provider, signIn, hidden ? null : entry?.usage ?? null, now)];
+      // found: no longer a reading gone for a search (an account the sign-in names none for is kept here, not by keptFor)
+      return [source, current ? { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder } : await this.read(provider, signIn, hidden ? null : entry?.usage ?? null, now)];
     }));
     // only a search that completed drops the places it did not find, a hidden one kept past invalidate (no search) included;
-    // a hidden account it did not name (gone, or a lookup that failed) keeps one reading, so it is not read when found again
+    // a hidden account it did not name (gone, or a lookup that failed) keeps one reading for one such search, so it is not
+    // read when found again soon after; one still not named by the search after that is dropped, so gone accounts do not
+    // pile up (#3391), and is read again only as a first sighting is. A search that could not look everywhere (a missing
+    // command: `incomplete`) ages none, so a hidden account it could not reach stays unread until one can
     if (searched) {
       const named = new Set(read.flatMap(([, entry]) => entry.usage ? [entry.usage.key] : []));
       for (const [source, entry] of this.entries) {
         if (!source.startsWith(`${provider.id}|`) || read.some(([found]) => found === source)) continue;
         const key = entry.usage?.key;
-        if (key !== undefined && this.lastSkipped.has(key) && !named.has(key)) { named.add(key); continue; }
+        if (key !== undefined && this.lastSkipped.has(key) && !named.has(key) && (incomplete || entry.gone !== true)) {
+          named.add(key);
+          if (!incomplete) entry.gone = true;
+          continue;
+        }
+        if (key !== undefined && this.lastSkipped.has(key) && !named.has(key)) this.dropped.set(key, provider.id);
         this.entries.delete(source);
       }
+      for (const key of named) this.dropped.delete(key);
     }
     for (const [source, entry] of read) this.entries.set(source, entry);
     const sources = read.map(([source]) => source);
