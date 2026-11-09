@@ -495,7 +495,7 @@ export class CLIProxyService {
           if (!start.hidden.has(row.key) && !live.hidden.has(row.key)) {
             this.shownRows.add(row);
             if (generation === this.generation) this.shownIdentities.set(row.key, identities);
-          } else if (JSON.stringify(this.shownIdentities.get(row.key)) !== JSON.stringify(identities)) {
+          } else if (generation === this.generation && JSON.stringify(this.shownIdentities.get(row.key)) !== JSON.stringify(identities)) {
             // the key now holds another account than the one it was shown as: that account is not this key's any more
             this.shownIdentities.delete(row.key);
           }
