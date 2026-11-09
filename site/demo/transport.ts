@@ -1327,13 +1327,6 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     }
     return json(startDemoPairing(), 200, { "cache-control": "no-store" });
   }
-  if (path === "/api/account/limits") {
-    const mode = new URLSearchParams(location.search).get("demo_limits");
-    const limits = mode === "full" ? { plan: "personal", pcs_max: 3, data_cap_bytes: 53_687_091_200, data_used_bytes: 13_314_398_618 }
-      : mode === "pcs-only" ? { plan: "personal", pcs_max: 3 }
-      : null;
-    return json({ limits }, 200, { "cache-control": "no-store" });
-  }
   // `?demo_account=member`: this PC belongs to an account, so a signed-in Settings offers joining by signing in
   if (path === "/api/account/status" && ACCOUNT_MEMBER) return json({ account: "demo-account", unlinked: [], removals: [], adds: [], blocked: [] }, 200, { "cache-control": "no-store" });
   // without `?demo_devices=` the demo answers no other device route: its /api/devices stays a 404, as before

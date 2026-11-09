@@ -28,11 +28,6 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     return pcs ? reply({ pcs }) : fail("introduction_none", "No introduction waits for this device", 404);
   }
   if (access.level !== "full" || access.role !== "drive") return fail("read_only", "this device can only watch", 403);
-  if (pathname === "/api/account/limits" && request.method === "GET") {
-    setRequestRoute(pathname);
-    const limits = await context.services.accountLimits.read(request.headers.get("x-ovis-account-token") ?? request.headers.get("authorization"));
-    return reply({ limits });
-  }
   if (pathname === "/api/account/status" && request.method === "GET") {
     setRequestRoute(pathname);
     const mailbox = context.services.accountMailbox;

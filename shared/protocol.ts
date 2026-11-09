@@ -610,7 +610,7 @@ export interface RelayStatus {
 }
 
 /**
- * GET /api/account/limits (from the account service's GET /v1/account/limits): the account's plan
+ * The account service's GET /v1/account/limits, as Settings → Account reads it: the account's plan
  * name, PC slot limit, and optional relay data allowance as reported by the account service.
  */
 export interface AccountLimits {

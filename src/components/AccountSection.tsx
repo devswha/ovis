@@ -12,7 +12,7 @@ import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNod
 import type { AccountLimits } from "../../shared/protocol.ts";
 import { listThisPc, thisPcInNoAccount } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
-import { ApiError, fetchAccountLimits } from "../lib/api.ts";
+import { ApiError } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, pcAccountServiceOf, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
@@ -235,19 +235,21 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     if (session === undefined) { show({ kind: "signed-out", error: null }); return; }
     const signedIn = { kind: "signed-in", provider: session.provider, account: session.account } as const;
     show({ ...signedIn, pcs: null, methods: null, limits: null, error: null });
-    const readLimits = (): Promise<AccountLimits | null> =>
-      fetchAccountLimits(session.access_token).then((fromServer) => fromServer ?? service.limits()).catch(() => service.limits().catch(() => null));
+    // the limits row is optional: read from the session's own service, apart, so it never holds up the rest
+    void service.limits().catch(() => null).then((limits: AccountLimits | null) => {
+      if (loads.current !== generation || limits === null) return;
+      setView((current) => current.kind === "signed-in" && current.account === session.account ? { ...current, limits } : current);
+    });
     try {
-      const [pcs, methods, limits] = await Promise.all([
+      const [pcs, methods] = await Promise.all([
         service.listPcs(),
         service.identities().catch((error: unknown) => {
           // a service from before sign-in methods: the list is left out, the rest works
           if (error instanceof AccountServiceError) return null;
           throw error;
         }),
-        readLimits(),
       ]);
-      show({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, limits, error: null });
+      if (loads.current === generation) setView((current) => ({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: null }));
     } catch (error) {
       if (error instanceof SignedOutError) show({ kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") });
       else show({ ...signedIn, pcs: [], methods: null, limits: null, error: t("The account service could not be reached. The PCs this device is paired with still work.") });

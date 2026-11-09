@@ -12,7 +12,6 @@ import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "..
 import { parseSystemReport } from "./systemReport.ts";
 import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
-  AccountLimits,
   WorkspaceMoved,
   HerdrPane,
   AgentKind,
@@ -302,14 +301,6 @@ export async function issuePortalInvite(name: string, days: number): Promise<Por
 /** Settings → Phone & devices: the Ovis relay, through which paired phones reach this PC from anywhere. */
 export function fetchRelay(): Promise<RelayStatus> {
   return getJson<RelayStatus>("/api/relay");
-}
-
-/** Settings → Account: the account's plan and limits, fetched through this PC's server. */
-export async function fetchAccountLimits(token?: string | null): Promise<AccountLimits | null> {
-  const response = await apiFetch("/api/account/limits", token ? { headers: { "x-ovis-account-token": token } } : undefined);
-  if (!response.ok) return null;
-  const body = await response.json().catch(() => null) as { limits?: AccountLimits | null } | null;
-  return body?.limits ?? null;
 }
 
 /** POST /api/relay/offer: a one-time pairing offer for the QR code, good until `expires_at`. */
