@@ -520,6 +520,19 @@ describe("the dashboard", () => {
       expect(nameOf()).toBe("Does Mac mini's screen show this ID?");
     });
 
+    it("drops the QR dialog when a directory refresh finds the account signed out, leaving the sign-in its only screen", async () => {
+      await mount(signedIn(four()));
+      await act(async () => { button("Add a PC").props.onClick(); });
+      await act(async () => { button("Pair with a QR or code").props.onClick(); });
+      expect(dialog().props["data-pair-dialog"]).toBe("qr");
+      const signedOut: RelayShellProps = { ...signedIn(four()), state: { kind: "list", devices: devices(), account: { kind: "signed-out", error: null } } };
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedOut) })); });
+      expect(renderer!.root.findAllByType("h1").map(textOf)).toEqual(["Sign in to Ovis"]);
+      // signing in again opens the dashboard without the dialog the sign-out closed
+      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) })); });
+      expect(dialogs()).toHaveLength(0);
+    });
+
     it("keeps the dashboard mounted under the sheet, so its filter and the control that opened the sheet are still there to take the focus back", async () => {
       await mount(signedIn(four()));
       const segBtn = (label: string) => renderer!.root.findByProps({ className: "segmented" }).find((n) => n.type === "button" && textOf(n).trim() === label);

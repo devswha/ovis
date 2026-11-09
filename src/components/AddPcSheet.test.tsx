@@ -178,21 +178,21 @@ describe("the Add-a-PC sheet", () => {
     expect(calls).toMatchObject({ closes: 1, cancels: 0 });
   });
 
-  it("walks an account join: expired Add window explanation, named approving device, 90-second wait, and refusal", async () => {
-    const approver = pcOf({ server_id: "a".repeat(32), name: "Work MacBook", state: "paired", paired: true });
+  it("walks an account join: expired Add window explanation, approval on a device connected to the PC, 90-second wait, and refusal", async () => {
+    // a PC this device paired by QR knows nothing of desk2's requests: it is never named as the approver
+    const unrelated = pcOf({ server_id: "a".repeat(32), name: "Work MacBook", state: "paired", paired: true });
     const pc = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
-    const stateWithPcs: RelayShellState = { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [approver, pc] } };
+    const stateWithPcs: RelayShellState = { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [unrelated, pc] } };
     await mount(props("join", pc, stateWithPcs));
     expect(all()).toContain("Add this device to desk2");
-    expect(all()).toContain("Add window closed");
-    expect(all()).toContain("Work MacBook");
+    expect(all()).toContain("Add window closed · an account member must approve on a device connected to desk2.");
+    expect(all()).toContain("Check the number on a device connected to desk2");
+    expect(all()).not.toContain("Work MacBook");
     expect(steps()).toEqual(["current", "todo", "todo", "todo"]);
     await click("Ask to join");
     expect(calls.joins).toEqual([[pc]]);
-    // when the controller moves from list to compare/approving/ready/failed, the approver name and 90-second text stay visible
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: false }));
-    expect(all()).toContain("Work MacBook");
-    expect(all()).toContain("Work MacBook shows three numbers: pick this one there.");
+    expect(all()).toContain("A device connected to desk2 shows three numbers: pick this one there.");
     const digits = renderer!.root.findByProps({ className: "relay-shell-digits" });
     expect(text(digits)).toBe("123 456");
     expect(digits.props["aria-label"]).toBe("1 2 3 4 5 6");
@@ -202,12 +202,10 @@ describe("the Add-a-PC sheet", () => {
     expect(calls.matches).toEqual([[]]);
     await update(props("join", pc, { kind: "compare", name: "desk2", digits: "123456", confirmed: true }));
     expect(steps()).toEqual(["done", "done", "running", "todo"]);
-    expect(all()).toContain("Waiting for Work MacBook to approve this device within 90 seconds…");
-    await update(props("join", pc, { kind: "ready", name: "desk2", server_id: SERVER_ID }));
-    expect(all()).toContain("Work MacBook");
+    expect(all()).toContain("Waiting for an account member to approve this device within 90 seconds…");
     await update(props("join", pc, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null }));
     expect(steps()).toEqual(["done", "done", "failed", "todo"]);
-    expect(all()).toContain("Work MacBook");
+    expect(all()).not.toContain("Work MacBook");
     expect(all()).toContain("desk2 did not approve this device");
     expect(all()).toContain("90 seconds");
     expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Close"]);
@@ -215,27 +213,16 @@ describe("the Add-a-PC sheet", () => {
     expect(calls).toMatchObject({ closes: 1, cancels: 0, retries: 0 });
   });
 
-  it("stays up when sessionStorage is denied, and still names the approver a previous page kept when it is not", async () => {
-    const denied = { getItem(): never { throw new DOMException("blocked", "SecurityError"); }, setItem(): never { throw new DOMException("blocked", "SecurityError"); }, removeItem() {} };
-    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: denied });
-    const closedWindow = new Date(Date.now() - 15 * 60_000).toISOString();
-    // ids no other test joins with: the sheet remembers approvers per PC for the whole test process
-    const approver = pcOf({ server_id: "a0".repeat(16), name: "Work MacBook", state: "paired", paired: true });
-    const pc = pcOf({ server_id: "c0".repeat(16), added_at: closedWindow });
-    // the account's PCs name the approver; keeping it for the PC's own page must not take the sheet down
-    await mount(props("join", pc, { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [approver, pc] } }));
-    expect(all()).toContain("Add window closed · an account member must approve on Work MacBook.");
-    await act(async () => { renderer!.unmount(); });
-    // nothing names one and the storage cannot be read: the generic wording
-    await mount(props("join", pcOf({ server_id: "d0".repeat(16), added_at: closedWindow }), LIST));
-    expect(all()).toContain("Add window closed · an account member must approve.");
-    expect(all()).not.toContain("Work MacBook");
-    await act(async () => { renderer!.unmount(); });
-    // the entry a previous page kept is read when the sheet opens
-    const kept = new Map<string, string>([["ovis-add-pc-approver", `${"e0".repeat(16)}:Studio desktop`]]);
-    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: (key: string) => kept.get(key) ?? null, setItem: (key: string, value: string) => { kept.set(key, value); }, removeItem: (key: string) => { kept.delete(key); } } });
-    await mount(props("join", pcOf({ server_id: "e0".repeat(16), added_at: closedWindow }), LIST));
-    expect(all()).toContain("Add window closed · an account member must approve on Studio desktop.");
+  it("keeps a connection failure's own diagnosis after a new PC's Add window has closed, and the closed window for a refusal", async () => {
+    const expired = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
+    await mount(props("new", expired, { kind: "failed", failure: "pc-offline", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(all()).toContain("desk2 is offline");
+    expect(all()).not.toContain("Add window closed");
+    await update(props("new", expired, { kind: "failed", failure: "relay-unreachable", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(all()).toContain("The relay could not be reached");
+    expect(all()).not.toContain("Add window closed");
+    await update(props("new", expired, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(all()).toContain("Add window closed · an account member must approve");
   });
 
   it("offers Try again on a wrong typed number to start a fresh handshake, and clears the field when the new challenge arrives", async () => {

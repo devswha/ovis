@@ -551,6 +551,18 @@
     white-space: normal;
     overflow-wrap: anywhere;
   }
+
+  /* a custom relay's host wider than the phone wraps inside the route instead of running off the dashboard */
+  .relay-map-host {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: 100%;
+    height: auto;
+    min-height: var(--chip-h);
+    border-radius: var(--radius-md);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
 }
 
 @media (forced-colors: active) {
