@@ -721,6 +721,48 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(before)).toEqual([]);
     });
 
+    it("reads no Hub account after a restart when even the hidden keys do not fit a saved list (#3453)", async () => {
+      const long = [0, 1, 2].map((at) => `${at}${"l".repeat(25000)}.json`);
+      for (const [at, name] of long.entries()) fake.files.push({ ...fake.files[0]!, name, email: `long-${at}@example.test`, auth_index: `l${at}` });
+      await configure();
+      await service.report();
+      const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      // the long-named accounts are hidden too: their keys alone are more than a saved list holds
+      for (const name of long) hidden.add(`claude:cliproxy:${name}`);
+      expect(() => service.hiddenChanged()).toThrow();
+      // Alice, under her file name, moves to index n: learned, never saved; then her email changes and Ovis restarts
+      fake.files[0]!.auth_index = "n";
+      service.invalidate();
+      await service.report(false, hidden);
+      fake.files[0]!.email = "alice-renamed@example.test";
+      const before = reads().length;
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => hidden);
+      await restarted.report(false, hidden);
+      // the second report comes after the hidden keys the Hub lists could be taken for their files
+      restarted.invalidate();
+      await restarted.report(false, hidden);
+      expect(reads().slice(before)).toEqual([]);
+    });
+
+    it("forgets a partial mark once its key is shown again, whether or not its account was kept (#3453)", async () => {
+      await configure();
+      await service.report();
+      let hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      // a saved list that could not hold Alice: left out, and marked partial
+      const path = join(dir, "cliproxy-hidden.json");
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), accounts: {}, blind: true, partial: ["claude:cliproxy:claude-a.json"] }));
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => hidden);
+      hidden = new Set();
+      restarted.hiddenChanged();
+      expect(JSON.parse(readFileSync(path, "utf8")).partial).toBeUndefined();
+    });
+
     it("widens a hidden account listed under thousands of files in time linear in them (#3453)", async () => {
       await configure();
       await service.report();
