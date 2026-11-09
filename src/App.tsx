@@ -18,7 +18,8 @@ import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
 import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
 import { useSetupGuide } from "./lib/useSetupGuide.ts";
 import { SessionHistory } from "./components/SessionHistory.tsx";
-import { WorktreeDialog } from "./components/WorktreeDialog.tsx";
+import { WorktreeRequestDialog } from "./components/WorktreeDialog.tsx";
+import { worktreesStartHere } from "./lib/repositoryWorkspaces.ts";
 import { UnsentTextDialog } from "./components/UnsentText.tsx";
 import { useUnsentRecovery } from "./lib/useUnsentRecovery.ts";
 import { sessionHistoryAgent, sessionHistoryListAgent, sessionHistorySourcePane } from "./lib/sessionHistory.ts";
@@ -620,7 +621,8 @@ export function App() {
       },
       openWorktree: (mode) => {
         const found = newTabTarget();
-        if (!found?.workspace.worktree || found.workspace.worktree.is_linked_worktree) return;
+        // the workspaces the sidebar and the palette offer worktrees for (lib/repositoryWorkspaces.ts)
+        if (!found || !worktreesStartHere(found.machineId, found.workspace)) return;
         setDrawerOpen(false);
         setWorktreeFor({ machineId: found.machineId, workspace: found.workspace, mode });
       },
@@ -1324,13 +1326,11 @@ export function App() {
       {viewing !== null && !fileDocked && <MachineContext.Provider value={viewing.machineId}>
         <FileViewer key={fileViewerKey(viewing)} path={viewing.path} paneId={viewing.paneId} onClose={closeFile} onOpen={(path) => openFile({ ...viewing, path, presentation })} onKind={reportFileKind} onTogglePresentation={toggleFilePresentation} keyboardActive={!settingsOpen} editable={fileEditable} />
       </MachineContext.Provider>}
-      {worktreeFor && <MachineContext.Provider value={worktreeFor.machineId}>
-        <WorktreeDialog mode={worktreeFor.mode} workspace={worktreeFor.workspace} onClose={() => setWorktreeFor(null)} onOpenPane={(paneId) => { setWorktreeFor(null); selectTarget(worktreeFor.machineId, paneId); }} onOpened={(opened) => {
-          setWorktreeFor(null);
-          if (opened.agent_started === true) actions.agentStarted(worktreeFor.machineId, opened.pane_id);
-          selectTarget(worktreeFor.machineId, opened.pane_id);
-        }} />
-      </MachineContext.Provider>}
+      {worktreeFor && <WorktreeRequestDialog request={worktreeFor} onClose={() => setWorktreeFor(null)} onOpenPane={(paneId) => { setWorktreeFor(null); selectTarget(worktreeFor.machineId, paneId); }} onOpened={(opened) => {
+        setWorktreeFor(null);
+        if (opened.agent_started === true) actions.agentStarted(worktreeFor.machineId, opened.pane_id);
+        selectTarget(worktreeFor.machineId, opened.pane_id);
+      }} />}
       {unsentFor && <UnsentTextDialog machines={machines} target={unsentFor} canRecover={unsentFor.pane.agent != null} onClose={closeUnsent} onRecover={recover} />}
       <CommandPalette key={selectedMachineId} machines={sidebarMachines} onSelect={selectTarget} open={paletteOpen} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} snapshot={snapshot} online={selectedMachine?.state === "connected"} selectedPaneId={selectedPaneId}
         // a peek shows the terminal: its toggle says Switch to chat, which ends the peek

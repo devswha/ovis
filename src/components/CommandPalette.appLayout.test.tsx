@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -70,11 +70,11 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer), shown = snapshot): Promise<string[]> {
+  async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer), shown = snapshot, online = false): Promise<string[]> {
     await act(async () => { renderer?.unmount(); });
     await act(async () => {
       renderer = create(createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
-        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online: false, selectedPaneId, view: "chat", actions }))));
+        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online, selectedPaneId, view: "chat", actions }))));
     });
     return renderer!.root.findAll((node) => node.props.className === "menu-item-main" && typeof node.props.children === "string").map((node) => node.props.children as string);
   }
@@ -137,6 +137,23 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     expect((await rows(TUI, "p1", ">", undefined, checkout(false))).filter((row) => worktreeRows.includes(row))).toEqual(worktreeRows);
     for (const listed of [await rows(TUI, "p1", ">", undefined, checkout(true)), await rows(APP_CORE, "p1", ">", undefined, checkout(false)), await rows(TUI, "p3", ">", undefined, checkout(false))]) {
       expect(listed.filter((row) => worktreeRows.includes(row))).toEqual([]);
+    }
+  });
+
+  it("lists them for a repository's folder herdr did not mark, as the sidebar's row menu does once git answers for it", async () => {
+    // git answers for w1's folder and refuses w2's, as GET /api/worktree/list does
+    const fetched = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => String(input).includes("workspace_id=w1")
+      ? Response.json({ worktrees: [] })
+      : Response.json({ error: { code: "not_a_repository", message: "not a repository" } }, { status: 400 }), globalThis.fetch));
+    try {
+      const worktreeRows = ["New worktree", "Open worktree…"];
+      await rows(TUI, "p1", ">", undefined, snapshot, true);
+      await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+      const listed = () => renderer!.root.findAll((node) => node.props.className === "menu-item-main" && typeof node.props.children === "string").map((node) => node.props.children as string);
+      expect(listed().filter((row) => worktreeRows.includes(row))).toEqual(worktreeRows);
+      expect((await rows(TUI, "p3", ">", undefined, snapshot, true)).filter((row) => worktreeRows.includes(row))).toEqual([]);
+    } finally {
+      fetched.mockRestore();
     }
   });
 

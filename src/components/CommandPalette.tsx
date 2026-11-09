@@ -31,6 +31,7 @@ import { useSheetSwipe } from "../lib/sheets.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
+import { useRepositoryWorkspaces } from "../lib/repositoryWorkspaces.ts";
 import { useWorktreeBranches } from "../lib/useWorktreeBranches.ts";
 import { worktreeLabel } from "../lib/worktreeName.ts";
 import { browseEntries, folderQuery, folderQueryFor, homeRelative, matchFolders, pinnedFolders, requestFilesFolder } from "../lib/paletteFolders.ts";
@@ -317,9 +318,12 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   // Rename tab opens the tab strip's name field, or, where the strip is left out (a lone tab on a
   // cramped screen), the dialog that stands in for it (PaneCanvas)
   const tabShown = selectedPane !== undefined;
-  // a worktree is made or opened from its repository's main checkout, as the row menu offers it
-  const selectedWorktree = snapshot?.workspaces.find((workspace) => workspace.workspace_id === selectedPane?.workspace_id)?.worktree;
-  const worktreeHere = actions.openWorktree !== undefined && worktreesOffered && !watching && !!selectedWorktree && !selectedWorktree.is_linked_worktree;
+  // a worktree is made or opened from its repository's main checkout, found as the row menu finds it
+  // (herdr's mark, else git's answer for the folder: lib/repositoryWorkspaces.ts)
+  const { repositoryWorkspaces } = useRepositoryWorkspaces({ machineId, snapshot, online, watching, offered: worktreesOffered, listWorktrees: api.listWorktrees });
+  const selectedWorkspaceInfo = snapshot?.workspaces.find((workspace) => workspace.workspace_id === selectedPane?.workspace_id);
+  const startsWorktrees = selectedWorkspaceInfo !== undefined && (selectedWorkspaceInfo.worktree ? !selectedWorkspaceInfo.worktree.is_linked_worktree : repositoryWorkspaces.has(selectedWorkspaceInfo.workspace_id));
+  const worktreeHere = actions.openWorktree !== undefined && worktreesOffered && !watching && startsWorktrees;
   const historyHere = selectedPaneId !== null && historyOffered && !watching;
 
   const paletteActions = useMemo<PaletteAction[]>(() => [
