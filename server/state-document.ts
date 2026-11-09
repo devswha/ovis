@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { chmodSync, closeSync, constants, copyFileSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { syncDirectory } from "./private-state.ts";
 import { basename, dirname } from "node:path";
@@ -97,8 +98,21 @@ export function holdsDocument(path: string, text: string): boolean {
  */
 export function writeStateDocument(path: string, text: string, keepDamaged: boolean): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, text, { mode: 0o600 });
+  // a name no one can guess, created exclusively ("wx": O_CREAT | O_EXCL, which follows no link at that name), so
+  // a link planted beside the document never receives it (#3437); no fsync: these documents are cheap to lose
+  const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  const fd = openSync(temporary, "wx", 0o600);
+  // created here: a write that fails part way (a full disk) removes it, so no fragment of the document stays
+  let open = true;
+  try {
+    writeFileSync(fd, text);
+    open = false; // a failed close is not retried: the descriptor is released either way
+    closeSync(fd);
+  } catch (error) {
+    if (open) try { closeSync(fd); } catch { /* the write's error says why */ }
+    try { rmSync(temporary, { force: true }); } catch { /* the write's error says why */ }
+    throw error;
+  }
   if (keepDamaged) {
     try {
       chmodSync(path, 0o600);
@@ -109,5 +123,10 @@ export function writeStateDocument(path: string, text: string, keepDamaged: bool
       throw new Error(`Cannot keep the damaged ${basename(path)} as ${basename(damagedCopy(path))} (${reason}), so it was not replaced`);
     }
   }
-  renameSync(temporary, path);
+  // a fresh name each time: one a failed rename left would stay for good, so it goes before the failure is told
+  try { renameSync(temporary, path); }
+  catch (error) {
+    try { rmSync(temporary, { force: true }); } catch { /* the rename's error says why */ }
+    throw error;
+  }
 }
