@@ -16,6 +16,7 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { isLoopbackBind, lanExposed } from "./access.ts";
 import { DeviceStore, mergeAccountTombstones } from "./devices.ts";
 import { PreferenceStore } from "./preferences.ts";
+import { readOmpHeldFilesSetting } from "./omp.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -293,6 +294,8 @@ export function createServer(
   }
   const devices = new DeviceStore(stateDir, merge?.devicesBlocked ?? null, accountBlocked);
   const preferences = new PreferenceStore(stateDir);
+  // Settings -> Experimental -> OMP on macOS herdr-core: chat from the session it holds open
+  readOmpHeldFilesSetting(() => preferences.get().settings.ompHeldFiles === true);
   // on herdr-core an agent pinned here is pinned in the Herdr app and its other clients too
   const stopPinBridge = servingCore() ? bridgePins(coreConnection(), preferences, LOCAL_MACHINE, stateDir) : null;
   // Chat's own rewind (#1500, never released) kept its rewinds here; nothing reads them since #1577
@@ -311,12 +314,15 @@ export function createServer(
   const usageAccounts = new UsageAccountList(stateDir, usage);
   const hiddenAccounts = (hidden: unknown): Set<string> => new Set(Array.isArray(hidden) ? hidden.filter((key): key is string => typeof key === "string") : []);
   // an account hidden in Settings (the shared usageHidden) or removed from Ovis has its sign-in looked up no more (#3333)
-  usage.skipAccounts(() => {
+  const skippedAccounts = () => {
     let removed: string[] = [];
     // an unreadable list skips nothing; the report says why
     try { removed = usageAccounts.removed(); } catch { /* UsageAccountList.report warns */ }
     return new Set([...hiddenAccounts(preferences.get().settings.usageHidden), ...removed]);
-  });
+  };
+  usage.skipAccounts(skippedAccounts);
+  // a Hub sign-in keeps the rows of the accounts hidden now, not only of those the last report skipped
+  cliProxy.skipAccounts(skippedAccounts);
   // an account shown again is looked up now, not at the browser's next poll; hiding one needs no read,
   // and with Plan limits off nothing is read at all (gh auth token included)
   let usageHidden = hiddenAccounts(preferences.get().settings.usageHidden);

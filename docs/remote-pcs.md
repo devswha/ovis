@@ -2,7 +2,7 @@
 
 Use **Settings → Devices and PCs → Add a connection → SSH** (the command palette has **Add PC** too) to connect a Linux or macOS computer (x64 or arm64) or a Windows PC (x64) running OpenSSH Server. Enter an SSH alias or `user@hostname`; the name defaults to that address. Advanced settings accept a port, a key path on the **web server**, and a named herdr session. Each registration selects one herdr socket. The sidebar groups PC → workspace → pane, and the header and new-session dialog show the destination PC. **Settings → Remote PCs → Show in sidebar** keeps a PC out of this device's sidebar, Agents list and command palette; it stays connected, and links and alerts still open its panes. The sidebar's PCs head counts the PCs hidden there; its menu shows each one again.
 
-The **SSH** tab lists the PCs it can find, each with **Add**, which opens the setup dialog with that address filled in: the PCs saved in herdr that wait for **Connect**, the hosts of the connection server's own ssh config (`~/.ssh/config` and the files its `Include` lines name; hosts named only by a pattern and everything under `Match` are left out, and only the first 200 are listed), and the other online, untagged PCs of its own Tailscale login, by their MagicDNS name. A Tailscale PC is reached over SSH like any other address, never through the relay, and a PC a config host already names (by alias or HostName) is listed once. A PC already added shows **Added**. Below the list, type any other SSH address. The list is read from `GET /api/machines/ssh-candidates`, which reads both sources and connects to nothing; a watching device, an open LAN window, a Portal visitor and a device on the relay are refused (`read_only`, `owner_only`), and then see only the field.
+The **SSH** tab lists the PCs it can find, each with **Add**, which opens the setup dialog with that address filled in: the PCs saved in herdr that wait for **Connect**, the hosts of the connection server's own ssh config (`~/.ssh/config` and the files its `Include` lines name, a wildcard `Include`'s folders listed through their open handle on Linux with glibc, what they match opened through it too, and by path elsewhere, where a listing gives names only (a folder swapped after its check can redirect it, so a name from outside home can be listed and a file can be missed): any host those files name or set an option for, and any host after that `Include`, is listed but never claims a Tailscale PC; on Linux the folders are read synchronously, so a home on a stalled network mount can freeze the server while the list is built; hosts named only by a pattern and everything under `Match` are left out), and the other online, untagged PCs of its own Tailscale login, by their MagicDNS name. The list stops at 200 rows, and each Tailscale PC it lists keeps its row within them (the first 32 of the login, as for the other Tailscale lists): config hosts fill only the rows left. A Tailscale PC is reached over SSH like any other address, never through the relay, and a PC a config host already names (by alias or HostName) is listed once. A PC already added shows **Added**. Below the list, type any other SSH address. The list is read from `GET /api/machines/ssh-candidates`, which reads both sources and connects to nothing; a watching device, an open LAN window, a Portal visitor and a device on the relay are refused (`read_only`, `owner_only`), and then see only the field.
 
 **Machines already saved in herdr appear automatically.** The connection server reads its account's
 `herdr machine list --json` at startup and every five seconds after the previous read finishes. Failed reads back off up to five minutes and
@@ -239,8 +239,35 @@ and herdr's default session only.
   `unsupported`, `missing_tool` (no curl, git or tar), `disk` (under 1 GB free in the home folder),
   `permission`, `bridge_there`, `ovis_there`, `changed` (the process to stop is no longer the one
   shown, or its pid now runs another program: nothing is stopped), `not_stopped`, `installer_failed` (with the installer's last words),
-  `no_launcher`, `not_started`, `connect_failed`. A failure or cancel after the server started by hand was stopped
-  says so, and whether another was installed in its place. These routes are this PC's owner's only, with the
+  `no_launcher`, `not_started`, `connect_failed`. Experimental, off by default (Settings → Experimental → PCs → Start a replaced server again): when it is off, a failed or cancelled replacement leaves the server started by hand stopped, as before, and nothing of it is copied. When it is on and the install fails or is cancelled after the server started by
+  hand was stopped, before anything was installed or launched in its place (the installer could not be
+  downloaded, or never ran), that server is started again as it was. Just before it is stopped, its program, arguments,
+  environment (its `OVIS_TOKEN` with the rest) and folder are copied from `/proc` into a folder only
+  that account can read. The stop goes ahead only while that pid is still the very server its bridge
+  registration recorded (its birth: this boot's id and start ticks on Linux, `ps`'s start time on macOS),
+  so another Ovis that took the pid after it ended is never stopped (`changed`), whether or not the
+  restore is on. A registration that recorded no birth (every 0.5.x server's) is stopped only if its
+  process started no later than its registration file was written (2 s of slack): one that took the
+  pid later is refused in plain words. The copy and the stop each go ahead only while that pid is still the process
+  shown (on Linux its start in clock ticks since boot from `/proc/<pid>/stat` and its owner; on macOS `ps`'s start time to the second and owner, where a pid reused within that second stays a residual; checked in the same command): one that took
+  its pid since is never copied or signalled (`changed`). A copy cut short removes itself. Nothing is stopped when copying fails this time (try again). When no faithful
+  copy can be made (its environment unreadable, its program or folder deleted since it started, as after
+  a Bun upgrade, or a byte that would not survive being started again, not UTF-8), it is replaced as on macOS:
+  without a copy, and the job says it stays stopped if the install then fails.
+  To start it again, its own Bun first binds the server's own address (`HOST`, `PORT`): one already
+  taken means a live server is there, its replacement among them, and nothing is started beside it; so does any live Ovis registered for that herdr session, managed or not, on any port. It
+  then reads the copy and starts the program with exactly that environment,
+  given to the process directly (never on a command line another account could read), in its own
+  session, its output in `~/.local/state/ovis/restored-server.log` (opened without following a link, this
+  account's own file, made readable by this account alone). A new SSH
+  connection does it, tried twice, after waiting for a server that is still stopping, and the PC stays
+  busy until then. Once something was installed or launched in its place, it is not started again (a
+  start of their own may still be on its way, and would come up beside it): the copy is then only
+  removed, and the words say what may be running. The copy is removed once read, once the new Ovis
+  answers, or after two hours whatever becomes of the job (`systemd-run` where it can, so it outlives the
+  SSH session; each later capture also sweeps older ones). Where there is no `/proc` (macOS) nothing is
+  copied, and the server is never started again with a guessed environment; the job then says it stays
+  stopped. The words say which happened. These routes are this PC's owner's only, with the
   `X-Herdr-Update: 1` header on a change, as updates are ([Updating PCs from here](#updating-pcs-from-here)). Only the process named is ever stopped, only after
   it is checked to be that PC's own Ovis server. While an install or setup runs, no other setup or
   install connects to that PC from here: the same PC as ssh resolves it (`ssh -G`: an alias, or its
