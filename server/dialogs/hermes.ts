@@ -213,6 +213,15 @@ const HERMES_STATUS_BAR = " ☤ ";
 
 const HERMES_APPROVAL_ROW_RE = /^([❯ ]) (\d)\. (.+)$/u;
 
+/** a row anywhere in the box that reads like a choice, however the command or warning got it there */
+const HERMES_CHOICE_LIKE_RE = /^\s*(?:❯\s*)?\d+\.\s/u;
+
+/**
+ * Hermes's classic spinner line between the panel and its hint (0.21.5): an icon, the tool and its timer in
+ * parentheses, e.g. "  💻 rm -rf ./scratch  (  6.7s · ↓ 5 tok)"; nothing else may stand there
+ */
+const HERMES_SPINNER_LINE_RE = /^ {2}\S{1,2} .+ {2}\( *\d[^()]*\)$/u;
+
 /** what Hermes left out, in its own words: "… (choose Show full command)", "… (command truncated — …)", "… (description truncated)" */
 const HERMES_APPROVAL_CUT_RE = /^… \((?:choose |command truncated|description truncated)/u;
 
@@ -260,7 +269,14 @@ function hermesInputLine(lines: string[]): number {
  */
 export function hermesModalWaits(screen: string): boolean {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
-  return HERMES_MODAL_INPUT_RE.test(lines[hermesInputLine(lines)] ?? "");
+  // a draft longer than the pane wraps the input onto more lines: its mark is on the first of them, so the lines
+  // up to the rule over the input (or Hermes's own line above it) are looked at, not only the last
+  for (let at = hermesInputLine(lines), seen = 0; at >= 0 && seen < 12; at -= 1, seen += 1) {
+    const line = lines[at]!;
+    if (HERMES_MODAL_INPUT_RE.test(line)) return true;
+    if (!line.trim() || /^─{2,}/u.test(line) || line.startsWith(HERMES_STATUS_BAR) || HERMES_APPROVAL_HINT_RE.test(line)) return false;
+  }
+  return false;
 }
 
 function parseHermesApproval(screen: string): ParsedPrompt | null {
@@ -271,7 +287,7 @@ function parseHermesApproval(screen: string): ParsedPrompt | null {
   // pane taller than Hermes needs) stay blank under the panel
   let bottom = hint - 1;
   for (let spinner = 0; bottom >= 0 && !/^╰─+╯$/u.test(lines[bottom]!); bottom -= 1) {
-    if (lines[bottom]!.trim() && ++spinner > 3) return null;
+    if (lines[bottom]!.trim() && (!HERMES_SPINNER_LINE_RE.test(lines[bottom]!) || ++spinner > 1)) return null;
   }
   if (bottom < 0) return null;
   // every row `│ `, the panel's text and ` │` at the borders' width, up to the top border
@@ -281,9 +297,13 @@ function parseHermesApproval(screen: string): ParsedPrompt | null {
   if (top < 0 || !/^╭─+╮$/u.test(lines[top]!) || [...lines[top]!].length !== width) return null;
   const [title, ...rows] = lines.slice(top + 1, bottom).map((line) => line.slice(2, -1).trimEnd());
   if (!HERMES_APPROVAL_TITLE_RE.test(title ?? "")) return null;
-  // the choices: rows numbered from 1, a label wrapped onto the rows under it at four spaces in
-  const first = rows.findIndex((row) => HERMES_APPROVAL_ROW_RE.exec(row)?.[2] === "1");
+  // the choices: rows numbered from 1, a label wrapped onto the rows under it at four spaces in. They are the last
+  // such block, over the warning; a command or warning that reads like a choice anywhere else is no card, since its
+  // rows could stand in for Hermes's own and move the cursor's meaning
+  let first = rows.length - 1;
+  while (first >= 0 && HERMES_APPROVAL_ROW_RE.exec(rows[first]!)?.[2] !== "1") first -= 1;
   if (first < 1) return null;
+  if (rows.slice(0, first).some((row) => HERMES_CHOICE_LIKE_RE.test(row))) return null;
   const choices: { label: string; cursor: boolean }[] = [];
   let end = first;
   for (; end < rows.length; end += 1) {
@@ -302,6 +322,7 @@ function parseHermesApproval(screen: string): ParsedPrompt | null {
   const description = rows.slice(spaced ? end + 1 : end);
   if ((spaced && (rows[first - 1] !== "" || rows[end] !== "")) || !command.some(Boolean) || !description.some(Boolean)) return null;
   if ([...command, ...description].some((line) => HERMES_APPROVAL_CUT_RE.test(line))) return null;
+  if (description.some((line) => HERMES_CHOICE_LIKE_RE.test(line))) return null;
   return finishPrompt("hermes", {
     kind: "approval", title: title!.replace(/^⚠\uFE0F?\s+/u, ""), question: description.map((line) => line.trim()).filter(Boolean).join(" "),
     body: command.join("\n"),

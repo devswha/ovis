@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText } from "./prompt.ts";
+import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
@@ -6924,6 +6924,15 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       expect(await answer(prompt.id, { option_index: 3 })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["down", "down", "down", "enter"]);
     });
+    // the cursor moved away under the arrows (a key pressed in the terminal meanwhile): the read before Enter sees
+    // it off the row picked, and no Enter is pressed
+    await withPane("hermes", "blocked", at(0), async (pane) => {
+      let cursor = 0;
+      pane.onSent = (sent) => { if (sent === "down") { cursor += 1; pane.screen = at(cursor === 3 ? 1 : cursor); } };
+      const prompt = (await card())!;
+      expect(await answer(prompt.id, { option_index: 3 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "down", "down"]);
+    });
     // another command asked meanwhile: nothing is pressed
     await withPane("hermes", "blocked", at(0), async (pane) => {
       const prompt = (await card())!;
@@ -6948,6 +6957,16 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
       expect(pane.sent).toEqual([]);
     });
+  });
+
+  test("takes only Hermes itself as the foreground that may take an approval's keys", () => {
+    for (const argv of [["/usr/local/bin/hermes"], ["hermes"], ["/usr/bin/python3", "/home/u/.local/bin/hermes", "chat"], ["python3.14", "-u", "/opt/hermes/bin/hermes"]]) {
+      expect([argv, isHermesForeground({ argv })]).toEqual([argv, true]);
+    }
+    // "hermes" as an argument of something else, or Python running other code
+    for (const argv of [["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"]]) {
+      expect([argv, isHermesForeground({ argv })]).toEqual([argv, false]);
+    }
   });
 
   test("logs prompt answer requests with pane_id, prompt_matched and outcome", async () => {

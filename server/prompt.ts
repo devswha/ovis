@@ -11,7 +11,6 @@ import { commandInvocations, commandOutcome, CommandReservations, dialogSettling
 import { codexTranscriptPath, paneCodexHomePlaced, unansweredCodexQuestions } from "./codex.ts";
 import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
 import { isPiProcess, piTranscriptPath } from "./pi.ts";
-import { isHermesProcess } from "./hermes.ts";
 import { heldOmoProcess } from "./omo.ts";
 import { OmoAskReader, ompAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { ompCallPrompt, ompMarkdownPrompt, ompOpenCall, ompStepPrompt } from "./omp-ask.ts";
@@ -824,13 +823,39 @@ async function piOwnsInput(paneId: string): Promise<boolean> {
 /**
  * Whether Hermes holds the pane's input (it is the pane's foreground process), not a shell it was
  * suspended behind (Ctrl+Z), where herdr still names the pane Hermes and anything run there can show an
- * approval's text. Unknown (herdr did not answer) is not Hermes's. Windows lists no foreground process
- * group: read as before.
+ * approval's text. Unknown (herdr did not answer) is not Hermes's, and neither is Windows, which lists no
+ * foreground process group: its approval stays for the terminal there, as one this reader leaves out.
  */
 async function hermesOwnsInput(paneId: string): Promise<boolean> {
-  if (process.platform === "win32") return true;
+  if (process.platform === "win32") return false;
   const info = await paneProcessInfo(paneId).catch(() => null);
-  return (info?.foreground_processes ?? []).some(isHermesProcess);
+  return (info?.foreground_processes ?? []).some(isHermesForeground);
+}
+
+/**
+ * The foreground process is Hermes itself: its own executable, or Python running Hermes's entry script as the
+ * script (the first argument that is not an option). isHermesProcess also takes a Python with "hermes" anywhere in its
+ * arguments (`python3 -c '…' /tmp/hermes`), which may label a pane but must not let it take an approval's keys.
+ */
+export function isHermesForeground(entry: { name?: string | null; argv0?: string | null; argv?: readonly string[] | null }): boolean {
+  const named = (value: string) => {
+    const lower = value.toLowerCase();
+    return lower === "hermes" || lower === "hermes.exe" || lower.endsWith("/hermes") || lower.endsWith("\\hermes.exe");
+  };
+  const argv = entry.argv ?? [];
+  const first = argv[0] ?? entry.argv0 ?? entry.name ?? "";
+  if (named(first)) return true;
+  const interpreter = (first.split(/[\\/]/).pop() ?? "").toLowerCase();
+  if (!/^python[\d.]*(?:\.exe)?$/u.test(interpreter)) return false;
+  // Python's own options before the script; -c and -m run something else, and -X/-W take a value
+  for (let at = 1; at < argv.length; at += 1) {
+    const arg = argv[at]!;
+    if (arg === "-c" || arg === "-m" || arg.startsWith("-c") || arg.startsWith("-m")) return false;
+    if (arg === "-X" || arg === "-W") { at += 1; continue; }
+    if (arg.startsWith("-")) continue;
+    return named(arg);
+  }
+  return false;
 }
 
 /** A move between a form's questions ran out of its request's time, or its asking ended: no further key. */
