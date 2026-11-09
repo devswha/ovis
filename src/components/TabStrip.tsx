@@ -38,6 +38,7 @@ import { useAppLayout, useMachineApi, useMachineId } from "../lib/machineContext
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { usePaneLocked } from "../lib/paneLocks.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { SHEET_QUERY } from "../lib/sheets.ts";
 import { useTabReorder } from "../lib/useTabReorder.ts";
 import { indicatorGlyph, paneStatus, rollupStatus, STATUS_WORD, type KnownStatus } from "../lib/status.ts";
 import { useSettings } from "../lib/settings.ts";
@@ -107,6 +108,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // has keyboard focus (TabStrip.css): the tab's menu is never only behind a right-click
   const hoverMenu = useMediaQuery("(hover: hover) and (pointer: fine) and (min-width: 769px)");
   const menuButton = touchMenu || hoverMenu;
+  // at a phone's width the menu is a bottom sheet, a dialog (RowMenu): the buttons that open it say so (G-037)
+  const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
   const soloPanes = useMediaQuery(SOLO_PANE_QUERY);
   // a compact-height phone screen (a foldable's outer display, landscape or the keyboard) has no
   // height to spare: a lone tab is not drawn there, so the pane and approval cards keep their room
@@ -114,6 +117,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const strip = useRef<HTMLDivElement>(null);
   const [picker, setPicker] = useState<{ anchor: HTMLElement; tab: HerdrTab; point?: { x: number; y: number }; previousFocus: HTMLElement | null; touch: boolean; workspaces?: true } | null>(null);
   const [editing, setEditing] = useState<{ tabId: string; value: string } | null>(null);
+  const renameDrafts = useRef(new Map<string, string>());
   // the name just sent, shown until herdr's snapshot carries it
   const [sent, setSent] = useState<{ tabId: string; label: string } | null>(null);
   const [confirm, setConfirm] = useState<{ tab: HerdrTab; title: string; body: string } | null>(null);
@@ -139,6 +143,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     previousOwner.current = owner;
     // Native IDs can repeat on another PC. A pending dialog never changes its target PC.
     setPicker(null); setEditing(null); setConfirm(null); setSent(null); setError(null);
+    renameDrafts.current.clear();
     refocus.current = null; closed.current = null;
   }, [owner]);
   const panes = rosterPanes(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id), selectedPane.pane_id);
@@ -330,7 +335,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
 
   const beginRename = (tab: HerdrTab): void => {
     setError(null);
-    setEditing({ tabId: tab.tab_id, value: sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "" });
+    const saved = sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "";
+    const draft = renameDrafts.current.get(tab.tab_id);
+    setEditing({ tabId: tab.tab_id, value: draft !== undefined ? draft : saved });
   };
   // The request is one-shot (the app clears it once handled), so the effect depends on it alone: a
   // strip that is not drawn drops it, and a later selection of this pane never replays it.
@@ -342,6 +349,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     onRenameHandled?.();
   }, [renameRequest]);
 
+  // the More list is long (it holds every tab that does not fit): letters typed over it jump to the next tab whose
+  // name starts with them, as a native menu's typeahead does (G-160). RowMenu's own type-ahead does it; a second
+  // one here would move the focus twice per letter and skip a tab sharing its first letter
   // a name being typed keeps its row: a keyboard that shortens the screen past the cutoff leaves the field in place
   if (!shown) return null;
   const rowShown = !tabsHidden || editing !== null;
@@ -366,6 +376,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
 
   // the mark of the pane the tab opens on, else of the first agent in it
   const agentOf = (tab: HerdrTab): PaneInfo["agent"] => paneFor(tab)?.agent ?? panesOf(tab).find((pane) => pane.agent)?.agent ?? null;
+  // the agent's name as herdr shows it ("OmO" for omo), for the tab's spoken description
+  const agentNameOf = (tab: HerdrTab): string | null => {
+    const pane = paneFor(tab) ?? panesOf(tab).find((candidate) => candidate.agent);
+    return pane?.display_agent?.trim() || pane?.agent || null;
+  };
   const statusOf = (tab: HerdrTab): KnownStatus => rollupStatus(panesOf(tab).map((pane) => paneStatus(pane as HerdrPane)));
   // the strip draws a mark only for a state; the sheet's list keeps a hollow one for a tab at rest, so its names line up
   const statusMark = (status: KnownStatus): ReactNode => settings.statusIndicators === "classic"
@@ -385,6 +400,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const saveRename = (tab: HerdrTab): void => {
     const label = editing?.value.trim() ?? "";
     if (label === "") { setError(t("A tab needs a name.")); return; }
+    renameDrafts.current.delete(tab.tab_id);
     refocus.current = tab.tab_id;
     setEditing(null);
     if (label === givenName(tab)) return;
@@ -427,6 +443,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const requestClose = (tab: HerdrTab): void => {
     if (tabLocked(tab)) return;
     setError(null);
+    const own = snapshot.panes.filter((pane) => pane.tab_id === tab.tab_id);
+    const what = own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length });
     // a turn that waits on its background work would lose that work too
     const busy = panesOf(tab).some((pane) => { const status = paneStatus(pane as HerdrPane); return status === "working" || status === "blocked" || status === "waiting"; });
     if (tabs.length > 1 && !busy) {
@@ -436,9 +454,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     setConfirm({
       tab,
       title: t("Close tab {name}?", { name: nameOf(tab) }),
-      body: tabs.length > 1
+      body: `${tabs.length > 1
         ? t("An agent in it is still at work, and stops with the tab.")
-        : t("It is the last tab of {workspace}: the workspace closes with it, and the agents and shells in it stop.", { workspace: workspace.label }),
+        : t("It is the last tab of {workspace}: the workspace closes with it, and the agents and shells in it stop.", { workspace: workspace.label })} ${what}`,
     });
   };
 
@@ -518,18 +536,24 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     id: `workspace:${entry.workspace_id}`, label: entry.label, icon: Folder, run: () => moveToWorkspace(tab, entry.workspace_id),
   }));
   // the strip's + opens a shell tab; the menu keeps the dialog, where an agent is picked
-  const tabActions = (tab: HerdrTab): RowMenuItem[] => [
-    ...(arrange && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
-      ? [{ id: "move-left", label: t("Move tab left"), icon: ArrowLeft, run: () => reorder.moveAdjacent(tab.tab_id, -1) }] : []),
-    ...(arrange && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) < tabs.length - 1
-      ? [{ id: "move-right", label: t("Move tab right"), icon: ArrowRight, run: () => reorder.moveAdjacent(tab.tab_id, 1) }] : []),
-    ...(canMoveOut(tab) ? [{ id: "move-workspace", label: t("Move to workspace…"), icon: FolderInput,
-      // RowMenu closes before it runs an item: the picker is set again, not updated
-      run: () => { if (picker) setPicker({ ...picker, workspaces: true }); } }] : []),
-    { id: "new-agent-tab", label: t("New tab with agent…"), icon: Bot, run: onNewTab },
-    ...(!renameOffered ? [] : [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, run: () => beginRename(tab) }]),
-    ...(tabLocked(tab) ? [] : [{ id: "close-tab", label: t("Close tab"), icon: X, danger: true, run: () => requestClose(tab) }]),
-  ];
+  // each item names the tab it acts on in its tooltip (G-022): a desktop popover shows no title of its own, and the
+  // item's words are what the browser checks read, so the name rides along as the item's title
+  const tabActions = (tab: HerdrTab): RowMenuItem[] => {
+    const name = nameOf(tab);
+    const about = (label: string): string => `${label} · ${name}`;
+    return [
+      ...(arrange && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
+        ? [{ id: "move-left", label: t("Move tab left"), title: about(t("Move tab left")), icon: ArrowLeft, run: () => reorder.moveAdjacent(tab.tab_id, -1) }] : []),
+      ...(arrange && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) < tabs.length - 1
+        ? [{ id: "move-right", label: t("Move tab right"), title: about(t("Move tab right")), icon: ArrowRight, run: () => reorder.moveAdjacent(tab.tab_id, 1) }] : []),
+      ...(canMoveOut(tab) ? [{ id: "move-workspace", label: t("Move to workspace…"), title: t("Move {tab} to", { tab: name }), icon: FolderInput, disabled: !closable,
+        // RowMenu closes before it runs an item: the picker is set again, not updated
+        run: () => { if (picker) setPicker({ ...picker, workspaces: true }); } }] : []),
+      { id: "new-agent-tab", label: t("New tab with agent…"), icon: Bot, disabled: !closable, run: onNewTab },
+      ...(!renameOffered ? [] : [{ id: "rename-tab", label: t("Rename tab"), title: about(t("Rename tab")), icon: Pencil, disabled: !closable, run: () => beginRename(tab) }]),
+      ...(tabLocked(tab) || !closable ? [] : [{ id: "close-tab", label: t("Close tab"), title: t("Close {tab}", { tab: name }), icon: X, danger: true, run: () => requestClose(tab) }]),
+    ];
+  };
 
   // the pane region every tab governs, as App names it. App gives that region the tabpanel role
   // only while the pane's own tab is in this snapshot (paneTabPanelLabel); the same call answers
@@ -548,6 +572,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
           const agent = agentOf(tab);
           const pickerOpen = picker?.tab.tab_id === tab.tab_id;
           const name = nameOf(tab);
+          // what the strip draws as a mark and a dot, said in words for a screen reader (G-045): the agent and its state
+          const tabStatusId = `tab-desc-${tab.tab_id}`;
+          const tabDescription = [agentNameOf(tab) ?? (browserTabs ? t("Shell") : null), status !== "unknown" ? t(STATUS_WORD[status]) : null].filter(Boolean).join(" · ");
+          const paneTitle = own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length });
+          const tabTitle = paneTitle.includes(name) ? paneTitle : `${name} — ${paneTitle}`;
           return (
             <div className={`tab-strip-item${active ? " is-active" : ""}${own.length > 1 ? " has-panes" : ""}${editing?.tabId === tab.tab_id ? " is-editing" : ""}${reorder.drag?.tabId === tab.tab_id ? " is-dragging" : ""}${reorder.drag?.boundary === index ? " is-drop-before" : ""}${reorder.drag?.boundary === index + 1 && !drawnNext(index) ? " is-drop-after" : ""}`} key={tab.tab_id} data-tab-index={index}>
               {editing?.tabId === tab.tab_id ? (
@@ -560,7 +589,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   placeholder={name}
                   value={editing.value}
                   onFocus={(event) => event.currentTarget.select()}
-                  onChange={(event) => setEditing({ tabId: tab.tab_id, value: event.target.value })}
+                  onChange={(event) => {
+                    const nextValue = event.target.value;
+                    renameDrafts.current.set(tab.tab_id, nextValue);
+                    setEditing({ tabId: tab.tab_id, value: nextValue });
+                  }}
                   onBlur={() => setEditing(null)}
                   onKeyDown={(event) => {
                     event.stopPropagation();
@@ -577,11 +610,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   className="tab-strip-tab"
                   data-tab-id={tab.tab_id}
                   aria-selected={active}
-                  aria-haspopup="menu"
+                  aria-haspopup={popup}
                   aria-keyshortcuts={!arrange ? "Shift+F10" : "Shift+F10 Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"}
                   aria-controls={panePanel}
+                  aria-describedby={tabDescription ? tabStatusId : undefined}
                   tabIndex={active ? 0 : -1}
-                  title={own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length })}
+                  title={tabTitle}
                   onPointerDown={(event) => {
                     reorder.onPointerDown(event, tab.tab_id);
                     // the chat of the tab pressed starts reading before the click picks it
@@ -600,19 +634,20 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                     const pane = paneFor(tab);
                     if (pane && pane.pane_id !== selectedPane.pane_id) onSelectPane(pane.pane_id);
                   }}
-                  onDoubleClick={!renameOffered ? undefined : () => beginRename(tab)}
+                  onDoubleClick={!renameOffered || !closable ? undefined : () => beginRename(tab)}
                   onContextMenu={(event) => { event.preventDefault(); openPicker(event, tab); }}
                   // the middle button closes a tab, as it does a browser's
-                  onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); requestClose(tab); } }}
+                  onAuxClick={(event) => { if (event.button === 1 && closable) { event.preventDefault(); requestClose(tab); } }}
                 >
                   {busyStatus(status) && statusMark(status)}
                   {/* named by the tab's own words alone: a screen reader hears the tab, not the agent's logo */}
                   {agent ? <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agent} size={14} /></span>
                     : browserTabs && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
                   <span className="tab-strip-label">{name}</span>
+                  {tabDescription && <span id={tabStatusId} className="visually-hidden">{tabDescription}</span>}
                 </button>
               )}
-              {menuButton && active && editing?.tabId !== tab.tab_id && <button type="button" className="tab-strip-menu" aria-label={t("Actions for {tab}", { tab: name })} title={t("Actions for {tab}", { tab: name })} aria-haspopup="menu" aria-expanded={pickerOpen} onClick={(event) => openPicker(event, tab)}>
+              {menuButton && active && editing?.tabId !== tab.tab_id && <button type="button" className="tab-strip-menu" aria-label={t("Actions for {tab}", { tab: name })} title={t("Actions for {tab}", { tab: name })} aria-haspopup={popup} aria-expanded={pickerOpen} onClick={(event) => openPicker(event, tab)}>
                 <Ellipsis aria-hidden="true" />
               </button>}
               {browserTabs && closable && editing?.tabId !== tab.tab_id && !tabLocked(tab) && <button type="button" className="tab-strip-close" tabIndex={-1} aria-label={t("Close {tab}", { tab: name })} title={t("Close {tab}", { tab: name })} onClick={() => requestClose(tab)}>
@@ -621,11 +656,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
             </div>
           );
         })}
-        <button type="button" className="tab-strip-add" aria-label={t("New terminal")} title={t("New terminal")} onClick={newTerminal}>
+        <button type="button" className="tab-strip-add" disabled={!closable} aria-label={t("New terminal")} title={!closable ? `${t("New terminal")} · ${t("View only")}` : t("New terminal")} onClick={newTerminal}>
           <Plus aria-hidden="true" />
         </button>
         {leftOut.length > 0 && <button type="button" className="tab-strip-more" aria-label={t("{n} more tabs", { n: leftOut.length })} title={t("{n} more tabs", { n: leftOut.length })}
-          aria-haspopup="menu" aria-expanded={moreAnchor !== null} onClick={(event) => setMoreAnchor(moreAnchor ? null : event.currentTarget)}>
+          aria-haspopup={popup} aria-expanded={moreAnchor !== null} onClick={(event) => setMoreAnchor(moreAnchor ? null : event.currentTarget)}>
           <ChevronDown aria-hidden="true" />{leftOut.length}
         </button>}
         {error && <span className="tab-strip-error" role="alert">{error}</span>}
@@ -651,12 +686,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const sheetItems = (): RowMenuItem[] => [
     ...tabs.map((tab): RowMenuItem => ({
       ...tabItem(tab),
-      ...(tabLocked(tab) ? {} : { aside: { label: t("Close {tab}", { tab: nameOf(tab) }), icon: X, run: () => requestClose(tab) } }),
+      ...(tabLocked(tab) || !closable ? {} : { aside: { label: t("Close {tab}", { tab: nameOf(tab) }), icon: X, run: () => requestClose(tab) } }),
     })),
-    ...(openTab ? tabActions(openTab).filter((item) => item.id === "move-left" || item.id === "move-right") : [])
+    ...(openTab && closable ? tabActions(openTab).filter((item) => item.id === "move-left" || item.id === "move-right") : [])
       .map((item, index) => index === 0 ? { ...item, divider: true } : item),
-    { id: "new-terminal", label: t("New terminal"), icon: Plus, divider: true, run: newTerminal },
-    { id: "new-agent-tab", label: t("New tab with agent…"), icon: Bot, run: onNewTab },
+    { id: "new-terminal", label: t("New terminal"), icon: Plus, divider: true, disabled: !closable, run: newTerminal },
+    { id: "new-agent-tab", label: t("New tab with agent…"), icon: Bot, disabled: !closable, run: onNewTab },
   ];
   return (
     <>
@@ -664,6 +699,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
         : end === undefined ? row : <div className="tab-strip-row">{row}<div className="tab-strip-end">{end}</div></div>}
       {picker && <RowMenu key={picker.workspaces ? "workspaces" : "tab"} anchor={picker.anchor} point={picker.point} restoreFocusTo={picker.previousFocus}
         title={picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab)}
+        header={<span className="tab-strip-menu-target">{picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab)}</span>}
         items={picker.workspaces ? workspaceItems(picker.tab) : pickerItems(picker.tab, picker.touch)} align="start" onClose={() => setPicker(null)} />}
       {moreAnchor && leftOut.length > 0 && <RowMenu anchor={moreAnchor} restoreFocusTo={moreAnchor} title={t("More tabs")} items={leftOut.map(tabItem)} align="start" onClose={() => setMoreAnchor(null)} />}
       {sheet && onSheetClose && <RowMenu anchor={sheet} title={t("Tabs of {workspace}", { workspace: workspace.label })} items={sheetItems()} onClose={onSheetClose} />}

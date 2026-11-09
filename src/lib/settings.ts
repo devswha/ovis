@@ -990,8 +990,9 @@ function coarsePointer(): boolean {
 }
 
 /** Whether the sidebar shows each open PC's load: as chosen on this device, else while two or more PCs are connected. */
-export function pcLoadOn(settings: Pick<Settings, "pcLoad">, machines: readonly { state: string }[]): boolean {
-  return settings.pcLoad ?? machines.filter((machine) => machine.state === "connected").length >= 2;
+export function pcLoadOn(settings: Pick<Settings, "pcLoad">, _machines: readonly { state: string }[]): boolean {
+  // off until chosen in Settings: the owner judged each PC's CPU, memory and disk line not needed by default
+  return settings.pcLoad ?? false;
 }
 
 /** Whether Enter (Return) sends from the composer: the device's choice, else not on a touch screen. */

@@ -36,7 +36,7 @@ import { browserEvidencePage, browserEvidenceTracing, startBrowserEvidence } fro
 import type { BrowserEvidenceSession } from "./browser-evidence.ts";
 import { chromePath } from "./chrome-path.ts";
 
-const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-browser-")));
+const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-ui-")));
 const workspaces: string[] = [];
 const worktreeWorkspaces: string[] = [];
 // the repository the worktree step makes, for the cleanup to find what the step made
@@ -408,21 +408,21 @@ try {
   const finishKey = `ovis:finish:local:${encodeURIComponent(completionSnapshot!.finish_epoch!)}:${encodeURIComponent(paneA)}`;
   assert.equal(await page.locator(".pane-frame.is-current [data-pane-content]").count(), 0, "an unavailable conversation is not presented content");
   assert.equal(await page.evaluate((key) => localStorage.getItem(key), finishKey), null, "an unavailable chat does not acknowledge its finish");
-  await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
+  await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
   await page.locator(".pane-frame.is-current .terminal-stack[data-pane-content]").waitFor();
   await agentRow(paneA).locator('.badge[data-status="idle"]').waitFor();
   assert.equal(await page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? "null")?.id, finishKey), completion.finish_id,
     "presenting terminal output acknowledges exactly the bridge's completed turn");
-  await page.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
+  await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
   console.log("PASS delayed machines poll preserves newer status; unavailable chat keeps DONE until terminal content is presented");
 
   // Agents is global to the sidebar: explicit pane selection from that list keeps its machine and pane target.
-  // The test session's only PC is the Host, drawn without its header: no caret folds it, and its + is the New
-  // workspace row under the workspaces. A PC's fold over Agents, with two PCs, is in sidebar-spacing-demo-regression.ts.
+  // The test session's only PC is the Host, drawn without its header: no caret folds it, and New workspace
+  // stays available in the compact header. A PC's fold over Agents, with two PCs, is in sidebar-spacing-demo-regression.ts.
   await herdrRpc("pane.report_agent", { pane_id: paneB, source: "manual", agent: "codex", state: "idle" });
   await agentRow(paneB).waitFor();
   assert.equal(await page.locator(".machine-group .machine-header").count(), 0, "the lone Host is drawn without its header");
-  assert.equal(await page.locator(".machine-group .machine-new-row").count(), 1, "its + is the New workspace row");
+  assert.equal(await page.getByRole("button", { name: "New workspace", exact: true }).count(), 1, "its + offers New workspace");
   await agentRow(paneB).locator(".agent-select").click();
   await agentRow(paneB).locator('.agent-select[aria-current="true"]').waitFor();
   assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem("ovis:selection") ?? "null")),
@@ -619,7 +619,7 @@ try {
   // Use a real browser paste: keydown must not send Ctrl+V (0x16) to the agent,
   // where it can trigger image paste against the server's unrelated clipboard.
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin });
-  await page.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
+  await page.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
   await pendingReady(paneA);
   const fileInputSocket = inputStates.get(paneA)?.socket;
   assert.ok(fileInputSocket, "the current pane has an input-ready attachment");
@@ -729,7 +729,7 @@ try {
     await page.locator(`.pane-select[title^="${paneA} —"]`).click();
     await until(async () => (await selectedTitle())?.startsWith(`${paneA} —`) === true, "back on the first pane");
   }
-  await page.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
+  await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
   await composer.waitFor();
   // the empty message box has no text to select: the pane shortcut switches panes from it too
   await composer.focus();
@@ -951,7 +951,7 @@ try {
   const reportPending = (state: string) => herdrRpc("pane.report_agent", { pane_id: pendingPane, source: "manual", agent: "claude", state });
   await reportPending("working");
   await page.locator(`.pane-select[title^="${pendingPane} —"]`).click();
-  await page.getByRole("group", { name: "Pane view", exact: true }).getByRole("button", { name: "Chat", exact: true }).click();
+  await page.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
   await page.locator('.composer-status[data-status="working"]').waitFor();
   await until(async () => await page.locator(".composer-agent-label").innerText() === "Claude", "foreground agent identity reached the composer");
   await pendingReady(pendingPane);
@@ -1110,7 +1110,7 @@ try {
   await until(async () => await page.locator(".composer-queue-text").count() === 3, "queue restored");
   assert.equal(await page.locator(".composer-queue-text").nth(1).inputValue(), "# edited second message");
   // the queue belongs to the chat lens: the terminal lens hides it and keeps it for the return
-  const lens = page.getByRole("group", { name: "Pane view", exact: true });
+  const lens = page.locator(".view-switch");
   await lens.getByRole("button", { name: "Terminal", exact: true }).click();
   await until(async () => await page.locator(".composer-queue").count() === 0, "queue hidden in the terminal lens");
   await lens.getByRole("button", { name: "Chat", exact: true }).click();
@@ -1510,7 +1510,7 @@ try {
     await createGate;
     await route.continue();
   });
-  await page.locator(".machine-new-row").click();
+  await page.getByRole("button", { name: "New workspace", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: /^New workspace/ });
   // opening Browse on home leaves Directory as typed, `~`, not the absolute path it lists
   await dialog.getByLabel(/^Directory/).fill("~");
@@ -1888,8 +1888,8 @@ try {
   await page.unroute("**/api/agents");
   await page.evaluate(() => localStorage.removeItem("ovis:new-session-agent"));
   console.log("PASS reopening after a failed agent start owns focus before paint, enables its fields and closes with Escape");
-  // the lone Host's New workspace row is New workspace again, not a tab in the workspace the last dialog was for
-  await page.locator(".machine-new-row").click();
+  // the lone Host's New workspace action is New workspace again, not a tab in the workspace the last dialog was for
+  await page.getByRole("button", { name: "New workspace", exact: true }).click();
   await page.getByRole("dialog", { name: /^New workspace/ }).waitFor();
   await page.keyboard.press("Escape");
   await page.getByRole("dialog", { name: /^New workspace/ }).waitFor({ state: "hidden" });
@@ -2234,7 +2234,7 @@ try {
   await mobilePage.locator(".conn-live").waitFor();
   const tapHighlight = await mobilePage.locator(".view-switch button").first().evaluate((node) => getComputedStyle(node).getPropertyValue("-webkit-tap-highlight-color"));
   assert.equal(tapHighlight, "rgba(0, 0, 0, 0)", "native tap overlays do not obscure selection");
-  await mobilePage.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
+  await mobilePage.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
   await mobilePage.getByRole("textbox", { name: "Message", exact: true }).fill("mobile draft");
   await mobilePage.locator(".chat-terminal-fallback").waitFor();
   assert.equal(await mobilePage.locator(".chat-terminal-fallback").getAttribute("open"), null, "missing native history is labeled, not presented as broken chat");
@@ -2297,10 +2297,10 @@ try {
   await mobilePage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await mobilePage.waitForTimeout(NO_SEND_WAIT_MS); // fixed wait: a picked pane may not take the keyboard
   assert.equal(await typing(mobilePage), false, "a pane picked on a phone does not take the keyboard");
-  await mobilePage.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
+  await mobilePage.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
   await mobilePage.waitForTimeout(NO_SEND_WAIT_MS); // fixed wait: switching the lens may not take the keyboard
   assert.equal(await typing(mobilePage), false, "nor does switching its lens");
-  await mobilePage.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
+  await mobilePage.locator(".view-switch").getByRole("button", { name: "Chat", exact: true }).click();
   await mobilePage.getByRole("textbox", { name: "Message", exact: true }).tap();
   await until(() => typing(mobilePage), "a tap on the message box takes the keyboard");
   await mobilePage.getByRole("textbox", { name: "Message", exact: true }).blur();
@@ -2364,7 +2364,7 @@ try {
   }));
   await touchPage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}`);
   await touchPage.locator(".conn-live").waitFor();
-  await touchPage.getByTitle("Live terminal (⌘⇧J)", { exact: true }).click();
+  await touchPage.locator(".view-switch").getByRole("button", { name: "Terminal", exact: true }).click();
   await touchPage.locator("[data-direct-typing]").waitFor();
   assert.equal(await touchPage.locator(".terminal-input").count(), 0, "a phone starts in direct typing");
   assert.equal(await touchPage.evaluate(() => document.activeElement?.classList.contains("xterm-helper-textarea") ?? false), false,
