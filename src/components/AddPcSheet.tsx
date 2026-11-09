@@ -20,8 +20,6 @@ import { EnrollmentStatus } from "./EnrollmentStatus.tsx";
 export type AddPcSheetMode = "new" | "join" | "add";
 export type AddPcPhase = "start" | "confirm" | "connecting" | "compare" | "wrong" | "approving" | "ready" | "failed";
 export type AddPcStepStatus = "done" | "current" | "running" | "todo" | "failed";
-const APPROVER_STORAGE_KEY = "ovis-add-pc-approver";
-const lastApprovers = new Map<string, string>();
 
 export function addPcPhase(pc: MyPc, state: RelayShellState): AddPcPhase {
   switch (state.kind) {
@@ -53,34 +51,6 @@ export interface AddPcSheetProps {
   onRetry?: () => void; onOpenPc?: () => void; onCancel: () => void; onClose: () => void; onPairByQr: () => void;
 }
 
-/** The approver a previous page kept for `serverId` (`<server id>:<name>`); none when the tab's storage is blocked or holds another PC's. */
-function storedApprover(serverId: string | null): string | null {
-  if (serverId === null) return null;
-  let entry: string | null = null;
-  try { entry = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(APPROVER_STORAGE_KEY) : null; } catch { /* storage denied: this page's own sources name the approver */ }
-  return entry?.startsWith(`${serverId}:`) ? entry.slice(serverId.length + 1) : null;
-}
-
-function resolveApprover(pc: MyPc | null, state: RelayShellState, stored: string | null): string | null {
-  if (pc === null) return null;
-  if ((state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-in" && state.account.pcs) {
-    const paired = state.account.pcs.find((row) => row.paired && row.server_id !== pc.server_id);
-    if (paired) return paired.name;
-  }
-  if (state.kind === "list") {
-    const saved = state.devices.find((device) => device.server_id !== pc.server_id && device.name);
-    if (saved?.name) return saved.name;
-  }
-  return lastApprovers.get(pc.server_id) ?? stored;
-}
-
-/** Keeps the approver for the PC's own page, where the join goes on without the account's list; a blocked storage keeps it for this page alone. */
-function rememberApprover(serverId: string, approver: string | null): void {
-  if (!approver) return;
-  lastApprovers.set(serverId, approver);
-  try { if (typeof sessionStorage !== "undefined") sessionStorage.setItem(APPROVER_STORAGE_KEY, `${serverId}:${approver}`); } catch { /* storage denied or full: the in-memory copy serves this page */ }
-}
-
 export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, onOpenPc, onCancel, onClose, onPairByQr }: AddPcSheetProps) {
   const t = useT(), locale = useLocale(), phone = useMediaQuery(SHEET_QUERY);
   const id = useId();
@@ -93,11 +63,6 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
   const [retriedChallenge, setRetriedChallenge] = useState<number | null>(null);
   const prevChallenge = useRef<number | null>(null);
 
-  // read once when the sheet opens: the sheet is mounted per PC, and the storage is never touched while rendering
-  const [stored] = useState(() => storedApprover(pc?.server_id ?? null));
-  const approver = resolveApprover(pc, state, stored);
-  const serverId = pc?.server_id ?? null;
-  useEffect(() => { if (serverId !== null) rememberApprover(serverId, approver); }, [serverId, approver]);
   if (state.kind === "compare" && state.wrong && challenge > 0 && retriedChallenge !== challenge) setRetriedChallenge(challenge);
 
   useLayoutEffect(() => {
@@ -148,7 +113,8 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     title = mode === "new" ? t("Add {name} to your account", { name }) : t("Add this device to {name}", { name });
     sub = mode === "new"
       ? (windowExpired && phase !== "failed" ? t("Add window closed · an account member must approve.") : t("Type the number {name} shows on its own screen, then approve there.", { name }))
-      : approver ? t("Add window closed · an account member must approve on {approver}.", { approver }) : t("Add window closed · an account member must approve.");
+      // only a device connected to the PC hears its join request (docs/account.md "Who may admit a device"), so none is named
+      : t("Add window closed · an account member must approve on a device connected to {name}.", { name });
     switch (phase) {
       case "start":
         actions = mode === "new"
@@ -182,7 +148,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           body = (
             <>
               <p className="relay-shell-digits" aria-label={digits.split("").join(" ")}>{`${digits.slice(0, 3)} ${digits.slice(3)}`}</p>
-              <p className="relay-shell-copy">{approver ? t("{approver} shows three numbers: pick this one there.", { approver }) : t("Another of your devices shows three numbers: pick this one there.")}</p>
+              <p className="relay-shell-copy">{t("A device connected to {name} shows three numbers: pick this one there.", { name })}</p>
             </>
           );
           actions = pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onMatch()}>{t("The numbers match")}</button>);
@@ -202,7 +168,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         body = (
           <div className="relay-shell-wait" role="status">
             <div className="boot-spinner" aria-hidden="true" />
-            <p className="relay-shell-detail">{mode === "new" ? t("Approve this device on {name} within 90 seconds to finish.", { name }) : approver ? t("Waiting for {approver} to approve this device within 90 seconds…", { approver }) : t("Waiting for an account member to approve this device within 90 seconds…")}</p>
+            <p className="relay-shell-detail">{mode === "new" ? t("Approve this device on {name} within 90 seconds to finish.", { name }) : t("Waiting for an account member to approve this device within 90 seconds…")}</p>
           </div>
         );
         actions = cancel;
@@ -213,7 +179,9 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
         break;
       case "failed": {
         const failureKind = state.kind === "failed" ? state.failure : null;
-        const expiredWindowFailure = mode === "new" && (failureKind === "pair-unavailable" || windowExpired);
+        // a connection that failed says why even after the window closed: the window is not what stopped it
+        const connectionFailure = failureKind === "pc-offline" || failureKind === "pc-unresponsive" || failureKind === "relay-unreachable";
+        const expiredWindowFailure = mode === "new" && (failureKind === "pair-unavailable" || (windowExpired && !connectionFailure));
         const failure = state.kind === "failed" ? relayFailureText(t, state.failure, name, state.detail) : null;
         body = failure && (
           <div role="alert">
@@ -240,7 +208,7 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
     [t("Ready"), t("This device can open {name}", { name })],
   ] : [
     [t("Ask to join"), t("Through your account, with this device's key")],
-    [approver ? t("Check the number on {approver}", { approver }) : t("Check the number on another of your devices"), t("It shows three; pick the one this device shows")],
+    [t("Check the number on a device connected to {name}", { name }), t("It shows three; pick the one this device shows")],
     [t("Approved by an account member"), t("On that device, never on {name} itself", { name })],
     [t("Ready"), t("This device can open {name}", { name })],
   ]).map(([label, detail], step) => ({ label, detail, status: statuses[step] ?? "todo" }));

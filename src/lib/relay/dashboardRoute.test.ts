@@ -12,6 +12,11 @@ describe("dashboardRoute", () => {
     expect(parseDashboardHash("#relay")).toEqual({ view: "relay", filter: "all", relay: null, pc: null });
     expect(parseDashboardHash("#settings")).toEqual({ view: "settings", filter: "all", relay: null, pc: null });
     expect(parseDashboardHash("#unknown")).toEqual({ view: "overview", filter: "all", relay: null, pc: null });
+    // names an object inherits are no legacy anchors
+    for (const inherited of ["#constructor", "#toString", "#__proto__", "#hasOwnProperty"]) {
+      expect(parseDashboardHash(inherited)).toEqual({ view: "overview", filter: "all", relay: null, pc: null });
+      expect(isDashboardHash(inherited)).toBe(false);
+    }
   });
 
   it("maps legacy scroll-anchor hashes onto their real views", () => {

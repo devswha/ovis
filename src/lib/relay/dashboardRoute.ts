@@ -30,7 +30,7 @@ function isFilter(value: string | null): value is DashboardFilter {
 
 function parseHead(raw: string): DashboardView | null {
   if (isView(raw)) return raw;
-  return LEGACY_VIEW[raw] ?? null;
+  return Object.hasOwn(LEGACY_VIEW, raw) ? LEGACY_VIEW[raw] ?? null : null;
 }
 
 /**

@@ -1269,6 +1269,28 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
     return `${routes.length} routes, each link meets the item above, the last ends inside its relay's mark`;
   });
 
+  // a custom relay's host wider than the phone wraps inside the route list instead of running off the dashboard
+  await check("map-long-host-390", async () => {
+    const host = "relay-eu-west-dedicated-instance-for-the-studio-team.customer-internal.example.com";
+    const { page, fleet } = await open({ fleet: "F4", width: 390, directory: async (route) => {
+      const pcs = directoryOf(fleet, Date.now()).map((pc) => ({ ...pc, relay: `wss://${host}` }));
+      await route.fulfill({ status: 200, headers: { "access-control-allow-origin": APP }, contentType: "application/json", body: JSON.stringify({ pcs }) });
+    } });
+    await page.locator('.relay-dash[data-dashboard-mode="account"]').waitFor({ timeout: LOAD_MS });
+    await go(page, "#relay", "relay");
+    const pill = page.locator(".relay-map-routes .relay-map-host", { hasText: host });
+    await pill.waitFor();
+    const fit = await pill.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const list = element.closest(".relay-map-routes")?.getBoundingClientRect() ?? null;
+      return { left: box.left, right: box.right, listLeft: list?.left ?? 0, listRight: list?.right ?? 0, scroll: element.scrollWidth, client: element.clientWidth, vw: document.documentElement.clientWidth };
+    });
+    await shot(page, "map-long-host-390-dark");
+    expect(fit.left >= fit.listLeft - 0.5 && fit.right <= fit.listRight + 0.5, `the host spans ${Math.round(fit.left)}-${Math.round(fit.right)}, its route list ${Math.round(fit.listLeft)}-${Math.round(fit.listRight)}`);
+    expect(fit.scroll <= fit.client + 1, `the host's text is cut: scrollWidth ${fit.scroll} > clientWidth ${fit.client}`);
+    return `host ${Math.round(fit.left)}-${Math.round(fit.right)} inside the route list ${Math.round(fit.listLeft)}-${Math.round(fit.listRight)}, ${await noOverflow(page)}`;
+  });
+
   // ---- what every page above heard: no page error, no request off the two hosts, no policy violation ----
 
   await check("console-and-policy", async () => {
