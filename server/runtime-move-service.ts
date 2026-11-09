@@ -82,8 +82,8 @@ export interface HcInstaller {
 export interface MoveService {
   read: () => Promise<MovePlanResponse>;
   /** starts the move, or waits for every pane to be done first; an error code when it cannot */
-  /** `locked`: another Ovis server is moving this herdr session; `lock_unsafe`: its lock's folder is a symlink or not this user's */
-  start: (revision: string) => Promise<"plan_changed" | "unavailable" | "already_moving" | "locked" | "lock_unsafe" | "runtime_switching" | null>;
+  /** `locked`: another Ovis server is moving this herdr session; `lock_unsafe`: its lock cannot be taken here, and why (MoveLockUnsafe's own words) */
+  start: (revision: string) => Promise<"plan_changed" | "unavailable" | "already_moving" | "locked" | { lock_unsafe: string } | "runtime_switching" | null>;
   cancel: () => void;
   /**
    * Ends the command a shell pane runs while the move waits, as the person would: Ctrl+C in the pane's
@@ -501,7 +501,7 @@ export function moveService(options: MoveServiceOptions): MoveService {
           // the server stopped while the lock was taken: it lets go at once
           if (stopped) { release(); return "unavailable"; }
         } catch (error) {
-          if (error instanceof MoveLockUnsafe) return "lock_unsafe";
+          if (error instanceof MoveLockUnsafe) return { lock_unsafe: error.message };
           throw error;
         }
         if (current.ready) { void go(current); return null; }

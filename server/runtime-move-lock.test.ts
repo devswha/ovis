@@ -1,5 +1,6 @@
-import { afterAll, afterEach, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SessionSnapshot } from "../shared/herdr-api.generated.ts";
@@ -9,6 +10,7 @@ import { handleRequest, type ServerContext } from "./dispatch.ts";
 import { unitHerdrOnly } from "../scripts/test-herdr.ts";
 import { createServer } from "./index.ts";
 import { moveService, type MoveService } from "./runtime-move-service.ts";
+import * as moveLock from "./runtime-move-lock.ts";
 import { MoveLockUnsafe, moveLockPath, takeMoveLock } from "./runtime-move-lock.ts";
 import { createServer as listenOn } from "node:net";
 
@@ -56,6 +58,41 @@ it("lets one server of a herdr session move it at a time, and the other once tha
   // a server that stops while its move waits gives the session back
   bridge.stop();
   expect(await start(own)).toBeNull();
+});
+
+it("tells the reason a lock could not be taken, not a stock one", async () => {
+  const service = server("unsafe-server");
+  const ctx: ServerContext = { ...app.context, services: { ...app.context.services, runtimeMove: service }, requestIP: () => ({ address: "127.0.0.1", family: "IPv4", port: 1 }), timeout: () => {} };
+  const revision = ((await service.read()) as Extract<MovePlanResponse, { available: true }>).plan.revision;
+  const reason = "fictional: this PC's filesystem refused the lock";
+  const take = spyOn(moveLock, "takeMoveLock").mockRejectedValueOnce(new MoveLockUnsafe(reason));
+  try {
+    const refused = await handleRequest(new Request("http://127.0.0.1/api/runtime/move", { method: "POST", body: JSON.stringify({ revision }),
+      headers: { host: "127.0.0.1", authorization: "Bearer fictional-token", "content-type": "application/json", "x-herdr-update": "1" } }), ctx);
+    expect([refused?.status, await refused?.json()]).toEqual([409, { error: { code: "move_lock_unsafe", message: reason } }]);
+  } finally { take.mockRestore(); }
+});
+
+/** this process's descriptors open on runtime-move.lock (Linux) */
+const realLockFile = () => join(realpathSync(root), "runtime-move.lock");
+const lockDescriptors = (): string[] => readdirSync("/proc/self/fd").filter((fd) => { try { return readlinkSync(`/proc/self/fd/${fd}`) === realLockFile(); } catch { return false; } });
+
+it.skipIf(process.platform !== "linux")("closes the lock file again when reading it back fails", async () => {
+  const failing = spyOn(fs, "fstatSync").mockImplementationOnce(() => { throw Object.assign(new Error("fictional EIO"), { code: "EIO" }); });
+  try {
+    await expect(takeMoveLock(lockPath)).rejects.toThrow("fictional EIO");
+  } finally { failing.mockRestore(); }
+  expect(lockDescriptors()).toEqual([]);
+});
+
+it.skipIf(process.platform !== "linux")("never hands the held lock file to a program a server starts", async () => {
+  const held = await takeMoveLock(lockPath);
+  try {
+    const fds = lockDescriptors();
+    expect(fds).toHaveLength(1);
+    const flags = Number.parseInt(readFileSync(`/proc/self/fdinfo/${fds[0]}`, "utf8").match(/^flags:\s*(\d+)/m)![1]!, 8);
+    expect(flags & 0o2000000).toBe(0o2000000);
+  } finally { held!.release(); }
 });
 
 /** a holder in another process: a server of the same session elsewhere, which can be killed without letting go */
@@ -135,13 +172,14 @@ it("holds the session with the kernel's own lock: refused while another process 
 
 it("refuses a link or a folder at runtime-move.lock as unsafe, never following it", async () => {
   const lockFile = join(root, "runtime-move.lock");
-  for (const make of [() => symlinkSync(join(root, "elsewhere"), lockFile), () => mkdirSync(lockFile)]) {
-    rmSync(lockFile, { recursive: true, force: true });
-    make();
-    await expect(takeMoveLock(lockPath)).rejects.toThrow(MoveLockUnsafe);
-    expect(existsSync(join(root, "elsewhere"))).toBe(false);
-  }
-  rmSync(lockFile, { recursive: true, force: true });
+  try {
+    for (const make of [() => symlinkSync(join(root, "elsewhere"), lockFile), () => mkdirSync(lockFile)]) {
+      rmSync(lockFile, { recursive: true, force: true });
+      make();
+      await expect(takeMoveLock(lockPath)).rejects.toThrow(MoveLockUnsafe);
+      expect(existsSync(join(root, "elsewhere"))).toBe(false);
+    }
+  } finally { rmSync(lockFile, { recursive: true, force: true }); }
 });
 
 it("is refused while a server of the previous version holds only the socket, and lets go of its kernel lock then", async () => {

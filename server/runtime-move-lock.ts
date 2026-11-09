@@ -55,6 +55,8 @@ type Flock = { flock(fd: number, operation: number): number; errno(): number };
 const LOCK_EX = 2, LOCK_NB = 4;
 /** "would block": another holder has it (Linux EAGAIN, macOS EWOULDBLOCK) */
 const WOULD_BLOCK = process.platform === "darwin" ? 35 : 11;
+/** O_CLOEXEC, which node:fs does not name (and Bun 1.4.2 does not add): a program a server starts never holds the lock on */
+const CLOEXEC = process.platform === "darwin" ? 0x0100_0000 : 0o2000000;
 let flockCalls: Flock | null | undefined;
 function flockBinding(): Flock | null {
   if (flockCalls !== undefined) return flockCalls;
@@ -79,12 +81,17 @@ function takeKernelLock(path: string): KernelLock | null {
   if (!calls) throw new MoveLockUnsafe("This PC's C library cannot be loaded to lock a move, so Ovis cannot move this herdr session here.");
   // only this user's own regular file, never through a link: anything else there is refused, not an internal error
   let fd: number;
-  try { fd = openSync(join(dirname(path), "runtime-move.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600); }
+  try { fd = openSync(join(dirname(path), "runtime-move.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | CLOEXEC, 0o600); }
   catch (error) { if (["ELOOP", "EISDIR", "ENOTDIR", "EACCES", "EPERM", "ENXIO"].includes((error as NodeJS.ErrnoException).code ?? "")) throw new MoveLockUnsafe(MOVE_LOCK_UNSAFE); throw error; }
-  const info = fstatSync(fd);
-  if (!info.isFile() || (process.getuid?.() !== undefined && info.uid !== process.getuid!())) { closeSync(fd); throw new MoveLockUnsafe(MOVE_LOCK_UNSAFE); }
-  if (calls.flock(fd, LOCK_EX | LOCK_NB) !== 0) {
-    const errno = calls.errno();
+  // the descriptor is closed again on every way out but the lock taken
+  let locked: boolean, errno = 0;
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile() || (process.getuid?.() !== undefined && info.uid !== process.getuid!())) throw new MoveLockUnsafe(MOVE_LOCK_UNSAFE);
+    locked = calls.flock(fd, LOCK_EX | LOCK_NB) === 0;
+    if (!locked) errno = calls.errno();
+  } catch (error) { closeSync(fd); throw error; }
+  if (!locked) {
     closeSync(fd);
     // only another holder is "taken"; anything else (a filesystem without locks, say) is told as such
     if (errno === WOULD_BLOCK) return null;
