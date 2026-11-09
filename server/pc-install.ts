@@ -488,8 +488,9 @@ export class PcInstaller {
           for (const until = Date.now() + this.stopMs; await posixHost.alive(ssh, plan.pid);) {
             if (Date.now() >= until) {
               // the launcher started an Ovis of its own beside the planned one: only that new one (a token not seen
-              // before, an Ovis server's command line) is stopped again, so one Ovis serves the socket, as before
-              for (const extra of (await posixHost.descriptors(ssh)).filter((d) => d.socket_path === inspection.expectedSocket && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== plan.pid)) {
+              // before, an Ovis server's command line) is stopped again, so one Ovis serves the socket, as before. It registers
+              // at the socket of the Ovis installed there: the planned one's (a herdr-core server's adapter), or herdr's default
+              for (const extra of (await posixHost.descriptors(ssh)).filter((d) => (d.socket_path === socket || d.socket_path === inspection.expectedSocket) && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== plan.pid)) {
                 if (OVIS_COMMAND.test(await ssh.run(`ps -o args= -p ${extra.pid} 2>/dev/null || true`))) await ssh.run(`kill -TERM ${extra.pid} 2>/dev/null || true`);
               }
               throw new InstallFailed("not_stopped", `That PC's Ovis (process ${plan.pid}) was not started by its launcher, so restarting the launcher did not restart it; the one the launcher started beside it was stopped again. Stop it on that PC, then update it.`);
@@ -522,8 +523,11 @@ export class PcInstaller {
         if (!facts.herdrRunning) await launch(HEADLESS_HERDR);
       }
       step("starting", "Waiting for Ovis to answer on that PC…");
+      // a restart brings the planned server back where it was (its launcher runs the same Ovis): at the plan's socket. A
+      // replace may come back there too (the Ovis installed there, started by its launcher), or at herdr's default socket,
+      // where the official installer's Ovis (OVIS_RUNTIME=herdr) registers
       for (const until = Date.now() + this.startMs; ;) {
-        const answering = (await posixHost.descriptors(ssh)).find((d) => d.socket_path === inspection.expectedSocket && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0);
+        const answering = (await posixHost.descriptors(ssh)).find((d) => (d.socket_path === socket || job.mode !== "restart" && d.socket_path === inspection.expectedSocket) && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0);
         if (answering && await posixHost.alive(ssh, answering.pid)) { await forget(); break; }
         if (Date.now() >= until) throw new InstallFailed("not_started", `Ovis is ${job.mode === "restart" ? "restarted" : "installed"} on that PC but did not start within ${Math.round(this.startMs / 1000)} seconds. Check herdr's plugin log there (herdr plugin log list).`);
         await pause();

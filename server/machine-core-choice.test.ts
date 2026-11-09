@@ -13,7 +13,7 @@ import { readProcessBirth } from "./process-owner.ts";
 
 // quiet: the live server cannot prove itself at first (no answer, an HTTP error); open: once chosen, it no longer can
 const quiet = ["unanswered", "server error"], open = ["wrong token", "redirect", "server error later", "server error after proof"];
-it.each(["connect", "default bridge", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect"])("chooses the PC's own core server: %s", async (outcome) => {
+it.each(["connect", "default bridge", "unbridged herdr", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect"])("chooses the PC's own core server: %s", async (outcome) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-core-choice-"));
   const id = "12345678-1234-1234-1234-123456789abc";
   const socket = "/home/fixture/.config/ovis/hc-adapter.sock";
@@ -34,6 +34,9 @@ it.each(["connect", "default bridge", "birthless", "unanswered", "server error",
   const sessions = [{ socket_path: join(herdrDir, "herdr.sock"), session: "work", label: "work" }];
   // no TUI herdr runs beside a quiet core server, so nothing else could be offered
   const herdr = quiet.includes(outcome) ? undefined : Bun.listen({ unix: sessions[0]!.socket_path, socket: { data() {} } });
+  // unbridged herdr: herdr answers at the PC's own socket with no bridge in front yet (right after an app update, before
+  // this app's runtime is there again), beside the core server
+  const tui = outcome === "unbridged herdr" ? Bun.listen({ unix: join(dir, ".config/herdr/herdr.sock"), socket: { data() {} } }) : undefined;
   if (!herdr) sessions.length = 0;
   const runtimeDir = join(dir, "runtime");
   mkdirSync(join(runtimeDir, "bin"), { recursive: true });
@@ -57,7 +60,7 @@ it.each(["connect", "default bridge", "birthless", "unanswered", "server error",
       return out;
     }),
     spyOn(posixHost, "herdrVersion").mockResolvedValue("herdr 0.9.0"),
-    spyOn(posixHost, "inspect").mockResolvedValue({ platform: "linux-x64", home: dir, herdrPath: "/fixture/herdr", expectedSocket: join(dir, ".config/herdr/herdr.sock"), bundleReady: true, bundleOlder: false, descriptors: listedHere, runtimeDir, registryDir: registry }),
+    spyOn(posixHost, "inspect").mockResolvedValue({ platform: "linux-x64", home: dir, herdrPath: "/fixture/herdr", expectedSocket: join(dir, ".config/herdr/herdr.sock"), bundleReady: outcome !== "unbridged herdr", bundleOlder: false, descriptors: listedHere, runtimeDir, registryDir: registry }),
     spyOn(posixHost, "descriptors").mockResolvedValue(listedHere),
     spyOn(posixHost, "alive").mockImplementation(async () => !selected || outcome !== "stopped after proof"),
     spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
@@ -96,15 +99,29 @@ it.each(["connect", "default bridge", "birthless", "unanswered", "server error",
   });
   try {
     if (outcome === "default bridge") {
-      // reconnects to its live bridge on its own, as before: no choice it did not ask for, nothing started, no retry
-      const reconnect = await run({ destination: "fixture-only" });
-      expect(reconnect).toMatchObject({ phase: "connected", runtime: "herdr" });
-      expect(reconnect.action_required ?? null).toBeNull();
-      expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ state: "connected", runtime: "herdr", action_required: null });
+      // reconnects to its live bridge on its own, as before, and a setup started in its dialog connects to it too: no
+      // choice nobody needs, nothing started, no retry
+      for (const auto of [true, false]) {
+        const reconnect = await run({ destination: "fixture-only" }, auto);
+        expect(reconnect).toMatchObject({ phase: "connected", runtime: "herdr" });
+        expect(reconnect.action_required ?? null).toBeNull();
+        expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ state: "connected", runtime: "herdr", action_required: null });
+      }
       expect(starts).toBe(0);
       return;
     }
-    const offer = await run({ destination: "fixture-only" });
+    if (outcome === "unbridged herdr") {
+      // a reconnect of a PC saved without an Ovis chosen does as before this choice existed: it starts this app's bridge
+      // for its herdr (the fixture's start then fails), and offers no core server nobody asked for
+      const reconnect = await run({ destination: "fixture-only" });
+      expect(reconnect.action_required).not.toBe("choose_herdr");
+      expect(reconnect.found_ovis).toBeUndefined();
+      expect(manager.list().find((pc) => pc.id === id)?.action_required).not.toBe("choose_herdr");
+      expect(starts).toBe(1);
+      return;
+    }
+    // the unasked choice: offered only in a setup the user started in its dialog
+    const offer = await run({ destination: "fixture-only" }, false);
     expect(offer).toMatchObject({ phase: "failed", action_required: "choose_herdr", found_herdr_sessions: sessions, found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
     expect(starts).toBe(0);
     if (quiet.includes(outcome)) {
@@ -151,7 +168,7 @@ it.each(["connect", "default bridge", "birthless", "unanswered", "server error",
       expect(retries).not.toHaveBeenCalled();
     }
   } finally {
-    manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); relays.forEach((relay) => relay.stop(true)); herdr?.stop(true); rmSync(dir, { recursive: true, force: true });
+    manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); relays.forEach((relay) => relay.stop(true)); herdr?.stop(true); tui?.stop(true); rmSync(dir, { recursive: true, force: true });
   }
 });
 

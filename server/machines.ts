@@ -1523,7 +1523,10 @@ export class MachineManager {
     };
     // The core adapter is not a TUI socket. Discover the account's own registered Ovis and prove
     // its loopback endpoint before offering it; an explicit selection is checked anew on each try.
-    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || candidates.length > 0 && !await servedAlready())) {
+    // Unasked, it is offered only in a setup the user started: a reconnect (or an update that asks nobody) of a PC saved
+    // without an Ovis chosen connects as before, whatever runs beside it (its herdr may answer with no bridge in front yet)
+    const asked = !!job && !job.auto;
+    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || asked && candidates.length > 0 && !await servedAlready())) {
       const found: FoundOvis[] = [];
       const sessions = new Map<string, FoundHerdrSession>();
       // answered: one of them proved itself through the tunnel; unlisted: one did not list the account's herdr sessions

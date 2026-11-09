@@ -30,6 +30,11 @@ interface Pc {
   newPid?: number;
   /** a server started by hand beside the launcher: restarting the launcher leaves it running */
   besideLauncher?: boolean;
+  /**
+   * where the Ovis already installed there registers when its launcher starts it (a herdr-core one's adapter socket);
+   * herdr's default unless set. The official installer's Ovis (OVIS_RUNTIME=herdr) always registers at the default
+   */
+  ovisSocket?: string;
   /** the probe's SSH command fails, as a dropped connection does */
   probeFails?: boolean;
   /** the installer's answer: its exit status and last words; it starts the plugin when herdr runs */
@@ -110,7 +115,9 @@ function fixture(pc: Pc) {
   const dying = new Map<number, number>();
   const commands: string[] = [];
   const challenges: unknown[] = [];
-  const register = () => { if (pc.neverStarts) return; const next = descriptor(pc.newPid ?? 5555, false, "b".repeat(64)); listed.push(next); alive.add(next.pid); };
+  const register = (socket = SOCKET) => { if (pc.neverStarts) return; const next = { ...descriptor(pc.newPid ?? 5555, false, "b".repeat(64)), socket_path: socket }; listed.push(next); alive.add(next.pid); };
+  /** the Ovis installed there, started by its launcher (or by herdr, as its plugin) */
+  const registerInstalled = () => register(pc.ovisSocket);
   SshConnection.prototype.start = async (challenge?: unknown) => { challenges.push(challenge); if (pc.refused) throw new Error(pc.refused); };
   SshConnection.prototype.close = () => {};
   SshConnection.prototype.run = async (script: string) => {
@@ -176,9 +183,9 @@ function fixture(pc: Pc) {
       return script.includes("echo stopping") ? "stopping\n" : "";
     }
     if (script.includes('for f in "$HOME/.config/herdr-web-ui/bridges/"')) return listed.map((d) => JSON.stringify(d)).join("\n") + "\n";
-    if (script.includes(" server </dev/null")) { if (pc.headlessFails) throw new Error("herdr: could not start the server"); register(); return ""; }
+    if (script.includes(" server </dev/null")) { if (pc.headlessFails) throw new Error("herdr: could not start the server"); if (pc.launcher) registerInstalled(); else register(); return ""; }
     if (pc.launcherFails && (script.includes("devswha.ovis.start") || script.includes("ovis.service"))) throw new Error(pc.launcherFails);
-    if (script.includes("devswha.ovis.start") || script.includes("ovis.service")) { if (!pc.besideLauncher && (script.includes("devswha.ovis.stop") || script.includes("restart"))) for (const d of listed) alive.delete(d.pid); register(); return ""; }
+    if (script.includes("devswha.ovis.start") || script.includes("ovis.service")) { if (!pc.besideLauncher && (script.includes("devswha.ovis.stop") || script.includes("restart"))) for (const d of listed) alive.delete(d.pid); registerInstalled(); return ""; }
     throw new Error(`Unexpected remote command: ${script}`);
   };
   const connects: Parameters<InstallConnect>[0][] = [];
@@ -546,8 +553,9 @@ describe("installing Ovis on a PC over SSH", () => {
 
   it("looks for a herdr-core server the plan names on its own adapter socket, never on herdr's default one", async () => {
     const socket = "/home/fx/.local/state/ovis/herdr-core.sock";
-    // live there: found, checked and stopped before the install, so no second Ovis runs beside it
-    const live = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], restoreOff: true });
+    // live there: found, checked and stopped before the install, so no second Ovis runs beside it. No launcher there, so
+    // the official installer's Ovis takes its place, at herdr's default socket (OVIS_RUNTIME=herdr)
+    const live = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], restoreOff: true, ovisSocket: socket });
     const replaced = await live.settled(live.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket } }));
     expect(replaced.phase).toBe("connected");
     expect(live.commands.some((command) => command.includes("&& kill -TERM 4242"))).toBe(true);
@@ -559,6 +567,31 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(installed.phase).toBe("connected");
     expect(gone.commands.some((command) => command.includes("kill -TERM 4242"))).toBe(false);
     expect(installs(gone.commands)).toHaveLength(1);
+  });
+
+  const coreSocket = "/home/fx/.local/state/ovis/herdr-core.sock";
+  const core = { ...descriptor(4242), socket_path: coreSocket };
+  it("waits for a herdr-core Ovis its launcher restarts at its own adapter socket", async () => {
+    // restarted through its launcher, it registers again where it was: the job ends connected, not timed out
+    const restarted = fixture({ descriptors: [core], launcher: "systemd", ovisSocket: coreSocket, restoreOff: true });
+    expect(await restarted.settled(restarted.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242, socket: coreSocket } }))).toMatchObject({ phase: "connected", mode: "restart" });
+  });
+
+  it("waits for the herdr-core Ovis its launcher starts in place of a replaced one, at its adapter socket", async () => {
+    const replaced = fixture({ descriptors: [core], launcher: "systemd", ovisSocket: coreSocket, restoreOff: true });
+    expect(await replaced.settled(replaced.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket: coreSocket } }))).toMatchObject({ phase: "connected", mode: "replace" });
+    expect(replaced.alive.has(4242)).toBe(false);
+  });
+
+  it("stops a second herdr-core Ovis a launcher's restart started at the planned server's adapter socket", async () => {
+    const socket = coreSocket;
+    // the launcher's restart leaves the planned server running: the Ovis it started beside it, at that socket, is stopped
+    const beside = fixture({ descriptors: [core], launcher: "plugin", ovisSocket: socket, besideLauncher: true, restoreOff: true });
+    expect(await beside.settled(beside.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242, socket } }))).toMatchObject({ phase: "failed", error_code: "not_stopped" });
+    expect(beside.commands).toContain("kill -TERM 5555 2>/dev/null || true");
+    expect(beside.alive.has(5555)).toBe(false);
+    expect(beside.alive.has(4242)).toBe(true);
+    expect(beside.connects).toEqual([]);
   });
 
   it("stops the shown server when its birth still matches its registration", async () => {
