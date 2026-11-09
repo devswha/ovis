@@ -6,14 +6,14 @@ import { EnrollmentStatus } from "../../components/EnrollmentStatus.tsx";
 import { RelayPcDetails } from "../../components/RelayPcDetails.tsx";
 import { RelayPcTable } from "../../components/RelayPcTable.tsx";
 import { ACCOUNT_FEATURE, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
-import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
+import { exportPublicKey, generateKeyPair, importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { accountDeviceId, newRecordId, signAccountRecord } from "../../../shared/account-records.ts";
 import type { AddRecord } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { PcFetch } from "../account/join.ts";
 import { enrollPc, planEnroll, rememberDevice } from "../account/join.ts";
-import { memoryAccountStore } from "../account/store.ts";
+import { memoryAccountStore, memoryLock } from "../account/store.ts";
 import { AccountService } from "../account/service.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { SettingsProvider } from "../settings.ts";
@@ -38,7 +38,7 @@ describe("account enrollment ownership", () => {
     setCurrentLanguage("en");
   });
 
-  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly changed?: () => Promise<void> } = {}) {
+  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly heldAccount?: string } = {}) {
     const identity = generateKeyPair();
     const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.invalid", name: "Desk" };
     const accountStore = memoryAccountStore();
@@ -64,6 +64,12 @@ describe("account enrollment ownership", () => {
     const renewalRequested = Promise.withResolvers<void>();
     const renewalResponse = Promise.withResolvers<void>();
     const putPcs: string[] = [];
+    // the first account service request `heldAccount` names ("GET /v1/pcs") waits for accountRelease
+    const accountRequested = Promise.withResolvers<void>();
+    const accountRelease = Promise.withResolvers<void>();
+    const signOutAsked = Promise.withResolvers<void>();
+    const viewChanged = Promise.withResolvers<void>();
+    let accountHeld = false;
     let linked = !options.linking;
     const answer = (path: string): Response => {
       switch (path) {
@@ -94,13 +100,35 @@ describe("account enrollment ownership", () => {
       container: Object.create(null), entryUrl: "https://app.ovis.invalid", renderApp: () => { throw new TypeError("No app here"); },
       store, accountStore, accountService: "https://account.invalid", accountProviders: ["github"], open,
       accountFetch: async (input, init) => {
+        const route = `${init?.method ?? "GET"} ${new URL(input instanceof Request ? input.url : String(input)).pathname}`;
+        if (route === "POST /v1/signout") signOutAsked.resolve();
+        if (route === options.heldAccount && !accountHeld) { accountHeld = true; accountRequested.resolve(); await accountRelease.promise; }
         if (init?.method === "PUT") putPcs.push("put");
         if (options.listed && init?.method === "GET") return Response.json({ pcs: [{ server_id: "a".repeat(32), label: "Unread PC", public_key: null, relay: offer.relay, added_at: new Date().toISOString(), last_seen_at: null }] });
         return service.fetch(input, init);
       },
-    }, { active: () => false, changed: options.changed ?? (async () => {}), outdated: () => new Set() });
-    return { controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service, linked: () => linked };
+    }, { active: () => false, changed: async () => { viewChanged.resolve(); }, outdated: () => new Set() });
+    return {
+      controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service, linked: () => linked,
+      accountRequested, accountRelease, signOutAsked, viewChanged: viewChanged.promise,
+    };
   }
+  type Run = Awaited<ReturnType<typeof fixture>>;
+  // a pairing just made with its own key, which an enrollment links to the account key
+  const unlinked = async (run: Run): Promise<void> => {
+    const own = await memoryAccountStore().key();
+    const { account: _account, ...rest } = run.original;
+    await run.store.update(run.original.server_id, () => ({ ...rest, private_key: own.private_key, public_spki: own.public_spki }));
+  };
+  const listInDirectory = (run: Run): Promise<void> => new AccountService({ store: run.accountStore, fetch: run.service.fetch }).putPc(run.original.server_id, {
+    label: "Desk", relay: run.original.relay, public_key: Array.from(importPublicKey(run.original.server_public_key), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  });
+  const tokenStatus = async (run: Run, token: string): Promise<number> => (await run.service.fetch(new URL("/v1/pcs", "https://account.invalid"), { headers: { authorization: `Bearer ${token}` } })).status;
+  const laterSignIn = async (run: Run) => {
+    const first = await run.accountStore.get("session");
+    if (first === undefined) throw new TypeError("Missing sign-in");
+    return { first, later: { ...first, access_token: run.service.issueToken("account"), refresh_token: "later" } };
+  };
 
   it("does not list a pairing after Forget releases a held renewal", async () => {
     const run = await fixture("unused", { linking: true, holdRenewal: true });
@@ -112,22 +140,90 @@ describe("account enrollment ownership", () => {
     expect(run.putPcs).toEqual([]);
   });
 
-  it("leaves the account only once an enrollment still running has stopped, so no PC takes the account key after it", async () => {
-    const left = Promise.withResolvers<void>();
-    const run = await fixture("/api/account/status", { linking: true, changed: async () => { left.resolve(); } });
-    // a pairing just made with its own key, which the enrollment would link to the account key
-    const own = await memoryAccountStore().key();
-    const { account: _account, ...unlinked } = run.original;
-    await run.store.update(run.original.server_id, () => ({ ...unlinked, private_key: own.private_key, public_spki: own.public_spki }));
-    const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+  it.each(["while that leave runs", "after that leave ends"] as const)("sends no link from another tab once this tab's leave has its snapshot, %s", async (moment) => {
+    const run = await fixture("/api/account/status", { linking: true, heldAccount: "GET /v1/pcs" });
+    await unlinked(run);
+    // the other tab's enrollment waits on the PC's status, before its link
+    const linking = run.otherController.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
     await run.requested.promise;
     run.controller.leave();
+    // marked and snapshotted: the leave now reads the directory
+    await run.accountRequested.promise;
+    if (moment === "after that leave ends") { run.accountRelease.resolve(); await run.viewChanged; }
     run.response.resolve(run.answer("/api/account/status"));
-    await left.promise;
-    expect(run.controller.state).toEqual({ kind: "signed-out", error: null });
-    const stopped = await pending;
+    const outcome = await linking;
     expect(run.linked()).toBe(false);
-    expect(stopped).toBeInstanceOf(DOMException);
+    expect((await run.store.get(run.original.server_id))?.pending_key).toBeUndefined();
+    expect(outcome).toBeInstanceOf(DOMException);
+    run.accountRelease.resolve();
+    await run.viewChanged;
+    expect(run.controller.state).toEqual({ kind: "signed-out", error: null });
+  });
+
+  it.each(["renewal", "link answer"] as const)("leaves at once while an enrollment of this tab waits on its %s, and names a PC that may still take the key", async (held) => {
+    const run = await fixture(held === "link answer" ? "/api/account/link" : "unused", { linking: true, holdRenewal: held === "renewal" });
+    await unlinked(run);
+    if (held === "renewal") await listInDirectory(run);
+    const { first } = await laterSignIn(run);
+    const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+    await (held === "renewal" ? run.renewalRequested.promise : run.requested.promise);
+    run.controller.leave();
+    await run.viewChanged;
+    if (held === "renewal") {
+      // linked and listed: the removal went to its mailbox, and its pairing is forgotten here
+      expect(run.service.mailbox(run.original.server_id, "account")).toMatchObject([{ kind: "remove", account: "account", key: run.key.public_spki }]);
+      expect(await run.store.get(run.original.server_id)).toBeUndefined();
+      expect(run.controller.state).toEqual({ kind: "signed-out", error: null });
+    } else {
+      // the link went out, and its answer has not come: the PC may hold the key, so it is named
+      expect(run.service.requests).not.toContain("POST /v1/records");
+      expect((await run.store.get(run.original.server_id))?.pending_key?.public_spki).toBe(run.key.public_spki);
+      expect(run.controller.state).toMatchObject({ kind: "signed-out", error: expect.stringContaining("Desk") });
+    }
+    expect(await run.accountStore.get("session")).toBeUndefined();
+    expect(await tokenStatus(run, first.access_token)).toBe(401);
+    expect((await run.accountStore.key()).public_spki).not.toBe(run.key.public_spki);
+    if (held === "renewal") run.renewalResponse.resolve(); else run.response.resolve(run.answer("/api/account/link"));
+    await pending;
+  });
+
+  it("sends no removal for a sign-in made while this device's leave reads the directory, and keeps it", async () => {
+    const run = await fixture("unused", { heldAccount: "GET /v1/pcs" });
+    await listInDirectory(run);
+    const { later } = await laterSignIn(run);
+    run.controller.leave();
+    await run.accountRequested.promise;
+    // signed out and in again meanwhile (the phone app's page stays open)
+    await run.accountStore.set("session", later);
+    run.accountRelease.resolve();
+    await run.viewChanged;
+    expect(run.service.requests.filter((request) => request === "POST /v1/records" || request === "POST /v1/signout")).toEqual([]);
+    expect(run.service.mailbox(run.original.server_id, "account")).toEqual([]);
+    expect(await run.accountStore.get("session")).toEqual(later);
+    expect(await tokenStatus(run, later.access_token)).toBe(200);
+    expect((await run.accountStore.key()).public_spki).toBe(run.key.public_spki);
+    expect(await run.accountStore.get("leaving")).toBeUndefined();
+    expect(await run.store.get(run.original.server_id)).toEqual(run.original);
+  });
+
+  it("signs out only the sign-in it was asked to when a new one lands while it waits on the lock", async () => {
+    const run = await fixture("unused");
+    const lock = memoryLock();
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { ...navigator, locks: { request: (_name: string, work: () => Promise<unknown>) => lock(work) } } });
+    // another tab holds the account lock (a refresh on its way)
+    const holding = Promise.withResolvers<void>();
+    const held = lock(() => holding.promise);
+    const { first, later } = await laterSignIn(run);
+    run.controller.signOut();
+    await run.accountStore.set("session", later);
+    holding.resolve();
+    await held;
+    await run.signOutAsked.promise;
+    // the sign-out's own turn under the lock is over once this one runs
+    await lock(async () => undefined);
+    expect(await run.accountStore.get("session")).toEqual(later);
+    expect(await tokenStatus(run, later.access_token)).toBe(200);
+    expect(await tokenStatus(run, first.access_token)).toBe(401);
   });
 
   it.each(["same", "other"] as const)("does not save an introduced pairing after the %s controller forgets its source during a held update", async (canceller) => {

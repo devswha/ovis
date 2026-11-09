@@ -1,9 +1,10 @@
 /** Account sign-in, directory refresh and authenticated PC enrollment for the hosted shell. */
 import { ACCOUNT_FEATURE } from "../../../shared/relay-mux.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
+import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { myPcs } from "../account/myPcs.ts";
-import { AccountService, accountProvidersOf, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
+import { AccountService, accountProvidersOf, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError } from "../account/signin.ts";
@@ -40,7 +41,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
   const open = mount.open ?? openRelayTransport;
   const forgotten = new Map<string, number>();
-  // enrollments still running, with their PC: leaving the account stops them first
+  // enrollments still running, with their PC: leaving the account cancels each, and waits for none
   const running = new Map<Promise<unknown>, string>();
   const cancelEnrollment = (id: string): void => { forgotten.set(id, (forgotten.get(id) ?? 0) + 1); };
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
@@ -92,17 +93,26 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void refresh(); armRefresh(); });
   const invalidate = (): void => { generation++; directory = []; accountView = { kind: "signed-out", error: null }; armRefresh(); };
   const signOut = (): void => {
+    // the sign-in the person ended, read before anything waits: one made meanwhile stays (service.ts, forSignIn)
+    const ending = account.session();
     invalidate();
     void changed();
-    void account.signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
+    void ending.then((session) => session === undefined ? undefined : account.forSignIn(session).signOut()).catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
   };
   const leave = (): void => {
     if (leaving) return;
     leaving = true;
-    generation++;
-    // an enrollment still running could hand a PC the account key after the removal's snapshot: stop each, and wait for it
+    const epoch = ++generation;
+    // the sign-in the person leaves, read before anything waits: one made meanwhile is never touched (leave.ts)
+    const from = account.session();
+    // an enrollment of this tab stops here; one still linking, here or in another tab, is in the leave's snapshot (leave.ts)
     for (const serverId of running.values()) cancelEnrollment(serverId);
-    void Promise.allSettled(running.keys()).then(() => leaveAccount({ service: account, accountStore, relayStore: store })).then(async ({ unconfirmed }) => {
+    void from.then((session) => {
+      if (session === undefined) throw new SignedOutError();
+      return leaveAccount({ service: account, accountStore, relayStore: store, session });
+    }).then(async ({ unconfirmed }) => {
+      // signed out, or in again, meanwhile: that view is not this leave's to change
+      if (epoch !== generation) return;
       // a PC the account does not list kept this device: say so, rather than claim it is gone everywhere
       const names = new Map((await store.list()).map((device) => [device.server_id, device.name ?? device.server_id.slice(0, 8)]));
       accountView = { kind: "signed-out", error: unconfirmed.length === 0 ? null
@@ -110,6 +120,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       await changed();
     }, async (error: unknown) => {
       console.warn("Ovis: this device did not leave the account", error instanceof Error ? error.name : error);
+      if (epoch !== generation) return;
       if (accountView?.kind === "signed-in") accountView = { ...accountView, error: t("This device could not leave the account. Try again.") };
       await changed();
     }).finally(() => { leaving = false; });
@@ -212,7 +223,25 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // a PC this link brings into the account, or one still waiting for the member that linked it (who may be gone),
       // gets this client's enrollment: the account's removals first, read from its other PCs
       if (linking && (status.account === null || status.enrolling === true)) await planEnroll(accountStore, serverId, session.account);
-      if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store: enrollmentStore });
+      if (linking) {
+        // in one transaction with a leave's mark (leave.ts): a link recorded here is in that leave's snapshot, and
+        // none goes out once a leave of this key has begun, in any tab, or for a sign-in that has ended
+        const link = newRecordId();
+        let recorded = false;
+        await accountStore.updateMany(["session", "leaving", "linking"], (current) => {
+          recorded = current.session !== undefined && sameSignIn(current.session, session) && !Object.values(current.leaving ?? {}).includes(key.public_spki);
+          return recorded ? { ...current, linking: { ...current.linking, [link]: serverId } } : current;
+        });
+        if (!recorded) throw new DOMException("This device is leaving the account", "AbortError");
+        try { device = await linkThisDevice({ fetch, device, key, account: session.account, store: enrollmentStore }); }
+        finally {
+          // settled: the pairing itself (pending_key) names a link whose answer was lost
+          await accountStore.update("linking", (current) => {
+            const { [link]: _settled, ...rest } = current ?? {};
+            return Object.keys(rest).length > 0 ? rest : undefined;
+          });
+        }
+      }
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
       if (linking || fresh) {
         await opened.renew();
