@@ -43,6 +43,11 @@ import { windowsArgv, windowsProcessTable } from "./windows-processes.ts";
 
 /** the first release with `--strip-request-header` and an address tied to the identity */
 const PORTAL_VERSION = "v2.6.1";
+/**
+ * The first release that binds a sign-in to the hosts it was made on. Before it, a session cookie
+ * from the short address passes for whoever holds the same `--name` once Portal registers again.
+ */
+const SIGN_IN_VERSION = "v2.7.3";
 /** a relay that answers but will not take the tunnel is only ever retried, never refused */
 const READY_TIMEOUT_MS = 60_000;
 /** Portal unregisters from the relay on SIGTERM; one still running after this is killed, within the 6 s the supervisor gives this server to stop */
@@ -126,6 +131,19 @@ export function atLeast(version: string, minimum: string): boolean {
   if (have === null || need === null) return false;
   for (let i = 0; i < 3; i++) if (have[i] !== need[i]) return have[i]! > need[i]!;
   return true;
+}
+
+/**
+ * Whether `version` is the release `minimum` or later by semver: a pre-release comes before its
+ * release, build metadata counts for nothing, and anything that does not parse is too old.
+ */
+function releaseAtLeast(version: string, minimum: string): boolean {
+  const pattern = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+  const have = pattern.exec(version.trim());
+  const need = pattern.exec(minimum.trim());
+  if (have === null || need === null) return false;
+  for (let i = 1; i <= 3; i++) if (Number(have[i]) !== Number(need[i])) return Number(have[i]) > Number(need[i]);
+  return have[4] === undefined;
 }
 
 /** A relay as the user gave it, as an https origin; null for anything with a path, a query, credentials or a second host. */
@@ -668,6 +686,7 @@ export class PortalService {
     if (bin === null || version === null) throw new Error("Portal is not installed on this PC.");
     if (!atLeast(version, PORTAL_VERSION)) throw new Error(`This PC has Portal ${version}; the app needs ${PORTAL_VERSION} or later.`);
     if (auth.method !== "none") {
+      if (!releaseAtLeast(version, SIGN_IN_VERSION)) throw new Error(`This PC has Portal ${version}; a sign-in needs Portal ${SIGN_IN_VERSION} or later. Update Portal, or start without a sign-in.`);
       const offered = await this.signIns(true);
       if (!this.isCurrentStart(operation)) return;
       if (!offered.includes(auth.method)) throw new Error(`The Portal on this PC does not support --auth ${auth.method} yet. Update it, or choose another sign-in.`);
