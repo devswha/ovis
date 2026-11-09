@@ -977,9 +977,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   List all tabs and VS Code's tab overflow do, rather than Chrome's tabs shrinking to their icon:
   an Ovis tab is told apart by its name, and a tab too narrow for it is a close button to
   misclick. The open tab is always in the row (the last place when it is past the others), and
-  one picked from the list opens there; `lib/tabOverflow.ts` picks them. The open tab takes the pane's surface (`--bg` under
-  the chat lens, `--term-bg` otherwise) with rounded top corners and no line under it, so it runs
-  on into the pane; its close (×) shows on the open tab and a hovered one. A split view keeps a
+  one picked from the list opens there; `lib/tabOverflow.ts` picks them. The row is the panel's surface and the
+  open tab a raised pill on it (`--bg-elevated`); its close (×) shows on the open tab alone, and a
+  resting tab closes from its menu or a middle click, as a browser's does. A split view keeps a
   strip per half and the title in the header. The Herdr app's Changes button is not carried over:
   Files holds the changes as one of its tabs.
 - The Chat/Terminal switch (`.view-switch`) shows both lenses as Apple's segmented control: a

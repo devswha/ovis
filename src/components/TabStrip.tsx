@@ -14,7 +14,7 @@
  * On a phone (the sheets' width) the row is not drawn (`inHeader`): the header's title opens
  * `sheet`, the tabs listed with their state, agent and a Close each, and the ways to a new tab.
  */
-import { useContext, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Bot, ChevronDown, Ellipsis, Folder, FolderInput, Pencil, Plus, Terminal, X } from "lucide-react";
 
 import "./TabStrip.css";
@@ -115,6 +115,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // height to spare: a lone tab is not drawn there, so the pane and approval cards keep their room
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const strip = useRef<HTMLDivElement>(null);
+  const stripId = useId();
   const [picker, setPicker] = useState<{ anchor: HTMLElement; tab: HerdrTab; point?: { x: number; y: number }; previousFocus: HTMLElement | null; touch: boolean; workspaces?: true } | null>(null);
   const [editing, setEditing] = useState<{ tabId: string; value: string } | null>(null);
   const renameDrafts = useRef(new Map<string, string>());
@@ -149,7 +150,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const panes = rosterPanes(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id), selectedPane.pane_id);
   // The snapshot order is authoritative; number identifies a tab and does not change on a move.
   const tabs = snapshot.tabs.filter((tab) => tab.workspace_id === workspace.workspace_id);
-  const reorder = useTabReorder({ owner: `${machineId}:${workspace.workspace_id}`, tabs, strip, moveTab, fixed: !arrange,
+  // a watching device moves no tab (the server refuses it read_only): the order is fixed for it as for the Herdr app's
+  const reorderable = arrange && closable;
+  const reorder = useTabReorder({ owner: `${machineId}:${workspace.workspace_id}`, tabs, strip, moveTab, fixed: !reorderable,
     failed: (reason) => setError(t("Move failed: {reason}", { reason: said(reason) })),
     stale: () => setError(t("Tab order did not refresh. Try again.")),
     // dragged down out of the strip, a tab opens its pane in half of the pane area (lib/split.ts)
@@ -377,8 +380,10 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // the mark of the pane the tab opens on, else of the first agent in it
   const agentOf = (tab: HerdrTab): PaneInfo["agent"] => paneFor(tab)?.agent ?? panesOf(tab).find((pane) => pane.agent)?.agent ?? null;
   // the agent's name as herdr shows it ("OmO" for omo), for the tab's spoken description
+  // the same pane agentOf draws the mark of: the one the tab opens on when it runs an agent, else the first agent in it
   const agentNameOf = (tab: HerdrTab): string | null => {
-    const pane = paneFor(tab) ?? panesOf(tab).find((candidate) => candidate.agent);
+    const opens = paneFor(tab);
+    const pane = opens?.agent ? opens : panesOf(tab).find((candidate) => candidate.agent);
     return pane?.display_agent?.trim() || pane?.agent || null;
   };
   const statusOf = (tab: HerdrTab): KnownStatus => rollupStatus(panesOf(tab).map((pane) => paneStatus(pane as HerdrPane)));
@@ -542,9 +547,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const name = nameOf(tab);
     const about = (label: string): string => `${label} · ${name}`;
     return [
-      ...(arrange && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
+      ...(reorderable && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) > 0
         ? [{ id: "move-left", label: t("Move tab left"), title: about(t("Move tab left")), icon: ArrowLeft, run: () => reorder.moveAdjacent(tab.tab_id, -1) }] : []),
-      ...(arrange && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) < tabs.length - 1
+      ...(reorderable && !reorder.moving && tabs.findIndex((entry) => entry.tab_id === tab.tab_id) < tabs.length - 1
         ? [{ id: "move-right", label: t("Move tab right"), title: about(t("Move tab right")), icon: ArrowRight, run: () => reorder.moveAdjacent(tab.tab_id, 1) }] : []),
       ...(canMoveOut(tab) ? [{ id: "move-workspace", label: t("Move to workspace…"), title: t("Move {tab} to", { tab: name }), icon: FolderInput, disabled: !closable,
         // RowMenu closes before it runs an item: the picker is set again, not updated
@@ -573,7 +578,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
           const pickerOpen = picker?.tab.tab_id === tab.tab_id;
           const name = nameOf(tab);
           // what the strip draws as a mark and a dot, said in words for a screen reader (G-045): the agent and its state
-          const tabStatusId = `tab-desc-${tab.tab_id}`;
+          // one id per strip: a split draws two strips of the same tabs, whose descriptions can differ
+          const tabStatusId = `${stripId}-desc-${tab.tab_id}`;
           const tabDescription = [agentNameOf(tab) ?? (browserTabs ? t("Shell") : null), status !== "unknown" ? t(STATUS_WORD[status]) : null].filter(Boolean).join(" · ");
           const paneTitle = own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length });
           const tabTitle = paneTitle.includes(name) ? paneTitle : `${name} — ${paneTitle}`;
@@ -611,7 +617,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   data-tab-id={tab.tab_id}
                   aria-selected={active}
                   aria-haspopup={popup}
-                  aria-keyshortcuts={!arrange ? "Shift+F10" : "Shift+F10 Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"}
+                  aria-keyshortcuts={!reorderable ? "Shift+F10" : "Shift+F10 Alt+Shift+ArrowLeft Alt+Shift+ArrowRight"}
                   aria-controls={panePanel}
                   aria-describedby={tabDescription ? tabStatusId : undefined}
                   tabIndex={active ? 0 : -1}

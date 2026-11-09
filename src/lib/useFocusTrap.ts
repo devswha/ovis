@@ -43,6 +43,8 @@ export interface FocusTrapOptions {
 function reachable(node: HTMLElement): boolean {
   if (node.hasAttribute("disabled") || node.getAttribute("aria-hidden") === "true") return false;
   if (node.tabIndex < 0) return false;
+  // a disconnected PC's cached rows are inert: the browser refuses them the focus, so Tab must not stop there
+  if (node.closest("[inert]") !== null) return false;
   // hidden ancestors and collapsed sections report no box at all
   return node.getClientRects().length > 0;
 }
@@ -123,6 +125,9 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       if (event.key !== "Tab" || openTraps.at(-1) !== trap || typeAheadFocused()) return;
       const node = surface.current;
       if (!node || nativeModalOver(node)) return;
+      // another dialog or menu that has the focus (a row's action sheet over the drawer) keeps its own Tab
+      const holder = document.activeElement;
+      if (holder instanceof Element && !node.contains(holder) && holder.closest('[role="dialog"], [role="alertdialog"], [role="menu"]') !== null) return;
       const stops = tabStops(node, latest.current);
       // every control disabled (a deed that cannot be undone): Tab goes nowhere rather than out
       if (stops.length === 0) { event.preventDefault(); return; }

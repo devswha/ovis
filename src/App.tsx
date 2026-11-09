@@ -717,7 +717,8 @@ export function App() {
   const isSheetWidth = useMediaQuery(SHEET_QUERY);
   // a phone's open drawer is a dialog over the pane (G-003): Tab stays in it, the pane column is inert under it, Escape
   // closes it and the focus goes back to the toggle that opened it (lib/headerSessions.ts useDrawerDialog)
-  const drawerModal = drawerOpen && !wideScreen;
+  // only once the shell is drawn: a drawer a link opens behind the access gate takes its focus when it mounts
+  const drawerModal = locked === false && drawerOpen && !wideScreen;
   const { ref: drawerRef } = useDrawerDialog(drawerModal, setDrawerOpen, [peekSidebarRef]);
   // a phone (the sheets' width) draws no tab row: the header's title lists the tabs (TabStrip's sheet),
   // as the Codex and Claude apps title a thread and list the others from it
@@ -823,6 +824,7 @@ export function App() {
           {wideScreen && !sidebarCollapsed && <SidebarBrand dark={resolvedTheme === "dark"} />}
           <button
             type="button"
+            id="drawer-toggle"
             className="icon-button drawer-toggle"
             aria-label={t(drawerOpen ? "Close workspace list" : "Open workspace list")}
             aria-haspopup="dialog"
@@ -832,7 +834,7 @@ export function App() {
           >
             {drawerOpen ? <X /> : <Menu />}
           </button>
-          {((wideScreen && !sidebarCollapsed) || (!wideScreen && drawerOpen)) && settings.sidebarRows !== "two" && <button type="button" className="icon-button new-workspace-button" disabled={auth?.role === "watch"} aria-label={t("New workspace")} title={auth?.role === "watch" ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => actions.openNewSession()}>
+          {((wideScreen && !sidebarCollapsed) || (!wideScreen && drawerOpen)) && settings.sidebarRows !== "two" && <button type="button" id="drawer-new-workspace" className="icon-button new-workspace-button" disabled={auth?.role === "watch" || selectedMachine?.state !== "connected"} aria-label={t("New workspace")} title={auth?.role === "watch" ? `${t("New workspace")} · ${t("View only")}` : t("New workspace")} onClick={() => actions.openNewSession()}>
             <Plus aria-hidden="true" />
           </button>}
           <button type="button" className="icon-button palette-button" aria-label={t("Command palette")} title={shortcutTitle(t("Command palette"), "palette")} onClick={() => openPalette()}>
@@ -1003,7 +1005,9 @@ export function App() {
 
       <PanePressContext.Provider value={pressPane}>
       <div className="app-body">
-        <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined} ref={drawerRef} {...peekSidebarHandlers}>
+        <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}
+          // the header's toggle and + are drawn as the open drawer's top row: a screen reader that keeps to the modal finds them in it
+          aria-owns={drawerModal ? (settings.sidebarRows !== "two" ? "drawer-toggle drawer-new-workspace" : "drawer-toggle") : undefined} ref={drawerRef} {...peekSidebarHandlers}>
           {error && <div className="error-state" role="alert"><p>{error}</p><button className="btn" onClick={() => void load()}>{t("Retry")}</button></div>}
           {/* a sidebar that cannot be drawn leaves the panes working */}
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
@@ -1216,7 +1220,7 @@ export function App() {
         {statusBarShown && selectedPane && crumb && <StatusBar machineId={selectedMachineId} workspaceId={selectedPane.workspace_id}
           machine={crumb.machine} place={crumb.folder === null ? crumb.workspace : `${crumb.workspace} › ${crumb.folder}`} path={crumb.path}
           session={sessionShort.length > 0 ? sessionShort.join(" · ") : null}
-          pcLoad={pcLoadOn(settings, machines) ? <PcLoadStatus machine={selectedMachine ?? null} /> : null}
+          pcLoad={pcLoadOn(settings, machines) ? <PcLoadStatus key={selectedMachine?.id ?? ""} machine={selectedMachine ?? null} /> : null}
           watching={auth?.role === "watch"}
           waiting={sessionTally.waiting} onNextWaiting={nextWaiting === null ? null : openNextWaiting}
           connection={headerConnection ?? (connected ? "live" : "lost")}
