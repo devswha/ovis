@@ -307,6 +307,9 @@ try {
         await check("each list fades only at an edge with rows past it", { width, mode, twoPcs: true, height: 640 }, async (page, label) => {
           const agentsToggle = page.locator(".agent-section-toggle");
           if (await agentsToggle.getAttribute("aria-expanded") !== "true") await agentsToggle.click();
+          // Resting agents now start folded; this scenario needs their rows to exercise real overflow.
+          await page.locator(".agent-resting-label button").click();
+          assert.equal(await page.locator(".agent-resting-label button").getAttribute("aria-expanded"), "true");
           for (const list of [".machine-list", ".agent-list-contents"]) {
             const start = await fades(page, list);
             assert.ok(start.max > 40, `${label}: ${list} holds more rows than it shows (${start.max}px to scroll)`);

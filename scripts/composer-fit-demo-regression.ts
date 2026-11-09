@@ -950,9 +950,9 @@ try {
       });
       console.log("PASS selectable pending bubbles fit phones; explicit Send now and Discard act on IDs");
 
-      // With automatic sending off (the default, G-107), a follow-up sent while the agent works is held by
-      // the PC at once: a reconnect leaves it held and sends nothing, and only Send now delivers it.
-      await withCard(browser, 390, { agent: "codex", model: "gpt-5.6" }, async (page) => {
+      // With automatic sending turned off, a follow-up sent while the agent works is held by the PC at once:
+      // a reconnect leaves it held and sends nothing, and only Send now delivers it.
+      await withCard(browser, 390, { agent: "codex", model: "gpt-5.6", autoSend: false }, async (page) => {
         const text = "held at once follow-up";
         await page.getByRole("textbox", { name: "Message", exact: true }).fill(text);
         await page.getByRole("button", { name: "Send message", exact: true }).click();
