@@ -70,11 +70,11 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer)): Promise<string[]> {
+  async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer), shown = snapshot): Promise<string[]> {
     await act(async () => { renderer?.unmount(); });
     await act(async () => {
       renderer = create(createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
-        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot, online: false, selectedPaneId, view: "chat", actions }))));
+        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online: false, selectedPaneId, view: "chat", actions }))));
     });
     return renderer!.root.findAll((node) => node.props.className === "menu-item-main" && typeof node.props.children === "string").map((node) => node.props.children as string);
   }
@@ -129,6 +129,15 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     // off by default: Web links open in a new tab, and the palette offers no page
     expect(await rows(TUI, "p1", "localhost:8448")).not.toContain("Open localhost:8448");
     expect(await rows(TUI, "p1", ">")).not.toContain("Open a page on this PC…");
+  });
+
+  it("lists New worktree and Open worktree… for a repository's main checkout, where the PC offers worktrees", async () => {
+    const checkout = (linked: boolean): SessionSnapshot => ({ ...snapshot, workspaces: [{ ...workspace("w1", 1), worktree: { repo_key: "r", repo_name: "r", repo_root: "/r", checkout_path: linked ? "/r-wt" : "/r", is_linked_worktree: linked } }, workspace("w2", 1)] });
+    const worktreeRows = ["New worktree", "Open worktree…"];
+    expect((await rows(TUI, "p1", ">", undefined, checkout(false))).filter((row) => worktreeRows.includes(row))).toEqual(worktreeRows);
+    for (const listed of [await rows(TUI, "p1", ">", undefined, checkout(true)), await rows(APP_CORE, "p1", ">", undefined, checkout(false)), await rows(TUI, "p3", ">", undefined, checkout(false))]) {
+      expect(listed.filter((row) => worktreeRows.includes(row))).toEqual([]);
+    }
   });
 
   it("lists rename and move but no split or zoom on a core that keeps no documents", async () => {
