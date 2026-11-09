@@ -493,7 +493,8 @@ export const DEFAULT_SETTINGS: Settings = {
   uiFontFamily: "",
   chatWidth: "default",
   enterSends: null,
-  autoSendQueued: true,
+  // off until chosen: a message sent while the agent works waits for Send now (G-107)
+  autoSendQueued: false,
   autoTabNames: true,
   composerArtifacts: false,
   composerPasteSend: false,

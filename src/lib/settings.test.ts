@@ -808,6 +808,15 @@ describe("chat font size", () => {
 
 });
 
+describe("queued messages", () => {
+  it("hold until Send now unless auto-send was chosen (G-107)", () => {
+    expect(DEFAULT_SETTINGS.autoSendQueued).toBe(false);
+    expect(sanitizeSettings({}).autoSendQueued).toBe(false);
+    expect(sanitizeSettings({ autoSendQueued: true }).autoSendQueued).toBe(true);
+    expect(sanitizeSettings({ autoSendQueued: "yes" }).autoSendQueued).toBe(false);
+  });
+});
+
 describe("chat width", () => {
   it("is the default lane until one is chosen, and accepts only the four steps", () => {
     expect(DEFAULT_SETTINGS.chatWidth).toBe("default");

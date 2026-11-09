@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { IBufferCell, IBufferLine } from "@xterm/xterm";
-import { columnAt, contrastRatio, paletteColor, readableColor, rowHtml, webLinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
+import { cellStyle, columnAt, contrastRatio, paletteColor, readableColor, rowHtml, webLinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
 
 interface Cell { chars: string; width?: number; fg?: number; bg?: number; bgRgb?: number; bold?: boolean; dim?: boolean; inverse?: boolean }
 
@@ -61,9 +61,18 @@ describe("the folded view of a mirrored grid", () => {
     expect(rowHtml(line([], 4), 4, {}, scratch)).toBe("");
   });
 
-  test("dim text fades its colour, not its background", () => {
+  test("dim text fades its colour, not its background, and meets >= 4.5:1 contrast on light and dark terminal backgrounds", () => {
     expect(rowHtml(line([{ chars: "d", fg: 2, bg: 0, dim: true }], 1), 1, {}, scratch))
       .toBe('<span style="color:color-mix(in srgb, #4e9a06 50%, transparent);background:#2e3436;">d</span>');
+    const dimCell = line([{ chars: "d", dim: true }], 1).getCell(0, scratch)!;
+    const darkStyle = cellStyle(dimCell, { foreground: "#d8d0c3", background: "#181613" }, 4.5);
+    const darkHex = /color:(#[0-9a-f]{6});/i.exec(darkStyle)?.[1];
+    expect(darkHex).toBeDefined();
+    expect(contrastRatio(darkHex!, "#181613")!).toBeGreaterThanOrEqual(4.5);
+    const lightStyle = cellStyle(dimCell, { foreground: "#2a251f", background: "#faf8f3" }, 4.5);
+    const lightHex = /color:(#[0-9a-f]{6});/i.exec(lightStyle)?.[1];
+    expect(lightHex).toBeDefined();
+    expect(contrastRatio(lightHex!, "#faf8f3")!).toBeGreaterThanOrEqual(4.5);
   });
 
   test("a tap on a folded row finds the http(s) address it is on, without the punctuation after it", () => {
