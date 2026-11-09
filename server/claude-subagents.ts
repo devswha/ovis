@@ -485,6 +485,16 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
         if (parent.restAt !== null) parent.turnOpen = false;
       }
     } catch { /* a line caught half written is read again */ }
+  } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
+    // a /loop wakeup's fire begins the turn it resumes, before that turn writes its prompt: the rest before it is gone
+    try {
+      const entry = row(JSON.parse(line));
+      if (entry?.["type"] === "system" && entry["taskKind"] === "loop") {
+        parent.echo = null;
+        parent.restAt = null;
+        openTurn(parent, end, stamp(entry["timestamp"]));
+      }
+    } catch { /* a line caught half written is read again */ }
   } else if (user && line.includes('"isCompactSummary":true')) {
     // a compaction's summary is Claude Code's own: \`/compact\` is told by its command, an idle compaction runs no turn
   } else if (/"type":"(?:user|assistant|api-request)"/.test(line) && !line.includes('"isSidechain":true') && !line.includes('"type":"progress"')) {
