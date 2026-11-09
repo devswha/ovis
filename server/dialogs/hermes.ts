@@ -150,7 +150,9 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
 }
 
 /**
- * Hermes's dangerous-command approval, as its classic CLI (0.21.5, its default interface) draws it over
+ * Hermes's dangerous-command approval, as its CLI draws it (0.21.5's classic layout below; 0.23's default modern
+ * layout draws the same panel, with the hint, the rule over the input holding the spinner, the input, then the status
+ * bar under it, recorded in server/fixtures/hermes-approval/modern-*) over
  * the input (hermes_cli/cli_tui_mixin.py _get_approval_display_fragments), recorded on panes 120 and
  * 38 columns wide, 15 and 14 rows high, and 41 columns attached from a phone, in
  * server/fixtures/hermes-approval/:
@@ -200,6 +202,15 @@ const HERMES_MODAL_INPUT_RE = /^⚠(?: .*)?$/u;
 
 const HERMES_RULE_RE = /^─{8,}$/u;
 
+/**
+ * the rule over the input in Hermes's modern layout (0.23, its default) while it works: its spinner, the tool and
+ * timers, then the user's last prompt at the right; a narrow pane cuts it anywhere, with "..." or at its very edge
+ */
+const HERMES_SPINNER_RULE_RE = /^── [\u2800-\u28FF] /u;
+
+/** Hermes's status bar: its own line, under the input in the modern layout and over it in the classic one */
+const HERMES_STATUS_BAR = " ☤ ";
+
 const HERMES_APPROVAL_ROW_RE = /^([❯ ]) (\d)\. (.+)$/u;
 
 /** what Hermes left out, in its own words: "… (choose Show full command)", "… (command truncated — …)", "… (description truncated)" */
@@ -224,15 +235,20 @@ function hermesApprovalHint(lines: string[]): number {
   let at = hermesInputLine(lines);
   if (!HERMES_APPROVAL_INPUT_RE.test(lines[at] ?? "")) return -1;
   at -= 1;
-  if (HERMES_RULE_RE.test(lines[at] ?? "")) at -= 1;
-  if (lines[at]?.startsWith(" ☤ ")) at -= 1;
+  // the rule over the input: plain, or the modern layout's with the spinner in it
+  if (HERMES_RULE_RE.test(lines[at] ?? "") || HERMES_SPINNER_RULE_RE.test(lines[at] ?? "")) at -= 1;
+  if (lines[at]?.startsWith(HERMES_STATUS_BAR)) at -= 1;
   return HERMES_APPROVAL_HINT_RE.test(lines[at] ?? "") ? at : -1;
 }
 
-/** Where the input line is: the last line shown, or the one over the rule a pane 64 columns or wider closes it with. */
+/**
+ * Where the input line is: the last line shown, or the one over the rule a pane 64 columns or wider closes it with;
+ * in the modern layout (Hermes 0.23's default) the status bar comes last, under both.
+ */
 function hermesInputLine(lines: string[]): number {
   let at = lines.length - 1;
   while (at >= 0 && !lines[at]!.trim()) at -= 1;
+  if (lines[at]?.startsWith(HERMES_STATUS_BAR)) at -= 1;
   return HERMES_RULE_RE.test(lines[at] ?? "") ? at - 1 : at;
 }
 

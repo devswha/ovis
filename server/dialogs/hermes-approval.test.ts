@@ -140,6 +140,63 @@ describe("Hermes's dangerous-command approval", () => {
     expect(registry.waits("codex", screen)).toBe(false);
   });
 
+  // Hermes 0.23.0, recorded the same way: its default "modern" layout draws the same panel, but under it the hint, the
+  // rule over the input with the spinner, the tool and the user's last prompt in it, the input, then the status bar last
+  // (modern-*); its classic layout keeps 0.21.5's order (classic-0.23-once-120). Paths in them are scrubbed.
+  describe("in Hermes 0.23's default modern layout", () => {
+    it.each(["modern-once-120", "modern-once-38", "modern-once-41", "modern-compact-15-rows", "classic-0.23-once-120"])("reads %s as the panel draws it", (name) => {
+      const prompt = card(fixture(name))!;
+      expect(prompt?.kind).toBe("approval");
+      expect(prompt.fallback).toBeUndefined();
+      expect([prompt.title, prompt.question, prompt.body]).toEqual(["Dangerous Command", "recursive delete", "rm -rf ./scratch"]);
+      expect(prompt.options.map((option) => option.label)).toEqual(ALL);
+      expect(answerKeys(prompt, { option_index: 3 })).toEqual([{ keys: ["down"] }, { keys: ["down"] }, { keys: ["down"] }, { keys: ["enter"] }]);
+    });
+
+    it("keeps one card while the countdown, spinner and timers tick and the cursor moves", () => {
+      const prompt = card(fixture("modern-once-120"))!;
+      expect(card(fixture("modern-once-120-tick"))!.id).toBe(prompt.id);
+      const moved = card(fixture("modern-cursor-120"))!;
+      expect(moved.id).toBe(prompt.id);
+      expect(answerKeys(moved, { option_index: 0 })).toEqual([{ keys: ["up"] }, { keys: ["enter"] }]);
+    });
+
+    it("keeps a wrapped command's lines, reads the expanded one, and the once-and-deny menu", () => {
+      expect(card(fixture("modern-long-38"))!.body).toBe("rm -rf ./scratch/build-\nartifacts-from-the-previous-\nrelease ./scratch/nightly-cache");
+      expect(card(fixture("modern-long-cursor-38"))!.id).toBe(card(fixture("modern-long-38"))!.id);
+      const expanded = card(fixture("modern-expanded-38"))!;
+      expect(expanded.body).toBe(["first", "second", "third", "fourth", "fifth", "sixth"]
+        .map((nth, index) => `${index === 0 ? "rm -rf" : "output"} ./scratch/${nth}-build-`).join("\n") + "\noutput");
+      expect(answerKeys(expanded, { option_index: 3 })).toEqual([{ keys: ["enter"] }]);
+      expect(card(fixture("modern-once-deny-120"))!.options.map((option) => option.label)).toEqual(["Allow once", "Deny"]);
+    });
+
+    it("leaves a cut panel to the terminal with no card at all, and an answered one alone", () => {
+      for (const name of ["modern-cut-38", "modern-compact-14-rows"]) {
+        expect([name, card(fixture(name))]).toEqual([name, null]);
+        expect([name, registry.waits("hermes", fixture(name))]).toEqual([name, true]);
+      }
+      expect(card(fixture("modern-after-deny-120"))).toBeNull();
+      expect(registry.waits("hermes", fixture("modern-after-deny-120"))).toBe(false);
+    });
+
+    it("reads nothing with anything but Hermes's own lines under the panel", () => {
+      const screen = fixture("modern-once-120");
+      const variants: [string, string][] = [
+        ["a line between the hint and the rule", screen.replace(/^(── [\u2800-\u28FF] )/mu, "  ▸ subagent: tidy\n$1")],
+        ["a plain line for the spinner rule", screen.replace(/^── [\u2800-\u28FF] .*$/mu, "  something else")],
+        ["output under the status bar", `${screen.trimEnd()}\n$ `],
+        ["text typed into the input", screen.replace(/^⚠ ❯$/mu, "⚠ ❯ hello")],
+      ];
+      for (const [name, shown] of variants) expect([name, card(shown)]).toEqual([name, null]);
+      expect(registry.waits("hermes", variants[3]![1])).toBe(true);
+    });
+
+    it("is the generic card's raw keys on main, as before (#857)", () => {
+      expect(parseFallbackPrompt("hermes", fixture("modern-once-120")).options.map((option) => option.label)).toEqual(["↑", "↓", "Enter", "Esc"]);
+    });
+  });
+
   it("is what the generic card would have offered as raw keys before (#857)", () => {
     // on main the screen got a fallback card of ↑, ↓, Enter and Esc, whose Enter took Allow once
     expect(parseFallbackPrompt("hermes", fixture("once-120")).options.map((option) => option.label)).toEqual(["↑", "↓", "Enter", "Esc"]);
