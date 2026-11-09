@@ -81,17 +81,18 @@ const agentHidden = ["reflection", "clear-messages", "cd", "help", "stream", "se
  * Sent bare, these open one of Letta's own panels, pickers or a browser page and wait there for
  * keys (their handlers say so: "Opening …", or App.tsx draws an overlay). `/login`, `/logout` and
  * `/exit` sign in, sign out or end the session. `/model` opens its model picker, which Chat
- * answers from a card (dialogs/letta.ts).
+ * answers from a card (dialogs/letta.ts). `/feedback` opens its dialog with or without a message.
  */
 const terminalBare = [
   "agents", "skills", "memory", "palace", "sleeptime", "compaction", "connect", "toolset", "system",
-  "personality", "subagents", "hooks", "title", "experiments", "ade", "resume", "search", "bg", "workflows",
-  "install-github-app", "terminal", "login", "logout", "exit", "pinned", "profiles",
+  "personality", "subagents", "hooks", "title", "experiments", "ade", "resume", "search", "mcp", "pin",
+  "help", "install-github-app", "login", "logout", "exit", "pinned", "profiles",
 ] as const;
 const forms: Record<string, CommandForm[]> = {
   ...Object.fromEntries(terminalBare.map((name) => [
     name, [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "unknown" }],
   ])),
+  feedback: [{ match: "bare", interaction: "terminal" }, { match: "other", interaction: "terminal" }],
   model: [{ match: "bare", interaction: "dialog", dialog: "letta-model" }],
 };
 
