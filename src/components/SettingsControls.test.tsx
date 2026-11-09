@@ -19,11 +19,51 @@ describe("the typed font size (G-179)", () => {
     const changes: number[] = [];
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     act(() => {
-      renderer = create(createElement(Stepper, { label: "Terminal font size", value: 14, text: "14px", min: 10, max: 22, decreaseLabel: "Smaller", increaseLabel: "Larger", unit: "px", onChange: (value: number) => changes.push(value) }));
+      renderer = create(createElement(Stepper, { label: "Terminal font size", value: 14, text: "14px", min: 10, max: 22, decreaseLabel: "Smaller", increaseLabel: "Larger", unit: "px", range: "Enter 10–22px", onChange: (value: number) => changes.push(value) }));
     });
     const field = () => renderer!.root.findByType("input");
-    return { changes, field };
+    const button = (name: string) => renderer!.root.findByProps({ "aria-label": name });
+    const range = () => renderer!.root.findByProps({ id: field().props["aria-describedby"] });
+    return { changes, field, button, range };
   };
+
+  it("keeps a valid size typed when the field goes without a blur, and nothing after Escape", () => {
+    const { changes, field } = mount();
+    act(() => field().props.onChange({ target: { value: "16" } }));
+    // Settings closed by a swipe or the system Back: no blur comes
+    act(() => renderer!.unmount());
+    renderer = undefined;
+    expect(changes).toEqual([16]);
+
+    const again = mount();
+    act(() => again.field().props.onChange({ target: { value: "18" } }));
+    act(() => again.field().props.onKeyDown(key("Escape", false)));
+    act(() => renderer!.unmount());
+    renderer = undefined;
+    expect(again.changes).toEqual([]);
+  });
+
+  it("steps from the size still in the field, not the saved one", () => {
+    const { changes, field, button } = mount();
+    act(() => field().props.onChange({ target: { value: "16" } }));
+    act(() => button("Larger").props.onClick());
+    expect(changes).toEqual([17]);
+    // the draft is resolved: a later blur does not put 16 back
+    act(() => field().props.onBlur());
+    expect(changes).toEqual([17]);
+  });
+
+  it("names the range, and shows it under the field after a refused size until the next edit", () => {
+    const { field, range } = mount();
+    expect(range().props.children).toBe("Enter 10–22px");
+    expect(range().props.className).toBe("visually-hidden");
+    act(() => field().props.onChange({ target: { value: "30" } }));
+    act(() => field().props.onKeyDown(key("Enter", false)));
+    expect(range().props.className).toBe("settings-stepper-range");
+    expect(field().props["aria-invalid"]).toBe(true);
+    act(() => field().props.onChange({ target: { value: "1" } }));
+    expect(range().props.className).toBe("visually-hidden");
+  });
 
   it("leaves Enter and Escape to an IME while it composes, then commits the finished number", () => {
     const { changes, field } = mount();

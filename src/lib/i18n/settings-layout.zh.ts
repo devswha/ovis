@@ -59,4 +59,6 @@ export const SETTINGS_LAYOUT_ZH: Record<string, string> = {
   "Keyboard shortcuts, and herdr's prefix keys.": "快捷键和 herdr 前缀键。",
   "Phones, browsers and PCs that reach this Ovis.": "连接到此 Ovis 的手机、浏览器和 PC。",
   "Features still being shaped; they may change.": "仍在完善的功能，可能会变化。",
+  // the range under a typed font size it refused (G-179)
+  "Enter {min}–{max}px": "请输入 {min}–{max}px 之间的数值。",
 };

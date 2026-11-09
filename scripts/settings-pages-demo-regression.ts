@@ -581,11 +581,16 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
       await typedSize.fill("30");
       await typedSize.press("Enter");
       assert.equal(await typedSize.inputValue(), "14", `${width}px: a size out of range is refused`);
+      // the refusal names the range under the field until the next edit, and the field is described by it all along
+      const rangeLine = results.locator(`[id="${await typedSize.getAttribute("aria-describedby")}"]`);
+      assert.equal(await rangeLine.textContent(), "Enter 10–22px", `${width}px: the field is described by its range`);
+      assert.equal(await rangeLine.isVisible(), true, `${width}px: a refused size shows the range`);
       // a pasted number is read whole: 200 is refused, never cut to 20
       await typedSize.focus();
       await typedSize.selectText();
       await page.keyboard.insertText("200");
       assert.equal(await typedSize.inputValue(), "200", `${width}px: a pasted number is kept whole`);
+      assert.equal(await rangeLine.evaluate((node) => node.classList.contains("visually-hidden")), true, `${width}px: the next edit hides the range line`);
       await typedSize.press("Enter");
       assert.equal(await typedSize.inputValue(), "14", `${width}px: a pasted size out of range is refused`);
       assert.equal(await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done(JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize)))), 14, `${width}px: a refused paste saves nothing`);

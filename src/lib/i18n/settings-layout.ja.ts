@@ -59,4 +59,6 @@ export const SETTINGS_LAYOUT_JA: Record<string, string> = {
   "Keyboard shortcuts, and herdr's prefix keys.": "ショートカットと herdr のプレフィックスキー。",
   "Phones, browsers and PCs that reach this Ovis.": "この Ovis に接続するスマホ、ブラウザー、PC。",
   "Features still being shaped; they may change.": "調整中の機能です。変わることがあります。",
+  // the range under a typed font size it refused (G-179)
+  "Enter {min}–{max}px": "{min}–{max}px の範囲で入力してください。",
 };

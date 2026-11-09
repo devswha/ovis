@@ -610,6 +610,15 @@
   color: var(--status-blocked);
 }
 
+/* the range under a typed size it refused, until the next edit: its own line at the end of the row */
+.settings-stepper-range {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--status-blocked);
+  font-size: var(--fs-xs);
+  text-align: end;
+}
+
 @media (pointer: coarse) {
   /* never under --fs-input, the smallest size iOS does not zoom the page for, as .input */
   .settings-stepper-field {
