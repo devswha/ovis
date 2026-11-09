@@ -79,6 +79,11 @@
   .update-notice {
     padding-block: var(--space-1);
   }
+
+  /* the sentence that is a button takes a tap over the line's whole height, as its buttons do */
+  .update-notice.is-line > .update-notice-text {
+    min-height: var(--touch-target);
+  }
 }
 
 .update-progress {

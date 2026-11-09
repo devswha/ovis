@@ -63,7 +63,6 @@ export const SETUP_JA: Record<string, string> = {
   "No accounts signed in": "ログイン済みアカウントなし",
   "Turn on plan limits to see accounts.": "プラン上限をオンにするとアカウントが表示されます。",
   "Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.": "設定の横にプラン使用量を表示します。ログイン情報を各サービスの使用量APIに送信し、ここでは更新しません。",
-  "Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.|plan limits row": "設定の横に使用量を表示します。",
   "Accounts": "アカウント",
   "Session is the 5-hour limit. Without it, the closest limit is shown.": "セッションは5時間の上限です。なければ最も近い上限を表示します。",
   "Used": "使用量",

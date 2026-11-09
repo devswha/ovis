@@ -906,6 +906,11 @@ function VoiceMore() {
   const [voice, setVoice] = useState<VoiceStatus | null>(null);
   const voiceKeyRef = useRef<HTMLInputElement>(null);
   const [voiceKeyTyped, setVoiceKeyTyped] = useState(false);
+  // the field drawn again (a search hid its group, then found it) comes back empty: Save waits for a key typed again
+  const voiceKeyField = useCallback((field: HTMLInputElement | null) => {
+    voiceKeyRef.current = field;
+    return () => { voiceKeyRef.current = null; setVoiceKeyTyped(false); };
+  }, []);
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   useEffect(() => { fetchVoiceStatus().then(setVoice, () => setVoice(null)); }, []);
@@ -951,7 +956,7 @@ function VoiceMore() {
           {voice && voice.source !== "env" && (
             <form className="voice-key" onSubmit={(event) => { event.preventDefault(); const typed = voiceKeyRef.current?.value.trim() ?? ""; if (typed) void changeVoiceKey(typed); }}>
               <input
-                ref={voiceKeyRef}
+                ref={voiceKeyField}
                 className="input voice-key-input"
                 type="password"
                 placeholder="sk-..."
@@ -1873,7 +1878,11 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   // fold that holds one, scrolls the first into view and puts the focus on it, so no row found hides
   // again and the focus does not fall to the body (G-110)
   const landing = useRef<{ page: SettingsPage; sections: string[] } | null>(null);
-  const openFromSearch = (id: SettingsPage, groups: string[] = []): void => { landing.current = { page: id, sections: groups }; setQuery(""); openPage(id); };
+  const openFromSearch = (id: SettingsPage, groups: string[] = []): void => {
+    // a press on the page already open changes nothing to land: a landing kept for it would take a later Back's focus
+    if (id === page && !searching && !keyBarOpen) return;
+    landing.current = { page: id, sections: groups }; setQuery(""); openPage(id);
+  };
   const openKeyBar = (): void => {
     settingsScrollRef.current = settingsBodyRef.current?.scrollTop ?? 0;
     // from a search, the editor opens over its own page, so Back steps out to that page as from there
@@ -1903,8 +1912,13 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
         first.focus({ preventScroll: true });
         first.scrollIntoView({ block: "start" });
         following.current = { group: first, page };
-      } else if (narrow) backRef.current?.focus();
-      else tab(page)?.focus();
+      } else {
+        if (narrow) backRef.current?.focus();
+        else tab(page)?.focus();
+        // a group drawn only once the server answers (Also send to) is landed on when it comes
+        const named = landed.sections[0];
+        if (named !== undefined) awaited.current = { named, page };
+      }
     } else if (before?.keyBar && before.page === page) {
       if (settingsBodyRef.current) settingsBodyRef.current.scrollTop = settingsScrollRef.current;
       keyBarButtonRef.current?.focus({ preventScroll: true });

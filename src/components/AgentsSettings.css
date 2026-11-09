@@ -19,6 +19,19 @@
   justify-content: center;
 }
 
+/* a read under way: aria-disabled, so a press keeps the focus on the button, and it reads as a
+   disabled .btn does (styles.css) */
+.btn.agents-check-again[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .btn.agents-check-again[aria-disabled="true"]:hover {
+    background: transparent;
+  }
+}
+
 .agents-head .btn svg,
 .agents-detail-head .btn svg,
 .agents-row-action svg {

@@ -87,4 +87,23 @@ describe("update failure announcements", () => {
       else Reflect.deleteProperty(navigator, "languages");
     }
   });
+
+  it.each([true, false])("announces a runtime update that failed without output (bare %p)", (bare) => {
+    const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+    const hook = spyOn(herdrUpdate, "useHerdrUpdate").mockReturnValue({
+      status: { supported: true, phase: "error", server_version: "1.0", binary_version: "1.0", stale: false, output: null, finished_at: null },
+      error: null, busy: false, request: async () => undefined,
+    });
+    try {
+      const html = renderToStaticMarkup(createElement(SettingsProvider, null,
+        createElement(SettingsBare.Provider, { value: bare }, createElement(HerdrUpdateControls, { enabled: true, herdrVersion: "1.0" }))));
+      expect(html).toContain('role="alert"');
+      expect(html).toContain("Update herdr");
+    } finally {
+      hook.mockRestore();
+      if (languages) Object.defineProperty(navigator, "languages", languages);
+      else Reflect.deleteProperty(navigator, "languages");
+    }
+  });
 });
