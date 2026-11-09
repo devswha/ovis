@@ -164,6 +164,7 @@ const BASE: Record<string, string> = {
   "Start herdr on this PC, or check HERDR_SOCKET.": "この PC で herdr を起動するか、HERDR_SOCKET を確認してください。",
   "The other PC's answer was larger than this app accepts": "別の PC の応答が、このアプリで受け取れるサイズを超えています",
   "The other PC's answer could not be read": "別の PC の応答を読み取れませんでした",
+  "Start Ovis on that PC, or start a new herdr here": "その PC で Ovis を起動するか、ここで新しい herdr を起動してください",
   "Browse files": "ファイルを参照",
   "Copy link": "リンクをコピー",
   "Goal: {objective}": "目標: {objective}",

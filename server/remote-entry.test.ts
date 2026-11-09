@@ -142,6 +142,14 @@ describe("remote entry startup lock", () => {
     expect(result.output).not.toContain(join(home, "missing-herdr"));
   }, 60_000);
 
+  it.skipIf(process.platform === "win32")("starts herdr without extra consent when no sessions exist", async () => {
+    const resultFile = join(home, "empty.result");
+    const result = await start(undefined, { HERDR_REMOTE_RESULT: resultFile });
+    expect(result.output).toContain(join(home, "missing-herdr"));
+    expect(result.code).not.toBe(0);
+    expect(existsSync(resultFile)).toBe(false);
+  }, 60_000);
+
   it.skipIf(process.platform === "win32")("offers another live session when the selected socket has disappeared", async () => {
     const chosen = join(home, "config/herdr/sessions/gone/herdr.sock");
     const other = fakeHerdr(join(home, "config/herdr/sessions/other/herdr.sock"));
@@ -200,7 +208,7 @@ describe("remote entry startup lock", () => {
     // regression (fails on main, which waited for any live PID): a reused PID is not a starter
     const reused = other();
     ownerLock(reused.pid, earlierBirth);
-    const run = await start();
+    const run = await start(undefined, { HERDR_REMOTE_START_NEW: "1" });
     expect(run.output).not.toContain("Another bridge is starting");
     expect(run.output).toContain(join(home, "missing-herdr"));
     expect(run.code).not.toBe(0);
@@ -266,7 +274,7 @@ describe("remote entry startup lock", () => {
     // an older version's descriptor has no birth: outside Windows the refusal alone proves it someone else's
     for (const fields of [{ birth: earlierBirth }, ...(process.platform === "win32" ? [] : [{}])]) {
       writeFileSync(descriptor, JSON.stringify({ port: 1, token: "registered-secret", pid: reused.pid, generation: "g", ...fields, socket_path: "s", bridge_protocol: 1, bundle_version: "v" }));
-      const run = await start(preload);
+      const run = await start(preload, { HERDR_REMOTE_START_NEW: "1" });
       expect(run.output).toContain(join(home, "missing-herdr"));
       expect(run.code).not.toBe(0);
     }
@@ -299,7 +307,7 @@ describe("remote entry startup lock", () => {
     const registered = (pid: number, birth: { platform: string; value: string }) =>
       writeFileSync(descriptor, JSON.stringify({ port: 1, token: "registered-secret", pid, generation: "g", birth, socket_path: "s", bridge_protocol: 1, bundle_version: "v" }));
     registered(reused.pid, earlierBirth);
-    expect((await start()).output).toContain(join(home, "missing-herdr"));
+    expect((await start(undefined, { HERDR_REMOTE_START_NEW: "1" })).output).toContain(join(home, "missing-herdr"));
     // control: a live bridge is left serving, and no herdr is started for it
     registered(bridge.pid, reading.birth);
     const run = await start();

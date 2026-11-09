@@ -8,6 +8,30 @@ import { createServer } from "./index.ts";
 import { PortalService } from "./portal.ts";
 import { MachineManager } from "./machines.ts";
 import type { MachineRelay } from "./machine-relay.ts";
+import * as bridge from "./bridge.ts";
+import * as discovery from "./herdr-discovery.ts";
+
+it("returns account sessions only to an authorized bridge discovery request", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-bridge-discovery-"));
+  const sessions = [{ socket_path: "/home/fixture/.config/herdr/herdr.sock", label: "Default session" }];
+  const identity = spyOn(bridge, "bridgeIdentity").mockResolvedValue({ pid: 42, managed_remote: false, bridge_protocol: 1, bundle_version: "43", socket_path: "/fixture/core.sock", socket_id: "1:2", herdr: { version: "fixture", protocol: 22, runtime: "herdr-core" } });
+  const discover = spyOn(discovery, "discoverHerdrSessions").mockResolvedValue(sessions);
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "owner-token", bridgeToken: "bridge-token", tailscaleOwner: null, machines: false, sidecar: false });
+  try {
+    const get = (path: string, token: string) => fetch(`http://127.0.0.1:${app.port}${path}`, { headers: { authorization: `Bearer ${token}` } });
+    expect((await get("/api/bridge?discover=herdr", "wrong")).status).toBe(401);
+    expect(discover).not.toHaveBeenCalled();
+    const normal = await get("/api/bridge", "bridge-token");
+    expect(await normal.json()).not.toHaveProperty("found_herdr_sessions");
+    expect(discover).not.toHaveBeenCalled();
+    const found = await get("/api/bridge?discover=herdr", "bridge-token");
+    expect(await found.json()).toMatchObject({ herdr: { runtime: "herdr-core" }, found_herdr_sessions: sessions });
+    const watching = app.context.services.devices.pair(app.context.services.devices.startPairing().code, "Watcher", "watch");
+    if (!watching) throw new Error("Fixture pairing failed");
+    const refused = await fetch(`http://127.0.0.1:${app.port}/api/bridge?discover=herdr`, { headers: { cookie: `ovis_device=${watching.token}` } });
+    expect(refused.status).toBe(403);
+  } finally { app.stop(); identity.mockRestore(); discover.mockRestore(); rmSync(stateDir, { recursive: true, force: true }); }
+});
 
 for (const [path, status, expectedTimeouts] of [["/api/health", 200, [60]], ["/api/nope", 404, [60]]] as const) {
   it(`dispatches GET ${path} with a fake socket context`, async () => {

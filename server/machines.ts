@@ -1,5 +1,5 @@
 import { authenticatedWebSocket } from "./remote-websocket.ts";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
@@ -18,10 +18,11 @@ import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
 import { type HerdrMachineProfile, samePort, sameSshSession } from "./herdr-profiles.ts";
 import { appBuild } from "./app-revision.ts";
 import { validateTarget } from "./machine-security.ts";
+import { parseFoundHerdrSessions } from "./herdr-discovery.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
 import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from "./remote-host.ts";
-import type { FoundHerdrSession } from "../shared/machines.ts";
+import type { FoundHerdrSession, FoundOvis } from "../shared/machines.ts";
 import { DESKTOP_APP_UPDATES, REVISION, type UpdateStatus } from "../shared/update.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
 import { SshConnection, sshClient } from "./ssh.ts";
@@ -31,7 +32,7 @@ import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
 import { TailnetPcError, TailnetPcs, type TailnetPcsOptions } from "./tailnet-pcs.ts";
 import { sshCandidates, type SshCandidatesOptions } from "./ssh-candidates.ts";
 import { followOwnUpdate, offerFromStatus, readOwnStatus, cancelledWords, cancelOwnUpdate, installIdOf, OwnUpdateCancelled } from "./pc-update.ts";
-import { appRelease, INSTALLER, installPlanFor, PcInstaller, samePc, type InstallConnect, type InstallPlan } from "./pc-install.ts";
+import { appRelease, INSTALLER, installPlanFor, PcInstaller, registeredAs, samePc, type InstallConnect, type InstallPlan } from "./pc-install.ts";
 import { warmSshAddresses } from "./ssh-address.ts";
 import { readMoveOffer } from "./remote-move.ts";
 
@@ -303,7 +304,7 @@ const ownUpdateRefused = (offer: RemoteOvis): string => `${independentBridge(REM
 /** A connection that retrying cannot fix: the PC waits for the user instead of reconnecting. */
 export class MachineActionRequired extends Error {
   /** `newerServer`: the server that answered is newer than this app, as its own identity proved (verify) */
-  constructor(message: string, readonly action: MachineAction, readonly newerServer = false, readonly foundHerdrSessions?: FoundHerdrSession[]) { super(message); }
+  constructor(message: string, readonly action: MachineAction, readonly newerServer = false, readonly foundHerdrSessions?: FoundHerdrSession[], readonly foundOvis?: FoundOvis[]) { super(message); }
 }
 
 
@@ -668,7 +669,10 @@ export class MachineManager {
   list(): Machine[] {
     const own = this.serverId?.();
     // ovis_update is derived from the PC's state at each read; the roster hands out its live PCs
-    for (const runtime of this.machines.values()) if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
+    for (const runtime of this.machines.values()) {
+      runtime.machine.runtime = runtime.machine.herdr ? runtime.machine.herdr.runtime ?? "herdr" : undefined;
+      if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
+    }
     return [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
   }
   /**
@@ -1231,13 +1235,13 @@ export class MachineManager {
     if (existing?.machine.herdr_profile_id) {
       if (target.identity_file) throw new Error("SSH connection details are managed by herdr; use the account's SSH config for keys");
       // SSH identity stays catalog-owned; the socket/new-start choice belongs to this web client.
-      target = { ...existing.machine.target!, herdr_socket: target.herdr_socket, start_new_herdr: target.start_new_herdr };
+      target = { ...existing.machine.target!, herdr_socket: target.herdr_socket, start_new_herdr: target.start_new_herdr, own_ovis: target.own_ovis };
     }
     // the install that asks it (fromInstall) was the approval of a PC not added here yet too
     const auto = options.auto === true && request.update_remote === true && (!!existing || options.fromInstall === true);
     // A saved PC set up at another SSH address stays at its own until it connects there: that address is the user's to
     // review in this dialog, and a reconnect or an update that asks nobody goes only where the PC is (#2075)
-    const moving = !!existing && (!sameSshSession(target, existing.machine.target!) || target.herdr_socket !== existing.machine.target!.herdr_socket);
+    const moving = !!existing && (!sameSshSession(target, existing.machine.target!) || target.herdr_socket !== existing.machine.target!.herdr_socket || target.own_ovis !== existing.machine.target!.own_ovis);
     // A session switch gets a separate connection. Keep the saved PC serving its old workspaces until commit.
     const switchingSession = !!existing && moving && target.destination === existing.machine.target!.destination && samePort(target.port, existing.machine.target!.port);
     if (switchingSession) { clearTimeout(existing.retry); existing.retry = undefined; }
@@ -1353,12 +1357,13 @@ export class MachineManager {
           else if (ownsRuntime && existing && runtime.machine.enabled && !this.stopped && !(e instanceof MachineActionRequired) && (unreachable || resumeRetry || runtime.machine.action_required === "windows_login")) { runtime.machine.error = error; runtime.machine.action_required = null; this.retryLater(runtime); }
           // a failed bridge update on a PC that answered keeps its button: the bridge is still
           // out of date, and the error says why this attempt failed (a password needed, …)
-          else if (ownsRuntime) { runtime.machine.state = "error"; runtime.machine.error = error; runtime.machine.action_required = e instanceof MachineActionRequired ? e.action : job.update && existing ? "update_bridge" : null; runtime.machine.found_herdr_sessions = e instanceof MachineActionRequired ? e.foundHerdrSessions : undefined; }
+          else if (ownsRuntime) { runtime.machine.state = "error"; runtime.machine.error = error; runtime.machine.action_required = e instanceof MachineActionRequired ? e.action : job.update && existing ? "update_bridge" : null; runtime.machine.found_herdr_sessions = e instanceof MachineActionRequired ? e.foundHerdrSessions : undefined; runtime.machine.found_ovis = e instanceof MachineActionRequired ? e.foundOvis : undefined; }
           // the dialog reads the job, not the PC: a first connect that failed on the version
           // check has no machine to carry action_required, and an interrupted update keeps
           // offering itself even when the PC was never registered
           job.public.action_required = e instanceof MachineActionRequired ? e.action : job.update ? "update_bridge" : null;
           job.public.found_herdr_sessions = e instanceof MachineActionRequired ? e.foundHerdrSessions : undefined;
+          job.public.found_ovis = e instanceof MachineActionRequired ? e.foundOvis : undefined;
           // the devices list says why this PC's update failed, whichever way it was started
           if (ownsRuntime && job.runtime) job.runtime.machine.update_error = error;
           this.emit();
@@ -1454,7 +1459,7 @@ export class MachineManager {
     const session = target.session;
     // at an address the PC is not at yet, what this try learns is kept apart (Runtime.move) and its offer goes only
     // to the job its dialog reads: the PC keeps its own until it connects there
-    const moving = !!job && (!sameSshSession(target, runtime.machine.target!) || target.herdr_socket !== runtime.machine.target!.herdr_socket);
+    const moving = !!job && (!sameSshSession(target, runtime.machine.target!) || target.herdr_socket !== runtime.machine.target!.herdr_socket || target.own_ovis !== runtime.machine.target!.own_ovis);
     // only this try, at this address, tells whose server the PC runs: a cancelled or superseded one (another
     // connection, or its dialog moving the PC to another address, since it looked) writes nothing
     const learnServer = (seen: Pick<BridgeDescriptor, "managed_remote">, verified = false) => {
@@ -1476,14 +1481,56 @@ export class MachineManager {
       if (runtime.generation === generation && !moving) runtime.machine.remote_ovis = left;
     };
     const { host, inspection } = await detectHost(ssh, session, target.herdr_socket);
+    const coreUnavailable = async () => {
+      let sessions: FoundHerdrSession[] = [];
+      try { sessions = await host.discoverSessions?.(ssh, inspection) ?? []; }
+      catch (error) {
+        if (!(error instanceof Error)) throw error;
+        // An inaccessible discovery runtime leaves no verified choices, but still requires the owner.
+        sessions = [];
+      }
+      if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
+      return new MachineActionRequired("Start Ovis on that PC, or start a new herdr here", "choose_herdr", false, sessions);
+    };
     if (job && host.kind === "windows") job.public.windows_startup = moving || !this.machines.has(runtime.machine.id);
-    const { platform, expectedSocket } = inspection;
+    const { platform } = inspection;
+    let expectedSocket = inspection.expectedSocket;
+    // The core adapter is not a TUI socket. Discover the account's own registered Ovis and prove
+    // its loopback endpoint before offering it; an explicit selection is checked anew on each try.
+    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr) {
+      const found: FoundOvis[] = [];
+      const sessions = new Map<string, FoundHerdrSession>();
+      for (const candidate of inspection.descriptors) {
+        if (candidate?.managed_remote !== false || typeof candidate.socket_path !== "string") continue;
+        if (target.own_ovis && candidate.socket_path !== target.own_ovis) continue;
+        if (!target.own_ovis && candidate.socket_path === expectedSocket) continue;
+        try {
+          if (!await this.ownedRegistration(ssh, candidate)) continue;
+          const proved = await this.verify(ssh, candidate, candidate.socket_path, true, true);
+          if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
+          if (proved.identity.pid !== candidate.pid || proved.identity.managed_remote !== false || proved.identity.herdr.runtime !== "herdr-core") continue;
+          found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" });
+          const listed = proved.identity.found_herdr_sessions;
+          if (listed?.length) for (const row of parseFoundHerdrSessions(listed)) sessions.set(row.socket_path, row);
+        } catch (error) {
+          if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw error;
+          // A stale or inaccessible registration grants no connection and no permission to start anything.
+        }
+      }
+      if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
+      if (target.own_ovis) {
+        if (!found.some((candidate) => candidate.socket_path === target.own_ovis)) throw await coreUnavailable();
+        expectedSocket = target.own_ovis;
+      } else if (found.length) {
+        throw new MachineActionRequired("Choose this PC's Ovis server or a running herdr session.", "choose_herdr", false, [...sessions.values()], found);
+      }
+    } else if (target.own_ovis) throw new Error("Choosing this PC's Ovis server over SSH requires Linux or macOS");
     // what the PC's own Ovis said is read anew on every try: it may have been updated or replaced since
     // kept while its own Ovis is away (below): an install that stopped it and then failed is tried again from its card
     const offered = { remote_ovis: runtime.machine.remote_ovis, installFix: runtime.installFix, remoteRevision: runtime.remoteRevision };
     if (!moving) { runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; runtime.installFix = undefined; }
     let { herdrPath } = inspection;
-    if (herdrPath) {
+    if (herdrPath && !target.own_ovis) {
       const version = await host.herdrVersion(ssh, herdrPath);
       const match = /herdr (\d+)\.(\d+)\.(\d+)/.exec(version);
       if (!match || Number(match[1]) === 0 && Number(match[2]) < 9) throw new Error("The installed herdr is incompatible. Update it explicitly to 0.9+ before connecting; it was left unchanged.");
@@ -1506,6 +1553,7 @@ export class MachineManager {
       stalePid = descriptor.pid;
       descriptor = undefined;
     }
+    if (target.own_ovis && !descriptor) throw await coreUnavailable();
     // The PC's own Ovis is away (#2047): the PC waits for it, as for a PC that cannot be reached, and nothing of this
     // app's is installed or started in its place, by a reconnect or by an update that asks nobody. Only a setup the
     // user reviews in its dialog may start this app's bridge there.
@@ -1520,6 +1568,7 @@ export class MachineManager {
     if (descriptor && update && descriptor.bridge_protocol === BRIDGE_PROTOCOL && descriptor.bundle_version === REMOTE_BUNDLE_VERSION) {
       try { currentBridge = await this.verify(ssh, descriptor, expectedSocket); }
       catch (error) {
+        if (target.own_ovis) throw await coreUnavailable();
         if (error instanceof MachineActionRequired && error.action === "update_bridge") {
           throw new MachineActionRequired("The running bridge is incompatible with this app. Another app may have reconnected with a different version. Update or disconnect the other app, then reconnect here. The remote bridge was left running.", "bridge_conflict");
         }
@@ -1653,7 +1702,7 @@ export class MachineManager {
           if (descriptor) break;
           const found = await host.foundSessions?.(ssh, inspection);
           if (found?.gone) throw new MachineActionRequired("The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.", "choose_herdr", false, found.sessions);
-          if (found?.sessions.length) throw new MachineActionRequired("A herdr session is already running on this PC. Choose it, or start a new one.", "choose_herdr", false, found.sessions);
+          if (found) throw new MachineActionRequired(found.sessions.length ? "A herdr session is already running on this PC. Choose it, or start a new one." : "No Ovis or herdr is running for this account. Start Ovis on that PC, or explicitly choose to start a new herdr here.", "choose_herdr", false, found.sessions);
           if (!headless) notice = await host.startupNotice?.(ssh, session) ?? null;
           if (notice) break;
           await Bun.sleep(250);
@@ -1695,13 +1744,36 @@ export class MachineManager {
     catch (error) {
       // its own update ended in a refusal of what answers there, which decides over what its descriptor said
       if (ownUpdate && job && error instanceof MachineActionRequired) ownRefused(ownUpdate, error, job);
+      if (target.own_ovis && !(error instanceof MachineActionRequired)) throw await coreUnavailable();
       throw error;
     }
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
+    if (target.own_ovis) {
+      try {
+        if (verified.identity.pid !== descriptor.pid || verified.identity.managed_remote !== false || verified.identity.herdr.runtime !== "herdr-core" || !await this.ownedRegistration(ssh, descriptor)) throw await coreUnavailable();
+      } catch (error) {
+        if (error instanceof MachineActionRequired) throw error;
+        throw await coreUnavailable();
+      }
+    }
     if (verified.identity.pid !== descriptor.pid) throw new Error("Bridge process verification failed; ownership was not changed");
+    if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     learnServer(verified.identity, true);
     runtime.endpoint = verified.endpoint;
     if (moving) runtime.move!.herdr = verified.identity.herdr; else runtime.machine.herdr = verified.identity.herdr;
+    if (job) job.public.runtime = verified.identity.herdr.runtime ?? "herdr";
+  }
+  /** The registry file and live process must belong to the SSH uid, not merely be readable by it. */
+  private async ownedRegistration(ssh: SshConnection, descriptor: BridgeDescriptor): Promise<boolean> {
+    if (!Number.isSafeInteger(descriptor.pid) || descriptor.pid <= 0 || typeof descriptor.socket_path !== "string" || !descriptor.socket_path.startsWith("/") || descriptor.socket_path.length > 4096
+      || !Number.isInteger(descriptor.port) || descriptor.port < 1 || descriptor.port > 65535 || typeof descriptor.token !== "string" || !/^[a-f0-9]{64}$/.test(descriptor.token)) return false;
+    const name = createHash("sha256").update(descriptor.socket_path).digest("hex") + ".json";
+    const text = await ssh.run(`f="$HOME/.config/herdr-web-ui/bridges/${name}"; uid=$(id -u); test ! -L "$f" && test -f "$f" && test "$(stat -c %u "$f" 2>/dev/null || stat -f %u "$f")" = "$uid" && test "$(ps -o uid= -p ${descriptor.pid} | tr -d ' ')" = "$uid" && kill -0 ${descriptor.pid} 2>/dev/null && ${registeredAs(descriptor.pid, descriptor)} && head -c 16384 "$f" || true`);
+    try {
+      const current: unknown = JSON.parse(text);
+      return !!current && typeof current === "object" && "pid" in current && current.pid === descriptor.pid && "token" in current && current.token === descriptor.token
+        && "socket_path" in current && current.socket_path === descriptor.socket_path && "port" in current && current.port === descriptor.port && "managed_remote" in current && current.managed_remote === false;
+    } catch { return false; }
   }
   /** A tunnel to the bridge a descriptor names, on the PC's 127.0.0.1, with that bridge's token. */
   private async tunnel(ssh: SshConnection, descriptor: BridgeDescriptor): Promise<{ url: string; token: string }> {
@@ -1893,12 +1965,12 @@ export class MachineManager {
       await this.pause(job.abort.signal);
     }
   }
-  private async verify(ssh: SshConnection, descriptor: BridgeDescriptor, expectedSocket: string, forReplacement = false): Promise<{ endpoint: { url: string; token: string }; identity: BridgeIdentity }> {
+  private async verify(ssh: SshConnection, descriptor: BridgeDescriptor, expectedSocket: string, forReplacement = false, discover = false): Promise<{ endpoint: { url: string; token: string }; identity: BridgeIdentity }> {
     const endpoint = await this.tunnel(ssh, descriptor);
     let response: Response;
     // one deadline for the answer, its body included: a bridge that stops halfway timed out too
     const deadline = AbortSignal.timeout(BRIDGE_ANSWER_MS);
-    try { response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: deadline }); }
+    try { response = await fetch(`${endpoint.url}/api/bridge${discover ? "?discover=herdr" : ""}`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: deadline, redirect: "manual" }); }
     catch (error) { throw new Error(bridgeUnreachable(descriptor, error), { cause: error }); }
     if (!response.ok) throw new Error(verificationFailure(response.status, await readCappedJson(response, REMOTE_LIMITS.bridgeError).catch(() => null)));
     let identity: BridgeIdentity;
@@ -1983,7 +2055,7 @@ export class MachineManager {
     const generation = runtime.generation;
     await this.refresh(runtime);
     if (generation !== runtime.generation || this.stopped) throw new Error("Connection cancelled");
-    runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.found_herdr_sessions = undefined; runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; runtime.installFix = undefined; runtime.attempts = 0; runtime.updateCancelled = false;
+    runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.found_herdr_sessions = undefined; runtime.machine.found_ovis = undefined; runtime.machine.remote_ovis = null; runtime.remoteRevision = undefined; runtime.installFix = undefined; runtime.attempts = 0; runtime.updateCancelled = false;
     // told only for a connected PC (shared/machines.ts)
     if (runtime.tunnel) runtime.machine.route = runtime.tunnel.route;
     this.openObserver(runtime, generation);
@@ -2095,6 +2167,7 @@ export class MachineManager {
     if (error instanceof MachineActionRequired && error.action !== "windows_login") {
       runtime.machine.state = "error"; runtime.machine.action_required = error.action;
       runtime.machine.found_herdr_sessions = error.foundHerdrSessions;
+      runtime.machine.found_ovis = error.foundOvis;
       this.emit();
       // SSH itself just worked without a password, so the update can run unattended
       if (error.action === "update_bridge" && this.preferences.auto_update_bridges && this.mayManageBridge(runtime) && !runtime.updateCancelled) this.queueAutoUpdate(runtime.machine.id);

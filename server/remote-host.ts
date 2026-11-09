@@ -140,6 +140,8 @@ export interface RemoteHost {
   foundSessions?(ssh: SshConnection, inspection: HostInspection): Promise<{ gone: boolean; sessions: FoundHerdrSession[] } | null>;
   /** a chosen socket checked on the PC by the rule its bridge applies (server/herdr-discovery.ts); null when it cannot be */
   chosenSocketStatus?(ssh: SshConnection, inspection: HostInspection, socket: string): Promise<"usable" | "gone" | "refused" | null>;
+  /** Read-only discovery, including when the chosen Ovis server is stopped. */
+  discoverSessions?(ssh: SshConnection, inspection: HostInspection): Promise<FoundHerdrSession[]>;
   descriptors(ssh: SshConnection): Promise<BridgeDescriptor[]>;
 }
 
@@ -205,7 +207,13 @@ export const posixHost: RemoteHost = {
     if (typeof result !== "object" || result === null || !("code" in result) || (result.code !== "herdr_sessions_found" && result.code !== "herdr_session_gone") || !("sessions" in result)) throw new Error("The PC returned an invalid startup result");
     const gone = result.code === "herdr_session_gone";
     // a stopped chosen session may leave no other one running
-    return { gone, sessions: gone && Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions) };
+    return { gone, sessions: Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions) };
+  },
+  async discoverSessions(ssh, inspection) {
+    const script = `import { discoverHerdrSessions } from ${JSON.stringify(inspection.runtimeDir + "/server/herdr-discovery.ts")}; console.log(JSON.stringify(await discoverHerdrSessions()));`;
+    const text = await ssh.run(`if test -x ${shellQuote(inspection.runtimeDir + "/bin/bun")}; then ${shellQuote(inspection.runtimeDir + "/bin/bun")} -e ${shellQuote(script)}; else printf '[]'; fi`);
+    const sessions: unknown = JSON.parse(text);
+    return Array.isArray(sessions) && sessions.length === 0 ? [] : parseFoundHerdrSessions(sessions);
   },
   async chosenSocketStatus(ssh, inspection, socket) {
     // the installed bundle holds the rule; an older or missing one cannot say

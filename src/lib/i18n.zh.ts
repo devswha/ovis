@@ -166,6 +166,7 @@ const BASE: Record<string, string> = {
   "Start herdr on this PC, or check HERDR_SOCKET.": "请在此电脑上启动 herdr，或检查 HERDR_SOCKET。",
   "The other PC's answer was larger than this app accepts": "另一台电脑的响应超出了此应用可接受的大小",
   "The other PC's answer could not be read": "无法读取另一台电脑的响应",
+  "Start Ovis on that PC, or start a new herdr here": "请在那台 PC 上启动 Ovis，或在此启动新的 herdr",
   "Browse files": "浏览文件",
   "Copy link": "复制链接",
   "Goal: {objective}": "目标：{objective}",
