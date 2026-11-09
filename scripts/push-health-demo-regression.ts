@@ -369,12 +369,14 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
 /**
  * A repair that fails says why in full (repairFailureText): on a narrow phone at the largest interface text the
  * sentence keeps most of the line's width, the repair button drops under it, Close stays at the top right, and the
- * notice stays within the screen, scrolling inside itself when it must (G-103).
+ * notice stays within the screen, scrolling inside itself when it must (G-103). A wide screen keeps the line's row:
+ * only the sentence wraps, the repair button and Close stay beside it.
  */
 async function checkFailedRepairAtLargeText(browser: Browser, origin: string, width: number): Promise<void> {
-  const viewport = { width, height: width === 320 ? 568 : 844 };
+  const wide = width > 640;
+  const viewport = wide ? DESKTOP : { width, height: width === 320 ? 568 : 844 };
   const tag = `${width} failed repair at 20px`;
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US", permissions: ["notifications"] });
+  const context = await browser.newContext({ viewport, ...(wide ? {} : { deviceScaleFactor: 3, isMobile: true, hasTouch: true }), locale: "en-US", permissions: ["notifications"] });
   await context.addInitScript(([settings, key]) => { localStorage.setItem("ovis:settings", settings); localStorage.setItem(key, "fresh"); }, [JSON.stringify({ language: "en", theme: "light", alertsOn: true, uiFontSize: 20 }), QA_KEY] as const);
   try {
     const page = await context.newPage();
@@ -400,6 +402,13 @@ async function checkFailedRepairAtLargeText(browser: Browser, origin: string, wi
     const action = await box(notice.getByRole("button", { name: "Turn alerts on again", exact: true }));
     const close = await box(notice.getByRole("button", { name: "Dismiss", exact: true }));
     if (EVIDENCE) await page.screenshot({ path: join(EVIDENCE, `push-health-${width}-light-failed-repair-20px.png`) });
+    if (wide) {
+      const middle = (b: { y: number; height: number }) => b.y + b.height / 2;
+      assert.ok(Math.abs(middle(action) - middle(close)) < 2 && action.x >= reason.x + reason.width - 1, `${tag}: the repair button and Close stay on one row beside the reason`);
+      assert.ok(line.x + line.width - (close.x + close.width) < 24, `${tag}: Close stays at the line's right end`);
+      console.log(`PASS ${tag}: the line keeps its row, the reason beside the repair button and Close`);
+      return;
+    }
     assert.ok(reason.width >= line.width * 0.6, `${tag}: the reason keeps most of the line's width (${Math.round(reason.width)} of ${Math.round(line.width)}px)`);
     assert.ok(action.y >= reason.y + reason.height - 1, `${tag}: the repair button sits under the reason`);
     assert.ok(close.y - line.y < 24 && line.x + line.width - (close.x + close.width) < 24, `${tag}: Close stays at the top right`);
@@ -437,7 +446,7 @@ try {
       for (const [width, theme, language] of [[PHONE.width, "light", "en"], [PHONE.width, "dark", "en"], [DESKTOP.width, "light", "en"], [DESKTOP.width, "dark", "en"], [PHONE.width, "light", "ko"]] as const) {
         await run(browser, origin, width, theme, language);
       }
-      for (const width of [320, PHONE.width]) await checkFailedRepairAtLargeText(browser, origin, width);
+      for (const width of [320, PHONE.width, DESKTOP.width]) await checkFailedRepairAtLargeText(browser, origin, width);
     } finally { await browser.close(); }
   } finally { server.stop(true); }
   if (EVIDENCE) {
