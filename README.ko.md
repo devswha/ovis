@@ -76,7 +76,7 @@ irm https://ovis.sh/install.ps1 | iex
 
 [전체 기능 →](docs/guide.md#features)
 
-**한계:** 내 컴퓨터가 켜져 있고 닿을 수 있어야 합니다(Ovis 릴레이, Tailscale, VPN, SSH 터널). Herdr 데스크톱 앱의 터미널은 Linux와 macOS에서만 됩니다.
+**한계:** 내 컴퓨터가 켜져 있고 닿을 수 있어야 합니다(Ovis 릴레이, Tailscale, VPN, SSH 터널). Herdr 데스크톱 앱의 터미널은 Ovis가 herdr-core를 서비스할 때 보입니다. herdr가 없는 PC에서는 자동으로 그렇게 되고, 그 밖에는 **설정 → 정보 → 터미널**에서 전환합니다.
 
 **개인정보:** 세션은 내 컴퓨터에 남고, 계정이 없습니다. 선택 사항인 릴레이는 내용을 읽지 못합니다([신뢰 모델](docs/relay.md#trust-model)). 익명 사용 집계는 기본으로 켜져 있고, **Settings → About**이나 `OVIS_TELEMETRY=0`으로 끕니다([보내는 내용](docs/guide.md#anonymous-usage-counts)).
 

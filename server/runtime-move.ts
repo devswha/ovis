@@ -147,13 +147,18 @@ export async function planMove(snapshot: SessionSnapshot, facts: MoveFacts): Pro
   return { ...shown, revision: Bun.hash(JSON.stringify(shown)).toString(36) };
 }
 
-/** Why this server offers no move to herdr-core, or null when it does. */
-export function moveUnavailable(serving: "herdr" | "herdr-core", facts: HerdrRuntimeFacts | undefined): MoveUnavailable | null {
+/**
+ * Why this server offers no move to herdr-core, or null when it does. The move runs on Linux and macOS
+ * only: it ends shells and agents through their Unix process groups (runtime-move-service.ts), which
+ * Windows has not, though Settings switches the runtime there.
+ */
+export function moveUnavailable(serving: "herdr" | "herdr-core", facts: HerdrRuntimeFacts | undefined, platform: NodeJS.Platform = process.platform): MoveUnavailable | null {
   if (serving !== "herdr") return "not_herdr";
   if (!facts || facts.locked !== null) return "runtime_locked";
   if (facts.switch_to !== "herdr-core") return "no_herdr_core";
   // the Herdr app arranges a core it runs in a document of its own, which Ovis never writes
   if (facts.app_installed) return "herdr_app";
+  if (platform !== "linux" && platform !== "darwin") return "platform";
   return null;
 }
 

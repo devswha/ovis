@@ -56,10 +56,11 @@ export interface MovePlan {
 }
 
 /**
- * Why no move is offered: the server does not serve herdr, the PC has no herdr-core or the runtime
- * cannot be switched from here, or the Herdr app is installed and may arrange the core itself.
+ * Why no move is offered: the server does not serve herdr, the move does not run on this OS (Windows,
+ * where Settings still switches the runtime), the PC has no herdr-core or the runtime cannot be
+ * switched from here, or the Herdr app is installed and may arrange the core itself.
  */
-export type MoveUnavailable = "not_herdr" | "no_herdr_core" | "runtime_locked" | "herdr_app";
+export type MoveUnavailable = "not_herdr" | "platform" | "no_herdr_core" | "runtime_locked" | "herdr_app";
 
 /**
  * Where the move is: `idle` (none asked for), `waiting` (asked for; it goes by itself once no pane is

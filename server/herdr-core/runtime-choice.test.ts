@@ -41,7 +41,24 @@ it("reads the PC's traces from files alone", () => {
   mkdirSync(join(home, ".local", "share", "herdr-app"), { recursive: true });
   touch(join(root, "run", "herdr-core", "test.sock"));
   expect(runtimeTraces({ env, home, platform: "linux" })).toEqual({ tuiInstalled: true, tuiRunning: true, appInstalled: true, coreRunning: true });
+  // on Windows herdr keeps its files in %APPDATA%\herdr and its installer puts herdr.exe in %LOCALAPPDATA%\Programs\Herdr\bin:
+  // what the Unix places above hold says nothing there
+  const windows = windowsEnv(root, home);
+  expect(runtimeTraces({ env: windows, home, platform: "win32" })).toEqual({ tuiInstalled: false, tuiRunning: false, appInstalled: false, coreRunning: false });
+  touch(join(home, "AppData", "Local", "Programs", "Herdr", "bin", "herdr.exe"));
+  expect(runtimeTraces({ env: windows, home, platform: "win32" }).tuiInstalled).toBe(true);
+  rmSync(join(home, "AppData", "Local", "Programs", "Herdr"), { recursive: true });
+  touch(join(home, "AppData", "Roaming", "herdr", "config.toml"));
+  touch(join(home, "AppData", "Roaming", "herdr", "herdr.sock"));
+  mkdirSync(join(home, "AppData", "Local", "Programs", "herdr-app"), { recursive: true });
+  touch(join(root, "run", "hc.sock"));
+  expect(runtimeTraces({ env: windows, home, platform: "win32" })).toEqual({ tuiInstalled: true, tuiRunning: true, appInstalled: true, coreRunning: true });
 });
+
+/** a Windows PC's environment: no XDG folders, herdr's and the app's places under the profile, hc's socket named as a file the test can make */
+function windowsEnv(root: string, home: string): Record<string, string> {
+  return { HOME: home, USERPROFILE: home, PATH: join(root, "empty"), APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"), HC_SESSION: "test", HC_SOCKET: join(root, "run", "hc.sock") };
+}
 
 it("keeps herdr wherever herdr's TUI left a trace, without looking for hc", async () => {
   const { home, state, env, touch, root } = scratch();
@@ -86,13 +103,30 @@ it("chooses herdr-core on a PC with no TUI, a verified hc and the Herdr app or i
 it("never chooses herdr-core by itself where it is not served", async () => {
   const { home, state, env } = scratch();
   mkdirSync(join(home, ".local", "share", "herdr-app"), { recursive: true });
-  mkdirSync(join(home, "AppData", "Local", "Programs", "herdr-app"), { recursive: true });
-  for (const platform of ["win32", "freebsd"] as const) {
-    expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform, find: async () => core })).toMatchObject({ runtime: "herdr", source: "detected" });
-  }
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "freebsd", find: async () => core })).toMatchObject({ runtime: "herdr", source: "detected" });
   // nor from a saved choice, which a state folder carried over from another PC may hold
   saveRuntime(state, 7, { runtime: "herdr-core", previous: null });
-  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "win32", find: async () => core })).toMatchObject({ runtime: "herdr", source: "detected" });
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "freebsd", find: async () => core })).toMatchObject({ runtime: "herdr", source: "detected" });
+});
+
+it("chooses on Windows as on Linux and macOS, from the places herdr and the Herdr app have there", async () => {
+  const { home, state, touch, root } = scratch();
+  const env = windowsEnv(root, home);
+  let looked = 0;
+  const find = async () => { looked += 1; return core; };
+  // neither herdr nor the Herdr app: herdr, and nothing is looked for
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "win32", find })).toMatchObject({ runtime: "herdr", source: "detected" });
+  expect(looked).toBe(0);
+  mkdirSync(join(home, "AppData", "Local", "Programs", "herdr-app"), { recursive: true });
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "win32", find })).toMatchObject({ runtime: "herdr-core", source: "detected" });
+  // herdr's own install, off the PATH, keeps herdr without a look for hc
+  looked = 0;
+  touch(join(home, "AppData", "Local", "Programs", "Herdr", "bin", "herdr.exe"));
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "win32", find })).toMatchObject({ runtime: "herdr", source: "detected" });
+  expect(looked).toBe(0);
+  // and a choice saved in Settings stands there too
+  saveRuntime(state, 7, { runtime: "herdr-core", previous: "herdr" });
+  expect(await chooseRuntime({ stateDir: state, port: 7, env, home, platform: "win32", find })).toMatchObject({ runtime: "herdr-core", source: "saved" });
 });
 
 it("takes OVIS_RUNTIME first, then the choice saved in Settings, then the PC's facts", async () => {
@@ -130,8 +164,9 @@ it("takes a launcher that does not say it restarts on a switch for no launcher",
 it("locks the switch when OVIS_RUNTIME decides, the server has no launcher, or herdr-core is not served on the OS", () => {
   expect(runtimeLock({ OVIS_RUNTIME: "herdr-core" }, "linux", true)).toBe("env");
   expect(runtimeLock({}, "linux", false)).toBe("unmanaged");
-  expect(runtimeLock({}, "win32", true)).toBe("platform");
+  expect(runtimeLock({}, "freebsd", true)).toBe("platform");
   expect(runtimeLock({}, "darwin", true)).toBeNull();
+  expect(runtimeLock({}, "win32", true)).toBeNull();
 });
 
 it("switches only to a runtime the PC has, saves it with the one it replaces, and asks for one restart", () => {

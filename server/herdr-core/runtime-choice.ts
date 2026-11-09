@@ -18,7 +18,7 @@ type Env = Record<string, string | undefined>;
 
 /** What is on this PC, read from files alone: nothing is run and nothing is connected to. */
 export interface RuntimeTraces {
-  /** herdr's TUI is installed: OVIS_HERDR_BIN's herdr, a herdr on the PATH or in ~/.local/bin, or its config.toml */
+  /** herdr's TUI is installed: OVIS_HERDR_BIN's herdr, a herdr on the PATH or where its installer puts it (~/.local/bin; %LOCALAPPDATA%\Programs\Herdr\bin on Windows), or its config.toml */
   tuiInstalled: boolean;
   /** herdr's TUI server runs: its socket is there (HERDR_SOCKET, else the default one) */
   tuiRunning: boolean;
@@ -40,11 +40,15 @@ export function runtimeTraces(options: TraceOptions = {}): RuntimeTraces {
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
   const home = options.home ?? userHome(env, platform);
-  const exe = platform === "win32" ? ".exe" : "";
-  const config = env["XDG_CONFIG_HOME"] || join(home, ".config");
+  const windows = platform === "win32";
+  const exe = windows ? ".exe" : "";
+  const localAppData = env["LOCALAPPDATA"] || join(home, "AppData", "Local");
+  // where herdr keeps its files by default: ~/.config, or %APPDATA% on Windows (herdrSocketPath, herdrConfigPath)
+  const defaultConfig = windows ? env["APPDATA"] || join(home, "AppData", "Roaming") : join(home, ".config");
+  const config = env["XDG_CONFIG_HOME"] || defaultConfig;
   // herdr's own files: under XDG_CONFIG_HOME when it is set, and the default the server asks (herdrSocketPath)
-  const herdrDirs = [...new Set([join(config, "herdr"), join(home, ".config", "herdr")])];
-  const herdrOnPath = (env["PATH"] ?? "").split(platform === "win32" ? ";" : delimiter).filter((dir) => dir !== "")
+  const herdrDirs = [...new Set([join(config, "herdr"), join(defaultConfig, "herdr")])];
+  const herdrOnPath = (env["PATH"] ?? "").split(windows ? ";" : delimiter).filter((dir) => dir !== "")
     .some((dir) => isFile(join(dir, `herdr${exe}`)));
   // OVIS_HERDR_BIN names the herdr Ovis runs, wherever it is
   const named = env["OVIS_HERDR_BIN"];
@@ -52,13 +56,15 @@ export function runtimeTraces(options: TraceOptions = {}): RuntimeTraces {
   const namedFound = named !== undefined && named !== "" && (/[\\/]/.test(named) ? isFile(named) : Bun.which(named, { PATH: env["PATH"] ?? "" }) !== null);
   // HERDR_CONFIG_PATH names herdr's config wherever it is kept (herdrConfigPath in server/herdr-sidebar.ts)
   const configPath = env["HERDR_CONFIG_PATH"];
-  const tuiInstalled = herdrOnPath || namedFound || isFile(join(home, ".local", "bin", `herdr${exe}`)) || herdrDirs.some((dir) => isFile(join(dir, "config.toml")))
+  // where herdr's own installer puts it, which a plugin's PATH may not hold
+  const installedHerdr = windows ? join(localAppData, "Programs", "Herdr", "bin", "herdr.exe") : join(home, ".local", "bin", "herdr");
+  const tuiInstalled = herdrOnPath || namedFound || isFile(installedHerdr) || herdrDirs.some((dir) => isFile(join(dir, "config.toml")))
     || (configPath !== undefined && configPath !== "" && isFile(configPath));
   // the socket HERDR_SOCKET names and the default one are both traces: a stale variable hides no running TUI
   const tuiRunning = [env["HERDR_SOCKET"], ...herdrDirs.map((dir) => join(dir, "herdr.sock"))].some((socket) => socket !== undefined && socket !== "" && exists(socket));
   const systemApps = options.systemAppDirs ?? (platform === "darwin" ? ["/Applications"] : []);
-  const appInstalled = (platform === "win32"
-    ? [join(env["LOCALAPPDATA"] || join(home, "AppData", "Local"), "Programs", "herdr-app")]
+  const appInstalled = (windows
+    ? [join(localAppData, "Programs", "herdr-app")]
     : [join(home, ".local", "share", "herdr-app"), join(home, "Applications", "Herdr.app"), ...systemApps.map((dir) => join(dir, "Herdr.app"))])
     .concat(join(config, "herdr-app"))
     .some(exists);
@@ -70,6 +76,11 @@ export interface RuntimeChoice {
   source: RuntimeSource;
   /** one line on why, for the log */
   reason: string;
+}
+
+/** Where the server serves herdr-core (startRuntime, runtime.ts): Linux, macOS and Windows, the OSes hc runs on. */
+export function servesCore(platform: NodeJS.Platform): boolean {
+  return platform === "linux" || platform === "darwin" || platform === "win32";
 }
 
 /** OVIS_RUNTIME's runtime: undefined when unset, an error for a value Ovis does not know. */
@@ -97,10 +108,10 @@ export async function chooseRuntime(options: ChooseOptions): Promise<RuntimeChoi
   const env = options.env ?? process.env;
   const named = environmentRuntime(env);
   if (named !== undefined) return { runtime: named, source: "env", reason: `OVIS_RUNTIME=${named}` };
-  // herdr-core is served on Linux and macOS only: elsewhere only OVIS_RUNTIME asks for it, and fails loudly;
-  // a saved choice (a state folder carried over from another PC) never does
+  // where herdr-core is not served, only OVIS_RUNTIME asks for it, and fails loudly; a saved choice (a state
+  // folder carried over from another PC) never does
   const platform = options.platform ?? process.platform;
-  if (platform !== "linux" && platform !== "darwin") return { runtime: "herdr", source: "detected", reason: `herdr-core is not served on ${platform}` };
+  if (!servesCore(platform)) return { runtime: "herdr", source: "detected", reason: `herdr-core is not served on ${platform}` };
   const saved = readSavedRuntime(options.stateDir, options.port);
   if (saved !== null) return { runtime: saved.runtime, source: "saved", reason: `chosen in Settings (${runtimeFile(options.port)})` };
   const traces = runtimeTraces(options);
@@ -120,7 +131,7 @@ export function runtimeLock(env: Env = process.env, platform: NodeJS.Platform = 
   managed ??= env["OVIS_MANAGED"] === "1" && env["OVIS_RUNTIME_SWITCH"] === "1" && ipc;
   if (environmentRuntime(env) !== undefined) return "env";
   if (!managed) return "unmanaged";
-  if (platform !== "linux" && platform !== "darwin") return "platform";
+  if (!servesCore(platform)) return "platform";
   return null;
 }
 
@@ -174,7 +185,7 @@ export function runtimeService(options: RuntimeServiceOptions): RuntimeService {
     request: (target) => {
       if (target !== "herdr" && target !== "herdr-core") return { ok: false, status: 400, code: "invalid_runtime", message: "runtime must be herdr or herdr-core" };
       const now = facts();
-      if (now.locked !== null) return { ok: false, status: 409, code: "runtime_locked", message: now.locked === "env" ? "OVIS_RUNTIME in the server's environment decides the runtime" : now.locked === "unmanaged" ? "this server was not started by Ovis's launcher, so it cannot restart itself" : "herdr-core is served on Linux and macOS only" };
+      if (now.locked !== null) return { ok: false, status: 409, code: "runtime_locked", message: now.locked === "env" ? "OVIS_RUNTIME in the server's environment decides the runtime" : now.locked === "unmanaged" ? "this server was not started by Ovis's launcher, so it cannot restart itself" : `herdr-core is not served on ${platform}` };
       if (requested || options.accepted?.() === false) return { ok: false, status: 409, code: "runtime_switching", message: requested ? "the server is already restarting on another runtime" : "the server is still starting; switch once it is up" };
       if (now.switch_to !== target) return { ok: false, status: 409, code: "runtime_unavailable", message: target === now.serving ? `this server already serves ${target}` : `${target} is not on this PC` };
       const id = randomUUID();

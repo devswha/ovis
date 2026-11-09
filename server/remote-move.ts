@@ -29,7 +29,7 @@ export function tooOldToMove(kind: Machine["kind"] | undefined, status: number, 
 
 const MOVE_STEPS = new Set(["ending_agents", "building", "starting_agents", "switching"]);
 /** the reasons this version knows (shared/runtime-move.ts MoveUnavailable): any other words of that PC are not carried */
-const MOVE_REASONS = new Set<string>(["not_herdr", "no_herdr_core", "runtime_locked", "herdr_app"] satisfies MoveUnavailable[]);
+const MOVE_REASONS = new Set<string>(["not_herdr", "platform", "no_herdr_core", "runtime_locked", "herdr_app"] satisfies MoveUnavailable[]);
 /** What of a PC's move status the roster carries (PcMoveStatus): no reason or agent's words, which name folders. */
 function moveSummary(status: Record<string, unknown>): PcMoveStatus | null {
   const { state } = status;

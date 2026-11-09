@@ -76,7 +76,7 @@ irm https://ovis.sh/install.ps1 | iex
 
 [すべての機能 →](docs/guide.md#features)
 
-**制約：** 自分のコンピューターが動いていて、届く必要があります（Ovis リレー、Tailscale、VPN、SSH トンネル）。Herdr デスクトップアプリのターミナルは Linux と macOS のみ対応です。
+**制約：** 自分のコンピューターが動いていて、届く必要があります（Ovis リレー、Tailscale、VPN、SSH トンネル）。Herdr デスクトップアプリのターミナルは、Ovis が herdr-core を提供しているときに表示されます。herdr のない PC では自動的にそうなり、それ以外は **設定 → 情報 → ターミナル** で切り替えます。
 
 **プライバシー：** セッションは自分のコンピューターに残り、アカウントはありません。任意のリレーは内容を読めません（[信頼モデル](docs/relay.md#trust-model)）。匿名の使用状況の集計はデフォルトで有効で、**Settings → About** か `OVIS_TELEMETRY=0` でオフにできます（[送信される内容](docs/guide.md#anonymous-usage-counts)）。
 

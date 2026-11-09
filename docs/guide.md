@@ -883,14 +883,16 @@ PC's panes are then the app's. One server serves one runtime, chosen as it start
 1. `OVIS_RUNTIME` (`herdr` or `herdr-core`) in the server's environment, when it is set;
 2. else the choice made in **Settings → About → Terminals** (saved as `runtime-<port>.json` in the state folder);
 3. else what the PC has. Any trace of herdr's TUI (a `herdr` on the `PATH` or in `~/.local/bin`,
-   `~/.config/herdr/config.toml`, or its socket) keeps herdr, and nothing is run to decide it.
-   Only a PC with none looks for herdr-core, and picks it when an `hc` answers `--version` and the
-   Herdr app is installed or its core runs.
+   `~/.config/herdr/config.toml`, or its socket; on Windows, `herdr.exe` in
+   `%LOCALAPPDATA%\Programs\Herdr\bin` and those files in `%APPDATA%\herdr`) keeps herdr, and
+   nothing is run to decide it. Only a PC with none looks for herdr-core, and picks it when an `hc`
+   answers `--version` and the Herdr app is installed or its core runs.
 
 Ovis needs an `hc` speaking
 protocol generation 1 (checked with 0.1.14 and 0.1.17), and finds it the way the Herdr app does:
 `OVIS_HC_BIN`, then the `PATH`, then your login shell's `PATH`, then the usual install places
-(`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, mise, Nix and cargo), taking `herdr-core`
+(`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, mise, Nix and cargo; on Windows
+`%LOCALAPPDATA%\Programs\herdr-core` and cargo), taking `herdr-core`
 before `hc` in each. A candidate counts only when `--version` says `hc …`, since some window
 managers ship an unrelated `hc`. Looking runs nothing but `--version`: every other hc command
 starts a core when none runs. When no candidate answers, Ovis does not start and says where it
@@ -917,8 +919,10 @@ Whether the core runs is read from its socket file (`HC_SOCKET`, `socket` in hc'
 `config.toml`, else `<session>.sock` under `$XDG_RUNTIME_DIR/herdr-core/`; `HC_SESSION` names the
 session, `default` otherwise); nothing connects to it.
 
-On Windows Ovis serves herdr-core only when `OVIS_RUNTIME=herdr-core` is set, as the desktop app
-sets it: the automatic choice stays on herdr there, and Settings offers no switch.
+On Windows the choice and the switch work the same way, and Ovis reaches hc over its named pipe as
+the desktop app's server does. Ovis installed with `install.ps1` runs as herdr's plugin, so herdr is
+on that PC and chosen first; **Settings → About → Terminals** switches it to the Herdr app's
+terminals. **Move everything to herdr-core** (below) stays on Linux and macOS.
 
 **Moving everything to herdr-core.** On a Linux or macOS PC where Ovis serves herdr's TUI through
 its own launcher and no Herdr app is installed, **Settings → About → Terminals** offers **Move

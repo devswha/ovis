@@ -76,7 +76,7 @@ irm https://ovis.sh/install.ps1 | iex
 
 [全部功能 →](docs/guide.md#features)
 
-**限制：** 你的电脑需要开着并且能被访问（Ovis 中继、Tailscale、VPN 或 SSH 隧道）。Herdr 桌面应用的终端仅支持 Linux 和 macOS。
+**限制：** 你的电脑需要开着并且能被访问（Ovis 中继、Tailscale、VPN 或 SSH 隧道）。Herdr 桌面应用的终端在 Ovis 运行 herdr-core 时显示：没有 herdr 的电脑会自动如此，否则在 **设置 → 关于 → 终端** 中切换。
 
 **隐私：** 会话留在你的电脑上，没有账号。可选的中继无法读取内容（[信任模型](docs/relay.md#trust-model)）。匿名使用计数默认启用，可在 **Settings → About** 或用 `OVIS_TELEMETRY=0` 关闭（[发送哪些内容](docs/guide.md#anonymous-usage-counts)）。
 

@@ -24,9 +24,10 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     throw 'Install Git for Windows (https://git-scm.com/download/win), then run this again.'
 }
 if (-not (Get-Command herdr -ErrorAction SilentlyContinue)) {
-    # install.sh runs Ovis on herdr-core where there is no herdr; the server cannot reach it on Windows yet
+    # install.sh runs Ovis on herdr-core where there is no herdr, from a user service; Windows has no such
+    # install yet, so Ovis runs as herdr's plugin there and Settings switches it to herdr-core
     if (Get-Command herdr-core, hc -CommandType Application -ErrorAction SilentlyContinue) {
-        Write-Host 'Ovis: found herdr-core (hc), but Ovis runs on herdr-core on Linux and macOS only for now, so on Windows it uses herdr'
+        Write-Host 'Ovis: found herdr-core (hc); on Windows Ovis runs as a herdr plugin, so herdr is installed too. Once Ovis is up, Settings > About > Terminals switches it to the Herdr app''s terminals'
     }
     Write-Host 'Ovis: installing herdr for your user'
     $installer = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName() + '.cmd')

@@ -6,6 +6,7 @@ import { SeenMarker } from "./seen-label.ts";
 import { existsSync } from "node:fs";
 import { coreSocket, findHc, type FoundHc } from "./discovery.ts";
 import { adapterAddress } from "./pipe.ts";
+import { servesCore } from "./runtime-choice.ts";
 import { opencodeDatabasePath, opencodeSessionsTitled } from "../opencode.ts";
 
 /**
@@ -140,7 +141,7 @@ export function coreConnection(): HcConnection {
 export async function startRuntime(stateDir: string, find: () => Promise<FoundHc | null> = () => findHc()): Promise<HerdrCoreAdapter | null> {
   if (runtime() !== "herdr-core") return null;
   const platform = process.platform;
-  if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
+  if (!servesCore(platform)) {
     throw new Error(`OVIS_RUNTIME=herdr-core is served on Linux, macOS and Windows, not ${platform}`);
   }
   // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one

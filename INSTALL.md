@@ -73,8 +73,10 @@ Where the herdr plugin already runs Ovis, it does not add a second one: it says 
 On Windows x64, use `irm https://ovis.sh/install.ps1 | iex` in PowerShell.
 It requires Git for Windows and installs missing herdr and Bun for the user, without Node or WSL.
 It starts the plugin when herdr runs. Phone access stays optional: use the **Phone setup** action.
-On Windows it uses herdr even where herdr-core is installed: Ovis runs on herdr-core on Linux and
-macOS only.
+On Windows it installs herdr even where herdr-core is installed, since the plugin runs under herdr;
+once Ovis is up, **Settings → About → Terminals** switches it to the Herdr app's terminals (herdr-core).
+An install on herdr-core without herdr, as `install.sh` sets up on Linux and macOS, is not offered on
+Windows yet.
 `OVIS_REF` selects a branch or tag for testing; otherwise it installs the latest release.
 
 ## 3A. Install as a herdr plugin

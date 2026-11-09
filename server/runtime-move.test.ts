@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { PaneInfo, PaneLayoutSnapshot, SessionSnapshot } from "../shared/herdr-api.generated.ts";
-import { planMove, tabTree, type MoveFacts } from "./runtime-move.ts";
+import type { HerdrRuntimeFacts } from "../shared/machines.ts";
+import { moveUnavailable, planMove, tabTree, type MoveFacts } from "./runtime-move.ts";
 
 // herdr 0.9.5's answer for a tab split right, then its right pane split down (isolated test session)
 const layout: PaneLayoutSnapshot = {
@@ -16,6 +17,21 @@ const layout: PaneLayoutSnapshot = {
     { pane_id: "w1:p3", focused: false, rect: { x: 60, y: 20, width: 60, height: 20 } },
   ],
 };
+
+describe("moveUnavailable", () => {
+  const facts: HerdrRuntimeFacts = { serving: "herdr", source: "detected", tui: { installed: true, running: true }, app_installed: false, switch_to: "herdr-core", locked: null };
+
+  it("offers the move on Linux and macOS alone: Windows switches its runtime in Settings, but the move ends panes through Unix process groups", () => {
+    expect(moveUnavailable("herdr", facts, "linux")).toBeNull();
+    expect(moveUnavailable("herdr", facts, "darwin")).toBeNull();
+    expect(moveUnavailable("herdr", facts, "win32")).toBe("platform");
+    expect(moveUnavailable("herdr-core", facts, "win32")).toBe("not_herdr");
+    // the reasons that hold everywhere come first: what they say is true on Windows too
+    expect(moveUnavailable("herdr", { ...facts, app_installed: true }, "win32")).toBe("herdr_app");
+    expect(moveUnavailable("herdr", { ...facts, switch_to: null }, "win32")).toBe("no_herdr_core");
+    expect(moveUnavailable("herdr", { ...facts, locked: "unmanaged", switch_to: null }, "linux")).toBe("runtime_locked");
+  });
+});
 
 describe("tabTree", () => {
   it("rebuilds herdr's split tree from its split paths", () => {
