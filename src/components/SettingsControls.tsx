@@ -224,7 +224,11 @@ export function Stepper({ label, value, text, min, max, decreaseLabel, increaseL
         <input className="settings-stepper-value" type="text" inputMode="numeric" aria-label={label} title={`${min}–${max}${unit}`} value={shown}
           aria-invalid={draft !== null && typedStep(draft, min, max) === null ? true : undefined} autoComplete="off" spellCheck={false}
           onChange={(event) => setDraft(event.target.value)} onBlur={commit}
-          onKeyDown={(event) => { if (event.key === "Enter") commit(); else if (event.key === "Escape" && draft !== null) { event.stopPropagation(); setDraft(null); } }} />
+          onKeyDown={(event) => {
+            // an IME's own Enter and Escape finish or drop its composition, not the draft
+            if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+            if (event.key === "Enter") commit(); else if (event.key === "Escape" && draft !== null) { event.stopPropagation(); setDraft(null); }
+          }} />
         <span aria-hidden="true">{unit}</span>
         {/* the field is not announced as it changes: the size the -/+ buttons or a typed number set is */}
         <output className="visually-hidden" aria-live="polite">{text}</output>
