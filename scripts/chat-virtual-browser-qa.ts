@@ -34,6 +34,8 @@ const STREAMED_PARAGRAPHS = 40;
 let longRead = { asked: Promise.withResolvers<void>(), answer: Promise.withResolvers<void>() };
 /** long enough to fold (over 30 lines): its head shows until the reader asks for all of it */
 const WHOLE_OUTPUT = `FULL TOOL OUTPUT\n${Array.from({ length: 98 }, (_, n) => `detail line ${n + 1} ${"detail ".repeat(20)}`).join("\n")}\nFULL OUTPUT END`;
+/** few lines but very long ones (one 100 KB line of JSON): no line count folds it, its length does */
+const LONG_LINE_OUTPUT = JSON.stringify({ items: Array.from({ length: 2500 }, (_, n) => ({ id: n, name: `item-${n}` })) }).padEnd(100_000, " ");
 /** A short chat whose newest answer ran a tool with a long output (a line-count fold). */
 function foldChat(): ConversationTurn[] {
   const say = (role: ConversationTurn["role"], text: string): ConversationTurn => ({ role, ts: "2026-10-12T00:00:00.000Z", parts: [{ kind: "text", text }] });
@@ -42,6 +44,7 @@ function foldChat(): ConversationTurn[] {
     say("user", "Run the tests."),
     { role: "assistant", ts: "2026-10-12T00:00:00.000Z", parts: [
       { kind: "tool", name: "Bash", summary: "bun test", input: JSON.stringify({ command: "bun test" }), output: Array.from({ length: 100 }, (_, n) => `(pass) test ${n + 1}`).join("\n") },
+      { kind: "tool", name: "Bash", summary: "cat big.json", input: JSON.stringify({ command: "cat big.json" }), output: LONG_LINE_OUTPUT },
       { kind: "text", text: "FOLD-CHAT-END" },
     ] },
   ];
@@ -340,8 +343,9 @@ try {
     const newest = page.locator("[data-chat-row]").filter({ hasText: "FOLD-CHAT-END" });
     const block = newest.locator(".work-block-head");
     if (await block.getAttribute("aria-expanded") === "false") await block.click();
-    await newest.locator(".work-row-head").click();
-    const more = newest.locator(".chat-tool-result-more");
+    const testRow = newest.locator(".work-row").filter({ has: page.locator(".work-row-head", { hasText: "bun test" }) });
+    await testRow.locator(".work-row-head").click();
+    const more = testRow.locator(".chat-tool-result-more");
     await more.waitFor();
     // back to the end and following it, as a reader who opened the row and read on to the end
     const jump = page.locator(".chat-virtual-jump");
@@ -351,7 +355,7 @@ try {
     assert.equal(await jump.count(), 0, "the reader follows the end before unfolding");
     const before = await page.locator(".chat-view").evaluate((node) => node.scrollTop);
     await more.click();
-    await newest.locator(".chat-tool-result-more[aria-expanded=true]").waitFor();
+    await testRow.locator(".chat-tool-result-more[aria-expanded=true]").waitFor();
     // settled: the view and the transcript's height unchanged for 20 frames
     const after = await page.evaluate(() => new Promise<number>((resolve) => {
       let last = "", same = 0;
@@ -367,6 +371,16 @@ try {
     }));
     assert.ok(Math.abs(after - before) <= 1, `unfolding the newest output keeps a following reader where they were: ${before} -> ${after}`);
     console.log(`PASS ${width}: unfolding the newest tool output at the end stops following and keeps the view`);
+    // one very long line folds by its length, with the same row
+    const longLine = newest.locator(".work-row").filter({ has: page.locator(".work-row-head", { hasText: "cat big.json" }) });
+    await longLine.locator(".work-row-head").click();
+    const longMore = longLine.locator(".chat-tool-result-more");
+    await longMore.waitFor();
+    const shown = await longLine.locator(".chat-tool-result").evaluate((node) => ({ length: node.textContent?.length ?? 0, height: node.getBoundingClientRect().height }));
+    assert.ok(shown.length < 5_000 && shown.height < 900, `a 100 KB single-line output shows a capped preview: ${JSON.stringify(shown)}`);
+    await longMore.click();
+    assert.equal(await longLine.locator(".chat-tool-result").evaluate((node) => node.textContent?.length), LONG_LINE_OUTPUT.length);
+    console.log(`PASS ${width}: a single 100 KB line folds by its length`);
     await context.close();
   }
   for (const [width, theme] of [[1440, "dark"], [1440, "light"], [390, "dark"], [390, "light"]] as const) {

@@ -189,12 +189,13 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
           })}
           {matches.length === 0 && <p className="palette-empty" role="status">{status}</p>}
         </div>
-        {/* with no match the list says it; the line under it tells a pick and the search's progress,
-            and with nothing to tell and no retry it takes no room (the input stays at the top) */}
-        {(footerLine !== "" || canRetry) && <footer className="palette-footer conversation-search-footer">
+        {/* with no match the list says it; the line under it tells a pick and the search's progress.
+            With nothing to tell and no retry the band takes no room (the input stays at the top), but
+            stays mounted: its live region is there before the first status, so that one is announced */}
+        <footer className={`palette-footer conversation-search-footer${footerLine === "" && !canRetry ? " is-empty" : ""}`}>
           <p className="conversation-search-status" role="status">{footerLine}</p>
           {canRetry && <button type="button" className="btn" onClick={() => setRetry((count) => count + 1)}>{t("Try again")}</button>}
-        </footer>}
+        </footer>
       </section>
     </div>,
     document.body,

@@ -27,6 +27,7 @@ export const CHAT_KO: Record<string, string> = {
   "Copy code": "코드 복사",
   "Show less": "접기",
   "Show all {n} lines": "{n}줄 모두 보기",
+  "Show all {size} characters": "{size}자 모두 보기",
   "Empty task": "빈 할 일",
   "Couldn't copy. Select the text and copy it manually.": "복사하지 못했습니다. 텍스트를 선택해 직접 복사하세요.",
   "Input": "입력",

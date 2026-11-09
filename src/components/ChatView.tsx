@@ -654,6 +654,25 @@ function LineImages({ paneId, images }: { paneId: string; images: readonly WorkI
 }
 
 /**
+ * Past this many characters an output folds even in few lines: one long line wraps into hundreds on
+ * a phone. About 20 wrapped lines on a phone, as the line fold shows.
+ */
+const FOLD_OUTPUT_CHARS = 1000;
+
+/**
+ * The folded head of a long output: a code block's line fold, its head cut to FOLD_OUTPUT_CHARS;
+ * `lines` is null when only the length folds it. Null when it shows whole.
+ */
+function foldToolOutput(output: string): { head: string; lines: number | null } | null {
+  const byLines = foldCode(output);
+  const head = byLines?.head ?? output;
+  if (head.length <= FOLD_OUTPUT_CHARS) return byLines;
+  // at a line's end when one is near, else mid-line
+  const end = head.lastIndexOf("\n", FOLD_OUTPUT_CHARS);
+  return { head: head.slice(0, end > FOLD_OUTPUT_CHARS / 2 ? end : FOLD_OUTPUT_CHARS), lines: byLines?.lines ?? null };
+}
+
+/**
  * A call's output in its opened row. A long one folds to its head with a "Show all" row, as a code
  * block does (Markdown.tsx), so the chat stays the only scroller.
  */
@@ -661,7 +680,7 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
   const t = useT();
   // the files an output names open from it ("saved /tmp/shot/t0.png")
   const openFile = useContext(OpenFileContext);
-  const fold = useMemo(() => foldCode(output), [output]);
+  const fold = useMemo(() => foldToolOutput(output), [output]);
   // kept by the chat's row memory, under a key of its own: a row scrolled away and back keeps it
   const [chosen, setExpanded] = useChatRowToggle(stateKey, false);
   const expanded = chosen === true;
@@ -679,7 +698,7 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
     <pre ref={box} className={`chat-tool-io chat-tool-result${whole ? " is-whole" : ""}`}>{linkFilePaths(fold !== null && !expanded ? fold.head : output, openFile)}</pre>
     {fold !== null && <button type="button" className="markdown-code-more chat-tool-result-more" aria-expanded={expanded}
       onClick={() => { folding.current = expanded; setExpanded(!expanded); }}>
-      {expanded ? t("Show less") : t("Show all {n} lines", { n: fold.lines })}
+      {expanded ? t("Show less") : fold.lines !== null ? t("Show all {n} lines", { n: fold.lines }) : t("Show all {size} characters", { size: formatTokens(output.length) })}
     </button>}
   </>;
 }

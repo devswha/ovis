@@ -110,11 +110,19 @@ try {
 
     await page.evaluate(() => window.searchQa.open());
     await dialog(page).waitFor();
+    // before a search the footer has nothing to say and takes no room, but its live region is
+    // already there: a status that appears later is announced, not mounted already filled
+    const live = dialog(page).locator(".conversation-search-status[role=status]");
+    assert.equal(await live.count(), 1, "the search's live region is mounted before any search");
+    assert.ok(((await dialog(page).locator(".conversation-search-footer").boundingBox())?.height ?? 0) < 1, "an empty footer takes no room");
+    await live.evaluate((node) => { (node as HTMLElement).dataset.qaFirst = "1"; });
     await search(page, "z");
     await dialog(page).getByText("Type at least 2 characters.").waitFor();
     // newest first, the user's words and the agent's answers only: the tool's output is no match
     await search(page, "ZEBRA");
     await dialog(page).getByText("Searched the whole conversation.").waitFor();
+    assert.equal(await live.getAttribute("data-qa-first"), "1", "the status that tells the search's end is the live region mounted at the start");
+    assert.equal(await live.textContent(), "Searched the whole conversation.");
     const options = dialog(page).getByRole("option");
     assert.deepEqual(await options.locator(".conversation-search-snippet").allTextContents(), [
       "The zebra test moved to crossing.test.ts, beside the other crossing tests.",
