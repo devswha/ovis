@@ -315,7 +315,7 @@ function PlanLimits({ watching }: { watching: boolean }) {
   return (
     <SettingsGroup section="plan-limits" className="agents-limits">
       <SettingsRow icon={Gauge} label={t("Plan limits")}
-        condition={<span className="settings-condition">{t("Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.|plan limits row")}</span>} keywords={`${t("Plan limits")} ${t("Show plan limits")} ${t("Meters show")} ${t("Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.")}`} wide reset={settings.showUsage ? ["showUsage", "usageCount"] : ["showUsage"]}>
+        condition={<span className="settings-condition">{t("Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.")}</span>} keywords={`${t("Plan limits")} ${t("Show plan limits")} ${t("Meters show")} ${t("Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.")}`} wide reset={settings.showUsage ? ["showUsage", "usageCount"] : ["showUsage"]}>
         <Segmented label={t("Plan limits")} value={settings.showUsage ? settings.usageCount : "off"} onChange={(shown) => update(shown === "off" ? { showUsage: false } : { showUsage: true, usageCount: shown })} options={[{ value: "off", label: t("Off") }, { value: "used", label: t("Used") }, { value: "left", label: t("Remaining") }] as const} />
       </SettingsRow>
       {settings.showUsage && <>
@@ -435,7 +435,8 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
 
       <section className="settings-section" data-section="agents-installed" tabIndex={-1} aria-label={t("On this PC")}>
         <SectionHead>
-          <button type="button" ref={checkAgain} className="btn btn-ghost agents-check-again" disabled={checking} aria-busy={checking || undefined} onClick={() => setReads((count) => count + 1)}><RotateCw aria-hidden="true" />{t(checking ? "Checking…" : "Check again")}</button>
+          {/* aria-disabled, not disabled: a press keeps the focus it had instead of dropping it to the page */}
+          <button type="button" ref={checkAgain} className="btn btn-ghost agents-check-again" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={() => { if (!checking) setReads((count) => count + 1); }}><RotateCw aria-hidden="true" />{t(checking ? "Checking…" : "Check again")}</button>
         </SectionHead>
         {/* a failed read, the first or a Check again: the rows the last good one gave stay, with the error beside them */}
         {catalogError !== null && <p className="settings-hint agents-note" role="alert">{catalogError.message}{catalogError.detail !== null && <><br /><code>{catalogError.detail}</code></>}</p>}

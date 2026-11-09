@@ -33,6 +33,7 @@ export const UPDATES_JA: Record<string, string> = {
   "Installs the newest herdr on the PC this app runs on and moves its running panes onto it. Panes and agents keep running, and open terminals reconnect.": "このアプリが動いている PC に最新の herdr をインストールし、実行中のペインを新しいバージョンに移します。ペインとエージェントは動き続け、開いているターミナルは再接続します。",
   "Update herdr": "herdr を更新",
   "Updating herdr…": "herdr を更新しています…",
+  "herdr could not be updated, and it printed nothing to say why.": "herdr を更新できませんでした。理由は出力されませんでした。",
   "The server was updated. Save any unsent drafts, then": "サーバーが更新されました。未送信の下書きを保存してから",
   "This tab still runs {version} until it is reloaded.": "このタブは再読み込みするまで {version} のままです。",
   "App updated. Save unsent drafts before reloading.": "アプリが更新されました。再読み込みする前に未送信の下書きを保存してください。",

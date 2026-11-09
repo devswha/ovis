@@ -33,6 +33,7 @@ export const UPDATES_ZH: Record<string, string> = {
   "Installs the newest herdr on the PC this app runs on and moves its running panes onto it. Panes and agents keep running, and open terminals reconnect.": "在运行此应用的 PC 上安装最新的 herdr，并把正在运行的窗格迁移到新版本。窗格和 Agent 会继续运行，已打开的终端会重新连接。",
   "Update herdr": "更新 herdr",
   "Updating herdr…": "正在更新 herdr…",
+  "herdr could not be updated, and it printed nothing to say why.": "未能更新 herdr，且没有输出原因。",
   "The server was updated. Save any unsent drafts, then": "服务器已更新。请先保存未发送的草稿，然后",
   "This tab still runs {version} until it is reloaded.": "此标签页在重新加载前仍运行 {version}。",
   "App updated. Save unsent drafts before reloading.": "应用已更新。重新加载前请保存未发送的草稿。",

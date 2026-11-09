@@ -174,7 +174,7 @@ export function HerdrUpdateControls({ enabled, herdrVersion, showVersion = false
   const version = runningHerdrVersion(status, herdrVersion);
   const bare = useContext(SettingsBare);
   // bare: About's first line already names herdr's version; here only its Update button, while nothing needs a sentence
-  if (bare && !(status?.supported && ((status.stale && !!status.binary_version && !!status.server_version) || error || busy || status.output))) {
+  if (bare && !(status?.supported && ((status.stale && !!status.binary_version && !!status.server_version) || error || busy || status.output || status.phase === "error"))) {
     return status?.supported || (showVersion && version) ? <section className="settings-section settings-herdr-update">
       <div className="settings-card">
         <SettingsRow label="herdr" icon={Download}>
@@ -205,6 +205,8 @@ export function HerdrUpdateControls({ enabled, herdrVersion, showVersion = false
     {(error || busy) && <p className="settings-hint" role={error ? "alert" : "status"}>{error ?? t("Updating herdr…")}</p>}
     {/* herdr's own words: what it installed, or why it did not */}
     {!busy && status.output && <pre className="update-output" role={status.phase === "error" ? "alert" : undefined} data-failed={status.phase === "error" || undefined}>{status.output}</pre>}
+    {/* a failure herdr printed nothing for still says it failed */}
+    {!busy && !status.output && status.phase === "error" && <p className="settings-hint" role="alert">{t("herdr could not be updated, and it printed nothing to say why.")}</p>}
     </div></div>
   </section>;
 }
