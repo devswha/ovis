@@ -101,8 +101,8 @@ const isDirectory = (path: string): boolean => { try { return statSync(path).isD
 
 /**
  * The skills Letta's `/` menu lists, by the rules of its discovery (src/agent/skills.ts): a
- * SKILL.md anywhere under a root, named by its frontmatter `id`, else `name`, else its folder's
- * path under the root; a later root wins over an earlier one for the same name; a skill with
+ * SKILL.md anywhere under a root, also below another skill's folder, named by its frontmatter `id`,
+ * else `name`, else its folder's path under the root (`root` for one right in the root); a later root wins over an earlier one for the same name; a skill with
  * `user-invocable: false` is left out, and so is one named like a builtin. The roots, lowest
  * first: `<config dir>/skills` (`LETTA_CONFIG_DIR`, else `~/.letta`), then the project's
  * `.skills` and `.agents/skills`. Letta's bundled skills and the agent's own memory skills are
@@ -126,10 +126,11 @@ export const source: AgentCommandSource = {
     const found = new Map<string, SlashCommand | null>();
     for (const [root, origin] of roots) {
       if (!existsSync(root) || !isDirectory(root)) continue;
-      for (const skill of walkSkills(root, { depth: "recursive", looseMarkdown: "none", ignoreFiles: false, requireDescription: false, budget })) {
+      for (const skill of walkSkills(root, { depth: "recursive", looseMarkdown: "none", ignoreFiles: false, requireDescription: false, belowSkills: true, budget })) {
         const field = (key: string): string => typeof skill.fields[key] === "string" ? (skill.fields[key] as string).trim() : "";
         const folder = relative(root, join(skill.path, "..")).split(sep).join("/");
-        const name = field("id") || field("name") || folder;
+        // a SKILL.md right in the root has no folder: Letta names it "root"
+        const name = field("id") || field("name") || folder || "root";
         if (!/^\S+$/.test(name)) continue;
         const invocable = skill.fields["user-invocable"] !== false && skill.fields["user-invocable"] !== "false";
         found.delete(name);

@@ -47,8 +47,12 @@ it("lists the user's and the project's skills by Letta's names, the project's wi
   skill(join(home, ".letta", "skills", "quiet"), "name: quiet\ndescription: model only\nuser-invocable: false");
   skill(join(home, ".letta", "skills", "clash"), "name: model\ndescription: named like a builtin");
   skill(join(cwd, ".agents", "skills", "review"), "name: review\ndescription: project review");
+  // nested below another skill's folder, and one right in the root with no name: Letta lists both
+  skill(join(home, ".letta", "skills", "review", "deeper"), "description: below a skill");
+  mkdirSync(join(home, ".letta", "skills"), { recursive: true });
+  writeFileSync(join(home, ".letta", "skills", "SKILL.md"), "---\ndescription: right in the root\n---\nBody\n");
   const found = skills(cwd, home);
-  expect(found.map(({ name, origin }) => `${name}:${origin}`).sort()).toEqual(["review:project", "web/scraper:user"]);
+  expect(found.map(({ name, origin }) => `${name}:${origin}`).sort()).toEqual(["review/deeper:user", "review:project", "root:user", "web/scraper:user"]);
   expect(found.find(({ name }) => name === "review")!.description).toBe("project review");
   // LETTA_CONFIG_DIR moves the user's folder
   const config = join(home, "elsewhere");
