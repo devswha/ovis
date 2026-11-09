@@ -191,6 +191,14 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
       assert.ok(await noSidewaysScroll(page), `${tag}: nothing scrolls sideways with the notice`);
       const button = notice(page).getByRole("button", { name: REPAIR, exact: true });
       if (phone) assert.ok(await touchSized(button), `${tag}: the notice's button is a finger-sized target`);
+      // one line at every width (G-103): Close shares the button's row and keeps to the notice's right end
+      {
+        const close = (await notice(page).getByRole("button", { name: language === "ko" ? "닫기" : "Dismiss", exact: true }).boundingBox())!;
+        const repairBox = (await button.boundingBox())!;
+        const line = (await notice(page).boundingBox())!;
+        assert.ok(Math.abs((close.y + close.height / 2) - (repairBox.y + repairBox.height / 2)) < 2, `${tag}: Close sits on the button's line`);
+        assert.ok(close.x > repairBox.x + repairBox.width && line.x + line.width - (close.x + close.width) < 24, `${tag}: Close is the line's last control, at its right end`);
+      }
       await capture(page, width, theme, language, "rest");
       if (!phone) {
         await button.hover();
