@@ -6,12 +6,36 @@
   color: var(--text-strong);
 }
 
-/* why a repair failed is read in full: its sentence wraps, the row does not, so Close stays at the end of the first line's row */
+/* why a repair failed is read in full (G-103): the sentence takes the line's width beside the glyph, Close stays at
+   the top right, and the repair button goes under the sentence. On a narrow phone with large text the notice keeps to
+   half the screen and scrolls inside itself past that */
+.update-notice.is-alerts.is-failure {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "icon text close"
+    ". action action";
+  align-items: start;
+  max-height: calc(var(--app-height, 100dvh) / 2);
+  overflow-y: auto;
+}
+
+.update-notice.is-alerts.is-failure > svg { grid-area: icon; }
+.update-notice.is-alerts.is-failure > .update-notice-dismiss { grid-area: close; }
+
 .update-notice.is-alerts.is-failure > span {
+  grid-area: text;
   white-space: normal;
   overflow: visible;
   text-overflow: clip;
   overflow-wrap: anywhere;
+}
+
+.update-notice.is-alerts.is-failure > .btn {
+  grid-area: action;
+  justify-self: start;
+  max-width: 100%;
+  white-space: normal;
 }
 
 .update-notice.is-alerts > svg {

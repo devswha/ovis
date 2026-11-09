@@ -289,7 +289,12 @@ export function UpdateNotice({ updates, onOpen }: { updates: UpdatesModel; onOpe
       setAttempted(true); setStarted(install !== null);
       void request(install !== null ? { command: "install", expected_revision: install } : { command: "check" });
     }}>{t(failed ? "Try again" : "Update")}</button>
-    {offer !== null && <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => { writeOfferClosed(offer); setClosedOffer(offer); }}><X /></button>}
+    {offer !== null && <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={(event) => {
+      // the line goes with its Close: a keyboard's focus moves to the header's More beside where it was, not to the page
+      const focused = event.currentTarget === document.activeElement;
+      writeOfferClosed(offer); setClosedOffer(offer);
+      if (focused) document.querySelector<HTMLElement>(".header-more-button")?.focus();
+    }}><X /></button>}
   </div>;
 }
 
