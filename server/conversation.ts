@@ -63,7 +63,7 @@ import { cmdTranscriptPath } from "./cmd.ts";
 import { defaultDevinDbPath, DevinHistoryUnavailable, devinConversation, forgetDevinState } from "./devin.ts";
 import { forgetGrokState, GROK_IMAGE_REF, grokImage, grokProjection, grokToolOutput, parseGrokTranscript, GrokUnavailable } from "./grok.ts";
 import { resolveGrokStore } from "./grok-store.ts";
-import { AgyUnavailable, agyCatalogOffThread, agyToolOutput, forgetAgyState, parseAgyTranscript, withAgyHistory, type AgyProjection } from "./agy.ts";
+import { AGY_CATALOG_BYTES, AgyUnavailable, agyCatalogOffThread, agyDatabasePath, agyToolOutput, forgetAgyState, parseAgyTranscript, withAgyHistory, type AgyProjection } from "./agy.ts";
 import { agyFreshSession, resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
 import { FileBusyError } from "./file-pool.ts";
 import { museSession, museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
@@ -2223,7 +2223,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       if (!transcriptExists) {
         if (writtenSessions.has(`agy-transcript\0${found.path}`)) throw new ConversationUnavailable("transcript_missing");
         const catalog = await agyCatalogOffThread(found.path);
-        const firstTurn = pane.agent_status === "working" && catalog.size <= 1;
+        const firstTurn = pane.agent_status === "working" && (catalog.size === 0 || (catalog.size === 1 && catalog.has(0)));
         if ((catalog.size !== 0 && !firstTurn) || !sameAgyStore(found, await resolveAgyStore(pane))) throw new ConversationUnavailable("transcript_missing");
         throw new ConversationNotStarted(found.session, "agy-transcript", found.path);
       }
@@ -2362,6 +2362,10 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
  * no geometry, and a viewport scrolled up into the blank rows under a short screen reads the same
  * as the live one, so no screen is read rather than guessed (unlike viewportShowsLive's text check).
  */
+// Agy commits a step to its catalog and then to its ledger: a catalog read that fails this soon after
+// a write may be racing it, and a later one is not
+const AGY_WRITE_RACE_MS = 5000;
+
 async function bottomViewport(paneId: string): Promise<string> {
   const scroll = () => paneScrollInfo(paneId).catch(() => null);
   const before = await scroll();
@@ -2537,6 +2541,21 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     const paged = page.before !== undefined || page.since !== undefined || page.from !== undefined;
     if (resolved.source === "agy-transcript" && refused) {
       if (page.history_id === undefined && !paged) throw error;
+      // a catalog that keeps failing while Agy writes nothing to it, or that is too large to ever be
+      // read, is no write race: fall back (a timestamp ahead of the clock proves no recent write)
+      const catalog = agyDatabasePath(resolved.path);
+      let bytes = 0;
+      let writing = false;
+      for (const file of [catalog, `${catalog}-wal`]) {
+        try {
+          const stat = statSync(file, { throwIfNoEntry: false });
+          if (stat === undefined) continue;
+          bytes += stat.size;
+          const age = Date.now() - stat.mtimeMs;
+          writing ||= age >= 0 && age < AGY_WRITE_RACE_MS;
+        } catch { /* unreadable: proves no write */ }
+      }
+      if (!writing || bytes > AGY_CATALOG_BYTES) throw error;
       const fresh = await sessionSnapshot().catch(() => null);
       const pane = fresh?.panes.find((candidate) => candidate.pane_id === paneId);
       if (!live() || pane === undefined) throw new ConversationUnavailable("no_session_id");

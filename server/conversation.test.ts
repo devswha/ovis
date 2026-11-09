@@ -3989,6 +3989,11 @@ describe("Agy native ledger through shared paging", () => {
       forgetTranscriptState();
       db.query("INSERT INTO steps VALUES (1)").run();
       expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+      // a resumed conversation whose only cataloged step is a later one is not a first turn
+      forgetTranscriptState();
+      db.exec("DELETE FROM steps");
+      db.query("INSERT INTO steps VALUES (500)").run();
+      expect(await paneConversation(pane.pane_id).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
   it("retries a transient mid-turn catalog race and answers 503 ConversationReadPending instead of dropping chat", async () => {
@@ -4016,9 +4021,21 @@ describe("Agy native ledger through shared paging", () => {
       // A persistent mid-turn write race returns ConversationReadPending (503) when history_id matches,
       // and HistoryChanged (409) when history_id belongs to another conversation.
       spy = spyOn(filePool, "fileTask").mockRejectedValue(new Error("ongoing WAL write"));
+      const catalog = join(root, "conversations", `${session}.db`);
+      utimesSync(catalog, new Date(), new Date());
       await expect(paneConversation(pane.pane_id, undefined, { history_id: initial.history_id })).rejects.toBeInstanceOf(ConversationReadPending);
       await expect(paneConversation(pane.pane_id, undefined, { history_id: "other-dev-ino-agy-0" })).rejects.toBeInstanceOf(HistoryChanged);
       await expect(paneConversation(pane.pane_id, undefined, { from: "other-dev-ino-agy-0:0" })).rejects.toBeInstanceOf(HistoryChanged);
+      // a catalog that keeps failing while nothing writes it is not a race: the chat falls back
+      utimesSync(catalog, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+      // nor is one stamped ahead of the clock
+      utimesSync(catalog, new Date(Date.now() + 86_400_000), new Date(Date.now() + 86_400_000));
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+      spy.mockRestore();
+      spy = undefined;
+      rmSync(catalog);
+      expect(await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
   it.skipIf(process.platform === "win32")("greets an Agy started in the terminal on its unused start screen", async () => {
