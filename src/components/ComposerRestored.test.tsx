@@ -89,3 +89,50 @@ it.each([
   });
   expect(calls.map((call) => call[4])).toEqual([...expected]);
 });
+
+/** The `now` and `hold` flags of each onSend a key in the box made; `phone`: the composer's phone layout (a coarse pointer). */
+async function pressIn(keys: Record<string, unknown>, agentStatus: "working" | "idle", phone = false): Promise<unknown[][]> {
+  const calls: unknown[][] = [];
+  if (phone) Object.assign(window, { matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }) });
+  const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus, connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
+  composerDrafts.set(draftKey, "keep this for later");
+  await act(async () => { renderer = create(<Composer {...props} />); });
+  const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
+  await act(async () => {
+    box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {}, ...keys });
+  });
+  return calls.map((call) => [call[4], call[5]]);
+}
+
+// Alt+Enter (Option+Enter) holds the message in the queued list for its Send now, whatever automatic sending says
+for (const agentStatus of ["working", "idle"] as const) {
+  it.each([
+    ["Alt+Enter", { altKey: true }, [[false, true]]],
+    ["Enter", {}, [[undefined, undefined]]],
+    ["Ctrl+Enter", { ctrlKey: true }, [[true, undefined]]],
+    ["Shift+Enter", { shiftKey: true }, []],
+    ["Ctrl+Alt+Enter", { ctrlKey: true, altKey: true }, []],
+    ["Alt+Shift+Enter", { altKey: true, shiftKey: true }, []],
+    ["Cmd+Alt+Enter", { metaKey: true, altKey: true }, []],
+    ["an IME's composing Alt+Enter", { altKey: true, nativeEvent: { isComposing: true, keyCode: 13 } }, []],
+    ["WebKit's committing Alt+Enter (229)", { altKey: true, nativeEvent: { isComposing: false, keyCode: 229 } }, []],
+  ] as const)(`%s while the agent is ${agentStatus} holds only for Alt alone`, async (_name, keys, expected) => {
+    expect(await pressIn(keys, agentStatus)).toEqual(expected.map((call) => [...call]));
+  });
+}
+
+it("leaves Alt+Enter on a phone as it was: a line break, no send and no hold", async () => {
+  expect(await pressIn({ altKey: true }, "working", true)).toEqual([]);
+  expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
+});
+
+it("keeps the draft and says why when a hold is refused", async () => {
+  const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: () => "Update this PC to hold messages. Your draft stayed here.", onAbort() {}, onUploadImage: async () => "" };
+  composerDrafts.set(draftKey, "keep this for later");
+  await act(async () => { renderer = create(<Composer {...props} />); });
+  const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
+  await act(async () => {
+    box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: true, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {} });
+  });
+  expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
+});
