@@ -378,9 +378,39 @@
 
 .agents-sidebar.is-one-line .agent-title-line { flex: 0 1 auto; }
 
+/* the place gives way down to a couple of letters and its ellipsis, never a stray letter; the title then */
 .agents-sidebar.is-one-line .agent-context {
   flex: 1 1 0;
-  min-width: 0;
+  min-width: 2.5em;
+}
+
+/* as a compact workspace row's: the state at the row's end in a cell its glyph's size, and under a pointer the ⋯
+   over that cell, so the title and the place never move when it shows (Sidebar.css) */
+.agents-sidebar.is-one-line .agent-item { padding-right: var(--space-6); }
+
+.agents-sidebar.is-one-line .agent-row > .agent-row-state { width: var(--space-6); }
+
+.agents-sidebar.is-one-line .agent-row > .agent-row-state > .sidebar-status {
+  flex-basis: auto;
+  width: auto;
+}
+
+@media (hover: hover) and (pointer: fine) and (min-width: 769px) {
+  .agents-sidebar.is-one-line .agent-item > .agent-actions {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    width: var(--space-6);
+    border-radius: inherit;
+    background: inherit;
+  }
+
+  .agents-sidebar.is-one-line .agent-item > .agent-actions .sidebar-row-action { width: 100%; }
+
+  .agents-sidebar.is-one-line .agent-item:is(:hover, :focus-within) > .agent-row > .agent-row-state,
+  .agents-sidebar.is-one-line .agent-item:has(> .agent-actions [aria-expanded="true"]) > .agent-row > .agent-row-state {
+    visibility: hidden;
+  }
 }
 
 /* a helper an agent started (herdr-core's parent) reads under that agent on one line, a workspace
