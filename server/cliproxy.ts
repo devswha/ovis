@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CLIProxyStatus, ProviderUsage } from "../shared/protocol.ts";
 import { isJsonObject } from "./http.ts";
+import { writePrivateState } from "./private-state.ts";
 import { FRESH_MS, MIN_REFRESH_MS, systemUsageContext, USAGE_PROVIDERS, UsageHttpError } from "./usage.ts";
 
 export class CLIProxyError extends Error {
@@ -11,9 +12,28 @@ export class CLIProxyError extends Error {
 export const proxyInvalid = () => new CLIProxyError("invalid_cliproxy_request", 400, "Invalid Hub request");
 /**
  * Which account a Hub file is, whatever its file name: its provider and the account it names (email, ChatGPT
- * workspace: `holder`), or, for a file naming neither, its auth index. Never reported.
+ * workspace: `holder`), and its auth index, either of which tells it (#3428: an email may change while the index
+ * stays). Never reported.
  */
-const accountIdentity = (provider: string, holder: string | null, index: string) => JSON.stringify([provider, holder ?? `index:${index}`]);
+const accountIdentities = (provider: string, holder: string | null, index: string): readonly string[] =>
+  [...(holder === null ? [] : [JSON.stringify([provider, holder])]), `index:${provider}:${index}`];
+const isIndexed = (identity: string) => identity.startsWith("index:");
+const sameAccount = (known: readonly string[], identities: readonly string[]) => known.some((identity) => identities.includes(identity));
+const isHubKey = (key: string) => key.includes(":cliproxy:");
+/** a saved hidden list larger than this is no list this server wrote */
+const HIDDEN_MAX_BYTES = 64 * 1024;
+
+/** The saved hidden list's text: a regular file of this user's, no link, at most HIDDEN_MAX_BYTES; throws otherwise. */
+function readOwnFile(path: string): string {
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > HIDDEN_MAX_BYTES || (process.getuid !== undefined && stat.uid !== process.getuid())) throw new Error("not this server's file");
+    const text = readFileSync(fd, "utf8");
+    if (Buffer.byteLength(text) > HIDDEN_MAX_BYTES) throw new Error("not this server's file");
+    return text;
+  } finally { closeSync(fd); }
+}
 type Config = { readonly url: string; readonly management_key: string };
 const DEFAULT_URL = "http://localhost:8317";
 
@@ -38,8 +58,8 @@ export class CLIProxyService {
   private readonly shownAt = new Map<string, number>();
   /** the account (email, ChatGPT workspace) each row's file named when it was read; never reported */
   private readonly holders = new WeakMap<ProviderUsage, string>();
-  /** the account each row is (accountIdentity); never reported */
-  private readonly identities = new WeakMap<ProviderUsage, string>();
+  /** the account each row is (accountIdentities); never reported */
+  private readonly identities = new WeakMap<ProviderUsage, readonly string[]>();
   /** the rows read or listed while their key was not hidden: only these tell which account a key was when it was hidden */
   private readonly shownRows = new WeakSet<ProviderUsage>();
   /**
@@ -48,10 +68,22 @@ export class CLIProxyService {
    * of it was shown (a fresh server) has none, and its file name alone keeps whoever is under it unread. Kept only
    * while the key is hidden, so bounded by the hidden list.
    */
-  private readonly hiddenAccounts = new Map<string, string>();
+  private readonly hiddenAccounts = new Map<string, readonly string[]>();
   /** where hiddenAccounts is saved, with the Hub it was learned on, so a restart keeps a moved hidden account unread (#3427) */
   private readonly hiddenPath: string;
-  private hiddenUnsaved = false;
+  /** the document last written to (or read from) hiddenPath; null: none there yet, or the last save failed */
+  private savedHidden: string | null = null;
+  /** the hidden Hub keys the saved list covers, with or without a known account; null: no list was found at start */
+  private covered: Set<string> | null = null;
+  /** whether the first sync after start has checked the hidden Hub keys against the saved list */
+  private checkedCovered = false;
+  /**
+   * Fail closed (#3428): set when the saved list cannot be trusted (unreadable, not the list, a link, not this user's,
+   * too large) or does not cover a key hidden before this start (its save never landed). A hidden Hub key with no
+   * known account may then be any account under any file name, so while one is hidden no Hub account is read at all;
+   * it clears, and is saved cleared, once the whole hidden list holds no such key (each was shown again).
+   */
+  private blind = false;
   private hiddenWhole: () => boolean = () => true;
 
   constructor(stateDir: string) {
@@ -121,10 +153,8 @@ export class CLIProxyService {
   }
 
   private persist(config: Config | null): void {
-    mkdirSync(join(this.path, ".."), { recursive: true, mode: 0o700 });
-    const temporary = `${this.path}.${process.pid}.tmp`;
-    writeFileSync(temporary, JSON.stringify(config ?? {}), { mode: 0o600 });
-    renameSync(temporary, this.path);
+    // an exclusive temporary file of a name no one can guess: nothing left in its place receives the key (#3428)
+    writePrivateState(this.path, config ?? {});
     // another Hub, or another key to it, has other accounts: no row of the old one stays, hidden or not
     const moved = config?.url !== this.config?.url || config?.management_key !== this.config?.management_key;
     this.config = config;
@@ -136,9 +166,13 @@ export class CLIProxyService {
     if (moved) { this.entries = []; this.forgetIndexed(); this.saveHidden(); }
   }
 
-  /** Drops the hidden accounts known only by an auth index, which names a file on one Hub alone. */
+  /** Drops what an auth index says of the hidden accounts: it names a file on one Hub alone. */
   private forgetIndexed(): void {
-    for (const [key, identity] of this.hiddenAccounts) if (identity.includes("\"index:")) this.hiddenAccounts.delete(key);
+    for (const [key, identities] of this.hiddenAccounts) {
+      const kept = identities.filter((identity) => !isIndexed(identity));
+      if (kept.length === 0) this.hiddenAccounts.delete(key);
+      else this.hiddenAccounts.set(key, kept);
+    }
   }
 
   /** The Hub a saved hiddenAccounts belongs to: its address and management key, digested, so the key is never written there. */
@@ -146,28 +180,59 @@ export class CLIProxyService {
     return this.config === null ? null : createHash("sha256").update(`${this.config.url}\0${this.config.management_key}`).digest("hex");
   }
 
-  /** hiddenAccounts as saved; from another Hub, only the accounts known by their email. Unreadable: none. */
+  /**
+   * hiddenAccounts as saved; from another Hub, only the accounts known by their email. None saved yet (a fresh
+   * server): no hidden account's identity is known, and a hidden key's file name alone keeps it unread. A list that
+   * is there but cannot be trusted fails closed (blind).
+   */
   private loadHidden(): void {
-    try {
-      const value: unknown = JSON.parse(readFileSync(this.hiddenPath, "utf8"));
-      if (!isJsonObject(value) || !isJsonObject(value["accounts"])) return;
-      for (const [key, identity] of Object.entries(value["accounts"])) if (typeof identity === "string") this.hiddenAccounts.set(key, identity);
-      if (value["hub"] !== this.hub()) this.forgetIndexed();
-    } catch { /* none saved yet: a fresh server knows no hidden account's identity */ }
+    let text: string;
+    try { text = readOwnFile(this.hiddenPath); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      this.blind = true;
+      console.warn("cliproxy: the saved hidden accounts cannot be read; no Hub account is read while a hidden one is unknown");
+      return;
+    }
+    let value: unknown;
+    try { value = JSON.parse(text); } catch { value = null; }
+    const accounts = isJsonObject(value) ? value["accounts"] : null;
+    const keys = isJsonObject(value) ? value["keys"] : null;
+    const strings = (list: unknown): list is string[] => Array.isArray(list) && list.every((item) => typeof item === "string");
+    if (!isJsonObject(value) || !isJsonObject(accounts) || !strings(keys) || typeof value["blind"] !== "boolean"
+      || !Object.values(accounts).every((identities) => strings(identities) && identities.length > 0)) {
+      this.blind = true;
+      console.warn("cliproxy: the saved hidden accounts are not a list; no Hub account is read while a hidden one is unknown");
+      return;
+    }
+    for (const [key, identities] of Object.entries(accounts)) this.hiddenAccounts.set(key, identities as string[]);
+    this.covered = new Set(keys);
+    this.blind = value["blind"];
+    if (value["hub"] !== this.hub()) this.forgetIndexed();
+    this.savedHidden = this.hiddenDocument();
   }
 
-  /** A failed save is tried again at the next sync, so a restart does not find an older list. */
-  private saveHidden(): void {
+  private hiddenDocument(): string {
+    return JSON.stringify({ hub: this.hub(), accounts: Object.fromEntries(this.hiddenAccounts), keys: [...this.covered ?? []], blind: this.blind });
+  }
+
+  /** Saves the hidden list when it changed; a failed save is tried again at the next sync. false: not saved. */
+  private saveHidden(): boolean {
+    const document = this.hiddenDocument();
+    if (document === this.savedHidden) return true;
     try {
-      mkdirSync(join(this.hiddenPath, ".."), { recursive: true, mode: 0o700 });
-      const temporary = `${this.hiddenPath}.${process.pid}.tmp`;
-      writeFileSync(temporary, JSON.stringify({ hub: this.hub(), accounts: Object.fromEntries(this.hiddenAccounts) }), { mode: 0o600 });
-      renameSync(temporary, this.hiddenPath);
-      this.hiddenUnsaved = false;
+      writePrivateState(this.hiddenPath, JSON.parse(document));
+      this.savedHidden = document;
+      return true;
     } catch {
-      this.hiddenUnsaved = true;
       console.warn("cliproxy: could not save which accounts are hidden");
+      return false;
     }
+  }
+
+  /** while blind, a hidden Hub key with no known account may be any account: no Hub account is read */
+  private blindTo(hidden: ReadonlySet<string>): boolean {
+    return this.blind && [...hidden].some((key) => isHubKey(key) && !this.hiddenAccounts.has(key));
   }
 
   /**
@@ -175,19 +240,31 @@ export class CLIProxyService {
    * in it, and saves the result: at every report, and as soon as the hidden list changes (hiddenChanged), since hiding
    * an account starts no report and a restart before one must still know it.
    */
-  private syncHidden(hidden: ReadonlySet<string>): void {
-    const before = JSON.stringify([...this.hiddenAccounts]);
+  private syncHidden(hidden: ReadonlySet<string>): boolean {
     for (const row of this.entries) {
-      const identity = this.identities.get(row);
-      if (identity !== undefined && this.shownRows.has(row) && hidden.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identity);
+      const identities = this.identities.get(row);
+      if (identities !== undefined && this.shownRows.has(row) && hidden.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identities);
     }
+    const whole = this.hiddenWhole();
     // a key missing from a list read only in part may still be hidden: it is forgotten only once the whole list says so
-    if (this.hiddenWhole()) for (const key of this.hiddenAccounts.keys()) if (!hidden.has(key)) this.hiddenAccounts.delete(key);
-    if (this.hiddenUnsaved || JSON.stringify([...this.hiddenAccounts]) !== before) this.saveHidden();
+    if (whole) for (const key of this.hiddenAccounts.keys()) if (!hidden.has(key)) this.hiddenAccounts.delete(key);
+    const hub = [...hidden].filter(isHubKey);
+    // a Hub key hidden before this start that the saved list neither covers nor knows was hidden by a save that never landed
+    if (!this.checkedCovered && this.covered !== null && hub.some((key) => !this.covered?.has(key) && !this.hiddenAccounts.has(key))) this.blind = true;
+    this.checkedCovered = true;
+    if (this.blind && whole && hub.every((key) => this.hiddenAccounts.has(key))) this.blind = false;
+    this.covered = new Set([...(whole ? [] : (this.covered ?? [])), ...hub]);
+    return this.saveHidden();
   }
 
-  /** The hidden or removed accounts changed (Settings, or the removed list): remember or forget which accounts they are now. */
-  hiddenChanged(): void { this.syncHidden(this.hidden()); }
+  /**
+   * The hidden or removed accounts changed (Settings, or the removed list): remember or forget which accounts they are
+   * now. Throws when that cannot be saved, so the change is not taken as done: the account stays unread here, and a
+   * restart that finds the older list reads no Hub account while it is hidden (#3428).
+   */
+  hiddenChanged(): void {
+    if (!this.syncHidden(this.hidden())) throw new Error("Could not save which Hub accounts are hidden");
+  }
 
   /** `whole`: whether `keys` read the hidden list entire; while not (the removed list unreadable), no hidden account is forgotten */
   skipAccounts(keys: () => ReadonlySet<string>, whole: () => boolean = () => true): void { this.hidden = keys; this.hiddenWhole = whole; }
@@ -300,6 +377,7 @@ export class CLIProxyService {
       const files = body["files"].filter(isJsonObject);
       this.problem = null; this.checked = true;
       const ctx = systemUsageContext();
+      const blind = this.blindTo(hidden);
       return await Promise.all(files.flatMap((file) => {
         const provider = USAGE_PROVIDERS.find((item) => (item.id === "claude" || item.id === "codex") && item.id === file["provider"]);
         const index = file["auth_index"];
@@ -316,19 +394,19 @@ export class CLIProxyService {
         const holder = email === null && workspace === null ? null : JSON.stringify([email, workspace]);
         const last = kept.has(entry.key) && holder !== null ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
         if (last) return [Promise.resolve(last)];
-        const identity = accountIdentity(provider.id, holder, index);
+        const identities = accountIdentities(provider.id, holder, index);
         const held = (row: ProviderUsage): ProviderUsage => {
           if (holder !== null) this.holders.set(row, holder);
-          this.identities.set(row, identity);
+          this.identities.set(row, identities);
           if (!hidden.has(row.key)) this.shownRows.add(row);
           return row;
         };
         // hidden is decided by account, the file name only a hint (#3423): an account hidden under any key is listed unread
         // under whatever name it has now, and its credentials are not used; under a hidden key's name, only an account
         // known to be another than the one hidden is read anew
-        const hiddenAs = [...this.hiddenAccounts].some(([key, account]) => account === identity && hidden.has(key));
+        const hiddenAs = [...this.hiddenAccounts].some(([key, known]) => hidden.has(key) && sameAccount(known, identities));
         const named = this.hiddenAccounts.get(entry.key);
-        if (hiddenAs || (hidden.has(entry.key) && (named === undefined || named === identity))) return [Promise.resolve(held({ ...entry, problem: null }))];
+        if (blind || hiddenAs || (hidden.has(entry.key) && (named === undefined || sameAccount(named, identities)))) return [Promise.resolve(held({ ...entry, problem: null }))];
         if (file["disabled"] === true || file["unavailable"] === true) return [Promise.resolve(held(entry))];
         return [(async (): Promise<ProviderUsage> => {
           try {
