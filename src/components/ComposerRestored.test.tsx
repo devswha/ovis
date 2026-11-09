@@ -90,16 +90,20 @@ it.each([
   expect(calls.map((call) => call[4])).toEqual([...expected]);
 });
 
-/** The `now` and `hold` flags of each onSend a key in the box made; `phone`: the composer's phone layout (a coarse pointer). */
-async function pressIn(keys: Record<string, unknown>, agentStatus: "working" | "idle", phone = false): Promise<unknown[][]> {
+let prevented = false;
+/** The `now` and `hold` flags of each onSend a key in the box made. `layout`: "phone" matches every query (a coarse pointer),
+ * "narrow" only the width (a mouse in a window 640px wide or less); `enterSends`: this device's Enter sends setting */
+async function pressIn(keys: Record<string, unknown>, agentStatus: "working" | "idle", layout: "desktop" | "phone" | "narrow" = "desktop", enterSends: boolean | null = null): Promise<unknown[][]> {
   const calls: unknown[][] = [];
-  if (phone) Object.assign(window, { matchMedia: () => ({ matches: true, addEventListener() {}, removeEventListener() {} }) });
+  prevented = false;
+  if (layout !== "desktop") Object.assign(window, { matchMedia: (query: string) => ({ matches: layout === "phone" || query.includes("max-width"), addEventListener() {}, removeEventListener() {} }) });
+  spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, enterSends }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus, connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
   composerDrafts.set(draftKey, "keep this for later");
   await act(async () => { renderer = create(<Composer {...props} />); });
   const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
   await act(async () => {
-    box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {}, ...keys });
+    box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() { prevented = true; }, ...keys });
   });
   return calls.map((call) => [call[4], call[5]]);
 }
@@ -121,18 +125,40 @@ for (const agentStatus of ["working", "idle"] as const) {
   });
 }
 
-it("leaves Alt+Enter on a phone as it was: a line break, no send and no hold", async () => {
-  expect(await pressIn({ altKey: true }, "working", true)).toEqual([]);
-  expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
+// the phone layout (a coarse pointer, or a window 640px wide or less) keeps Alt+Enter as it was: the box's line break.
+// Never a send, even where this device's Enter sends: a hold that is not a hold must not go at once instead
+it.each([
+  ["a phone", "phone", null],
+  ["a phone where Enter sends", "phone", true],
+  ["a narrow window with a mouse", "narrow", null],
+  ["a narrow window with a mouse where Enter sends", "narrow", true],
+] as const)("leaves Alt+Enter on %s as a line break: no send, no hold", async (_name, layout, enterSends) => {
+  for (const agentStatus of ["working", "idle"] as const) {
+    expect(await pressIn({ altKey: true }, agentStatus, layout, enterSends)).toEqual([]);
+    expect(prevented).toBe(false);
+    expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
+    act(() => { renderer?.unmount(); });
+  }
+  // control: Enter itself still sends where Enter sends
+  if (enterSends === true || layout === "narrow") expect(await pressIn({}, "working", layout, enterSends)).toEqual([[undefined, undefined]]);
 });
 
 it("keeps the draft and says why when a hold is refused", async () => {
-  const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: () => "Update this PC to hold messages. Your draft stayed here.", onAbort() {}, onUploadImage: async () => "" };
+  const calls: unknown[][] = [];
+  const refusal = "Update this PC to hold messages. Your draft stayed here.";
+  const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return refusal; }, onAbort() {}, onUploadImage: async () => "" };
   composerDrafts.set(draftKey, "keep this for later");
   await act(async () => { renderer = create(<Composer {...props} />); });
   const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
   await act(async () => {
     box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: true, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {} });
   });
+  // it went as a hold, not a send now
+  expect(calls.map((call) => [call[4], call[5]])).toEqual([[false, true]]);
   expect(composerDrafts.read(draftKey).text).toBe("keep this for later");
+  // the composer's note (role="alert") says why
+  type Node = ReturnType<ReactTestRenderer["root"]["findAll"]>[number];
+  const textOf = (node: Node | string): string => typeof node === "string" ? node : node.children.map(textOf).join("");
+  const alerts = renderer!.root.findAll((node) => node.type === "div" && node.props.role === "alert" && node.props.className === "composer-note");
+  expect(alerts.map(textOf)).toEqual([refusal]);
 });

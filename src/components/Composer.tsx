@@ -1113,9 +1113,11 @@ export function Composer({
         return;
       }
       // Alt+Enter (Option+Enter on a Mac) holds the message in the queued list for its Send now alone, whatever
-      // automatic sending says and also while the agent is idle. A phone keeps its keys as they were
-      const hold = !mobile && event.key === "Enter" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-      const shouldSend = !hold && event.key === "Enter" && (enterSends
+      // automatic sending says and also while the agent is idle. The phone layout (a coarse pointer, or a window 640px
+      // wide or less) keeps its line break: Alt+Enter is never a send there either, where Enter sends
+      const altEnter = event.key === "Enter" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+      const hold = altEnter && !mobile;
+      const shouldSend = !altEnter && event.key === "Enter" && (enterSends
         ? !event.shiftKey && !event.metaKey && !event.ctrlKey
         : (event.metaKey || event.ctrlKey) && !event.shiftKey);
       // a typed pick waits in the card above: the empty box's Enter is its Confirm and Escape its
