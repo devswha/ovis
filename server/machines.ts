@@ -1812,7 +1812,9 @@ export class MachineManager {
         throw await coreUnavailable();
       }
       // right before it is used, on every path here (a fresh try, a live server reused, a retry): the very socket it
-      // reported is this account's own, in its own herdr-core folder
+      // reported is this account's own, in its own herdr-core folder. This app starts nothing for a chosen Ovis: that
+      // server reaches its socket by this path itself, and since only the account (or root) can change a folder on it,
+      // the socket checked here (its device and inode, as the server reported them just before) stays the one it uses
       if (!await this.coreSocketConfined(ssh, target.own_ovis, verified.identity.socket_id)) throw new MachineActionRequired(OWN_OVIS_SOCKET_REFUSED, "choose_herdr", false, await localSessions());
       if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     }
@@ -1845,13 +1847,37 @@ export class MachineManager {
    * (server/herdr-core/pipe.ts adapterAddress) in a folder of the SSH uid's that no other account may enter (startRuntime
    * makes it 0700) and that no link leads to, the socket itself a socket of that uid's and no link; and the very socket the
    * server reported (bridge.ts socket_id, its device and inode).
+   * That folder sits under a root the account controls (its home, XDG_RUNTIME_DIR or /run/user/<uid>), and every folder
+   * from it up to that root is the account's or root's and writable by no one else: no other account can swap any of them
+   * for a folder holding another socket between this check and the server's use of that path.
    */
   private async coreSocketConfined(ssh: SshConnection, socket: string, socketId: string): Promise<boolean> {
     if (!socket.startsWith("/") || socket.length > 4096 || /[\0\r\n]/.test(socket) || posix.normalize(socket) !== socket || posix.basename(socket) !== "herdr-core.sock") return false;
-    const found = await ssh.run(`s=${shellQuote(socket)}; d=${shellQuote(posix.dirname(socket))}; uid=$(id -u); owner() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }; `
-      + `test ! -L "$d" && test -d "$d" && test "$(cd -P "$d" 2>/dev/null && pwd -P)" = "$d" && test "$(owner "$d")" = "$uid" `
-      + `&& m=$(stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d") && test $((0$m & 077)) -eq 0 `
-      + `&& test ! -L "$s" && test -S "$s" && test "$(owner "$s")" = "$uid" && { stat -c %d:%i "$s" 2>/dev/null || stat -f %d:%i "$s"; } || true`);
+    const found = await ssh.run([
+      `s=${shellQuote(socket)}; d=${shellQuote(posix.dirname(socket))}; uid=$(id -u)`,
+      `owner() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }`,
+      `mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }`,
+      `confined() {`,
+      `  test ! -L "$d" && test -d "$d" && test "$(cd -P "$d" 2>/dev/null && pwd -P)" = "$d" || return 1`,
+      `  test "$(owner "$d")" = "$uid" && m=$(mode "$d") && test $((0$m & 077)) -eq 0 || return 1`,
+      `  root=`,
+      `  for r in "$HOME" "\${XDG_RUNTIME_DIR:-}" "/run/user/$uid"; do`,
+      `    test -n "$r" && test -d "$r" || continue`,
+      `    p=$(cd -P "$r" 2>/dev/null && pwd -P) || continue`,
+      `    case "$d" in "$p"/*) root=$p; break ;; esac`,
+      `  done`,
+      `  test -n "$root" && test "$root" != / || return 1`,
+      `  a=$d`,
+      `  while :; do`,
+      `    o=$(owner "$a") && m=$(mode "$a") || return 1`,
+      `    { test "$o" = "$uid" || test "$o" = 0; } && test $((0$m & 022)) -eq 0 || return 1`,
+      `    test "$a" = "$root" && return 0`,
+      `    a=\${a%/*}`,
+      `    test -n "$a" || return 1`,
+      `  done`,
+      `}`,
+      `confined && test ! -L "$s" && test -S "$s" && test "$(owner "$s")" = "$uid" && { stat -c %d:%i "$s" 2>/dev/null || stat -f %d:%i "$s"; } || true`,
+    ].join("\n"));
     return /^\d+:\d+$/.test(found.trim()) && found.trim() === socketId;
   }
   /** A tunnel to the bridge a descriptor names, on the PC's 127.0.0.1, with that bridge's token. */

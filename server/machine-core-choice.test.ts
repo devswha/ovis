@@ -18,13 +18,19 @@ const quiet = ["unanswered", "server error"], open = ["wrong token", "redirect",
 const waits = [...quiet, "server error later"];
 // once chosen, its adapter socket is no longer this account's own: through a link, not a socket, in a folder others may
 // enter, or another socket than the one the server reports
-const confinement = ["socket link", "not a socket", "open folder", "other socket id"];
+// enter, or another socket than the one the server reports; or in a folder another account could swap: outside the
+// account's own roots, or below a folder others may write or another account owns
+const confinement = ["socket link", "not a socket", "open folder", "other socket id", "outside home", "writable parent", "foreign parent"];
 it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-core-choice-"));
   const id = "12345678-1234-1234-1234-123456789abc";
   // the core adapter's socket in its server's own state folder (server/herdr-core/runtime.ts), as startRuntime leaves it
-  const stateDir = join(dir, "state");
+  const shared = join(dir, "shared");
+  const stateDir = join(shared, "state");
+  mkdirSync(shared, { mode: 0o755 });
   mkdirSync(stateDir, { mode: 0o700 });
+  // the SSH account's home on that PC, and the PATH its commands run with (a stand-in stat, below)
+  let home = dir, path = process.env["PATH"] ?? "";
   const socket = join(stateDir, "herdr-core.sock");
   let adapter = Bun.listen({ unix: socket, socket: { data() {} } });
   // what the server reports of its socket, read as server/bridge.ts reads it (through a link)
@@ -66,7 +72,7 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
     spyOn(SshConnection.prototype, "run").mockImplementation(async (command) => {
       commands.push(command);
-      const shell = Bun.spawn(["sh", "-c", command], { env: { ...process.env, HOME: dir, XDG_CONFIG_HOME: join(dir, ".config") }, stdout: "pipe", stderr: "pipe" });
+      const shell = Bun.spawn(["sh", "-c", command], { env: { ...process.env, HOME: home, XDG_RUNTIME_DIR: "", PATH: path, XDG_CONFIG_HOME: join(dir, ".config") }, stdout: "pipe", stderr: "pipe" });
       const [out, err, code] = await Promise.all([new Response(shell.stdout).text(), new Response(shell.stderr).text(), shell.exited]);
       if (code !== 0) throw new Error(err);
       return out;
@@ -176,6 +182,17 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
       if (outcome === "not a socket") writeFileSync(socket, "");
       // a folder others may enter or write is not this account's own herdr-core folder
       if (outcome === "open folder") chmodSync(stateDir, 0o755);
+      // the account's own folder, but outside its home (and no runtime dir): a parent it does not control could swap it
+      // (its registration is still found: that home's .config is the fixture's)
+      if (outcome === "outside home") { home = join(dir, "home"); mkdirSync(home); symlinkSync(join(dir, ".config"), join(home, ".config")); }
+      if (outcome === "writable parent") chmodSync(shared, 0o777);
+      if (outcome === "foreign parent") {
+        // another account owns the folder above: a stand-in stat says so, as that PC's would
+        const bin = join(dir, "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "stat"), `#!/bin/sh\nfor last; do :; done\nif [ "$1" = -c ] && [ "$2" = %u ] && [ "$last" = ${JSON.stringify(shared)} ]; then echo 4242; exit 0; fi\nexec ${JSON.stringify(Bun.which("stat"))} "$@"\n`, { mode: 0o755 });
+        path = `${bin}:${path}`;
+      }
       // the fresh setup (it reuses the live server: its update is not needed) and the saved PC's own reconnect both refuse
       for (const attach of [() => run({ destination: "fixture-only", own_ovis: socket }), reconnect]) {
         retries.mockClear();
