@@ -1340,7 +1340,7 @@ export class MachineManager {
         // closes the connection.
         // A PC whose own Ovis is away, or still checking for releases, waits the same way: both end by themselves.
         const unreachable = ownsRuntime && job.update && !!existing && !(e instanceof MachineActionRequired)
-          && (error === OWN_OVIS_AWAY || error === OWN_OVIS_GONE || error === OWN_CHECK_RUNNING || (reached ? !ssh.connected() : !SSH_REFUSED.test(error)));
+          && (error === OWN_OVIS_AWAY || error === OWN_OVIS_GONE || error === OWN_OVIS_UNANSWERED || error === OWN_CHECK_RUNNING || (reached ? !ssh.connected() : !SSH_REFUSED.test(error)));
         // a cancel asking that PC to stop its update goes over this connection: it is closed only once that is done
         if (job.cancelling) await job.cancelling;
         if (ownsRuntime) this.disconnect(runtime);
@@ -1505,8 +1505,10 @@ export class MachineManager {
     // setup the user started in its dialog gets the choice at once
     const ownOvisGone = async () => !job || job.auto ? new Error(OWN_OVIS_GONE) : await coreUnavailable();
     // the chosen Ovis, proven this account's and live, did not prove what it is (no answer, an HTTP error): it still runs,
-    // and stays the choice it was
-    const chosenOvisFailed = async () => new MachineActionRequired(OWN_OVIS_UNANSWERED, "choose_herdr", false, await localSessions(), [{ socket_path: target.own_ovis!, runtime: "herdr-core" }]);
+    // and stays the choice it was. A reconnect (or an update that asks nobody) waits for it, starting nothing: right after a
+    // reboot it may answer before its core adapter is ready. A setup the user started gets the choice at once
+    const chosenOvisFailed = async () => !job || job.auto ? new Error(OWN_OVIS_UNANSWERED)
+      : new MachineActionRequired(OWN_OVIS_UNANSWERED, "choose_herdr", false, await localSessions(), [{ socket_path: target.own_ovis!, runtime: "herdr-core" }]);
     if (job && host.kind === "windows") job.public.windows_startup = moving || !this.machines.has(runtime.machine.id);
     const { platform } = inspection;
     let expectedSocket = inspection.expectedSocket;
@@ -1568,7 +1570,7 @@ export class MachineManager {
       };
       if (target.own_ovis) {
         if (!found.length) throw await coreUnavailable();
-        if (!answered) throw await offer(OWN_OVIS_UNANSWERED);
+        if (!answered) throw !job || job.auto ? new Error(OWN_OVIS_UNANSWERED) : await offer(OWN_OVIS_UNANSWERED);
         expectedSocket = target.own_ovis;
       } else if (found.length) {
         throw await offer(answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED);
@@ -1617,7 +1619,8 @@ export class MachineManager {
     if (descriptor && update && descriptor.bridge_protocol === BRIDGE_PROTOCOL && descriptor.bundle_version === REMOTE_BUNDLE_VERSION) {
       try { currentBridge = await this.verify(ssh, descriptor, expectedSocket); }
       catch (error) {
-        if (target.own_ovis) throw error instanceof MachineActionRequired ? await coreUnavailable() : await chosenOvisFailed();
+        // the chosen Ovis answered with what it is (another version, say): that decision is told in its own words below
+        if (target.own_ovis && !(error instanceof MachineActionRequired)) throw await chosenOvisFailed();
         if (error instanceof MachineActionRequired && error.action === "update_bridge") {
           throw new MachineActionRequired("The running bridge is incompatible with this app. Another app may have reconnected with a different version. Update or disconnect the other app, then reconnect here. The remote bridge was left running.", "bridge_conflict");
         }
