@@ -61,6 +61,19 @@ describe("the palette's worktree dialog", () => {
     expect(branchField().props.value).toBe("feat/for-api");
   });
 
+  it("keeps a draft typed after a replaced dialog's creation was sent, when that creation answers", async () => {
+    await act(async () => { renderer = create(dialog(repository("api"))); });
+    await act(async () => { branchField().props.onChange({ target: { value: "feat/one" } }); });
+    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    await act(async () => { renderer!.update(dialog(repository("web"))); });
+    await act(async () => { renderer!.update(dialog(repository("api"))); });
+    await act(async () => { branchField().props.onChange({ target: { value: "feat/two" } }); });
+    await act(async () => { answerCreate({ workspace_id: "w9", pane_id: "p9", agent_started: true }); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { renderer!.update(dialog(repository("web"))); });
+    await act(async () => { renderer!.update(dialog(repository("api"))); });
+    expect(branchField().props.value).toBe("feat/two");
+  });
+
   it("ignores the answer of a dialog that another repository's replaced", async () => {
     const opened: string[] = [];
     await act(async () => { renderer = create(dialog(repository("api"), () => opened.push("api"))); });

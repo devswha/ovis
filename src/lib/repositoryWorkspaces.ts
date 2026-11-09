@@ -36,16 +36,22 @@ export function worktreesStartHere(machineId: string, workspace: WorkspaceInfo):
   return answers.get(machineId)?.get(workspace.workspace_id) === true;
 }
 
+function dropAnswers(machineId: string): void {
+  answers.delete(machineId);
+  rounds.set(machineId, (rounds.get(machineId) ?? 0) + 1);
+}
+
+/** one question per workspace and round: a question of a dropped round answers nobody, so the next round asks its own */
 function ask(machineId: string, workspaceId: string, listWorktrees: (workspace: string) => Promise<unknown>): Promise<void> {
-  const key = `${machineId}\n${workspaceId}`;
+  const round = rounds.get(machineId) ?? 0;
+  const key = `${machineId}\n${round}\n${workspaceId}`;
   const running = asking.get(key);
   if (running) return running;
-  const round = rounds.get(machineId) ?? 0;
   const kept = (answer: boolean): void => { if ((rounds.get(machineId) ?? 0) === round) answersOf(machineId).set(workspaceId, answer); };
   const question = listWorktrees(workspaceId).then(
     () => kept(true),
     (error: unknown) => { if (error instanceof ApiError && error.status < 500) kept(false); },
-  ).finally(() => asking.delete(key));
+  ).finally(() => { if (asking.get(key) === question) asking.delete(key); });
   asking.set(key, question);
   return question;
 }
@@ -76,8 +82,7 @@ export function useRepositoryWorkspaces({ machineId, snapshot, online, watching,
       const left = (readers.get(machineId) ?? 1) - 1;
       if (left > 0) { readers.set(machineId, left); return; }
       readers.delete(machineId);
-      answers.delete(machineId);
-      rounds.set(machineId, (rounds.get(machineId) ?? 0) + 1);
+      dropAnswers(machineId);
     };
   }, [machineId]);
   useEffect(() => {
@@ -89,12 +94,13 @@ export function useRepositoryWorkspaces({ machineId, snapshot, online, watching,
     return () => { listeners.delete(publish); };
   }, [read]);
   useEffect(() => {
-    const known = answersOf(machineId);
     if (asked === null) {
-      if (known.size > 0) { known.clear(); rounds.set(machineId, (rounds.get(machineId) ?? 0) + 1); }
+      // what was known, and every question still out, is dropped: the PC is asked afresh when it comes back
+      dropAnswers(machineId);
       told();
       return;
     }
+    const known = answersOf(machineId);
     const ids = asked.split("\n");
     for (const id of [...known.keys()]) if (!ids.includes(id)) known.delete(id);
     told();

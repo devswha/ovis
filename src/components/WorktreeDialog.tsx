@@ -228,9 +228,11 @@ export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened
     if (pending) return;
     setPending(status);
     setError(null);
+    // the draft as it was sent: one typed after it (this repository's dialog opened again meanwhile) stays
+    const sent = mode === "create" ? worktreeDrafts.get(draftKey) : undefined;
     try {
       const result = await request();
-      if (mode === "create") writeWorktreeDraft(draftKey, null);
+      if (mode === "create" && worktreeDrafts.get(draftKey) === sent) writeWorktreeDraft(draftKey, null);
       // a dialog replaced meanwhile (the palette asked for another workspace) leaves the checkout to the sidebar
       if (!mounted.current) return;
       if (result.agent_started === false && result.error) {
