@@ -566,10 +566,29 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
       await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 14);
       const typedSize = results.getByRole("group", { name: "Terminal font size", exact: true }).getByRole("textbox", { name: "Terminal font size", exact: true });
       assert.equal(await typedSize.inputValue(), "14");
+      // the -/+ buttons still have the new size read out
+      assert.equal(await results.getByRole("group", { name: "Terminal font size", exact: true }).locator('[aria-live="polite"]').textContent(), "14px", `${width}px: a stepped size is announced`);
+      // a finger's field is read at --fs-input or larger, so iOS does not zoom into it
+      if (width === 390) assert.ok(await typedSize.evaluate((input) => {
+        const probe = document.createElement("span");
+        probe.style.fontSize = "var(--fs-input)";
+        document.body.append(probe);
+        const least = Number.parseFloat(getComputedStyle(probe).fontSize);
+        probe.remove();
+        return Number.parseFloat(getComputedStyle(input).fontSize) >= least;
+      }), `${width}px: the typed size is read at --fs-input or larger`);
       // the number is typed in its place too: one out of range is refused and the field goes back (G-179)
       await typedSize.fill("30");
       await typedSize.press("Enter");
       assert.equal(await typedSize.inputValue(), "14", `${width}px: a size out of range is refused`);
+      // a pasted number is read whole: 200 is refused, never cut to 20
+      await typedSize.focus();
+      await typedSize.selectText();
+      await page.keyboard.insertText("200");
+      assert.equal(await typedSize.inputValue(), "200", `${width}px: a pasted number is kept whole`);
+      await typedSize.press("Enter");
+      assert.equal(await typedSize.inputValue(), "14", `${width}px: a pasted size out of range is refused`);
+      assert.equal(await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done(JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize)))), 14, `${width}px: a refused paste saves nothing`);
       await typedSize.fill("16");
       await typedSize.press("Enter");
       await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 16);
