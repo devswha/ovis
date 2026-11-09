@@ -44,6 +44,7 @@ import {
   imageMention,
   insertLeadingMention,
   MAX_COMPOSER_CHARS,
+  namesHiddenCommand,
   rankSlashCommands,
   slashCommandReplacement,
   submitNote,
@@ -556,7 +557,9 @@ export function Composer({
   // a typed query no listed command matches keeps the menu's place with one line saying so (G-077): a
   // list that just vanished could as well mean the commands are not known yet, and the line's way on
   // (type on, or change the word) is the key already under the finger; nothing here takes a key
-  const slashUnmatched = !menuDismissed && trigger?.kind === "slash" && trigger.query !== "" && choices.length === 0 && triggerCommands.length > 0;
+  const slashUnmatched = !menuDismissed && trigger?.kind === "slash" && trigger.query !== "" && choices.length === 0 && triggerCommands.length > 0
+    // a command the menu hides (Claude's /heapdump) typed by hand is still one, and is sent like any text
+    && !namesHiddenCommand(commands, trigger.query);
   // clamped as the list is drawn, not by an effect after it: a Tab or Enter typed before that
   // effect's render found no row at the old index and did nothing
   const choiceIds = choices.map((choice) => typeof choice === "string" ? `file:${choice}` : `${choice.source}:${choice.name}`);
