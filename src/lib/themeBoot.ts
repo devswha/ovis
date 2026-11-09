@@ -24,7 +24,7 @@ export const THEMES_STORAGE_KEY = "ovis:themes";
 export const DEFAULT_APPEARANCE: Appearance = { theme: "dark", darkTheme: DEFAULT_THEME, lightTheme: DEFAULT_THEME };
 
 /** In the hosted shell build only, a first visit with no saved theme follows prefers-color-scheme (system). */
-function defaultThemeSetting(): ThemeSetting {
+export function defaultThemeSetting(): ThemeSetting {
   return shellMode() === "relay" ? "system" : DEFAULT_APPEARANCE.theme;
 }
 

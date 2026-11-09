@@ -192,6 +192,9 @@ describe("theme boot", () => {
         lightTheme: DEFAULT_SETTINGS.lightTheme,
       });
       expect(boot()).toBe(rowFor(DEFAULT_SETTINGS.lightTheme, "light"));
+      // the settings SettingsProvider starts from keep following the system, as the first frame did
+      expect(loadSettings().theme).toBe("system");
+      expect(app()).toBe(boot());
 
       systemDark = true;
       expect(boot()).toBe(rowFor(DEFAULT_SETTINGS.darkTheme, "dark"));

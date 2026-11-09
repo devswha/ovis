@@ -223,18 +223,27 @@ describe("the hosted shell's front page", () => {
     expect(rows()).toBe(3);
     expect(account().pcs).toHaveLength(3);
     expect(account().error).toContain("could not be reached");
+
+    // and while reads keep failing, the kept rows still age: past 15 minutes unseen, Desk PC is offline
+    for (let read = 6; read <= 14; read++) {
+      await drain(); // the last read settles before the next minute
+      const drawnBefore = rendered.length;
+      jest.advanceTimersByTime(60_000);
+      await until(() => reads === read && rendered.length > drawnBefore, `failed read ${read} drawn`);
+    }
+    expect(account().pcs!.map((pc) => [pc.name, pc.state])).toEqual([["Desk PC", "offline"], ["Mac mini", "offline"], ["nuc", "offline"]]);
     answer = ok;
 
     // hidden again: the timer stops with it
     visible("hidden");
     jest.advanceTimersByTime(600_000);
     await drain();
-    expect(reads).toBe(5);
+    expect(reads).toBe(14);
 
     // back in view: read again, and the failure's line goes
     const shown = rendered.length;
     visible("visible");
-    await until(() => reads === 6 && rendered.length > shown, "the read on coming back drawn");
+    await until(() => reads === 15 && rendered.length > shown, "the read on coming back drawn");
     expect(account().error).toBeNull();
     expect(rows()).toBe(3);
   });

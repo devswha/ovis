@@ -129,3 +129,29 @@ it("checks exactly the PC asked for, ahead of a sweep's remaining PCs and within
   // the sweep's eight plus the two asked for, the PC moved up checked once
   expect(checked).toEqual([outside, ids[0], ids[11], queued, ...ids.slice(1, 7)].map((id) => id ?? ""));
 });
+
+it("lets an answer go once it is older than the directory's 15 minutes, while a newer answer for the PC stays", async () => {
+  jest.useFakeTimers();
+  const { devices, store } = await savedPcs(1);
+  const id = devices[0]?.server_id ?? "";
+  const { pending, arrived, probe } = heldProbe();
+  let redraws = 0;
+  const sweep = createPcSweep(store, { active: () => true, redraw() { redraws += 1; } }, { probe });
+  const first = sweep.checkOne(id);
+  await arrived(1);
+  pending[0]?.resolve({ kind: "answered", route: "relay", rttMs: 20 });
+  await first;
+  // ten minutes on, a second check answers again: the first answer's expiry leaves this one alone
+  jest.advanceTimersByTime(10 * 60_000);
+  const second = sweep.checkOne(id);
+  await arrived(2);
+  pending[1]?.resolve({ kind: "answered", route: "lan", rttMs: 4 });
+  await second;
+  jest.advanceTimersByTime(5 * 60_000);
+  expect(sweep.status.get(id)).toEqual({ kind: "answered", route: "lan", rttMs: 4 });
+  // fifteen minutes after it, nothing answers for the PC any more, and the rows are drawn again
+  const drawn = redraws;
+  jest.advanceTimersByTime(10 * 60_000);
+  expect(sweep.status.has(id)).toBe(false);
+  expect(redraws).toBe(drawn + 1);
+});

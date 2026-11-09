@@ -46,6 +46,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const cancelEnrollment = (id: string): void => { forgotten.set(id, (forgotten.get(id) ?? 0) + 1); };
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
   let directory: readonly DirectoryPc[] = [];
+  // whom `directory` was last read for, so a failed read can age its rows again without reading it
+  let listedFor: { readonly epoch: number; readonly accountKey: string; readonly account: string } | undefined;
   let generation = 0;
   let leaving = false;
   // the read out now and the sign-in it is for: a read of an earlier sign-in never holds back the next one's
@@ -68,6 +70,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const key = await accountStore.key();
         if (!live()) return;
         directory = listed;
+        listedFor = { epoch, accountKey: key.public_spki, account: session.account };
         accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(listed, devices, { now: Date.now(), accountKey: key.public_spki, account: session.account, outdated: view.outdated() }) };
         sendQueuedAdds({ service: account, store: accountStore, account: session.account }).catch((error: unknown) => console.warn("Ovis: kept adds could not be sent", error instanceof Error ? error.name : error));
       } catch (error) {
@@ -77,7 +80,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
           const devices = await store.list();
           if (!live()) return;
-          if (accountView?.kind === "signed-in") accountView = { ...accountView, pcs: current?.kind === "signed-in" ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() }), error: t("The account service could not be reached. The PCs this device is paired with still work.") };
+          // the rows kept from the last read, with their time-based states aged to now (a PC unseen for long goes Offline)
+          const kept = current?.kind === "signed-in" && current.pcs !== null && listedFor?.epoch === epoch
+            ? myPcs(directory, devices, { now: Date.now(), outdated: view.outdated(), accountKey: listedFor.accountKey, account: listedFor.account })
+            : current?.kind === "signed-in" ? current.pcs : myPcs([], devices, { now: Date.now(), outdated: view.outdated() });
+          if (accountView?.kind === "signed-in") accountView = { ...accountView, pcs: kept, error: t("The account service could not be reached. The PCs this device is paired with still work.") };
         }
       }
       if (live()) await changed();

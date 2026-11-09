@@ -3,6 +3,7 @@ import { checkPc, sweepOf } from "./pcStatus.ts";
 import type { PcStatus } from "./pcStatus.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
 import type { RelaySocket } from "./channel.ts";
+import { OFFLINE_AFTER_MS } from "../account/myPcs.ts";
 
 const CHECK_PCS = 8;
 const CHECK_AT_ONCE = 2;
@@ -45,7 +46,11 @@ export function createPcSweep(store: RelayDeviceStore, view: { readonly active: 
     for (let next = queue.shift(); next; next = queue.shift()) {
       // a check that throws knows nothing more of the PC than that no relay answered
       const found = await probe(next.device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
-      pcStatus.set(next.device.server_id, found);
+      const serverId = next.device.server_id;
+      pcStatus.set(serverId, found);
+      // an answer is live only as long as the directory's own idea of recently seen: past it, a PC
+      // that shut down meanwhile would still count as reachable, so the answer goes unless a newer check replaced it
+      if (found.kind === "answered") setTimeout(() => { if (pcStatus.get(serverId) === found) { pcStatus.delete(serverId); redraw(); } }, OFFLINE_AFTER_MS);
       redraw();
       next.settled.resolve();
     }
