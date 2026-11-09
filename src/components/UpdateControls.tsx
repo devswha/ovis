@@ -4,7 +4,7 @@ import { CHECKOUT_CHANGED_REASON, DESKTOP_APP_UPDATES, SUMMARY_GROUPS, type Summ
 import { useHerdrUpdate } from "../lib/herdrUpdate.ts";
 import { runningAppVersion, runningHerdrVersion, staleClientVersion, versionLabel } from "../lib/runningVersion.ts";
 import { useSettings } from "../lib/settings.ts";
-import { announcesUpdate, readAnnounced, summaryFor, watchAnnounced, writeAnnounced } from "../lib/updateNotes.ts";
+import { announcesUpdate, readAnnounced, readOfferClosed, summaryFor, watchAnnounced, watchOfferClosed, writeAnnounced, writeOfferClosed } from "../lib/updateNotes.ts";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
 import { lazyChunkFailed, onLazyChunkFailure } from "../lib/lazyChunk.ts";
@@ -45,7 +45,8 @@ const RESTART_HELP = "https://github.com/devswha/ovis/blob/main/docs/guide.md#up
  * What an update brings, or brought: each release it installs, newest first. A release is told
  * as patch notes, short lines in the app's language under what is new, improved and fixed, with
  * its changelog section folded under them; a release that wrote none shows the section as the
- * release wrote it (English). The box scrolls on its own, so the buttons under it stay in reach. The text comes
+ * release wrote it (English). The summary scrolls with Settings; the full changelog scrolls in a box of its
+ * own, so the buttons under it stay in reach (G-145). The text comes
  * from the Git remote: a section that cannot be drawn says so and takes nothing else down
  * with it.
  */
@@ -56,12 +57,14 @@ function ReleaseNotes({ notes, label }: { notes: Pick<UpdateNotes, "releases" | 
   const groups: Record<SummaryGroup, string> = { new: t("New features"), improved: t("Improvements"), fixed: t("Bug fixes") };
   return <>
     <span className="settings-label">{label}</span>
-    <div className="update-notes" role="region" aria-label={label} tabIndex={0}>
+    <div className="update-notes" role="region" aria-label={label}>
       {notes.releases.map((release) => {
         const summary = summaryFor(release, resolvedLanguage);
-        const section = <RenderBoundary resetKey={release.notes} fallback={() => <p className="settings-hint">{t("These notes could not be shown.")} <a href={CHANGELOG} target="_blank" rel="noopener noreferrer">{t("Full changelog")}</a></p>}>
-          <Markdown>{release.notes}</Markdown>
-        </RenderBoundary>;
+        const section = <div className="update-changelog" role="region" aria-label={t("Full changelog")} tabIndex={0}>
+          <RenderBoundary resetKey={release.notes} fallback={() => <p className="settings-hint">{t("These notes could not be shown.")} <a href={CHANGELOG} target="_blank" rel="noopener noreferrer">{t("Full changelog")}</a></p>}>
+            <Markdown>{release.notes}</Markdown>
+          </RenderBoundary>
+        </div>;
         return <section key={release.version}>
           <h4>v{release.version}{release.date && <time>{release.date}</time>}</h4>
           {summary === null ? section : <>
@@ -223,6 +226,9 @@ export function UpdateNotice({ updates, onOpen }: { updates: UpdatesModel; onOpe
   const [announced, setAnnounced] = useState(readAnnounced);
   // subscribed first, then read: a dismissal in another tab between this tab's first read and its subscription is not lost
   useEffect(() => { const stop = watchAnnounced(setAnnounced); setAnnounced(readAnnounced()); return stop; }, []);
+  // the release whose offer this device closed (G-102), as the done line is closed: the next release offers again
+  const [closedOffer, setClosedOffer] = useState(readOfferClosed);
+  useEffect(() => { const stop = watchOfferClosed(setClosedOffer); setClosedOffer(readOfferClosed()); return stop; }, []);
   // the check an install starts with reports nothing available until it is done: the line this
   // button sits on must not leave between the tap and the first step
   const [started, setStarted] = useState(false);
@@ -274,6 +280,9 @@ export function UpdateNotice({ updates, onOpen }: { updates: UpdatesModel; onOpe
   // unseen. An install names the release this render offered.
   const install = failure === null ? offered : null;
   const changed = failure === "offer-changed";
+  // only the plain offer closes: a failure or a changed offer stays until it is dealt with, and Settings still offers the release
+  const offer = !failed && !changed && !attempted ? status?.latest_revision ?? null : null;
+  if (offer !== null && offer === closedOffer) return null;
   const text = changed ? t("A newer release was published after you chose this update, so nothing was installed. Check again to review it.") : failed ? t("The update could not be installed.") : status?.latest_version ? t("Ovis v{version} is available.", { version: status.latest_version }) : t("An Ovis update is available.");
   return <div className={changed ? "update-notice is-line is-warning" : "update-notice is-line"} role="status">
     <span title={text}>{text}</span>
@@ -283,6 +292,12 @@ export function UpdateNotice({ updates, onOpen }: { updates: UpdatesModel; onOpe
       setAttempted(true); setStarted(install !== null);
       void request(install !== null ? { command: "install", expected_revision: install } : { command: "check" });
     }}>{t(failed ? "Try again" : "Update")}</button>
+    {offer !== null && <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={(event) => {
+      // the line goes with its Close: a keyboard's focus moves to the header's More beside where it was, not to the page
+      const focused = event.currentTarget === document.activeElement;
+      writeOfferClosed(offer); setClosedOffer(offer);
+      if (focused) document.querySelector<HTMLElement>(".header-more-button")?.focus();
+    }}><X /></button>}
   </div>;
 }
 

@@ -172,6 +172,8 @@ const BASE: Record<string, string> = {
   "Choosing this PC's Ovis server over SSH requires Linux or macOS": "SSH로 이 PC의 Ovis 서버를 선택하려면 Linux 또는 macOS가 필요합니다",
   "Browse files": "파일 찾아보기",
   "Copy link": "링크 복사",
+  "Find…": "찾기…",
+  "Pane and tab…": "패널·탭…",
   "Goal: {objective}": "목표: {objective}",
   "Transcript size unknown": "대화 기록 크기 알 수 없음",
   "Transcript {size}": "대화 기록 {size}",
@@ -387,6 +389,9 @@ const BASE: Record<string, string> = {
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "릴레이를 켜면 기기 게이트가 닫힙니다. 그 뒤 새 브라우저는 페어링 코드나 접속 토큰이 필요합니다.",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "새 탭",
+  "New worktree": "새 워크트리",
+  "Open worktree…": "워크트리 열기…",
+  "Earlier sessions…": "이전 세션…",
   "Rename tab": "탭 이름 바꾸기",
   "Zoom pane": "패널 확대",
   "Unzoom pane": "패널 확대 해제",
@@ -417,7 +422,7 @@ const BASE: Record<string, string> = {
   "Selected": "선택됨",
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text · {destination}": "보내지 않은 글 · {destination}",
-  "Text you had not sent when herdr restarted. A new herdr gives pane IDs out again, so it waits here rather than in a pane it was not written for. Nothing here is sent.": "재시작 전에 보내지 못한 글입니다. 대상 패널을 확인한 뒤 입력창에 넣으세요.",
+  "Text you had not sent before herdr restarted. Copy it and paste it where you need it. Nothing here is sent.": "재시작 전에 보내지 못한 글입니다. 복사해서 필요한 곳에 붙여 넣으세요. 자동으로 보내지 않습니다.",
   "Put in message box adds this text to {destination}. Nothing is sent.": "입력창에 넣기를 누르면 {destination}에 글이 들어갑니다. 보내지는 않습니다.",
   "Put in message box": "입력창에 넣기",
   "Adds the text to this pane's message box. Nothing is sent.": "이 패널의 입력창에 글을 추가합니다. 보내지는 않습니다.",

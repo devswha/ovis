@@ -176,6 +176,8 @@ const BASE: Record<string, string> = {
   "Choosing this PC's Ovis server over SSH requires Linux or macOS": "通过 SSH 选择此 PC 的 Ovis 服务器需要 Linux 或 macOS",
   "Browse files": "浏览文件",
   "Copy link": "复制链接",
+  "Find…": "查找…",
+  "Pane and tab…": "窗格和标签页…",
   "Goal: {objective}": "目标：{objective}",
   "Transcript size unknown": "记录大小未知",
   "Transcript {size}": "记录 {size}",
@@ -391,6 +393,9 @@ const BASE: Record<string, string> = {
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "开启中继后将关闭设备门槛：此后新的浏览器需要配对码或访问令牌。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新建标签页",
+  "New worktree": "新建工作树",
+  "Open worktree…": "打开工作树…",
+  "Earlier sessions…": "之前的会话…",
   "Rename tab": "重命名标签页",
   "Zoom pane": "放大窗格",
   "Unzoom pane": "取消放大",
@@ -422,7 +427,7 @@ const BASE: Record<string, string> = {
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text · {destination}": "未发送的文本 · {destination}",
   "Put in message box adds this text to {destination}. Nothing is sent.": "点击“放入输入框”会将此文本放入 {destination}。不会发送。",
-  "Text you had not sent when herdr restarted. A new herdr gives pane IDs out again, so it waits here rather than in a pane it was not written for. Nothing here is sent.": "这是重启前未发送的文本。确认目标窗格后再放入输入框。",
+  "Text you had not sent before herdr restarted. Copy it and paste it where you need it. Nothing here is sent.": "这是重启前未发送的文本。复制后粘贴到需要的地方。不会自动发送。",
   "Put in message box": "放入输入框",
   "Adds the text to this pane's message box. Nothing is sent.": "将文本添加到此面板的输入框中。不会发送。",
   "Message box": "输入框",
