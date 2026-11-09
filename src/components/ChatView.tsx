@@ -685,19 +685,31 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
   const [chosen, setExpanded] = useChatRowToggle(stateKey, false);
   const expanded = chosen === true;
   const box = useRef<HTMLPreElement>(null);
+  const more = useRef<HTMLButtonElement>(null);
   const folding = useRef(false);
-  // "Show less" sits at the bottom of a long output: after folding, bring its top back into view
+  // an unfold from the keyboard (a click with no pointer press: detail 0); a pointer's leaves the focus where it was
+  const revealing = useRef(false);
   useLayoutEffect(() => {
-    if (!folding.current) return;
-    folding.current = false;
     const node = box.current;
     const view = node?.closest(".chat-view");
-    if (node && view && node.getBoundingClientRect().top < view.getBoundingClientRect().top) node.scrollIntoView({ block: "start" });
+    // "Show less" sits at the bottom of a long output: after folding, bring its top back into view
+    if (folding.current) {
+      folding.current = false;
+      if (node && view && node.getBoundingClientRect().top < view.getBoundingClientRect().top) node.scrollIntoView({ block: "start" });
+    }
+    // the revealed text pushes the button below the view: the focus goes to the output it opened,
+    // so the next Tab reads on into it rather than past it; the button stays the next stop after it
+    if (revealing.current) {
+      revealing.current = false;
+      const button = more.current;
+      if (node && view && button && button.getBoundingClientRect().top >= view.getBoundingClientRect().bottom) node.focus({ preventScroll: false });
+    }
   }, [expanded]);
   return <>
-    <pre ref={box} className={`chat-tool-io chat-tool-result${whole ? " is-whole" : ""}`}>{linkFilePaths(fold !== null && !expanded ? fold.head : output, openFile)}</pre>
-    {fold !== null && <button type="button" className="markdown-code-more chat-tool-result-more" aria-expanded={expanded}
-      onClick={() => { folding.current = expanded; setExpanded(!expanded); }}>
+    {/* the head of a folded output links its paths as the whole text finds them: a path the fold cuts stays text */}
+    <pre ref={box} tabIndex={-1} className={`chat-tool-io chat-tool-result${whole ? " is-whole" : ""}`}>{linkFilePaths(output, openFile, fold !== null && !expanded ? fold.head.length : output.length)}</pre>
+    {fold !== null && <button ref={more} type="button" className="markdown-code-more chat-tool-result-more" aria-expanded={expanded}
+      onClick={(event) => { folding.current = expanded; revealing.current = !expanded && event.detail === 0; setExpanded(!expanded); }}>
       {expanded ? t("Show less") : fold.lines !== null ? t("Show all {n} lines", { n: fold.lines }) : t("Show all {size} characters", { size: formatTokens(output.length) })}
     </button>}
   </>;

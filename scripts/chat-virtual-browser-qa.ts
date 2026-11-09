@@ -378,9 +378,22 @@ try {
     await longMore.waitFor();
     const shown = await longLine.locator(".chat-tool-result").evaluate((node) => ({ length: node.textContent?.length ?? 0, height: node.getBoundingClientRect().height }));
     assert.ok(shown.length < 5_000 && shown.height < 900, `a 100 KB single-line output shows a capped preview: ${JSON.stringify(shown)}`);
-    await longMore.click();
+    // unfolded from the keyboard: the revealed text pushes the button screens below, so the focus
+    // moves to the output it opened, in view, and Tab still reaches the button that folds it again
+    await longMore.focus();
+    await page.keyboard.press("Enter");
+    await longLine.locator(".chat-tool-result-more[aria-expanded=true]").waitFor();
     assert.equal(await longLine.locator(".chat-tool-result").evaluate((node) => node.textContent?.length), LONG_LINE_OUTPUT.length);
-    console.log(`PASS ${width}: a single 100 KB line folds by its length`);
+    const focused = await page.evaluate(() => {
+      const active = document.activeElement as HTMLElement | null;
+      const view = document.querySelector(".chat-view")!.getBoundingClientRect();
+      const box = active?.getBoundingClientRect();
+      return { output: active?.classList.contains("chat-tool-result") ?? false, inView: box !== undefined && box.top < view.bottom && box.bottom > view.top };
+    });
+    assert.deepEqual(focused, { output: true, inView: true }, "a keyboard unfold moves the focus to the output it reveals, in view");
+    await page.keyboard.press("Tab");
+    assert.ok(await longLine.locator(".chat-tool-result-more[aria-expanded=true]").evaluate((node) => node === document.activeElement), "Tab from the revealed output reaches the button that folds it");
+    console.log(`PASS ${width}: a single 100 KB line folds by its length; a keyboard unfold keeps the focus in view`);
     await context.close();
   }
   for (const [width, theme] of [[1440, "dark"], [1440, "light"], [390, "dark"], [390, "light"]] as const) {
