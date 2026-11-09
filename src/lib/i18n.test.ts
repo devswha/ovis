@@ -69,6 +69,7 @@ function labelMapUses(): [key: string, file: string][] {
     ...grab("../shared/portal.ts", "PORTAL_AUTH_PROBLEMS", value),
     ...grab("components/SettingsDialog.tsx", "THEME_NAMES", /^\s+"?[\w-]+"?: "([^"]*)",?$/gm),
     ...grab("components/SettingsDialog.tsx", "HERDR_ACTION_LABELS", value),
+    ...grab("lib/herdrWindow.ts", "HERDR_WINDOW_CHOICES", /descriptionKey: "([^"]+)"/g),
     ...grab("components/KeyBar.tsx", "ARROWS", /label: "([^"]+)"/g),
     ...grab("components/KeyBar.tsx", "KEY_SPOKEN_NAMES", /label: "([^"]+)"/g),
     ...grab("lib/shortcuts.ts", "SHORTCUTS", /label: "([^"]+)"/g),
@@ -168,14 +169,14 @@ describe.each(Object.entries(DICTIONARIES))("%s dictionary", (_name, dictionary)
 
 /** Each part's files: a part holds the keys that only its files use (CONTRIBUTING.md, UI text). */
 const PART_FILES: Record<string, string[]> = {
-  settings: ["components/SettingsDialog.tsx", "components/SignOutRow.tsx", "components/KeyBarSettings.tsx", "lib/paletteSettings.ts", "components/TelemetryControls.tsx", "components/SettingsControls.tsx", "components/AlertWebhookGroup.tsx"],
+  settings: ["components/SettingsDialog.tsx", "lib/herdrWindow.ts", "components/SignOutRow.tsx", "components/KeyBarSettings.tsx", "lib/paletteSettings.ts", "components/TelemetryControls.tsx", "components/SettingsControls.tsx", "components/AlertWebhookGroup.tsx"],
   terminal: ["components/PaneTerminal.tsx", "lib/useTerminalMount.ts", "lib/useComposerSends.ts", "lib/usePeekReturn.ts", "lib/useTypedKeys.ts", "components/PaneCanvas.tsx", "components/KeyBar.tsx", "components/FindBar.tsx", "components/TerminalViewportTools.tsx", "components/SplitDropPreview.tsx", "components/TabStrip.tsx", "lib/terminalLabel.ts", "lib/tabName.ts"],
   composer: ["components/Composer.tsx", "components/ReplyComments.tsx", "components/ComposerNotices.tsx", "components/VoiceInput.tsx", "components/SecretInput.tsx", "components/TerminalInput.tsx", "components/PendingMessages.tsx", "lib/compose.ts", "components/PromptCard.tsx", "lib/promptAnswer.ts", "../shared/card-text.ts"],
   chat: ["components/ChatView.tsx", "lib/chatImages.ts", "components/SentWaiting.tsx", "components/Markdown.tsx", "components/MermaidLightbox.tsx", "components/ChatMinimap.tsx", "components/ImageLightbox.tsx", "components/BackgroundTasks.tsx", "components/BackgroundAgentDetail.tsx", "components/Artifacts.tsx", "components/OmpBtw.tsx", "components/MarkdownLinkMenu.tsx", "lib/workBlocks.ts", "lib/toolVerbs.ts", "lib/outcomeChip.ts", "lib/chatTimestamp.ts", "lib/chatReadDeadline.ts", "components/ConversationSearch.tsx"],
   sidebar: ["components/Sidebar.tsx", "components/AgentSidebar.tsx", "components/SidebarResizer.tsx", "components/SidebarSplit.tsx", "components/FoldHelpersRow.tsx"],
   machines: ["components/MachineSidebar.tsx", "components/MachineDialog.tsx", "components/FoundHerdrChoices.tsx", "lib/bridgeProgress.ts", "components/MachineStats.tsx", "lib/systemReport.ts"],
   workspace: ["components/NewSessionDialog.tsx", "components/WorktreeDialog.tsx", "components/DirectoryBrowser.tsx", "components/RecentFolderChips.tsx", "components/SessionHistory.tsx", "lib/sessionHistory.ts", "lib/useAgentSkills.ts"],
-  files: ["components/FileViewer.tsx", "components/RelayRenderedPage.tsx", "components/FilesDialog.tsx", "components/FileReader.tsx", "components/TextFileView.tsx", "components/TextFileEditor.tsx", "components/FilePathLink.tsx", "components/FilePanelResizer.tsx", "components/HighlightedCode.tsx", "components/RepoDiffViewer.tsx", "components/RepoChanges.tsx", "components/RepoDiff.tsx", "lib/repoDiff.ts", "lib/diffLineNotes.ts", "components/WebPanel.tsx", "components/PullRequestPanel.tsx", "lib/pullRequest.ts", "components/FileTextSizeRow.tsx", "components/FilesPanelRow.tsx", "components/MarkdownDocuments.tsx", "components/MarkdownOutline.tsx"],
+  files: ["lib/fileFailure.ts", "components/FileViewer.tsx", "components/RelayRenderedPage.tsx", "components/FilesDialog.tsx", "components/FileReader.tsx", "components/TextFileView.tsx", "components/TextFileEditor.tsx", "components/FilePathLink.tsx", "components/FilePanelResizer.tsx", "components/HighlightedCode.tsx", "components/RepoDiffViewer.tsx", "components/RepoChanges.tsx", "components/RepoDiff.tsx", "lib/repoDiff.ts", "lib/diffLineNotes.ts", "components/WebPanel.tsx", "components/PullRequestPanel.tsx", "lib/pullRequest.ts", "components/FileTextSizeRow.tsx", "components/FilesPanelRow.tsx", "components/MarkdownDocuments.tsx", "components/MarkdownOutline.tsx"],
   devices: ["components/DevicesPanel.tsx", "components/ConnectPhoneDialog.tsx", "components/RelaySignIn.tsx", "components/CompactPair.tsx", "components/PhonePanel.tsx", "components/PortalPanel.tsx", "components/RelayPanel.tsx", "components/PortalAuth.tsx", "components/PortalInvite.tsx", "components/PushTestControls.tsx", "components/AccessGate.tsx", "components/LanExposureNotice.tsx", "components/DevicePairedNotice.tsx", "components/InstallHint.tsx", "lib/install.ts", "lib/installHint.ts", "lib/portalAuth.ts", "../shared/portal.ts"],
   usage: ["components/UsageAccountDialog.tsx", "components/UsageSignInDialog.tsx", "components/UsageLocalLogin.tsx", "components/UsageHubConnect.tsx", "components/CLIProxyLogin.tsx", "components/UsageMeters.tsx", "components/UsageRemoveAccount.tsx", "lib/usage.ts"],
   updates: ["components/UpdateControls.tsx", "lib/updateProgress.ts"],
@@ -240,6 +241,15 @@ describe("dictionary parts", () => {
 });
 
 describe("translate", () => {
+  it.each(["ko", "ja", "zh"] as const)("uses the same %s agent state in groups, rows and alert filters", (language) => {
+    for (const [group, row] of [["Idle", "READY"], ["Working", "RUN"], ["Needs input", "INPUT"], ["Finished", "DONE"]] as const) {
+      // the Korean sidebar group keeps the owner's word 대기 for Idle (design-pass ruling B5)
+      if (language === "ko" && group === "Idle") continue;
+      expect(translate(language, group)).toBe(translate(language, row));
+    }
+  });
+
+
   it("fills placeholders, falls back to English, and leaves unknown placeholders alone", () => {
     expect(translate("en", "Worked for {duration}", { duration: "7s" })).toBe("Worked for 7s");
     expect(translate("ko", "Worked for {duration}", { duration: "7초" })).toBe(KO["Worked for {duration}"]!.replace("{duration}", "7초"));
@@ -247,6 +257,14 @@ describe("translate", () => {
     expect(translate("ja", "Settings")).toBe(JA["Settings"]!);
     expect(translate("zh", "Settings")).toBe(ZH["Settings"]!);
     expect(translate("en", "{a} and {b}", { a: 1 })).toBe("1 and {b}");
+  });
+
+  it("looks a key with a |context up as it is, and shows English or a missing entry as the part before the |", () => {
+    expect(translate("en", "Ovis relay|relay switch")).toBe("Ovis relay");
+    expect(translate("ko", "Ovis relay|relay switch")).toBe(KO["Ovis relay|relay switch"]!);
+    expect(KO["Ovis relay|relay switch"]).not.toBe(KO["Ovis relay"]);
+    expect(translate("ko", "not a key|somewhere")).toBe("not a key");
+    expect(translate("en", "Remove {name}|somewhere", { name: "GitHub" })).toBe("Remove GitHub");
   });
 
   it("follows the browser only when asked to", () => {

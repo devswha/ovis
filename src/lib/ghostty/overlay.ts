@@ -1,3 +1,4 @@
+// allow: SIZE_OK - the overlay's drawing and cleanup share its terminal and renderer state.
 /**
  * libghostty-vt draws every xterm terminal's screen, Kitty graphics pictures included, while xterm stays
  * the engine under it. xterm draws by itself only where this layer cannot: a module that does not load or
@@ -14,6 +15,7 @@ import { terminalDrawsPictures } from "../terminalImages.ts";
 import { followLateFaces, glyphFit, iconScale, oversizedIcon } from "../terminalGlyphs.ts";
 import { readableColor } from "../terminalFold.ts";
 import { isBoxGlyph } from "../terminalBoxGlyphs.ts";
+import { requestShownFrame } from "../shownFrame.ts";
 import { VIEW_MOVED_EVENT } from "./viewMoved.ts";
 import { GhosttyVt, STYLE_BOLD, STYLE_FAINT, STYLE_INVERSE, STYLE_INVISIBLE, STYLE_ITALIC, STYLE_STRIKE, STYLE_UNDERLINE_MASK, type GhosttyColors, type GhosttyImage, type GhosttyRun } from "./vt.ts";
 
@@ -174,7 +176,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   const rowRuns: GhosttyRun[][] = [];
   let cellW = 0;
   let cellH = 0;
-  let frameQueued = false;
+  let cancelFrame: (() => void) | null = null;
   const decoded = new Map<string, HTMLCanvasElement>();
 
   const metrics = (): void => {
@@ -500,13 +502,13 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   };
 
   const schedule = (): void => {
-    if (frameQueued || disposed) return;
-    frameQueued = true;
-    requestAnimationFrame(() => {
-      frameQueued = false;
+    if (cancelFrame !== null || disposed) return;
+    cancelFrame = requestShownFrame(() => {
+      cancelFrame = null;
       draw();
     });
   };
+  const cancelPaint = (): void => { cancelFrame?.(); };
 
   // every byte xterm is given, libghostty is given first, in the same order
   const write = term.write.bind(term);
@@ -548,6 +550,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
   } catch (error) {
     // the caller falls back to xterm: it gets its own write and reset back, so nothing reaches the freed module
     disposed = true;
+    cancelPaint();
     term.write = write;
     term.reset = reset;
     lateFaces.stop();
@@ -604,6 +607,7 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      cancelPaint();
       delete host.dataset["renderer"];
       unmuteXtermRows();
       term.refresh(0, term.rows - 1);
