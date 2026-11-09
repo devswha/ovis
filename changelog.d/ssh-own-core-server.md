@@ -5,4 +5,6 @@
   An Ovis there that runs but cannot answer right now stays a choice instead of a new herdr being
   started, running herdr sessions are offered beside an older Ovis that does not list them, the
   bridge token never appears in a command on that PC, and the owner can list sessions on an Ovis
-  without an access token from a paired device or their Tailscale login.
+  without an access token from a paired device or their Tailscale login. Installing Ovis over an
+  older herdr-core Ovis finds that server on its own socket, so it is never treated as gone while it
+  still runs.

@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as listenOn } from "node:net";
 import { tmpdir } from "node:os";
 import { readProcessBirth } from "./process-owner.ts";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
-import { birthNow, bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, restoreServer, runs, SAVED_SERVER, startedBeforeRegistration } from "./pc-install.ts";
+import { birthNow, bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, registeredAs, restoreServer, runs, SAVED_SERVER } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
 // A PC reached over SSH, as a script-answering stand-in: every command this app would run there is answered here,
@@ -166,10 +167,11 @@ function fixture(pc: Pc) {
       if (dying.has(pid)) { const left = dying.get(pid)! - 1; if (left <= 0) { dying.delete(pid); alive.delete(pid); } else dying.set(pid, left); }
       return alive.has(pid) ? "live" : "";
     }
-    if (script.endsWith("&& echo born || true")) return !script.startsWith("false") && bornAsShown(script) ? "born\n" : "";
+    // a `false` gate anywhere in the chain (a birth out of its shape, inside the registration check too) passes nothing
+    if (script.endsWith("&& echo born || true")) return !/(?:^|&& )false(?:[ ;]|$)/.test(script) && bornAsShown(script) ? "born\n" : "";
     if (script.includes("kill -TERM")) {
       const pid = Number(/kill -TERM (\d+)/.exec(script)![1]);
-      if (!bornAsShown(script) || !sameAsShown(script)) return "changed\n";
+      if (/(?:^|&& )false(?:[ ;]|$)/.test(script) || !bornAsShown(script) || !sameAsShown(script)) return "changed\n";
       if (pc.exitAfterChecks) dying.set(pid, pc.exitAfterChecks); else if (!pc.killIgnored) alive.delete(pid);
       return script.includes("echo stopping") ? "stopping\n" : "";
     }
@@ -205,6 +207,8 @@ describe("which PCs an install over SSH is offered for", () => {
     const target = { destination: "me@pc.invalid" };
     expect(installPlanFor("replace", "posix", 4242, target)).toEqual({ mode: "replace", pid: 4242, target });
     expect(installPlanFor("restart", "posix", 4242, target)).toEqual({ mode: "restart", pid: 4242, target });
+    // bound to the socket of the registration it was made for (a herdr-core server's adapter)
+    expect(installPlanFor("replace", "posix", 4242, target, undefined, "/home/u/.local/state/ovis/herdr-core.sock")).toEqual({ mode: "replace", pid: 4242, socket: "/home/u/.local/state/ovis/herdr-core.sock", target });
     expect(installPlanFor("replace", "windows", 4242, target)).toBeUndefined();
     expect(installPlanFor(undefined, "posix", 4242, target)).toBeUndefined();
   });
@@ -526,6 +530,35 @@ describe("installing Ovis on a PC over SSH", () => {
     // no new SSH connection while this app shuts down (an unreachable PC would hold it): the copy's own lease removes it
     expect(pc.challenges.length).toBe(connections);
     expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(false);
+  });
+
+  it("never puts the planned server's token on a command line there, with or without a recorded birth", async () => {
+    const token = "a".repeat(64);
+    for (const birth of [undefined, { platform: "linux", value: "1b4e28ba-2fa1-41d2-883f-0016d3cca427:100" }]) for (const mode of ["replace", "restart"] as const) {
+      const pc = fixture({ descriptors: [{ ...descriptor(4242, false, token), ...(birth ? { birth } : {}) }], restoreOff: true, ...(mode === "restart" ? { launcher: "systemd" as const } : {}) });
+      const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode, pid: 4242, token } }));
+      expect(job).toMatchObject({ phase: "connected", mode });
+      expect(pc.alive.has(4242)).toBe(false);
+      expect(pc.commands.some((command) => command.endsWith("&& echo born || true"))).toBe(true);
+      for (const command of pc.commands) expect(command).not.toContain(token);
+    }
+  });
+
+  it("looks for a herdr-core server the plan names on its own adapter socket, never on herdr's default one", async () => {
+    const socket = "/home/fx/.local/state/ovis/herdr-core.sock";
+    // live there: found, checked and stopped before the install, so no second Ovis runs beside it
+    const live = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], restoreOff: true });
+    const replaced = await live.settled(live.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket } }));
+    expect(replaced.phase).toBe("connected");
+    expect(live.commands.some((command) => command.includes("&& kill -TERM 4242"))).toBe(true);
+    expect(live.alive.has(4242)).toBe(false);
+    // really gone (its registration left behind): nothing to stop, and the plan goes ahead as before
+    const gone = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], restoreOff: true });
+    gone.alive.delete(4242);
+    const installed = await gone.settled(gone.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket } }));
+    expect(installed.phase).toBe("connected");
+    expect(gone.commands.some((command) => command.includes("kill -TERM 4242"))).toBe(false);
+    expect(installs(gone.commands)).toHaveLength(1);
   });
 
   it("stops the shown server when its birth still matches its registration", async () => {
@@ -991,16 +1024,25 @@ describe.skipIf(!existsSync("/proc/self/environ") || !Bun.which("setsid"))("star
     const server = Bun.spawn([process.execPath, "-e", 'console.log("up"); setInterval(() => {}, 1000);'], { stdout: "pipe", stderr: "ignore" });
     cleanups.push(() => server.kill());
     await server.stdout.getReader().read();
-    const token = "c".repeat(64), file = join(bridges, "own.json");
-    const check = () => shell(`${startedBeforeRegistration(server.pid, token)} && echo before || true`, { HOME: home });
+    // its file is named after its socket (server/bridge.ts descriptorPath): no token is needed to find it
+    const token = "c".repeat(64), socket = "/home/fx/.config/herdr/herdr.sock", file = join(bridges, createHash("sha256").update(socket).digest("hex") + ".json");
+    const check = () => shell(`${registeredAs(server.pid, { socket_path: socket })} && echo before || true`, { HOME: home });
     // written after it started, as a server writes its own registration
     writeFileSync(file, JSON.stringify({ pid: server.pid, token }));
     expect(await check()).toBe("before");
+    // another server's registration at that socket since, even one whose pid begins with this one's
+    writeFileSync(file, JSON.stringify({ pid: Number(`${server.pid}0`), token }));
+    expect(await check()).toBe("");
+    writeFileSync(file, JSON.stringify({ pid: server.pid, token }));
     // a registration written well before it started: this process took the pid of a server that ended
     const past = new Date(Date.now() - 600_000);
     utimesSync(file, past, past);
     expect(await check()).toBe("");
-    // and none at all holds its token
+    // a recorded birth out of its shape is no identity, whatever the file says
+    utimesSync(file, new Date(), new Date());
+    expect(await check()).toBe("before");
+    expect(await shell(`${registeredAs(server.pid, { socket_path: socket, birth: { platform: "linux", value: 7 } })} && echo before || true`, { HOME: home })).toBe("");
+    // and none at all is registered there
     rmSync(file);
     expect(await check()).toBe("");
   });

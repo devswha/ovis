@@ -11,7 +11,9 @@ import { posixHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { readProcessBirth } from "./process-owner.ts";
 
-it.each(["connect", "birthless", "unanswered", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect"])("chooses the PC's own core server: %s", async (outcome) => {
+// quiet: the live server cannot prove itself at first (no answer, an HTTP error); open: once chosen, it no longer can
+const quiet = ["unanswered", "server error"], open = ["wrong token", "redirect", "server error later", "server error after proof"];
+it.each(["connect", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect"])("chooses the PC's own core server: %s", async (outcome) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-core-choice-"));
   const id = "12345678-1234-1234-1234-123456789abc";
   const socket = "/home/fixture/.config/ovis/hc-adapter.sock";
@@ -27,20 +29,20 @@ it.each(["connect", "birthless", "unanswered", "older peer", "gone", "symlink", 
   const herdrDir = join(dir, ".config/herdr/sessions/work");
   mkdirSync(herdrDir, { recursive: true });
   const sessions = [{ socket_path: join(herdrDir, "herdr.sock"), session: "work", label: "work" }];
-  // unanswered: no TUI herdr runs beside the core server, so nothing else could be offered
-  const herdr = outcome === "unanswered" ? undefined : Bun.listen({ unix: sessions[0]!.socket_path, socket: { data() {} } });
+  // no TUI herdr runs beside a quiet core server, so nothing else could be offered
+  const herdr = quiet.includes(outcome) ? undefined : Bun.listen({ unix: sessions[0]!.socket_path, socket: { data() {} } });
   if (!herdr) sessions.length = 0;
   const runtimeDir = join(dir, "runtime");
   mkdirSync(join(runtimeDir, "bin"), { recursive: true });
   symlinkSync(process.execPath, join(runtimeDir, "bin/bun"));
   symlinkSync(import.meta.dir, join(runtimeDir, "server"));
   const relays: ReturnType<typeof Bun.serve>[] = [];
-  let selected = false, starts = 0, answering = outcome !== "unanswered";
+  let selected = false, starts = 0, answering = !quiet.includes(outcome);
   const commands: string[] = [];
   const realFetch = globalThis.fetch;
   const mocks = [
     // a live server that cannot answer right now: its identity request times out
-    spyOn(globalThis, "fetch").mockImplementation(Object.assign((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => !answering && String(input).includes("/api/bridge")
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => !answering && outcome === "unanswered" && String(input).includes("/api/bridge")
       ? Promise.reject(new DOMException("Fixture bridge answer timed out", "TimeoutError")) : realFetch(input, init), { preconnect: realFetch.preconnect })),
     spyOn(SshConnection.prototype, "start").mockResolvedValue(undefined),
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
@@ -63,6 +65,11 @@ it.each(["connect", "birthless", "unanswered", "older peer", "gone", "symlink", 
         expect(request.headers.get("authorization")).toBe(`Bearer ${descriptor.token}`);
         const path = new URL(request.url).pathname;
         if (path === "/api/bridge") {
+          // the server cannot reach its core adapter right now: every identity request, or (after proof) the one after discovery
+          const discovering = new URL(request.url).searchParams.get("discover") === "herdr";
+          if ((!answering && outcome === "server error") || (selected && outcome === "server error later") || (selected && outcome === "server error after proof" && !discovering)) {
+            return Response.json({ error: { code: "herdr_unavailable", message: "herdr-core is not answering" } }, { status: 500 });
+          }
           if (selected && outcome === "wrong token") return new Response(null, { status: 401 });
           if (selected && outcome === "redirect") return Response.redirect("http://127.0.0.1:1/");
           return Response.json({ ...descriptor, pid: selected && outcome === "wrong pid" ? process.pid + 1 : process.pid, managed_remote: selected && outcome === "managed", socket_id: "fixture:core", herdr: { protocol: 22, version: "0.1.17", runtime: selected && outcome === "wrong runtime" ? "herdr" : "herdr-core" }, ...(outcome === "older peer" ? {} : { found_herdr_sessions: sessions }) });
@@ -85,7 +92,7 @@ it.each(["connect", "birthless", "unanswered", "older peer", "gone", "symlink", 
     const offer = await run({ destination: "fixture-only" });
     expect(offer).toMatchObject({ phase: "failed", action_required: "choose_herdr", found_herdr_sessions: sessions, found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
     expect(starts).toBe(0);
-    if (outcome === "unanswered") {
+    if (quiet.includes(outcome)) {
       // a plain choice: neither the tunnel's address nor a reason to start Ovis on that PC (it runs)
       expect(offer.error).not.toContain("127.0.0.1");
       expect(offer.error).not.toBe("Start Ovis on that PC, or start a new herdr here");
@@ -104,7 +111,7 @@ it.each(["connect", "birthless", "unanswered", "older peer", "gone", "symlink", 
     if (outcome === "reused pid") descriptor.birth = { ...birth.birth, value: "not-this-process" };
     if (outcome === "changed port") writeFileSync(registration, JSON.stringify({ ...descriptor, port: 12346 }));
     const chosen = await run({ destination: "fixture-only", own_ovis: socket });
-    const connects = ["connect", "birthless", "unanswered", "older peer"].includes(outcome);
+    const connects = ["connect", "birthless", "older peer", ...quiet].includes(outcome);
     expect(chosen.phase).toBe(connects ? "connected" : "failed");
     expect(starts).toBe(0);
     // the registration's token goes only in the tunnel's HTTP request, never in a command on that PC
@@ -113,6 +120,13 @@ it.each(["connect", "birthless", "unanswered", "older peer", "gone", "symlink", 
     if (connects) {
       expect(chosen.runtime).toBe("herdr-core");
       expect(manager.list().find((pc) => pc.id === chosen.machine_id)).toMatchObject({ runtime: "herdr-core", target: { own_ovis: socket }, snapshot: { workspaces: [{ id: "core-work" }] } });
+    } else if (open.includes(outcome)) {
+      // owned and live, its identity not established: still offered, never dropped, nothing started in its place
+      expect(chosen).toMatchObject({ action_required: "choose_herdr", found_herdr_sessions: sessions, found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
+      expect(chosen.error).not.toBe("Start Ovis on that PC, or start a new herdr here");
+      expect(manager.endpoint(chosen.machine_id!)).toBeUndefined();
+      expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ action_required: "choose_herdr", found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
+      expect(retries).not.toHaveBeenCalled();
     } else {
       expect(chosen).toMatchObject({ action_required: "choose_herdr", error: "Start Ovis on that PC, or start a new herdr here", found_herdr_sessions: sessions });
       expect(manager.endpoint(chosen.machine_id!)).toBeUndefined();

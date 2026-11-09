@@ -231,8 +231,6 @@ function verificationFailure(status: number, body: unknown): string {
 
 /** how long verifying a bridge waits for its answer through the tunnel */
 const BRIDGE_ANSWER_MS = 15_000;
-/** verify's request through the tunnel got no answer (nothing listens there, or it timed out); not a refusal */
-class BridgeUnanswered extends Error {}
 /**
  * What the person adding the PC is told when the request through the standing tunnel to its bridge
  * fails (#1960): ssh resets the connection when nothing listens on the PC's 127.0.0.1 at that port,
@@ -959,7 +957,7 @@ export class MachineManager {
       // a restart's update installs the release its card showed, or none
       const revision = fix.mode === "restart" ? shown ?? offer.revision ?? undefined : undefined;
       if (fix.mode === "restart" && !revision) throw new PcUpdateRefused(UNREAD_RELEASE);
-      return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid, ...(fix.token ? { token: fix.token } : {}) }, ...(revision ? { revision } : {}) });
+      return this.installer.start({ target: runtime.machine.target, machine_id: runtime.machine.id, plan: { mode: fix.mode, pid: fix.pid, ...(fix.token ? { token: fix.token } : {}), ...(fix.socket ? { socket: fix.socket } : {}) }, ...(revision ? { revision } : {}) });
     }
     const target = validateTarget(request);
     // the same PC as ssh resolves it (an alias, or its default port given), added for herdr's default session
@@ -1498,10 +1496,9 @@ export class MachineManager {
       return sessions;
     };
     const coreUnavailable = async () => new MachineActionRequired("Start Ovis on that PC, or start a new herdr here", "choose_herdr", false, await localSessions());
-    // the chosen Ovis failed: one that only did not answer still runs, and stays the choice it was
-    const chosenOvisFailed = async (error: unknown) => error instanceof BridgeUnanswered
-      ? new MachineActionRequired(OWN_OVIS_UNANSWERED, "choose_herdr", false, await localSessions(), [{ socket_path: target.own_ovis!, runtime: "herdr-core" }])
-      : coreUnavailable();
+    // the chosen Ovis, proven this account's and live, did not prove what it is (no answer, an HTTP error): it still runs,
+    // and stays the choice it was
+    const chosenOvisFailed = async () => new MachineActionRequired(OWN_OVIS_UNANSWERED, "choose_herdr", false, await localSessions(), [{ socket_path: target.own_ovis!, runtime: "herdr-core" }]);
     if (job && host.kind === "windows") job.public.windows_startup = moving || !this.machines.has(runtime.machine.id);
     const { platform } = inspection;
     let expectedSocket = inspection.expectedSocket;
@@ -1532,9 +1529,10 @@ export class MachineManager {
         } catch (error) {
           if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw error;
           // A stale or inaccessible registration grants no connection and no permission to start anything. A live one of
-          // this account's that cannot answer right now stays a choice: it is neither dropped nor replaced by a new herdr.
+          // this account's whose identity could not be established right now (no answer, an HTTP error) stays a choice: it
+          // is neither dropped nor replaced by a new herdr. Only one proven not owned or not live is dropped (above).
           // Unasked, its runtime is told by its socket: a TUI herdr's ends in /herdr.sock, the core adapter's never does.
-          if (owned && error instanceof BridgeUnanswered && !validHerdrSocket(candidate.socket_path)) { found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" }); unlisted = true; }
+          if (owned && !validHerdrSocket(candidate.socket_path)) { found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" }); unlisted = true; }
         }
       }
       if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
@@ -1593,7 +1591,7 @@ export class MachineManager {
     if (descriptor && update && descriptor.bridge_protocol === BRIDGE_PROTOCOL && descriptor.bundle_version === REMOTE_BUNDLE_VERSION) {
       try { currentBridge = await this.verify(ssh, descriptor, expectedSocket); }
       catch (error) {
-        if (target.own_ovis) throw await chosenOvisFailed(error);
+        if (target.own_ovis) throw error instanceof MachineActionRequired ? await coreUnavailable() : await chosenOvisFailed();
         if (error instanceof MachineActionRequired && error.action === "update_bridge") {
           throw new MachineActionRequired("The running bridge is incompatible with this app. Another app may have reconnected with a different version. Update or disconnect the other app, then reconnect here. The remote bridge was left running.", "bridge_conflict");
         }
@@ -1622,7 +1620,7 @@ export class MachineManager {
         if (newerBundle(descriptor.bundle_version)) throw new MachineActionRequired(independentBridge(descriptor.bundle_version), "setup");
         const { revision: offeredRevision, fix, ...offer } = await this.ownOffer(ssh, descriptor, target, job?.abort.signal);
         if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
-        if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = installPlanFor(fix, host.kind, descriptor.pid, target, descriptor.token); }
+        if (!moving) { runtime.machine.remote_ovis = offer; runtime.remoteRevision = offeredRevision; runtime.installFix = installPlanFor(fix, host.kind, descriptor.pid, target, descriptor.token, descriptor.socket_path); }
         if (job) { job.public.remote_ovis = offer; job.offeredRevision = offeredRevision; }
         // a check still running there is no refusal: the PC tries again on its own instead of waiting for a tap
         if (!offer.updatable) throw offer.reason === OWN_CHECK_RUNNING ? new Error(OWN_CHECK_RUNNING) : new MachineActionRequired(ownUpdateRefused(offer), "setup");
@@ -1769,7 +1767,7 @@ export class MachineManager {
     catch (error) {
       // its own update ended in a refusal of what answers there, which decides over what its descriptor said
       if (ownUpdate && job && error instanceof MachineActionRequired) ownRefused(ownUpdate, error, job);
-      if (target.own_ovis && !(error instanceof MachineActionRequired)) throw await chosenOvisFailed(error);
+      if (target.own_ovis && !(error instanceof MachineActionRequired)) throw await chosenOvisFailed();
       throw error;
     }
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
@@ -2001,12 +1999,12 @@ export class MachineManager {
     // one deadline for the answer, its body included: a bridge that stops halfway timed out too
     const deadline = AbortSignal.timeout(BRIDGE_ANSWER_MS);
     try { response = await fetch(`${endpoint.url}/api/bridge${discover ? "?discover=herdr" : ""}`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: deadline, redirect: "manual" }); }
-    catch (error) { throw new BridgeUnanswered(bridgeUnreachable(descriptor, error), { cause: error }); }
+    catch (error) { throw new Error(bridgeUnreachable(descriptor, error), { cause: error }); }
     if (!response.ok) throw new Error(verificationFailure(response.status, await readCappedJson(response, REMOTE_LIMITS.bridgeError).catch(() => null)));
     let identity: BridgeIdentity;
     try { identity = await readCappedJson<BridgeIdentity>(response, REMOTE_LIMITS.bridgeIdentity); }
     catch (error) {
-      if (deadline.aborted) throw new BridgeUnanswered(bridgeUnreachable(descriptor, deadline.reason), { cause: error });
+      if (deadline.aborted) throw new Error(bridgeUnreachable(descriptor, deadline.reason), { cause: error });
       throw error;
     }
     // An approved replacement only reads this stable identity endpoint. It never uses the

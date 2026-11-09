@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PcInstallFailure, PcInstallJob, SshTarget } from "../shared/machines.ts";
@@ -83,20 +83,13 @@ export const bornAs = (pid: number, birth: ProcessBirth | undefined): string =>
 /**
  * A shell test, for a registration that recorded no birth (every 0.5.x bridge's), that the process at that pid started
  * no later than its registration file was written (2 s of slack): the server writes it after it starts, so a process
- * that took the pid after that server ended started later. Its file is the one in this account's bridge registry that
- * holds its token. Linux and macOS: ps's elapsed time, the file's mtime, the clock now.
+ * that took the pid after that server ended started later. Its file is the one the shell variable `f` names, so no token
+ * is on any command line. Linux and macOS: ps's elapsed time, the file's mtime, the clock now.
  */
-export const startedBeforeRegistration = (pid: number, token: string): string =>
-  `{ f=$(grep -l -F ${shellQuote(token)} "$HOME/.config/herdr-web-ui/bridges/"*.json 2>/dev/null | head -n 1); [ -n "$f" ] && ${startedBeforeFile(pid)}; }`;
-/** The same test against the registration file already named by the shell variable `f`: no token on any command line. */
 const startedBeforeFile = (pid: number): string =>
   `{ reg_of=${pid}; m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f") && `
   + `e=$(ps -o etime= -p $reg_of 2>/dev/null | awk '{ n = split($1, a, /[-:]/); if (index($1, "-")) print a[1]*86400 + a[2]*3600 + a[3]*60 + a[4]; else if (n == 3) print a[1]*3600 + a[2]*60 + a[3]; else print a[1]*60 + a[2] }') && `
   + `[ -n "$e" ] && [ $(( $(date +%s) - e )) -le $(( m + 2 )) ]; }`;
-/** the very server a registration names: by its recorded birth, or (none recorded) by having started before it registered */
-export const registeredAs = (pid: number, descriptor: { birth?: unknown; token: string }): string =>
-  // a birth recorded but not in its shape (read as raw JSON from the PC) is no identity: nothing passes as it
-  descriptor.birth === undefined ? startedBeforeRegistration(pid, descriptor.token) : parseBirth(descriptor.birth) ? bornAs(pid, parseBirth(descriptor.birth)!) : "false";
 /** prints the birth of the process at that pid now, in the form a registration records it on that platform; nothing when it cannot be read */
 export const birthNow = (pid: number, platform: string | undefined): string =>
   // only on the platform the birth was recorded on (macOS has no /proc), and only when every part of it reads
@@ -107,8 +100,24 @@ export const birthNow = (pid: number, platform: string | undefined): string =>
 // alive by kill -0; ended only on positive evidence (kill -0 fails, or ps reports a zombie): a PC whose ps lacks -o or -p
 // (BusyBox, a minimal image) never makes a running server look gone
 export const runs = (pid: number): string => `kill -0 ${pid} 2>/dev/null && ! ps -o stat= -p ${pid} 2>/dev/null | grep -q '^ *Z'`;
-/** registeredAs for a registration file the shell variable `f` already names, so its token is never on the command line */
-export const registeredIn = (pid: number, birth: ProcessBirth | undefined): string => birth ? bornAs(pid, birth) : startedBeforeFile(pid);
+/**
+ * the very server the registration file the shell variable `f` names recorded: by its birth, or (none recorded) by having
+ * started before that file was written. A birth recorded but not in its shape (read as raw JSON from the PC) is no
+ * identity: nothing passes as it
+ */
+export const registeredIn = (pid: number, birth: unknown): string => {
+  if (birth === undefined) return startedBeforeFile(pid);
+  const parsed = parseBirth(birth);
+  return parsed ? bornAs(pid, parsed) : "false";
+};
+/**
+ * The very server a registration names, without its token on any command line (another account on that PC can read a
+ * process's arguments): its file, named after its socket as server/bridge.ts descriptorPath names it, still names that
+ * pid, and the process at that pid is the one it recorded (registeredIn).
+ */
+export const registeredAs = (pid: number, descriptor: { birth?: unknown; socket_path: string }): string =>
+  `{ f="$HOME/.config/herdr-web-ui/bridges/${createHash("sha256").update(descriptor.socket_path).digest("hex")}.json"; [ -f "$f" ] && [ ! -L "$f" ] && `
+  + `grep -Eq ${shellQuote(`"pid"[[:space:]]*:[[:space:]]*${pid}([^0-9]|$)`)} "$f" && ${registeredIn(pid, descriptor.birth)}; }`;
 /** a shell test that the process is still the one with that identity */
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, takes its address first, starts the program, and removes the copy */
@@ -154,13 +163,14 @@ export const installerRun = (release: string, from = installerAt(release)): stri
 export type InstallConnect = (request: { target: SshTarget; name?: string; machine_id?: string; update: boolean; revision?: string; onJob?(job_id: string): void }) => { job_id: string; finished: Promise<string | null>; cancel(): void };
 /** what to put right on a PC added here whose own Ovis cannot update itself, and the process that runs it now */
 /** `token`: the shown server's descriptor token, so a server that took its pid since is never the one stopped */
-export interface InstallPlan { mode: "replace" | "restart"; pid: number; token?: string }
+/** `socket`: the socket of the registration the plan was made for (a herdr-core server's adapter); absent, herdr's default */
+export interface InstallPlan { mode: "replace" | "restart"; pid: number; token?: string; socket?: string }
 /**
  * The install a PC whose own Ovis refused to update can be offered (Machine.ovis_update how "install"): only on Linux
  * and macOS, where the official installer and this installer's checks run. A Windows PC keeps its plain refusal.
  */
-export function installPlanFor(fix: InstallPlan["mode"] | undefined, host: "posix" | "windows", pid: number, target: SshTarget, token?: string): (InstallPlan & { target: SshTarget }) | undefined {
-  return fix && host === "posix" ? { mode: fix, pid, ...(token ? { token } : {}), target: { ...target } } : undefined;
+export function installPlanFor(fix: InstallPlan["mode"] | undefined, host: "posix" | "windows", pid: number, target: SshTarget, token?: string, socket?: string): (InstallPlan & { target: SshTarget }) | undefined {
+  return fix && host === "posix" ? { mode: fix, pid, ...(token ? { token } : {}), ...(socket ? { socket } : {}), target: { ...target } } : undefined;
 }
 
 let release: string | undefined;
@@ -404,12 +414,14 @@ export class PcInstaller {
       if (!facts.writable) throw new InstallFailed("permission", "This SSH account cannot write to its own home folder on that PC, where Ovis installs.");
       if (facts.freeKb !== null && facts.freeKb < MIN_FREE_KB) throw new InstallFailed("disk", `That PC has only ${Math.floor(facts.freeKb / 1024)} MB free in its home folder; installing Ovis needs about 1 GB.`);
       const inspection = await posixHost.inspect(ssh);
-      const listed = inspection.descriptors.filter((d) => d.socket_path === inspection.expectedSocket);
+      // the planned server is looked for, and checked again up to its stop, on the socket of the registration the plan was
+      // made for (a herdr-core server's adapter): on herdr's default one, a live core server would seem gone
+      socket = plan?.socket ?? inspection.expectedSocket;
+      const listed = inspection.descriptors.filter((d) => d.socket_path === socket);
       const live: BridgeDescriptor[] = [];
       for (const descriptor of listed) if (Number.isSafeInteger(descriptor.pid) && descriptor.pid > 0 && await posixHost.alive(ssh, descriptor.pid)) live.push(descriptor);
       // a new Ovis registers anew, with a token of its own: a pid alone could be an old one's, reused
-      before = new Set(listed.map((d) => d.token));
-      socket = inspection.expectedSocket;
+      before = new Set(inspection.descriptors.filter((d) => d.socket_path === socket || d.socket_path === inspection.expectedSocket).map((d) => d.token));
       // an Ovis already installed there (a plugin, or its service) is started through that, and updated once it answers:
       // the installer would keep it as it is and only start it, whatever release it was asked for
       const installed = facts.launcher !== "none";
