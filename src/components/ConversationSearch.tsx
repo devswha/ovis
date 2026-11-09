@@ -159,6 +159,8 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
     : picking.result === null ? t("Loading earlier messages…")
     : picking.result === "missing" ? t("This message is no longer in the conversation.")
     : t("Couldn't load the earlier messages.");
+  const footerLine = pickLine ?? (matches.length === 0 ? "" : status);
+  const canRetry = search !== null && (search.state === "failed" || search.state === "changed");
 
   return createPortal(
     <div className="modal-scrim palette-scrim" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -187,11 +189,12 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
           })}
           {matches.length === 0 && <p className="palette-empty" role="status">{status}</p>}
         </div>
-        <footer className="palette-footer conversation-search-footer">
-          {/* with no match the list says it; the line under it tells a pick and the search's progress */}
-          <p className="conversation-search-status" role="status">{pickLine ?? (matches.length === 0 ? "" : status)}</p>
-          {search !== null && (search.state === "failed" || search.state === "changed") && <button type="button" className="btn" onClick={() => setRetry((count) => count + 1)}>{t("Try again")}</button>}
-        </footer>
+        {/* with no match the list says it; the line under it tells a pick and the search's progress,
+            and with nothing to tell and no retry it takes no room (the input stays at the top) */}
+        {(footerLine !== "" || canRetry) && <footer className="palette-footer conversation-search-footer">
+          <p className="conversation-search-status" role="status">{footerLine}</p>
+          {canRetry && <button type="button" className="btn" onClick={() => setRetry((count) => count + 1)}>{t("Try again")}</button>}
+        </footer>}
       </section>
     </div>,
     document.body,
