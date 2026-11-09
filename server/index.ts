@@ -315,15 +315,17 @@ export function createServer(
   const usageAccounts = new UsageAccountList(stateDir, usage, () => cliProxy.hiddenChanged());
   const hiddenAccounts = (hidden: unknown): Set<string> => new Set(Array.isArray(hidden) ? hidden.filter((key): key is string => typeof key === "string") : []);
   // an account hidden in Settings (the shared usageHidden) or removed from Ovis has its sign-in looked up no more (#3333)
+  // whether the last read of the removed list succeeded: while it does not, the Hub forgets no hidden account (#3428)
+  let removedReadable = true;
   const skippedAccounts = () => {
     let removed: string[] = [];
     // an unreadable list skips nothing; the report says why
-    try { removed = usageAccounts.removed(); } catch { /* UsageAccountList.report warns */ }
+    try { removed = usageAccounts.removed(); removedReadable = true; } catch { removedReadable = false; /* UsageAccountList.report warns */ }
     return new Set([...hiddenAccounts(preferences.get().settings.usageHidden), ...removed]);
   };
   usage.skipAccounts(skippedAccounts);
   // a Hub sign-in keeps the rows of the accounts hidden now, not only of those the last report skipped
-  cliProxy.skipAccounts(skippedAccounts);
+  cliProxy.skipAccounts(skippedAccounts, () => removedReadable);
   // an account shown again is looked up now, not at the browser's next poll; hiding one needs no read,
   // and with Plan limits off nothing is read at all (gh auth token included)
   let usageHidden = hiddenAccounts(preferences.get().settings.usageHidden);

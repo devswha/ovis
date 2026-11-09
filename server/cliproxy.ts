@@ -52,6 +52,7 @@ export class CLIProxyService {
   /** where hiddenAccounts is saved, with the Hub it was learned on, so a restart keeps a moved hidden account unread (#3427) */
   private readonly hiddenPath: string;
   private hiddenUnsaved = false;
+  private hiddenWhole: () => boolean = () => true;
 
   constructor(stateDir: string) {
     this.path = join(stateDir, "cliproxy.json");
@@ -180,14 +181,16 @@ export class CLIProxyService {
       const identity = this.identities.get(row);
       if (identity !== undefined && this.shownRows.has(row) && hidden.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identity);
     }
-    for (const key of this.hiddenAccounts.keys()) if (!hidden.has(key)) this.hiddenAccounts.delete(key);
+    // a key missing from a list read only in part may still be hidden: it is forgotten only once the whole list says so
+    if (this.hiddenWhole()) for (const key of this.hiddenAccounts.keys()) if (!hidden.has(key)) this.hiddenAccounts.delete(key);
     if (this.hiddenUnsaved || JSON.stringify([...this.hiddenAccounts]) !== before) this.saveHidden();
   }
 
   /** The hidden or removed accounts changed (Settings, or the removed list): remember or forget which accounts they are now. */
   hiddenChanged(): void { this.syncHidden(this.hidden()); }
 
-  skipAccounts(keys: () => ReadonlySet<string>): void { this.hidden = keys; }
+  /** `whole`: whether `keys` read the hidden list entire; while not (the removed list unreadable), no hidden account is forgotten */
+  skipAccounts(keys: () => ReadonlySet<string>, whole: () => boolean = () => true): void { this.hidden = keys; this.hiddenWhole = whole; }
 
   /** The next report reads the Hub anew, except the rows of the hidden or removed accounts: their credentials stay unused (#3333). */
   invalidate(): void {

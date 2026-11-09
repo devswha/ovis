@@ -281,6 +281,24 @@ describe("CLIProxyAPI v8", () => {
       expect(reads()).toEqual(["a", "b", "b"]);
     });
 
+    it("forgets nothing while the hidden list could not be read whole", async () => {
+      await configure();
+      await service.report();
+      let hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      let whole = true;
+      service.skipAccounts(() => hidden, () => whole);
+      service.hiddenChanged();
+      // the removed list cannot be read: the key it names is missing from the list for now
+      whole = false;
+      hidden = new Set();
+      service.hiddenChanged();
+      whole = true;
+      hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      moveAlice();
+      await restart(hidden);
+      expect(reads()).toEqual(["a", "b", "b"]);
+    });
+
     it("saves it at the next change after a save failed", async () => {
       await configure();
       await service.report();
