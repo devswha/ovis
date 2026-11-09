@@ -340,6 +340,25 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(3)).toEqual([]);
     });
 
+    it("checks the saved list only on a sync that read the hidden list whole (#3437)", async () => {
+      fake.files.push({ ...fake.files[0]!, name: "claude-c.json", email: "claude-c@example.test", auth_index: "c" });
+      await configure();
+      await service.report();
+      service.skipAccounts(() => new Set(["claude:cliproxy:claude-a.json"]));
+      service.hiddenChanged();
+      // Bob's hide was never saved; the removed list cannot be read at the start nor at the first sync
+      let readable = false;
+      const restarted = new CLIProxyService(dir);
+      const hidden = () => new Set(readable ? ["claude:cliproxy:claude-a.json", "codex:cliproxy:codex-b.json"] : ["claude:cliproxy:claude-a.json"]);
+      restarted.skipAccounts(hidden, () => readable);
+      restarted.hiddenChanged();
+      // readable again, and Bob's credential has moved to another file: nothing says which account was hidden
+      readable = true;
+      Object.assign(fake.files[1]!, { name: "codex-moved.json", auth_index: "m" });
+      await restarted.report(false, hidden());
+      expect(reads().slice(3)).toEqual([]);
+    });
+
     it("keeps the way out of a start that found a lost save, through a restart (#3437)", async () => {
       fake.files.push({ ...fake.files[0]!, name: "claude-c.json", email: "claude-c@example.test", auth_index: "c" });
       await configure();

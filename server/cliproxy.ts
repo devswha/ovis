@@ -77,7 +77,7 @@ export class CLIProxyService {
   private savedHidden: string | null = null;
   /** the hidden Hub keys the saved list covers, with or without a known account; null: no list was found at start */
   private covered: Set<string> | null = null;
-  /** whether the first sync after start has checked the hidden Hub keys against the saved list */
+  /** whether the hidden Hub keys, read whole since this start, were checked against the saved list */
   private checkedCovered = false;
   /**
    * Fail closed (#3428): set when the saved list cannot be trusted (unreadable, not the list, a link, not this user's,
@@ -274,7 +274,7 @@ export class CLIProxyService {
     if (whole) for (const key of this.hiddenAccounts.keys()) if (!hidden.has(key)) this.hiddenAccounts.delete(key);
     const hub = [...hidden].filter(isHubKey);
     // a Hub key hidden before this start that the saved list neither covers nor knows was hidden by a save that never landed
-    if (!this.checkedCovered) this.checkCovered(hidden);
+    if (!this.checkedCovered) this.checkCovered(hidden, whole);
     if (this.blind && whole && hub.every((key) => this.hiddenAccounts.has(key))) this.blind = false;
     this.covered = new Set([...(whole ? [] : (this.covered ?? [])), ...hub]);
     return this.saveHidden();
@@ -294,21 +294,24 @@ export class CLIProxyService {
     this.hidden = keys;
     this.hiddenWhole = whole;
     // the saved list is checked against the keys hidden as this server starts, read whole: one hidden after the start, its
-    // save still to come, is no sign of a save that never landed (#3437). Read in part, the first sync checks instead
+    // save still to come, is no sign of a save that never landed (#3437). Read in part, the first sync that reads them whole checks instead
     // the keys first: reading them is what tells whether they were read whole (index.ts skippedAccounts)
     const atStart = keys();
     if (this.checkedCovered || !whole()) return;
-    this.checkCovered(atStart);
+    this.checkCovered(atStart, true);
     // what the list covers from now on, read whole, as syncHidden sets it: a way out of blind saved before any sync
     // saves these. (The first sync's own check, on a list maybe read in part, leaves coverage to syncHidden.)
     this.covered = new Set([...atStart].filter(isHubKey));
   }
 
-  /** Blind when a Hub key in `hidden` is neither covered by the saved list nor known by its account: its save never landed. */
-  private checkCovered(hidden: ReadonlySet<string>): void {
+  /**
+   * Blind when a Hub key in `hidden` is neither covered by the saved list nor known by its account: its save never landed.
+   * Done only once `hidden` was read `whole`: a key a list read in part left out is checked at the first sync that has it.
+   */
+  private checkCovered(hidden: ReadonlySet<string>, whole: boolean): void {
     const hub = [...hidden].filter(isHubKey);
     if (this.covered !== null && hub.some((key) => !this.covered?.has(key) && !this.hiddenAccounts.has(key))) this.blind = true;
-    this.checkedCovered = true;
+    if (whole) this.checkedCovered = true;
   }
 
   /** The next report reads the Hub anew, except the rows of the hidden or removed accounts: their credentials stay unused (#3333). */

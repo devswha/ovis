@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { privateStateFs } from "./private-state.ts";
 import { readStateDocument, setAsideDamaged, writeStateDocument } from "./state-document.ts";
 
 const dirs: string[] = [];
@@ -129,8 +130,24 @@ describe("writeStateDocument", () => {
     expect(fs.statSync(path).mode & 0o777).toBe(0o600);
   });
 
+  it("flushes the temporary file before the rename and the directory after it (#3437)", () => {
+    const dir = directory(), path = join(dir, "usage-removed.json");
+    const order: string[] = [];
+    const flush = ((fd: number) => { order.push(`fsync ${fs.fstatSync(fd).isDirectory() ? "directory" : "file"}`); }) as never;
+    // the directory is flushed through private-state.ts, as setAsideDamaged's copy is
+    const fsync = spyOn(fs, "fsyncSync").mockImplementation(flush);
+    const directoryFsync = spyOn(privateStateFs, "fsyncSync").mockImplementation(flush);
+    const rename = spyOn(fs, "renameSync");
+    rename.mockImplementation(((from: string, to: string) => { order.push("rename"); rename.mockRestore(); fs.renameSync(from, to); }) as never);
+    try { writeStateDocument(path, "[]", false); }
+    finally { fsync.mockRestore(); directoryFsync.mockRestore(); rename.mockRestore(); }
+    expect(order).toEqual(process.platform === "win32" ? ["fsync file", "rename"] : ["fsync file", "rename", "fsync directory"]);
+    expect(readFileSync(path, "utf8")).toBe("[]");
+  });
+
   it.each([
     ["the write", "writeFileSync", "ENOSPC"],
+    ["the flush", "fsyncSync", "EIO"],
     ["the rename", "renameSync", "EIO"],
     ["the close", "closeSync", "EIO"],
   ] as const)("leaves no temporary file when %s fails (#3437)", (_name, call, code) => {

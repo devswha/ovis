@@ -99,13 +99,15 @@ export function holdsDocument(path: string, text: string): boolean {
 export function writeStateDocument(path: string, text: string, keepDamaged: boolean): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   // a name no one can guess, created exclusively ("wx": O_CREAT | O_EXCL, which follows no link at that name), so
-  // a link planted beside the document never receives it (#3437); no fsync: these documents are cheap to lose
+  // a link planted beside the document never receives it (#3437); flushed before the rename, as writePrivateState does,
+  // so a crash never leaves the document renamed in but empty
   const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   const fd = openSync(temporary, "wx", 0o600);
   // created here: a write that fails part way (a full disk) removes it, so no fragment of the document stays
   let open = true;
   try {
     writeFileSync(fd, text);
+    fsyncSync(fd);
     open = false; // a failed close is not retried: the descriptor is released either way
     closeSync(fd);
   } catch (error) {
@@ -129,4 +131,6 @@ export function writeStateDocument(path: string, text: string, keepDamaged: bool
     try { rmSync(temporary, { force: true }); } catch { /* the rename's error says why */ }
     throw error;
   }
+  // records the rename (best effort, none on Windows): the new document is in place either way
+  syncDirectory(dirname(path), process.platform);
 }
