@@ -53,4 +53,11 @@ export const UPDATES_KO: Record<string, string> = {
   "Restarting the app": "앱 다시 시작하는 중",
   "Last checked {when}": "마지막 확인: {when}",
   "This server is part of the Ovis app, which updates them together: updates come with the app, not from here.": "이 서버는 Ovis 앱에 들어 있어 앱과 함께 업데이트됩니다. 업데이트는 여기가 아니라 앱으로 받습니다.",
+  "Start with bun run start or the herdr plugin to enable updates.": "업데이트는 허더 플러그인이나 bun run start로 실행한 Ovis에서만 할 수 있습니다. 설치한 방법으로 업데이트하세요.",
+  "Switch the source checkout to main to update.": "소스 체크아웃을 main 브랜치로 바꾼 뒤 업데이트하세요.",
+  "The source checkout changed. Restart the app before updating.": "소스 체크아웃이 바뀜어요. Ovis를 다시 시작한 뒤 업데이트하세요.",
+  "The source checkout has local changes. Commit or move them before updating.": "소스 체크아웃에 저장하지 않은 변경이 있어요. 커밋하거나 옮긴 뒤 업데이트하세요.",
+  "Updates require a Git checkout on the main branch.": "업데이트는 main 브랜치를 체크아웃한 Git 저장소에서만 할 수 있어요.",
+  "This server runs from an installed update's folder, not from its source checkout. Restart Ovis from its source checkout (the herdr plugin's Stop, then Start, or bun run start there) to update.": "이 서버는 설치된 업데이트 폴더에서 실행 중이에요. 소스 체크아웃에서 Ovis를 다시 시작한 뒤(허더 플러그인의 Stop 후 Start, 또는 bun run start) 업데이트하세요.",
+  "The running version is not part of the release history; automatic downgrade is disabled.": "실행 중인 버전이 릴리즈 기록에 없어요. 이전 버전으로는 자동 전환하지 않습니다.",
 };

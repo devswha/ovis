@@ -63,6 +63,7 @@ export const SETUP_KO: Record<string, string> = {
   "No accounts signed in": "로그인된 계정 없음",
   "Turn on plan limits to see accounts.": "요금제 한도를 켜면 계정이 보여요.",
   "Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.": "설정 옆에 요금제 사용량을 보여줘요. 로그인 정보가 각 서비스의 사용량 API로 전송되며, 여기서 갱신하지 않아요.",
+  "Shows plan usage beside Settings. Sign-ins are sent to each provider's usage API; never refreshed here.|plan limits row": "설정 옆에 사용량을 표시합니다.",
   "Accounts": "계정",
   "Session is the 5-hour limit. Without it, the closest limit is shown.": "세션은 5시간 한도예요. 없으면 가장 가까운 한도를 보여줘요.",
   "Used": "사용량",

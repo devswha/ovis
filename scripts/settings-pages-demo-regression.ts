@@ -504,7 +504,7 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
 
       // Escape empties a search from a result too, not only from the field
       await search.fill("sound");
-      await results.getByRole("switch", { name: "Sound", exact: true }).focus();
+      await results.getByRole("switch", { name: "Play sounds", exact: true }).focus();
       await page.keyboard.press("Escape");
       assert.equal(await search.inputValue(), "", `${width}px: Escape on a result empties the search`);
       assert.equal(await search.evaluate((field) => field === document.activeElement), true, `${width}px: the field takes the focus back`);

@@ -53,4 +53,11 @@ export const UPDATES_ZH: Record<string, string> = {
   "Restarting the app": "正在重启应用",
   "Last checked {when}": "上次检查：{when}",
   "This server is part of the Ovis app, which updates them together: updates come with the app, not from here.": "此服务器是 Ovis 应用的一部分，会随应用一起更新：更新来自应用，而不是这里。",
+  "Start with bun run start or the herdr plugin to enable updates.": "只有通过 herdr 插件或 bun run start 启动的 Ovis 才能在此更新。请按安装方式更新。",
+  "Switch the source checkout to main to update.": "请先将源码检出切换到 main 分支，再更新。",
+  "The source checkout changed. Restart the app before updating.": "源码检出已更改。请先重启 Ovis，再更新。",
+  "The source checkout has local changes. Commit or move them before updating.": "源码检出中有未提交的更改。请先提交或移走，再更新。",
+  "Updates require a Git checkout on the main branch.": "更新需要检出了 main 分支的 Git 仓库。",
+  "This server runs from an installed update's folder, not from its source checkout. Restart Ovis from its source checkout (the herdr plugin's Stop, then Start, or bun run start there) to update.": "此服务器正从已安装更新的文件夹运行。请从源码检出重新启动 Ovis（herdr 插件的 Stop 然后 Start，或 bun run start），再更新。",
+  "The running version is not part of the release history; automatic downgrade is disabled.": "正在运行的版本不在发布历史中，不会自动降级。",
 };
