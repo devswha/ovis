@@ -867,9 +867,12 @@ describe("who may open the address", () => {
   });
 
   it("starts a sign-in only on a Portal that binds it to its hosts (v2.7.3 or later, by semver)", async () => {
+    // malformed versions fail closed: leading zeros, junk after it, a fourth part, a huge part, an empty or zero-led pre-release
     for (const [version, runs] of [
       ["v2.7.2", false], ["v2.7.3-rc.1", false], ["v2.7.3junk", false],
-      ["v2.7.3", true], ["v2.7.4-rc.1", true], ["v2.7.3+build.5", true],
+      ["v02.7.3", false], ["v2.07.3", false], ["v2.7.3x", false], ["v2.7.3.4", false], ["v2.7.3+foo..bar", false],
+      ["v2.7.1234567890", false], ["v2.7.4-", false], ["v2.7.4-rc.01", false],
+      ["v2.7.3", true], ["v2.7.4-rc.1", true], ["v2.7.3+build.5", true], ["2.8.0", true],
     ] as const) {
       const portal = standIn({ version });
       const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: portal.path, fetch: relay() });
@@ -885,6 +888,35 @@ describe("who may open the address", () => {
         }
       } finally {
         await bounded(service.shutdown(), "Portal shutdown settled");
+      }
+    }
+  });
+
+  it("offers no sign-in in the panel on a Portal older than v2.7.3, and the panel's start of one never runs it", async () => {
+    const portal = standIn({ version: "v2.7.2" });
+    const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin: portal.path, fetch: relay() });
+    expect(await service.status(open)).toMatchObject({ version: "v2.7.2", usable: true, auth_methods: [] });
+    const own = { "x-herdr-update": "1", origin: "http://127.0.0.1:7317", "sec-fetch-site": "same-origin", "content-type": "application/json" };
+    const response = await handlePortalRequest(new Request("http://127.0.0.1:7317/api/portal/start", { method: "POST", headers: own, body: JSON.stringify({ relay: "relay.example", auth: credential() }) }), "/api/portal/start", service, { port: 7317, ...open });
+    expect(response.status).toBe(202);
+    const status = await until(service, (s) => s.phase !== "starting", "the start ended");
+    expect(status).toMatchObject({ phase: "error", url: null });
+    expect(status.error).toContain("a sign-in needs Portal v2.7.3 or later");
+    expect(portal.pids()).toEqual([]);
+  });
+
+  it("says it could not read the Portal version when `portal version` gives none, and not installed only when there is no Portal", async () => {
+    for (const [bin, said] of [
+      [standIn({ version: "devel" }).path, "Could not read the Portal version on this PC."],
+      [standIn({ version: "v2.7" }).path, "Could not read the Portal version on this PC."],
+      [join(root, "no-such-portal"), "Portal is not installed on this PC."],
+    ] as const) {
+      for (const auth of [credential(), undefined]) {
+        const service = new PortalService({ stateDir: mkdtempSync(join(root, "state-")), bin, fetch: relay() });
+        service.start({ relay: RELAY, port: 7317, auth, ...open });
+        const status = await until(service, (s) => s.phase !== "starting", "the start ended");
+        expect(status.phase).toBe("error");
+        expect(status.error).toStartWith(said);
       }
     }
   });
