@@ -30,9 +30,12 @@ it("offers each running session and a separate explicit new-start choice", async
       { own_ovis: "/desktop/ovis/hc.sock", herdr_socket: undefined, start_new_herdr: undefined },
       { herdr_socket: undefined, start_new_herdr: true },
     ]);
-    await act(async () => { view?.update(<SettingsProvider><FoundHerdrChoices sessions={[]} coreUnavailable busy onChoose={(choice) => choices.push(choice)} /></SettingsProvider>); });
-    expect(view.root.findByType("strong").children.join("")).toBe("Start Ovis on that PC, or start a new herdr here");
-    expect(view.root.findByType("button").props.disabled).toBe(true);
+    // the chosen Ovis could not be used: the heading is why (gone, or its socket refused), as the server said it
+    for (const reason of ["Start Ovis on that PC, or start a new herdr here", "The Ovis chosen on this PC serves herdr-core from a socket that is not this SSH account's own, so it was not used. Choose again, or start a new herdr here."]) {
+      await act(async () => { view?.update(<SettingsProvider><FoundHerdrChoices sessions={[]} coreRefusal={reason} busy onChoose={(choice) => choices.push(choice)} /></SettingsProvider>); });
+      expect(view.root.findByType("strong").children.join("")).toBe(reason);
+      expect(view.root.findByType("button").props.disabled).toBe(true);
+    }
   } finally {
     await act(async () => { view?.unmount(); });
     if (prior) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", prior); else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");

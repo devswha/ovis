@@ -9,6 +9,7 @@ import { parseBirth, type ProcessBirth } from "./process-owner.ts";
 import { posixHost, REMOTE_PATH } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { samePc } from "./ssh-address.ts";
+import { isCoreAdapterSocket } from "./herdr-core/pipe.ts";
 
 /**
  * Ovis installed or put right on another PC over SSH, from the PC in use (docs/remote-pcs.md): the official
@@ -433,7 +434,8 @@ export class PcInstaller {
       } else {
         // a herdr-core Ovis started by hand: the official installer's Ovis would come back on herdr's default socket (a
         // herdr Ovis, beside a herdr of its own), not as the Ovis this PC is set to use. Refused before anything is stopped
-        const core = socket !== inspection.expectedSocket;
+        // a herdr-core plan names the core adapter's socket; a herdr session chosen for the PC (its own herdr.sock) is herdr's
+        const core = socket !== inspection.expectedSocket && isCoreAdapterSocket(socket);
         if (core && plan.mode === "replace" && !installed) throw new InstallFailed("no_launcher", "Ovis on that PC was started by hand; update it there, or start it with its launcher first.");
         // nor through a herdr plugin (one left from before the move, say): its Ovis, or the headless herdr started for it,
         // comes back on herdr's default socket, never as the herdr-core Ovis this PC uses
@@ -456,6 +458,10 @@ export class PcInstaller {
         const born = shown ? (await ssh.run(`${registeredAs(plan.pid, shown)} && echo born || true`)).trim() === "born" : false;
         if (!gone && (!shown || !OVIS_COMMAND.test(command) || !identity || identity !== still)) throw new InstallFailed("changed", CHANGED_WORDS);
         if (!gone && !born) throw new InstallFailed("changed", NOT_REGISTERED_WORDS(plan.pid));
+        // a herdr-core server started by hand beside its launcher is never stopped for that launcher's start: nothing
+        // shows the launcher starts a herdr-core Ovis at that socket (an ovis.service on herdr's runtime would not), and
+        // once the launcher is asked the stopped server is not restored. Started by its launcher, it is a restart instead
+        if (core && plan.mode === "replace" && !gone) throw new InstallFailed("no_launcher", "Ovis on that PC was started by hand; update it there, or start it with its launcher first.");
         if (gone && plan.mode === "replace") stopped = true;
         // a restart goes through the launcher that runs it, which must be there before anything is stopped
         if (plan.mode === "restart" && !installed) throw new InstallFailed("no_launcher", "That PC's Ovis was not installed as a herdr plugin or a user service, so it cannot be restarted from here. Restart it on that PC (Settings → Updates there tells how), then update it.");

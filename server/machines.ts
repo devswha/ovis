@@ -19,6 +19,7 @@ import { type HerdrMachineProfile, samePort, sameSshSession } from "./herdr-prof
 import { appBuild } from "./app-revision.ts";
 import { shellQuote, validateTarget } from "./machine-security.ts";
 import { parseFoundHerdrSessions, validHerdrSocket } from "./herdr-discovery.ts";
+import { isCoreAdapterSocket } from "./herdr-core/pipe.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
 import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from "./remote-host.ts";
@@ -679,7 +680,8 @@ export class MachineManager {
     const own = this.serverId?.();
     // ovis_update is derived from the PC's state at each read; the roster hands out its live PCs
     for (const runtime of this.machines.values()) {
-      runtime.machine.runtime = runtime.machine.herdr ? runtime.machine.herdr.runtime ?? "herdr" : undefined;
+      // told for the connection it was proven on: a PC away may run another one by the time it is back
+      runtime.machine.runtime = runtime.machine.state === "connected" && runtime.machine.herdr ? runtime.machine.herdr.runtime ?? "herdr" : undefined;
       if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
     }
     return [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
@@ -1525,7 +1527,11 @@ export class MachineManager {
     // choice to offer, the live registration first: the socket's probe (a command on that PC) only when none is live
     const servedAlready = async () => {
       for (const d of inspection.descriptors) if (d.socket_path === expectedSocket && Number.isSafeInteger(d.pid) && d.pid > 0 && await host.alive(ssh, d.pid)) return true;
-      return await host.chosenSocketStatus?.(ssh, inspection, expectedSocket) === "usable";
+      const status = await host.chosenSocketStatus?.(ssh, inspection, expectedSocket);
+      if (status !== null && status !== undefined) return status === "usable";
+      // the bundle there is too old (or missing) to apply the rule: a socket of this account's at herdr's own path is
+      // taken as served, so the PC connects as before this choice existed (its bridge, once started, checks herdr itself)
+      return (await ssh.run(`s=${shellQuote(expectedSocket)}; test ! -L "$s" && test -S "$s" && test "$(stat -c %u "$s" 2>/dev/null || stat -f %u "$s")" = "$(id -u)" && echo served || true`)).trim() === "served";
     };
     // The core adapter is not a TUI socket. Discover the account's own registered Ovis and prove
     // its loopback endpoint before offering it; an explicit selection is checked anew on each try.
@@ -1564,7 +1570,8 @@ export class MachineManager {
           // this account's whose identity could not be established right now (no answer, an HTTP error) stays a choice: it
           // is neither dropped nor replaced by a new herdr. Only one proven not owned or not live is dropped (above).
           // Unasked, its runtime is told by its socket: a TUI herdr's ends in /herdr.sock, the core adapter's never does.
-          if (owned && !validHerdrSocket(candidate.socket_path)) { found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" }); unlisted = true; }
+          // Only the core adapter's own name (isCoreAdapterSocket) is one: any other could never be connected to
+          if (owned && !validHerdrSocket(candidate.socket_path) && isCoreAdapterSocket(candidate.socket_path)) { found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" }); unlisted = true; }
         }
       }
       if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
@@ -1853,7 +1860,7 @@ export class MachineManager {
    * any of them for a folder holding another socket between this check and the server's use of that path.
    */
   private async coreSocketConfined(ssh: SshConnection, socket: string, socketId: string): Promise<boolean> {
-    if (!socket.startsWith("/") || socket.length > 4096 || /[\0\r\n]/.test(socket) || posix.normalize(socket) !== socket || posix.basename(socket) !== "herdr-core.sock") return false;
+    if (!socket.startsWith("/") || socket.length > 4096 || /[\0\r\n]/.test(socket) || posix.normalize(socket) !== socket || !isCoreAdapterSocket(socket)) return false;
     const found = await ssh.run([
       `s=${shellQuote(socket)}; d=${shellQuote(posix.dirname(socket))}; uid=$(id -u)`,
       `owner() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }`,

@@ -13,7 +13,8 @@ import { SshConnection } from "./ssh.ts";
 import { readProcessBirth } from "./process-owner.ts";
 
 // quiet: the live server cannot prove itself at first (no answer, an HTTP error); open: once chosen, it no longer can
-const quiet = ["unanswered", "server error"], open = ["wrong token", "redirect", "server error after proof"];
+// unanswered other name: a live server of the account's, not answering, whose socket is not the core adapter's name
+const quiet = ["unanswered", "server error", "unanswered other name"], open = ["wrong token", "redirect", "server error after proof"];
 // waits: once chosen and connected, a reconnect meets it alive but not answering (no answer, or a 500 while its core
 // adapter starts after a reboot): the saved PC tries again, starting nothing
 const waits = [...quiet, "server error later"];
@@ -22,7 +23,7 @@ const waits = [...quiet, "server error later"];
 // enter, or another socket than the one the server reports; or in a folder another account could swap: outside the
 // account's own roots, or below a folder others may write or another account owns
 const confinement = ["socket link", "not a socket", "open folder", "other socket id", "outside home", "writable parent", "foreign parent", "foreign root parent", "runtime dir"];
-it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
+it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", "unanswered other name", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "machine-core-choice-")));
   const id = "12345678-1234-1234-1234-123456789abc";
   // the core adapter's socket in its server's own state folder (server/herdr-core/runtime.ts), as startRuntime leaves it
@@ -47,7 +48,7 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
     `exec ${JSON.stringify(Bun.which("stat"))} "$@"`,
   ].join("\n") + "\n", { mode: 0o755 });
   const path = `${bin}:${process.env["PATH"] ?? ""}`;
-  const socket = join(stateDir, "herdr-core.sock");
+  const socket = join(stateDir, outcome === "unanswered other name" ? "other.sock" : "herdr-core.sock");
   let adapter = Bun.listen({ unix: socket, socket: { data() {} } });
   // what the server reports of its socket, read as server/bridge.ts reads it (through a link)
   const socketId = () => { try { const stat = statSync(socket); return `${stat.dev}:${stat.ino}`; } catch { return "fixture:gone"; } };
@@ -82,7 +83,7 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
   const realFetch = globalThis.fetch;
   const mocks = [
     // a live server that cannot answer right now: its identity request times out
-    spyOn(globalThis, "fetch").mockImplementation(Object.assign((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => !answering && outcome === "unanswered" && String(input).includes("/api/bridge")
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => !answering && outcome.startsWith("unanswered") && String(input).includes("/api/bridge")
       ? Promise.reject(new DOMException("Fixture bridge answer timed out", "TimeoutError")) : realFetch(input, init), { preconnect: realFetch.preconnect })),
     spyOn(SshConnection.prototype, "start").mockResolvedValue(undefined),
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
@@ -130,7 +131,8 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
   const run = (request: SetupRequest, auto = true) => new Promise<SetupJob>((resolve, reject) => {
     let job: SetupJob | undefined;
     const timeout = setTimeout(() => { off(); reject(new Error("setup did not settle")); }, 5000);
-    const off = manager.subscribe(() => { if (job && ["failed", "connected"].includes(job.phase)) { clearTimeout(timeout); off(); resolve(job); } });
+    // approval: a setup the user started that goes on, as before this choice existed, to what it installs or starts there
+    const off = manager.subscribe(() => { if (job && ["failed", "connected", "approval"].includes(job.phase)) { clearTimeout(timeout); off(); resolve(job); } });
     job = manager.setup({ ...request, machine_id: id, update_remote: true }, { auto });
   });
   // the saved PC's own reconnect: a retry scheduled, or a decision for the user, whichever comes first
@@ -163,10 +165,23 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
       expect(reconnect.found_ovis).toBeUndefined();
       expect(manager.list().find((pc) => pc.id === id)?.action_required).not.toBe("choose_herdr");
       expect(starts).toBe(1);
+      // and so does a setup the user started: the bundle there is too old to apply the socket rule, but herdr's own
+      // socket is there, so no choice nobody needs stops it
+      const asked = await run({ destination: "fixture-only" }, false);
+      expect(asked.action_required).not.toBe("choose_herdr");
+      expect(asked.found_ovis).toBeUndefined();
+      // it asks to install this app's runtime there first (that bundle is too old), as before: nothing is started yet
+      expect(asked.phase).toBe("approval");
+      expect(starts).toBe(1);
       return;
     }
     // the unasked choice: offered only in a setup the user started in its dialog
     const offer = await run({ destination: "fixture-only" }, false);
+    if (outcome === "unanswered other name") {
+      // never offered as herdr-core: no core adapter listens at another name, so choosing it could never connect
+      expect(offer.found_ovis ?? []).not.toContainEqual(expect.objectContaining({ socket_path: socket }));
+      return;
+    }
     expect(offer).toMatchObject({ phase: "failed", action_required: "choose_herdr", found_herdr_sessions: sessions, found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
     expect(starts).toBe(0);
     if (quiet.includes(outcome)) {
@@ -247,6 +262,9 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
     if (connects) {
       expect(chosen.runtime).toBe("herdr-core");
       expect(manager.list().find((pc) => pc.id === chosen.machine_id)).toMatchObject({ runtime: "herdr-core", target: { own_ovis: socket }, snapshot: { workspaces: [{ id: "core-work" }] } });
+      // a PC no longer connected tells no runtime: what runs there may change while it is away
+      manager.patch(chosen.machine_id!, { enabled: false });
+      expect(manager.list().find((pc) => pc.id === chosen.machine_id)?.runtime).toBeUndefined();
     } else if (outcome === "newer bundle") {
       // it answered with what it is: that decision is told in its own words, not as an Ovis to start there
       expect(chosen).toMatchObject({ phase: "failed", action_required: "setup" });

@@ -556,12 +556,15 @@ describe("installing Ovis on a PC over SSH", () => {
 
   it("looks for a herdr-core server the plan names on its own adapter socket, never on herdr's default one", async () => {
     const socket = "/home/fx/.local/state/ovis/herdr-core.sock";
-    // live there: found, checked and stopped, then started again by its launcher at its own socket: no second Ovis beside it
+    // live there and started by hand: its launcher cannot be shown to start a herdr-core Ovis at that socket (an
+    // ovis.service on herdr's runtime would not), so it is refused before anything is stopped
     const live = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], launcher: "systemd", restoreOff: true, ovisSocket: socket });
     const replaced = await live.settled(live.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket } }));
-    expect(replaced.phase).toBe("connected");
-    expect(live.commands.some((command) => command.includes("&& kill -TERM 4242"))).toBe(true);
-    expect(live.alive.has(4242)).toBe(false);
+    expect(replaced).toMatchObject({ phase: "failed", error_code: "no_launcher" });
+    expect(live.commands.some((command) => command.includes("kill -TERM"))).toBe(false);
+    expect(live.commands.some((command) => command.includes("ovis.service </dev/null"))).toBe(false);
+    expect(live.alive.has(4242)).toBe(true);
+    expect(live.connects).toEqual([]);
     // really gone (its registration left behind), nothing else running: nothing to stop, and its launcher starts it as before
     const gone = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], launcher: "systemd", restoreOff: true, ovisSocket: socket });
     gone.alive.delete(4242);
@@ -636,10 +639,20 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(await restarted.settled(restarted.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242, socket: coreSocket } }))).toMatchObject({ phase: "connected", mode: "restart" });
   });
 
-  it("waits for the herdr-core Ovis its launcher starts in place of a replaced one, at its adapter socket", async () => {
-    const replaced = fixture({ descriptors: [core], launcher: "systemd", ovisSocket: coreSocket, restoreOff: true });
-    expect(await replaced.settled(replaced.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket: coreSocket } }))).toMatchObject({ phase: "connected", mode: "replace" });
-    expect(replaced.alive.has(4242)).toBe(false);
+  it("never stops a herdr-core Ovis started by hand beside a launcher that may not bring it back at its adapter socket", async () => {
+    // the launcher here could run Ovis on herdr's runtime: the stopped core server would not come back, nor be restored
+    const replaced = fixture({ descriptors: [core], launcher: "systemd", ovisSocket: SOCKET, restoreOff: true });
+    expect(await replaced.settled(replaced.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket: coreSocket } }))).toMatchObject({ phase: "failed", error_code: "no_launcher" });
+    expect(replaced.commands.some((command) => command.includes("kill -TERM"))).toBe(false);
+    expect(replaced.commands.some((command) => command.includes("ovis.service </dev/null"))).toBe(false);
+    expect(replaced.alive.has(4242)).toBe(true);
+  });
+
+  it("restarts the Ovis of a chosen herdr session through its plugin, which no herdr-core rule refuses", async () => {
+    // a saved PC set to a herdr session other than the default: that socket is herdr's, not a herdr-core adapter's
+    const socket = "/home/fx/.config/herdr/sessions/work/herdr.sock";
+    const pc = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], launcher: "plugin", ovisSocket: socket, restoreOff: true });
+    expect(await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242, socket } }))).toMatchObject({ phase: "connected", mode: "restart" });
   });
 
   it("stops a second herdr-core Ovis a launcher's restart started at the planned server's adapter socket", async () => {
