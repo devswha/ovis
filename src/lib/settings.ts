@@ -452,8 +452,8 @@ export const DEFAULT_SETTINGS: Settings = {
   foldHelpers: false,
   sidebarAgentTree: false,
   pcLoad: null,
-  // herdr's order: a row stays where it was each time the list is seen; Waiting first is chosen in Settings
-  agentOrder: "workspace",
+  // the Agents list's order (the workspace list keeps herdr's): the agents that need you first, the resting ones folded
+  agentOrder: "waiting",
   agentGroups: false,
   agentGroupSort: "wait",
   agentMarks: "color",
@@ -493,8 +493,7 @@ export const DEFAULT_SETTINGS: Settings = {
   uiFontFamily: "",
   chatWidth: "default",
   enterSends: null,
-  // off until chosen: a message sent while the agent works waits for Send now (G-107)
-  autoSendQueued: false,
+  autoSendQueued: true,
   autoTabNames: true,
   composerArtifacts: false,
   composerPasteSend: false,
