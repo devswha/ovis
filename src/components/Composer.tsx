@@ -1079,7 +1079,9 @@ export function Composer({
           highlightedSearchKey.current = searchKey;
           return;
         }
-        if (event.key === "Enter" || (event.key === "Tab" && !event.shiftKey)) {
+        // AltGr (Ctrl+Alt on Windows) or Cmd+Option with Enter picks nothing: the box keeps the key, as it sends nothing (#3460)
+        const altModEnter = event.key === "Enter" && event.altKey && (event.ctrlKey || event.metaKey);
+        if ((event.key === "Enter" && !altModEnter) || (event.key === "Tab" && !event.shiftKey)) {
           event.preventDefault();
           const choice = choices[selectedIndex];
           if (choice !== undefined) selectCompletion(choice, trigger);
