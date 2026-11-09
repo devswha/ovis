@@ -3,7 +3,7 @@ import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 import { RelayTransport } from "./transport.ts";
 import { createUpdateFlow, loadObservedVersions, observedVersions } from "./updateFlow.ts";
 import type { Attempt, RelayShellState } from "./shellState.ts";
-import { nativeTransport, setTransport } from "../transport.ts";
+import { getTransport, nativeTransport, setTransport } from "../transport.ts";
 import { isValidElement, type ReactNode } from "react";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
@@ -14,7 +14,7 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { observedVersionOf, type RelayDevice, type RelayDeviceStore, type SavedDevice } from "./device.ts";
 
 const storageKeys = ["localStorage", "sessionStorage"] as const;
-const descriptors = storageKeys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
+const descriptors = [...storageKeys, "window"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const);
 afterEach(() => {
   for (const [key, descriptor] of descriptors) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -136,6 +136,36 @@ it("never installs after cancellation while an update-status read was pending", 
     for (let i = 0; i < 100; i++) await Promise.resolve();
     expect(writes).toEqual([]);
     expect(states).toHaveLength(count);
+  } finally { flow.cancel(); opened.close(); }
+});
+
+it.each([["pc-outdated", "0.0.1"], ["server-newer", "2.0.0"]] as const)("drops a %s admission cancelled while its version was being saved", async (_skew, version) => {
+  webStorage();
+  // the tab's reload memory lives in window.sessionStorage
+  Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
+  const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: "unused", relay: "wss://relay.ovis.sh" };
+  const devices = new Map([[offer.server_id, await savedDevice(offer.server_id)]]);
+  const store = memoryStore(devices);
+  const writing = Promise.withResolvers<void>(), held = Promise.withResolvers<void>();
+  const slow: RelayDeviceStore = { ...store, update: async (id, change) => { writing.resolve(); await held.promise; return store.update(id, change); } };
+  class Admitted extends RelayTransport {
+    override get server() { return { version, relayProtocol: RELAY_PROTOCOL }; }
+    override async fetch() { return Response.json({ managed: false }); }
+  }
+  const opened = new Admitted(offer);
+  const effects: string[] = [];
+  const flow = createUpdateFlow("1.0.0", {
+    show: (state) => effects.push(state.kind), accepted: () => effects.push("accepted"),
+    reload: async () => { effects.push("reload"); }, failed: async (error) => { throw error; },
+  }, slow);
+  try {
+    const admitted = flow.admit(opened, { offer, code: false, paired: true });
+    await writing.promise;
+    flow.cancel();
+    held.resolve();
+    await admitted;
+    expect(effects).toEqual([]);
+    expect(getTransport()).toBe(nativeTransport);
   } finally { flow.cancel(); opened.close(); }
 });
 

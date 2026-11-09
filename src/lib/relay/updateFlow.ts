@@ -116,8 +116,11 @@ export function createUpdateFlow(shellVersion: string, view: {
 }, store: RelayDeviceStore = indexedDeviceStore) {
   let outdated: { opened: RelayTransport; attempt: Attempt; name: string | null; version: string } | null = null;
   let updating = false;
+  /** Bumped by every admission and every cancel: an admission resumes only while it is still the latest. */
+  let generation = 0;
   const { show, failed, reload } = view;
   const admit = async (opened: RelayTransport, attempt: Attempt): Promise<void> => {
+    const mine = ++generation;
     const server = opened.server ?? { version: "", relayProtocol: 0 };
     const skew = relaySkew({ server, shellVersion });
     if (skew === "protocol-mismatch") {
@@ -128,6 +131,8 @@ export function createUpdateFlow(shellVersion: string, view: {
     const version = { version: server.version, outdated: skew === "pc-outdated" };
     observed = new Map(observed).set(attempt.offer.server_id, version);
     await keepVersion(store, attempt.offer.server_id, version);
+    // a cancel or a newer admission while the version was saved owns the screen and the transport now
+    if (generation !== mine) return;
     const memory = tabMemory();
     if (skew === "server-newer" && memory !== null && reloadOnce(memory, shellVersion, server.version)) { opened.close(); await reload(); return; }
     if (skew !== "pc-outdated") { outdated = null; view.accepted(opened, attempt); return; }
@@ -206,5 +211,5 @@ export function createUpdateFlow(shellVersion: string, view: {
   };
 
 
-  return { admit, update, cancel: () => { outdated = null; } };
+  return { admit, update, cancel: () => { outdated = null; generation++; } };
 }
