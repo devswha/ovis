@@ -1215,7 +1215,8 @@ describe("the service", () => {
     await service.report();
     service.invalidate("copilot");
     const report = await service.report();
-    expect(reads).toEqual(["token-a", "token-b", "token-b"]);
+    // a hidden account is listed but never read, not even by the first report (#3423)
+    expect(reads).toEqual(["token-b", "token-b"]);
     expect(report.providers.map((usage) => usage.key)).toEqual(["copilot:a", "copilot:b"]);
   });
 
@@ -1256,11 +1257,11 @@ describe("the service", () => {
     failing = false;
     now += FRESH_MS;
     const report = await service.report();
-    expect(reads.filter((token) => token === "token-a")).toEqual(["token-a"]);
+    expect(reads.filter((token) => token === "token-a")).toEqual([]);
     expect(report.providers.map((usage) => usage.key)).toEqual(["copilot:a", "copilot:b"]);
   });
 
-  it("asks the usage endpoint nothing for a hidden account found at a new place, keeping one reading of it", async () => {
+  it("asks the usage endpoint nothing for a hidden account found at a new place, keeping one entry for it", async () => {
     let place = 0;
     const reads: string[] = [];
     const copilot: UsageProvider = {
@@ -1275,7 +1276,7 @@ describe("the service", () => {
       service.invalidate("copilot");
       await service.report();
     }
-    expect(reads).toEqual(["token-0"]);
+    expect(reads).toEqual([]);
     expect([...service["entries"].keys()]).toEqual(["copilot|place-3"]);
   });
 
@@ -1375,6 +1376,88 @@ describe("the service", () => {
     expect((await service.report()).providers.map((usage) => usage.account).sort()).toEqual(["a", "b"]);
   });
 
+  it.each([
+    ["names its account", true],
+    ["names no account (the reading does)", false],
+  ])("never reads a hidden account that returns after another took its place, when the sign-in %s", async (_name, named) => {
+    const people = { alice: { token: "token-alice", id: "alice" }, bob: { token: "token-bob", id: "bob" } };
+    let at: keyof typeof people = "alice";
+    const reads: string[] = [];
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() {
+        const person = people[at];
+        return [{ source: "place", token: person.token, expiresAt: null, ...(named ? { account: { id: person.id, label: person.id } } : {}) }];
+      },
+      async read(_ctx, signIn) {
+        reads.push(signIn.token);
+        const person = Object.values(people).find((candidate) => candidate.token === signIn.token)!;
+        return { plan: "pro", windows: [], account: { id: person.id, label: person.id } };
+      },
+    };
+    const service = new UsageService(context(), [copilot]);
+    await service.report();
+    service.skipAccounts(() => new Set(["copilot:alice"]));
+    let report: UsageReport | undefined;
+    for (const next of ["bob", "alice", "bob", "alice"] as const) {
+      at = next;
+      service.invalidate("copilot");
+      report = await service.report();
+    }
+    // Bob is read each time he takes the place; Alice only before she was hidden
+    expect(reads).toEqual(["token-alice", "token-bob", "token-bob"]);
+    expect(report!.providers.map((usage) => [usage.key, usage.checked_at])).toEqual([["copilot:alice", null]]);
+  });
+
+  it("reads another sign-in found at a hidden place when neither names an account", async () => {
+    let token = "token-alice";
+    const reads: string[] = [];
+    const opencode: UsageProvider = {
+      id: "opencode",
+      async signIns() { return [{ source: "x", token, expiresAt: null }]; },
+      async read(_ctx, signIn) { reads.push(signIn.token); return { plan: "pro", windows: [] }; },
+    };
+    const service = new UsageService(context(), [opencode]);
+    const [alice] = (await service.report()).providers;
+    service.skipAccounts(() => new Set([alice!.key]));
+    token = "token-bob";
+    service.invalidate("opencode");
+    await service.report();
+    expect(reads).toEqual(["token-alice", "token-bob"]);
+  });
+
+  it("never reads a hidden account that names none when it moves as another takes its old place", async () => {
+    let round = 0;
+    const reads: string[] = [];
+    const copilot: UsageProvider = {
+      id: "copilot",
+      // Alice's sign-in is judged at its new place before the old one, now Bob's
+      async signIns() { return round === 0 ? [{ source: "x", token: "token-alice", expiresAt: null }] : [{ source: "y", token: "token-alice", expiresAt: null }, { source: "x", token: "token-bob", expiresAt: null }]; },
+      async read(_ctx, signIn) { reads.push(signIn.token); return { plan: "pro", windows: [], account: { id: signIn.token, label: signIn.token } }; },
+    };
+    const service = new UsageService(context(), [copilot]);
+    await service.report();
+    service.skipAccounts(() => new Set(["copilot:token-alice"]));
+    round = 1;
+    service.invalidate("copilot");
+    await service.report();
+    expect(reads).toEqual(["token-alice", "token-bob"]);
+  });
+
+  it("never reads an account the hidden list names, even with no reading kept for it", async () => {
+    const reads: string[] = [];
+    const copilot: UsageProvider = {
+      id: "copilot",
+      async signIns() { return [{ source: "a", token: "token-a", expiresAt: null, account: { id: "a", label: "a" } }, { source: "b", token: "token-b", expiresAt: null, account: { id: "b", label: "b" } }]; },
+      async read(_ctx, signIn) { reads.push(signIn.token); return { plan: "pro", windows: [] }; },
+    };
+    // a server started with the hidden list already saved
+    const service = new UsageService(context(), [copilot]);
+    service.skipAccounts(() => new Set(["copilot:a"]));
+    expect((await service.report()).providers.map((usage) => usage.key).sort()).toEqual(["copilot:a", "copilot:b"]);
+    expect(reads).toEqual(["token-b"]);
+  });
+
   it("does not look a fully hidden provider up when an account of the same name elsewhere is shown again", async () => {
     let searches = 0;
     const copilot: UsageProvider = {
@@ -1459,7 +1542,7 @@ describe("the service", () => {
     skipped = new Set(["copilot:b"]);
     now += FRESH_MS;
     await service.report();
-    expect(reads).toEqual(["token-a", "token-b", "token-a"]);
+    expect(reads).toEqual(["token-a"]);
   });
 
   it("searches a provider with one hidden and one visible account once per FRESH_MS", async () => {
