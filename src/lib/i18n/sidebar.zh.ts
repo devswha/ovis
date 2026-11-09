@@ -18,6 +18,7 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Pinned": "已固定",
   "Background agents": "后台代理",
   "+{n} background": "+{n} 后台",
+  "+{n} resting": "+{n} 空闲",
   "Background workspaces": "后台工作区",
   "Helpers": "助手",
   "Helpers of {title}": "{title} 的助手",
@@ -71,6 +72,7 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Working": "工作中",
   "Idle": "空闲",
   "{count} need you": "{count} 个需要你",
+  "Agent state unknown": "代理状态未知",
   "Move to {group}": "移到 {group}",
   "Remove from {group}": "从 {group} 移出",
 };

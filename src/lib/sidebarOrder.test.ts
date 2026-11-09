@@ -109,9 +109,9 @@ describe("opened finish identity", () => {
   });
 });
 
-it("defaults to Waiting first, keeps a saved Workspaces or Activity order, and accepts only known settings", () => {
-  expect(DEFAULT_SETTINGS.agentOrder).toBe("waiting");
-  expect(sanitizeSettings({ agentOrder: "workspace" })).toMatchObject({ agentOrder: "workspace" });
+it("defaults to herdr's order, keeps a saved Waiting first or Activity order, and accepts only known settings", () => {
+  expect(DEFAULT_SETTINGS.agentOrder).toBe("workspace");
+  expect(sanitizeSettings({ agentOrder: "waiting" })).toMatchObject({ agentOrder: "waiting" });
   expect(sanitizeSettings({ agentOrder: "activity" })).toMatchObject({ agentOrder: "activity" });
-  expect(sanitizeSettings({ agentOrder: "recent" })).toMatchObject({ agentOrder: "waiting" });
+  expect(sanitizeSettings({ agentOrder: "recent" })).toMatchObject({ agentOrder: "workspace" });
 });

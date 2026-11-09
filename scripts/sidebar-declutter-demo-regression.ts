@@ -136,9 +136,7 @@ async function loneHost(browser: Browser, scene: Scene): Promise<void> {
     const first = await page.locator(".machine-list .workspace-group").first().boundingBox();
     const list = await page.locator(".machine-list").boundingBox();
     assert.ok(first && list && first.y - list.y < 16, `the first workspace row is the list's first row (${first?.y} vs ${list?.y})`);
-    // the compact rows (the default) draw it as its + alone, named for a screen reader and in its tooltip
-    assert.equal((await newRow(page).innerText()).trim(), "");
-    assert.equal(await newRow(page).getAttribute("aria-label"), "New workspace");
+    assert.equal((await newRow(page).innerText()).trim(), "New workspace");
     const rows = await page.locator(".machine-list .workspace-group, .machine-list .machine-new-row").evaluateAll((elements) => elements.map((element) => element.classList.contains("machine-new-row")));
     assert.equal(rows.at(-1), true, "the New workspace row is the list's last row");
     await capture(page, scene, "lone-host");

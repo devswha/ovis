@@ -79,10 +79,18 @@ describe("AgentSidebar plugin tokens", () => {
   test("the row's tooltip says each token whole; a PC that is away draws none", () => {
     const long = `summary ${"x".repeat(200)}`;
     const online = render([machine([pane("w1:p1", { tokens: { summary: long, quota: "5h 95%" } })])]);
-    expect(tooltips(online)[0]).toEqual(["w1:p1", "checkout-api", "5h 95%", long, "claude"]);
+    expect(tooltips(online)[0]).toEqual(["w1:p1", "checkout-api", "workstation", "5h 95%", long, "claude"]);
     const away = render([machine([pane("w1:p1", { tokens: { summary: long } })], "disconnected")]);
     expect(away).not.toContain("agent-tokens");
     expect(away).not.toContain(long);
+  });
+
+  test("a lone PC remains in the row's accessible text beside its agent and workspace", () => {
+    const html = render([machine([pane("w1:p1", { title: "Review payments", agent_status: "working" })])]);
+    const row = /class="agent-select agent-row"[^>]*>([\s\S]*?)<\/button>/.exec(html)?.[1] ?? "";
+    const words = decode(row.replace(/<[^>]+>/g, " "));
+    for (const part of ["claude", "checkout-api", "workstation", "Review payments"]) expect(words).toContain(part);
+    expect(tooltips(html)[0]).toEqual(["w1:p1", "Review payments", "checkout-api", "workstation", "claude"]);
   });
 
   test("display_agent, a plugin's line for the agent, is said where it says more than the agent's kind", () => {
@@ -134,13 +142,33 @@ describe("AgentSidebar one-line row titles", () => {
     expect(places[1]).toStartWith("Guard the export button");
   });
 
-  test("Agents order: a saved Workspaces order keeps herdr's order; only Waiting first, the default, lifts a waiting agent", () => {
-    const rows = [pane("w1:p1"), pane("w1:p2", { agent_status: "blocked" })];
+  test("Agents order: herdr's order by default, so a row stays where it was; only Waiting first lifts a waiting agent", () => {
+    // both agents busy: the order alone decides, with no resting fold in the way
+    const rows = [pane("w1:p1", { agent_status: "working" }), pane("w1:p2", { agent_status: "blocked" })];
     const order = (html: string) => [...html.matchAll(/data-pane="([^"]+)"/g)].map((match) => match[1]);
-    expect(order(render([machine(rows)]))).toEqual(["w1:p2", "w1:p1"]);
-    const plain = (globalThis as { window: object }).window;
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentOrder: "workspace" }) : null, setItem() {}, removeItem() {} } } });
     expect(order(render([machine(rows)]))).toEqual(["w1:p1", "w1:p2"]);
+    const plain = (globalThis as { window: object }).window;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentOrder: "waiting" }) : null, setItem() {}, removeItem() {} } } });
+    expect(order(render([machine(rows)]))).toEqual(["w1:p2", "w1:p1"]);
+  });
+
+  test("on one line, Waiting first folds a resting agent under the \"+N resting\" line after the busy ones; herdr's order lists it in place", () => {
+    const rows = [pane("w1:p1"), pane("w1:p2", { agent_status: "blocked" })];
+    const entries = (html: string) => [...html.matchAll(/<li class="(agent-item|agent-background-label agent-resting-label)[^"]*"([^>]*)>/g)]
+      .map((item) => item[1] === "agent-item" ? `${/data-pane="([^"]+)"/.exec(item[2]!)![1]}${/ hidden=""/.test(item[2]!) ? " hidden" : ""}` : "RESTING");
+    // the default: every row where herdr has it, none folded away
+    expect(entries(render([machine(rows)]))).toEqual(["w1:p1", "w1:p2"]);
+    const plain = (globalThis as { window: object }).window;
+    const waiting = JSON.stringify({ agentOrder: "waiting" });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? waiting : null, setItem() {}, removeItem() {} } } });
+    const html = render([machine(rows)]);
+    expect(entries(html)).toEqual(["w1:p2", "RESTING", "w1:p1 hidden"]);
+    expect(html).toMatch(/<button type="button" class="agent-background-toggle" aria-expanded="false">[\s\S]*?<span>\+1 resting<\/span><\/button>/);
+    // the resting line opened on this device: the row is listed under it
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? waiting : key === "ovis:agents-resting-open" ? "1" : null, setItem() {}, removeItem() {} } } });
+    const open = render([machine(rows)]);
+    expect(entries(open)).toEqual(["w1:p2", "RESTING", "w1:p1"]);
+    expect(open).toMatch(/<button type="button" class="agent-background-toggle" aria-expanded="true">/);
   });
 });
 
@@ -204,7 +232,8 @@ describe("AgentSidebar folded helpers (#772)", () => {
   const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
   let stored: Record<string, string> = {};
   beforeEach(() => {
-    stored = {};
+    // Waiting first, whose one-line list folds the resting rows: the helpers' fold is read beside that one
+    stored = { "ovis:settings": JSON.stringify({ agentOrder: "waiting" }) };
     const localStorage = { getItem: (key: string) => stored[key] ?? null, setItem: (key: string, value: string) => { stored[key] = value; }, removeItem: (key: string) => { delete stored[key]; } };
     Object.defineProperty(globalThis, "window", { configurable: true, value: { matchMedia: () => ({ matches: false }), localStorage } });
     Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
@@ -226,21 +255,30 @@ describe("AgentSidebar folded helpers (#772)", () => {
   const draw = (selectedPaneId: string | null = null): string => renderToStaticMarkup(createElement(SettingsProvider, {
     children: createElement(AgentSidebar, { machines: [machine(family)], selectedMachineId: "local", selectedPaneId, stateWord: () => "disconnected", onSelect: () => {} }),
   }));
-  /** each entry of the list in the order drawn: a row as its pane id with " hidden" when folded away, a helpers line as "+<agent pane> <count> <expanded>" */
+  /** each entry of the list in the order drawn: a row as its pane id with " hidden" when folded away, a helpers line as
+   *  "+<agent pane> <count> <expanded>", the one-line list's resting fold as "+<count> resting <expanded>" */
   const entries = (html: string): string[] =>
-    [...html.matchAll(/<li class="(agent-item|agent-helpers)[^"]*"([^>]*)>([\s\S]*?<\/button>)?/g)].map((item) => item[1] === "agent-helpers"
+    [...html.matchAll(/<li class="(agent-item|agent-helpers|agent-background-label agent-resting-label)[^"]*"([^>]*)>([\s\S]*?<\/button>)?/g)].map((item) => item[1] === "agent-helpers"
       ? `+${/data-helpers-of="local:([^"]+)"/.exec(item[2]!)![1]} ${/agent-section-count">(\d+)</.exec(item[3]!)![1]} ${/aria-expanded="(true|false)"/.exec(item[3]!)![1]}`
-      : `${/data-pane="([^"]+)"/.exec(item[2]!)![1]}${/ hidden=""/.test(item[2]!) ? " hidden" : ""}`);
+      : item[1] === "agent-item" ? `${/data-pane="([^"]+)"/.exec(item[2]!)![1]}${/ hidden=""/.test(item[2]!) ? " hidden" : ""}`
+        : `${/<span>(\+\d+ resting)<\/span>/.exec(item[3]!)![1]} ${/aria-expanded="(true|false)"/.exec(item[3]!)![1]}`);
 
-  test("off by default: every helper is listed under its agent, with no helpers line", () => {
+  test("off by default: every helper is listed under its agent, with no helpers line; the resting helper folds under the list's resting line", () => {
     const html = draw();
-    expect(entries(html)).toEqual(["t1", "t2", "t5", "t3", "t6", "t4"]);
+    expect(entries(html)).toEqual(["t1", "t2", "t5", "t3", "t4", "+1 resting false", "t6 hidden"]);
+    // the resting helper, selected, stays in sight under the line
+    expect(entries(draw("t6"))).toEqual(["t1", "t2", "t5", "t3", "t4", "+1 resting false", "t6"]);
+  });
+
+  test("in herdr's order (the default) the resting helper stays under its agent, with no resting line", () => {
+    delete stored["ovis:settings"];
+    expect(entries(draw())).toEqual(["t1", "t2", "t5", "t3", "t6", "t4"]);
   });
 
   test("on: an agent's helpers fold under one line that says how many, and a helper that needs you stays in sight", () => {
     stored["ovis:fold-helpers"] = "true";
     const html = draw();
-    expect(entries(html)).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5 hidden", "t3", "t6 hidden", "t4"]);
+    expect(entries(html)).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5 hidden", "t3", "t4", "+1 resting false", "t6 hidden"]);
     // a screen reader hears whose helpers they are, not only "Helpers" and a count
     expect(html).toMatch(/data-helpers-of="local:t1"[\s\S]*?<span class="agent-helpers-name" aria-hidden="true">Helpers<\/span><span class="visually-hidden">Helpers of t1<\/span>/);
     // the line says which of the folded ones ask for a look
@@ -251,13 +289,16 @@ describe("AgentSidebar folded helpers (#772)", () => {
 
   test("on: the selected helper stays in sight", () => {
     stored["ovis:fold-helpers"] = "true";
-    expect(entries(draw("t5"))).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5", "t3", "t6 hidden", "t4"]);
+    expect(entries(draw("t5"))).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5", "t3", "t4", "+1 resting false", "t6 hidden"]);
   });
 
-  test("on: an agent this device opened lists every helper, its line open", () => {
+  test("on: an agent this device opened lists every helper, its line open; its resting helper still waits under the resting line", () => {
     stored["ovis:fold-helpers"] = "true";
     stored["ovis:agents-helpers-open"] = JSON.stringify(["local:t1"]);
-    expect(entries(draw())).toEqual(["t1", "+t1 4 true", "t2", "t5", "t3", "t6", "t4"]);
+    expect(entries(draw())).toEqual(["t1", "+t1 4 true", "t2", "t5", "t3", "t4", "+1 resting false", "t6 hidden"]);
+    // the resting line opened too: every helper is in sight
+    stored["ovis:agents-resting-open"] = "1";
+    expect(entries(draw())).toEqual(["t1", "+t1 4 true", "t2", "t5", "t3", "t4", "+1 resting true", "t6"]);
   });
 });
 
@@ -265,7 +306,9 @@ describe("AgentSidebar background agents", () => {
   const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
   const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
   beforeEach(() => {
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { matchMedia: () => ({ matches: false }) } });
+    // Waiting first, whose one-line list folds the resting rows: the background part comes after that fold
+    const localStorage = { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentOrder: "waiting" }) : null, setItem() {}, removeItem() {} };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { matchMedia: () => ({ matches: false }), localStorage } });
     Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
   });
   afterEach(() => {
@@ -274,11 +317,12 @@ describe("AgentSidebar background agents", () => {
     if (savedLanguages) Object.defineProperty(navigator, "languages", savedLanguages);
     else Reflect.deleteProperty(navigator, "languages");
   });
-  /** each list's entries in the order drawn: a row as its pane id (with " hidden" when folded away), the background heading as "BG" */
+  /** each list's entries in the order drawn: a row as its pane id (with " hidden" when folded away), the one-line list's
+   *  resting fold as "RESTING", the background heading as "BG" */
   const lists = (html: string): string[][] =>
     [...html.matchAll(/<ul class="agent-list[^"]*"[^>]*>([\s\S]*?)<\/ul>/g)].map((list) =>
-      [...list[1]!.matchAll(/<li class="(agent-item|agent-background-label)[^"]*"([^>]*)>/g)].map((item) =>
-        item[1] === "agent-background-label" ? "BG" : `${/data-pane="([^"]+)"/.exec(item[2]!)![1]}${/ hidden=""/.test(item[2]!) ? " hidden" : ""}`));
+      [...list[1]!.matchAll(/<li class="(agent-item|agent-background-label agent-resting-label|agent-background-label)"([^>]*)>/g)].map((item) =>
+        item[1] === "agent-background-label" ? "BG" : item[1] === "agent-background-label agent-resting-label" ? "RESTING" : `${/data-pane="([^"]+)"/.exec(item[2]!)![1]}${/ hidden=""/.test(item[2]!) ? " hidden" : ""}`));
 
   test("panes tagged role=background sit folded after the others in the same list, under a heading that says how many", () => {
     const html = render([machine([
@@ -287,14 +331,23 @@ describe("AgentSidebar background agents", () => {
       pane("w1:p3", { agent_status: "blocked", tokens: { role: "background" } }),
       pane("w1:p4", { agent_status: "working", tokens: { role: "background" } }),
     ])]);
-    // on one line (the default) a waiting row leads the list, the blocked background agent with it
-    expect(lists(html)).toEqual([["w1:p3", "w1:p1", "BG", "w1:p2 hidden", "w1:p4 hidden"]]);
-    expect(html).toMatch(/<button type="button" class="agent-background-toggle" aria-expanded="false">[\s\S]*?<span>\+2 background<\/span><\/button>/);
+    // on one line, waiting first, a waiting row leads the list, the blocked background agent with it; the resting
+    // agent folds under the people's own resting line, before the background part
+    expect(lists(html)).toEqual([["w1:p3", "RESTING", "w1:p1 hidden", "BG", "w1:p2 hidden", "w1:p4 hidden"]]);
+    expect(html).toMatch(/<li class="agent-background-label agent-resting-label"><button type="button" class="agent-background-toggle" aria-expanded="false">[\s\S]*?<span>\+1 resting<\/span><\/button>/);
+    expect(html).toMatch(/<li class="agent-background-label"><button type="button" class="agent-background-toggle" aria-expanded="false">[\s\S]*?<span>\+2 background<\/span><\/button>/);
   });
 
   test("a list with no tagged pane has no background part", () => {
     const html = render([machine([pane("w1:p1"), pane("w1:p2", { tokens: { role: "lead" } })])]);
-    expect(lists(html)).toEqual([["w1:p1", "w1:p2"]]);
-    expect(html).not.toContain("agent-background-toggle");
+    // both rest: the one-line list folds them under its resting line, and draws no background part
+    expect(lists(html)).toEqual([["RESTING", "w1:p1 hidden", "w1:p2 hidden"]]);
+    expect(html).not.toMatch(/\+\d+ background|Background agents|<li class="agent-background-label">/);
+    // two lines: no resting fold either, every row in sight and still no background part
+    const plain = (globalThis as { window: object }).window;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ sidebarRows: "two" }) : null, setItem() {}, removeItem() {} } } });
+    const twoLine = render([machine([pane("w1:p1"), pane("w1:p2", { tokens: { role: "lead" } })])]);
+    expect(lists(twoLine)).toEqual([["w1:p1", "w1:p2"]]);
+    expect(twoLine).not.toContain("agent-background-toggle");
   });
 });

@@ -206,6 +206,8 @@ async function newContext(browser: Browser, phone: boolean, settings: Record<str
   const context = await browser.newContext(phone ? { ...devices["iPhone 14"], locale: settings["language"] === "ko" ? "ko-KR" : "en-US" } : { viewport: { width: 1440, height: 900 }, locale: "en-US" });
   await context.addInitScript((stored) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat", alertsOn: true, alertInput: true, alertDone: "always", alertSound: true, ...stored }));
+    // the muted agent is idle: the one-line list folds it under its resting line, opened on this device as its toggle keeps it
+    localStorage.setItem("ovis:agents-resting-open", "1");
   }, settings);
   return context;
 }

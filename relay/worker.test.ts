@@ -758,6 +758,19 @@ describe("relay Worker pairing rendezvous", () => {
     expect(guest.closedWith?.code).toBe(1001);
   });
 
+  test("a host that does not answer its key's challenge in time is closed 4401, and the nameplate is free again", async () => {
+    const fake = fakeState();
+    setSystemTime(new Date(1_000_000));
+    const room = new RelayRoom(fake.state);
+    expect((await room.fetch(new Request(`${pairUrl("host")}&server_id=${SERVER}&public_key=${PC.publicKey}`, upgrade))).status).toBe(101);
+    const host = fake.sockets.at(-1)!;
+    expect(host.json(0)).toMatchObject({ type: "server_challenge" });
+    setSystemTime(new Date(1_000_000 + SERVER_PROOF_MS));
+    await room.alarm();
+    expect(host.closedWith?.code).toBe(SERVER_PROOF_CLOSE);
+    expect((await openPair(room, fake, "host")).json(0)).toEqual({ type: "waiting" });
+  });
+
   test("a host the runtime keeps answering keepalives for is not closed as idle", async () => {
     const fake = fakeState();
     setSystemTime(new Date(1_000_000));
@@ -853,20 +866,37 @@ describe("relay pass", () => {
     const allow = { limit: async () => ({ success: true }) };
     const e: Env = { ...settings, RELAY: { idFromName: (name: string) => name, get: () => ({ fetch: (request: Request) => box.room.fetch(request) }) }, RELAY_LIMITER: allow, RELAY_GLOBAL_LIMITER: allow };
     /** the socket the request ends on: the Durable Object's, or the one the Worker closed itself */
-    const open = async (query: string, pass?: string, extra: Record<string, string> = {}) => {
+    const openAt = async (address: string, pass?: string, extra: Record<string, string> = {}) => {
       const before = fake.sockets.length;
-      const response = await handle(new Request(url(query), { headers: { upgrade: "websocket", ...(pass ? { [RELAY_PASS_HEADER]: pass } : {}), ...extra } }), e);
+      const response = await handle(new Request(address, { headers: { upgrade: "websocket", ...(pass ? { [RELAY_PASS_HEADER]: pass } : {}), ...extra } }), e);
       expect(response.status).toBe(101);
       return fake.sockets.length > before ? fake.sockets.at(-1)! : pairs.at(-1)![1];
     };
+    const open = (query: string, pass?: string, extra: Record<string, string> = {}) => openAt(url(query), pass, extra);
+    const openPair = (query: string, pass?: string) => openAt(`https://relay.test/v1/pair?nameplate=AB1&v=1&${query}`, pass);
     const prove = (socket: FakeSocket, connectionId: string | null = null) => {
       const answer = answerChallenge(socket.sent.shift(), PC, connectionId);
       if (answer) box.room.webSocketMessage(socket, answer);
       return socket;
     };
     const control = async (pass?: string) => prove(await open(`role=server&${proof()}`, pass));
-    return { fake, box, open, prove, control, evict: async () => { box.room = new RelayRoom(fake.state, settings); await fake.state.ready; } };
+    return { fake, box, open, openPair, prove, control, evict: async () => { box.room = new RelayRoom(fake.state, settings); await fake.state.ready; } };
   }
+
+  test("while enforced, a pairing host needs a pass for the PC key it offers: 4402 in the Worker without one; with one it holds the nameplate once it proves the key, past an eviction", async () => {
+    const w = await world("enforce");
+    const keyed = `role=host&server_id=${SERVER}&public_key=${PC.publicKey}`;
+    expect((await w.openPair("role=host", await passFor())).closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+    expect((await w.openPair(keyed)).closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+    expect(w.fake.sockets).toEqual([]);
+    const host = await w.openPair(keyed, await passFor());
+    const challenge = host.sent.shift();
+    await w.evict();
+    w.box.room.webSocketMessage(host, answerServerChallenge(challenge, PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!);
+    expect(host.json(0)).toEqual({ type: "waiting" });
+    expect((await w.openPair("role=guest")).closedWith).toBeNull();
+    expect(host.json(1)).toMatchObject({ type: "guest" });
+  });
 
   test("while enforced, a PC socket without a pass closes 4402 in the Worker, before any Durable Object", async () => {
     const w = await world("enforce");
@@ -878,6 +908,184 @@ describe("relay pass", () => {
     expect(w.fake.sockets).toEqual([]);
     // a client needs no pass
     expect((await w.open("role=client")).closedWith).toBeNull();
+  });
+
+  /** A Worker over fake limiters that record what they are asked; the address has spent its own budget unless `address` says otherwise. */
+  function limitedWorld(allow: { address?: boolean; checks?: boolean } = {}) {
+    setSystemTime(new Date(T0));
+    const asked: string[] = [];
+    const rooms: string[] = [];
+    const limiter = (name: string, success: boolean) => ({ limit: async ({ key }: { key: string }) => { asked.push(`${name}:${key}`); return { success }; } });
+    const e: Env = {
+      RELAY_PASS_MODE: "enforce", RELAY_PASS_KEYS: keys,
+      RELAY: { idFromName: (name: string) => name, get: (id: unknown) => ({ fetch: async () => { rooms.push(id as string); return new Response(null, { status: 101 }); } }) },
+      RELAY_LIMITER: limiter("address", allow.address ?? false), RELAY_GLOBAL_LIMITER: limiter("global", true),
+      RELAY_PC_LIMITER: limiter("pc", true), RELAY_PASS_CHECK_LIMITER: limiter("checks", allow.checks ?? true),
+    };
+    const request = (pass?: string) => new Request(url(`role=server&${proof()}`), { headers: { upgrade: "websocket", "cf-connecting-ip": "203.0.113.9", ...(pass ? { [RELAY_PASS_HEADER]: pass } : {}) } });
+    return { e, asked, rooms, request };
+  }
+
+  test("once its address's budget is spent, a PC whose pass holds gets in on a budget of its own, so PCs behind one address get in", async () => {
+    const w = limitedWorld();
+    expect((await handle(w.request(await passFor()), w.e)).status).toBe(101);
+    expect(w.asked).toEqual(["address:203.0.113.9", "checks:203.0.113.9", "global:all", `pc:${SERVER}`]);
+    expect(w.rooms).toEqual([SERVER]);
+  });
+
+  test("past its address's budget, a pass for another PC, none, or one forged costs no signature check or only one counted one, and gets no way in", async () => {
+    const w = limitedWorld();
+    expect((await handle(w.request(await passFor("f".repeat(32))), w.e)).status).toBe(429);
+    expect((await handle(w.request(), w.e)).status).toBe(429);
+    expect(w.asked).toEqual(["address:203.0.113.9", "address:203.0.113.9"]);
+    w.asked.length = 0;
+    const good = await passFor();
+    const forged = `${good.slice(0, -8)}${good.endsWith("AAAAAAAA") ? "BBBBBBBB" : "AAAAAAAA"}`;
+    expect((await handle(w.request(forged), w.e)).status).toBe(429);
+    expect(w.asked).toEqual(["address:203.0.113.9", "checks:203.0.113.9", "global:all"]);
+    w.asked.length = 0;
+    const spent = limitedWorld({ checks: false });
+    expect((await handle(spent.request(good), spent.e)).status).toBe(429);
+    expect(spent.asked).toEqual(["address:203.0.113.9", "checks:203.0.113.9"]);
+    expect(w.rooms).toEqual([]);
+  });
+
+  test("within its address's budget a PC with its pass counts there like any socket, and its own budget is left alone", async () => {
+    const w = limitedWorld({ address: true });
+    expect((await handle(w.request(await passFor()), w.e)).status).toBe(101);
+    expect(w.asked).toEqual(["address:203.0.113.9", "global:all"]);
+  });
+
+  test("a pairing host's nameplate does not outlive enforcement: no device joins it, and the alarm at the date closes it 4402", async () => {
+    const enforceAt = T0 + 1000;
+    const w = await world("grace", new Date(enforceAt).toISOString());
+    const host = await w.openPair("role=host");
+    expect(host.json(0)).toEqual({ type: "waiting" });
+    expect(w.fake.state.alarm).toBe(enforceAt);
+    setSystemTime(new Date(enforceAt));
+    const guest = await w.openPair("role=guest");
+    expect(host.closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+    expect(guest.closedWith?.code).toBe(4404);
+    const late = await world("grace", new Date(enforceAt).toISOString());
+    const held = await late.openPair("role=host");
+    setSystemTime(new Date(enforceAt));
+    await late.box.room.alarm();
+    expect(held.closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+  });
+
+  test("while enforced, a pairing host whose pass runs out loses its nameplate, and one that proves after enforcement began without a pass gets none", async () => {
+    const keyed = `role=host&server_id=${SERVER}&public_key=${PC.publicKey}`;
+    const answer = (frame: Frame | undefined) => answerServerChallenge(frame, PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!;
+    const w = await world("enforce");
+    const host = await w.openPair(keyed, await passFor(SERVER, T0 - RELAY_PASS_LIFETIME_S * 1000 + 60_000));
+    w.box.room.webSocketMessage(host, answer(host.sent.shift()));
+    expect(host.json(0)).toEqual({ type: "waiting" });
+    const lapse = T0 + 60_000 + RELAY_PASS_SKEW_S * 1000;
+    setSystemTime(new Date(lapse));
+    w.fake.keepalive.set(host, new Date(lapse));
+    await w.box.room.alarm();
+    expect(host.closedWith).toEqual({ code: 4402, reason: "relay pass expired" });
+    const g = await world("grace", new Date(T0 + 1000).toISOString());
+    const proving = await g.openPair(keyed);
+    setSystemTime(new Date(T0 + 1000));
+    g.box.room.webSocketMessage(proving, answer(proving.sent.shift()));
+    expect(proving.closedWith).toEqual({ code: 4402, reason: "relay pass required" });
+  });
+
+  test("a pairing host does not outlive its PC's revocation or its pass key's removal", async () => {
+    const keyed = `role=host&server_id=${SERVER}&public_key=${PC.publicKey}`;
+    for (const extra of [{ RELAY_PASS_REVOKED: SERVER }, { RELAY_PASS_KEYS: `deadbeef:${keys.split(":")[1]}` }] as Record<string, string>[]) {
+      const fake = fakeState();
+      const first = await world("enforce", undefined, fake);
+      const host = await first.openPair(keyed, await passFor());
+      first.box.room.webSocketMessage(host, answerServerChallenge(host.sent.shift(), PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!);
+      expect(host.json(0)).toEqual({ type: "waiting" });
+      // a deploy with the new settings: the next arrival finds the host's pass no longer holds
+      const w = await world("enforce", undefined, fake, extra);
+      const guest = await w.openPair("role=guest");
+      expect(host.closedWith).toEqual({ code: 4402, reason: "relay pass invalid" });
+      expect(guest.closedWith?.code).toBe(4404);
+    }
+  });
+
+  test("a pairing host's guest goes with it once its PC is revoked: at its next frame, or at the next alarm", async () => {
+    const keyed = `role=host&server_id=${SERVER}&public_key=${PC.publicKey}`;
+    for (const by of ["frame", "alarm"] as const) {
+      const fake = fakeState();
+      const first = await world("enforce", undefined, fake);
+      const host = await first.openPair(keyed, await passFor());
+      first.box.room.webSocketMessage(host, answerServerChallenge(host.sent.shift(), PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!);
+      const guest = await first.openPair("role=guest");
+      expect(host.json(1)).toMatchObject({ type: "guest" });
+      const w = await world("enforce", undefined, fake, { RELAY_PASS_REVOKED: SERVER });
+      const sent = host.sent.length;
+      if (by === "frame") w.box.room.webSocketMessage(guest, new Uint8Array([1, 2, 3]).buffer);
+      else await w.box.room.alarm();
+      expect(host.closedWith).toEqual({ code: 4402, reason: "relay pass invalid" });
+      expect(guest.closedWith?.code).toBe(1001);
+      expect(host.sent).toHaveLength(sent);
+    }
+  });
+
+  test("a pairing host admitted before its key id was kept stays until its pass runs out", async () => {
+    const keyed = `role=host&server_id=${SERVER}&public_key=${PC.publicKey}`;
+    const fake = fakeState();
+    const first = await world("enforce", undefined, fake);
+    const host = await first.openPair(keyed, await passFor());
+    first.box.room.webSocketMessage(host, answerServerChallenge(host.sent.shift(), PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!);
+    // the attachment as the previous relay version saved it: the pass's expiry only
+    const { pass_kid: _kid, server_id: _id, ...legacy } = host.deserializeAttachment() as Record<string, unknown>;
+    host.serializeAttachment(legacy);
+    await first.evict();
+    expect((await first.openPair("role=guest")).closedWith).toBeNull();
+    expect(host.closedWith).toBeNull();
+    expect(host.json(1)).toMatchObject({ type: "guest" });
+  });
+
+  test("a pairing host admitted before its key id was kept goes once the settings revoke a PC: at its next arrival, frame or alarm", async () => {
+    const keyed = `role=host&server_id=${SERVER}&public_key=${PC.publicKey}`;
+    for (const by of ["arrival", "frame", "alarm"] as const) {
+      const fake = fakeState();
+      const first = await world("enforce", undefined, fake);
+      const host = await first.openPair(keyed, await passFor());
+      first.box.room.webSocketMessage(host, answerServerChallenge(host.sent.shift(), PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!);
+      expect(host.json(0)).toEqual({ type: "waiting" });
+      // the attachment as the previous relay version saved it: the pass's expiry only
+      const { pass_kid: _kid, server_id: _id, ...legacy } = host.deserializeAttachment() as Record<string, unknown>;
+      host.serializeAttachment(legacy);
+      await first.evict();
+      // a deploy that revokes the PC: nothing on the attachment names it, so any revocation may
+      const w = await world("enforce", undefined, fake, { RELAY_PASS_REVOKED: SERVER });
+      if (by === "arrival") expect([by, (await w.openPair("role=guest")).closedWith?.code]).toEqual([by, 4404]);
+      else if (by === "frame") w.box.room.webSocketMessage(host, new Uint8Array([1, 2, 3]).buffer);
+      else await w.box.room.alarm();
+      expect([by, host.closedWith]).toEqual([by, { code: 4402, reason: "relay pass invalid" }]);
+    }
+  });
+
+  test("a pairing host whose pass holds crosses into enforcement, then wakes the room only at its own times", async () => {
+    const enforceAt = T0 + 1000;
+    const w = await world("grace", new Date(enforceAt).toISOString());
+    const host = await w.openPair(`role=host&server_id=${SERVER}&public_key=${PC.publicKey}`, await passFor());
+    expect(w.fake.state.alarm).toBe(enforceAt);
+    w.box.room.webSocketMessage(host, answerServerChallenge(host.sent.shift(), PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!);
+    setSystemTime(new Date(enforceAt));
+    w.fake.keepalive.set(host, new Date(enforceAt));
+    await w.box.room.alarm();
+    expect(host.closedWith).toBeNull();
+    expect(w.fake.state.alarm).toBe(enforceAt + IDLE_MS);
+  });
+
+  test("in grace a pairing host whose pass ran out does not wake the room every second", async () => {
+    const w = await world("grace", new Date(T0 + 24 * 3_600_000).toISOString());
+    const host = await w.openPair(`role=host&server_id=${SERVER}&public_key=${PC.publicKey}`, await passFor(SERVER, T0 - RELAY_PASS_LIFETIME_S * 1000 + 60_000));
+    w.box.room.webSocketMessage(host, answerServerChallenge(host.sent.shift(), PC.secretKey, { server_id: SERVER, role: "pair-host", connection_id: "AB1" })!);
+    const lapse = T0 + 60_000 + RELAY_PASS_SKEW_S * 1000;
+    setSystemTime(new Date(lapse));
+    w.fake.keepalive.set(host, new Date(lapse));
+    await w.box.room.alarm();
+    expect(host.closedWith).toBeNull();
+    expect(w.fake.state.alarm).toBe(lapse + IDLE_MS);
   });
 
   test("a check result the request itself carries is never trusted", async () => {

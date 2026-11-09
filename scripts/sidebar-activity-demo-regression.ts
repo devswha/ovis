@@ -271,6 +271,8 @@ async function withPage(browser: Browser, settings: object, run: (page: Page) =>
   try {
     await context.addInitScript((stored) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat", ...stored }));
+      // idle agents are picked here: the one-line list folds them under its resting line, opened on this device as its toggle keeps it
+      localStorage.setItem("ovis:agents-resting-open", "1");
     }, settings);
     const page = await context.newPage();
     const errors: string[] = [];
@@ -926,7 +928,7 @@ try {
             if (mobile) await page.locator(`.workspace-group[data-workspace="${headId}"] > .workspace-header .row-menu-toggle`).tap();
             else await head.click({ button: "right" });
             const label = pin ? "Pin workspace" : "Unpin workspace";
-            const panel = page.getByRole(mobile ? "dialog" : "menu");
+            const panel = page.locator(mobile ? ".row-sheet" : ".row-menu");
             if (mobile) await panel.getByRole("button", { name: label, exact: true }).tap();
             else await panel.getByRole("menuitem", { name: label, exact: true }).click();
             await panel.waitFor({ state: "detached" });
@@ -1102,6 +1104,8 @@ try {
 
         // a message sent from an agent takes it to the top while it runs ...
         await agent(page, INFRA).locator(".agent-select").click();
+        // Rows keep their order while the pointer is over Agents; leave it before checking activity order.
+        await page.locator(".composer-text").click();
         await page.locator(".composer-text").fill("Check the plan again");
         await page.locator(".composer-text").press("Enter");
         await waitStatus(page, INFRA, "working");

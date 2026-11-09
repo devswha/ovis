@@ -2434,7 +2434,12 @@ try {
   // closed from the row's menu, which a desktop opens with the context-menu key or a right-click
   // (it draws no row ⋯); the workspace's pane goes with it, so a confirm asks first
   const selectedRow = page.locator(".pane-item.is-selected .pane-select");
-  assert.equal(await page.locator(".pane-item.is-selected .row-menu-toggle").isVisible(), false, "a desktop draws no row ⋯");
+  // a desktop draws the row's ⋯ under the pointer and the keyboard alone: away from both, the row is its selector
+  await page.mouse.move(640, 400);
+  assert.equal(await page.locator(".pane-item.is-selected .row-menu-toggle").isVisible(), false, "a desktop draws no row ⋯ at rest");
+  await selectedRow.hover();
+  assert.equal(await page.locator(".pane-item.is-selected .row-menu-toggle").isVisible(), true, "the row's ⋯ shows under the pointer");
+  await page.mouse.move(640, 400);
   await selectedRow.focus();
   await contextMenuKey(page);
   const rowMenu = page.getByRole("menu");

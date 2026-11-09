@@ -237,7 +237,8 @@ try {
           await page.locator('section.machine-group[aria-label="PC Work PC"] .machine-header').scrollIntoViewIfNeeded();
           if (!phone) await page.mouse.move(width - 8, 600);
           const rest = await pcHeader(page, "Work PC");
-          assert.equal(rest.countWords, `${agentsOnWork} agents running`, `${label}: the count's words say what it counts`);
+          // the words count the PC's agents whatever they are doing: a resting one is not "running"
+          assert.equal(rest.countWords, `${agentsOnWork} agents`, `${label}: the count's words say what it counts`);
           // no tooltip: a pointer never reaches the count (it lets presses through to the + under it, and a hover hides it)
           assert.equal(rest.countTitle, null, `${label}: the count claims no tooltip a pointer cannot reach`);
           if (phone) {
@@ -358,7 +359,7 @@ try {
         const manage = await page.locator('section.machine-group[aria-label="PC Work PC"] .machine-manage').evaluate((button) => { const box = button.getBoundingClientRect(); return { width: box.width, opacity: getComputedStyle(button).opacity }; });
         assert.ok(manage.width > 0 && manage.opacity === "1", `${label}: at rest Manage shows too: ${JSON.stringify(manage)}`);
         assert.equal(rest.count, null, `${label}: no count in view over the actions`);
-        assert.equal(rest.countWords, `${await agentRowsOn(page, "work")} agents running`, `${label}: a screen reader still hears the count`);
+        assert.equal(rest.countWords, `${await agentRowsOn(page, "work")} agents`, `${label}: a screen reader still hears the count`);
       });
       // forced colors paint every edge in full: a fade there is only lost text
       await check("forced colors fade no edge", { width: 1280, mode: "dark", twoPcs: true, height: 640, forcedColors: true }, async (page, label) => {

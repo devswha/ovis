@@ -105,8 +105,17 @@ try {
           // one line per row, as herdr-app's list: a branch other than the default dim at the row's end, without its
           // feature/-style prefix; the default branch says nothing
           const branchOf = (id: string) => row(page, id).locator(":scope > .workspace-header .workspace-branch-tail");
-          await branchOf("w1J").waitFor();
-          await branchOf("w1D").waitFor();
+          // a mouse's row keeps its branch out of sight until the pointer or the focus is on it; a finger's shows it
+          const shown = async (id: string) => {
+            if (!phone) {
+              await branchOf(id).waitFor({ state: "attached" });
+              assert.equal(await branchOf(id).isVisible(), false, `${id} at rest hides its branch under a mouse`);
+              await row(page, id).locator(":scope > .workspace-header").hover();
+            }
+            await branchOf(id).waitFor();
+          };
+          await shown("w1J");
+          await shown("w1D");
           assert.equal(await branchOf("w1C").count(), 0, "a repository on its default branch says no branch");
           assert.equal(await branchOf("w1J").textContent(), "develop", "a git folder herdr has not marked says its branch");
           assert.equal(await branchOf("w1D").textContent(), "web", "a worktree says its branch without the feature/ prefix");

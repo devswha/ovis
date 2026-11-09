@@ -29,6 +29,7 @@ import { filterWorkspaceGroups, machineFilter } from "../lib/sidebarFilter.ts";
 import { useSidebarFilter } from "../lib/sidebarFilterContext.ts";
 import { useSettings } from "../lib/settings.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { SHEET_QUERY } from "../lib/sheets.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useWorktreeBranches } from "../lib/useWorktreeBranches.ts";
 import { useSessionHistoryOffered } from "../lib/useSessionHistoryOffered.ts";
@@ -112,7 +113,9 @@ export function StatusBadge({ status, compact = false, detail = null }: { status
   const { settings } = useSettings();
   const value = knownStatus(status);
   const label = t(STATUS_WORD[value]);
-  const stateWords = value === "waiting" ? t("Agent waiting on background work") : t("Agent {status}", { status: label });
+  // the description names the state in words a reader knows (G-020): "waiting" is said whole, and a state nobody
+  // reported (an agent that said nothing yet, a PC that is away) is said to be unknown, not read as a dash
+  const stateWords = value === "waiting" ? t("Agent waiting on background work") : value === "unknown" ? t("Agent state unknown") : t("Agent {status}", { status: label });
   const description = detail ? `${stateWords} — ${detail}` : stateWords;
   // classic (the default): a compact cell draws only the states that ask for a look: a red question
   // mark while the agent waits for an answer, a green dot once it has finished and was not looked
@@ -387,6 +390,8 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   const [touchDrag, setTouchDrag] = useState<{ source: string; over: string | null } | null>(null);
   // the browser's drag and drop is a mouse's: on a touch screen a long press lifts the row instead
   const coarsePointer = useMediaQuery("(pointer: coarse)");
+  // a row's ⋯ opens a sheet at a phone's width and a popover above it (RowMenu): the button says which (G-037)
+  const sheet = useMediaQuery(SHEET_QUERY);
   const [inlineError, setInlineError] = useState<InlineError | null>(null);
   const rosterId = useId();
   const workspaceRoot = useRef<HTMLDivElement>(null);
@@ -975,7 +980,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
           </span>
         </div>
         <div className="workspace-actions">
-          <button type="button" className="sidebar-row-action row-menu-toggle" aria-label={t("More for {title}", { title: rowTitle })} aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => toggleMenu(event.currentTarget)}>
+          <button type="button" className="sidebar-row-action row-menu-toggle" aria-label={t("More for {title}", { title: rowTitle })} aria-haspopup={sheet ? "dialog" : "menu"} aria-expanded={menuOpen} onClick={(event) => toggleMenu(event.currentTarget)}>
             <Ellipsis aria-hidden="true" />
           </button>
         </div>
@@ -1035,7 +1040,9 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
           )}
         </>
       </nav>
-      {menu && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menu.title} subtitle={menu.place} items={menuItems(menu)} onClose={closeMenu} />}
+      {/* the menu names the workspace it is for above its items (G-022): the popover covers the row */}
+      {menu && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menu.title} subtitle={menu.place} items={menuItems(menu)} onClose={closeMenu}
+        header={<span className="row-menu-target"><span className="row-menu-target-name" title={menu.title}>{menu.title}</span>{menu.place && <span className={`row-menu-target-place${menu.place === menu.workspace.label ? "" : " is-literal"}`} title={menu.place}>{menu.place}</span>}</span>} />}
       {confirm && <ConfirmDialog title={confirm.title} body={confirm.body} confirmLabel={confirm.action ?? t("Close")} onConfirm={confirm.run} escalation={confirm.escalation} onClose={() => setConfirm(null)} />}
       {worktreeDialog && <WorktreeDialog mode={worktreeDialog.mode} workspace={worktreeDialog.workspace} onClose={() => setWorktreeDialog(null)} onOpenPane={(paneId) => { setWorktreeDialog(null); actions.selectPane(paneId); }} onOpened={(opened) => {
         rememberOpened(opened);

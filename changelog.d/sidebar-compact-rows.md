@@ -1,8 +1,15 @@
 ### Changed
-- The sidebar is denser, after herdr-app's list: one-line workspace rows with a branch other than the
-  default dim at the row's end, worktree names without herdr's `worktree-` prefix and hash, and New
-  workspace as a lone `+`. The Agents list shows its counts and marks on hover and folds background
-  agents into one line. Settings → Sidebar rows → Two lines keeps the previous look.
-- Settings → Agents order has a new default, Waiting first: herdr's order with the agents that need you
-  on top, each saying how long it has waited once the app saw the wait begin. A saved Workspaces or
-  Activity order is kept.
+- The sidebar is denser, after herdr-app's list: one-line workspace rows, a branch shown while the
+  pointer is on its row, and worktree names without herdr's `worktree-` prefix and hash. Settings →
+  Sidebar rows → Two lines keeps the previous look.
+- A waiting agent shows the same small `?` on its row and on its workspace's row; working is a dot
+  and an unread finish a check, in the same place. A status change no longer moves the row under
+  the pointer, or under a finger for a second after it lifts.
+- Settings → Agents order has a new choice, Waiting first: herdr's order with the agents that need
+  you on top, each saying how long it has waited once the app saw the wait begin, and the resting
+  ones folded into one `+N resting` line. The default stays herdr's order, so a row stays where it
+  was each time the list is opened.
+- Each PC's load (CPU and memory) stays off until it is chosen in Settings.
+
+### Fixed
+- Screen readers hear which PC an agent row belongs to.
