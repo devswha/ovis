@@ -17,6 +17,10 @@ const asking = new Map<string, Promise<void>>();
 /** bumped as a PC's answers are dropped: an answer to a question asked before then is not kept */
 const rounds = new Map<string, number>();
 const listeners = new Set<() => void>();
+/** the herdr each PC's answers came from (the snapshot's `herdr_lifetime`): another may give a workspace id to another folder */
+const lifetimes = new Map<string, string | undefined>();
+/** herdr's connection failing mid-call, which the bridge answers as a 404 (server/http.ts): no refusal, so asked again */
+const NOT_ANSWERED = new Set(["closed", "socket_error", "bad_frame", "cancelled"]);
 /** the mounted readers of each PC: its answers go with the last one, and the next asks again */
 const readers = new Map<string, number>();
 
@@ -50,7 +54,7 @@ function ask(machineId: string, workspaceId: string, listWorktrees: (workspace: 
   const kept = (answer: boolean): void => { if ((rounds.get(machineId) ?? 0) === round) answersOf(machineId).set(workspaceId, answer); };
   const question = listWorktrees(workspaceId).then(
     () => kept(true),
-    (error: unknown) => { if (error instanceof ApiError && error.status < 500) kept(false); },
+    (error: unknown) => { if (error instanceof ApiError && error.status < 500 && !NOT_ANSWERED.has(error.code ?? "")) kept(false); },
   ).finally(() => { if (asking.get(key) === question) asking.delete(key); });
   asking.set(key, question);
   return question;
@@ -71,6 +75,7 @@ export function useRepositoryWorkspaces({ machineId, snapshot, online, watching,
 }): { repositoryWorkspaces: ReadonlySet<string>; notCheckout: (workspaceId: string) => void } {
   const unmarked = (snapshot?.workspaces ?? []).filter((workspace) => !workspace.worktree).map((workspace) => workspace.workspace_id).join("\n");
   const asked = !online || unmarked === "" || watching || !offered ? null : unmarked;
+  const lifetime = snapshot?.herdr_lifetime;
   const read = useCallback((): ReadonlySet<string> => {
     const known = answers.get(machineId);
     return new Set(asked === null || !known ? [] : asked.split("\n").filter((id) => known.get(id) === true));
@@ -82,6 +87,7 @@ export function useRepositoryWorkspaces({ machineId, snapshot, online, watching,
       const left = (readers.get(machineId) ?? 1) - 1;
       if (left > 0) { readers.set(machineId, left); return; }
       readers.delete(machineId);
+      lifetimes.delete(machineId);
       dropAnswers(machineId);
     };
   }, [machineId]);
@@ -100,12 +106,16 @@ export function useRepositoryWorkspaces({ machineId, snapshot, online, watching,
       told();
       return;
     }
+    // another herdr: what the last one answered, and its questions still out, are for its workspaces
+    if (lifetimes.has(machineId) && lifetimes.get(machineId) !== lifetime) dropAnswers(machineId);
+    lifetimes.set(machineId, lifetime);
     const known = answersOf(machineId);
     const ids = asked.split("\n");
     for (const id of [...known.keys()]) if (!ids.includes(id)) known.delete(id);
     told();
-    void Promise.all(ids.filter((id) => !known.has(id)).map((id) => ask(machineId, id, listWorktrees))).then(told);
-  }, [machineId, asked, listWorktrees]);
+    // each answer is shown as it comes: one slow question holds back none of the others
+    for (const id of ids.filter((id) => !known.has(id))) void ask(machineId, id, listWorktrees).then(told);
+  }, [machineId, asked, lifetime, listWorktrees]);
   const notCheckout = useCallback((workspaceId: string) => {
     answersOf(machineId).set(workspaceId, false);
     told();
