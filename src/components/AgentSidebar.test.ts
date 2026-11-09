@@ -142,23 +142,24 @@ describe("AgentSidebar one-line row titles", () => {
     expect(places[1]).toStartWith("Guard the export button");
   });
 
-  test("Agents order: herdr's order by default, so a row stays where it was; only Waiting first lifts a waiting agent", () => {
+  test("Agents order: Waiting first, the default, lifts a waiting agent; a saved Workspaces order keeps herdr's order", () => {
     // both agents busy: the order alone decides, with no resting fold in the way
     const rows = [pane("w1:p1", { agent_status: "working" }), pane("w1:p2", { agent_status: "blocked" })];
     const order = (html: string) => [...html.matchAll(/data-pane="([^"]+)"/g)].map((match) => match[1]);
-    expect(order(render([machine(rows)]))).toEqual(["w1:p1", "w1:p2"]);
-    const plain = (globalThis as { window: object }).window;
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentOrder: "waiting" }) : null, setItem() {}, removeItem() {} } } });
     expect(order(render([machine(rows)]))).toEqual(["w1:p2", "w1:p1"]);
+    const plain = (globalThis as { window: object }).window;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentOrder: "workspace" }) : null, setItem() {}, removeItem() {} } } });
+    expect(order(render([machine(rows)]))).toEqual(["w1:p1", "w1:p2"]);
   });
 
-  test("on one line, Waiting first folds a resting agent under the \"+N resting\" line after the busy ones; herdr's order lists it in place", () => {
+  test("on one line, Waiting first (the default) folds a resting agent under the \"+N resting\" line after the busy ones; a saved Workspaces order lists it in place", () => {
     const rows = [pane("w1:p1"), pane("w1:p2", { agent_status: "blocked" })];
     const entries = (html: string) => [...html.matchAll(/<li class="(agent-item|agent-background-label agent-resting-label)[^"]*"([^>]*)>/g)]
       .map((item) => item[1] === "agent-item" ? `${/data-pane="([^"]+)"/.exec(item[2]!)![1]}${/ hidden=""/.test(item[2]!) ? " hidden" : ""}` : "RESTING");
-    // the default: every row where herdr has it, none folded away
-    expect(entries(render([machine(rows)]))).toEqual(["w1:p1", "w1:p2"]);
     const plain = (globalThis as { window: object }).window;
+    // a saved Workspaces order: every row where herdr has it, none folded away
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? JSON.stringify({ agentOrder: "workspace" }) : null, setItem() {}, removeItem() {} } } });
+    expect(entries(render([machine(rows)]))).toEqual(["w1:p1", "w1:p2"]);
     const waiting = JSON.stringify({ agentOrder: "waiting" });
     Object.defineProperty(globalThis, "window", { configurable: true, value: { ...plain, localStorage: { getItem: (key: string) => key === "ovis:settings" ? waiting : null, setItem() {}, removeItem() {} } } });
     const html = render([machine(rows)]);
@@ -270,8 +271,8 @@ describe("AgentSidebar folded helpers (#772)", () => {
     expect(entries(draw("t6"))).toEqual(["t1", "t2", "t5", "t3", "t4", "+1 resting false", "t6"]);
   });
 
-  test("in herdr's order (the default) the resting helper stays under its agent, with no resting line", () => {
-    delete stored["ovis:settings"];
+  test("in a saved Workspaces order the resting helper stays under its agent, with no resting line", () => {
+    stored["ovis:settings"] = JSON.stringify({ agentOrder: "workspace" });
     expect(entries(draw())).toEqual(["t1", "t2", "t5", "t3", "t6", "t4"]);
   });
 
