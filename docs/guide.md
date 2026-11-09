@@ -898,7 +898,10 @@ you named it. Two exceptions: a folder further up may be writable by anyone when
 under Homebrew's `/opt/homebrew` and `/usr/local` may be writable by the `admin` group, as
 Homebrew leaves them, so another administrator of that Mac could change an `hc` found there.
 Group write by your own private group counts as yours only when `/etc/nsswitch.conf` takes
-accounts from local files alone. A candidate counts only when `--version` says `hc …`, since some window
+accounts from local files alone. On a PC whose accounts also come from a directory service (sss, as on
+Fedora and RHEL by default), an installer-made `~/.local/bin` with umask 002 is group-writable and
+so is passed over: run `chmod g-w ~/.local/bin`, or set `OVIS_HC_BIN` to the `hc` you trust. When
+nothing is found, the error names each `hc` passed over and the rule it failed. A candidate counts only when `--version` says `hc …`, since some window
 managers ship an unrelated `hc`. Looking runs nothing but `--version`: every other hc command
 starts a core when none runs. When no candidate answers, Ovis does not start and says where it
 looked, rather than run an `hc` that may not be herdr-core's.

@@ -36,6 +36,8 @@ export interface FindHcOptions {
   timeoutMs?: number;
   /** getfacl's path, or null when it is not installed; the default looks in /usr/bin and /bin */
   getfacl?: string | null;
+  /** told each candidate the trust check refuses, and why */
+  onRefused?: (bin: string, reason: string) => void;
 }
 
 /** a slow or interactive shell profile, or a hanging binary, must not hold the server up */
@@ -87,7 +89,11 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
       if (seen.has(bin)) continue;
       seen.add(bin);
       if (!isFile(bin)) continue;
-      if (!named && harmless !== null && !ownedByUser(bin, harmless, false, acl)) continue;
+      const refused = named || harmless === null ? null : trustRefusal(bin, harmless, false, acl);
+      if (refused !== null) {
+        options.onRefused?.(bin, refused);
+        continue;
+      }
       const version = await hcVersion(bin, probing(), options.timeoutMs ?? PROBE_TIMEOUT_MS);
       if (version !== null) return { bin, version };
     }
@@ -122,17 +128,24 @@ const MAX_LINKS = 40;
  * `asFolder`, the path is a folder held to the same rule as a file's.
  */
 export function ownedByUser(path: string, harmless: (gid: number, path: string) => boolean, asFolder = false, acl: AclReader = aclReader()): boolean {
+  return trustRefusal(path, harmless, asFolder, acl) === null;
+}
+
+/** why ownedByUser refuses `path`, naming the entry and the rule it fails; null when it does not */
+export function trustRefusal(path: string, harmless: (gid: number, path: string) => boolean, asFolder = false, acl: AclReader = aclReader()): string | null {
   const uid = process.getuid?.();
-  if (uid === undefined) return false;
-  const owned = (stats: Stats) => stats.uid === uid || stats.uid === 0;
-  const writable = (stats: Stats, at: string) => {
-    if ((stats.mode & 0o002) !== 0) return true;
+  if (uid === undefined) return "no user id to check against";
+  const owned = (stats: Stats, at: string) => stats.uid === uid || stats.uid === 0 ? null : `${at} is owned by uid ${stats.uid}, not you or root`;
+  const writable = (stats: Stats, at: string): string | null => {
+    if ((stats.mode & 0o002) !== 0) return `${at} is writable by everyone`;
     const group = (stats.mode & 0o020) !== 0;
-    if (group && !harmless(stats.gid, at)) return true;
+    if (group && !harmless(stats.gid, at)) {
+      return `${at} is group-writable by gid ${stats.gid}, not trusted as your own private group (it has other members, or /etc/nsswitch.conf reads accounts from more than files and systemd, as sss does)`;
+    }
     // on Linux a named ACL entry can write only through the group bits (they show its mask); a
     // macOS ACL never shows in the mode
-    if (!group && !acl.darwin) return false;
-    return acl.grantsWrite(at, uid, harmless);
+    if (!group && !acl.darwin) return null;
+    return acl.grantsWrite(at, uid, harmless) ? `an ACL on ${at} may let another account write it` : null;
   };
   const parts = (path: string) => path.split("/").filter((part) => part !== "" && part !== ".");
   try {
@@ -142,9 +155,14 @@ export function ownedByUser(path: string, harmless: (gid: number, path: string) 
     const rest = parts(path);
     let links = 0;
     while (true) {
-      if (!here.isDirectory() || !owned(here) || writable(here, folder) && (here.mode & 0o1000) === 0) return false;
+      if (!here.isDirectory()) return `${folder} is not a folder`;
+      const folderOwner = owned(here, folder);
+      if (folderOwner !== null) return folderOwner;
       const name = rest.shift();
-      if (name === undefined) return asFolder && !writable(here, folder);
+      if (name === undefined) return asFolder ? writable(here, folder) : `${path} is a folder`;
+      // a sticky folder on the way: nobody may rename or replace what is not theirs in it
+      const open = writable(here, folder);
+      if (open !== null && (here.mode & 0o1000) === 0) return open;
       if (name === "..") {
         folder = dirname(folder);
         here = statSync(folder);
@@ -152,9 +170,10 @@ export function ownedByUser(path: string, harmless: (gid: number, path: string) 
       }
       const entry = join(folder, name);
       const stats = lstatSync(entry);
-      if (!owned(stats)) return false;
+      const entryOwner = owned(stats, entry);
+      if (entryOwner !== null) return entryOwner;
       if (stats.isSymbolicLink()) {
-        if (++links > MAX_LINKS) return false;
+        if (++links > MAX_LINKS) return `${path} goes through more than ${MAX_LINKS} links`;
         const target = readlinkSync(entry);
         rest.unshift(...parts(target));
         if (target.startsWith("/")) {
@@ -163,12 +182,15 @@ export function ownedByUser(path: string, harmless: (gid: number, path: string) 
         }
         continue;
       }
-      if (rest.length === 0 && !stats.isDirectory()) return !asFolder && stats.isFile() && !writable(stats, entry) && !writable(here, folder);
+      if (rest.length === 0 && !stats.isDirectory()) {
+        if (asFolder || !stats.isFile()) return `${entry} is not a regular file`;
+        return writable(stats, entry) ?? open;
+      }
       folder = entry;
       here = stats;
     }
-  } catch {
-    return false;
+  } catch (error) {
+    return `${path} could not be checked (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
   }
 }
 
@@ -234,6 +256,9 @@ export function privateGroup(user: string, gid: number, groups: string, passwd: 
 
 /** how long reading one ACL may take: one that does not answer counts as granting */
 const ACL_READ_TIMEOUT_MS = 2_000;
+/** how long a macOS ACL read stands: the walk from `/` asks the same folders on every look */
+const MAC_ACL_TTL_MS = 60_000;
+const macAcls = new Map<string, { at: number; grants: boolean }>();
 
 export interface AclReader {
   darwin: boolean;
@@ -263,8 +288,12 @@ export function aclReader(options: { platform?: NodeJS.Platform; getfacl?: strin
   };
   const grants = (path: string, uid: number, harmless: (gid: number, path: string) => boolean): boolean => {
     if (darwin) {
+      const kept = macAcls.get(path);
+      if (kept !== undefined && Date.now() - kept.at < MAC_ACL_TTL_MS) return kept.grants;
       const listing = read(["/bin/ls", "-lde", "--", path]);
-      return listing === null || macAclGrantsWrite(listing, userInfo().username);
+      const answer = listing === null || macAclGrantsWrite(listing, userInfo().username);
+      macAcls.set(path, { at: Date.now(), grants: answer });
+      return answer;
     }
     if (getfacl === undefined) getfacl = Bun.which("getfacl", { PATH: SYSTEM_PATH.join(delimiter) });
     if (getfacl === null) {

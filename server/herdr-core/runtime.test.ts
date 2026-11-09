@@ -116,6 +116,18 @@ it.skipIf(platform === "win32")("starts nothing, and runs no other hc, when none
   expect(existsSync(join(dir, "state"))).toBe(false);
 });
 
+it.skipIf(platform === "win32")("names each hc it passed over, and why, when none is found", async () => {
+  const dir = mkdtempSync(join(checkedTmp, "ovis-hc-refused-"));
+  cleanup = () => { chmodSync(join(dir, "open"), 0o755); rmSync(dir, { recursive: true, force: true }); };
+  const refused = hcIn(dir, "open", "hc 0.1.17");
+  chmodSync(join(dir, "open"), 0o777);
+  process.env["OVIS_RUNTIME"] = "herdr-core";
+  const start = startRuntime(join(dir, "state"), (onRefused) => findHc({ env: { PATH: join(dir, "open") }, home: dir, loginShellPath: async () => null, usualDirs: [], ...(onRefused ? { onRefused } : {}) }));
+  const error = await start.then(() => null, (failure: unknown) => failure as Error);
+  expect(error?.message).toContain(`${refused}: ${join(dir, "open")} is writable by everyone`);
+  expect(error?.message).toContain("OVIS_HC_BIN");
+});
+
 it.skipIf(platform === "win32")("tightens an existing state directory and socket on every start", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-mode-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });

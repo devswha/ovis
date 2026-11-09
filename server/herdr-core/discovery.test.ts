@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, statSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isAbsolute, relative } from "node:path";
-import { aclReader, coreSocket, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup } from "./discovery.ts";
+import { aclReader, coreSocket, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup, trustRefusal } from "./discovery.ts";
 
 const unix = process.platform !== "win32";
 let cleanup = () => {};
@@ -204,6 +204,32 @@ it.skipIf(process.platform !== "linux")("checks with the platform it is given: n
     // a Windows look reads no modes, so this PC's 0777 folder is not refused for it
     expect((await findHc({ env: { PATH: join(root, "open") }, home: root, platform: "win32", loginShellPath: async () => null, usualDirs: [] }))?.version).toBe("0.1.99");
   } finally { chmodSync(join(root, "open"), 0o755); }
+});
+
+it.skipIf(!unix)("says which entry a refused candidate fails on, and which rule", () => {
+  const { root, log } = scratch();
+  const bin = fake(join(root, "bin"), "hc", "hc 0.1.17", log);
+  chmodSync(join(root, "bin"), 0o775);
+  const gid = statSync(join(root, "bin")).gid;
+  // a private group this PC cannot prove, as on Fedora with sss
+  expect(trustRefusal(bin, () => false)).toBe(`${join(root, "bin")} is group-writable by gid ${gid}, not trusted as your own private group (it has other members, or /etc/nsswitch.conf reads accounts from more than files and systemd, as sss does)`);
+  chmodSync(join(root, "bin"), 0o755);
+  chmodSync(bin, 0o757);
+  expect(trustRefusal(bin, () => false)).toBe(`${bin} is writable by everyone`);
+  chmodSync(bin, 0o755);
+  expect(trustRefusal(bin, () => false)).toBeNull();
+});
+
+it.skipIf(!unix)("tells the caller each candidate it refuses", async () => {
+  const { root, log } = scratch();
+  const marker = join(root, "ran");
+  planted(join(root, "open"), 0o777, marker);
+  const real = fake(join(root, "real"), "hc", "hc 0.1.17", log);
+  const refused: string[] = [];
+  try {
+    expect(await findHc({ env: { PATH: [join(root, "open"), join(root, "real")].join(":") }, home: root, loginShellPath: async () => null, usualDirs: [], onRefused: (bin, reason) => refused.push(`${bin}: ${reason}`) })).toEqual({ bin: real, version: "0.1.17" });
+  } finally { chmodSync(join(root, "open"), 0o755); }
+  expect(refused).toEqual([`${join(root, "open", "hc")}: ${join(root, "open")} is writable by everyone`]);
 });
 
 it.skipIf(!unix)("gives the probe only absolute, checked PATH folders, never an empty PATH that would search the server's folder", async () => {
