@@ -12,13 +12,42 @@ export class CLIProxyError extends Error {
 export const proxyInvalid = () => new CLIProxyError("invalid_cliproxy_request", 400, "Invalid Hub request");
 /**
  * Which account a Hub file is, whatever its file name: its provider and the account it names (email, ChatGPT
- * workspace: `holder`), and its auth index, either of which tells it (#3428: an email may change while the index
- * stays). Never reported.
+ * workspace: `holder`), its email alone (whatever its workspace) and its auth index, any of which tells it (#3428: an
+ * email may change while the index stays). Never reported.
  */
-const accountIdentities = (provider: string, holder: string | null, index: string): readonly string[] =>
-  [...(holder === null ? [] : [JSON.stringify([provider, holder])]), `index:${provider}:${index}`];
+const accountIdentities = (provider: string, holder: string | null, email: string | null, index: string): readonly string[] =>
+  [...(holder === null ? [] : [JSON.stringify([provider, holder])]), ...(email === null ? [] : [`email:${provider}:${email}`]), `index:${provider}:${index}`];
 const isIndexed = (identity: string) => identity.startsWith("index:");
+const isEmail = (identity: string) => identity.startsWith("email:");
 const sameAccount = (known: readonly string[], identities: readonly string[]) => known.some((identity) => identities.includes(identity));
+/**
+ * Whether a remembered account (`known`) is the one now read as `identities`: one known by its email is so only under
+ * that email (another account, with another email or none, may take its old auth index, #3444, #3449); otherwise any
+ * identity tells it.
+ */
+const knownAs = (known: readonly string[], identities: readonly string[]): boolean => {
+  const emails = known.filter(isEmail);
+  return emails.length > 0 ? sameAccount(emails, identities) : sameAccount(known, identities);
+};
+/**
+ * most identities one remembered account keeps: its newest ones, and beyond them those a row the Hub lists now still
+ * carries, so a listed row is not forgotten (#3449), up to IDENTITIES_LISTED_MAX: the saved list must stay one a
+ * restart reads (HIDDEN_MAX_BYTES)
+ */
+const IDENTITIES_MAX = 6;
+const IDENTITIES_LISTED_MAX = 32;
+/**
+ * `known` with what the same account is read as now added, so a later move or email change still tells it; never
+ * replaced. An account known by its auth index alone gains a name only from a row shown (`named`): one first listed
+ * hidden may be another account that took that index. Over IDENTITIES_MAX, the oldest identities no row in `listed`
+ * carries are dropped.
+ */
+const widened = (known: readonly string[], identities: readonly string[], named: boolean, listed: ReadonlySet<string>): readonly string[] => {
+  const all = [...new Set([...identities.filter((identity) => named || isIndexed(identity)), ...known])];
+  const unlisted = all.filter((identity) => !listed.has(identity));
+  const dropped = new Set(unlisted.slice(Math.max(0, unlisted.length - Math.max(0, all.length - IDENTITIES_MAX))));
+  return all.filter((identity) => !dropped.has(identity)).slice(0, IDENTITIES_LISTED_MAX);
+};
 const isHubKey = (key: string) => key.includes(":cliproxy:");
 /** what a read is decided from: the hidden keys, whether read whole, blind, and which account each hidden key is (a copy) */
 interface ReadView { hidden: ReadonlySet<string>; blind: boolean; accounts: ReadonlyMap<string, readonly string[]> }
@@ -36,6 +65,8 @@ const unreadableIn = (view: ReadView, key: string, identities: readonly string[]
 const BLIND_PROBLEM = "Hidden accounts could not be told apart, so no hub account is read. Show again each hidden hub account, or save the hub again to read them by file name.";
 /** a saved hidden list larger than this is no list this server wrote */
 const HIDDEN_MAX_BYTES = 64 * 1024;
+/** the size of the file writePrivateState writes for `document` (indented JSON and a final newline): what a start reads */
+const savedBytes = (document: string) => Buffer.byteLength(`${JSON.stringify(JSON.parse(document), null, 2)}\n`);
 
 /** The saved hidden list's text: a regular file of this user's, no link, at most HIDDEN_MAX_BYTES; throws otherwise. */
 function readOwnFile(path: string): string {
@@ -77,6 +108,12 @@ export class CLIProxyService {
   /** the rows read or listed while their key was not hidden: only these tell which account a key was when it was hidden */
   private readonly shownRows = new WeakSet<ProviderUsage>();
   /**
+   * The account each shown Hub key is, by key, kept through an invalidation (a Hub sign-in drops every row but the hidden
+   * ones), so a hide made after it still knows the account wherever its file moves (#3444). Learned only from a report
+   * that completes, and pruned then to the keys it listed, so it is bounded by the Hub's files; forgotten with the Hub.
+   */
+  private readonly shownIdentities = new Map<string, readonly string[]>();
+  /**
    * The account each hidden key was when it was hidden, by identity, learned only from a row shown then (#3423): that
    * account is not read under any file name, and another one under the key's file name is. A key hidden before any row
    * of it was shown (a fresh server) has none, and its file name alone keeps whoever is under it unread. Kept only
@@ -104,6 +141,8 @@ export class CLIProxyService {
   /** the last save of the hidden list failed: the next change of the preferences tries again, and fails while it does */
   private hiddenSaveFailed = false;
   private hiddenWhole: () => boolean = () => true;
+  /** every identity a row of the last completed report carries: what fitHidden never drops */
+  private listed: ReadonlySet<string> = new Set();
 
   constructor(stateDir: string) {
     this.path = join(stateDir, "cliproxy.json");
@@ -193,7 +232,7 @@ export class CLIProxyService {
     this.checked = false;
     this.invalidate();
     // an account known by its email is that account on any Hub; one known only by its auth index is so on its own Hub alone
-    if (moved) { this.entries = []; this.forgetIndexed(); this.saveHidden(); }
+    if (moved) { this.entries = []; this.shownIdentities.clear(); this.listed = new Set(); this.forgetIndexed(); this.saveHidden(); }
   }
 
   /** Drops what an auth index says of the hidden accounts: it names a file on one Hub alone. */
@@ -248,9 +287,11 @@ export class CLIProxyService {
 
   /** Saves the hidden list when it changed; a failed save is tried again at the next sync. false: not saved. */
   private saveHidden(): boolean {
-    const document = this.hiddenDocument();
-    if (document === this.savedHidden) return true;
+    if (this.hiddenDocument() === this.savedHidden) return true;
     try {
+      // never a list a start refuses (HIDDEN_MAX_BYTES): it would read no Hub account (#3449). One that cannot fit is a failed save
+      if (!this.fitHidden()) throw new Error("the hidden accounts do not fit in a saved list");
+      const document = this.hiddenDocument();
       writePrivateState(this.hiddenPath, JSON.parse(document));
       this.savedHidden = document;
       this.hiddenSaveFailed = false;
@@ -260,6 +301,30 @@ export class CLIProxyService {
       console.warn("cliproxy: could not save which accounts are hidden");
       return false;
     }
+  }
+
+  /**
+   * Drops identities until the saved list fits HIDDEN_MAX_BYTES: each time the oldest one of the account that has the
+   * most, never an email, one a row the Hub lists now carries (listed), nor an account's last. false: it cannot fit.
+   */
+  private fitHidden(): boolean {
+    let excess = savedBytes(this.hiddenDocument()) - HIDDEN_MAX_BYTES;
+    while (excess > 0) {
+      let pick: { key: string; identities: readonly string[]; at: number } | null = null;
+      for (const [key, identities] of this.hiddenAccounts) {
+        if (identities.length < 2 || (pick !== null && identities.length <= pick.identities.length)) continue;
+        let at = identities.length - 1;
+        while (at >= 0 && (isEmail(identities[at]!) || this.listed.has(identities[at]!))) at--;
+        if (at >= 0) pick = { key, identities, at };
+      }
+      if (pick === null) return false;
+      const { key, identities, at } = pick;
+      this.hiddenAccounts.set(key, identities.filter((_, index) => index !== at));
+      // an indented array element is its JSON, its indent, a comma and a newline; measured again once it seems to fit
+      excess -= Buffer.byteLength(JSON.stringify(identities[at])) + 8;
+      if (excess <= 0) excess = savedBytes(this.hiddenDocument()) - HIDDEN_MAX_BYTES;
+    }
+    return true;
   }
 
   /** while blind, a hidden Hub key with no known account, or one a list read in part left out, may be any account: no Hub account is read */
@@ -285,6 +350,11 @@ export class CLIProxyService {
       const identities = this.identities.get(row);
       // while blind, a hidden key naming a file the Hub lists is taken to be that file's account (listed, never read)
       if (identities !== undefined && (this.shownRows.has(row) || this.blind) && hidden.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identities);
+    }
+    // a shown account whose row an invalidation dropped is still known by the identity it was shown with
+    for (const key of hidden) {
+      const identities = this.shownIdentities.get(key);
+      if (identities !== undefined && !this.hiddenAccounts.has(key)) this.hiddenAccounts.set(key, identities);
     }
     // a key missing from a list read only in part may still be hidden: it is forgotten only once the whole list says so
     if (whole) for (const key of this.hiddenAccounts.keys()) if (!hidden.has(key)) this.hiddenAccounts.delete(key);
@@ -415,7 +485,8 @@ export class CLIProxyService {
       : new Set(this.entries.map((entry) => entry.key).filter((key) => !shown.includes(key)));
     const generation = this.generation;
     const answer = { whole };
-    const pass = this.collect(kept, start, answer).then((entries) => {
+    const learned = new Map<string, { identities: readonly string[]; shown: boolean; kept?: ProviderUsage }>();
+    const pass = this.collect(kept, start, answer, learned).then((entries) => {
       if (generation !== this.generation) return [];
       // a partial read that failed changes nothing: the cached rows, hidden ones included, stay, and the
       // accounts shown again count as just shown at the next report, so it reads them again
@@ -428,6 +499,30 @@ export class CLIProxyService {
         return this.entries;
       }
       this.entries = entries;
+      // the Hub's whole listing: only the keys it lists now stay known as shown, so the map stays bounded by its files
+      for (const key of this.shownIdentities.keys()) if (!entries.some((entry) => entry.key === key)) this.shownIdentities.delete(key);
+      // what this report learned, kept only now it completed: a report an invalidation (a Hub change) overtook teaches
+      // nothing, what it read being of the Hub before
+      let widenedHidden = false;
+      const listed = new Set([...learned.values()].flatMap(({ identities }) => identities));
+      this.listed = listed;
+      for (const [key, { identities, shown, kept }] of learned) {
+        if (kept !== undefined) this.identities.set(kept, identities);
+        const known = this.shownIdentities.get(key);
+        // a key still holding the account it was shown as stays known as it, by every identity it was read with; a hidden
+        // one holding another account is not that account's any more, a shown one is now the account shown
+        if (known !== undefined && knownAs(known, identities)) this.shownIdentities.set(key, widened(known, identities, shown || known.some(isEmail), listed));
+        else if (shown) this.shownIdentities.set(key, identities);
+        else this.shownIdentities.delete(key);
+        // a hidden account read under a new index or name stays unread there after its email changes too; one known by
+        // no email (a workspace alone, or a list saved before emails were) gains a name only as a shown one does (#3449)
+        for (const [hiddenKey, account] of this.hiddenAccounts) {
+          if (!knownAs(account, identities)) continue;
+          const next = widened(account, identities, account.some(isEmail), listed);
+          if (next.length !== account.length || next.some((identity, at) => identity !== account[at])) { this.hiddenAccounts.set(hiddenKey, next); widenedHidden = true; }
+        }
+      }
+      if (widenedHidden) this.saveHidden();
       // a list read only in part let nothing be read: not a fresh read, so the next report reads again, the accounts
       // shown again included (#3437)
       if (!answer.whole) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
@@ -443,9 +538,11 @@ export class CLIProxyService {
    * `kept`: the accounts whose last rows stay unread (while their file still names the same account); `start`: the hidden
    * list as the report began. An account is read only if both `start` and the hidden list as the Hub answers let it be
    * (#3437): a hide, a show or a blind that changes meanwhile keeps it unread, never reads it. `answer.whole` turns false
-   * when either was read only in part. null: the Hub could not be read
+   * when either was read only in part. `learned`: each key's account as read, and whether shown then, for report to
+   * keep once it completes. null: the Hub could not be read
    */
-  private async collect(kept: ReadonlySet<string>, start: ReadView, answer: { whole: boolean }): Promise<readonly ProviderUsage[] | null> {
+  private async collect(kept: ReadonlySet<string>, start: ReadView, answer: { whole: boolean },
+    learned: Map<string, { identities: readonly string[]; shown: boolean; kept?: ProviderUsage }>): Promise<readonly ProviderUsage[] | null> {
     try {
       const body = await this.call("/credentials");
       if (!Array.isArray(body["files"])) throw new CLIProxyError("cliproxy_response", 502, "Hub returned an unreadable response");
@@ -472,12 +569,16 @@ export class CLIProxyService {
         const email = typeof file["email"] === "string" ? file["email"] : null;
         const holder = email === null && workspace === null ? null : JSON.stringify([email, workspace]);
         const last = kept.has(entry.key) && holder !== null ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
-        if (last) return [Promise.resolve(last)];
-        const identities = accountIdentities(provider.id, holder, index);
+        const identities = accountIdentities(provider.id, holder, email, index);
+        const shown = !start.hidden.has(entry.key) && !live.hidden.has(entry.key);
+        // a kept row teaches what its file says now too: its account may have moved to another auth index (#3449)
+        // (set on the row only once the report completes: one an invalidation overtook teaches nothing)
+        if (last) { learned.set(entry.key, { identities, shown, kept: last }); return [Promise.resolve(last)]; }
         const held = (row: ProviderUsage): ProviderUsage => {
           if (holder !== null) this.holders.set(row, holder);
           this.identities.set(row, identities);
-          if (!start.hidden.has(row.key) && !live.hidden.has(row.key)) this.shownRows.add(row);
+          if (shown) this.shownRows.add(row);
+          learned.set(row.key, { identities, shown });
           return row;
         };
         if (unreadableIn(start, entry.key, identities) || unreadableIn(live, entry.key, identities)) return [Promise.resolve(held({ ...entry, problem: null }))];

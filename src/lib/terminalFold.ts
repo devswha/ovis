@@ -117,6 +117,9 @@ export function readableColor(fg: string, bg: string, ratio: number): string {
 
 /** `fg` faded halfway toward `bg` (as SGR 2's 50% alpha draws it over `bg`), then lifted to `ratio` against `bg`. */
 export function dimmedColor(fg: string, bg: string, ratio = 4.5): string {
+  // a background read back from an element's style comes serialized, as rgb(r, g, b)
+  const serialized = /^rgba?\(\s*(\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})(?:,\s*1(?:\.0+)?)?\s*\)$/i.exec(bg);
+  if (serialized) bg = `#${serialized.slice(1, 4).map((value) => hex(Math.min(Number(value), 255))).join("")}`;
   const from = rgbOf(fg);
   const under = rgbOf(bg);
   if (!from || !under) return `color-mix(in srgb, ${fg} 50%, transparent)`;

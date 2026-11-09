@@ -158,7 +158,11 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
     return true;
   };
 
+  // a Retry sends the answer that failed: once the card's checks or text change, Send, Submit or Next take them as they are now
+  const dropRetry = (): void => setError((current) => current?.retry === undefined ? current : { ...current, retry: undefined });
+
   const toggle = (index: number): void => {
+    dropRetry();
     setSelected((current) => {
       const next = new Set(current);
       if (next.has(index)) next.delete(index); else next.add(index);
@@ -382,7 +386,12 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
         <div className="prompt-card-custom">
           {hasChoices && <span className="prompt-card-custom-label" id={customLabelId}>{sendsChecksWithText(prompt) ? t("Custom answer") : t("Or type your own answer")}</span>}
           <div className="prompt-card-custom-row">
-            <input className="input" value={custom} disabled={pending} placeholder={prompt.options[prompt.custom_option_index] !== undefined ? words.label(prompt.custom_option_index) : t("Type an answer")} aria-label={hasChoices ? undefined : t("Custom answer")} aria-labelledby={hasChoices ? customLabelId : undefined} onChange={(event) => { const next = event.currentTarget.value; setCustom(next); onTextChange?.(next); }} onKeyDown={(event) => {
+            <input className="input" value={custom} disabled={pending} placeholder={prompt.options[prompt.custom_option_index] !== undefined ? words.label(prompt.custom_option_index) : t("Type an answer")} aria-label={hasChoices ? undefined : t("Custom answer")} aria-labelledby={hasChoices ? customLabelId : undefined} onChange={(event) => {
+              const next = event.currentTarget.value;
+              setCustom(next);
+              onTextChange?.(next);
+              dropRetry();
+            }} onKeyDown={(event) => {
               // an IME's Enter commits the candidate; WebKit can send it after compositionend, as key code 229
               if (event.key === "Enter" && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && custom.trim().length > 0) void answer({ custom_text: custom.trim() });
             }} />
