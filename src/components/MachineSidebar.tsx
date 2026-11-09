@@ -22,6 +22,7 @@ import { useEdgeFades } from "../lib/useEdgeFades.ts";
 import "./Machines.css";
 import "./SidebarSections.css";
 import { useT } from "../lib/i18n.ts";
+import { FoundHerdrChoices } from "./FoundHerdrChoices.tsx";
 import { useSettings } from "../lib/settings.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { machineErrorText, saysHerdrAway, sshFailure } from "../lib/userError.ts";
@@ -475,7 +476,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     <span className={`machine-dot is-${machine.action_required === "setup" ? "setup" : machine.state}`} title={machine.action_required === "setup" ? t("Setup needed") : t(STATE_WORD[machine.state])} aria-hidden="true" />
   </>;
   // the PC's name is the head of its workspaces, and the caret beside its + the one fold over them
-  return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
+  return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}${compact ? "" : " is-two-line"}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
     {!headerless && <header className={`machine-header${compact ? " is-compact" : ""}`}>
       {renaming
         ? <div className="machine-title">{titleBody}</div>
@@ -503,6 +504,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     {menu && <RowMenu anchor={menu} title={machine.name} items={manageItems()} onClose={closeMenu} header={<span className="machine-menu-head">
       <span className="machine-menu-name">{machine.name}</span>
       <span className="machine-menu-state">{stateLine}</span>
+      {machine.runtime && <span className="machine-menu-note">{t("Runtime: {runtime}", { runtime: machine.runtime })}</span>}
       {manageNote !== null && <span className="machine-menu-note">{manageNote}</span>}
     </span>} />}
     {confirmRemove && <ConfirmDialog title={t("Remove PC {name}?", { name: machine.name })} body={t(machine.kind === "relay" ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
@@ -576,6 +578,7 @@ function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(m
   </div>;
   // another app's bridge runs on this PC: neither an update from here nor an approval fixes that,
   // so it is named as what it is, with the server's reason and a plain reconnect
+  if (machine.action_required === "choose_herdr" && (machine.found_herdr_sessions || machine.found_ovis) && machine.target) return <FoundHerdrChoices sessions={machine.found_herdr_sessions ?? []} ownOvis={machine.found_ovis} coreRefusal={machine.target.own_ovis && !machine.found_ovis?.length && machine.error ? machineErrorText(machine.error, t) : undefined} busy={busy || !machine.enabled} onChoose={(choice) => onSetup({ ...machine, target: { ...machine.target!, ...choice, ...(machine.herdr_profile_id ? { session: machine.target?.session } : {}) } }, false)} />;
   if (machine.action_required === "bridge_conflict") return <div className="machine-action" role="alert">
     <p className="machine-action-text"><strong>{t("Bridge connection conflict")}</strong><span>{t("Update the apps connected to this PC to the same version, or disconnect the other app, then reconnect here. Sessions keep running.")}</span>{machine.error && <span className="machine-action-reason">{machineErrorText(machine.error, t)}</span>}</p>
     <button type="button" className="btn btn-primary" onClick={() => onSetup(machine, false)}>{t("Reconnect")}</button>

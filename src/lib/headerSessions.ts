@@ -153,7 +153,9 @@ export function useDrawerDialog(open: boolean, setOpen: (open: boolean) => void,
     opener.current = null;
     escaped.current = false;
     wasOpen.current = false;
-    if (back?.isConnected && !nativeModalOver(back)) back.focus({ preventScroll: true });
+    // a dialog the drawer closed for (New workspace's) has taken the focus: it keeps it
+    const ownedElsewhere = active instanceof Element && active.closest('[aria-modal="true"], [role="dialog"], [role="alertdialog"]') !== null && !(surface.current?.contains(active) ?? false);
+    if (back?.isConnected && !ownedElsewhere && !nativeModalOver(back)) back.focus({ preventScroll: true });
   }, [open]);
   useEffect(() => {
     if (!open) return;
