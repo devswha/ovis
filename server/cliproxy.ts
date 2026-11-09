@@ -78,8 +78,8 @@ export class CLIProxyService {
   private readonly shownRows = new WeakSet<ProviderUsage>();
   /**
    * The account each shown Hub key is, by key, kept through an invalidation (a Hub sign-in drops every row but the hidden
-   * ones), so a hide made after it still knows the account wherever its file moves (#3444). Pruned to the keys the
-   * last full read listed, so it is bounded by the Hub's files; forgotten with the Hub.
+   * ones), so a hide made after it still knows the account wherever its file moves (#3444). Learned only from a report
+   * that completes, and pruned then to the keys it listed, so it is bounded by the Hub's files; forgotten with the Hub.
    */
   private readonly shownIdentities = new Map<string, readonly string[]>();
   /**
@@ -426,7 +426,8 @@ export class CLIProxyService {
       : new Set(this.entries.map((entry) => entry.key).filter((key) => !shown.includes(key)));
     const generation = this.generation;
     const answer = { whole };
-    const pass = this.collect(kept, start, answer).then((entries) => {
+    const learned = new Map<string, { identities: readonly string[]; shown: boolean }>();
+    const pass = this.collect(kept, start, answer, learned).then((entries) => {
       if (generation !== this.generation) return [];
       // a partial read that failed changes nothing: the cached rows, hidden ones included, stay, and the
       // accounts shown again count as just shown at the next report, so it reads them again
@@ -441,6 +442,15 @@ export class CLIProxyService {
       this.entries = entries;
       // the Hub's whole listing: only the keys it lists now stay known as shown, so the map stays bounded by its files
       for (const key of this.shownIdentities.keys()) if (!entries.some((entry) => entry.key === key)) this.shownIdentities.delete(key);
+      // what this report learned, kept only now it completed: a report an invalidation (a Hub change) overtook teaches
+      // nothing, what it read being of the Hub before
+      for (const [key, { identities, shown }] of learned) {
+        const known = this.shownIdentities.get(key);
+        // a hidden key still holding the account it was shown as stays known as it, by its identities now (its auth
+        // index may have changed); one holding another account is not that account's any more
+        if (shown || (known !== undefined && sameAccount(known, identities))) this.shownIdentities.set(key, identities);
+        else this.shownIdentities.delete(key);
+      }
       // a list read only in part let nothing be read: not a fresh read, so the next report reads again, the accounts
       // shown again included (#3437)
       if (!answer.whole) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
@@ -456,11 +466,11 @@ export class CLIProxyService {
    * `kept`: the accounts whose last rows stay unread (while their file still names the same account); `start`: the hidden
    * list as the report began. An account is read only if both `start` and the hidden list as the Hub answers let it be
    * (#3437): a hide, a show or a blind that changes meanwhile keeps it unread, never reads it. `answer.whole` turns false
-   * when either was read only in part. null: the Hub could not be read
+   * when either was read only in part. `learned`: each key's account as read, and whether shown then, for report to
+   * keep once it completes. null: the Hub could not be read
    */
-  private async collect(kept: ReadonlySet<string>, start: ReadView, answer: { whole: boolean }): Promise<readonly ProviderUsage[] | null> {
-    // a report an invalidation (a Hub change) overtook teaches nothing: what it shows is of the Hub before
-    const generation = this.generation;
+  private async collect(kept: ReadonlySet<string>, start: ReadView, answer: { whole: boolean },
+    learned: Map<string, { identities: readonly string[]; shown: boolean }>): Promise<readonly ProviderUsage[] | null> {
     try {
       const body = await this.call("/credentials");
       if (!Array.isArray(body["files"])) throw new CLIProxyError("cliproxy_response", 502, "Hub returned an unreadable response");
@@ -492,13 +502,9 @@ export class CLIProxyService {
         const held = (row: ProviderUsage): ProviderUsage => {
           if (holder !== null) this.holders.set(row, holder);
           this.identities.set(row, identities);
-          if (!start.hidden.has(row.key) && !live.hidden.has(row.key)) {
-            this.shownRows.add(row);
-            if (generation === this.generation) this.shownIdentities.set(row.key, identities);
-          } else if (generation === this.generation && JSON.stringify(this.shownIdentities.get(row.key)) !== JSON.stringify(identities)) {
-            // the key now holds another account than the one it was shown as: that account is not this key's any more
-            this.shownIdentities.delete(row.key);
-          }
+          const shown = !start.hidden.has(row.key) && !live.hidden.has(row.key);
+          if (shown) this.shownRows.add(row);
+          learned.set(row.key, { identities, shown });
           return row;
         };
         if (unreadableIn(start, entry.key, identities) || unreadableIn(live, entry.key, identities)) return [Promise.resolve(held({ ...entry, problem: null }))];

@@ -543,6 +543,48 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(before).sort()).toEqual(["b", "m"]);
     });
 
+    it("keeps a shown account known by its email when its auth index changes under the same key (#3444)", async () => {
+      await configure();
+      await service.report();
+      service.invalidate();
+      let hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      // Alice, hidden, is listed under the same key with a new auth index
+      fake.files[0]!.auth_index = "n";
+      await service.report(false, hidden);
+      // shown again, and hidden again before any report: the key is still Alice's
+      hidden = new Set();
+      service.hiddenChanged();
+      hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.hiddenChanged();
+      const before = reads().length;
+      moveAlice();
+      service.invalidate();
+      await service.report(false, hidden);
+      expect(reads().slice(before)).toEqual(["b"]);
+    });
+
+    it("learns no shown identity from a report a Hub change overtook (#3444)", async () => {
+      await configure();
+      await service.report();
+      const known = () => [...(service as unknown as { shownIdentities: Map<string, unknown> }).shownIdentities.keys()].sort();
+      expect(known()).toEqual(["claude:cliproxy:claude-a.json", "codex:cliproxy:codex-b.json"]);
+      // each report lists a disabled account (held at once) and is overtaken while it reads another; the account is then removed
+      for (const name of ["gone-1", "gone-2"]) {
+        fake.files.push({ ...fake.files[0]!, name: `${name}.json`, email: `${name}@example.test`, auth_index: name, disabled: true });
+        const read = fake.holdRead();
+        service.invalidate();
+        const report = service.report();
+        await read.arrived;
+        service.invalidate();
+        read.release();
+        expect(await report).toEqual([]);
+        fake.files.pop();
+      }
+      expect(known()).toEqual(["claude:cliproxy:claude-a.json", "codex:cliproxy:codex-b.json"]);
+    });
+
     it("saves it at the next change after a save failed", async () => {
       await configure();
       await service.report();
