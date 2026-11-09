@@ -26,6 +26,9 @@ const LINES = [
   "\x1b[48;2;50;60;70mCOLORED-TEST-TEXT     \x1b[0m NORMAL-TEST-TEXT",
   "\x1b[44mPALETTE-TEST-TEXT     \x1b[0m NORMAL-TEST-TEXT",
   "\x1b[38;2;0;0;0;48;2;230;230;230mDARK-ON-LIGHT-TEXT    \x1b[0m NORMAL-TEST-TEXT",
+  // a CJK row: two ideographic spaces (wide, no ink, so their centres are their background) at columns 14-15 and
+  // 16-17, then a Hangul glyph at 18-19
+  "\x1b[48;2;50;60;70mWIDE-ROW-TEXT \u3000\u3000\uAC00  \x1b[0m NORMAL-TEST-TEXT",
 ];
 /** the terminal's minimumContrastRatio (useTerminalMount.ts) */
 const MINIMUM_CONTRAST = 4.5;
@@ -202,6 +205,38 @@ setInterval(() => {}, 1 << 30);
   columnProbes.forEach((probe, index) => {
     const expected = probe.selected ? boxRgb : columnBefore[index]!;
     check(near(columnAfter[index]!, expected), `column select: the ${probe.name} is ${columnAfter[index]}, expected ${expected}`);
+  });
+
+  // a column whose edge falls inside a wide glyph: xterm tells a wide cell selected by its first column alone
+  // (DomRendererRowFactory) and copies only that, so a glyph whose first column is left of the column stays unselected
+  await page.mouse.click(bottom.x, bottom.y + bottom.width * 6);
+  await page.waitForFunction(() => document.querySelector(".pane-terminal .xterm-selection div") === null);
+  await drawn();
+  const wideProbes = [
+    { name: "unselected wide glyph's half left of the column", at: await cellCentre("WIDE-ROW-TEXT", 14), selected: false },
+    { name: "unselected wide glyph's half inside the column", at: await cellCentre("WIDE-ROW-TEXT", 15), selected: false },
+    { name: "selected wide glyph's first half", at: await cellCentre("WIDE-ROW-TEXT", 16), selected: true },
+    { name: "selected wide glyph's second half", at: await cellCentre("WIDE-ROW-TEXT", 17), selected: true },
+  ];
+  const wideBefore = await pixels(wideProbes.map((probe) => probe.at));
+  wideProbes.forEach((probe, index) => check(near(wideBefore[index]!, PROBES[truecolor]!.own!),
+    `the ${probe.name} is drawn in its own colour before the drag (${wideBefore[index]})`));
+  // the column starts a row up, on text: a column of blanks alone copies nothing, and xterm takes it for an Alt click
+  // that moves the cursor (altClickMovesCursor)
+  const [wideFrom, wideTo] = [await cellCentre("DARK-ON-LIGHT-TEXT", 15), wideProbes[3]!.at];
+  await page.keyboard.down("Alt");
+  await page.mouse.move(wideFrom.x - wideFrom.width / 2 + 1, wideFrom.y);
+  await page.mouse.down();
+  await page.mouse.move(wideTo.x, wideTo.y, { steps: 4 });
+  await page.mouse.up();
+  await page.keyboard.up("Alt");
+  await selectionShown();
+  await drawn();
+  const wideAfter = await pixels(wideProbes.map((probe) => probe.at));
+  await page.screenshot({ path: join(evidence, "terminal-selection-cell-bg-wide.png") });
+  wideProbes.forEach((probe, index) => {
+    const expected = probe.selected ? boxRgb : PROBES[truecolor]!.own!;
+    check(near(wideAfter[index]!, expected), `wide column select: the ${probe.name} is ${wideAfter[index]}, expected ${expected}`);
   });
   assert.deepEqual(failures, []);
   assert.deepEqual(errors, []);

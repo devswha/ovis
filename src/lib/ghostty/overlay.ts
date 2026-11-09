@@ -324,12 +324,13 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     const pieces: { run: GhosttyRun; inside: boolean }[] = [];
     let x = run.x;
     for (const cell of run.cells) {
-      const width = cell.wide ? 2 : 1;
-      const inside = x < selected[1] && x + width > selected[0];
+      // a wide cell is selected by its first column alone, as xterm's row factory tells it and its copy takes it: a column
+      // whose edge falls inside the glyph leaves the glyph out when that edge is right of the first column
+      const inside = x >= selected[0] && x < selected[1];
       const last = pieces.at(-1);
       if (last?.inside === inside) last.run.cells.push(cell);
       else pieces.push({ run: { ...run, x, cells: [cell] }, inside });
-      x += width;
+      x += cell.wide ? 2 : 1;
     }
     return pieces.map((piece) => pieceHtml(piece.run, piece.inside)).join("");
   };
