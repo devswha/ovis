@@ -375,6 +375,48 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(3)).toEqual([]);
     });
 
+    it("decides a report's reads from the hidden list as it was when the report began (#3437)", async () => {
+      fake.files.push({ ...fake.files[0]!, name: "claude-c.json", email: "claude-c@example.test", auth_index: "c" });
+      await configure();
+      await service.report();
+      service.skipAccounts(() => new Set(["claude:cliproxy:claude-a.json"]));
+      service.hiddenChanged();
+      // Bob's hide was never saved, and the removed list naming him cannot be read as the report begins
+      let readable = false;
+      const restarted = new CLIProxyService(dir);
+      const hidden = () => new Set(readable ? ["claude:cliproxy:claude-a.json", "codex:cliproxy:codex-b.json"] : ["claude:cliproxy:claude-a.json"]);
+      restarted.skipAccounts(hidden, () => readable);
+      restarted.hiddenChanged();
+      Object.assign(fake.files[1]!, { name: "codex-moved.json", auth_index: "m" });
+      const held = fake.holdCredentials();
+      const report = restarted.report(false, hidden());
+      await held.arrived;
+      // the list becomes whole while the Hub's answer is on its way
+      readable = true;
+      restarted.status();
+      held.release();
+      await report;
+      expect(reads().slice(3)).toEqual([]);
+    });
+
+    it("reads again at the next report once a list read only in part is whole (#3437)", async () => {
+      fake.files.push({ ...fake.files[0]!, name: "claude-c.json", email: "claude-c@example.test", auth_index: "c" });
+      await configure();
+      await service.report();
+      const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      let readable = false;
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => hidden, () => readable);
+      await restarted.report(false, hidden);
+      expect(reads().slice(3)).toEqual([]);
+      // readable again: the accounts shown are read now, not at the next refresh
+      readable = true;
+      await restarted.report(false, hidden);
+      expect(reads().slice(3).sort()).toEqual(["b", "c"]);
+    });
+
     it("keeps the way out of a start that found a lost save, through a restart (#3437)", async () => {
       fake.files.push({ ...fake.files[0]!, name: "claude-c.json", email: "claude-c@example.test", auth_index: "c" });
       await configure();
