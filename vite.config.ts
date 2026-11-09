@@ -12,9 +12,10 @@ const xtermSource = normalizePath(buildXtermSource(fileURLToPath(new URL(".", im
 
 let revision: string | null = null;
 try { revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* non-Git build */ }
-// whether tracked files differ from that commit: such a build is not that revision (server/app-revision.ts trusts no dirty one)
+// whether the tree differs from that commit, an untracked (not ignored) file included: it can go into the build, so such a
+// build is not that revision (server/app-revision.ts trusts no dirty one)
 let dirty = true;
-try { dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim() !== ""; } catch { /* non-Git build: unverified */ }
+try { dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=normal"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim() !== ""; } catch { /* non-Git build: unverified */ }
 
 // agentSvgMarks.ts carries LobeHub Icons paths (MIT): their notice ships with every built client
 const thirdPartyNotices: Plugin = {

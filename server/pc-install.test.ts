@@ -519,10 +519,13 @@ describe("installing Ovis on a PC over SSH", () => {
     const pc = fixture({ descriptors: [descriptor(4242)], exitAfterChecks: 3 });
     const job = pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242 } });
     await pc.reached("stopping");
+    const connections = pc.challenges.length;
     pc.installer.stop();
     await pc.settled(job);
     expect(pc.commands.some((command) => command.includes('[ -L "$d/exe" ]'))).toBe(false);
-    expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(true);
+    // no new SSH connection while this app shuts down (an unreachable PC would hold it): the copy's own lease removes it
+    expect(pc.challenges.length).toBe(connections);
+    expect(pc.commands.some((command) => command.startsWith("rm -rf '/tmp/ovis-restore."))).toBe(false);
   });
 
   it("stops the shown server when its birth still matches its registration", async () => {

@@ -285,6 +285,9 @@ export class PcInstaller {
    */
   private async startAgain(state: State, request: { target: SshTarget; machine_id?: string }, saved: string, socket: string, port: number | undefined, restore: number | null | false): Promise<string> {
     const job = state.public;
+    // this app shutting down opens no SSH connection (an unreachable PC would hold it past the teardown): the copy's own
+    // lease removes it there, as it does for a copy this app never came back to
+    if (restore === false && this.stopping) return "forgotten";
     job.step = restore === false ? "Removing the copy of that PC's Ovis…" : "Starting that PC's Ovis again as it was (this can take a few minutes, and is not cancelled)…";
     this.options.onChange?.(job);
     let ssh: SshConnection | undefined;
@@ -526,7 +529,7 @@ export class PcInstaller {
       // the server stopped (or signalled) for this install, with nothing installed or launched in its place: started again
       // as it was, before the job ends. Not once the installer ran or the launcher was asked: a start of their own may
       // still be on its way there, and would come up beside it. The copy is removed either way
-      // this app stopping (installer.stop()) only removes the copy (one short SSH command), never minutes of restoring while it shuts down
+      // this app stopping (installer.stop()) neither restores nor connects: the copy's lease removes it
       const again = saved ? await this.startAgain(state, request, saved, socket, savedPort, !this.stopping && (stopped || signalled !== null) && replaced === "no" ? signalled : false) : null;
       // the signal never stopped it: as if nothing was stopped
       if (again === "running") stopped = false;
