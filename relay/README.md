@@ -113,8 +113,7 @@ pairing hosts, in a release most PCs run.
   no account. A v2 payload has the same fields with `v` 2 and one more, `new`: 1 when new client
   sessions to the PC are allowed, 0 when they are not for the pass's lifetime; a v1 pass allows
   them. The prefix stays `ovp1.`: the signature covers the payload, `v` and `new` included. The
-  relay accepts both forms and parses `new`, but does not act on it yet: that is enforced by a
-  later relay change.
+  relay accepts both forms; what `new` does is under "New sessions" below.
 - **Sending it.** The PC puts it in the `x-ovis-relay-pass` header of every PC socket's upgrade
   (control, data, warm), never in the URL. A pass alone opens nothing: the socket still answers the
   server challenge for that `server_id`'s key, so a copied pass is no use without the PC's secret key.
@@ -136,6 +135,12 @@ pairing hosts, in a release most PCs run.
   kept in the Durable Object's storage, so it outlives an eviction. The PC renews it on its proven
   control socket with `{"type":"relay_pass","pass":"..."}`, which only ever moves the expiry later; a
   relay without passes drops that frame like any other.
+- **New sessions.** The account service issues a pass with `new` 0 to a PC whose account is past
+  its limits (a relay data limit, say). The room keeps what the pass that authorizes it says: the
+  one that runs out last, which is the one issued last, so a renewal with `new` 1 lifts it at once.
+  While enforced, a new client of a room whose pass says `new` 0 closes `4403` (`no new sessions
+  for this server`) before it takes any place; clients already connected, and the PC's own sockets,
+  stay. `off` and `grace` let every client in whatever the pass says.
 - **Modes**, from `RELAY_PASS_MODE` (`--pass-mode`): `off` (the default) lets every PC in as
   before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at"}` to the control
   socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`) and, while the room has no pass
@@ -197,6 +202,7 @@ pairing hosts, in a release most PCs run.
 | `1013` | a limit above; try again later |
 | `4401` | to a PC socket, or a pairing host that offers a key: proof missing, a key that does not derive the `server_id`, or a wrong or late answer |
 | `4402` | to a PC socket or a pairing host: no relay pass that holds while the relay asks for one (`relay pass required`, `relay pass expired`, `relay pass invalid`) |
+| `4403` | to a new client, while passes are enforced: the PC's pass allows no new sessions (account limits; `no new sessions for this server`). Clients already connected stay |
 
 A socket that closes itself has its close answered at once, with its own code when that is `1000`
 or `3000`-`4999` (`1000` otherwise, such as for `1001` or `1005`), and its partner is closed as above. On Cloudflare the

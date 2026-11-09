@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { answerServerChallenge, SERVER_PROOF_CLOSE, SERVER_PROOF_MS } from "../shared/relay-server-proof.ts";
-import { RELAY_PASS_HEADER, RELAY_PASS_LIFETIME_S, RELAY_PASS_SKEW_S, signRelayPass } from "../shared/relay-pass.ts";
+import { RELAY_NEW_SESSIONS_REFUSED, RELAY_PASS_HEADER, RELAY_PASS_LIFETIME_S, RELAY_PASS_SKEW_S, signRelayPass } from "../shared/relay-pass.ts";
 import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, USAGE_REPORT_MS, WARM_QUIET_MS, parseSocketRequest, type Frame } from "./core.ts";
 import { answerChallenge, newServer, type TestServer } from "./relay-test-client.ts";
 import { PAIR_GUEST_MS } from "./pair-room.ts";
@@ -1102,6 +1102,49 @@ describe("relay pass", () => {
     const client = await w.open("role=client");
     expect(client.json(0)).not.toHaveProperty("relay_pass");
     expect((w.fake.stored.get("pass_until") as { until: number }).until).toBe(T0 + RELAY_PASS_LIFETIME_S * 1000);
+  });
+
+  const passSaying = (newSessions: boolean, at = T0) => signRelayPass(signer, KID, SERVER, Math.floor(at / 1000), undefined, { newSessions });
+
+  test("while enforced, a PC whose pass allows no new sessions takes no new client, keeps the ones it has, and takes them again after a renewal that allows them", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passSaying(true));
+    const kept = await w.open("role=client");
+    expect(kept.closedWith).toBeNull();
+    // the renewal issued next (it runs out later) says no new sessions
+    const refusedAt = T0 + 3_600_000;
+    setSystemTime(new Date(refusedAt));
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passSaying(false, refusedAt) }));
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: refusedAt + RELAY_PASS_LIFETIME_S * 1000, kid: KID, noNew: true });
+    await w.evict();
+    expect((await w.open("role=client")).closedWith).toEqual({ code: CLOSE.NEW_SESSIONS, reason: RELAY_NEW_SESSIONS_REFUSED });
+    expect(kept.closedWith).toBeNull();
+    expect(control.closedWith).toBeNull();
+    const allowedAt = refusedAt + 3_600_000;
+    setSystemTime(new Date(allowedAt));
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passSaying(true, allowedAt) }));
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: allowedAt + RELAY_PASS_LIFETIME_S * 1000, kid: KID });
+    expect((await w.open("role=client")).closedWith).toBeNull();
+  });
+
+  test("a renewal with the same expiry still changes what the room says of new sessions", async () => {
+    const w = await world("enforce");
+    const control = await w.control(await passSaying(false));
+    expect((await w.open("role=client")).closedWith?.code).toBe(CLOSE.NEW_SESSIONS);
+    setSystemTime(new Date(T0 + 60_000));
+    await w.box.room.webSocketMessage(control, JSON.stringify({ type: "relay_pass", pass: await passSaying(true) }));
+    expect(w.fake.stored.get("pass_until")).toEqual({ until: T0 + RELAY_PASS_LIFETIME_S * 1000, kid: KID });
+    expect((await w.open("role=client")).closedWith).toBeNull();
+  });
+
+  test("a PC socket's proof says for the room that its pass allows no new sessions; in grace every client still gets in", async () => {
+    const enforced = await world("enforce");
+    await enforced.control(await passSaying(false));
+    expect((await enforced.open("role=client")).closedWith?.code).toBe(CLOSE.NEW_SESSIONS);
+    const grace = await world("grace");
+    await grace.control(await passSaying(false));
+    expect((await grace.open("role=client")).closedWith).toBeNull();
+    expect(grace.fake.stored.get("pass_until")).toMatchObject({ noNew: true });
   });
 
   test("a pass whose proof fails authorizes nothing", async () => {
