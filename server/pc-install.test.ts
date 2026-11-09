@@ -570,6 +570,21 @@ describe("installing Ovis on a PC over SSH", () => {
     expect(gone.commands.some((command) => command.includes("kill -TERM 4242"))).toBe(false);
   });
 
+  it.each(["replace", "restart"] as const)("refuses a herdr-core %s through a herdr plugin left there, starting no headless herdr", async (mode) => {
+    const socket = "/home/fx/.local/state/ovis/herdr-core.sock";
+    // a herdr plugin from before the move: its Ovis, and the headless herdr started for it, would come back on herdr's
+    // default socket, never as the herdr-core Ovis this PC uses
+    const pc = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], launcher: "plugin", herdrRunning: false, restoreOff: true });
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode, pid: 4242, socket } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "no_launcher" });
+    expect(pc.commands.some((command) => command.includes(" server </dev/null"))).toBe(false);
+    expect(pc.commands.some((command) => command.includes("herdr plugin action invoke"))).toBe(false);
+    expect(pc.commands.some((command) => command.includes("kill -TERM"))).toBe(false);
+    expect(installs(pc.commands)).toEqual([]);
+    expect(pc.alive.has(4242)).toBe(true);
+    expect(pc.connects).toEqual([]);
+  });
+
   it("refuses a herdr-core plan whose server is gone while another Ovis runs on herdr's default socket", async () => {
     const socket = "/home/fx/.local/state/ovis/herdr-core.sock";
     // an independent Ovis live on the default socket: not gone, so nothing is installed or started beside it
@@ -630,7 +645,8 @@ describe("installing Ovis on a PC over SSH", () => {
   it("stops a second herdr-core Ovis a launcher's restart started at the planned server's adapter socket", async () => {
     const socket = coreSocket;
     // the launcher's restart leaves the planned server running: the Ovis it started beside it, at that socket, is stopped
-    const beside = fixture({ descriptors: [core], launcher: "plugin", ovisSocket: socket, besideLauncher: true, restoreOff: true });
+    // its user service (a herdr plugin is refused for a herdr-core plan)
+    const beside = fixture({ descriptors: [core], launcher: "systemd", ovisSocket: socket, besideLauncher: true, restoreOff: true });
     expect(await beside.settled(beside.installer.start({ target, machine_id: "pc-1", plan: { mode: "restart", pid: 4242, socket } }))).toMatchObject({ phase: "failed", error_code: "not_stopped" });
     expect(beside.commands).toContain("kill -TERM 5555 2>/dev/null || true");
     expect(beside.alive.has(5555)).toBe(false);

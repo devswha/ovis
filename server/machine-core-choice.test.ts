@@ -239,6 +239,45 @@ it.each(["registration removed", "process stopped"])("retries a saved PC whose c
   }
 });
 
+// The account's sessions are read on that PC for the choice: a dropped SSH connection is said as that, never as a PC with
+// no herdr sessions, while a bundle that cannot run discovery still leaves the choice, with none listed
+it.each(["connection dropped", "discovery unavailable"])("tells why the choice could not list sessions: %s", async (failure) => {
+  const dir = mkdtempSync(join(tmpdir(), "machine-core-discovery-"));
+  const id = "12345678-1234-1234-1234-123456789abc";
+  const socket = "/home/fixture/.config/ovis/hc-adapter.sock";
+  writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: { destination: "fixture-only" } }]));
+  const dropped = failure === "connection dropped";
+  let starts = 0;
+  const mocks = [
+    spyOn(SshConnection.prototype, "start").mockResolvedValue(undefined),
+    spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
+    spyOn(SshConnection.prototype, "connected").mockImplementation(() => !dropped),
+    spyOn(SshConnection.prototype, "run").mockRejectedValue(new Error("no command is expected on that PC")),
+    // the chosen Ovis is gone: a setup started in its dialog gets the choice, with the sessions read there
+    spyOn(posixHost, "inspect").mockResolvedValue({ platform: "linux-x64", home: "/home/fixture", herdrPath: "", expectedSocket: "/home/fixture/.config/herdr/herdr.sock", bundleReady: true, bundleOlder: false, descriptors: [], runtimeDir: "/runtime", registryDir: "/registry" }),
+    spyOn(posixHost, "discoverSessions").mockRejectedValue(new Error(dropped ? "Connection to fixture-only closed by remote host." : "SSH command failed (1)")),
+    spyOn(posixHost, "start").mockImplementation(async () => { starts++; }),
+  ];
+  const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+  try {
+    const job = await new Promise<SetupJob>((resolve, reject) => {
+      let job: SetupJob | undefined;
+      const timeout = setTimeout(() => { off(); reject(new Error("setup did not settle")); }, 5000);
+      const off = manager.subscribe(() => { if (job && ["failed", "connected"].includes(job.phase)) { clearTimeout(timeout); off(); resolve(job); } });
+      job = manager.setup({ destination: "fixture-only", own_ovis: socket, machine_id: id }, {});
+    });
+    expect(job.phase).toBe("failed");
+    expect(starts).toBe(0);
+    if (dropped) {
+      expect(job.error).toBe("Connection to fixture-only closed by remote host.");
+      expect(job.action_required).not.toBe("choose_herdr");
+      expect(job.found_herdr_sessions).toBeUndefined();
+    } else expect(job).toMatchObject({ action_required: "choose_herdr", error: "Start Ovis on that PC, or start a new herdr here", found_herdr_sessions: [] });
+  } finally {
+    manager.stop(); mocks.forEach((mock) => mock.mockRestore()); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 it("asks for a new choice instead of retrying when a saved Windows PC is set to use its own Ovis server", async () => {
   const dir = mkdtempSync(join(tmpdir(), "machine-core-windows-"));
   const id = "12345678-1234-1234-1234-123456789abd";

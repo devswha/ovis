@@ -1493,8 +1493,10 @@ export class MachineManager {
       let sessions: FoundHerdrSession[] = [];
       try { sessions = await host.discoverSessions?.(ssh, inspection) ?? []; }
       catch (error) {
-        if (!(error instanceof Error)) throw error;
-        // An inaccessible discovery runtime leaves no verified choices, but still requires the owner.
+        // the SSH connection itself failed: said as that, never as a PC with no sessions
+        if (!(error instanceof Error) || !ssh.connected()) throw error;
+        // A bundle that cannot run discovery, or an answer that does not parse, leaves no verified choices, but still
+        // requires the owner.
         sessions = [];
       }
       if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
