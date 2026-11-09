@@ -5,7 +5,7 @@ import "./PullRequestPanel.css";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { Skeleton } from "./Skeleton.tsx";
 
-import { paneStorageId } from "../../shared/machines.ts";
+import { LOCAL_MACHINE, paneStorageId } from "../../shared/machines.ts";
 import type { PullRequestCheck, PullRequestCheckState, PullRequestThread, PullRequestView } from "../../shared/pull-request.ts";
 import { blockIntoComposer } from "../lib/chatQuote.ts";
 import { useLocale, useT } from "../lib/i18n.ts";
@@ -91,12 +91,16 @@ export function PullRequestPanel({ paneId, directory }: PullRequestPanelProps) {
   const passed = view?.checks.filter((check) => check.state === "pass").length ?? 0;
   const blocked = view === null ? null : mergeBlockedWord(t, view);
   const stateWord = view === null ? "" : view.state === "merged" ? t("Merged") : view.state === "closed" ? t("Closed without merging") : view.draft ? t("Draft") : t("Ready for review");
+  const pcPrefix = machineId !== LOCAL_MACHINE ? `${machineId} · ` : "";
+  const fallbackHeading = load.status === "pending"
+    ? `${pcPrefix}${t("Loading…")}`
+    : `${pcPrefix}${directory || t("Pull request")}`;
 
   return (
     <div className="pull-request" role="group" aria-label={t("Pull request")} aria-busy={load.status === "pending"}>
       <div className="pull-request-bar">
         {view === null
-          ? <span className="pull-request-heading">{t("Pull request")}</span>
+          ? <span className="pull-request-heading" title={directory || undefined}><span dir="ltr">{fallbackHeading}</span></span>
           : <a className="pull-request-heading pull-request-title" href={view.url} target="_blank" rel="noreferrer" title={view.title}>
             <span className="pull-request-number">#{view.number}</span> <span>{view.title}</span>
             <ExternalLink aria-hidden="true" />
@@ -109,7 +113,7 @@ export function PullRequestPanel({ paneId, directory }: PullRequestPanelProps) {
         <span className="visually-hidden">{t("Loading…")}</span>
         {skeletonRows(4).map((width, index) => <Skeleton key={index} width={width} />)}
       </div>}
-      {load.status === "failed" && <p className="pull-request-note pull-request-error" role="alert">{pullRequestErrorMessage(t, load.error)}</p>}
+      {load.status === "failed" && <p className="pull-request-note pull-request-error" role="alert">{pullRequestErrorMessage(t, load.error, machineId)}</p>}
       {view !== null && <>
         <p className="pull-request-branches">
           <span className="pull-request-state" data-state={view.draft && view.state === "open" ? "draft" : view.state}>{stateWord}</span>

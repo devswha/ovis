@@ -76,9 +76,51 @@ test("narrows the list to the paths that hold the filter's words, in any case", 
   const filter = renderer!.root.findByProps({ type: "search" });
   await act(async () => { filter.props.onChange({ target: { value: "PLANS" } }); });
   expect(rows().map((row) => row.props.title)).toEqual(["docs/plans/rollout.md"]);
+  const bar = renderer!.root.findByProps({ className: "dir-browser-bar" });
+  expect(textOf(bar)).toContain("Filter documents:/repo");
   await act(async () => { filter.props.onChange({ target: { value: "nothing-like-it" } }); });
   expect(rows()).toHaveLength(0);
-  expect(notes()).toEqual(["No matching documents"]);
+  // what is missing, then the way on, in one note
+  expect(notes()).toEqual(["No matching documents" + "Clear or change the filter."]);
+});
+
+test("retains the last folder path and skeleton placeholders while refreshing", async () => {
+  let resolveNext: ((res: Response) => void) | undefined;
+  let call = 0;
+  serve(() => {
+    call += 1;
+    if (call === 1) return Response.json(LISTING);
+    return new Promise<Response>((resolve) => { resolveNext = resolve; }) as unknown as Response;
+  });
+  await mount();
+  expect(rows()).toHaveLength(2);
+  const refresh = renderer!.root.findByProps({ "aria-label": "Refresh documents" });
+  await act(async () => { refresh.props.onClick(); });
+  const pathBar = renderer!.root.findByProps({ className: "dir-browser-path" });
+  expect(textOf(pathBar)).toBe("/repo");
+  // the note stands in the first row's place, a placeholder in each other row's: the list keeps its two rows' height
+  expect(textOf(renderer!.root.findByProps({ role: "status" }))).toBe("Loading documents…");
+  expect(renderer!.root.findAllByProps({ className: "md-docs-skeleton" })).toHaveLength(1);
+  await act(async () => { resolveNext?.(Response.json(LISTING)); });
+  expect(rows()).toHaveLength(2);
+});
+
+// the rows shown before a refresh, each a document or the note standing for none: the refresh keeps as many
+test.each([
+  ["no document", 0, "", 1],
+  ["one document", 1, "", 1],
+  ["two documents", 2, "", 2],
+  ["two documents filtered to one", 2, "plans", 1],
+])("a refresh after %s keeps the rows shown", async (_, listed, filter, shownRows) => {
+  const listing = { ...LISTING, documents: LISTING.documents.slice(0, listed) };
+  let reading = true;
+  serve(() => reading ? Response.json(listing) : new Promise<Response>(() => {}) as unknown as Response);
+  await mount();
+  await act(async () => { renderer!.root.findByProps({ type: "search" }).props.onChange({ target: { value: filter } }); });
+  reading = false;
+  await act(async () => { renderer!.root.findByProps({ "aria-label": "Refresh documents" }).props.onClick(); });
+  // the note takes the first row's place
+  expect(1 + renderer!.root.findAllByProps({ className: "md-docs-skeleton" }).length).toBe(shownRows);
 });
 
 test("says a PC on an older version cannot list documents, apart from any other failure", async () => {

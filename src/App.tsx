@@ -367,7 +367,7 @@ export function App() {
           : swap.reason === "same_pane" ? t("Choose two different panes.")
           : swap.reason === "not_found" ? t("A pane is no longer available.")
           : swap.reason === "no_neighbor" ? t("There is no pane on that side.")
-          : t("Something went wrong. Try again.");
+          : t("The pane swap could not be completed. Try again.");
         setLayoutNotice(t("Pane swap was refused: {reason}", { reason }));
       }
       void load();

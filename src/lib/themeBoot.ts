@@ -20,12 +20,15 @@ export const SETTINGS_STORAGE_KEY = "ovis:settings";
 /** The theme choice kept apart from the main record, so a damaged main record does not lose it. */
 export const THEMES_STORAGE_KEY = "ovis:themes";
 
-export const DEFAULT_APPEARANCE: Appearance = { theme: "dark", darkTheme: DEFAULT_THEME, lightTheme: DEFAULT_THEME };
+export const DEFAULT_APPEARANCE: Appearance = { theme: "system", darkTheme: DEFAULT_THEME, lightTheme: DEFAULT_THEME };
 
 /** The appearance of a stored record, with the migration of the records from before the two theme sides. */
 export function sanitizeAppearance(raw: unknown): Appearance {
   const record = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
-  const theme = record["theme"] === "dark" || record["theme"] === "light" || record["theme"] === "system" ? record["theme"] : DEFAULT_APPEARANCE.theme;
+  // A record without a theme choice: one that carries a palette is from the dark-only app (every
+  // record saved since has its theme), so it stays dark; anything else is a fresh device, on the OS scheme.
+  const beforeThemes = "palette" in record || "paletteDark" in record || "paletteLight" in record;
+  const theme = record["theme"] === "dark" || record["theme"] === "light" || record["theme"] === "system" ? record["theme"] : beforeThemes ? "dark" : DEFAULT_APPEARANCE.theme;
   const palette = isThemeId(record["palette"]) ? record["palette"] : "amber";
   // Absence migrates (a record from before themes wore amber, so it keeps amber); an explicitly
   // unknown id falls back to the default, not a stale pair.
@@ -48,7 +51,7 @@ export interface StoredAppearance {
 
 /** Reads both records; `storage` is a getter because reading localStorage itself throws where storage is blocked. */
 export function readStoredAppearance(storage: () => Pick<Storage, "getItem">): StoredAppearance {
-  const stored: StoredAppearance = { main: null, themes: null };
+  const stored: StoredAppearance = { main: { value: DEFAULT_APPEARANCE }, themes: null };
   try {
     const raw = storage().getItem(SETTINGS_STORAGE_KEY);
     if (raw !== null) stored.main = { value: JSON.parse(raw) };
