@@ -101,7 +101,6 @@ const ToolPathRootContext = createContext<string | null>(null);
 import type { TypedAnswer } from "../lib/promptAnswer.ts";
 import { polledPrompt, screenWordsToShow } from "../lib/promptText.ts";
 import { CARD_TEXT_PREFIX, paneLifetimes } from "../lib/paneLifetime.ts";
-import { onPaneMoved } from "../lib/paneMove.ts";
 import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import type { ConversationSearchMatch } from "../../shared/conversation-search.ts";
 import { pickAhead, pickedTurn, pickSettled } from "../../shared/conversation-search.ts";
@@ -205,19 +204,6 @@ paneLifetimes.onRetire((machineId) => {
     cardTexts.delete(key);
     if (typed.text.trim() !== "") paneLifetimes.keep(machineId, typed.paneId, "message", typed.text);
   }
-});
-// herdr moved the pane under a new ID: its card's text goes with it, for the pane it is now (a question
-// asked again there gets it back; one gone since puts it in that pane's draft, as keepCardText does)
-onPaneMoved((machineId, from, to) => {
-  const before = paneStorageId(machineId, from), after = paneStorageId(machineId, to);
-  const typed = heldCardTextFor(before);
-  // a text the new ID holds already is that pane's own
-  if (typed === undefined || heldCardTextFor(after) !== undefined) return;
-  cardTexts.delete(before);
-  storeCardText(before, null);
-  const moved = { ...typed, paneId: to };
-  cardTexts.set(after, moved);
-  storeCardText(after, moved);
 });
 const keptPrompt = (kept: { session: string | null; prompt: InteractivePrompt } | undefined, session: string | null): InteractivePrompt | null =>
   kept !== undefined && kept.session === session ? kept.prompt : null;
