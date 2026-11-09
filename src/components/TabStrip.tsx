@@ -644,9 +644,10 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   {agent ? <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agent} size={14} /></span>
                     : browserTabs && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
                   <span className="tab-strip-label">{name}</span>
-                  {tabDescription && <span id={tabStatusId} className="visually-hidden">{tabDescription}</span>}
                 </button>
               )}
+              {/* beside the tab, not in it: inside, its words would join the tab's name ("Tab 1Shell") */}
+              {tabDescription && <span id={tabStatusId} className="visually-hidden">{tabDescription}</span>}
               {menuButton && active && editing?.tabId !== tab.tab_id && <button type="button" className="tab-strip-menu" aria-label={t("Actions for {tab}", { tab: name })} title={t("Actions for {tab}", { tab: name })} aria-haspopup={popup} aria-expanded={pickerOpen} onClick={(event) => openPicker(event, tab)}>
                 <Ellipsis aria-hidden="true" />
               </button>}
