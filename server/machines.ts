@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, posix } from "node:path";
 import { BRIDGE_PROTOCOL, LOCAL_MACHINE, OWN_UPDATE_OFFER, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type HerdrIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type PcInstallJob, type PcInstallRequest, type PcUpdateAll, type PcUpdateOffer, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
@@ -17,7 +17,7 @@ import type { CompletionTracker } from "./completion.ts";
 import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
 import { type HerdrMachineProfile, samePort, sameSshSession } from "./herdr-profiles.ts";
 import { appBuild } from "./app-revision.ts";
-import { validateTarget } from "./machine-security.ts";
+import { shellQuote, validateTarget } from "./machine-security.ts";
 import { parseFoundHerdrSessions, validHerdrSocket } from "./herdr-discovery.ts";
 import { writePrivateState } from "./private-state.ts";
 import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
@@ -297,6 +297,8 @@ const OWN_OVIS_UNANSWERED = "Ovis on this PC is running but not answering right 
  * own Ovis that is away (#2047): after a reboot SSH answers before that Ovis has started. A setup in its dialog asks.
  */
 const OWN_OVIS_GONE = "Start Ovis on that PC, or start a new herdr here";
+/** the chosen Ovis serves its herdr-core from a socket that is not the SSH account's own (coreSocketConfined): never used */
+const OWN_OVIS_SOCKET_REFUSED = "The Ovis chosen on this PC serves herdr-core from a socket that is not this SSH account's own, so it was not used. Choose again, or start a new herdr here.";
 /** the host an SSH destination names, without its user: where that PC's own Ovis is opened */
 function sshHost(destination: string): string { return destination.slice(destination.lastIndexOf("@") + 1); }
 /** a release version as a PC's updater tells it (`0.4.18`, or a beta `0.5.0-beta.2`), or null */
@@ -1809,6 +1811,10 @@ export class MachineManager {
         if (error instanceof MachineActionRequired) throw error;
         throw await coreUnavailable();
       }
+      // right before it is used, on every path here (a fresh try, a live server reused, a retry): the very socket it
+      // reported is this account's own, in its own herdr-core folder
+      if (!await this.coreSocketConfined(ssh, target.own_ovis, verified.identity.socket_id)) throw new MachineActionRequired(OWN_OVIS_SOCKET_REFUSED, "choose_herdr", false, await localSessions());
+      if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
     }
     if (verified.identity.pid !== descriptor.pid) throw new Error("Bridge process verification failed; ownership was not changed");
     if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
@@ -1833,6 +1839,20 @@ export class MachineManager {
       return !!current && typeof current === "object" && "pid" in current && current.pid === descriptor.pid && "token" in current && current.token === descriptor.token
         && "socket_path" in current && current.socket_path === descriptor.socket_path && "port" in current && current.port === descriptor.port && "managed_remote" in current && current.managed_remote === false;
     } catch { return false; }
+  }
+  /**
+   * Whether a chosen Ovis's herdr-core adapter socket is the SSH account's own, read on that PC: `herdr-core.sock`
+   * (server/herdr-core/pipe.ts adapterAddress) in a folder of the SSH uid's that no other account may enter (startRuntime
+   * makes it 0700) and that no link leads to, the socket itself a socket of that uid's and no link; and the very socket the
+   * server reported (bridge.ts socket_id, its device and inode).
+   */
+  private async coreSocketConfined(ssh: SshConnection, socket: string, socketId: string): Promise<boolean> {
+    if (!socket.startsWith("/") || socket.length > 4096 || /[\0\r\n]/.test(socket) || posix.normalize(socket) !== socket || posix.basename(socket) !== "herdr-core.sock") return false;
+    const found = await ssh.run(`s=${shellQuote(socket)}; d=${shellQuote(posix.dirname(socket))}; uid=$(id -u); owner() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1"; }; `
+      + `test ! -L "$d" && test -d "$d" && test "$(cd -P "$d" 2>/dev/null && pwd -P)" = "$d" && test "$(owner "$d")" = "$uid" `
+      + `&& m=$(stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d") && test $((0$m & 077)) -eq 0 `
+      + `&& test ! -L "$s" && test -S "$s" && test "$(owner "$s")" = "$uid" && { stat -c %d:%i "$s" 2>/dev/null || stat -f %d:%i "$s"; } || true`);
+    return /^\d+:\d+$/.test(found.trim()) && found.trim() === socketId;
   }
   /** A tunnel to the bridge a descriptor names, on the PC's 127.0.0.1, with that bridge's token. */
   private async tunnel(ssh: SshConnection, descriptor: BridgeDescriptor): Promise<{ url: string; token: string }> {

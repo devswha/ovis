@@ -145,6 +145,9 @@ export interface RemoteHost {
   descriptors(ssh: SshConnection): Promise<BridgeDescriptor[]>;
 }
 
+/** the most a PC's herdr discovery answer (or its error) may send */
+const DISCOVERY_OUTPUT_BYTES = 256 * 1024;
+
 function parseDescriptors(lines: string[]): BridgeDescriptor[] {
   return lines.flatMap((line) => { try { return [JSON.parse(line) as BridgeDescriptor]; } catch { return []; } });
 }
@@ -211,7 +214,8 @@ export const posixHost: RemoteHost = {
   },
   async discoverSessions(ssh, inspection) {
     const script = `import { discoverHerdrSessions } from ${JSON.stringify(inspection.runtimeDir + "/server/herdr-discovery.ts")}; console.log(JSON.stringify(await discoverHerdrSessions()));`;
-    const text = await ssh.run(`if test -x ${shellQuote(inspection.runtimeDir + "/bin/bun")}; then ${shellQuote(inspection.runtimeDir + "/bin/bun")} -e ${shellQuote(script)}; else printf '[]'; fi`);
+    // at most 256 sessions of a few hundred bytes each: an answer past the cap is stopped and refused, never parsed
+    const text = await ssh.run(`if test -x ${shellQuote(inspection.runtimeDir + "/bin/bun")}; then ${shellQuote(inspection.runtimeDir + "/bin/bun")} -e ${shellQuote(script)}; else printf '[]'; fi`, undefined, undefined, DISCOVERY_OUTPUT_BYTES);
     const sessions: unknown = JSON.parse(text);
     return Array.isArray(sessions) && sessions.length === 0 ? [] : parseFoundHerdrSessions(sessions);
   },

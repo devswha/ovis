@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,10 +16,19 @@ const quiet = ["unanswered", "server error"], open = ["wrong token", "redirect",
 // waits: once chosen and connected, a reconnect meets it alive but not answering (no answer, or a 500 while its core
 // adapter starts after a reboot): the saved PC tries again, starting nothing
 const waits = [...quiet, "server error later"];
-it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect"])("chooses the PC's own core server: %s", async (outcome) => {
+// once chosen, its adapter socket is no longer this account's own: through a link, not a socket, in a folder others may
+// enter, or another socket than the one the server reports
+const confinement = ["socket link", "not a socket", "open folder", "other socket id"];
+it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-core-choice-"));
   const id = "12345678-1234-1234-1234-123456789abc";
-  const socket = "/home/fixture/.config/ovis/hc-adapter.sock";
+  // the core adapter's socket in its server's own state folder (server/herdr-core/runtime.ts), as startRuntime leaves it
+  const stateDir = join(dir, "state");
+  mkdirSync(stateDir, { mode: 0o700 });
+  const socket = join(stateDir, "herdr-core.sock");
+  let adapter = Bun.listen({ unix: socket, socket: { data() {} } });
+  // what the server reports of its socket, read as server/bridge.ts reads it (through a link)
+  const socketId = () => { try { const stat = statSync(socket); return `${stat.dev}:${stat.ino}`; } catch { return "fixture:gone"; } };
   writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: { destination: "fixture-only" } }]));
   const birth = readProcessBirth(process.pid);
   if (birth.state !== "identified") throw new Error("Test process birth unavailable");
@@ -83,7 +92,7 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
           }
           if (selected && outcome === "wrong token") return new Response(null, { status: 401 });
           if (selected && outcome === "redirect") return Response.redirect("http://127.0.0.1:1/");
-          return Response.json({ ...descriptor, pid: selected && outcome === "wrong pid" ? process.pid + 1 : process.pid, managed_remote: selected && outcome === "managed", socket_id: "fixture:core", herdr: { protocol: 22, version: "0.1.17", runtime: selected && outcome === "wrong runtime" ? "herdr" : "herdr-core" }, ...(outcome === "older peer" ? {} : { found_herdr_sessions: sessions }),
+          return Response.json({ ...descriptor, pid: selected && outcome === "wrong pid" ? process.pid + 1 : process.pid, managed_remote: selected && outcome === "managed", socket_id: selected && outcome === "other socket id" ? "1:2" : socketId(), herdr: { protocol: 22, version: "0.1.17", runtime: selected && outcome === "wrong runtime" ? "herdr" : "herdr-core" }, ...(outcome === "older peer" ? {} : { found_herdr_sessions: sessions }),
             // newer bundle: the chosen Ovis was updated past this app since it was proven
             ...(selected && outcome === "newer bundle" && !discovering ? { bundle_version: String(Number(REMOTE_BUNDLE_VERSION) + 1) } : {}) });
         }
@@ -156,6 +165,33 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
     if (outcome === "symlink") { writeFileSync(join(dir, "outside.json"), JSON.stringify(descriptor)); symlinkSync(join(dir, "outside.json"), registration); }
     if (outcome === "reused pid") descriptor.birth = { ...birth.birth, value: "not-this-process" };
     if (outcome === "changed port") writeFileSync(registration, JSON.stringify({ ...descriptor, port: 12346 }));
+    if (confinement.includes(outcome)) {
+      if (outcome === "socket link" || outcome === "not a socket") { adapter.stop(true); rmSync(socket, { force: true }); }
+      if (outcome === "socket link") {
+        // another folder's socket, reached through a link where the chosen server's socket was
+        mkdirSync(join(dir, "elsewhere"), { mode: 0o700 });
+        adapter = Bun.listen({ unix: join(dir, "elsewhere/herdr-core.sock"), socket: { data() {} } });
+        symlinkSync(join(dir, "elsewhere/herdr-core.sock"), socket);
+      }
+      if (outcome === "not a socket") writeFileSync(socket, "");
+      // a folder others may enter or write is not this account's own herdr-core folder
+      if (outcome === "open folder") chmodSync(stateDir, 0o755);
+      // the fresh setup (it reuses the live server: its update is not needed) and the saved PC's own reconnect both refuse
+      for (const attach of [() => run({ destination: "fixture-only", own_ovis: socket }), reconnect]) {
+        retries.mockClear();
+        const settled = await attach();
+        if (typeof settled !== "string") expect(settled).toMatchObject({ phase: "failed", action_required: "choose_herdr" });
+        else expect(settled).toBe("decision");
+        expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ state: "error", action_required: "choose_herdr", target: { own_ovis: socket } });
+        expect(manager.list().find((pc) => pc.id === id)?.error).not.toBe("Start Ovis on that PC, or start a new herdr here");
+        expect(manager.endpoint(id)).toBeUndefined();
+        expect(retries).not.toHaveBeenCalled();
+        manager.patch(id, { enabled: false });
+      }
+      expect(starts).toBe(0);
+      expect(installs).toBe(0);
+      return;
+    }
     if (waits.includes(outcome)) {
       if (quiet.includes(outcome)) answering = false;
       expect(await reconnect()).toBe("retry");
@@ -199,7 +235,7 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
       expect(retries).not.toHaveBeenCalled();
     }
   } finally {
-    manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); relays.forEach((relay) => relay.stop(true)); herdr?.stop(true); tui?.stop(true); rmSync(dir, { recursive: true, force: true });
+    manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); relays.forEach((relay) => relay.stop(true)); herdr?.stop(true); tui?.stop(true); adapter.stop(true); rmSync(dir, { recursive: true, force: true });
   }
 });
 
