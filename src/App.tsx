@@ -367,7 +367,7 @@ export function App() {
           : swap.reason === "same_pane" ? t("Choose two different panes.")
           : swap.reason === "not_found" ? t("A pane is no longer available.")
           : swap.reason === "no_neighbor" ? t("There is no pane on that side.")
-          : t("Something went wrong. Try again.");
+          : t("The pane swap could not be completed. Try again.");
         setLayoutNotice(t("Pane swap was refused: {reason}", { reason }));
       }
       void load();
@@ -803,7 +803,7 @@ export function App() {
     else revealFiles();
   };
   const filesDialog = (docked: boolean): ReactNode => selectedPane && (
-    <FilesDialog docked={docked} covered={docked && filesCovered} panelStart={docked ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined}
+    <FilesDialog docked={docked} covered={docked && filesCovered} machineName={selectedMachine?.name} panelStart={docked ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined}
       start={selectedPane.foreground_cwd ?? selectedPane.cwd ?? ""} paneId={selectedPane.pane_id} viewing={(viewing !== null && !fileDocked) || diffViewing !== null} onOpenFile={viewFile}
       onOpenDiff={(comparison, file) => openDiff({ machineId: selectedMachineId, paneId: selectedPane.pane_id, directory: selectedPane.foreground_cwd ?? selectedPane.cwd ?? null, ...comparison, path: file.path, oldPath: file.old_path })}
       onBrowseFolders={(path) => actions.openPalette(folderQueryFor(path, null))}
@@ -1178,6 +1178,7 @@ export function App() {
                         backgroundWait={item?.background_wait === true}
                         cwd={item?.cwd ?? null}
                         workspaceId={item?.workspace_id ?? null}
+                        workspaceLabel={slotSnapshot?.workspaces.find((workspace) => workspace.workspace_id === item?.workspace_id)?.label ?? null}
                         worktreeRepo={worktreeRepoName(item === null ? undefined : slotSnapshot?.workspaces.find((workspace) => workspace.workspace_id === item.workspace_id))}
                         machineName={machine?.name ?? machineId}
                         view={item ? lensOf(item) : slotView}
@@ -1261,6 +1262,7 @@ export function App() {
       /></MachineContext.Provider>
       {sessionHistory && sessionHistoryWorkspace && <MachineContext.Provider value={sessionHistory.machineId}><SessionHistory
         workspace={sessionHistoryWorkspace.workspace}
+        machineName={machines.find((m) => m.id === sessionHistory.machineId)?.name}
         panes={sessionHistoryWorkspace.panes}
         agent={sessionHistory.agent}
         sourcePaneId={sessionHistory.paneId}
@@ -1314,7 +1316,7 @@ export function App() {
       {viewing !== null && !fileDocked && <MachineContext.Provider value={viewing.machineId}>
         <FileViewer key={fileViewerKey(viewing)} path={viewing.path} paneId={viewing.paneId} onClose={closeFile} onOpen={(path) => openFile({ ...viewing, path, presentation })} onKind={reportFileKind} onTogglePresentation={toggleFilePresentation} keyboardActive={!settingsOpen} editable={fileEditable} />
       </MachineContext.Provider>}
-      {unsentFor && <UnsentTextDialog machines={machines} canRecover={unsentFor.pane.agent != null} onClose={closeUnsent} onRecover={recover} />}
+      {unsentFor && <UnsentTextDialog machines={machines} target={unsentFor} canRecover={unsentFor.pane.agent != null} onClose={closeUnsent} onRecover={recover} />}
       <CommandPalette key={selectedMachineId} machines={sidebarMachines} onSelect={selectTarget} open={paletteOpen} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} snapshot={snapshot} online={selectedMachine?.state === "connected"} selectedPaneId={selectedPaneId}
         // a peek shows the terminal: its toggle says Switch to chat, which ends the peek
         view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={auth?.role === "watch"} />

@@ -130,7 +130,8 @@ try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.addInitScript((ids) => {
     // only the first load: a reload must keep what Settings stored, such as the language
-    if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+    // The pending-input cases exercise automatic queue delivery, which is opt-in.
+    if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", autoSendQueued: true }));
     for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
   }, panes);
   await context.addInitScript(rewriteMachinesFrames);
@@ -1541,7 +1542,7 @@ try {
   await until(async () => (await dialog.getByLabel(/^Directory/).inputValue()).endsWith("/a"), "Directory follows Browse into a");
   // New folder inside a: the workspace starts in the folder it made
   await checkNewFolder(page, dialog, () => createRequests, "made-here");
-  await dialog.getByLabel(/^Name/).fill("ovis-test-browser-created");
+  await dialog.getByLabel("Optional workspace label", { exact: true }).fill("ovis-test-browser-created");
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
   await until(() => createRequests === 1, "creation started");
   assert.equal(createCwd, join(root, "a", "made-here"), "Start uses the folder Browse is showing");
@@ -1795,7 +1796,7 @@ try {
   await tabDialog.waitFor();
   assert.equal(await tabDialog.locator(".new-session-folder").textContent(), join(root, "a", "made-here"), "the folder is the workspace's, shown");
   assert.equal(await tabDialog.getByRole("button", { name: "Browse", exact: true }).count(), 0, "the folder is not asked for");
-  const tabNameField = tabDialog.getByLabel(/^Name/);
+  const tabNameField = tabDialog.getByLabel("Tab name (optional)", { exact: true });
   await tabNameField.fill("second");
   // The command palette takes the keyboard above a dialog. Escape closes only the palette,
   // preserving the dialog's draft so the same creation can continue.
