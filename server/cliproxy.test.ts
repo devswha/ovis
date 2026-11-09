@@ -679,6 +679,64 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(before)).toEqual(["b"]);
     });
 
+    // four hidden accounts, each listed under 31 files with long auth indexes: together more than a saved list may hold
+    const listManyHidden = async () => {
+      const names = [0, 1, 2, 3].map((at) => `acct${at}`);
+      for (const name of names) fake.files.push({ ...fake.files[0]!, name: `${name}.json`, email: `${name}@example.test`, auth_index: name });
+      await configure();
+      await service.report();
+      const hidden = new Set(names.map((name) => `claude:cliproxy:${name}.json`));
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      const copies = names.flatMap((name) => Array.from({ length: 31 }, (_, at) => ({ ...fake.files[0]!, name: `${name}-${at}.json`, email: `${name}@example.test`, auth_index: `${name}-${at}-${"x".repeat(600)}` })));
+      fake.files.push(...copies);
+      service.invalidate();
+      await service.report(false, hidden);
+      return { hidden, copies };
+    };
+
+    it("never saves a hidden list a restart would refuse, however many hidden accounts grow (#3449)", async () => {
+      const { hidden } = await listManyHidden();
+      const before = reads().length;
+      await restart(hidden);
+      expect(reads().slice(before).sort()).toEqual(["a", "b"]);
+    });
+
+    it("saves the hidden list again once identities no listed row carries can be dropped (#3449)", async () => {
+      const { hidden, copies } = await listManyHidden();
+      // the hidden accounts leave the Hub, copies and all, so no row widens them any more: what they taught may now be
+      // dropped to fit
+      fake.files.splice(2, 4 + copies.length);
+      for (let at = 0; at < 2; at++) { service.invalidate(); await service.report(false, hidden); }
+      expect(service.hiddenUnsaved()).toBe(false);
+      const before = reads().length;
+      await restart(hidden);
+      expect(reads().slice(before).sort()).toEqual(["a", "b"]);
+    });
+
+    it("learns no kept row's identity from a report an invalidation overtook (#3449)", async () => {
+      await configure();
+      await service.report();
+      let hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      fake.files[0]!.auth_index = "m";
+      const held = fake.holdCredentials();
+      service.invalidate();
+      const report = service.report(false, hidden);
+      await held.arrived;
+      service.invalidate();
+      held.release();
+      expect(await report).toEqual([]);
+      // shown and hidden again before any report: the key is the account as last learned, not as the overtaken report read it
+      hidden = new Set();
+      service.hiddenChanged();
+      hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.hiddenChanged();
+      const accounts = (service as unknown as { hiddenAccounts: Map<string, readonly string[]> }).hiddenAccounts;
+      expect(accounts.get("claude:cliproxy:claude-a.json")).not.toContain("index:claude:m");
+    });
+
     it("never forgets an identity a listed row of a hidden account still carries (#3449)", async () => {
       await configure();
       await service.report();
