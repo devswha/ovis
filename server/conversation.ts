@@ -64,7 +64,7 @@ import { defaultDevinDbPath, DevinHistoryUnavailable, devinConversation, forgetD
 import { forgetGrokState, GROK_IMAGE_REF, grokImage, grokProjection, grokToolOutput, parseGrokTranscript, GrokUnavailable } from "./grok.ts";
 import { resolveGrokStore } from "./grok-store.ts";
 import { AgyUnavailable, agyCatalogOffThread, agyToolOutput, forgetAgyState, parseAgyTranscript, withAgyHistory, type AgyProjection } from "./agy.ts";
-import { resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
+import { agyFreshSession, resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
 import { FileBusyError } from "./file-pool.ts";
 import { museSession, museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
 import { resolveMuseSession } from "./muse-store.ts";
@@ -2221,7 +2221,10 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       try { transcriptExists = !!statSync(found.path, { throwIfNoEntry: false }); }
       catch { throw new ConversationUnavailable("transcript_missing"); }
       if (!transcriptExists) {
-        if ((await agyCatalogOffThread(found.path)).size !== 0 || !sameAgyStore(found, await resolveAgyStore(pane))) throw new ConversationUnavailable("transcript_missing");
+        if (writtenSessions.has(`agy-transcript\0${found.path}`)) throw new ConversationUnavailable("transcript_missing");
+        const catalog = await agyCatalogOffThread(found.path);
+        const firstTurn = pane.agent_status === "working" && catalog.size <= 1;
+        if ((catalog.size !== 0 && !firstTurn) || !sameAgyStore(found, await resolveAgyStore(pane))) throw new ConversationUnavailable("transcript_missing");
         throw new ConversationNotStarted(found.session, "agy-transcript", found.path);
       }
       return { source: "agy-transcript", path: found.path, agy: found };
@@ -2409,7 +2412,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     // Claude writes its file with the first message, so at work with none it has no turn yet: a
     // /clear reports working for a moment (#2550)
     const status = snapshot.panes.find((pane) => pane.pane_id === paneId)?.agent_status;
-    if ((status === "working" && error.source !== "claude-transcript") || status === "blocked") throw error;
+    if ((status === "working" && error.source !== "claude-transcript" && error.source !== "agy-transcript") || status === "blocked") throw error;
     // the chat says there is nothing yet; the session's first prompt writes the file and
     // the next refresh's history_id differs, so the chat takes it whole
     return notBegun(error.source, `unwritten:${error.sessionId}`);
@@ -2450,6 +2453,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
           if (fresh !== null) return await notBegun("codex-transcript", fresh, screen);
         }
         if (screen.model !== null) throw new ConversationUnavailable(error.message, screen);
+      }
+      if (pane.agent === "agy" && error.message === "no_session_path" && page.before === undefined && page.since === undefined && page.from === undefined && pane.agent_status !== "working" && pane.agent_status !== "blocked") {
+        const fresh = await agyFreshSession(pane, await bottomViewport(paneId));
+        if (fresh !== null) return await notBegun("agy-transcript", fresh);
       }
       throw error;
     }
@@ -2519,10 +2526,37 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       return transcriptPage(transcript.source, transcript.path, prefix === null ? page : copilotPage(page, prefix), transcript.codexHome ?? codexHome, transcript.piAgentDir);
     });
     if (settled === null) throw new ConversationUnavailable("no_session_id");
-    answer = settled.value ?? await agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome);
+    const readAgy = () => agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome);
+    answer = settled.value ?? await readAgy().catch((error) => {
+      if (error instanceof ConversationUnavailable && error.message === "transcript_missing" && live()) return readAgy();
+      throw error;
+    });
   } catch (error) {
     // a growth no digest checked is the same file: it is pending, with no recovery that would digest it here
     const refused = (error instanceof ConversationReadPending && !(error instanceof RevisionUnchecked)) || (error instanceof ConversationUnavailable && error.message === "transcript_missing");
+    const paged = page.before !== undefined || page.since !== undefined || page.from !== undefined;
+    if (resolved.source === "agy-transcript" && refused) {
+      if (page.history_id === undefined && !paged) throw error;
+      const fresh = await sessionSnapshot().catch(() => null);
+      const pane = fresh?.panes.find((candidate) => candidate.pane_id === paneId);
+      if (!live() || pane === undefined) throw new ConversationUnavailable("no_session_id");
+      if (!sameAgyStore(resolved.agy!, await resolveAgyStore(pane))) {
+        throw paged ? new HistoryChanged() : new ConversationUnavailable("no_session_path");
+      }
+      let stat: Stats | undefined;
+      try { stat = statSync(resolved.path, { throwIfNoEntry: false }); } catch { /* unreadable */ }
+      if (!stat?.isFile()) throw paged ? new HistoryChanged() : error;
+      const agyPrefix = `${stat.dev.toString(36)}-${stat.ino.toString(36)}-agy-`;
+      if ([page.before, page.since, page.from].some((cursor) => cursor !== undefined && !cursor.startsWith(agyPrefix))) {
+        throw new HistoryChanged();
+      }
+      if (page.history_id !== undefined && !page.history_id.startsWith(agyPrefix)
+        && page.history_id !== `unwritten:${resolved.agy!.session}`
+        && !page.history_id.startsWith(`unwritten:agy:${paneId}:${resolved.agy!.pid}:${resolved.agy!.started}`)) {
+        throw new HistoryChanged();
+      }
+      throw new ConversationReadPending();
+    }
     if (resolved.source !== "copilot-transcript" || !refused) throw error;
     // refused before its read (readSettled: the path names another file than the one authorized, as
     // after a replacement by rename): the history is the one the path names now, as a read beginning
@@ -2532,7 +2566,6 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       prefix = copilotPrefix(paneId, `${resolved.binding}\0${history}`, resolved.path);
       copilotPage(page, prefix);
     }
-    const paged = page.before !== undefined || page.since !== undefined || page.from !== undefined;
     // Unpaged refreshes otherwise carry no proof of which history is on screen: older
     // clients without it keep their fail-closed fallback, with no recheck to wait on.
     if (page.history_id === undefined && !paged) throw error;
