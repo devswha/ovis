@@ -61,6 +61,14 @@ export function carryPaneState(machineId: string, from: string, to: string, draf
   }
 }
 
+const moveListeners = new Set<(machineId: string, from: string, to: string) => void>();
+
+/** What a module keeps under a pane's ID itself (ChatView's prompt-card text) goes with the pane: called on each carryMovedPane. */
+export function onPaneMoved(listener: (machineId: string, from: string, to: string) => void): () => void {
+  moveListeners.add(listener);
+  return () => { moveListeners.delete(listener); };
+}
+
 /**
  * Everything this browser keeps under a pane's ID, carried when herdr moved the pane under a new one, wherever
  * the move was made (the server's `pane-moved`, #1503): what carryPaneState carries, the pane's pending-message
@@ -75,6 +83,7 @@ export function carryMovedPane(machineId: string, from: string, to: string): voi
   pendingMessages.move(before, after);
   moveChatPosition(before, after);
   setSidebarPins(movedSidebarPins(currentSidebarPins(), machineId, from, to));
+  for (const listener of moveListeners) listener(machineId, from, to);
 }
 
 type PaneTarget = { machineId: string; paneId: string };

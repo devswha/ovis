@@ -580,7 +580,8 @@ export function Composer({
   // recording stay the terminal's
   const dictation = useDictation({
     mode: "chat",
-    active: active && !inert,
+    // a watch-only composer takes no dictation either: its shortcut would write into the draft
+    active: active && !inert && !viewOnly,
     connected,
     phone: mobile,
     polish: settings.voicePolishChat,

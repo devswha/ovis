@@ -210,6 +210,8 @@ describe("pane state per herdr lifetime", () => {
     expect(lifetimes.unsent().map(({ pane_id, text }) => `${pane_id}=${text}`).sort()).toEqual(["w1:p1=yes", "w1:p2=no"]);
     pending.removeCopy("w1:p1", second!.id);
     expect(lifetimes.unsent().map(({ pane_id, text }) => `${pane_id}=${text}`)).toEqual(["w1:p2=no"]);
+    // a copy that went with its row was never discarded in Recover unsent text: nothing there offers it back
+    expect(lifetimes.undoable()).toEqual([]);
 
     // storage that refuses the row on a stored PC: the row is in this page alone, its text in recovery
     const full = new MemoryStorage();
@@ -261,6 +263,8 @@ describe("pane state per herdr lifetime", () => {
     storage.refuse = null;
     pending.keepUnconfirmed("w1:p1", "second");
     expect(lifetimes.unsent()).toEqual([]);
+    // the row is saved now: an Undo in an open Recover unsent text would offer its words a second time
+    expect(lifetimes.undoable()).toEqual([]);
     const reloaded = page(storage);
     reloaded.observe([pc("local", "herdr-a")], title);
     const after = new PendingMessageStore(() => reloaded.paneStorage, reloaded);
