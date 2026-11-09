@@ -40,6 +40,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const label = mount.label ?? deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0);
   const open = mount.open ?? openRelayTransport;
   const forgotten = new Map<string, number>();
+  // enrollments still running, with their PC: leaving the account stops them first
+  const running = new Map<Promise<unknown>, string>();
   const cancelEnrollment = (id: string): void => { forgotten.set(id, (forgotten.get(id) ?? 0) + 1); };
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
   let directory: readonly DirectoryPc[] = [];
@@ -98,7 +100,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (leaving) return;
     leaving = true;
     generation++;
-    void leaveAccount({ service: account, accountStore, relayStore: store }).then(async ({ unconfirmed }) => {
+    // an enrollment still running could hand a PC the account key after the removal's snapshot: stop each, and wait for it
+    for (const serverId of running.values()) cancelEnrollment(serverId);
+    void Promise.allSettled(running.keys()).then(() => leaveAccount({ service: account, accountStore, relayStore: store })).then(async ({ unconfirmed }) => {
       // a PC the account does not list kept this device: say so, rather than claim it is gone everywhere
       const names = new Map((await store.list()).map((device) => [device.server_id, device.name ?? device.server_id.slice(0, 8)]));
       accountView = { kind: "signed-out", error: unconfirmed.length === 0 ? null
@@ -151,9 +155,15 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     signal.throwIfAborted();
     return key ? { accountKey: key, intent } : {};
   };
-  const enroll = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | EnrollmentCompletion> => {
+  const enroll = (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | EnrollmentCompletion> => {
+    const done = enrollOwned(opened, serverId, fresh);
+    running.set(done, serverId);
+    void done.then(() => running.delete(done), () => running.delete(done));
+    return done;
+  };
+  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | EnrollmentCompletion> => {
     const epoch = forgotten.get(serverId);
-    if (accountService === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
+    if (leaving || accountService === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
     const session = await account.session();
     if (session === undefined) return "local";
     const saved = await store.get(serverId);

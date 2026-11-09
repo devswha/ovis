@@ -38,7 +38,7 @@ describe("account enrollment ownership", () => {
     setCurrentLanguage("en");
   });
 
-  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch } = {}) {
+  async function fixture(heldPath: string, options: { readonly linking?: boolean; readonly admitted?: number; readonly listed?: boolean; readonly holdRenewal?: boolean; readonly peerFetch?: PcFetch; readonly changed?: () => Promise<void> } = {}) {
     const identity = generateKeyPair();
     const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.invalid", name: "Desk" };
     const accountStore = memoryAccountStore();
@@ -98,8 +98,8 @@ describe("account enrollment ownership", () => {
         if (options.listed && init?.method === "GET") return Response.json({ pcs: [{ server_id: "a".repeat(32), label: "Unread PC", public_key: null, relay: offer.relay, added_at: new Date().toISOString(), last_seen_at: null }] });
         return service.fetch(input, init);
       },
-    }, { active: () => false, changed: async () => {}, outdated: () => new Set() });
-    return { controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service };
+    }, { active: () => false, changed: options.changed ?? (async () => {}), outdated: () => new Set() });
+    return { controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service, linked: () => linked };
   }
 
   it("does not list a pairing after Forget releases a held renewal", async () => {
@@ -110,6 +110,24 @@ describe("account enrollment ownership", () => {
     run.renewalResponse.resolve();
     await pending;
     expect(run.putPcs).toEqual([]);
+  });
+
+  it("leaves the account only once an enrollment still running has stopped, so no PC takes the account key after it", async () => {
+    const left = Promise.withResolvers<void>();
+    const run = await fixture("/api/account/status", { linking: true, changed: async () => { left.resolve(); } });
+    // a pairing just made with its own key, which the enrollment would link to the account key
+    const own = await memoryAccountStore().key();
+    const { account: _account, ...unlinked } = run.original;
+    await run.store.update(run.original.server_id, () => ({ ...unlinked, private_key: own.private_key, public_spki: own.public_spki }));
+    const pending = run.controller.enroll(await run.open(), run.original.server_id, false).catch((error: unknown) => error);
+    await run.requested.promise;
+    run.controller.leave();
+    run.response.resolve(run.answer("/api/account/status"));
+    await left.promise;
+    expect(run.controller.state).toEqual({ kind: "signed-out", error: null });
+    const stopped = await pending;
+    expect(run.linked()).toBe(false);
+    expect(stopped).toBeInstanceOf(DOMException);
   });
 
   it.each(["same", "other"] as const)("does not save an introduced pairing after the %s controller forgets its source during a held update", async (canceller) => {
