@@ -163,7 +163,7 @@ try {
         const context = await browser.newContext({ viewport: { width: view.width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile, colorScheme: view.theme, locale: view.language === "ko" ? "ko-KR" : "en-US" });
         // the demo's other Claude pane finishes a few seconds in: its in-app alert is not this surface's
         await context.addInitScript(({ theme, language, demo }) => {
-          localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, alertInApp: false }));
+          localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, alertsOn: false }));
           window.bgCase = demo;
         }, { theme: view.theme, language: view.language ?? "en", demo });
         const page = await context.newPage();
@@ -312,7 +312,7 @@ try {
           const before = await detailReads(page);
           await openDetail(page, 1);
           await note(page, "This PC can't show details for this task").waitFor();
-          await dialog(page).locator(".bg-agent-note-line", { hasText: "Only a running Claude Code subagent's work can be opened here." }).waitFor();
+          await dialog(page).locator(".bg-agent-note-line", { hasText: "Only a running Claude Code or OpenCode subagent's work can be opened here." }).waitFor();
           assert.equal(await dialog(page).locator(".bg-agent-section").count(), 0, "no empty transcript stands in for the command's");
           assert.equal(await dialog(page).getByRole("button", { name: "Refresh", exact: true }).count(), 0, "nothing to read again");
           assert.equal(await detailReads(page), before, "a command's row asks the PC for nothing");

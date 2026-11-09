@@ -9,6 +9,8 @@ import { createServer } from "../server/index.ts";
 import { PtySession } from "../server/pty/session.ts";
 import { herdrRpc, herdrSocketPath, type WorkspaceCreateResult, paneRead, paneSendKeys, paneSendText, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { chromePath } from "./chrome-path.ts";
+import { shownRow, shownRows } from "./shown-rows.ts";
+import { clickTab } from "./tab-pick.ts";
 
 /** how long a resize that should not happen gets to show up */
 const NO_RESIZE_WAIT_MS = 400;
@@ -225,7 +227,7 @@ export async function checkChatKeepsTerminalSize(browser: Browser, origin: strin
     // the desktop's terminal lens ignored that resize: it drives the grid itself. Entering the chat
     // lens, its hidden screen takes the grid the pty has now, since what the chat reads there (a
     // masked prompt) is drawn for the phone's grid. xterm's DOM renderer keeps one element a row.
-    const hiddenRows = () => desktop.locator(".pane-terminal .xterm-rows > div").count();
+    const hiddenRows = () => desktop.locator(shownRow()).count();
     const phoneRows = Number(phoneSize.split(" ")[0]);
     assert.notEqual(await hiddenRows(), phoneRows, "the desktop's terminal lens kept its own grid");
     await desktop.getByTitle("Chat transcript (⌘⇧J)", { exact: true }).click();
@@ -776,7 +778,7 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             // the command line does not spell the prompt: only the prompt itself puts "Password:" on screen
             await paneSendText(first, "read -s -p \"$(printf 'Pass%s: ' word)\" x");
             await paneSendKeys(first, ["Enter"]);
-            const drawn = (): Promise<boolean> => idlePage.evaluate(() => document.querySelector(".xterm-rows")?.textContent?.includes("Password:") ?? false);
+            const drawn = (): Promise<boolean> => idlePage.evaluate((shown) => document.querySelector(shown)?.textContent?.includes("Password:") ?? false, shownRows());
             const promptDeadline = Date.now() + 10_000;
             // the paused clock lets the watched view parse and draw only as it is advanced (no resume has started yet)
             while (!(await drawn()) && Date.now() < promptDeadline) await page.clock.runFor(100);
@@ -935,7 +937,7 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
           const extra = await tabCreate({ workspaceId: workspaces[0]!, label: "Mirror cache" });
           const before = wire.length;
           // When it becomes cached, presentation effects must not release the mirror.
-          await page.locator(`[role="tab"][data-tab-id="${extra.tab.tab_id}"]`).evaluate((button: HTMLElement) => button.click());
+          await clickTab(page, extra.tab.tab_id, true);
           await page.locator(`.pane-frame.is-hidden[data-layout-pane="${first}"]`).waitFor({ state: "attached" });
           await page.clock.runFor(0);
           await waitWire("in", "input-ready", 2);
@@ -1016,7 +1018,7 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
               assert.ok(page);
               const tab = tabs.get(pane);
               assert.ok(tab);
-              await page.locator(`[role="tab"][data-tab-id="${tab}"]`).evaluate((button: HTMLElement) => button.click());
+              await clickTab(page, tab, true);
               await page.locator(`.pane-frame.is-current[data-layout-pane="${pane}"]`).waitFor();
               await page.clock.runFor(0);
             };
@@ -1071,7 +1073,7 @@ export async function checkInactiveAttachLifecycle(browser: Browser, origin: str
             });
             await waitWire("in", "input-ready", 2);
             await page.clock.runFor(50);
-            assert.equal((await page.locator(".xterm-rows").textContent() ?? "").includes("STALE-SUBSCRIPTION"), false,
+            assert.equal((await page.locator(shownRows()).textContent() ?? "").includes("STALE-SUBSCRIPTION"), false,
               "resume resets after pending writes, before the new attachment stream");
             holdOutput = false;
             for (const deliver of heldOutput) deliver();

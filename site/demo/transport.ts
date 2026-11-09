@@ -15,9 +15,12 @@
  * What does not: files, images, push and remote PCs, which need a real machine.
  */
 import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
-import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
+import { resolveHerdrKeys } from "../../shared/herdr-keys.ts";
+import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PaneMoved, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeInventory, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
+import type { PullRequestCheckLog, PullRequestView } from "../../shared/pull-request.ts";
+import type { SystemReport } from "../../shared/system.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
 import { ALERT_WEBHOOK_PRESETS, type AlertWebhookSave, type AlertWebhookView } from "../../shared/alert-webhook.ts";
 import { DEFAULT_ALERTS } from "../../shared/notify-policy.ts";
@@ -26,8 +29,9 @@ import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { firstMessageFault } from "../../shared/launch-rules.ts";
 import { insertTextProblem } from "../../shared/terminal-insert.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
+import { searchPattern, searchTurns, MAX_SEARCH_QUERY, type ConversationSearchResponse } from "../../shared/conversation-search.ts";
 import { neighborPane } from "../../src/lib/layoutMap.ts";
-import { closeLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
+import { closeLayoutPane, moveLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
 import { deviceLabel } from "../../src/lib/phone.ts";
 import { rollupStatus } from "../../src/lib/status.ts";
 import { movedTabOrder } from "../../src/lib/tabOrder.ts";
@@ -47,6 +51,14 @@ import terminalFixture from "./fixtures/terminal.json";
  * any real server's. `older` answers without facts, `error` fails the bridge health and `loading`
  * never answers it.
  */
+/**
+ * `?demo_runtime=both`: the PC has herdr's TUI and the Herdr app's core (hc) both installed, serving
+ * herdr, so Settings > About offers the switch between them (scripts/settings-pages-demo-regression.ts).
+ */
+const DEMO_RUNTIME_FACTS = new URLSearchParams(location.search).get("demo_runtime") === "both" ? {
+  herdr_runtime: { serving: "herdr" as const, source: "detected" as const, tui: { installed: true, running: true }, app_installed: true, switch_to: "herdr-core" as const, locked: null },
+  herdr_core: { version: "0.1.17", session: "default", running: true },
+} : {};
 const DEMO_SECURITY_AT_LOAD = new URLSearchParams(location.search).get("demo_security") ?? "known";
 const demoSecurity = (): string => {
   try { return sessionStorage.getItem("ovis:demo-security") ?? DEMO_SECURITY_AT_LOAD; } catch { return DEMO_SECURITY_AT_LOAD; }
@@ -432,7 +444,9 @@ function readSnapshot(machine: Machine): SessionSnapshot | null {
 function readRoster(): Machine[] {
   return machines.map((machine) => {
     const order = orderOf(machine.id);
-    const { source_boot_id: _proof, ...rest } = machine;
+    const { source_boot_id: _proof, ...withoutId } = machine;
+    // with the device routes on, the Host carries the fictional relay ID My devices shows at its top
+    const rest = DEVICE_STATE !== null && machine.kind === "local" ? { ...withoutId, server_id: demoRelayServerId() } : withoutId;
     if (order.legacy) return { ...rest, snapshot: readSnapshot(machine) };
     // a restart its manager has not proved yet: the cache keeps the last accepted server's read
     if (order.epoch !== order.accepted) return { ...rest, snapshot: structuredClone(order.cached), source_boot_id: order.accepted };
@@ -979,6 +993,52 @@ const DEMO_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
  */
 const DEMO_HEAD = "4f2a9c1d7e3b5a8c6d0e1f2a3b4c5d6e7f8a9b0c";
 const DEMO_MAIN = "7a3e5c19b2d84f06a1c3e5b7d9f1a3c5e7b9d1f3";
+/**
+ * The pull request a worktree's branch has in the demo (GET /api/workspace/pr): one failing check
+ * whose log Send to agent reads, one still running, the rest passed, and two open review threads.
+ * Merge stays off (a required check failed), as GitHub would keep it.
+ */
+const DEMO_PR: PullRequestView = {
+  number: 128,
+  title: "Retry webhook deliveries with backoff",
+  url: "https://github.com/demo/checkout-api/pull/128",
+  state: "open",
+  draft: false,
+  head_ref: "",
+  base_ref: "main",
+  head_oid: DEMO_HEAD,
+  merge_state: "blocked",
+  merge_queue: false,
+  mergeable: false,
+  merge_method: "squash",
+  checks: [
+    { name: "test (node 22)", workflow: "CI", state: "fail", url: "https://github.com/demo/checkout-api/actions/runs/7001/job/9003", job_id: "9003" },
+    { name: "e2e", workflow: "CI", state: "pending", url: "https://github.com/demo/checkout-api/actions/runs/7001/job/9004", job_id: "9004" },
+    { name: "lint", workflow: "CI", state: "pass", url: "https://github.com/demo/checkout-api/actions/runs/7001/job/9001", job_id: "9001" },
+    { name: "typecheck", workflow: "CI", state: "pass", url: "https://github.com/demo/checkout-api/actions/runs/7001/job/9002", job_id: "9002" },
+  ],
+  threads: [
+    { path: "src/webhooks/retry.ts", line: 42, outdated: false, author: "mira", body: "Cap the backoff: after eight tries this waits over four minutes between attempts.", comments: 2, url: "https://github.com/demo/checkout-api/pull/128#discussion_r1" },
+    { path: "src/webhooks/queue.ts", line: 17, outdated: false, author: "jonas", body: "Can a delivery be retried twice if two workers pick it up?", comments: 1, url: "https://github.com/demo/checkout-api/pull/128#discussion_r2" },
+  ],
+  threads_truncated: false,
+};
+const DEMO_PR_LOG = [
+  "> checkout-api@2.4.0 test",
+  "> bun test",
+  "",
+  "src/webhooks/retry.test.ts:",
+  "(pass) retries a failed delivery [3.10ms]",
+  "(fail) gives up after the last attempt [1.42ms]",
+  "  expect(received).toBe(expected)",
+  "  Expected: \"failed\"",
+  "  Received: \"retrying\"",
+  "",
+  " 11 pass",
+  " 1 fail",
+  "error: script \"test\" exited with code 1",
+].join("\n");
+
 const DEMO_REFS: RepoDiffRefs["refs"] = [
   { name: "refs/heads/main", oid: DEMO_MAIN },
   { name: "refs/remotes/origin/main", oid: DEMO_MAIN },
@@ -1021,6 +1081,17 @@ let demoStatusline = false;
 const removedUsageAccounts = new Set<string>();
 const USAGE_STATE = new URLSearchParams(location.search).get("demo_usage");
 
+/** A calm PC, a little different each time it is asked, for the sidebar's CPU, memory and disk meters. */
+function systemReport(): SystemReport {
+  const wobble = (base: number, spread: number): number => Math.round((base + (Math.random() - 0.5) * spread) * 10) / 10;
+  const gib = 1024 ** 3;
+  return {
+    sampled_at: Date.now(), platform: "linux", uptime_s: 3 * 86400 + 5 * 3600, cpu_count: 8,
+    cpu_percent: wobble(24, 16), memory: { used: 11.2 * gib, total: 32 * gib, percent: 35 },
+    load: [0.86, 0.72, 0.64], disks: [{ path: "/", used: 412 * gib, total: 931 * gib, percent: 44.3 }],
+  };
+}
+
 /** Settings → Agents' accounts on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
 /**
  * `?demo_sign_in=1`: the in-browser sign-in plays the flows recorded from Claude Code 2.1.312 and
@@ -1046,11 +1117,11 @@ function usageReport(): UsageReport {
         { kind: "session", scope: null, used_percent: 38, ...session(2.4) },
         { kind: "week", scope: null, used_percent: 61, ...week(78) },
         ...(demoStatusline ? [] : [{ kind: "week" as const, scope: "Sonnet", used_percent: 12, ...week(78) }]),
-      ] },
+      ], credits: { kind: "spend", currency: "USD", used: 12.19, limit: 15.39, used_percent: 79.2 } },
     { id: "codex", key: "codex:demo-codex-work", account: "sam@work.example", plan: "pro", problem: null, checked_at: checked, windows: [
       { kind: "session", scope: null, used_percent: 22, ...session(1.2) },
       { kind: "week", scope: null, used_percent: 84, ...week(97) },
-    ] },
+    ], credits: { kind: "balance", balance: 1232, unlimited: false }, resets: { available: 1, expires_at: at(52) } },
     { id: "codex", key: "codex:demo-codex-home", account: "sam@example.com", plan: "plus", problem: null, checked_at: checked, windows: [
       { kind: "session", scope: null, used_percent: 5, ...session(3.1) },
       { kind: "week", scope: null, used_percent: 31, ...week(140) },
@@ -1089,6 +1160,7 @@ function usageReport(): UsageReport {
  * it, the phone enters the code a moment later, as a visitor to the demo expects.
  */
 const DEVICE_STATE = new URLSearchParams(location.search).get("demo_devices");
+const ACCOUNT_MEMBER = new URLSearchParams(location.search).get("demo_account") === "member";
 const CONNECTION_DROPS = new URLSearchParams(location.search).get("demo_connection") === "drops";
 let connectionLost = false;
 /** `?demo_connection=switch`: the page loses the bridge connection with `herdrDemoLoseConnection()` and lets it
@@ -1177,7 +1249,10 @@ const DEMO_RELAY_PUBLIC_KEY = btoa(String.fromCharCode(...Array.from({ length: 3
 let demoRelayOnline = new URLSearchParams(location.search).get("demo_relay") === "on";
 let demoRelayIdentities = 1;
 const demoRelayServerId = (): string => `${demoRelayIdentities.toString(16).padStart(4, "0")}5e1f1d0ff3ab1e0ff3ab1e5e1f1d`;
-const demoRelayStatus = (): RelayStatus => ({ phase: demoRelayOnline ? "online" : "off", relay: DEMO_RELAY, app: DEMO_RELAY_APP, sessions: 0, blocked: null, error: null });
+/** direct connections on the PC's network: on by default; the demo listens nowhere, and names a made-up home address while the relay is on */
+let demoRelayDirect = true;
+const demoRelayStatus = (): RelayStatus => ({ phase: demoRelayOnline ? "online" : "off", relay: DEMO_RELAY, app: DEMO_RELAY_APP, sessions: 0, blocked: null, error: null,
+  direct: { on: demoRelayDirect, carriers: demoRelayDirect && demoRelayOnline ? ["ws://192.168.0.10:7319"] : [] } });
 /** POST /api/relay/offer: the pending code inside an offer for the fictional identity, as the server reuses it */
 function demoRelayOffer(): Response {
   if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
@@ -1213,12 +1288,14 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (query.get("scope") === "bridge") {
       if (variant === "loading") return await new Promise<Response>(() => undefined);
       if (variant === "error") return error("server_unavailable", "The demo server is not answering.", 503);
-      return json({ ok: true, auth, bridge_protocol: 1, relay: demoRelayStatus(), ...facts }, 200, { "cache-control": "no-store" });
+      return json({ ok: true, auth, bridge_protocol: 1, relay: demoRelayStatus(), ...facts, ...DEMO_RUNTIME_FACTS }, 200, { "cache-control": "no-store" });
     }
     // the LAN warning is drawn only where a real server would send it: an other-address bind, no token, nothing paired
     const lan = variant === "unknown" ? { lan_exposure: { host: "0.0.0.0" } } : {};
-    return json({ ok: true, herdr: { version: "0.9.0", protocol: 22, terminal_attach: true }, auth, relay: demoRelayStatus(), ...lan, ...facts, web_ui: { boot_id: orderOf(local.id).epoch, revision: null } }, 200, { "cache-control": "no-store" });
+    return json({ ok: true, herdr: { version: "0.9.0", protocol: 22, terminal_attach: true }, auth, relay: demoRelayStatus(), ...lan, ...facts, ...DEMO_RUNTIME_FACTS, web_ui: { boot_id: orderOf(local.id).epoch, revision: null } }, 200, { "cache-control": "no-store" });
   }
+  // the demo serves no herdr TUI of its own: no move to herdr-core is offered
+  if (path === "/api/runtime/move") return json({ available: false, reason: "not_herdr", status: { state: "idle" } }, 200, { "cache-control": "no-store" });
   // a code starts here from the Devices group or from the relay panel's New code; the fictional phone
   // enters it only where the demo has a device list to add it to
   if (path === "/api/devices/pair/start") {
@@ -1229,6 +1306,8 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     }
     return json(startDemoPairing(), 200, { "cache-control": "no-store" });
   }
+  // `?demo_account=member`: this PC belongs to an account, so a signed-in Settings offers joining by signing in
+  if (path === "/api/account/status" && ACCOUNT_MEMBER) return json({ account: "demo-account", unlinked: [], removals: [], adds: [], blocked: [] }, 200, { "cache-control": "no-store" });
   // without `?demo_devices=` the demo answers no other device route: its /api/devices stays a 404, as before
   if (DEVICE_STATE !== null) {
     if (path === "/api/devices") {
@@ -1291,7 +1370,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/portal") return json(demoPortal(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay") return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity"
-    || path === "/api/relay/link" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel") {
+    || path === "/api/relay/link" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel" || path === "/api/relay/direct") {
     if (method !== "POST") return error("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
     if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
     if (path === "/api/relay/offer") return demoRelayOffer();
@@ -1308,6 +1387,13 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (path === "/api/relay/code/cancel") return json({ ok: true }, 200, { "cache-control": "no-store" });
     // no phone ever compares digits with the demo, so none is waiting to be approved
     if (path === "/api/relay/pairing") return error("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
+    if (path === "/api/relay/direct") {
+      const body = await layoutBodyOf(method, init, input);
+      if (body instanceof Response) return body;
+      if (typeof body.on !== "boolean") return error("invalid_relay_direct", "Send { on: true } or { on: false }.", 400);
+      demoRelayDirect = body.on;
+      return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
+    }
     if (path === "/api/relay/start") demoRelayOnline = true;
     else if (path === "/api/relay/stop") demoRelayOnline = false;
     // a new identity: the offers made so far name a PC that no longer exists; the link stays as it was
@@ -1315,8 +1401,9 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
   }
   if (path === "/api/portal/start" || path === "/api/portal/stop" || path === "/api/portal/invite") return error("portal_unsupported", "The demo opens no public address.", 409);
-  if (path === "/api/herdr-ui") return json({ copy_on_select: true }, 200, { "cache-control": "no-store" });
+  if (path === "/api/herdr-ui") return json({ copy_on_select: true, keys: resolveHerdrKeys(undefined) }, 200, { "cache-control": "no-store" });
   if (path === "/api/access") return json({ port: 7317, relay: demoRelayStatus(), tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: "https://workstation.example.ts.net", serve_command: null, serve_url: null } });
+  if (path === "/api/system") return json(systemReport(), 200, { "cache-control": "no-store" });
   if (path === "/api/usage") {
     const report = usageReport();
     const removed = report.providers.filter((account) => removedUsageAccounts.has(account.key));
@@ -1443,6 +1530,20 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json({ action: "created", ...(await created.json() as { workspace_id: string; pane_id: string; agent_started: boolean }) } satisfies SessionResumeResponse);
   }
 
+  // the sidebar's one read for every repository (#2661): each workspace answered as the list route answers it
+  if (path === "/api/worktree/inventory") {
+    if (method !== "GET") return error("method_not_allowed", "use GET", 400);
+    const workspaceIds = [...new Set(query.getAll("workspace_id"))];
+    if (workspaceIds.length === 0 || workspaceIds.includes("")) return error("missing_workspace_id", "workspace_id is required", 400);
+    const entries = await Promise.all(workspaceIds.map(async (workspaceId) => {
+      const answer = await route(new URL(`/api/worktree/list?workspace_id=${encodeURIComponent(workspaceId)}`, url), "GET", undefined, input);
+      if (answer.ok) return { workspace_id: workspaceId, listing: await answer.json() as WorktreeListing };
+      const refused = await answer.json() as { error: { code: string; message: string } };
+      return { workspace_id: workspaceId, error: { status: answer.status, code: refused.error.code, message: refused.error.message } };
+    }));
+    return json({ entries } satisfies WorktreeInventory);
+  }
+
   if (path === "/api/worktree/list" || path === "/api/worktree/create" || path === "/api/worktree/open" || path === "/api/worktree/remove") {
     const listing = path === "/api/worktree/list";
     if (method !== (listing ? "GET" : "POST")) return error("method_not_allowed", listing ? "use GET" : "use POST", 400);
@@ -1505,6 +1606,15 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     return json({ workspace_id: made.workspace_id, pane_id: made.pane_id, already_open: false, path: checkout.path, branch: checkout.branch, ...(agent ? { agent_started: made.agent_started } : {}) } satisfies WorktreeOpened);
   }
 
+  // the demo's chats are one page each: the whole chat is searched at once
+  if (path === "/api/pane/conversation/search") {
+    const q = query.get("q") ?? "";
+    const pattern = q.length > MAX_SEARCH_QUERY ? null : searchPattern(q);
+    if (pattern === null) return error("invalid_query", `q must hold a word and at most ${MAX_SEARCH_QUERY} characters`, 400);
+    const key = keyOfPane.get(paneId);
+    const chat = key ? chats.get(key) : undefined;
+    return json({ matches: chat ? searchTurns(chat.turns, pattern) : [], cursor: null } satisfies ConversationSearchResponse);
+  }
   if (path === "/api/pane/conversation") {
     const key = keyOfPane.get(paneId);
     const chat = key ? chats.get(key) : undefined;
@@ -1585,6 +1695,8 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   }
   // the demo's sessions publish no pages: the artifacts chip stays away
   if (path === "/api/pane/artifacts") return json({ artifacts: [] });
+  // nor do they keep OMP side conversations: the side conversations chip stays away
+  if (path === "/api/pane/btw") return json({ topics: [], more: false });
   if (path === "/api/pane/omo-tasks") return json({ tasks: keyOfPane.get(paneId) === "flaky" ? BACKGROUND_TASKS : [], runs: [], server_time: new Date().toISOString() } satisfies OmoActivity);
   if (path === "/api/pane/background-agent") {
     if (method !== "GET") return error("method_not_allowed", "use GET", 400);
@@ -1608,6 +1720,13 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/pane/files") {
     const q = (query.get("q") ?? "").toLowerCase();
     return json({ files: DEMO_FILES.filter((file) => file.toLowerCase().includes(q)).slice(0, Number(query.get("limit") ?? 20)) });
+  }
+  // Files' Documents tab (off by default): the demo folder's Markdown files, changed an hour apart
+  if (path === "/api/pane/docs") {
+    const pane = paneOf(paneId);
+    if (!pane) return error("pane_not_found", "no such pane", 404);
+    const documents = DEMO_FILES.filter((file) => file.endsWith(".md")).map((file, index) => ({ path: file, size: 512, modified: new Date(Date.now() - (index + 1) * 3_600_000).toISOString() }));
+    return json({ root: pane.foreground_cwd ?? pane.cwd ?? "", documents, truncated: false });
   }
   if (path === "/api/pane/input" || path === "/api/pane/keys") return json({ ok: true });
   if (path === "/api/plugins/actions") return json({ plugins: PLUGINS } satisfies PluginActionsResponse);
@@ -1727,9 +1846,10 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   }
   // herdr's layout operations on the demo's own layouts: a split halves the pane's rect for a new
   // shell pane, a zoom flips the tab's flag (after focusing the pane, as herdr does), a swap
-  // exchanges two rects, a resize moves the ratio of the split the border belongs to and lays its
-  // panes out again (src/lib/layoutTree.ts), and a clear blanks the pane's screen on every socket attached to it
-  if (path === "/api/pane/split" || path === "/api/pane/zoom" || path === "/api/pane/swap" || path === "/api/pane/resize" || path === "/api/pane/clear" || path === "/api/pane/focus") {
+  // exchanges two rects, a move takes the pane out as a close does and into half of another's as a
+  // split does, a resize moves the ratio of the split the border belongs to and lays its panes out
+  // again (src/lib/layoutTree.ts), and a clear blanks the pane's screen on every socket attached to it
+  if (path === "/api/pane/split" || path === "/api/pane/zoom" || path === "/api/pane/swap" || path === "/api/pane/move" || path === "/api/pane/resize" || path === "/api/pane/clear" || path === "/api/pane/focus") {
     const body = await layoutBodyOf(method, init, input);
     if (body instanceof Response) return body;
     if (typeof body["pane_id"] !== "string" || !body["pane_id"].trim()) return error("missing_pane_id", "pane_id is required", 400);
@@ -1782,6 +1902,24 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       if (zoomed === layout.zoomed) return answer(zoomed, false, zoomed ? "already_zoomed" : "already_unzoomed");
       layout.zoomed = zoomed;
       return answer(zoomed, true, null);
+    }
+    if (path === "/api/pane/move") {
+      const target = body["target_pane_id"];
+      const side = body["side"];
+      if (typeof target !== "string" || !target.trim()) return error("invalid_target_pane_id", "target_pane_id must be a non-empty string", 400);
+      if (side !== "left" && side !== "right" && side !== "up" && side !== "down") return error("invalid_side", "side must be left, right, up or down", 400);
+      const other = paneOf(target);
+      if (!other) return error("pane_not_found", "pane not found", 404);
+      const reason = other.pane_id === pane.pane_id ? "same_pane" : other.tab_id !== pane.tab_id ? "cross_tab" : null;
+      if (reason) return json({ ok: true, changed: false, reason } satisfies PaneMoved);
+      const split = side === "left" || side === "right" ? "right" : "down";
+      if (!moveLayoutPane(layout, pane.pane_id, target, split)) return error("split_failed", "The demo pane is too small to split.", 400);
+      // herdr puts a moved pane right of or below its target: a swap puts it before
+      if (side === "left" || side === "up") swapLayoutPanes(layout, pane.pane_id, target);
+      // a zoomed tab shows every pane again, as herdr-core's move makes it, so the moved one is in view
+      layout.zoomed = false;
+      structureChanged();
+      return json({ ok: true, changed: true, reason: null } satisfies PaneMoved);
     }
     const direction = body["direction"];
     const beside = (side: PaneDirection) => { const id = neighborPane(layout, pane.pane_id, side); return id === null ? undefined : layout.panes.find((candidate) => candidate.pane_id === id); };
@@ -2054,6 +2192,15 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (!entry) return error("not_found", "nothing changed at that path in this comparison", 404);
     return json({ ...shared, file: entry.file, patch: entry.patch, unavailable: entry.patch === null ? "binary" : null, truncated: false, limits: { max_patch_bytes: DEMO_DIFF_LIMITS.max_patch_bytes, context_lines: DEMO_DIFF_LIMITS.context_lines } } satisfies RepoDiffFilePatch);
   }
+  if (path === "/api/workspace/pr" || path === "/api/workspace/pr/log" || path === "/api/workspace/pr/merge") {
+    const root = snapshot().panes.find((pane) => pane.pane_id === paneId)?.cwd ?? query.get("directory") ?? "/home/demo/checkout-api";
+    const branch = [...repositories.values()].flatMap((repo) => repo.checkouts).find((checkout) => checkout.path === root)?.branch ?? "main";
+    // a worktree's branch has a pull request in the demo; main has none
+    if (branch === "main") return error("no_pull_request", "This branch has no pull request", 404);
+    if (path === "/api/workspace/pr/merge") return error("merge_refused", "The demo merges nothing.", 409);
+    if (path === "/api/workspace/pr/log") return json({ job_id: query.get("job_id") ?? "", text: DEMO_PR_LOG, truncated: true } satisfies PullRequestCheckLog);
+    return json({ ...DEMO_PR, head_ref: branch } satisfies PullRequestView, 200, { "cache-control": "no-store" });
+  }
   if (path.startsWith("/api/fs/")) return error("not_found", "the demo has no files to open", 404);
   return error("demo", `${method} ${path} is not part of the demo`, 404);
 }
@@ -2120,7 +2267,7 @@ async function pushRoute(path: string, method: string, init: RequestInit | undef
 }
 
 /** Settings → Alerts → Also send to: kept in this page only, and never posted anywhere. */
-const NO_WEBHOOK: AlertWebhookView = { configured: false, preset: null, target: null, chat_id: null, alerts: DEFAULT_ALERTS, last_success_at: null, last_failure_at: null, last_error: null };
+const NO_WEBHOOK: AlertWebhookView = { configured: false, preset: null, target: null, chat_id: null, alerts: DEFAULT_ALERTS, reachable_link: false, last_success_at: null, last_failure_at: null, last_error: null };
 let demoWebhook: AlertWebhookView = NO_WEBHOOK;
 const demoMask = (preset: string, secret: string): string => { if (preset === "telegram") return "…"; try { return `${new URL(secret).host}/…`; } catch { return "…"; } };
 
@@ -2141,7 +2288,9 @@ function alertWebhookRoute(path: string, method: string, init: RequestInit | und
   const same = demoWebhook.configured && demoWebhook.preset === preset;
   if (!secret && !same) return error("invalid_webhook", preset === "telegram" ? "a bot token is required" : "a URL is required", 400);
   demoWebhook = { ...NO_WEBHOOK, configured: true, preset, target: secret ? demoMask(preset, secret) : demoWebhook.target,
-    chat_id: preset === "telegram" ? body.chat_id ?? null : null, alerts: body.alerts ?? demoWebhook.alerts };
+    chat_id: preset === "telegram" ? body.chat_id ?? null : null, alerts: body.alerts ?? demoWebhook.alerts,
+    // as the server does: this PC's own localhost is not an address a phone opens
+    reachable_link: demoWebhook.reachable_link || !/^(?:localhost|.+\.localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1?\]|\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\])\.?$/i.test(location.hostname) };
   return json(demoWebhook, 200, { "cache-control": "no-store" });
 }
 
@@ -2270,7 +2419,7 @@ class DemoSocket extends EventTarget {
       const open = new Event("open");
       this.onopen?.(open);
       this.dispatchEvent(open);
-      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert", "agent-only"], connection: this.connection });
+      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert", "agent-only", "conversation-search"], connection: this.connection });
     }, 20);
     this.timers.add(opening);
   }

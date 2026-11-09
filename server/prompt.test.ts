@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand } from "./prompt.ts";
+import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
@@ -2943,6 +2943,49 @@ Which approach?
     expect(idOf(asked("✢ Tempering… (5s · ↓ 1.0k tokens)"))).toBe(idOf(asked("✶ Tempering… (9s · ↓ 1.3k tokens)")));
   });
 
+  test("keeps its id while only omp's status row ticks (#3412)", () => {
+    // omp's status row under its panel, as omp 18.12.6 draws it: spinner, elapsed time, then the model, folder and context
+    const row = (lead: string, model = "Ask fixture") => ` ${lead} · ⬢ ${model} · 🗑 …PsA/home/fixture · ◫ 5.7%/131K ⟲`;
+    const underStatus = (status: string, cursor = 0) => [
+      "Run the tests?", "",
+      ...["Yes", "No"].map((label, index) => `${index === cursor ? "❯" : " "} ${index + 1}. ${label}`),
+      "", "Enter to select · ↑/↓ to navigate · Esc to cancel", "", status,
+    ].join("\n");
+    const ompId = (screen: string) => parseFallbackPrompt("omp", screen).id;
+    // the spinner and the elapsed time move every second; the question does not
+    expect(ompId(underStatus(row("⠋ 6m 0s")))).toBe(ompId(underStatus(row("⠙ 6m 1s"))));
+    expect(ompId(underStatus(row("⠸ 1h 2m 3s")))).toBe(ompId(underStatus(row("⠋ 0s"))));
+    // the selected row, or the model and folder the row names, are still another card
+    expect(ompId(underStatus(row("⠋ 6m 0s"), 0))).not.toBe(ompId(underStatus(row("⠋ 6m 0s"), 1)));
+    expect(ompId(underStatus(row("⠋ 6m 0s")))).not.toBe(ompId(underStatus(row("⠋ 6m 0s", "Other model"))));
+    // only the last line is omp's status row: one shaped like it inside the question is read as written
+    const asking = (line: string) => [line, "", "❯ 1. Yes", "  2. No", "", "Enter to select · ↑/↓ to navigate · Esc to cancel"].join("\n");
+    expect(ompId(asking(row("⠋ 1m 0s")))).not.toBe(ompId(asking(row("⠋ 2m 0s"))));
+    // a question line written exactly as the status row is: neither is blanked, so a change to both is another card
+    const echoed = (status: string) => [status, "", "❯ 1. Yes", "  2. No", "", "Enter to select · ↑/↓ to navigate · Esc to cancel", "", status].join("\n");
+    expect(ompId(echoed(row("⠋ 1m 0s")))).not.toBe(ompId(echoed(row("⠋ 2m 0s"))));
+    // every status-line preset omp draws, as the repo's fixtures hold them: the spinner and time tick, the rest stays (#3416)
+    const presets: [string, string, string][] = [
+      ["unicode", " ⠸ 0s > ⬢ Approval fixture > 📁 …/cwd ▶──6%──╎─┃─", " ⠹ 1s > ⬢ Approval fixture > 📁 …/cwd ▶──6%──╎─┃─"],
+      ["ascii", " / 0s > [M] Approval fixture > [D] …/cwd >--6%----:--|-", " - 1s > [M] Approval fixture > [D] …/cwd >--6%----:--|-"],
+      ["nerd", "  ⠴ 0s   Approval fixture   …/cwd ──6%──", "  ⠦ 1m 2s   Approval fixture   …/cwd ──6%──"],
+      ["box", "╭── ⠸ 1s > ⬢ Shape fixture > 🗑 …/cwd ▶──6%──", "╭── ⠹ 2s > ⬢ Shape fixture > 🗑 …/cwd ▶──6%──"],
+    ];
+    for (const [name, before, after] of presets) {
+      expect(ompId(underStatus(before)), name).toBe(ompId(underStatus(after)));
+      // the model the row names is still part of the card
+      expect(ompId(underStatus(before)), name).not.toBe(ompId(underStatus(before.replace(/(Approval|Shape) fixture/, "Other model"))));
+    }
+    // the default preset with the user's context segment turned off: a braille frame and a time still tick, with no gauge
+    const bare = (lead: string) => ` ${lead} · ⬢ Ask fixture · 🗑 …/home/fixture`;
+    expect(ompId(underStatus(bare("⠋ 6m 0s")))).toBe(ompId(underStatus(bare("⠙ 6m 1s"))));
+    expect(ompId(underStatus(bare("⠋ 6m 0s")))).not.toBe(ompId(underStatus(bare("⠋ 6m 0s").replace("Ask fixture", "Other model"))));
+    // a question that only looks like a frame and a time is read as written: it has no context gauge
+    for (const [before, after] of [["- 5s delay before production?", "- 30s delay before production?"], ["| 5s timeout", "| 30s timeout"]]) {
+      expect(ompId(underStatus(before!)), before).not.toBe(ompId(underStatus(after!)));
+    }
+  });
+
   test("makes another card of anything else that changed, on a working line too", () => {
     const working = "✢ Tempering… (5s · ↓ 1.0k tokens)";
     // what the agent is doing: the words stay in the id
@@ -3322,11 +3365,17 @@ describe("pi's dialogs", () => {
   });
 
   test("reads a select, confirm and input over an extension's status line in pi's footer", () => {
-    const withStatus = (screen: string) => `${screen}worktree: main · usage 12%\n`;
-    expect(labels(parseInteractivePrompt("pi", withStatus(select)))).toEqual(["Allow once", "Always allow", "Block"]);
-    expect(parseInteractivePrompt("pi", withStatus(piScreen(" Clear session?\n All messages will be lost.\n\n → Yes\n   No\n" + MENU_HINT)))?.kind).toBe("approval");
-    expect(parseInteractivePrompt("pi", withStatus(piScreen(" Branch name?\n\n>\n enter submit  escape/ctrl+c cancel")))?.custom_option_index).toBe(0);
-    expect(parseInteractivePrompt("pi", `${withStatus(select)}Some later output\nand more\n`)).toBeNull();
+    for (const stats of ["0.0%/215k (auto)", "$0.000 (sub) 0.0%/215k (auto)", "$0.000 0.0%/215k (auto)"]) {
+      const withStatus = (screen: string) => `${screen.replace("0.0%/215k (auto)", stats)}worktree: main · usage 12%\n`;
+      expect(labels(parseInteractivePrompt("pi", withStatus(select)))).toEqual(["Allow once", "Always allow", "Block"]);
+      const confirm = parseInteractivePrompt("pi", withStatus(piScreen(" Clear session?\n All messages will be lost.\n\n → Yes\n   No\n" + MENU_HINT)));
+      expect(confirm?.kind).toBe("approval");
+      expect(labels(confirm)).toEqual(["Yes", "No"]);
+      const input = parseInteractivePrompt("pi", withStatus(piScreen(" Branch name?\n\n>\n enter submit  escape/ctrl+c cancel")));
+      expect(input?.custom_option_index).toBe(0);
+      expect(labels(input)).toEqual(["Type your answer"]);
+      expect(parseInteractivePrompt("pi", `${withStatus(select)}Some later output\nand more\n`)).toBeNull();
+    }
   });
 });
 
@@ -3375,9 +3424,11 @@ describe("pi's thinking selector", () => {
 
   test("reads the selector over an extension's status line in pi's footer", () => {
     for (const narrow of [false, true]) {
-      const screen = `${piThinking(1, narrow)}\nworktree: main · usage 12%`;
-      expect(labels(parseInteractivePrompt("pi", screen))).toEqual(["off", "medium", "max"]);
-      expect(parseInteractivePrompt("pi", `${screen}\nAnswer output\nMore output`)).toBeNull();
+      for (const stats of ["0.0%/215k (auto)", "$0.000 (sub) 0.0%/215k (auto)", "$0.000 0.0%/215k (auto)"]) {
+        const screen = `${piThinking(1, narrow).replace("0.0%/215k (auto)", stats)}\nworktree: main · usage 12%`;
+        expect(labels(parseInteractivePrompt("pi", screen))).toEqual(["off", "medium", "max"]);
+        expect(parseInteractivePrompt("pi", `${screen}\nAnswer output\nMore output`)).toBeNull();
+      }
     }
   });
 });
@@ -3598,6 +3649,12 @@ Claude: 5h 12% (4h 4m) · 7d 12% (6d 8h) | Codex: 5h 0% (4h 55m) ·...
     // a narrow pane cuts the stats line before its meter, as pi cuts that line at 48 columns
     const narrow = status.replace("$0.461 (sub) 3.7%/1.0M (auto)  claude-o", "$0.461 (sub) 3.7...");
     expect(labels(parseInteractivePrompt("pi", narrow))).toEqual(labels(parseInteractivePrompt("pi", status)));
+    for (const stats of ["$0.000 (sub) 0.0%/1.0M (auto)", "$0.000 0.0%/200k", "$0.000 (sub) ?/200k"]) {
+      expect(labels(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, `\n${stats}\n`)))).toEqual(labels(prompt));
+    }
+    for (const stats of ["$0.000 total", "$0.000 (sub) progress 50%/100 done"]) {
+      expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, `\n${stats}\n`))).toBeNull();
+    }
     expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, "\n0.0%/200k (auto)\n"))).not.toBeNull();
     expect(parseInteractivePrompt("pi", status.replace(/\n↑52 .*\n/, "\n?/200k\n"))).not.toBeNull();
   });
@@ -4388,9 +4445,9 @@ describe("an answer and the menu it was made for", () => {
     return ((await (await handlePromptRequest(new Request(url), url, { codexHome }))!.json()) as { prompt: InteractivePrompt | null }).prompt;
   }
 
-  async function answer(promptId: string, choice: { option_index?: number; option_indices?: number[]; custom_text?: string; step_back?: boolean; step_index?: number }, more: { signal?: AbortSignal; codexHome?: string } = {}): Promise<{ status: number; code?: string }> {
+  async function answer(promptId: string, choice: { option_index?: number; option_indices?: number[]; custom_text?: string; step_back?: boolean; step_index?: number }, more: { signal?: AbortSignal; codexHome?: string; beforeKey?: () => Promise<void> } = {}): Promise<{ status: number; code?: string }> {
     const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
-    const response = (await handlePromptRequest(new Request(url, { method: "POST", signal: more.signal, body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...choice }) }), url, { codexHome: more.codexHome }))!;
+    const response = (await handlePromptRequest(new Request(url, { method: "POST", signal: more.signal, body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...choice }) }), url, { codexHome: more.codexHome, ...(more.beforeKey ? { beforeKey: more.beforeKey } : {}) }))!;
     const body = await response.json() as { error?: { code: string } };
     return { status: response.status, code: body.error?.code };
   }
@@ -5731,6 +5788,131 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
         });
       });
     }
+  });
+
+  describe("Letta's /model search, typed a key at a time", () => {
+    // letta-code 0.34.31's picker on its Recents tab, with what the search line shows
+    const recents = readFileSync(new URL("./fixtures/letta/model-recents-0.34.31.txt", import.meta.url), "utf8");
+    const lettaModels = (search: string) => search === "" ? recents : recents.replace("(type to filter)", search);
+
+    test("types the search into the picker while it shows each key", async () => {
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        let search = "";
+        pane.onSent = (sent) => { if (sent.startsWith("text:")) search += sent.slice(5); pane.screen = lettaModels(search); };
+        expect(await answer(prompt.id, { custom_text: "son" })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["text:s", "text:o", "text:n"]);
+      });
+    });
+
+    test("types on into a picker whose search matches nothing", async () => {
+      // letta-code's empty list: no rows and no footer, only its line saying so
+      const noMatch = (search: string) => `${lettaModels(search).slice(0, lettaModels(search).indexOf("Claude Opus 5.5 · Anthropic")).replace(/\n[^\n]*$/, "")}\n  No models match your search.\n`;
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        let search = "";
+        pane.onSent = (sent) => { search += sent.slice(5); pane.screen = search.includes("x") ? noMatch(search) : lettaModels(search); };
+        expect(await answer(prompt.id, { custom_text: "xyz" })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["text:x", "text:y", "text:z"]);
+      });
+    });
+
+    test("serves no second model card for a pick while Letta redraws after it", async () => {
+      const effort = readFileSync(new URL("./fixtures/letta/effort-0.34.31.txt", import.meta.url), "utf8");
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        // Letta draws the reasoning step a few reads after the Enter
+        let reads = -1;
+        pane.onSent = (sent) => { if (sent === "enter") reads = 0; };
+        pane.onRead = () => { if (reads >= 0 && ++reads === 5) pane.screen = effort; };
+        expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+        // the card read right after the answer: a model list again would take a second tap's Enter
+        expect((await card())?.question ?? "").not.toStartWith("Select model");
+        // Letta's next step: the pane's model list after this is asked anew
+        pane.screen = effort;
+        expect((await card())?.question).toStartWith("Select reasoning level");
+      });
+    });
+
+    test("serves no fresh card for a picked model list until the screen changes", async () => {
+      const effort = readFileSync(new URL("./fixtures/letta/effort-0.34.31.txt", import.meta.url), "utf8");
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+        // Letta has not redrawn yet: the list just answered is no new asking, however long it stays
+        const again = await card();
+        expect(again, "a card for the unchanged list would take a second Enter").toBeNull();
+        expect(pane.sent).toEqual(["enter"]);
+        // once the screen moves on, its cards are served again, and the list after it too
+        pane.screen = effort;
+        expect((await card())?.question).toStartWith("Select reasoning level");
+        pane.screen = lettaModels("");
+        expect((await card())?.question).toStartWith("Select model");
+      });
+    });
+
+    test("holds the picked list when Letta redraws it with other counts before the next step", async () => {
+      const effort = readFileSync(new URL("./fixtures/letta/effort-0.34.31.txt", import.meta.url), "utf8");
+      // a refresh of the catalog under the answer: another tab's count, the same row under the cursor
+      const refreshed = lettaModels("").replace("Recommended [12]", "Recommended [13]");
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        let reads = 0;
+        pane.onRead = () => { if (++reads === 2) pane.screen = refreshed; };
+        expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+        expect(pane.sent).toEqual(["enter"]);
+        expect(await card(), "the list the Enter went to, redrawn, is no new asking").toBeNull();
+        pane.screen = effort;
+        expect((await card())?.question).toStartWith("Select reasoning level");
+      });
+    });
+
+    test("stops a search once the picker shows another tab", async () => {
+      const recommended = readFileSync(new URL("./fixtures/letta/model-recommended-0.34.31.txt", import.meta.url), "utf8");
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        // → in the terminal right after the first key: Recommended, under the same search
+        pane.onSent = (sent) => { if (sent === "text:a") pane.screen = recommended.replace("(type to filter)", "a"); };
+        const result = await answer(prompt.id, { custom_text: "abc" });
+        expect(pane.sent, "another tab must not take the rest of the search").toEqual(["text:a"]);
+        expect(result).toEqual({ status: 409, code: "prompt_changed" });
+      });
+    });
+
+    test("refuses a search with a control character before any key", async () => {
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        // Enter would pick the top row, Esc close the picker and leave the rest to Letta's input
+        for (const text of ["son\rnet", "so\u001bhi", "a\tb", "a\u007fb", "a\u0085b"]) {
+          expect(await answer(prompt.id, { custom_text: text })).toEqual({ status: 400, code: "invalid_answer" });
+        }
+        expect(pane.sent).toEqual([]);
+      });
+    });
+
+    test("sends no further key into Letta's input once the picker closes under the search", async () => {
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        // Esc in the terminal right after the first key: the composer would take the rest
+        pane.onSent = (sent) => { if (sent === "text:a") pane.screen = "\n> \n"; };
+        const result = await answer(prompt.id, { custom_text: "abc" });
+        expect(pane.sent, "a closed picker must not receive the remaining keys").toEqual(["text:a"]);
+        expect(result).toEqual({ status: 409, code: "prompt_changed" });
+      });
+    });
+
+    test("sends no further key into Letta's input when the picker closes during the look before it", async () => {
+      await withPane("letta", "idle", lettaModels(""), async (pane) => {
+        const prompt = (await card())!;
+        let search = "";
+        pane.onSent = (sent) => { search += sent.slice(5); pane.screen = lettaModels(search); };
+        // Esc in the terminal after the picker showed `a`, while the look before `b` is under way
+        const beforeKey = async (): Promise<void> => { if (pane.sent.length === 1) pane.screen = "\n> \n"; };
+        const result = await answer(prompt.id, { custom_text: "abc" }, { beforeKey });
+        expect(pane.sent, "a closed picker must not receive the remaining keys").toEqual(["text:a"]);
+        expect(result).toEqual({ status: 409, code: "prompt_changed" });
+      });
+    });
   });
 
   // a refusal waits out the answer's own 1.5 s for the picker to show the row
@@ -7504,5 +7686,13 @@ describe("piRunsCommand", () => {
     expect(piListsTemplate(pane, "/review\nthe parser")).toBe(true);
     expect(piListsTemplate(pane, "/skill:commit and push")).toBe(false);
     expect(piListsTemplate(pane, "/commit")).toBe(false);
+  });
+});
+
+describe("a prompt watch's read", () => {
+  test("reads nothing of a pi pane, whose pi-ask draft a late read would replace", async () => {
+    // no such pane in herdr: any read of it would reject
+    const pane = { pane_id: "w-prompt-watch-pi:p1", agent: "pi", agent_status: "idle", cwd: tmpdir() } as HerdrPane;
+    expect(await shownPromptText(pane, [pane], { openCodeState: new OpenCodePromptState(), ompLookups: new Map() })).toBeUndefined();
   });
 });

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
-import { ApiError, fetchRelay, requestRelay } from "./api.ts";
+import { ApiError, fetchRelay, requestRelay, requestRelayDirect } from "./api.ts";
 import { usePageVisible } from "./visibility.ts";
 
 /**
@@ -22,6 +22,13 @@ export const PAIRING_CODE_EVENT = "ovis:pairing-code";
 export function announcePairingCode(code: PairingCode): void {
   window.dispatchEvent(new CustomEvent<PairingCode>(PAIRING_CODE_EVENT, { detail: code }));
 }
+
+/**
+ * The PC's device list changed behind the app: the relay shell linked this client's pairing to the
+ * account (relay/shell.tsx) and the session that signed in again is up, so a Devices panel read
+ * before the link lists this client as no member yet and reads the list again.
+ */
+export const DEVICES_CHANGED_EVENT = "ovis:devices-changed";
 
 /** how often the relay is asked again: closely while it connects or retries, otherwise at rest */
 function pollDelay(status: RelayStatus): number {
@@ -68,11 +75,11 @@ export function useRelay() {
     return () => { stopped = true; clearTimeout(timer); };
   }, [refresh, visible, unsupported]);
 
-  /** Start, stop or reset: the answer is the relay's state after it, or the failure's words. */
-  const request = useCallback(async (action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> => {
+  /** Start, stop, reset or the direct switch: the answer is the relay's state after it, or the failure's words. */
+  const request = useCallback(async (action: "start" | "stop" | "reset-identity" | { direct: boolean }): Promise<RelayStatus> => {
     setPending(true);
     try {
-      const next = await requestRelay(action);
+      const next = typeof action === "string" ? await requestRelay(action) : await requestRelayDirect(action.direct);
       if (mounted.current) {
         setStatus(next);
         // a start is still connecting: the next answers follow it closely

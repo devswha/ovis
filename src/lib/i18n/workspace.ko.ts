@@ -55,10 +55,7 @@ export const WORKSPACE_KO: Record<string, string> = {
   "Starting shell…": "셸 시작 중…",
   "Directory not found": "폴더를 찾을 수 없습니다",
   "model, effort": "모델, 노력 수준",
-  "Model": "모델",
   "Empty: the agent's own model.": "비우면 에이전트 자체 모델을 씁니다.",
-  "One model name, without spaces.": "띄어쓰기 없는 모델 이름 하나를 적으세요.",
-  "Effort": "노력 수준",
   "Levels depend on the model.": "고를 수 있는 수준은 모델에 따라 다릅니다.",
   "Ultracode": "Ultracode",
   "Claude Code 2.1.284 or later": "Claude Code 2.1.284 이상",
@@ -94,4 +91,6 @@ export const WORKSPACE_KO: Record<string, string> = {
   "Add another agent…": "다른 에이전트 추가…",
   "It is installed, but this PC does not offer it here yet. Restart Ovis on the PC, or start it in a terminal tab.": "설치는 됐지만 이 PC가 아직 여기서 고를 수 있게 내놓지 않아요. PC에서 Ovis를 다시 시작하거나, 터미널 탭에서 시작하세요.",
   "It is installed. Waiting for this PC to offer it here…": "설치됐어요. 이 PC에서 고를 수 있게 될 때까지 기다리는 중…",
+  "Group": "그룹",
+  "Where the Agents list shows it": "에이전트 목록에서 보일 자리",
 };

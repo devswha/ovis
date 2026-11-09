@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import { AmbiguousClaudeStore, claudeAttachArgs, claudeAttachedJob, claudeAttachSession, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, processLaunchSource, procArgsEnvironment } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeAttachArgs, claudeAttachedJob, claudeAttachSession, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, processLaunchSource, procArgsEnvironment, windowsShellClaude } from "./claude-store.ts";
 import { procStartTime } from "./darwin-process.ts";
 import type { ProcessRow } from "./windows-processes.ts";
 
@@ -572,6 +572,15 @@ describe("claudeTranscriptFile", () => {
     }
   });
 
+  it("records the exact identity of the transcript whose tail it read, for the file it returns (#3402)", async () => {
+    const { home: dir, projects } = home();
+    const path = transcript(projects, claudeProjectDir("/w/project"));
+    const proofs = new Map<string, string>();
+    expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], undefined, null, proofs)).toBe(path);
+    const proven = statSync(path, { bigint: true });
+    expect(proofs.get(path)).toBe(`${proven.dev}:${proven.ino}`);
+  });
+
   it("tries each cwd in turn, then finds the session in whichever project holds it", async () => {
     const { home: dir, projects } = home();
     const started = transcript(projects, claudeProjectDir("/w/started-here"));
@@ -780,6 +789,18 @@ describe("claudeTranscriptFile", () => {
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], join(dir, ".claude"), DEEPER)).toBe(deeper);
     });
 
+    it("gives a branch it follows no proof, while the session it was copied from keeps its own (#3402)", async () => {
+      const { dir, folder, original } = setup();
+      const plain = new Map<string, string>();
+      expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], join(dir, ".claude"), null, plain)).toBe(original);
+      expect(plain.has(original)).toBe(true);
+      const branch = branched(folder, BRANCH, SESSION);
+      const proofs = new Map<string, string>();
+      expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], join(dir, ".claude"), BRANCH, proofs)).toBe(branch);
+      // the branch was told by its own head, read apart from any tail: it falls back to the outcome read's exact stat
+      expect(proofs.has(branch)).toBe(false);
+    });
+
     it("keeps the reported session when the live one is no branch of it (control)", async () => {
       const { dir, projects, folder, original } = setup();
       const store = join(dir, ".claude");
@@ -877,6 +898,84 @@ describe("claudeTranscriptFile", () => {
       // once the line is whole, it is followed
       writeFileSync(branch, `${record}\n`);
       expect(await claudeTranscriptFile(dir, SESSION, ["/w/project"], store, BRANCH)).toBe(branch);
+    });
+  });
+
+  describe("a session a Claude started inside the pane reported (#3260)", () => {
+    const OWN = "0c4d2a6e-3b1f-4e8a-9d27-5f6a7b8c9d01";
+    const CHILD = "1d5e3b7f-4c2a-4f9b-8e38-6a7b8c9d0e12";
+    const STORE = (dir: string) => join(dir, ".claude");
+    /** a transcript as Claude Code writes it: interactive (`cli`) or print mode (`sdk-cli`) */
+    const written = (folder: string, id: string, entrypoint: string): string => {
+      mkdirSync(folder, { recursive: true });
+      const path = join(folder, `${id}.jsonl`);
+      writeFileSync(path, [
+        { type: "user", message: { role: "user", content: "Reply OK" }, sessionId: id, entrypoint },
+        { type: "assistant", message: { content: [{ type: "text", text: "OK" }] }, sessionId: id, entrypoint },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      return path;
+    };
+
+    it("reads the pane's own Claude when the reported session has no transcript (regression: fails on main)", async () => {
+      const { home: dir, projects } = home();
+      const own = written(join(projects, claudeProjectDir("/w/project")), OWN, "cli");
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(own);
+    });
+
+    it("reads the pane's own Claude when print mode wrote the reported transcript (regression: fails on main)", async () => {
+      const { home: dir, projects } = home();
+      const folder = join(projects, claudeProjectDir("/w/project"));
+      written(folder, CHILD, "sdk-cli");
+      const own = written(folder, OWN, "cli");
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(own);
+      // its newest record decides: once the session is used interactively again, the report stands
+      appendFileSync(join(folder, `${CHILD}.jsonl`), JSON.stringify({ type: "user", message: { content: "again" }, sessionId: CHILD, entrypoint: "cli" }) + "\n");
+      forgetClaudeSessions();
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(join(folder, `${CHILD}.jsonl`));
+    });
+
+    it("never takes the live session from another project", async () => {
+      const { home: dir, projects } = home();
+      // the pane's project holds no transcript of the live id; another project does
+      written(join(projects, claudeProjectDir("/w/other")), OWN, "cli");
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBeNull();
+      // beside a print-mode report too: only the report's own folder is looked in
+      const reported = written(join(projects, claudeProjectDir("/w/project")), CHILD, "sdk-cli");
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(reported);
+    });
+
+    it.skipIf(process.platform === "win32")("never follows a link in place of the live transcript", async () => {
+      const { home: dir, projects } = home();
+      const folder = join(projects, claudeProjectDir("/w/project"));
+      const outside = written(join(dir, "elsewhere"), OWN, "cli");
+      mkdirSync(folder, { recursive: true });
+      symlinkSync(outside, join(folder, `${OWN}.jsonl`));
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBeNull();
+    });
+
+    it("keeps the answer it gave when the PID record tells nothing better (control)", async () => {
+      const { home: dir, projects } = home();
+      const folder = join(projects, claudeProjectDir("/w/project"));
+      // no PID record, or one with no transcript either: the report has not written its first message yet
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), null)).toBeNull();
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBeNull();
+      // an interactive report stands, as after a /resume back to it
+      const reported = written(folder, CHILD, "cli");
+      written(folder, OWN, "cli");
+      expect(await claudeTranscriptFile(dir, CHILD, ["/w/project"], STORE(dir), OWN)).toBe(reported);
+      // print mode beside print mode: neither is told apart
+      const { home: other, projects: otherProjects } = home();
+      const otherFolder = join(otherProjects, claudeProjectDir("/w/project"));
+      const printed = written(otherFolder, CHILD, "sdk-cli");
+      written(otherFolder, OWN, "sdk-cli");
+      expect(await claudeTranscriptFile(other, CHILD, ["/w/project"], STORE(other), OWN)).toBe(printed);
+      // a record that names no entrypoint is no print mode
+      const { home: plain, projects: plainProjects } = home();
+      const plainFolder = join(plainProjects, claudeProjectDir("/w/project"));
+      mkdirSync(plainFolder, { recursive: true });
+      writeFileSync(join(plainFolder, `${CHILD}.jsonl`), JSON.stringify({ type: "user", message: { content: "hi" }, sessionId: CHILD }) + "\n");
+      written(plainFolder, OWN, "cli");
+      expect(await claudeTranscriptFile(plain, CHILD, ["/w/project"], STORE(plain), OWN)).toBe(join(plainFolder, `${CHILD}.jsonl`));
     });
   });
 
@@ -1351,6 +1450,180 @@ describe("a Windows Claude's store", () => {
     expect(await storeOf(dir)).toBeNull();
     record(join(dir, ".claude-second"));
     expect(await storeOf(dir)).toBe(join(dir, ".claude-second"));
+  });
+});
+
+describe("the Claude under a Windows pane's shell", () => {
+  // herdr and herdr-core name only the shell in front on Windows, so the process table answers. These
+  // run anywhere, with the table handed in.
+  const SHELL = 6100;
+  const LAUNCHER = 6200;
+  const INNER = 6300;
+  const BESIDE = 6500;
+  const STARTED = 1_791_384_794_216;
+  const CLAUDE_EXE = "C:\\Users\\u\\.local\\bin\\claude.exe";
+  const row = (pid: number, parent: number, path: string, commandLine: string, started = STARTED): ProcessRow => ({ pid, parent, path, commandLine, started });
+  // as a real PC showed it: the shell's claude.exe (no arguments, no record) runs the session's
+  // claude.exe, with the shell's console host beside it and an MCP server below it
+  const chain: ProcessRow[] = [
+    row(SHELL, 1, "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "powershell.exe", STARTED - 60_000),
+    row(6110, SHELL, "C:\\WINDOWS\\System32\\conhost.exe", "conhost.exe 0xffffffff", STARTED - 59_000),
+    row(LAUNCHER, SHELL, CLAUDE_EXE, `"${CLAUDE_EXE}"`, STARTED - 1_000),
+    row(INNER, LAUNCHER, CLAUDE_EXE, `"${CLAUDE_EXE}" --permission-mode auto`),
+    row(6400, INNER, "C:\\Program Files\\nodejs\\node.exe", "node.exe mcp-server.js", STARTED + 2_000),
+  ];
+  const beside = row(BESIDE, SHELL, CLAUDE_EXE, `"${CLAUDE_EXE}"`);
+  const roots: string[] = [];
+  let serverConfigDir: string | undefined;
+  beforeEach(() => { serverConfigDir = process.env["CLAUDE_CONFIG_DIR"]; delete process.env["CLAUDE_CONFIG_DIR"]; });
+  afterEach(() => {
+    forgetClaudeSessions();
+    if (serverConfigDir === undefined) delete process.env["CLAUDE_CONFIG_DIR"];
+    else process.env["CLAUDE_CONFIG_DIR"] = serverConfigDir;
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  function home(): string {
+    const root = mkdtempSync(join(tmpdir(), "herdr-claude-shell-"));
+    roots.push(root);
+    return root;
+  }
+  /** Claude's PID record of `pid`, with its start as Claude writes it: FILETIME, 100 ns since 1601 */
+  function record(store: string, pid: number, started = STARTED): void {
+    mkdirSync(join(store, "sessions"), { recursive: true });
+    writeFileSync(join(store, "sessions", `${pid}.json`), JSON.stringify({
+      pid, sessionId: SESSION, procStart: String((BigInt(started) + 11_644_473_600_000n) * 10_000n + 8714n), kind: "interactive",
+    }));
+  }
+  const pids = async (dir: string, rows: readonly ProcessRow[] = chain, shell = SHELL) =>
+    (await windowsShellClaude(shell, async () => [...rows], dir))?.map((entry) => entry.pid) ?? null;
+
+  it("takes the child claude.exe holding the PID record, not the launcher its shell started", async () => {
+    const dir = home();
+    record(join(dir, ".claude"), INNER);
+    expect(await windowsShellClaude(SHELL, async () => chain, dir)).toEqual([{ pid: INNER, argv: [CLAUDE_EXE, "--permission-mode", "auto"] }]);
+    // in another store Claude may use
+    const other = home();
+    record(join(other, ".claude-work"), INNER);
+    expect(await pids(other)).toEqual([INNER]);
+  });
+
+  it("keeps a Claude beside the record's holder that has written none: a `claude attach` client in front writes no record either", async () => {
+    const dir = home();
+    record(join(dir, ".claude"), INNER);
+    const rows = [...chain, beside];
+    expect(await pids(dir, rows)).toEqual([INNER, BESIDE]);
+    const found = (await windowsShellClaude(SHELL, async () => rows, dir))!;
+    expect(await paneClaudeSource(found, dir, "win32", async () => rows)).toEqual({ state: "ambiguous" });
+  });
+
+  it("never hands over from a `claude attach` client, nor passes one over below a launcher: it names its session by its job", async () => {
+    const dir = home();
+    const attach = row(LAUNCHER, SHELL, CLAUDE_EXE, `"${CLAUDE_EXE}" attach dc5643bd`, STARTED - 1_000);
+    record(join(dir, ".claude"), INNER);
+    // an attach client the shell started, with a recorded Claude below it
+    expect(await pids(dir, [chain[0]!, attach, chain[3]!])).toEqual([LAUNCHER]);
+    // a launcher whose children are an attach client and a recorded Claude: neither can be told the one in front
+    const attached = row(6700, LAUNCHER, CLAUDE_EXE, `"${CLAUDE_EXE}" attach dc5643bd`, STARTED + 1_000);
+    expect(await pids(dir, [...chain, attached])).toEqual([INNER, 6700]);
+  });
+
+  it("hands over only from a Claude with no record file: one with a torn or leftover record stays, though a Claude below it holds one", async () => {
+    const nested = row(6600, 6400, CLAUDE_EXE, `"${CLAUDE_EXE}" -p hi`, STARTED + 3_000);
+    const rows = [...chain, nested];
+    for (const left of ["{\"pid\":62", JSON.stringify({ pid: INNER, sessionId: SESSION, procStart: "1", kind: "interactive" })]) {
+      const dir = home();
+      record(join(dir, ".claude"), nested.pid, STARTED + 3_000);
+      writeFileSync(join(dir, ".claude", "sessions", `${INNER}.json`), left);
+      // the launcher hands over to the session's Claude, which keeps its own place whatever its record says
+      expect(await pids(dir, rows)).toEqual([INNER]);
+    }
+  });
+
+  it("reads the table once, and no store for a lone Claude", async () => {
+    const dir = home();
+    record(join(dir, ".claude"), INNER);
+    let reads = 0;
+    const table = async () => { reads += 1; return [...chain]; };
+    expect((await windowsShellClaude(SHELL, table, dir))?.map((entry) => entry.pid)).toEqual([INNER]);
+    expect(reads).toBe(1);
+    const stores = spyOn(fsPromises, "readdir");
+    try {
+      expect(await pids(dir, chain.filter((entry) => entry.pid !== INNER))).toEqual([LAUNCHER]);
+      expect(stores).not.toHaveBeenCalled();
+    } finally {
+      stores.mockRestore();
+    }
+  });
+
+  it("keeps the nearest Claude and any other not started by it while none below it has a record file", async () => {
+    const dir = home();
+    expect(await pids(dir)).toEqual([LAUNCHER]);
+    expect(await pids(dir, [...chain, beside])).toEqual([LAUNCHER, BESIDE]);
+    // the record a finished process left at the number the session's Claude has now: that Claude
+    // is still the one the launcher started, and its store check finds no live session in it
+    record(join(dir, ".claude"), INNER, STARTED - 10_000);
+    expect(await pids(dir)).toEqual([INNER]);
+    expect(await paneClaudeSource([{ pid: INNER, argv: [CLAUDE_EXE] }], dir, "win32", async () => chain)).toEqual({ state: "unreadable" });
+  });
+
+  it("takes a lone Claude with or without a record, finds none under another shell, and has no answer from an empty table", async () => {
+    const dir = home();
+    const lone = [chain[0]!, row(INNER, SHELL, CLAUDE_EXE, `"${CLAUDE_EXE}"`)];
+    expect(await pids(dir, lone)).toEqual([INNER]);
+    record(join(dir, ".claude"), INNER);
+    expect(await pids(dir, lone)).toEqual([INNER]);
+    expect(await pids(dir, chain, 99)).toEqual([]);
+    expect(await pids(dir, [])).toBeNull();
+  });
+
+  it("names both of two Claudes holding records when neither started the other: which session the pane shows cannot be told", async () => {
+    const dir = home();
+    record(join(dir, ".claude"), INNER);
+    record(join(dir, ".claude"), BESIDE);
+    const rows = [...chain, beside];
+    expect(await pids(dir, rows)).toEqual([INNER, BESIDE]);
+    const found = (await windowsShellClaude(SHELL, async () => rows, dir))!;
+    expect(await paneClaudeSource(found, dir, "win32", async () => rows)).toEqual({ state: "ambiguous" });
+  });
+
+  it("leaves out a Claude the record's holder started, as it leaves out one the nearest Claude started", async () => {
+    const dir = home();
+    const nested = row(6600, 6400, CLAUDE_EXE, `"${CLAUDE_EXE}"`, STARTED + 3_000);
+    record(join(dir, ".claude"), INNER);
+    record(join(dir, ".claude"), nested.pid, STARTED + 3_000);
+    expect(await pids(dir, [...chain, nested])).toEqual([INNER]);
+  });
+
+  it("asks only Claude processes: a record under another process's number counts for nothing", async () => {
+    const dir = home();
+    record(join(dir, ".claude"), 6400, STARTED + 2_000);
+    record(join(dir, ".claude"), 6110, STARTED - 59_000);
+    expect(await pids(dir)).toEqual([LAUNCHER]);
+    record(join(dir, ".claude"), INNER);
+    expect(await pids(dir)).toEqual([INNER]);
+  });
+
+  it("takes a record that cannot be read, or that two stores hold, for one its process may hold", async () => {
+    const dir = home();
+    record(join(dir, ".claude"), INNER);
+    const unreadable = join(dir, ".claude", "sessions", `${INNER}.json`);
+    const open = fsPromises.open;
+    const opened = spyOn(fsPromises, "open").mockImplementation(((path, flags, mode) => path === unreadable
+      ? Promise.reject(Object.assign(new Error("EIO: i/o error, open"), { code: "EIO" }))
+      : open(path, flags, mode)) as typeof open);
+    try {
+      const found = (await windowsShellClaude(SHELL, async () => chain, dir))!;
+      expect(found.map((entry) => entry.pid)).toEqual([INNER]);
+      expect(await paneClaudeSource(found, dir, "win32", async () => chain)).toEqual({ state: "ambiguous" });
+      expect(opened).toHaveBeenCalledWith(unreadable, expect.anything());
+    } finally { opened.mockRestore(); }
+    // a store copied while Claude ran: the process stands, and its store stays one that cannot be told
+    const copy = home();
+    record(join(copy, ".claude"), INNER);
+    record(join(copy, ".claude-copy"), INNER);
+    const found = (await windowsShellClaude(SHELL, async () => chain, copy))!;
+    expect(found.map((entry) => entry.pid)).toEqual([INNER]);
+    expect(await paneClaudeSource(found, copy, "win32", async () => chain)).toEqual({ state: "ambiguous" });
   });
 });
 

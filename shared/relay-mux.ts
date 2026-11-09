@@ -8,6 +8,21 @@ export const RELAY_PROTOCOL = 1;
  */
 export const RELAY_HINTS = "relay-hints";
 /**
+ * The optional mux feature by which a PC names the addresses on its private networks where a phone
+ * can open this same channel without the relay (server/relay/direct.ts), in AUTH_OK. A phone that can
+ * open them offers it in HELLO; it is answered only in AUTH_OK, never selected in WELCOME, which may
+ * go out before HELLO is read. The address is a hint: Noise against the pinned PC key proves the PC.
+ */
+export const DIRECT_CARRIER = "direct-carrier";
+/**
+ * Offered beside DIRECT_CARRIER by a client that can also open a direct carrier on the PC's Tailscale
+ * address (100.64.0.0/10): only then does AUTH_OK name one. A client without it would refuse the whole
+ * AUTH_OK over an address its older isDirectCarrier does not take.
+ */
+export const DIRECT_TAILNET = "direct-tailnet";
+/** At most this many direct carriers in one AUTH_OK. */
+export const MAX_DIRECT_CARRIERS = 4;
+/**
  * The oldest Ovis server the hosted shell connects to: 0.4.21 (package.json read 0.4.20 when the
  * relay landed; v0.4.21 itself holds no server/relay/, so the first release that does is newer).
  * Raise it only in a PR that makes the shell need a newer server API, with a changelog line. A
@@ -51,6 +66,12 @@ export const PAIR_INTENT_ACCOUNT = "pair-intent-account";
  * never selected in WELCOME, which may go out before HELLO is read, and v1 limits stay as they are.
  */
 export const LARGE_WS_MESSAGES = "large-ws-messages";
+/**
+ * The optional mux feature by which a phone says it takes the `x-server-time` response header (the PC's
+ * clock as it answered a conversation read, src/lib/sentWaiting.ts). A phone without it refuses a
+ * header it does not list, so a PC sends it only to a phone that offered this in HELLO.
+ */
+export const SERVER_TIME_HEADER = "server-time-header";
 /**
  * A 4 MiB outgoing queue (relay-mux-engine.ts) holds one such message and, behind it, the 1 MiB a PC's
  * core still sends to a client while it drains (server/output-window.ts OUTPUT_HARD_BYTES).
@@ -97,6 +118,8 @@ export const RESPONSE_HEADERS = [
   "content-type", "content-length", "content-range", "accept-ranges", "etag",
   "last-modified", "cache-control", "content-disposition", "retry-after", "x-request-id",
   "content-security-policy", "x-content-type-options", "cross-origin-resource-policy", "referrer-policy",
+  // only to a peer that offered SERVER_TIME_HEADER
+  "x-server-time",
 ] as const;
 /** The only read-only routes a browser resource may load through a shell worker. */
 export const RELAY_RESOURCE_ROUTES = ["fs/file", "fs/favicon", "pane/conversation/image"] as const;
@@ -125,7 +148,7 @@ type Payloads = {
   readonly 0x01: { readonly protocol: "ovis-mux"; readonly versions: readonly number[]; readonly features: readonly string[]; readonly required_features: readonly string[] };
   readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
-  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[] };
+  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[] };
   readonly 0x05: { readonly code: SessionError; readonly message: string };
   readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number };
   readonly 0x07: bigint;
@@ -281,6 +304,45 @@ function relayOrigin(value: unknown): string {
   requireProtocol(origin === result, "Invalid relay origin");
   return result;
 }
+function directOrigin(value: unknown): string {
+  const result = text(value, 32);
+  requireProtocol(isDirectCarrier(result), "Invalid direct carrier");
+  return result;
+}
+
+type Subnet = readonly [number, number, number];
+const PRIVATE_IPV4: readonly Subnet[] = [[10, 0, 8], [172, 16, 12], [192, 168, 16], [169, 254, 16]];
+/** Tailscale's IPv4 range (shared CGNAT space, which Tailscale assigns its nodes from). */
+const TAILNET_IPV4: readonly Subnet[] = [[100, 64, 10]];
+
+function carrierIn(text: string, subnets: readonly Subnet[]): boolean {
+  const match = /^ws:\/\/((?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}):([1-9]\d{0,4})$/.exec(text);
+  if (!match) return false;
+  const octets = match[1]!.split(".").map(Number);
+  const port = Number(match[2]);
+  if (port > 65535 || octets.some((octet) => octet > 255)) return false;
+  const address = ((octets[0]! << 24) | (octets[1]! << 16) | (octets[2]! << 8) | octets[3]!) >>> 0;
+  return subnets.some(([a, b, bits]) => address >>> (32 - bits) === (((a << 24) | (b << 16)) >>> 0) >>> (32 - bits));
+}
+
+/** Exactly `ws://<Tailscale IPv4>:<port>`: an address in 100.64.0.0/10, a port written out, nothing else. */
+export function isTailnetCarrier(text: string): boolean {
+  return carrierIn(text, TAILNET_IPV4);
+}
+
+/** Whether `address` (dotted IPv4, nothing else) is in Tailscale's range, as isTailnetCarrier reads it. */
+export function isTailnetAddress(address: string): boolean {
+  return isTailnetCarrier(`ws://${address}:1`);
+}
+
+/**
+ * Exactly `ws://<private IPv4>:<port>`: an RFC 1918, link-local or Tailscale (isTailnetCarrier) address, a
+ * port written out, nothing else.
+ */
+export function isDirectCarrier(text: string): boolean {
+  return carrierIn(text, PRIVATE_IPV4) || isTailnetCarrier(text);
+}
+
 function protocol(value: unknown): string {
   const result = text(value, 128);
   requireProtocol(HTTP_TOKEN.test(result), "Invalid WS subprotocol");
@@ -361,7 +423,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { confirmed: true } };
     case FrameType.AUTH_OK:
       return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]),
-        ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }) } };
+        ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }),
+        ...(v.direct === undefined ? {} : { direct: list(v.direct, MAX_DIRECT_CARRIERS, directOrigin) }) } };
     case FrameType.SESSION_ERROR:
       return { ...common, type, payload: { code: choice(v.code, SESSION_ERRORS), message: text(v.message, 256) } };
     case FrameType.GOAWAY:

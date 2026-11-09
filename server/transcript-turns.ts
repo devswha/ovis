@@ -50,7 +50,7 @@ function answeredBetween(answers: readonly number[], from: number, to: number): 
 }
 
 /** a slash command the user ran, as Claude Code echoes it: a local_command record, or a user one on older versions */
-function claudeCommandEchoRecord(entry: { type?: unknown; subtype?: unknown; isMeta?: unknown; content?: unknown; message?: { content?: unknown } }): boolean {
+export function claudeCommandEchoRecord(entry: { type?: unknown; subtype?: unknown; isMeta?: unknown; content?: unknown; message?: { content?: unknown } }): boolean {
   const text = entry.type === "system" && entry.subtype === "local_command" ? entry.content : entry.type === "user" && !entry.isMeta ? entry.message?.content : undefined;
   return typeof text === "string" && /^\s*(?:<command-message>[^<]*<\/command-message>\s*)?<command-name>\//.test(text);
 }
@@ -119,7 +119,7 @@ const TURN_MARK: Record<StreamSource, Buffer> = {
  * task_started), a Claude or omp prompt (tool results answer the turn before it),
  * and the same for pi, whose prompts are `message` records with a user role.
  */
-function opensTurn(source: StreamSource, line: string, blobs: string | null): boolean | "inline" {
+export function opensTurn(source: StreamSource, line: string, blobs: string | null): boolean | "inline" {
   let entry: { type?: unknown; uuid?: unknown; origin?: unknown; permissionMode?: unknown; data?: { content?: unknown }; isMeta?: unknown; isCompactSummary?: unknown; payload?: { type?: unknown }; message?: { role?: unknown; content?: unknown } };
   try { entry = JSON.parse(line); } catch { return false; }
   if (entry === null || typeof entry !== "object") return false;
@@ -132,10 +132,10 @@ function opensTurn(source: StreamSource, line: string, blobs: string | null): bo
     const message = piMessage(entry);
     if (message?.role !== "user") return false;
     if ((message.content as Record<string, unknown>[]).some((part) => part.type === "text" && typeof part.text === "string" && part.text.length > 0)) return true;
-    // a pi or omp prompt that is only pictures is drawn as a turn of its own, so it opens one (omp's
+    // a pi, omp or omo prompt that is only pictures is drawn as a turn of its own, so it opens one (omp's
     // pictures in its blob store `blobs`, as the parser names them)
     if (source === "omp-transcript") return piPromptImages(entry, message, blobs).length > 0;
-    return (source === "pi-transcript" || source === "cmd-transcript") && piPromptImages(entry, message).length > 0;
+    return (source === "pi-transcript" || source === "cmd-transcript" || source === "omo-transcript") && piPromptImages(entry, message).length > 0;
   }
   // another session's message opens a turn in either of its forms, the meta entry and the queued attachment
   if (claudePeerNotice(entry) !== null) return true;

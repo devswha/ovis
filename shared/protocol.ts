@@ -1,3 +1,4 @@
+import type { HerdrKeys } from "./herdr-keys.ts";
 import type { MachineEvent } from "./machines.ts";
 /**
  * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
@@ -37,6 +38,8 @@ import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, 
 /** GET /api/herdr-ui: the herdr client preferences of the PC serving the web UI, never the rest of its config. */
 export interface HerdrUiConfig {
   copy_on_select: boolean;
+  /** its `[keys]` prefix bindings the app can run (shared/herdr-keys.ts); absent from an older server */
+  keys?: HerdrKeys;
 }
 
 /** Friendly aliases used across the UI. */
@@ -46,6 +49,7 @@ export type HerdrTab = TabInfo;
  * `background_tasks`: an OmO pane's `task` children, or a Claude Code pane's subagents and background commands, still running, counted by the server; absent when none.
  * `background_wait`: the pane is at rest while work its turn started still runs, and the turn goes on when it ends (server/background-wait.ts); absent when not.
  * `plan`: how far the pane's agent's task list or checklist has progressed; absent when it keeps none.
+ * `context`: how much of its context a Claude Code or Codex pane's last request filled, read from its transcript as the chat's ring reads it; absent before one reports it.
  *
  * What herdr-core (server/herdr-core/snapshot.ts) reports about the terminal, each absent where it
  * reported nothing (and always on herdr's TUI runtime):
@@ -56,8 +60,11 @@ export type HerdrTab = TabInfo;
  * agent waits for (`permission`, `question`, `auth`), its message in its own words (never
  * translated), and how far it is, 0 to 100.
  */
+/** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
+export type PaneContext = { used: number; window: number | null };
+
 export type HerdrPane = PaneInfo & {
-  background_tasks?: number; background_wait?: true; plan?: PlanSummary;
+  background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
   own_tab?: true;
   agent_kind?: string;
@@ -137,8 +144,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         a driving owner only (not watch, not an open install's stranger): saves the choice (runtime-<port>.json) and has
  *         the launcher restart the server on it (server/herdr-core/runtime-choice.ts); 409 runtime_locked (OVIS_RUNTIME,
  *         no launcher, the OS), runtime_unavailable (this PC lacks it, or serves it already), runtime_switching
- *  GET    /api/herdr-ui                  -> HerdrUiConfig (this server PC's herdr [ui] copy_on_select,
- *         for local and remote panes alike), no-store
+ *  GET    /api/herdr-ui                  -> HerdrUiConfig (this server PC's herdr [ui] copy_on_select and
+ *         [keys] prefix bindings, for local and remote panes alike), no-store
  *  GET    /api/access                    -> RemoteAccess (how a phone can reach this server: what
  *         Tailscale on this PC already serves, or the command to run), no-store
  *  GET    /api/portal                    -> PortalStatus (an optional public HTTPS address through
@@ -168,6 +175,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
  *         404 relay_pairing_gone once it left, was decided or ran out of time
+ *  POST   /api/relay/direct              -> RelayStatus; JSON { on: boolean }: direct connections on this PC's
+ *         networks while the relay is on (on unless turned off; off ends every direct session); 400 invalid_relay_direct, 409 direct_unavailable on a server without them
  *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
  *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
  *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
@@ -175,7 +184,13 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
- *  POST   /api/updates/install           -> 202 { accepted: true }; UpdateInstallRequest JSON body
+ *  POST   /api/updates/install           -> 202 { accepted: true, install_id }; UpdateInstallRequest JSON body
+ *  POST   /api/updates/cancel            -> 202 { accepted: true }; { install_id } JSON body, as the install's 202 gave it: stops that
+ *                                            install only, while it checks or builds (install_cancellable); 400 invalid_update_cancel,
+ *                                            409 update_restart_required, or 409 update_not_cancellable alike for a wrong or expired
+ *                                            install_id and for no update running (supervisor IPC: update-cancel-v2)
+ *                                            (the bridge token may cancel any install that builds there, as it may start one: it is this
+ *                                            PC owner's own connection server, which asks only for an install it requested)
  *         (at most 1 KiB): 400 invalid_update_install for a missing or malformed revision,
  *         409 update_restart_required where the supervisor does not advertise
  *         revision_bound_install, 409 update_offer_changed when the offer is no longer that
@@ -278,6 +293,11 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         Grok requires exact live process/session evidence, Agy live process/session evidence;
  *         rewinds invalidate cursors.
  *         Grok/Agy optional activity describes the latest native turn, independently of pane status.)
+ *  GET    /api/pane/conversation/search?pane_id=&q=[&before=&history_id=] -> ConversationSearchResponse
+ *         (the user's messages and the agent's answers that hold q, newest first, read through the
+ *         same pages; a few pages per answer, `cursor` goes on as `before` with the answer's
+ *         history_id. 409 history_changed, 503 conversation_read_pending as above; a pane with no
+ *         readable store answers no matches, one that loses it after a page was read 409 history_changed.)
  *  POST   /api/pane/close { pane_id }         -> { ok: true } (pane.close RPC; the collector's
  *         session-changed broadcast removes it from every client's sidebar)
  *  POST   /api/pane/rename { pane_id, label } -> { ok: true } (pane.rename; empty label clears it)
@@ -298,6 +318,14 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         -> PaneSwapped { ok: true, changed, reason, target_pane_id } (pane.swap with the neighbour
  *         on that side, prefix+shift+hjkl, or an explicit pane; exactly one destination is required;
  *         changed false names no_neighbor, same_pane, cross_tab or not_found)
+ *  POST   /api/pane/move   { pane_id, target_pane_id, side: left|right|up|down } -> PaneMoved { ok: true, changed, reason }
+ *         (pane.move: the pane goes to that side of another pane of its own tab, its terminal and ID kept;
+ *         herdr 0.9.5 moves none within a tab, so it passes through a tab of its own, and a swap puts
+ *         it left of or above the target; herdr's focus stays where it was; changed false names
+ *         same_pane or cross_tab, an unknown pane answers pane_not_found; a pane herdr will not
+ *         bring back beside its target goes back into its tab, beside the target or another pane,
+ *         and the error says so, or says it waits in a tab of its own; changed true with a reason:
+ *         the swap was refused or failed, so the pane stays right of or below its target)
  *  POST   /api/pane/resize { pane_id, direction: left|right|up|down, amount? } -> PaneResized { ok: true, changed, reason }
  *         (pane.resize, herdr's resize mode: the border the pane shares with a neighbour moves that way
  *         by `amount` of the split the border belongs to, not of the tab (0 < amount <= 0.5, herdr's
@@ -325,16 +353,22 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/pane/artifacts?pane_id= -> { artifacts: ClaudeArtifact[] } (the pages a Claude Code
  *         pane's session published with its Artifact tool, newest first; empty for any other pane or
  *         one whose session is not known yet)
+ *  GET    /api/pane/btw?pane_id=        -> OmpBtwHistory (the side conversations an OMP pane's session
+ *         saved with /btw, newest first, under hard caps; `more` when a cap left some out; empty for any
+ *         other pane or one without any)
  *  GET    /api/pane/plan?pane_id=       -> PanePlan (the plan the pane's Claude Code, Codex or OmO session
  *         keeps: its task list or checklist, read from the transcript; null when it keeps none)
  *  GET    /api/pane/files?pane_id=&q=&limit=  -> { files: string[] } (paths relative to the pane
  *         cwd matching q, for @-mentions; git ls-files when the cwd is a repo, bounded walk otherwise)
+ *  GET    /api/pane/docs?pane_id=       -> PaneDocuments (the Markdown files under the pane's folder,
+ *         newest first, from the same listing; read only: Files' Documents tab, shared/files.ts)
  *  GET    /api/workspace/diff/files?pane_id=&directory=&scope=&base=&head= -> RepoDiffFileList
  *         (what changed in the git repository the pane's folder, or `directory`, is inside: read
  *         only, on the PC that owns the pane. `directory` is absolute, `~/…`, or relative to the
  *         pane's folder; one of pane_id and directory is required. scope: workspace (the default:
  *         working tree against the index, plus untracked files), staged (index against HEAD),
- *         commit (`base` against `head`, HEAD when absent; each one commit) or branch (the working
+ *         commit (`base` against `head`, HEAD when absent; each one commit, or for `base` the
+ *         empty tree's hash, which a root commit's changes are read against) or branch (the working
  *         tree, untracked files included, against the merge base of `base` and HEAD: what this
  *         branch changed, never what `base` went on to change; `base` is required, `head` is not
  *         taken). The list is capped (`limits`), and `truncated` says when it was. 400
@@ -355,6 +389,35 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/workspace/diff/refs?pane_id=&directory= -> RepoDiffRefs (the local and remote
  *         branches of that repository, as full refnames with their commits, for choosing a base:
  *         at most `limits.max_refs`, sorted, a remote's symbolic HEAD left out; nothing is fetched)
+ *  GET    /api/workspace/git/log?pane_id=&directory=&ref=&oid=&skip=&limit= -> RepoLog
+ *         (shared/repo-log.ts: a page of the history of `ref`, HEAD when absent, newest first,
+ *         `limit` 1..100 commits (50 by default) from `skip`; each commit carries the branches,
+ *         remote branches and tags at it by full refname. Later pages pass the first page's `oid`,
+ *         so commits made in between do not shift them; `next_skip` is null on the last page. An
+ *         empty page before the first commit. Read like the diff routes, with their folder
+ *         resolution, errors and refusals; 400 invalid_limit / invalid_skip)
+ *  GET    /api/workspace/git/branches?pane_id=&directory= -> RepoBranches (the local branches,
+ *         the current one first and then by last commit, each with its upstream, how far ahead
+ *         and behind it is and whether the upstream is gone; at most `limits.max_branches`)
+ *  GET    /api/workspace/git/show?pane_id=&directory=&rev= -> RepoCommitDetail (one commit's
+ *         whole message, up to `limits.max_message_bytes`, and the `base` its changes are read
+ *         against with the diff routes in the commit scope: its first parent, or the empty tree
+ *         for a root commit). The three are reached on another PC under /api/machines/<id>/,
+ *         as the diff routes are
+ *  GET    /api/workspace/pr?pane_id=&directory= -> PullRequestView (shared/pull-request.ts: the
+ *         pull request of the branch checked out in the pane's folder, or `directory`, read through
+ *         that PC's own `gh` sign-in: title, state, checks failing first with their Actions job ids,
+ *         the unresolved review threads, whether GitHub would merge now and with which default
+ *         method. 409 gh_missing / gh_signed_out / no_github_remote / not_a_repository, 404
+ *         no_pull_request, 502 gh_failed, 504 gh_timeout. A watching device is refused, as for diffs)
+ *  GET    /api/workspace/pr/log?pane_id=&directory=&job_id=&host= -> PullRequestCheckLog (the last
+ *         lines of that Actions job's log, timestamps and colour codes removed, asked of the pull
+ *         request's host: github.com when absent; 400 invalid_job / invalid_host)
+ *  POST   /api/workspace/pr/merge { pane_id?, directory?, number, head_oid, base_ref, method } -> { ok: true }
+ *         (`gh pr merge --<method> --match-head-commit <head_oid>`: only the head the view showed is
+ *         merged, into the base it showed (read again first: 409 pull_request_changed), the branch
+ *         is kept; 400 invalid_body, 409 merge_queue (a base merged through a merge queue, where gh
+ *         would only queue it), 409 merge_refused with GitHub's reason)
  *  GET    /api/pane/prompt?pane_id=     -> PanePromptResponse
  *         (the agent's TUI question/approval menu currently on screen, parsed from the visible pane
  *         text; with no menu, the next prompt Claude Code suggests, grey in its empty input box, and
@@ -395,6 +458,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         409 repository_without_commits when no base is named and the repository has no commit yet;
  *         both worktree routes refuse a label over MAX_LABEL_CHARS with 400 label_too_long)
  *  GET    /api/worktree/list?workspace_id= -> WorktreeListing (worktree.list: the repo's checkouts)
+ *  GET    /api/worktree/inventory?workspace_id=&workspace_id=... -> WorktreeInventory (the same listing for up to
+ *         MAX_INVENTORY_WORKSPACES workspaces in one read, each with its listing or the error the list route would give;
+ *         400 missing_workspace_id, too_many_workspaces; a bridge from before it answers 404 not_found)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
  *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
@@ -402,7 +468,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         dirty_worktree_requires_force)
  *  POST   /api/auth        { token }     -> 204 + Set-Cookie ovis_token (401 invalid_token on mismatch)
  *  DELETE /api/auth                      -> 204, clears the token and the device cookies
- *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices; `current` marks the caller's)
+ *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices; `current` marks the caller's,
+ *         `connection` how one with an encrypted session up reaches the PC; `?check=1` measures their round trips first, within 3 s)
  *  POST   /api/devices/pair/start        -> PairingCode: a six-digit code good for ten minutes, replacing any pending one
  *         (X-Herdr-Machine: 1 + same origin, from a client with full access)
  *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
@@ -452,11 +519,11 @@ export interface ApiError {
 
 export type { PaneFindMatch, PaneFindRequest, PaneFindResponse } from "./find.ts";
 
-export type { UsageProviderId, UsageWindow, UsageProblem, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
+export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
-export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
+export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, DirectExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, DeviceConnection, DeviceRoute, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
 /** Older servers and the Tailscale-only builder omit relay state. */
 export type RemoteAccess = import("./access.ts").RemoteAccess & { readonly relay?: RelayStatus };
 
@@ -488,6 +555,25 @@ export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
 export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalStatus } from "./portal.ts";
 
+/**
+ * Why the relay is not online, as a fixed code a client puts in its own words (RelayStatus.error_code;
+ * docs/relay.md, "Why it is not online"). Each says whether the PC tries again by itself:
+ * - `start_failed`: the relay did not start; starting it again may work.
+ * - `identity_unreadable`: this PC's relay identity cannot be read (`blocked` says so too); nothing retries.
+ * - `relay_unreachable`: the relay did not answer or the connection dropped; the PC tries again.
+ * - `server_key_refused`: the relay refused this PC's key for good; the PC does not try again.
+ * - `pass_required`: an Ovis relay needs a relay pass and no account names this PC: sign in on it and add it.
+ * - `pass_not_listed`: the account this PC names does not list it: add it to that account.
+ * - `pass_limit`: that account has as many PCs on the Ovis relay as it may: remove one from it.
+ * - `pass_unavailable`: the relay needs a pass the account service has not given yet; the PC keeps asking.
+ * - `pass_refused`: the relay refused the pass this PC holds (a key it does not trust, a PC it revoked); the PC asks
+ *   for another now and then.
+ * - `pass_unsupported`: the relay needs a pass and this PC asks no account service for one (turned off or
+ *   unusable, or a relay that is not Ovis's): waiting brings none; use the same Wi-Fi, Tailscale or another relay.
+ */
+export type RelayErrorCode = "start_failed" | "identity_unreadable" | "relay_unreachable" | "server_key_refused"
+  | "pass_required" | "pass_not_listed" | "pass_limit" | "pass_unavailable" | "pass_refused" | "pass_unsupported";
+
 /** GET /api/relay; relay and app are configured secure origins, never pairing credentials. */
 export interface RelayStatus {
   readonly phase: "off" | "connecting" | "online" | "error";
@@ -496,6 +582,25 @@ export interface RelayStatus {
   readonly sessions: number;
   readonly blocked: null | "serve_only" | "identity_unreadable";
   readonly error: string | null;
+  /** why, as a fixed code, whenever `error` says something (null otherwise); absent from an older server */
+  readonly error_code?: RelayErrorCode | null;
+  /**
+   * Direct connections on this PC's networks (docs/relay.md): whether they are on, and the carriers
+   * listened on now (none while the relay is off). Absent from a server without them.
+   */
+  readonly direct?: { readonly on: boolean; readonly carriers: readonly string[] };
+  /**
+   * This PC's relay pass, on Ovis's own relays only (docs/relay.md, "Relay pass"): `state` is where
+   * getting one stands (server/relay/pass.ts), `relay` what the relay last said of it (null before it
+   * said anything, or on a relay that asks for none) and `enforce_at` from when it will be needed.
+   */
+  readonly pass?: {
+    readonly state: "ok" | "no_account" | "not_listed" | "limit" | "unavailable";
+    readonly relay: "ok" | "missing" | "invalid" | "expired" | null;
+    readonly enforce_at: string | null;
+    /** the relay refused this PC for its pass (4402) and it has not been let in since */
+    readonly refused: boolean;
+  };
 }
 
 /** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */
@@ -522,6 +627,11 @@ export interface ConversationTurn {
   ts: string | null;
   /** Last recorded assistant activity, never the next user's timestamp. */
   end_ts?: string;
+  /**
+   * The store row each text part was read from, in the parts' order (Hermes's message ids): a search
+   * match is found by the row its words are in, wherever a page boundary split the turn.
+   */
+  text_rows?: number[];
   parts: ConversationPart[];
 }
 
@@ -534,7 +644,9 @@ export interface SkillActivity {
 }
 
 export type ConversationPart =
-  | { kind: "text"; text: string; phase?: "commentary" | "final_answer" }
+  /** `failed`: a request the agent recorded as failed (pi-family `stopReason: "error"`); `text` is "Error: " and its error.
+   *  A later part of the same turn is a later request; nothing records whether it was an automatic retry. */
+  | { kind: "text"; text: string; phase?: "commentary" | "final_answer"; failed?: true }
   /** the agent's reasoning block; the client folds it and shows it only on request */
   | { kind: "thinking"; text: string }
   | { kind: "skill"; skill: SkillActivity }
@@ -560,8 +672,9 @@ export type ConversationPart =
   }
   /** A native Claude/Codex user image, addressed by an opaque ref and fetched on demand: GET /api/pane/conversation/image?pane_id=…&ref=… */
   | { kind: "image"; media_type: string; ref: string }
-  /** the summary a compaction left; the conversation before it is what it sums up */
-  | { kind: "compact"; text: string }
+  /** the summary a compaction left; the conversation before it is what it sums up. The token counts are present only
+   *  where the record states them (pi-family `tokensBefore`/`tokensAfter`, OmO's `details.structuralYield.savedTokens`). */
+  | { kind: "compact"; text: string; tokens_before?: number; tokens_after?: number; tokens_saved?: number }
   /** a message the agent's runtime put in the user's seat (gjc's background-job result): it starts a turn, nobody typed it.
    * `source`: the runtime's name for it (pi's customType, e.g. "async-result", "irc:incoming", "omo-model-profile:unavailable") */
   | { kind: "notice"; text: string; source?: string }
@@ -569,7 +682,20 @@ export type ConversationPart =
    * stderr until the agent records them */
   | { kind: "shell"; command: string; stdout?: string; stderr?: string }
   /** OmO's background tasks that ended, as OmO reported them back to the agent, or a Claude Code subagent that ended (its task notification): it starts a turn, nobody typed it */
-  | { kind: "task_result"; tasks: OmoTaskResult[] };
+  | { kind: "task_result"; tasks: OmoTaskResult[] }
+  /** OmO's goal waiting on background work before it continues on its own (its `goal-cache-warmup`
+   * record): a turn of its own while it is the conversation's last, gone once it resumes or anything
+   * else follows. `due_at`: when OmO continues if nothing wakes it first */
+  | { kind: "goal_wait"; due_at: string; waiting_on: GoalWaitSources };
+
+/** What an OmO goal's wait waits on, by kind: background tasks, monitors, background terminals, DAG runs and detached code cells. */
+export interface GoalWaitSources {
+  tasks: number;
+  monitors: number;
+  terminals: number;
+  dags: number;
+  cells: number;
+}
 
 /** One OmO background task that ended (the `senpi-task.completion` OmO wakes its agent with). */
 export interface OmoTaskResult {
@@ -599,18 +725,47 @@ export interface ConversationMetadata {
    * How much of the model's context the last request filled, in tokens; absent until a
    * response reports its usage. `window` is null when the transcript does not say it.
    */
-  context?: { used: number; window: number | null };
+  context?: PaneContext;
+  /**
+   * The provider the conversation runs at, as omp, omo, gjc and pi name it (`anthropic`,
+   * `openai-codex`): set by a model change and by each answer, absent when none is named.
+   */
+  provider?: string;
 }
 
 export type { OmoTask, OmoRunNode, OmoRun, OmoActivity, PaneBackgroundAgentDetail } from "./tasks.ts";
 
 export type { PlanStep, PanePlan } from "./plans.ts";
 
+export type { ConversationSearchMatch, ConversationSearchResponse } from "./conversation-search.ts";
+
 /** One page a Claude Code session published with its Artifact tool: its claude.ai URL, the title of its latest publish (else the published file's name) and when that was. */
 export interface ClaudeArtifact {
   url: string;
   title: string | null;
   at: string | null;
+}
+
+/** One question of an OMP `/btw` side conversation and its answer, as OMP saved it; `at` is when it was asked. */
+export interface OmpBtwExchange {
+  question: string;
+  answer: string;
+  status: "running" | "complete" | "cancelled" | "error" | "interrupted";
+  error: string | null;
+  at: string;
+}
+
+/** One OMP `/btw` topic: its first question, the follow-ups asked in it, and the title OMP gave it if any. */
+export interface OmpBtwTopic extends OmpBtwExchange {
+  id: string;
+  title: string | null;
+  follow_ups: OmpBtwExchange[];
+}
+
+/** GET /api/pane/btw: at most a megabyte; `more` says a cap (topics, follow-ups, size, or a folder too long to list) left some out. */
+export interface OmpBtwHistory {
+  topics: OmpBtwTopic[];
+  more: boolean;
 }
 
 /** How far a pane's plan has got, for the sidebar: `current` names the step in progress. */
@@ -629,7 +784,13 @@ export interface ConversationResponse {
   activity?: "thinking" | "working" | "idle";
   /** Stable across appends; changes on transcript replacement or native context clear. */
   history_id?: string;
-  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  /**
+   * The PC's clock as it answered, which the turns' times are on (ISO time): the browser's clock runs
+   * ahead of it by no more than the time the answer was in hand less this. Absent on a scrollback
+   * fallback and from older bridges. A 200 and a 304 also carry it as the `x-server-time` header.
+   */
+  server_time?: string;
+  source: "dsh-transcript" | "kiro-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
@@ -644,6 +805,12 @@ export interface ConversationResponse {
    * read again on the pane's next activity rather than on a timer.
    */
   recovery?: "waiting";
+  /**
+   * On a scrollback answer for a Copilot pane on Linux: its one Copilot process was not started with
+   * `--ui-server`, and Chat could not bind its session from the files and herdr's report; starting it
+   * with the flag may help.
+   */
+  hint?: "copilot_ui_server";
   /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or
@@ -678,15 +845,16 @@ export type { PluginActionContext, PluginAction, PluginActions, PluginActionsRes
 
 export type { DirectoryListing, CreateDirectoryRequest, DirectoryCreated } from "./directories.ts";
 
-export type { FileKind, FileInfo, ProjectFavicon } from "./files.ts";
+export type { FileKind, FileInfo, MarkdownDocument, PaneDocuments, ProjectFavicon } from "./files.ts";
 
 export type { RepoDiffScope, RepoBranchComparison, RepoDiffRefs, RepoDiffStatus, RepoDiffRepository, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch } from "./repo-diff.ts";
+export type { RepoPerson, RepoCommit, RepoLog, RepoBranch, RepoBranches, RepoCommitDetail } from "./repo-log.ts";
 
 export type { AgentKind } from "./agents.ts";
 
 export type { AgentIntegration, IntegrationsResponse } from "./integrations.ts";
 
-export type { CreateWorkspaceRequest, MoveTabRequest, TabMoved, MoveTabToWorkspaceRequest, TabMovedToWorkspace, CreateTabRequest, CreateWorktreeRequest, OpenWorktreeRequest, WorktreeOpened, RemoveWorktreeRequest, WorktreeRemoved, WorktreeEntry, WorktreeListing, WorkspaceCreated, TabCreated } from "./workspace-lifecycle.ts";
+export type { CreateWorkspaceRequest, MoveTabRequest, TabMoved, MoveTabToWorkspaceRequest, TabMovedToWorkspace, CreateTabRequest, CreateWorktreeRequest, OpenWorktreeRequest, WorktreeOpened, RemoveWorktreeRequest, WorktreeRemoved, WorktreeEntry, WorktreeListing, WorktreeInventory, WorktreeInventoryEntry, WorkspaceCreated, TabCreated } from "./workspace-lifecycle.ts";
 
 /** POST /api/agent/rename: the live name of the agent in the pane; null clears it. */
 export interface AgentRenameRequest {
@@ -694,7 +862,7 @@ export interface AgentRenameRequest {
   name: string | null;
 }
 
-export type { SplitPaneDirection, PaneDirection, SplitPaneRequest, PaneSplit, ZoomPaneRequest, PaneZoomed, FocusPaneRequest, SwapPaneRequest, PaneSwapped, ResizePaneRequest, PaneResized, SetSplitRatioRequest } from "./pane-layout.ts";
+export type { SplitPaneDirection, PaneDirection, SplitPaneRequest, PaneSplit, ZoomPaneRequest, PaneZoomed, FocusPaneRequest, SwapPaneRequest, PaneSwapped, MovePaneRequest, PaneMoved, ResizePaneRequest, PaneResized, SetSplitRatioRequest } from "./pane-layout.ts";
 
 /** GET /api/pane/commands: one slash command the pane's agent understands. */
 export interface SlashCommand {
@@ -850,6 +1018,13 @@ export interface InteractivePrompt {
    */
   screen_words?: string;
   /**
+   * The preview Claude draws for the option under its cursor (AskUserQuestion's `preview`), read off
+   * the screen as drawn: rows a long line wrapped into at the box's width stay apart, and a long
+   * preview is cut to its first rows, `hidden_lines` more in the terminal. Claude draws only that
+   * option's, so it follows the cursor; not part of the card's id. Absent without a preview box.
+   */
+  option_preview?: { option_index: number; text: string; hidden_lines?: number };
+  /**
    * The card's own words, which the bridge wrote rather than read off the agent's screen (an Esc
    * offered as Close, a fallback card's title): for each such field above, its English as a key with
    * its values (shared/card-text.ts), so the client shows it in the user's language. A field not
@@ -914,10 +1089,10 @@ export interface PromptAnswer {
  *  Client -> server frames: attach {pane_id, cols, rows} | detach {pane_id} | input {pane_id, text}
  *    | keys {pane_id, keys} | resize {pane_id, cols, rows} | release-size {pane_id} | role {mode}
  *    | pty-ack {pane_id, stream_id, offset} | secret {id, pane_id, prompt, secret}
- *    | watch {pane_id, cols, rows} | unwatch {pane_id} | conversation-watch {pane_id, enabled}
- *    | insert {id, pane_id, text}
+ *    | watch {pane_id, cols, rows} | unwatch {pane_id} | conversation-watch {pane_id, enabled, detached?}
+ *    | prompt-watch {pane_id, enabled} | insert {id, pane_id, text}
  *  Server -> client frames: snapshot | pty-data | pty-exit | pane-geometry | role-ack
- *    | pane-status | pane-exited | session-changed | conversation-changed | secret-result
+ *    | pane-status | pane-exited | session-changed | conversation-changed | prompt-changed | secret-result
  *    | insert-result | input-result | watch-data | watch-end | error
  *
  *  attach {flow_control:"ack"} opts into per-subscription output credit.
@@ -954,6 +1129,9 @@ export interface PendingMessage {
   text: string;
   state: "queued" | "sending" | "held" | "uncertain";
   created_at: string;
+  /** The PC's clock as this try went out (`sending`), before anything was typed: its turn is written after
+   * it. Kept while uncertain; gone once it is queued or held again, and from older bridges. */
+  sending_at?: string;
   error?: { code: string; message: string };
   /** its submit was `agent_only`: a resend of a saved copy says so again */
   agent_only?: true;
@@ -966,8 +1144,16 @@ export type ClientMessage =
   | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }
   /** Native invalidations require "conversation-watch" and an attachment; observers may subscribe.
-   * Detaching clears interest, so reconnect/reattach must enable it again. REST remains authoritative. */
-  | { type: "conversation-watch"; pane_id: string; enabled: boolean }
+   * Detaching clears interest, so reconnect/reattach must enable it again. REST remains authoritative.
+   * `detached: true` (feature "conversation-watch-detached"): an interest that needs no attachment, for a client that
+   * shows the chat and no terminal. It survives attaching and detaching the pane and ends with a `detached: true`
+   * disable or the connection; at most 32 per connection (`too_many_conversation_watches`). */
+  | { type: "conversation-watch"; pane_id: string; enabled: boolean; detached?: boolean }
+  /** feature "prompt-watch": a `prompt-changed` whenever the prompt on the pane's screen opens, closes or becomes
+   * another one, without attaching the pane. Ends with a disable, the connection, or an error `prompt_watch_ended`
+   * (the pane closed, or its screen could not be read 10 times in a row); at most 32 per connection
+   * (`too_many_prompt_watches`). GET /api/pane/prompt stays authoritative. */
+  | { type: "prompt-watch"; pane_id: string; enabled: boolean }
   /** a pane another web bridge holds (`attach_held`): take herdr's attach slot from it, here, now */
   | { type: "take-over"; pane_id: string }
   /** `stop`: the composer's Stop (text a lone ESC). The bridge sends it in the pane's turn, after typing
@@ -1096,8 +1282,11 @@ export interface ClientConnectionTrace {
  * `terminal-history` (herdr-core, which has no viewport to scroll): each attach clears the client's scrollback and replays
  * the pane's last TERMINAL_HISTORY_LINES lines, so the client keeps the scrollback and scrolls it itself. Without it herdr
  * owns the scrollback and the client keeps none.
+ * `conversation-search`: GET /api/pane/conversation/search answers; without it the browser offers no conversation search.
+ * `conversation-watch-detached` and `prompt-watch`: a client may follow a pane's conversation and prompt without
+ * attaching it (the `conversation-watch` and `prompt-watch` frames).
  */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt";
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch";
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
@@ -1106,8 +1295,10 @@ export type ServerMessage =
   /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server
    * supports and this socket's `connection` id (the snapshot names the same), and the herdr it reads now
    * (`herdr_lifetime` as a snapshot names it; absent when unproven). A page acts on it before the snapshot only
-   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot */
-  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string }
+   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot.
+   * `paste_dir`: the absolute folder `OVIS_PASTE_DIR` sends this PC's uploads to, so the page reads an upload's
+   * path whole through it (src/lib/pasteFolders.ts, #2771); absent when uploads go to each pane's `<cwd>/.ovis` */
+  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string; paste_dir?: string }
   /** `connection`: this socket's id on the PC, for a create request's `first_message_connection`; older bridges send none */
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[]; connection?: string }
   /** raw PTY bytes: append to the terminal, never repaint over it. A mirrored pane (HerdrIdentity.terminal_mirror) sends whole screens the same way. */
@@ -1138,8 +1329,11 @@ export type ServerMessage =
    * `typed_now`: on a queued send, this request typed the message at once (the turn had ended
    * before it arrived); on a held copy's resend (`resend_id`), this request typed it. A replayed id, a
    * row sent or discarded since, or a copy another connection sent answers ok without it; an older
-   * server never sends it. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; code?: string; message?: string; draft?: string; box?: string }
+   * server never sends it.
+   * `sending_at`: on an ok for a message this request typed (an immediate send, or one with
+   * `typed_now`), the PC's clock (ISO 8601) before it typed anything, as a queued row's `sending_at`:
+   * the message's turn is written after it on that clock. An older server never sends it. */
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes
@@ -1155,9 +1349,12 @@ export type ServerMessage =
   | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: PendingRemoval[] }
   | { type: "secret-result"; id: number; pane_id: string; ok: boolean; code?: string }
   /** agent-status push for ANY pane, attached or not (server-side status collector) */
-  | { type: "pane-status"; pane_id: string; agent_status: AgentStatus; finish_id?: number; finish_epoch?: string; /** a pane's running background tasks (OmO's, or a Claude Code pane's subagents and commands), when the frame is about them: it changes no status */ background_tasks?: number; /** every frame says it: absent, the pane does not wait on its turn's background work */ background_wait?: true; /** a pane's plan, when the frame is about it (null: it keeps none now); it changes no status */ plan?: PlanSummary | null }
+  | { type: "pane-status"; pane_id: string; agent_status: AgentStatus; finish_id?: number; finish_epoch?: string; /** a pane's running background tasks (OmO's, or a Claude Code pane's subagents and commands), when the frame is about them: it changes no status */ background_tasks?: number; /** every frame says it: absent, the pane does not wait on its turn's background work */ background_wait?: true; /** a pane's plan, when the frame is about it (null: it keeps none now); it changes no status */ plan?: PlanSummary | null; /** a pane's context, when the frame is about it (null: none reported now); it changes no status */ context?: PaneContext | null }
   /** Native transcript invalidation for an interested attached pane; signature is opaque, not a REST ETag. Refetch the existing conversation endpoint. */
   | { type: "conversation-changed"; pane_id: string; signature: string }
+  /** the prompt on a watched pane's screen (`prompt-watch`) opened, closed or became another one: read GET /api/pane/prompt
+   * again. The first comes with the watch's first read. `signature` is opaque, the same for the same prompt text */
+  | { type: "prompt-changed"; pane_id: string; signature: string }
   /** a pane's process exited (pushed even when nobody is attached to it) */
   | { type: "pane-exited"; pane_id: string }
   /** session structure changed (pane created/closed): refetch /api/session */

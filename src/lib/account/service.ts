@@ -3,8 +3,10 @@
  * directory of the account's PCs, and the tokens a sign-in gives. Answers are parsed here, at the
  * edge; a token is never logged or put in an error's text.
  */
+import { accountLabel, accountOsOf, type AccountAsker, type AccountOs } from "../../../shared/account-asker.ts";
 import type { AccountRecord } from "../../../shared/account-records.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
+import { GLOBAL_APP } from "../../../shared/relay-regions.ts";
 import type { AccountLock, AccountProvider, AccountSession, AccountStore } from "./store.ts";
 import { ACCOUNT_PROVIDERS, accountLock } from "./store.ts";
 
@@ -26,6 +28,35 @@ export function accountServiceOf(document: { querySelector(selector: string): { 
 }
 
 /**
+ * The account service the hosted shell signs in with: the page's (accountServiceOf), but in a browser
+ * only on app.ovis.sh. The service sends a browser back to `<origin>/` for that origin alone, so a
+ * copy served anywhere else (the regional app beside a relay, a preview, a local test run) offers
+ * no sign-in rather than one the service refuses; the phone app comes back through its own scheme.
+ */
+export function shellAccountServiceOf(document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null }, origin: string, nativeApp: boolean): string | null {
+  return nativeApp || origin === GLOBAL_APP ? accountServiceOf(document) : null;
+}
+
+/**
+ * The account service a PC's own page signs in with (GitHub's device flow, lib/account/deviceSignIn.ts),
+ * from `<meta name="ovis-pc-account-service">`, which only the PC's server writes (server/static.ts):
+ * an https origin, and only on a secure page, where WebCrypto works and no one on the network could
+ * have rewritten the script that holds the sign-in. The hosted shell has its own meta and redirect.
+ */
+export function pcAccountServiceOf(document: { querySelector(selector: string): { getAttribute(name: string): string | null } | null }, secure: boolean): string | null {
+  const content = document.querySelector('meta[name="ovis-pc-account-service"]')?.getAttribute("content");
+  if (!secure || !content) return null;
+  // new URL in a try: an older WebView has no URL.canParse
+  try {
+    const url = new URL(content);
+    return url.protocol === "https:" ? url.origin : null;
+  } catch (error) {
+    if (error instanceof TypeError) return null;
+    throw error;
+  }
+}
+
+/**
  * The sign-ins this page offers, from `<meta name="ovis-account-providers" content="github,apple">`:
  * GitHub alone without it, and Apple only once the service is set up for it, so no button leads
  * to a sign-in the service would refuse.
@@ -34,6 +65,52 @@ export function accountProvidersOf(document: { querySelector(selector: string): 
   const named = new Set((document.querySelector('meta[name="ovis-account-providers"]')?.getAttribute("content") ?? "").split(",").map((name) => name.trim()));
   const offered = ACCOUNT_PROVIDERS.filter((provider) => named.has(provider));
   return offered.length > 0 ? offered : ["github"];
+}
+
+/** The providers with a device flow a PC's own page can start (lib/account/deviceSignIn.ts). */
+export const DEVICE_PROVIDERS = ["github", "google"] as const;
+export type DeviceProvider = (typeof DEVICE_PROVIDERS)[number];
+
+export interface OfferedProviders {
+  readonly providers: AccountProvider[];
+  readonly device: DeviceProvider[];
+  /** the sign-ins the Ovis link page finishes (`device_page`); empty when the service has no link page */
+  readonly page: DeviceProvider[];
+}
+
+/**
+ * The sign-ins the service is set up for (`GET /v1/providers`), so a Google button shows only where
+ * Google can finish. A service that cannot say leaves the build's own list (`fallback`), and a PC's
+ * page GitHub alone, as before the service could be asked.
+ */
+export async function offeredProviders(service: string, fallback: readonly AccountProvider[], options: { fetch?: Fetch } = {}): Promise<OfferedProviders> {
+  const before: OfferedProviders = { providers: [...fallback], device: ["github"], page: [] };
+  let body: unknown;
+  try {
+    const response = await (options.fetch ?? fetch)(new URL("/v1/providers", service));
+    if (!response.ok) return before;
+    body = await response.json();
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof SyntaxError) return before;
+    throw error;
+  }
+  if (!isRecord(body) || !Array.isArray(body.providers) || !Array.isArray(body.device)) return before;
+  const named = new Set<unknown>(body.providers);
+  const providers = ACCOUNT_PROVIDERS.filter((provider) => named.has(provider));
+  if (providers.length === 0) return before;
+  const device = new Set<unknown>(body.device);
+  const page = new Set<unknown>(Array.isArray(body.device_page) ? body.device_page : []);
+  return {
+    providers,
+    device: DEVICE_PROVIDERS.filter((provider) => device.has(provider) && named.has(provider)),
+    page: DEVICE_PROVIDERS.filter((provider) => page.has(provider) && named.has(provider)),
+  };
+}
+
+/** One way the account signs in (`GET /v1/identities`); the service keeps no email or login to name it by. */
+export interface AccountIdentity {
+  readonly provider: AccountProvider;
+  readonly added_at: string;
 }
 
 /** A refresh this long before the access token runs out, so a request never leaves with one about to. */
@@ -55,6 +132,12 @@ export class SignedOutError extends Error {
   }
 }
 
+/** The name an admission is shown and signed under when its own has nothing left once made plain. */
+export const UNNAMED_DEVICE = "Device";
+
+/** A device of the account waiting at a PC (`GET /v1/admissions`), and who is asking. */
+export interface Admission extends AccountAsker { readonly key: string; readonly label: string; readonly server_id: string; readonly at: string }
+
 export interface DirectoryPc {
   readonly server_id: string;
   readonly label: string;
@@ -74,7 +157,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** The service's error code only: its message is the service's text, which could echo a token, so it is never kept. */
-async function failure(response: Response): Promise<AccountServiceError> {
+export async function failure(response: Response): Promise<AccountServiceError> {
   let code = "http_error";
   try {
     const body: unknown = await response.json();
@@ -106,11 +189,11 @@ export function sessionOf(body: unknown, service: string, now: number): AccountS
   return { service, account, provider: provider as AccountProvider, access_token, refresh_token, expires_at: now + expires_in * 1000 };
 }
 
-/** `POST /v1/token`: a code, a refresh token or a native Apple token for a session. */
-export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number } = {}): Promise<AccountSession> {
+/** `POST /v1/token`: a code, a refresh token or a native Apple token for a session; `bearer` redeems a linking sign-in. */
+export async function requestToken(service: string, grant: Record<string, string>, options: { fetch?: Fetch; now?: () => number; bearer?: string } = {}): Promise<AccountSession> {
   const now = options.now ?? Date.now;
   const response = await (options.fetch ?? fetch)(new URL("/v1/token", service), {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(grant),
+    method: "POST", headers: { "content-type": "application/json", ...(options.bearer === undefined ? {} : { authorization: `Bearer ${options.bearer}` }) }, body: JSON.stringify(grant),
   });
   if (!response.ok) throw await failure(response);
   return sessionOf(await response.json(), service, now());
@@ -160,20 +243,102 @@ export class AccountService {
     await this.call("PUT", `/v1/pcs/${serverId}`, entry);
   }
 
+  /** Takes a PC out of the account's directory (it rings nobody and admits nothing either way). */
+  async deletePc(serverId: string): Promise<void> {
+    await this.call("DELETE", `/v1/pcs/${serverId}`);
+  }
+
   /**
    * Says this signed-in device waits at that PC with its account key: the account's other devices
    * hear of it, and the PC takes a comparison that asks to join the account for 10 minutes.
    */
-  async postAdmission(serverId: string, label: string, key: string): Promise<void> {
-    await this.call("POST", "/v1/admissions", { server_id: serverId, label, key });
+  async postAdmission(serverId: string, label: string, key: string, os: AccountOs | null = null): Promise<void> {
+    await this.call("POST", "/v1/admissions", { server_id: serverId, label, key, ...(os === null ? {} : { os }) });
   }
 
-  /** The account's admissions of the last 10 minutes, straight from the account service: what a PC passes on cannot change them. */
-  async recentAdmissions(): Promise<{ key: string; label: string; server_id: string; at: string }[]> {
+  /**
+   * The account's admissions of the last 10 minutes, straight from the account service: what a PC
+   * passes on cannot change them. Each says who is asking, as far as the service knows (null each).
+   */
+  async recentAdmissions(): Promise<Admission[]> {
     const body = await this.call("GET", "/v1/admissions");
     const list = isRecord(body) && Array.isArray(body.admissions) ? body.admissions : [];
-    return list.filter((entry): entry is { key: string; label: string; server_id: string; at: string } => isRecord(entry)
-      && typeof entry.key === "string" && typeof entry.label === "string" && typeof entry.server_id === "string" && typeof entry.at === "string");
+    return list.flatMap((entry) => {
+      if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.label !== "string" || typeof entry.server_id !== "string" || typeof entry.at !== "string") return [];
+      // shown on the approval card and signed into the add: one plain line; a name with nothing left
+      // keeps its row (it may be the newest) under a plain stand-in
+      const label = accountLabel(entry.label) || UNNAMED_DEVICE;
+      const city = typeof entry.city === "string" ? accountLabel(entry.city) : "";
+      const place = typeof entry.country === "string" && /^[A-Z]{2}$/.test(entry.country)
+        ? { country: entry.country, city: city === "" ? null : city }
+        : { country: null, city: null };
+      return [{ key: entry.key, label, server_id: entry.server_id, at: entry.at, os: accountOsOf(entry.os), ...place }];
+    });
+  }
+
+  /** The account's sign-in methods, one per provider. */
+  async identities(): Promise<AccountIdentity[]> {
+    const body = await this.call("GET", "/v1/identities");
+    const list = isRecord(body) && Array.isArray(body.identities) ? body.identities : [];
+    return list.filter((entry): entry is AccountIdentity => isRecord(entry) && ACCOUNT_PROVIDERS.includes(entry.provider as AccountProvider)
+      && typeof entry.added_at === "string")
+      .map(({ provider, added_at }) => ({ provider, added_at }));
+  }
+
+  /**
+   * Adds `provider` to the signed-in account on purpose, through a redirect sign-in only (a device
+   * code can be phished): the service hands a one-time link token, `signIn` runs that provider's
+   * sign-in with it and redeems the code with this account's access token (`bearer`), and only then
+   * does the service link it. Its session replaces the one this client had, which then ends at the
+   * service. An answer for any other account is ended and refused, and the session stays as it was;
+   * an identity another account already has is refused (SignInError `in_use`) and nothing changes.
+   * A sign-in older than ten minutes gets 403 `reauth_required` before anything starts: the caller
+   * asks the person to sign in again, then repeats. The link is redeemed by this same sign-in.
+   */
+  async addMethod(provider: AccountProvider, signIn: (linkToken: string, bearer: string) => Promise<AccountSession>): Promise<AccountSession> {
+    const body = await this.call("POST", "/v1/identities/link", { provider });
+    const linkToken = isRecord(body) && typeof body.link_token === "string" && body.link_token !== "" ? body.link_token : null;
+    if (linkToken === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no link");
+    const before = await this.session();
+    if (before === undefined) return this.signedOut();
+    const after = await signIn(linkToken, before.access_token);
+    const end = (session: AccountSession, what: string) => this.fetch(new URL("/v1/signout", session.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } })
+      .catch((error: unknown) => console.warn(`Ovis: ${what} was not ended at the account service`, error instanceof Error ? error.name : error));
+    if (after.account !== before.account) {
+      await end(after, "a sign-in for another account");
+      throw new AccountServiceError(502, "invalid_answer", "The account service answered for another account");
+    }
+    // under the lock sign-out and refresh take: the answer replaces only the sign-in that asked for it
+    const outcome = await this.lock(async () => {
+      let result: "kept" | "moved-on" | "signed-out" = "signed-out";
+      await this.options.store.update("session", (current) => {
+        if (current?.refresh_token === before.refresh_token) { result = "kept"; return after; }
+        // refreshed by another tab, or signed in again there: the link holds at the service, and that session stays
+        if (current !== undefined && current.account === before.account) result = "moved-on";
+        return current;
+      });
+      return result;
+    });
+    if (outcome === "signed-out") {
+      // signed out (or into another account) meanwhile: the new sign-in must not outlive that
+      await end(after, "a link that finished after a sign-out");
+      throw new SignedOutError();
+    }
+    if (outcome === "moved-on") {
+      await end(after, "a link's sign-in no tab keeps");
+      return (await this.session()) ?? after;
+    }
+    // the old sign-in's tokens would otherwise live on at the service until they expire
+    await end(before, "the replaced sign-in");
+    return after;
+  }
+
+  /**
+   * Removes a sign-in method; the service refuses the account's last one (409 `last_identity`), and
+   * like a link wants a sign-in made in the last ten minutes (403 `reauth_required`).
+   */
+  async removeIdentity(provider: AccountProvider): Promise<void> {
+    await this.call("DELETE", `/v1/identities/${provider}`);
   }
 
   /** Leaves a signed record in the mailbox of each listed PC of the account (at most 32 at a time). */

@@ -66,7 +66,7 @@ keytool -printcert -jarfile app/build/outputs/bundle/release/app-release.aab   #
 | Field | Now | Rule |
 |---|---|---|
 | `applicationId` | `sh.ovis.app` | never changes once uploaded |
-| `versionCode` | `3` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`) |
+| `versionCode` | `7` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`); the last upload is 1.0 (6), to the internal testing track on 2026-11-07 |
 | `versionName` | `1.0` | what people see; raise it for each public release |
 | `targetSdkVersion` | 36 | Play asks new apps for a recent target |
 
@@ -253,4 +253,7 @@ developer):
 - **Ovis relay**, from 1.0 (4): the app opens a PC paired through `relay.ovis.sh` in the app
   served from `app.ovis.sh`. Both are named in the privacy policy; the Data safety answers above
   stay as they are (see the first route).
+- **Saving pictures**, from 1.0 (5): Download in Chat's picture viewer saves the picture to the
+  phone's Downloads (MediaStore on Android 10 and later), with no storage permission, so the Data
+  safety answers stay as they are.
 - Every new upload: raise `versionCode`, build as in section 2, upload to the track.

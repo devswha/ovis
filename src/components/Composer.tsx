@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, MessageSquarePlus, Minimize2, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Minimize2, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon } from "lucide-react";
 
 import "./Composer.css";
 
@@ -61,9 +61,10 @@ import { useFacesArrived } from "../lib/fontFaces.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "../lib/mentions.ts";
 import { resolveComposerMenuActiveItemId } from "../lib/composerMenuHighlight.ts";
 import { enterSendsOn, quickReplyButtons, useSettings } from "../lib/settings.ts";
-import { composerUsage, formatPercent, formatResetIn, HIGH_PERCENT, meterPercent, meterText, providerForAgent, statusWindows, usageName, useUsage, windowLabel } from "../lib/usage.ts";
+import { composerUsage, formatPercent, formatResetIn, HIGH_PERCENT, meterPercent, meterText, planForPane, statusWindows, usageName, useUsage, windowLabel } from "../lib/usage.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { Artifacts } from "./Artifacts.tsx";
+import { OmpBtw } from "./OmpBtw.tsx";
 import { BackgroundTasks } from "./BackgroundTasks.tsx";
 import { MicButton, VoiceRecordingPill, useDictation } from "./VoiceInput.tsx";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
@@ -109,8 +110,8 @@ export interface ComposerProps {
   /** opens the folder's earlier sessions instead of submitting /resume */
   onOpenHistory?: () => void;
   /** opens the New tab dialog on this pane's workspace, to start another agent with its model, effort, skills
-   * and first message (NewSessionDialog); none: the pane has no workspace to add a tab to */
-  onOpenNewSession?: () => void;
+   * and first message (NewSessionDialog), on this chat's agent and the model and effort it recorded; none: the pane has no
+   * workspace to add a tab to */
   /** the pane's working folder, named in the strip tucked under the card; nothing is drawn for it while absent */
   cwd?: string | null;
   /** the pane's branch, beside the folder in that strip; nothing is drawn for it while absent */
@@ -260,7 +261,6 @@ export function Composer({
   role = "interact",
   inert = false,
   onOpenHistory,
-  onOpenNewSession,
   cwd = null,
   branch = null,
   worktreeRepo = null,
@@ -278,9 +278,9 @@ export function Composer({
   const mobile = useMediaQuery("(max-width: 640px), (pointer: coarse)");
   // a touch screen's Return breaks the line until this device chooses otherwise; Send (or Mod+Enter) sends
   const enterSends = enterSendsOn(settings, useMediaQuery("(pointer: coarse)"));
-  const usageEnabled = settings.showUsage && !mobile && machineId === "local" && providerForAgent(agent) !== null;
+  const usageEnabled = settings.showUsage && !mobile && machineId === "local" && planForPane(agent, metadata?.provider) !== null;
   const { report: usageReport } = useUsage(usageEnabled);
-  const usage = usageEnabled && usageReport !== null ? composerUsage(usageReport.providers, agent, settings.usageOrder, settings.usageHidden) : undefined;
+  const usage = usageEnabled && usageReport !== null ? composerUsage(usageReport.providers, agent, settings.usageOrder, settings.usageHidden, metadata?.provider) : undefined;
   const usageWindows = usage === undefined ? [] : statusWindows(usage);
   const usageLimit = usageWindows[0];
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -647,6 +647,15 @@ export function Composer({
     element.selectionStart = element.selectionEnd = clampedCaret;
     if (activeRef.current) element.focus();
   }, []);
+
+  const acceptSuggestion = useCallback(() => {
+    if (offered === null || textRef.current !== "" || composingRef.current) return;
+    if (offered.length > MAX_COMPOSER_CHARS) {
+      setNote(t("{max}-character limit · {count} over", { max: formatChars(MAX_COMPOSER_CHARS), count: formatChars(offered.length - MAX_COMPOSER_CHARS) }));
+      return;
+    }
+    setTextAndCaret(offered, offered.length);
+  }, [offered, setTextAndCaret]);
 
   // a quote taken from the chat (lib/chatQuote.ts) is in the draft already: the caret goes after it, the keyboard here
   useEffect(() => onQuoted(paneStorageId(machineId, paneId), () => {
@@ -1106,7 +1115,7 @@ export function Composer({
       // Tab takes the suggestion into the empty box, as in Claude's own input
       if (event.key === "Tab" && !event.shiftKey && offered !== null && textRef.current === "") {
         event.preventDefault();
-        setTextAndCaret(offered, offered.length);
+        acceptSuggestion();
         return;
       }
       const shouldSend = event.key === "Enter" && (enterSends
@@ -1134,7 +1143,7 @@ export function Composer({
       event.preventDefault();
       send(undefined, false, sendNow);
     },
-    [agentStatus, carried.length, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, enterSends, trigger, waitingAnswer],
+    [acceptSuggestion, agentStatus, carried.length, choices, connected, menuDismissed, menuOpen, offered, onAbort, selectCompletion, selectedIndex, send, sendBeside, setTextAndCaret, enterSends, trigger, waitingAnswer],
   );
 
   const onPaste = useCallback(
@@ -1224,7 +1233,7 @@ export function Composer({
       {/* no Tab key on a phone: the suggestion can be a chip there that fills the box, when Settings asks for it */}
       {settings.suggestionChip && offered !== null && text === "" && (
         <div className="composer-quick composer-suggestion-row">
-          <button type="button" className="composer-quick-reply composer-suggestion" title={t("Use the suggestion")} onClick={() => setTextAndCaret(offered, offered.length)}>
+          <button type="button" className="composer-quick-reply composer-suggestion" title={t("Use the suggestion")} onClick={acceptSuggestion}>
             <span aria-hidden="true">↹ </span>{offered}
           </button>
         </div>
@@ -1439,7 +1448,7 @@ export function Composer({
           // in a frame, after the caret of dictation held through the composition has landed
           setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
         }}
-          className="composer-text"
+          className={`composer-text${settings.suggestionChip && offered !== null && text === "" ? " has-suggestion" : ""}`}
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
           value={text}
@@ -1470,6 +1479,17 @@ export function Composer({
             setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
           }}
         />
+        {/* tapping the grey words takes the suggestion only when Settings asks for it: by default a tap there just focuses the box */}
+        {settings.suggestionChip && offered !== null && text === "" && (
+          <div className="composer-inline-suggestion">
+            <span role="button" tabIndex={-1} aria-label={t("Use the suggestion")}
+              onClick={acceptSuggestion} onKeyDown={(event) => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                acceptSuggestion();
+              }}>{offered}</span>
+          </div>
+        )}
         <textarea
           ref={measurementRef}
           className="composer-measure"
@@ -1519,22 +1539,9 @@ export function Composer({
             </button>
           )}
           {dictation.shown && <MicButton dictation={dictation} />}
-          {/* only once this device turned it on (Settings → Chat → Composer; the composer's row stays minimal, and
-              the tab menu opens the same dialog), and in a mouse-driven window only, like the usage glance: a phone's
-              card has no row to spare beside the mic and the tasks chip, and its tab menu carries New tab with agent… already */}
-          {onOpenNewSession && settings.composerNewTabButton && role !== "observe" && !mobile && (
-            <button
-              type="button"
-              className="icon-button composer-new-session"
-              aria-label={t("New tab with an agent…")}
-              title={t("New tab with an agent…")}
-              onClick={onOpenNewSession}
-            >
-              <MessageSquarePlus aria-hidden="true" />
-            </button>
-          )}
           <BackgroundTasks paneId={paneId} count={backgroundTasks} omo={agent === "omo"} subagents={agent === "claude" || agent === "opencode"} plan={plan} />
           {agent === "claude" && <Artifacts paneId={paneId} status={agentStatus} />}
+          {agent === "omp" && <OmpBtw paneId={paneId} />}
         </div>
         {/* between the two control groups of the card's last row. The agent's name, its separator and the
             state word are read, not drawn: the mark and the header name the agent, and Stop, the live row and

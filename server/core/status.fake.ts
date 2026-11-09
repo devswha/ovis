@@ -89,7 +89,7 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   const held: { paneId: string; code: string }[] = [];
   const status = createStatusHub({
     options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}) },
-    devices: { gated: false, has: () => true, onPaired: () => {} } as never, preferences: { get: () => ({ muted_panes: [] }), subscribe: () => () => {} } as never,
+    devices: { gated: false, has: () => true, onPaired: () => {} } as never, preferences: { get: () => ({ revision: 0, settings: {}, muted_panes: [] }), subscribe: () => () => {} } as never,
     clients: new Set([client]), present: new Set(), pending, drainPending: drain ?? (() => {}), holdPendingPane: (paneId, fault) => { held.push({ paneId, code: fault.code }); },
     usage: { invalidate() {} } as never, usageLogin: { ended: () => false } as never,
   });
@@ -97,7 +97,7 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   const poll = status.opencodeAgents.poll.bind(status.opencodeAgents);
   stubs.push(spyOn(status.opencodeAgents, "poll").mockImplementation((only) => { const read = poll(only); polls.push(read); return read; }));
   stubs.push(spyOn(status.push, "onStatus").mockImplementation(async (_paneId: string, alert: string) => { alerts.push(alert); }));
-  stubs.push({ mockRestore: () => { status.collector.stop(); status.omo.stop(); status.gjc.stop(); status.claudeAgents.stop(); status.opencodeAgents.stop(); status.plans.stop(); clearInterval(status.waitTimer); } });
+  stubs.push({ mockRestore: () => { status.collector.stop(); status.omo.stop(); status.gjc.stop(); status.letta.stop(); status.claudeAgents.stop(); status.opencodeAgents.stop(); status.plans.stop(); clearInterval(status.waitTimer); } });
   const ended: string[] = [];
   stubs.push(spyOn(status.push, "onEnded").mockImplementation(async (paneId: string) => { ended.push(paneId); }));
   return {

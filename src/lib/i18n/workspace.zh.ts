@@ -55,10 +55,7 @@ export const WORKSPACE_ZH: Record<string, string> = {
   "Starting shell…": "正在启动 Shell…",
   "Directory not found": "找不到目录",
   "model, effort": "模型、推理强度",
-  "Model": "模型",
   "Empty: the agent's own model.": "留空则使用代理自身的模型。",
-  "One model name, without spaces.": "填写一个不含空格的模型名称。",
-  "Effort": "推理强度",
   "Levels depend on the model.": "可选的级别取决于模型。",
   "Ultracode": "Ultracode",
   "Claude Code 2.1.284 or later": "Claude Code 2.1.284 或更高版本",
@@ -94,4 +91,6 @@ export const WORKSPACE_ZH: Record<string, string> = {
   "Add another agent…": "添加其他代理…",
   "It is installed, but this PC does not offer it here yet. Restart Ovis on the PC, or start it in a terminal tab.": "已经安装，但这台电脑还没有在这里提供它。请在电脑上重启 Ovis，或在终端标签页中启动它。",
   "It is installed. Waiting for this PC to offer it here…": "已安装。正在等待这台电脑在这里提供它…",
+  "Group": "分组",
+  "Where the Agents list shows it": "在代理列表中显示的位置",
 };

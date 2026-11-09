@@ -24,6 +24,7 @@ import { registry } from "./dialogs/registry.ts";
 import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, cleanLine, findLastIndex, finishPrompt, isDivider, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
+import { LETTA_SEARCH_MAX, lettaPick, lettaSearchShown } from "./dialogs/letta.ts";
 import { sameText } from "./dialogs/omo.ts";
 import { OMP_REVIEW_HINT_RE, OMP_TABS_HINT_RE } from "./dialogs/omp.ts";
 import { INVISIBLE_CHAR_RE } from "./dialogs/claude.ts";
@@ -482,6 +483,14 @@ export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer,
     if ((parsed.responder === "pi-ask-question" || parsed.responder === "pi-questionnaire-question") && /[\u0000-\u001f\u007f-\u009f]/.test(answer.custom_text)) {
       throw new InvalidAnswer("Pi custom answers must be one line without control characters.");
     }
+    // Letta's model search takes each character as a key: a control one is a command there (Enter picks, Esc closes
+    // the picker), and one past U+FFFF (or half of one) is not the one unit a key of Letta's search holds (dialogs/letta.ts)
+    if (parsed.responder === "letta-model" && /[\u0000-\u001f\u007f-\u009f\u{d800}-\u{dfff}\u{10000}-\u{10ffff}]/u.test(answer.custom_text)) {
+      throw new InvalidAnswer("A model search must be one line of plain characters.");
+    }
+    if (parsed.responder === "letta-model" && answer.custom_text.trim().length > LETTA_SEARCH_MAX) {
+      throw new InvalidAnswer(`A model search holds at most ${LETTA_SEARCH_MAX} characters.`);
+    }
     const text = answer.custom_text.trim();
     if (!text || parsed.customMenuIndex === null || (parsed.multi_select && parsed.responder !== "claude-question")) throw new InvalidAnswer("This prompt does not accept a custom answer.");
     if (parsed.responder === "fallback-gjc-menu") {
@@ -568,7 +577,11 @@ const queueFronts = new Map<string, QueueFront & { rollout: string }>();
  * two askings cannot be told apart from the screen.
  */
 /** `call`: the omp ask call the asking's card was read under (omp-ask.ts ompCallPrompt), once a read proved one */
-interface Asking { content: string | null; n: number; queued: boolean; call?: string }
+/**
+ * `picked`: a Letta picker answered with its Enter (a model, a level), by what it says: Letta redraws a moment after
+ * the key, and until a read shows anything else that drawing is the asking just answered, never a new one
+ */
+interface Asking { content: string | null; n: number; queued: boolean; call?: string; picked?: string }
 const askings = new Map<string, Asking>();
 /** counted across panes and never reused: a pane forgotten here starts no asking over */
 let askingCount = 0;
@@ -595,7 +608,9 @@ const answerTurns = new Map<string, number>();
  */
 function asked(paneId: string, prompt: InteractivePrompt | null, turns: number): InteractivePrompt | null {
   let asking = askings.get(paneId);
+  if (prompt !== null && asking?.picked !== undefined && asking.picked === lettaPick(parsedByPublicPrompt.get(prompt))) return null;
   if (!answersUnderWay.has(paneId) && (answerTurns.get(paneId) ?? 0) === turns) {
+    if (asking) asking.picked = undefined;
     if (prompt === null) {
       if (asking) asking.content = null;
       return null;
@@ -701,16 +716,34 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   const turns = answerTurns.get(paneId) ?? 0;
   const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal, true);
   if (known.stale) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
+  const fallback = await fallbackCard(paneId, agent, status, known);
+  if (!fallback) {
+    fallbackLogged.delete(paneId);
+    return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, snapshot, screen: known.screen, inputUnverified: known.inputUnverified };
+  }
+  if (!fallback.prompt) {
+    fallbackLogged.delete(paneId);
+    return { agent, status, prompt: asked(paneId, null, turns), pane, panes, snapshot, screen: fallback.screen };
+  }
+  const prompt = asked(paneId, fallback.prompt, turns)!;
+  if (!fallbackLogged.has(paneId) && fallbackLogged.size < FALLBACK_LOGGED_MAX) {
+    fallbackLogged.add(paneId);
+    console.warn(`prompt: ${agent} pane ${paneId} is blocked on a screen no reader knows; fallback card (${prompt.options.length} options)`);
+  }
+  return { agent, status, prompt, pane, panes, snapshot, screen: fallback.screen, inputUnverified: known.inputUnverified };
+}
+
+/**
+ * The generic card for a pane herdr says waits on the user on a screen no reader knows: null when it is not such a
+ * pane, `prompt` null when the screen offers no card. Reads only: GET /api/pane/prompt and the prompt watches share it.
+ */
+async function fallbackCard(paneId: string, agent: string, status: string | undefined, known: { prompt: InteractivePrompt | null; screen?: string; suppressFallback?: true }): Promise<{ prompt: InteractivePrompt | null; screen: string } | null> {
   // A custom form just answered can close before Herdr stops reporting blocked. Its hint may
   // outlive the widget, but that is no input to offer as fallback keys. Known next steps still
   // show immediately; only an unrecognized screen waits for this bounded settling window.
   const settling = Date.now() - (formsAnswered.get(paneId) ?? 0) < FORM_SETTLE_MS;
   // a pi pane gets no generic card (readKnownPrompt says so through suppressFallback)
-  if (known.prompt !== null || known.suppressFallback || status !== "blocked" || !agent || settling) {
-    fallbackLogged.delete(paneId);
-    return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, snapshot, screen: known.screen, inputUnverified: known.inputUnverified };
-  }
-  // herdr says the agent waits on the user and no reader knows the screen: the fallback card
+  if (known.prompt !== null || known.suppressFallback || status !== "blocked" || !agent || settling) return null;
   const screen = known.screen ?? await liveScreen(paneId);
   // Codex's collapsed question queue reads blocked while its main prompt takes a message; a
   // model list of Claude Code's or Codex's that no reader could read is left to the terminal
@@ -718,16 +751,8 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   // ending the screen is no dialog: herdr says blocked a moment before Claude draws its panel,
   // and for a second or two after it closes
   if ((agent === "codex" && codexQuestionsCollapsed(screen)) || registry.waits(agent, screen)
-    || (agent === "claude" && claudeInputBoxEndsScreen(screen))) {
-    fallbackLogged.delete(paneId);
-    return { agent, status, prompt: asked(paneId, null, turns), pane, panes, snapshot, screen };
-  }
-  const prompt = asked(paneId, parseFallbackPrompt(agent, screen), turns)!;
-  if (!fallbackLogged.has(paneId) && fallbackLogged.size < FALLBACK_LOGGED_MAX) {
-    fallbackLogged.add(paneId);
-    console.warn(`prompt: ${agent} pane ${paneId} is blocked on a screen no reader knows; fallback card (${prompt.options.length} options)`);
-  }
-  return { agent, status, prompt, pane, panes, snapshot, screen, inputUnverified: known.inputUnverified };
+    || (agent === "claude" && claudeInputBoxEndsScreen(screen))) return { prompt: null, screen };
+  return { prompt: parseFallbackPrompt(agent, screen), screen };
 }
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
@@ -840,10 +865,11 @@ const ompAskReader = new OmoAskReader(ompAsksAfter);
  * Each omp pane's last session lookup that answered, which a lookup that fails for a while stands in for, and the
  * failures in a row since: past OMP_LOOKUP_FAILURES the pane's session reads as unproved.
  */
-const ompLookups = new Map<string, { path: string; open: OmoAsks; failures: number }>();
+export type OmpLookups = Map<string, { path: string; open: OmoAsks; failures: number }>;
+const ompLookups: OmpLookups = new Map();
 const OMP_LOOKUP_FAILURES = 3;
 
-async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean): Promise<{ prompt: InteractivePrompt; unverified?: true; rebind: (prompt: InteractivePrompt) => InteractivePrompt }> {
+async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt, markdown: boolean, lookups: OmpLookups): Promise<{ prompt: InteractivePrompt; unverified?: true; rebind: (prompt: InteractivePrompt) => InteractivePrompt }> {
   const parsed = parsedByPublicPrompt.get(prompt);
   if (parsed?.responder !== "omp-question" && parsed?.responder !== "omp-submit" && !parsed?.nativeSteps) return { prompt, rebind: (card) => card };
   let path = "";
@@ -853,14 +879,14 @@ async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractiveP
     if (cwd) {
       path = (await ompTranscriptPath(paneId, cwd)).path;
       open = ompAskReader.read(path);
-      ompLookups.delete(paneId);
-      ompLookups.set(paneId, { path, open, failures: 0 });
-      if (ompLookups.size > 64) ompLookups.delete(ompLookups.keys().next().value!);
+      lookups.delete(paneId);
+      lookups.set(paneId, { path, open, failures: 0 });
+      if (lookups.size > 64) lookups.delete(lookups.keys().next().value!);
     }
   } catch (error) {
-    const last = ompLookups.get(paneId);
+    const last = lookups.get(paneId);
     // Not written yet, no lookup that ever answered, or one failing for long: ordinary answers remain usable, unbound.
-    if (error instanceof ConversationNotStarted || !last || last.failures + 1 >= OMP_LOOKUP_FAILURES) ompLookups.delete(paneId);
+    if (error instanceof ConversationNotStarted || !last || last.failures + 1 >= OMP_LOOKUP_FAILURES) lookups.delete(paneId);
     // A lookup that fails for a moment (a busy herdr, an unreadable /proc): the card keeps the binding (and id) the last
     // lookup gave, and this read authorizes no key, rather than a card with another id that would start a new asking
     else {
@@ -892,6 +918,8 @@ async function readKnownPrompt(
    * read before and parsed with what this read found; a card the screen no longer draws so authorizes no key
    */
   settle = false,
+  /** the omp session lookups this read stands on; a prompt watch keeps its own, so its failing reads use up none of an answer's */
+  ompBindings = ompLookups,
 ): Promise<{ prompt: InteractivePrompt | null; screen?: string; stale?: boolean; inputUnverified?: true; suppressFallback?: true;
   /** the card as the settling read drew it: the same card, its cursor where the screen has it now */ settled?: InteractivePrompt }> {
   // no native card (no session herdr reports, no verified v2 service, no pending form): OpenCode
@@ -1038,7 +1066,7 @@ async function readKnownPrompt(
     return { prompt: publicPrompt(parsed) };
   }
 
-  if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", ""].includes(agent)) return { prompt: null };
+  if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", "letta", ""].includes(agent)) return { prompt: null };
   const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
   // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
   if (piTranscript && "path" in piTranscript) {
@@ -1119,9 +1147,12 @@ async function readKnownPrompt(
     return parseInteractivePrompt(agent, drawn, omoAsks[0] ?? null, omoTrusted, omoAsks, held, pane.agent_status === "working");
   };
   let prompt = piNative ? publicPrompt(piNative) : parseDrawn(screen);
+  // Letta's own pickers only (dialogs/letta.ts): any other Letta screen keeps the card it had, the
+  // generic one while herdr reports it blocked
+  if (agent === "letta" && prompt && !parsedByPublicPrompt.get(prompt)?.responder.startsWith("letta-")) prompt = null;
   let rebind = (card: InteractivePrompt): InteractivePrompt => card;
   if (prompt && agent === "omp") {
-    const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown);
+    const read = await withOmpMarkdown(paneId, pane.cwd ?? "", prompt, markdown, ompBindings);
     prompt = read.prompt;
     rebind = read.rebind;
     if (read.unverified) inputUnverified = true;
@@ -1350,6 +1381,27 @@ export async function currentPrompt(paneId: string, options: { codexHome?: strin
   const read = await readPrompt(paneId, options.codexHome, options.openCodeStateDir, options.openCodeState ?? defaultOpenCodeState, options.signal);
   if (read.stale || read.inputUnverified || !read.prompt) return null;
   return { prompt: read.prompt, ...(read.screen === undefined ? {} : { screen: read.screen }) };
+}
+
+/**
+ * What the prompt on the pane's screen says, for a prompt watch (server/prompt-monitor.ts): the id its text alone
+ * makes, or null when none shows; undefined when the read raced a change. Unlike GET /api/pane/prompt it starts and
+ * ends no asking, so these reads never move the ids the route hands out. `openCodeState` is the watch's own, never
+ * the route's: a watch's read, late or from an older snapshot, must not replace the entry or draft an answer uses.
+ * A pi pane is not read at all (undefined): its pi-ask card keeps the answers to earlier steps in a draft of the
+ * route's (pi-ask-bridge.ts), which a late read of an older form would replace. omp's session lookups are the
+ * watch's own too (`ompLookups`), so failing watch reads never use up the ones an answer stands on. A blocked screen
+ * no reader knows is told by its fallback card, as the route offers it. An OpenCode form is told with the route's
+ * draft (`answers`, read only), as answering a step moves the route's card to the next one with no change on screen.
+ */
+export async function shownPromptText(pane: HerdrPane, panes: HerdrPane[], options: { codexHome?: string; openCodeStateDir?: string; openCodeState: OpenCodePromptState; ompLookups: OmpLookups; answers?: OpenCodePromptState }): Promise<string | null | undefined> {
+  if (pane.agent === "pi") return undefined;
+  const agent = pane.agent ?? "";
+  const known = await readKnownPrompt(pane.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir, options.openCodeState, undefined, false, false, options.ompLookups);
+  if (known.stale) return undefined;
+  const shown = contentId(known.prompt ?? (await fallbackCard(pane.pane_id, agent, pane.agent_status, known))?.prompt ?? null) ?? null;
+  const draft = agent === "opencode" ? (options.answers ?? defaultOpenCodeState).entries.get(pane.pane_id)?.draft : undefined;
+  return shown !== null && draft ? `${shown}\0${JSON.stringify(draft)}` : shown;
 }
 
 export async function handlePromptRequest(request: Request, url: URL, options: PromptRequestOptions = {}): Promise<Response | null> {
@@ -1853,7 +1905,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const parsed = parsedByPublicPrompt.get(target)!;
         const responder = parsed.responder;
         const reader = registry.readerFor(responder);
-        const interaction = reader?.interaction?.(parsed);
+        // a picker's plan answers a row; typed words (Letta's model search) go by the steps alone
+        const interaction = body.custom_text === undefined ? reader?.interaction?.(parsed) : undefined;
         // where the moves sent so far leave the cursor (↑ stops at the first row: omoWalk)
         let cursor = parsed.selectedIndex;
         // Claude's unnumbered rows and pi's models are read with no number to aim at: looked at
@@ -1949,11 +2002,15 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           // with, as before. pi's look is as it was (pi-ask's own check, awaited with the request's deadline).
           const look = agent === "pi" ? deadline : AbortSignal.timeout(SETTLE_MS);
           const guardUntil = agent === "pi" ? null : Date.now() + SETTLE_MS;
-          if (!committed || togglesInPlace) {
+          // Letta's search: each key after the first is looked for as the first was, in the picker showing the search
+          // the keys before it left (customEditorReady waited for that drawing); a picker closed meanwhile gets none
+          const lettaTyping = committed && responder === "letta-model" && body.custom_text !== undefined;
+          if (!committed || togglesInPlace || lettaTyping) {
             // every key up to the answer's first one that cannot be undone, that one included: the question as asked
             const onCursor = !move && (step.keys?.every((key) => key === KEY.enter || key === KEY.space) ?? false);
             const { written } = await verifyThenSend(look, guardUntil, Date.now() + SETTLE_MS,
-              (shown, screen, settled) => sameQuestion(shown, screen, onCursor, settled), () => ({ written: write() }),
+              (shown, screen, settled) => lettaTyping ? lettaSearchShown(shown, parsed, lettaSearch)
+                : sameQuestion(shown, screen, onCursor, settled), () => ({ written: write() }),
               interaction !== undefined || responder === "pi-question" || responder === "pi-confirm" || responder.startsWith("fallback"));
             await written;
           } else {
@@ -1968,6 +2025,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           if (more) await Bun.sleep(30);
         };
         let customTyped = false;
+        /** Letta's model search as the keys sent so far leave it */
+        let lettaSearch = parsed.lettaSearch ?? "";
         const customEditorReady = async (draft: string): Promise<boolean> => {
           const deadline = Date.now() + SETTLE_MS;
           if (responder === "pi-questionnaire-question") {
@@ -1984,6 +2043,21 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) : null;
             return !!read && !read.inputUnverified && asks() && !request.signal.aborted && Date.now() < deadline
               && shown?.id === parsed.id && shown.piAskTyping === true && shown.selectedIndex === parsed.customMenuIndex;
+          }
+          if (responder === "letta-model") {
+            // Letta's picker, its search as the keys so far left it (the line drops trailing spaces): a closed
+            // picker would hand the next key to Letta's input
+            while (asks() && !request.signal.aborted && Date.now() < deadline) {
+              const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
+              reading.catch(() => undefined);
+              const read = await Promise.race([reading, Bun.sleep(Math.max(0, deadline - Date.now())).then(() => null)]);
+              const shown = read?.prompt ? parsedByPublicPrompt.get(read.prompt) : null;
+              if (read && !read.inputUnverified && lettaSearchShown(shown, parsed, draft)) {
+                return asks() && !request.signal.aborted && Date.now() < deadline;
+              }
+              await Bun.sleep(50);
+            }
+            return false;
           }
           while (asks() && !request.signal.aborted && Date.now() < deadline) {
             const read = await Promise.race([
@@ -2025,6 +2099,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
               if (!(await customEditorReady(customTyped ? body.custom_text.trim() : ""))) return promptChanged();
               if (step.text !== undefined) customTyped = true;
             }
+            // Letta's search goes in a key at a time, each only into the picker showing the search the keys before it left
+            if (responder === "letta-model" && body.custom_text !== undefined && committed && !(await customEditorReady(lettaSearch))) return promptChanged();
             // GJC's selector can close under the answer: its composer must not take the moves.
             if (move && walked && (list || reader?.reread === "each-move" || responder === "fallback-gjc-menu") && !(await onRow())) return promptChanged();
             if (!move && (!committed || togglesInPlace)) {
@@ -2038,6 +2114,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             const key: AnswerStep | null = step.pick ? (seen as ParsedPrompt | null)?.rowKey ?? null : step;
             if (key === null) return promptChanged();
             await sendStep(key, move, index < steps.length - 1);
+            if (key.text !== undefined) lettaSearch += key.text;
+            for (const pressed of key.keys ?? []) if (pressed === KEY.backspace) lettaSearch = lettaSearch.slice(0, -1);
             if (move) {
               moved = true;
               walked = true;
@@ -2065,6 +2143,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         if (queueOpened && !answered) await closeOpenQuestion(body.pane_id).catch(() => undefined);
         // answered, or as good as: the same prompt on the screen after this is asked anew
         if (committed) askingEnded(body.pane_id);
+        // but Letta's picker picked with Enter is no new asking until the screen shows something else
+        const answeredCard = parsedByPublicPrompt.get(target);
+        if (committed && (answeredCard?.responder === "letta-model" || answeredCard?.responder === "letta-effort") && body.option_index !== undefined
+          && answeredCard.optionSteps?.[body.option_index]?.at(-1)?.keys?.[0] === KEY.enter) {
+          const asking = askings.get(body.pane_id);
+          if (asking) asking.picked = lettaPick(answeredCard);
+        }
         // sent or dropped from its card: the same words in the box after this are a new message
         if (committed && parsedByPublicPrompt.get(target)?.responder === "claude-held") heldCandidates.delete(body.pane_id);
       }

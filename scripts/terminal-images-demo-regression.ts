@@ -3,7 +3,9 @@
  * setting off takes the pictures away and draws none meanwhile, and turning it on again draws the next
  * picture only where it was printed. The image addon keeps a picture's id in its cells and a new addon
  * numbers from 1 again: one loaded anew drew its first picture into the cells an old picture 1 had
- * left. Demo fixtures only: no herdr, hc or user state.
+ * left. With no choice stored on the device, a herdr-core server (`terminal-history`) draws them, the
+ * picture in a pane's first output included, and the switch shows on; herdr's own server draws none.
+ * Demo fixtures only: no herdr, hc or user state.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -14,9 +16,13 @@ import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
+import { openSettingsFolds } from "./settings-page.ts";
+import { shownRows } from "./shown-rows.ts";
 
 interface ImagesFixture { print(data: string): void }
-declare global { interface Window { imagesFixture: ImagesFixture } }
+/** `core`: the server lists `terminal-history`, as herdr-core does; `first`: the output an attach replays first */
+interface ImagesConfig { core?: boolean; first?: string }
+declare global { interface Window { imagesFixture: ImagesFixture; imagesConfig?: ImagesConfig } }
 
 /** The demo serves the pane; its own recording is held back, and the test prints what it needs. */
 function installImagesFixture(): void {
@@ -31,6 +37,9 @@ function installImagesFixture(): void {
     sockets.push(socket);
     const push = socket.push.bind(socket);
     socket.push = (frame) => {
+      if ((frame.type === "snapshot" || frame.type === "features") && Array.isArray(frame.features) && window.imagesConfig?.core) {
+        return push({ ...frame, features: [...(frame.features as string[]), "terminal-history"] });
+      }
       if (frame.type !== "pty-data") return push(frame);
       // the demo's own recording would move the screen under the test
       if (frame.fixture !== "images") return;
@@ -41,7 +50,14 @@ function installImagesFixture(): void {
     socket.send = (raw) => {
       const frame = JSON.parse(String(raw)) as { type: string; pane_id?: string };
       send(raw);
-      if (frame.type === "attach" && frame.pane_id) pane = frame.pane_id;
+      if (frame.type === "attach" && frame.pane_id) {
+        pane = frame.pane_id;
+        const first = window.imagesConfig?.first;
+        if (first) {
+          window.imagesConfig!.first = undefined;
+          push({ type: "pty-data", pane_id: pane, replay: true, data: first });
+        }
+      }
     };
     return socket;
   };
@@ -53,7 +69,7 @@ function installImagesFixture(): void {
  * A 24x24 PNG square of one colour as an iTerm2 inline image. iTerm2's pictures decode in the browser
  * itself; sixel's WebAssembly decoder starts after the addon loads, so a first sixel could be missed.
  */
-const square = (rgb: [number, number, number]): string => {
+const squarePng = (rgb: [number, number, number]): Buffer => {
   const chunk = (type: string, data: Uint8Array) => {
     const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
     const out = Buffer.alloc(12 + data.length);
@@ -69,10 +85,50 @@ const square = (rgb: [number, number, number]): string => {
   const row = Buffer.concat([Buffer.from([0]), ...Array.from({ length: 24 }, () => Buffer.from(rgb))]);
   const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk("IHDR", header),
     chunk("IDAT", deflateSync(Buffer.concat(Array.from({ length: 24 }, () => row)))), chunk("IEND", new Uint8Array())]);
+  return png;
+};
+const square = (rgb: [number, number, number]): string => {
+  const png = squarePng(rgb);
   return `\x1b]1337;File=inline=1;size=${png.length}:${png.toString("base64")}\x07`;
 };
 const RED = square([255, 0, 0]);
 const BLUE = square([0, 0, 255]);
+
+/** iTerm2's own imgcat: the picture's arguments, then its base64 in 200-character pieces, then the end (#3147) */
+const multipart = (rgb: [number, number, number]): string => {
+  const png = squarePng(rgb);
+  const base64 = png.toString("base64");
+  let out = `\x1b]1337;MultipartFile=inline=1;size=${png.length};name=c3F1YXJlLnBuZw==\x07`;
+  for (let i = 0; i < base64.length; i += 200) out += `\x1b]1337;FilePart=${base64.slice(i, i + 200)}\x07`;
+  return `${out}\x1b]1337;FileEnd\x07`;
+};
+
+/** `chafa -f iterm`: an uncompressed RGBA TIFF with no size= argument, laid out as chafa writes it (#3147) */
+const chafaTiff = (rgb: [number, number, number], side = 24): string => {
+  const pixels = Buffer.alloc(side * side * 4);
+  for (let i = 0; i < pixels.length; i += 4) pixels.set([...rgb, 255], i);
+  const tags: Array<[number, number, number, number]> = [
+    [256, 4, 1, side], [257, 4, 1, side], [258, 3, 4, 8 + pixels.length + 2 + 11 * 12 + 4], [262, 3, 1, 2], [273, 4, 1, 8],
+    [274, 3, 1, 1], [277, 3, 1, 4], [278, 4, 1, side], [279, 4, 1, pixels.length], [284, 3, 1, 1], [338, 3, 1, 2],
+  ];
+  const tiff = Buffer.alloc(8 + pixels.length + 2 + tags.length * 12 + 4 + 8);
+  tiff.write("II*\0", 0, "latin1");
+  tiff.writeUInt32LE(8 + pixels.length, 4);
+  pixels.copy(tiff, 8);
+  let at = 8 + pixels.length;
+  tiff.writeUInt16LE(tags.length, at);
+  at += 2;
+  for (const [tag, type, count, value] of tags) {
+    tiff.writeUInt16LE(tag, at);
+    tiff.writeUInt16LE(type, at + 2);
+    tiff.writeUInt32LE(count, at + 4);
+    if (type === 3 && count === 1) tiff.writeUInt16LE(value, at + 8);
+    else tiff.writeUInt32LE(value, at + 8);
+    at += 12;
+  }
+  for (let i = 0; i < 4; i++) tiff.writeUInt16LE(8, at + 4 + 2 * i);
+  return `\x1b]1337;File=inline=1;width=3;height=2;preserveAspectRatio=0:${tiff.toString("base64")}\x07`;
+};
 
 /** the picture layer's pixel at a point given in its own pixels, or null where it draws nothing */
 const pixel = (page: Page, x: number, y: number) => page.evaluate(({ x, y }) => {
@@ -85,17 +141,25 @@ const pixel = (page: Page, x: number, y: number) => page.evaluate(({ x, y }) => 
 const settled = (page: Page) => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 const print = async (page: Page, data: string, marker: string) => {
   await page.evaluate((data) => window.imagesFixture.print(data), `${data}${marker}\r\n`);
-  await page.locator(".pane-frame.is-current .xterm-rows", { hasText: marker }).waitFor();
+  await page.locator(shownRows(".pane-frame.is-current"), { hasText: marker }).waitFor();
   await settled(page);
 };
-const setPictures = async (page: Page, on: boolean) => {
+/** the Pictures switch as Settings shows it, in an open Settings -> Terminal */
+const picturesSwitch = async (page: Page) => {
   await page.getByRole("button", { name: "Settings", exact: true }).first().click();
   await page.getByRole("navigation", { name: "Settings" }).getByText("Terminal", { exact: true }).click();
-  const toggle = page.getByRole("switch", { name: "Pictures in the terminal" });
-  if ((await toggle.getAttribute("aria-checked")) !== String(on)) await toggle.click();
-  assert.equal(await toggle.getAttribute("aria-checked"), String(on));
+  await openSettingsFolds(page);
+  return page.getByRole("switch", { name: "Pictures in the terminal" });
+};
+const closeSettings = async (page: Page) => {
   await page.keyboard.press("Escape");
   await page.getByRole("dialog", { name: "Settings" }).waitFor({ state: "detached" });
+};
+const setPictures = async (page: Page, on: boolean) => {
+  const toggle = await picturesSwitch(page);
+  if ((await toggle.getAttribute("aria-checked")) !== String(on)) await toggle.click();
+  assert.equal(await toggle.getAttribute("aria-checked"), String(on));
+  await closeSettings(page);
   await settled(page);
 };
 
@@ -122,7 +186,7 @@ try {
       const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
       await context.addInitScript(() => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
-        localStorage.setItem("ovis:terminal-images", "true");
+        localStorage.setItem("ovis:terminal-pictures", "true");
       });
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
@@ -159,8 +223,50 @@ try {
       const held = await page.evaluate(() => (document.querySelector(".pane-frame.is-current .xterm") as HTMLElement & { imageAt?: (col: number, row: number) => number[] | null }).imageAt?.(0, 0));
       assert.notEqual(held, undefined, "the demo build's probe answers");
       assert.equal(held, null, `on again: the top left cell holds no picture (${JSON.stringify(held)})`);
+
+      // imgcat's multipart form and chafa's TIFF without a size, which the addon takes neither of by itself (#3147)
+      await print(page, `\x1b[H\x1b[2J${multipart([0, 255, 0])}`, "IMGCAT-PRINTED");
+      assert.deepEqual(await pixel(page, 4, 4), [0, 255, 0], "imgcat's multipart picture is drawn");
+      await print(page, `\x1b[H\x1b[2J${chafaTiff([255, 0, 255])}`, "CHAFA-PRINTED");
+      assert.deepEqual(await pixel(page, 4, 4), [255, 0, 255], "chafa's TIFF picture is drawn");
+      // 1700 x 1700 RGBA: about 15 million base64 characters, past the 10,000,000 xterm holds for a string handler (#3154)
+      await print(page, `\x1b[H\x1b[2J${chafaTiff([0, 255, 255], 1700)}`, "CHAFA-LARGE-PRINTED");
+      assert.deepEqual(await pixel(page, 4, 4), [0, 255, 255], "a TIFF past xterm's string handler cap is drawn");
       assert.deepEqual(errors, [], "no page errors");
-      console.log("PASS pictures: drawn, gone while off, and on again only where printed");
+      console.log("PASS pictures: drawn, gone while off, and on again only where printed; imgcat's multipart and chafa's TIFF drawn too, also past 10M characters");
+      await context.close();
+
+      // no choice stored on this device: the server decides. The demo's health names herdr, so the switch
+      // follows what the terminal's own connection lists, not the health read.
+      for (const core of [true, false]) {
+        const fresh = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+        await fresh.addInitScript((config) => {
+          localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
+          window.imagesConfig = config;
+        }, { core, first: `\x1b[H\x1b[2J${RED}FIRST-PRINTED\r\n` });
+        const page = await fresh.newPage();
+        page.setDefaultTimeout(10000);
+        const errors: string[] = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
+        await page.locator(shownRows(".pane-frame.is-current"), { hasText: "FIRST-PRINTED" }).waitFor();
+        await settled(page);
+        if (core) {
+          assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "herdr-core, nothing stored: the picture in the first output is drawn");
+          await print(page, `\x1b[H\x1b[2J${BLUE}`, "CORE-BLUE-PRINTED");
+          assert.deepEqual(await pixel(page, 4, 4), [0, 0, 255], "herdr-core, nothing stored: a later picture is drawn");
+        } else {
+          assert.equal(await pixel(page, 4, 4), null, "herdr, nothing stored: the first output draws no picture");
+          await print(page, `\x1b[H\x1b[2J${BLUE}`, "HERDR-BLUE-PRINTED");
+          assert.equal(await pixel(page, 4, 4), null, "herdr, nothing stored: a later picture is not drawn");
+        }
+        const toggle = await picturesSwitch(page);
+        assert.equal(await toggle.getAttribute("aria-checked"), String(core), `nothing stored: the switch shows what the ${core ? "herdr-core" : "herdr"} terminal does`);
+        await closeSettings(page);
+        assert.deepEqual(errors, [], "no page errors");
+        await fresh.close();
+      }
+      console.log("PASS pictures with nothing stored: herdr-core draws them, the first output's included, and shows the switch on; herdr draws none and shows it off");
     } finally {
       await browser.close();
     }

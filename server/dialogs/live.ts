@@ -131,6 +131,10 @@ export function promptTailIsActive(prompt: ParsedPrompt, screen: string): boolea
   if (prompt.responder === "claude-goal") return ends(/esc to dismiss$/i);
   if (prompt.responder === "claude-model") return claudeModelListWaits(screen);
   if (prompt.responder === "claude-effort") return ends(CLAUDE_EFFORT_HINT_RE);
+  // Letta's pickers end the screen with their own hint (parseLettaModel, parseLettaEffort)
+  // or, when its search matches nothing, with the line saying so
+  if (prompt.responder === "letta-model") return ends(/^(?:enter select · ↑↓ navigate · ←→\/tab switch · esc cancel|no models match your search\.)$/i);
+  if (prompt.responder === "letta-effort") return ends(/^enter select · ←→\/tab switch · esc back$/i);
   if (prompt.responder === "codex-model") return ends(/(?:^|\s)enter select\s*·\s*esc back$|(?:^|\s)enter (?:default|apply)\s*·\s*s session\s*·\s*esc back$/i);
   if (prompt.responder === "omo-question" || prompt.responder === "omo-review" || prompt.responder === "omo-typing") {
     // The form is live only with OmO's footer and extension status under its hint: blank lines, one
@@ -214,9 +218,10 @@ const PI_FOOTER_LINES = 2;
  * pi's stats line, its second footer line: usage counters (`↑1.2k ↓300 R… W… CH…% $0.012 (sub)`), then
  * the context meter (`3.7%/1.0M`, `?/200k`). The meter comes last, and a narrow pane cuts the line
  * with `...` before it (`↑52 ↓5.3k R460k W33k CH98.9% $0.461 (sub) 3.7...`), so the line is told by how
- * it starts: both counters (`↑52 ↓5.3k`), or the meter alone when pi has no usage yet (pi 1.4.0's footer).
+ * it starts: both counters (`↑52 ↓5.3k`), or the meter when pi has no usage yet, optionally
+ * preceded by the cost (`$0.000 (sub) 0.0%/1.0M` in pi 1.5.0).
  */
-const PI_STATS_LINE_RE = /^(?:↑[\d.]+[kKmMbB]? ↓[\d.]+[kKmMbB]?|(?:\d+(?:\.\d+)?%|\?)\/[\d.]+[kKmMbB]?)(?:\s|\.\.\.|$)/u;
+const PI_STATS_LINE_RE = /^(?:↑[\d.]+[kKmMbB]? ↓[\d.]+[kKmMbB]?|(?:\$\d+\.\d{3}(?: \(sub\))? )?(?:\d+(?:\.\d+)?%|\?)\/[\d.]+[kKmMbB]?)(?:\s|\.\.\.|$)/u;
 
 /** pi's first footer line, the pane's folder: `~/app (main)`, `/tmp/app`, `C:\work\app`. */
 const PI_FOLDER_LINE_RE = /^(?:~(?:[\\/]|\s|$)|\/|[A-Za-z]:[\\/])/u;

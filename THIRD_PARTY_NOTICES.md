@@ -31,6 +31,18 @@ Unlicense).
 [Project Nayuki's QR Code generator](https://github.com/nayuki/QR-Code-generator),
 under MIT, Copyright (c) Project Nayuki. The MIT license text below applies.
 
+## Herdr app tab bar and status line
+
+The desktop header's one row (`src/App.tsx` `stripInHeader`, `src/styles.css` `.header-tabs`) and
+the pane column's status bar (`src/components/StatusBar.tsx`) follow the Herdr app,
+<https://github.com/herdrdev/herdr-app> (`defaults/mods/tabs/main.js` and
+`defaults/mods/workspace-status/main.js`, commit `cfcf836`): the workspace's tabs in the top row
+with `+` after them and the side panel's Files button at the far end, the sidebar's head with the
+logo, search and collapse in that order, and a 28 px status line under the workspace naming the
+computer and its branch. Its sizes and layout were adapted; no code was copied. Licensed under the
+Apache License, Version 2.0 (<http://www.apache.org/licenses/LICENSE-2.0>), copyright the Herdr
+app's authors.
+
 ## Agent of Empires request correlation
 
 `server/request-log.ts` adapts the request-completion boundary and client correlation-ID
@@ -1516,6 +1528,105 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+```
+
+## libghostty-vt
+
+`src/lib/ghostty/ghostty-vt.wasm` is libghostty-vt from [Ghostty](https://github.com/ghostty-org/ghostty) at
+commit e95bed6, built for wasm32 by `scripts/ghostty-vt/build.sh` with the small change in
+`scripts/ghostty-vt/kitty-on-wasm.patch` (Kitty graphics on, file media off). It draws every terminal, under the
+MIT License below. The module links two
+packages Ghostty's build brings in: [Wuffs](https://github.com/google/wuffs) 0.4.0-alpha.10, which decodes
+Kitty PNG pictures, under the MIT License (it is offered under MIT or Apache-2.0), and
+[uucode](https://github.com/jacobsandlund/uucode) 0.2.0, Unicode tables, under the MIT License.
+
+```
+MIT License
+
+Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+Wuffs:
+
+```
+Copyright 2023 The Wuffs Authors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+uucode:
+
+```
+# uucode license
+
+MIT License
+
+Copyright (c) 2026 Jacob Sandlund
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Other licenses
+
+See [./licenses](./licenses) for licenses of code being used in the repo:
+
+* [LICENSE_Bjoern_Hoehrmann](./licenses/LICENSE_Bjoern_Hoehrmann)
+* [LICENSE_unicode](./licenses/LICENSE_unicode)
 ```
 
 ## JetBrains Mono

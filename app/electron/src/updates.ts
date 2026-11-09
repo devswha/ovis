@@ -1,7 +1,8 @@
 /**
  * Whether the app updates itself, and from where. A packaged build does when it was built with a
- * feed (OVIS_UPDATE_FEED at build time writes electron-builder's app-update.yml) or is started
- * with OVIS_UPDATE_URL; a development run never does, and OVIS_UPDATES=0 turns it off. On Linux
+ * feed (OVIS_UPDATE_FEED at build time writes electron-builder's app-update.yml); OVIS_UPDATE_URL
+ * only replaces that feed, since electron-updater reads app-update.yml again when it downloads. A
+ * development run never updates, and OVIS_UPDATES=0 turns it off. On Linux
  * the AppImage replaces itself, and a .deb install (electron-builder's `package-type` file in the
  * resources says `deb`) installs the downloaded .deb with apt-get behind the system's password prompt.
  *
@@ -11,6 +12,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { AppUpdater } from "electron-updater";
 import { readUpdateChannel, type UpdateChannel } from "../../../shared/update.ts";
 
 type Env = Record<string, string | undefined>;
@@ -52,6 +54,9 @@ export function updatePlan(options: { packaged: boolean; env: Env; platform: str
   const channel = options.channel ?? "stable";
   if (["0", "false", "off", "no"].includes(env["OVIS_UPDATES"]?.trim().toLowerCase() ?? "")) return { enabled: false, reason: "turned off with OVIS_UPDATES" };
   if (!options.packaged) return { enabled: false, reason: "a development run" };
+  // without app-update.yml electron-updater finds an update but fails to download it. Asked first:
+  // a Linux package gets its package-type file only from a build with a feed
+  if (!options.builtWithFeed) return { enabled: false, reason: "this build has no update feed" };
   let installer: Installer = "default";
   if (options.platform === "linux") {
     // chosen here, not by electron-updater: it goes by the package-type file alone, and electron-builder
@@ -74,9 +79,20 @@ export function updatePlan(options: { packaged: boolean; env: Env; platform: str
   }
   // the beta workflow builds no Windows app yet, so its feed has none: Windows stays on the release
   // feed and its stable channel (latest.yml), since the release publishes no beta.yml
-  if (options.builtWithFeed) {
-    if (channel === "beta" && options.platform === "win32") return { enabled: true, feed: null, channel: "stable", installer };
-    return { enabled: true, feed: channel === "beta" ? BETA_FEED : null, channel, installer };
-  }
-  return { enabled: false, reason: "this build has no update feed" };
+  if (channel === "beta" && options.platform === "win32") return { enabled: true, feed: null, channel: "stable", installer };
+  return { enabled: true, feed: channel === "beta" ? BETA_FEED : null, channel, installer };
+}
+
+/**
+ * One check of the feed, as the app runs it after it starts and every 6 hours. A failed check is
+ * logged. A newer version found starts its download, whose failure the updater's error event already
+ * reports (a cancelled one is no error): the promise of that download is only caught, where left alone
+ * it was logged a second time as an unhandled rejection (#2831).
+ */
+export async function checkForUpdates(updater: Pick<AppUpdater, "checkForUpdates">, log: (line: string) => void): Promise<void> {
+  const result = await updater.checkForUpdates().catch((error: unknown) => {
+    log(`Update check failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  });
+  result?.downloadPromise?.catch(() => {});
 }

@@ -28,7 +28,7 @@ run_script() {
   if [ -n "${CI:-}${CHECK_DIR:-}" ]; then
     # These evidence branches add viewport changes, assertions or font waits, not just captures.
     case "$1" in
-      scripts/ui-regression.ts|scripts/ui-contexts-regression.ts|scripts/key-bar-customization-demo-regression.ts) evidence="";;
+      scripts/ui-regression.ts|scripts/ui-contexts-regression.ts|scripts/ui-contexts-layout-regression.ts|scripts/key-bar-customization-demo-regression.ts) evidence="";;
     esac
   fi
   UI_EVIDENCE_DIR="$evidence" bun "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
@@ -60,6 +60,7 @@ export HERDR_DEMO_BUILD
 run_script scripts/demo-build.ts "$HERDR_DEMO_BUILD"
 run_script scripts/ui-regression.ts
 run_script scripts/ui-contexts-regression.ts
+run_script scripts/ui-contexts-layout-regression.ts
 run_script scripts/machine-events-browser-regression.ts
 run_script scripts/workspace-rows-regression.ts
 run_script scripts/pending-pane-switch-regression.ts
@@ -79,7 +80,9 @@ run_script scripts/terminal-touch-burst-regression.ts
 run_script scripts/omo-question-wheel-regression.ts
 run_script scripts/mirror-scroll-demo-regression.ts
 run_script scripts/core-history-scroll-demo-regression.ts
+run_script scripts/codex-drag-demo-regression.ts
 run_script scripts/terminal-images-demo-regression.ts
+run_script scripts/terminal-ghostty-demo-regression.ts
 run_script scripts/mirror-fold-demo-regression.ts
 run_script scripts/chat-no-rewind-demo-regression.ts
 run_script scripts/terminal-cjk-punctuation-regression.ts
@@ -87,6 +90,7 @@ run_script scripts/terminal-late-faces-regression.ts
 run_script scripts/terminal-hangul-seam-regression.ts
 run_script scripts/terminal-sync-output-regression.ts
 run_script scripts/terminal-bundled-mono-regression.ts
+run_script scripts/terminal-served-font-regression.ts
 run_script scripts/application-paging-regression.ts
 run_script scripts/pane-paging-demo-regression.ts
 run_script scripts/link-menu-demo-regression.ts
@@ -97,12 +101,16 @@ run_script scripts/settings-pages-demo-regression.ts
 run_script scripts/agent-entry-points-demo-regression.ts
 run_script scripts/agents-sign-in-demo-regression.ts
 run_script scripts/interface-font-demo-regression.ts
+run_script scripts/file-text-size-demo-regression.ts
+run_script scripts/files-panel-demo-regression.ts
+run_script scripts/files-documents-demo-regression.ts
 run_script scripts/theme-first-paint-demo-regression.ts
 run_script scripts/boot-loading-demo-regression.ts
 run_script scripts/old-safari-demo-regression.ts
 run_script scripts/security-summary-demo-regression.ts
 run_script scripts/push-health-demo-regression.ts
 run_script scripts/alert-webhook-demo-regression.ts
+run_script scripts/relay-direct-demo-regression.ts
 run_script scripts/install-hint-demo-regression.ts
 run_script scripts/device-security-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts
@@ -111,12 +119,15 @@ run_script scripts/pane-input-focus-demo-regression.ts
 run_script scripts/terminal-keyboard-demo-regression.ts
 run_script scripts/unconfirmed-input-demo-regression.ts
 run_script scripts/shortcut-exact-modifiers-demo-regression.ts
+run_script scripts/herdr-prefix-keys-demo-regression.ts
 run_script scripts/portal-regression.ts
 run_script scripts/deep-link-demo-regression.ts
 run_script scripts/chat-history-browser-qa.ts
 run_script scripts/session-history-browser-qa.ts
 run_script scripts/new-session-skills-browser-qa.ts
 run_script scripts/chat-virtual-browser-qa.ts
+run_script scripts/conversation-search-browser-qa.ts
+run_script scripts/conversation-search-demo-regression.ts
 run_script scripts/chat-gjc-streaming-browser-qa.ts
 run_script scripts/chat-scroll-padding-regression.ts
 run_script scripts/chat-selection-copy-regression.ts
@@ -140,11 +151,14 @@ run_script scripts/omp-codex-image-browser-qa.ts
 run_script scripts/grok-image-browser-qa.ts
 run_script scripts/copilot-image-browser-qa.ts
 run_script scripts/file-viewer-regression.ts
+run_script scripts/text-file-edit-regression.ts
 run_script scripts/web-panel-mobile-regression.ts
+run_script scripts/palette-local-page-demo-regression.ts
 run_script scripts/pwa-update-browser-qa.ts
 run_script scripts/install-state-demo-regression.ts
 run_script scripts/revision-bound-update-demo-regression.ts
 run_script scripts/file-preview-text-browser-qa.ts
+run_script scripts/markdown-outline-browser-qa.ts
 run_script scripts/virtual-source-browser-qa.ts
 run_script scripts/repo-diff-browser-qa.ts
 run_script scripts/diff-find-demo-regression.ts
@@ -152,6 +166,7 @@ run_script scripts/keyboard-viewport-regression.ts
 run_script scripts/file-viewer-mobile-regression.ts
 run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
+run_script scripts/phone-safe-area-demo-regression.ts
 run_script scripts/reconnect-header-demo-regression.ts
 run_script scripts/chat-greeting-demo-regression.ts
 run_script scripts/restored-draft-demo-regression.ts
@@ -163,6 +178,7 @@ run_script scripts/chat-selection-turn-end-demo-regression.ts
 run_script scripts/diff-line-notes-demo-regression.ts
 run_script scripts/chat-tool-paths-demo-regression.ts
 run_script scripts/chat-list-markers-demo-regression.ts
+run_script scripts/chat-request-details-demo-regression.ts
 run_script scripts/chat-svg-figures-demo-regression.ts
 run_script scripts/chat-math-demo-regression.ts
 run_script scripts/terminal-paste-insert-demo-regression.ts
@@ -178,12 +194,23 @@ run_script scripts/sidebar-activity-demo-regression.ts
 run_script scripts/sidebar-filter-demo-regression.ts
 run_script scripts/sidebar-declutter-demo-regression.ts
 run_script scripts/sidebar-spacing-demo-regression.ts
+run_script scripts/sidebar-split-demo-regression.ts
+run_script scripts/sidebar-split-access-demo-regression.ts
+run_script scripts/sidebar-peek-demo-regression.ts
+run_script scripts/sidebar-heads-demo-regression.ts
 run_script scripts/sidebar-machine-layout-demo-regression.ts
 run_script scripts/sidebar-machine-removal-demo-regression.ts
 run_script scripts/sidebar-selection-contrast-demo-regression.ts
 run_script scripts/hide-pc-demo-regression.ts
+run_script scripts/pc-load-demo-regression.ts
 run_script scripts/sidebar-branch-line-demo-regression.ts
 run_script scripts/sidebar-tokens-demo-regression.ts
+run_script scripts/sidebar-context-ring-demo-regression.ts
+run_script scripts/sidebar-background-workspaces-demo-regression.ts
+run_script scripts/agent-helpers-fold-demo-regression.ts
+run_script scripts/sidebar-agent-tree-demo-regression.ts
+run_script scripts/agent-lock-demo-regression.ts
+run_script scripts/agent-groups-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
 run_script scripts/prompt-dock-demo-regression.ts

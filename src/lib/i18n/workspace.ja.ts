@@ -55,10 +55,7 @@ export const WORKSPACE_JA: Record<string, string> = {
   "Starting shell…": "シェルを起動しています…",
   "Directory not found": "ディレクトリが見つかりません",
   "model, effort": "モデル、推論レベル",
-  "Model": "モデル",
   "Empty: the agent's own model.": "空のままならエージェント自身のモデルを使います。",
-  "One model name, without spaces.": "空白を含まないモデル名を一つ指定してください。",
-  "Effort": "推論レベル",
   "Levels depend on the model.": "選べるレベルはモデルによって異なります。",
   "Ultracode": "Ultracode",
   "Claude Code 2.1.284 or later": "Claude Code 2.1.284 以降",
@@ -94,4 +91,6 @@ export const WORKSPACE_JA: Record<string, string> = {
   "Add another agent…": "別のエージェントを追加…",
   "It is installed, but this PC does not offer it here yet. Restart Ovis on the PC, or start it in a terminal tab.": "インストールは済みましたが、このPCではまだここで選べません。PCでOvisを再起動するか、ターミナルタブで起動してください。",
   "It is installed. Waiting for this PC to offer it here…": "インストールしました。このPCでここから選べるようになるのを待っています…",
+  "Group": "グループ",
+  "Where the Agents list shows it": "エージェント一覧での表示先",
 };

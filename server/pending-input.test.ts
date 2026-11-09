@@ -29,6 +29,12 @@ describe("pending target identity", () => {
     expect(samePendingIdentity(identity, { ...identity, agent: null })).toBe(false);
   });
 
+  it("refuses a known start of the same PID that can no longer be read, and keeps every other unknown part permitted", () => {
+    expect(samePendingIdentity(identity, { ...identity, processBirth: null })).toBe(false);
+    expect(samePendingIdentity(identity, { ...identity, processPid: null, processBirth: null })).toBe(true);
+    expect(samePendingIdentity({ ...identity, processBirth: null }, identity)).toBe(true);
+  });
+
   it("tolerates only the existing macOS birth precision (control #540)", () => {
     expect(samePendingIdentity(identity, { ...identity, processBirth: 101_000 }, "darwin")).toBe(true);
     expect(samePendingIdentity(identity, { ...identity, processBirth: 101_001 }, "darwin")).toBe(false);
@@ -46,6 +52,16 @@ function fixture() {
 }
 
 describe("bridge pending input", () => {
+  it("stamps a try with this PC's clock as it goes out, and drops the stamp once the message waits again", () => {
+    const f = fixture(), item = f.enqueue(1);
+    f.advance(500);
+    expect(f.queue.claim(item, false)).toBe(true);
+    expect(item.message).toMatchObject({ state: "sending", sending_at: new Date(1_500).toISOString() });
+    f.queue.settle(item, { code: "agent_blocked", message: "blocked" }, false, true);
+    expect(item.message.state).toBe("queued");
+    expect(item.message.sending_at).toBeUndefined();
+  });
+
   it.each(["submit_changed", "submit_partial", "submit_failed", "disconnected", "timeout", "unknown_failure"])(
     "retains ambiguous held-copy disposition across generations and dismissal: %s", async (code) => {
       const f = fixture(), item = f.enqueue(1);

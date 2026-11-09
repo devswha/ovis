@@ -5,8 +5,9 @@
  */
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { createServer } from "node:net";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ovisName } from "../../../server/legacy-env.ts";
 
@@ -40,16 +41,33 @@ export function layout(root: string, platform: NodeJS.Platform = process.platfor
 /** hc's session for the app's own core, apart from the `default` one another hc client may run. */
 export const HC_SESSION = "ovis";
 
+/** the lists an AppImage's AppRun puts its own folders in front of */
+const APPIMAGE_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_SCHEMA_DIR"];
+
 /**
  * The environment hc runs in: the caller's, with the app's own core session unless one is named.
- * Electron's own settings are not passed on.
+ * Electron's own settings are not passed on, nor an AppImage's: the core and its terminals outlive
+ * the app, and its mount (APPDIR) goes away with it, so they would load its libraries meanwhile
+ * and then point at a folder that is gone. Only this app's own mount (`execPath` inside it): an
+ * AppImage's settings the app was merely started under stay, as for any other program.
  */
-export function coreEnv(base: Env): Env {
+export function coreEnv(base: Env, execPath: string = process.execPath): Env {
   const env: Env = { ...base, HC_SESSION: base["HC_SESSION"]?.trim() || HC_SESSION };
   // the app's own core: never one another client named with HC_SOCKET
   delete env["HC_SOCKET"];
   delete env["ELECTRON_RUN_AS_NODE"];
   delete env["ELECTRON_NO_ATTACH_CONSOLE"];
+  const mount = base["APPIMAGE"] ? base["APPDIR"]?.replace(/\/+$/, "") : undefined;
+  if (mount && execPath.startsWith(`${mount}/`)) {
+    for (const name of ["APPDIR", "APPIMAGE", "ARGV0", "OWD"]) delete env[name];
+    for (const name of APPIMAGE_LISTS) {
+      const value = env[name];
+      if (value === undefined) continue;
+      const kept = value.split(":").filter((entry) => entry.replace(/\/+$/, "") !== mount && !entry.startsWith(`${mount}/`));
+      if (kept.some((entry) => entry !== "")) env[name] = kept.join(":");
+      else delete env[name];
+    }
+  }
   return env;
 }
 
@@ -78,7 +96,8 @@ export function serverEnv(base: Env, options: { hc: string; stateDir: string; po
 export function openLog(path: string): WriteStream {
   mkdirSync(dirname(path), { recursive: true });
   if (existsSync(path)) renameSync(path, `${path}.1`);
-  return createWriteStream(path, { flags: "a" });
+  // opened now, not on a later tick: the file exists once this returns, and a folder removed meanwhile cannot fail the stream
+  return createWriteStream(path, { fd: openSync(path, "a") });
 }
 
 export function tail(text: string, lines = 20): string {
@@ -136,10 +155,13 @@ function sameBytes(a: string, b: string): boolean {
 /**
  * Starts the app's core (`hc server start`, which returns once the core runs, or at once when it
  * already does). The core runs apart from the app, as hc runs it for every client: its terminals
- * outlive the window, and the next start finds them.
+ * outlive the window, and the next start finds them. It starts in the home folder: a workspace
+ * made without a folder opens in the core's, and the app's own (where the installer and the Start
+ * menu start it on Windows) is replaced by an update and removed with the app. A home folder that
+ * is not there leaves it in the app's: a missing folder would keep the core from starting at all.
  */
-export async function startCore(hc: string, env: Env, log: WriteStream, timeoutMs = 30_000): Promise<void> {
-  const { code, output } = await run(hc, ["server", "start"], env, log, timeoutMs);
+export async function startCore(hc: string, env: Env, log: WriteStream, timeoutMs = 30_000, home = homedir()): Promise<void> {
+  const { code, output } = await run(hc, ["server", "start"], env, log, timeoutMs, isDirectory(home) ? home : undefined);
   if (code !== 0) throw new Error(`herdr-core did not start (${code === null ? "timed out" : `exit code ${code}`})\n${tail(output)}`);
 }
 
@@ -323,11 +345,11 @@ export async function processStart(pid: number): Promise<string | null> {
   return code === 0 && output.trim() !== "" ? output.trim() : null;
 }
 
-async function run(command: string, args: string[], env: Env, log: WriteStream | null, timeoutMs: number): Promise<{ code: number | null; output: string }> {
+async function run(command: string, args: string[], env: Env, log: WriteStream | null, timeoutMs: number, cwd?: string): Promise<{ code: number | null; output: string }> {
   return new Promise((resolve) => {
     let output = "";
     const [program, argv] = withoutInherited(command, args);
-    const child = spawn(program, argv, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(program, argv, { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     const take = (chunk: Buffer) => {
       log?.write(chunk);
       output += chunk.toString("utf8");
@@ -348,4 +370,8 @@ async function run(command: string, args: string[], env: Env, log: WriteStream |
 
 export function isFile(path: string): boolean {
   try { return statSync(path).isFile(); } catch { return false; }
+}
+
+function isDirectory(path: string): boolean {
+  try { return statSync(path).isDirectory(); } catch { return false; }
 }

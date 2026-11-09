@@ -1,5 +1,8 @@
 import { SETTINGS_ZH } from "./i18n/settings.zh.ts";
 import { SETTINGS_ACCESS_ZH } from "./i18n/settings-access.zh.ts";
+import { SETTINGS_AGENTS_ZH } from "./i18n/settings-agents.zh.ts";
+import { SETTINGS_COMPOSER_ZH } from "./i18n/settings-composer.zh.ts";
+import { SETTINGS_LAYOUT_ZH } from "./i18n/settings-layout.zh.ts";
 import { TERMINAL_ZH } from "./i18n/terminal.zh.ts";
 import { COMPOSER_ZH } from "./i18n/composer.zh.ts";
 import { CHAT_ZH } from "./i18n/chat.zh.ts";
@@ -14,6 +17,7 @@ import { GUIDE_ZH } from "./i18n/guide.zh.ts";
 import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 import { RELAY_ZH } from "./i18n/relay.zh.ts";
+import { RUNTIME_MOVE_ZH } from "./i18n/runtime-move.zh.ts";
 
 /**
  * Simplified Chinese for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than
@@ -29,6 +33,9 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "View only": "仅查看",
+  "Not pasted: the file's path holds a line break, which the terminal would take as Enter.": "未粘贴：文件路径中含有换行，终端会将其当作 Enter。",
+  "Attach files": "附加文件",
   "Sign out": "退出登录",
 
   "Only for {pc}": "仅限 {pc}",
@@ -38,12 +45,40 @@ const BASE: Record<string, string> = {
   "Signed in with {provider}": "已使用 {provider} 登录",
   "Signing in…": "正在登录…",
   "The sign-in did not finish. Try again.": "登录未完成。请重试。",
+  "Open {provider} and enter this code. Enter it only if you started this sign-in on this page.": "打开 {provider} 并输入此代码。仅当这是你在此页面上自己发起的登录时才输入。",
+  "On any device, open {address} and enter this code, then continue with GitHub or Google. Enter it only if you started this sign-in on this page.": "在任意设备上打开 {address} 并输入此代码，然后选择用 GitHub 或 Google 继续。仅当这是你在此页面上自己发起的登录时才输入。",
+  "QR code of the sign-in page with this code filled in": "已填好此代码的登录页面二维码",
+  "Waiting for the sign-in…": "正在等待登录…",
+  "Open the sign-in page": "打开登录页面",
+  "Waiting for {provider}…": "正在等待 {provider} 批准…",
+  "Open {provider}": "打开 {provider}",
+  "{provider} refused the sign-in.": "{provider} 拒绝了此次登录。",
+  "Your account already signs in with {provider}.": "此账户已经可以用 {provider} 登录。",
+  "This {provider} sign-in already belongs to another Ovis account. Nothing was changed.": "这个 {provider} 登录已属于另一个 Ovis 账户。没有做任何更改。",
+  "Add another way to sign in before removing this one.": "请先添加另一种登录方式，再移除这一种。",
+  "The sign-in method could not be removed. Try again.": "无法移除该登录方式。请重试。",
+  "Ways to sign in": "登录方式",
+  "Sign in again": "重新登录",
+  "Added {date}": "{date} 添加",
+  "To change how you sign in, sign in again with {provider} first.": "要更改登录方式，请先用 {provider} 重新登录。",
+  "To change how you sign in, sign in again with {provider} on its own sign-in page first.": "要更改登录方式，请先在 {provider} 自己的登录页面上重新登录。",
+  "Add another way to sign in from the Ovis desktop app.": "请在 Ovis 桌面应用中添加其他登录方式。",
+  "Add {provider}": "添加 {provider}",
+  "The code expired. Sign in again to get a new one.": "代码已过期。请重新登录以获取新代码。",
+  "This account service can't sign in a browser on this PC yet.": "此账户服务暂不支持在这台 PC 的浏览器中登录。",
   "Your sign-in ended. Sign in again to see every PC of your account.": "登录已失效。请重新登录以查看账户中的所有 PC。",
   "The account service could not be reached. The PCs this device is paired with still work.": "无法连接账户服务。已与此设备配对的 PC 仍可正常使用。",
   "Add {device}?": "添加 {device}？",
   "Through {pc} · joins your {n} PCs": "经由 {pc} · 将加入你的 {n} 台 PC",
   "Pick the number on {device}": "选择 {device} 上显示的数字",
-  "Didn't ask for this? Deny it.": "如果不是你发起的，请拒绝。",
+  "Approve only if you started this yourself just now. Didn't ask for it? Deny it.": "仅在你刚刚亲自发起时才批准。如果不是你发起的，请拒绝。",
+  "Network location unknown": "网络位置未知",
+  "Network near {place}": "网络位置：{place} 附近",
+  "The name and system are what the device says. The place is where its network connects from.": "名称和系统是设备自己报告的；位置是其网络的接入地点。",
+  "This device asked again with other details. Check them, then pick the number again.": "该设备用不同的信息再次发起请求。请先核对，再重新选择数字。",
+  "Device": "设备",
+  "The sign-in was refused.": "登录被拒绝。",
+  "This sign-in already belongs to another Ovis account. Nothing was changed.": "此登录已属于另一个 Ovis 账户，未做任何更改。",
   "Deny": "拒绝",
   "never": "从未",
   "just now": "刚刚",
@@ -68,9 +103,10 @@ const BASE: Record<string, string> = {
   "Input line": "输入框",
   // ---- settings ----
   "Settings": "设置",
+  "PCs": "PC",
   "Chat": "聊天",
   "Agent default": "代理默认",
-  "Phone & devices": "手机和设备",
+  "Devices and PCs": "设备和电脑",
   "Access token": "访问 Token",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
@@ -105,6 +141,8 @@ const BASE: Record<string, string> = {
   "Show the terminal": "显示终端",
   "Show the chat": "显示聊天",
   "Close this half": "关闭这一半",
+  "Remove from the split": "从拆分中移除",
+  "Resize the split": "调整拆分大小",
   "Toggle sidebar (⌘⇧B)": "切换侧边栏 (⌘⇧B)",
   "Chat transcript (⌘⇧J)": "聊天记录 (⌘⇧J)",
   "Live terminal (⌘⇧J)": "实时终端 (⌘⇧J)",
@@ -145,7 +183,6 @@ const BASE: Record<string, string> = {
   "Command palette (⌘⇧K)": "命令面板 (⌘⇧K)",
   "Could not sign out. Try again.": "无法退出登录，请重试。",
   "Retry": "重试",
-  "Notify me when a pane needs input or finishes": "窗格需要输入或完成时通知我",
   "On, pushed to this device": "已开启，推送到此设备",
   "Alerts on, pushed to this device, even with the app closed. Tap to turn them off": "提醒已开启，推送到此设备。即使关闭应用也会收到。点按可关闭",
   "Off on this device": "此设备已关闭",
@@ -172,22 +209,30 @@ const BASE: Record<string, string> = {
   "Filter workspaces and agents": "筛选工作区和代理",
   "Connecting…": "正在连接…",
   "Connected": "已连接",
+  "Add a connection": "添加连接",
+  "Answers": "有响应",
+  "Same Wi-Fi, direct": "同一 Wi-Fi 直连",
+  "Tailscale, direct": "Tailscale 直连",
+  "Seoul relay": "首尔中继",
+  "Through the relay": "经由中继",
+  "{n} ms": "{n} ms",
+  "Check now": "立即检查",
+  "Checking…": "正在检查…",
   "relay": "中继",
   "direct": "直连",
   "local": "本地",
   "Via a loopback address: this PC, or a tunnel to it": "经由回环地址：本机，或通往它的隧道",
   "Via the Ovis relay": "经由 Ovis 中继",
+  "Directly on the same network, not through the relay": "在同一网络上直接连接，不经过中继",
   "Via the Portal relay": "经由 Portal 中继",
   "Via Tailscale": "经由 Tailscale",
   "Via Tailscale, or Funnel from the internet": "经由 Tailscale，或经由 Funnel 从互联网连接",
   "Via the local network": "经由局域网",
   "Straight to this address": "直接连接此地址",
-  "Sessions on this PC": "此 PC 上的会话",
-  "{count} working": "{count} 个工作中",
   "{count} waiting for you": "{count} 个等待你回应",
-  "{count} done": "{count} 个已完成",
   "Open the next session waiting for you": "打开下一个等待你回应的会话",
   "Tab {index} of {count}": "第 {index} 个标签页，共 {count} 个",
+  "Tabs of {workspace}": "{workspace} 的标签页",
   "Reconnecting…": "正在重连…",
   "Add PC": "添加 PC",
   "Connect": "连接",
@@ -197,6 +242,7 @@ const BASE: Record<string, string> = {
   // ---- command palette ----
   "Refresh": "刷新",
   "Search panes and actions": "搜索窗格和操作",
+  "Search conversation": "搜索对话",
 
   // ---- new workspace ----
   "Browse": "浏览",
@@ -213,6 +259,7 @@ const BASE: Record<string, string> = {
   "No matching folders": "没有匹配的文件夹",
   "This folder cannot be opened.": "无法打开此文件夹。",
   "Folders could not be loaded.": "无法加载文件夹。",
+  "Unlock agent": "解锁 Agent",
 
   // ---- files ----
   "Files": "文件",
@@ -232,15 +279,12 @@ const BASE: Record<string, string> = {
   "Submit": "提交",
   "Recommended": "推荐",
   "Agents": "代理",
-  "Check again": "重新检查",
   "Setup guide": "设置向导",
   "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "无法确认此浏览器已配对。请检查是否允许 Cookie，然后重试。",
   "New code": "新代码",
   "Paired: {name}.": "已配对：{name}。",
   "QR code that pairs a phone with code {code}": "使用代码 {code} 配对手机的二维码",
-  "Connect a phone": "连接手机",
   "Pairing code": "配对码",
-  "Open this address on your phone": "在手机上打开此地址",
   "{agent} is ready": "{agent} 已就绪",
 
 
@@ -269,7 +313,7 @@ const BASE: Record<string, string> = {
   "Microphone permission was denied": "麦克风权限已被拒绝",
   "Voice input needs HTTPS": "语音输入需要 HTTPS",
   // ---- errors (lib/userError.ts) ----
-  "This browser is not signed in to this PC any more. Pair it again in Settings → Phone & devices.": "此浏览器已不再登录此电脑。请在设置 → 手机和设备中重新配对。",
+  "This browser is not signed in to this PC any more. Pair it again in Settings → Devices and PCs.": "此浏览器已不再登录此电脑。请在设置 → 设备和电脑中重新配对。",
   "That item no longer exists on the PC. Refresh and try again.": "该项目在电脑上已不存在。请刷新后重试。",
   "It changed on the PC while you were acting. Check it and try again.": "你操作期间电脑上的内容已更改。请检查后重试。",
   "The PC took too long to answer. Try again.": "电脑响应时间过长。请重试。",
@@ -284,7 +328,7 @@ const BASE: Record<string, string> = {
   "Can't reach the PC": "无法连接到电脑",
   "PC disk is full": "电脑磁盘已满",
   "No permission on the PC": "电脑上没有权限",
-  "Pair it again in Settings → Phone & devices.": "请在设置 → 手机和设备中重新配对。",
+  "Pair it again in Settings → Devices and PCs.": "请在设置 → 设备和电脑中重新配对。",
   "Refresh and try again.": "请刷新后重试。",
   "Check it and try again.": "请检查后重试。",
   "Check your connection, then try again.": "请检查网络连接后重试。",
@@ -347,6 +391,8 @@ const BASE: Record<string, string> = {
   "Pane swap was refused: {reason}": "窗格交换被拒绝：{reason}",
   "The panes are in different tabs.": "窗格位于不同的标签页中。",
   "Choose two different panes.": "请选择两个不同的窗格。",
+  "The pane moved to the right instead.": "窗格改为移到了右侧。",
+  "The pane moved below instead.": "窗格改为移到了下方。",
   "A pane is no longer available.": "窗格已不可用。",
   "There is no pane on that side.": "该方向没有窗格。",
   "Split pane right": "向右拆分窗格",
@@ -359,9 +405,6 @@ const BASE: Record<string, string> = {
   "Copy details": "复制详细信息",
   "This pane can't be shown.": "无法显示此窗格。",
   "The sidebar can't be shown.": "无法显示侧边栏。",
-  "Diff layout": "差异布局",
-  "Unified": "单栏",
-  "Split": "并排",
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "切换电脑",
@@ -396,12 +439,61 @@ const BASE: Record<string, string> = {
   "{name} wants to pair through the relay. Approve it only if its screen shows": "{name} 想通过中继配对。只有它的屏幕显示以下数字时才批准:",
   "Decline": "拒绝",
   "differs": "不同",
+  "A code has ten letters and digits, like 7K3QD-M2XHA.": "代码由十个字母和数字组成，例如 7K3QD-M2XHA。",
+  "No PC shows this code. Check it, or show a new one on the PC.": "没有电脑显示这个代码。请检查，或在电脑上显示新代码。",
+  "That code did not work. Check it and try again; after three wrong tries the PC needs a new code.": "该代码无效。请检查后重试；输错三次后需要在电脑上生成新代码。",
+  "That code ran out. Show a new one on the PC.": "该代码已过期。请在电脑上显示新代码。",
+  "Another device is trying this code, or it was tried too often. Wait a moment, or show a new code on the PC.": "另一台设备正在尝试此代码，或尝试次数过多。请稍候，或在电脑上显示新代码。",
+  "The answer did not come from a PC this app can pair with. Show a new code on the PC, or scan its QR code.": "该响应并非来自本应用可配对的电脑。请在电脑上显示新代码，或扫描其二维码。",
+  "The relay could not be reached. Check this device's connection, then try again.": "无法连接中继。请检查此设备的网络连接，然后重试。",
+  "Reset": "重置",
+  "Group name": "分组名称",
+  "Remove group {group}": "删除分组 {group}",
+  "New group": "新分组",
+  "Add group": "添加分组",
+  "No group": "无分组",
+  "Context {percent}% left": "上下文剩余 {percent}%",
+  "{used} of {window} tokens": "{used} / {window} Token",
+  "Permission mode": "权限模式",
+  "Model": "模型",
+  "One model name, without spaces.": "填写一个不含空格的模型名称。",
+  "Effort": "推理强度",
+  "Sandbox and approvals": "沙箱与审批",
+  "Add this PC to my account": "将此电脑添加到我的账号",
+  "Add this PC to your account, so every device of your account can use it with one approval.": "将此电脑添加到账号后，只需批准一次，账号的所有设备都能使用它。",
+  "Every device of your account can use this PC after that.": "之后，账号的所有设备都能使用此电脑。",
+  "On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.": "在已加入账号的手机上打开 Ovis 应用，点按 {name} 的“添加”。然后在这里批准。",
+  "This PC could not be listed in your account. Try again.": "无法将此电脑列入你的账号。请重试。",
+  "Turn on remote access through the Ovis relay above first.": "请先在上方开启通过 Ovis 中继的远程访问。",
+  "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "请先在 设置 → 设备和电脑 中开启通过 Ovis 中继的远程访问。",
+  "New terminal": "新建终端",
+  "New terminal failed: {reason}": "新建终端失败：{reason}",
+  "herdr prefix: press a key": "herdr 前缀键：请按一个键",
+  "Shell": "Shell",
+  "This device": "此设备",
+  "Sign out of {provider}": "退出 {provider} 登录",
+  "Ovis relay": "Ovis 中继",
+  "Reset relay identity": "重置中继身份",
+  "Reset the relay identity?": "要重置中继身份吗？",
+  "Phones paired through the relay will need to scan a new code.": "通过中继配对的手机需要重新扫描新代码。",
+  "Pairs this phone through the relay, so Ovis keeps working away from home.": "通过中继配对这部手机，离家在外也能使用 Ovis。",
+  "This PC": "本机",
+  "Paste and send": "粘贴并发送",
+  "Conversation": "对话",
+  "Off": "关闭",
+  "Not now": "暂不",
+  "Remove PC": "移除 PC",
+  "Remove PC {name}?": "移除 PC {name}？",
+  "Removes this registration. Remote sessions keep running.": "仅移除此注册。远程会话会继续运行。",
+  "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "仅从这台 PC 移除。要同时取消它的访问权限，请在那台 PC 的 手机和设备 中撤销。",
+  "Added": "新增",
+  "Sign in to Ovis": "登录 Ovis",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const ZH_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH },
+  settings: { ...SETTINGS_ZH, ...SETTINGS_ACCESS_ZH, ...SETTINGS_COMPOSER_ZH, ...SETTINGS_LAYOUT_ZH, ...SETTINGS_AGENTS_ZH },
   terminal: TERMINAL_ZH,
   composer: COMPOSER_ZH,
   chat: CHAT_ZH,
@@ -416,6 +508,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   updates: UPDATES_ZH,
   palette: PALETTE_ZH,
   relay: RELAY_ZH,
+  "runtime-move": RUNTIME_MOVE_ZH,
 };
 
 export const ZH: Record<string, string> = Object.assign({}, ...Object.values(ZH_PARTS));

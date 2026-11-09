@@ -20,17 +20,25 @@ npmRebuild: false
 toolsets:
   # the static AppImage runtime, which needs no libfuse2 (gone from recent Ubuntu)
   appimage: '1.0.3'
-# notarizes and staples the macOS dmg once electron-builder has signed it (scripts/notarize-dmg.mjs)
+# notarize and staple the signed macOS app, then the dmg made from it (scripts/notarize-dmg.mjs)
+afterSign: ./scripts/notarize-app.mjs
 artifactBuildCompleted: ./scripts/notarize-dmg.mjs
 linux:
   target:
     - AppImage
     - deb
   category: Development
+  # 16 to 512 pixels, made by scripts/build.ts from ../assets/icon-only.png: hicolor lists no 1024 folder
+  icon: .cache/linux-icons
+  synopsis: Your coding agents in one app
   executableName: ovis
   syncDesktopName: true
   maintainer: devswha <devswha@users.noreply.github.com>
 deb:
+  # stops the herdr-core server the app started for the user removing the package (linux/before-remove.sh)
+  fpm:
+    - --before-remove
+    - linux/before-remove.sh
   # electron-builder's own list, which lacks ALSA (Electron needs libasound.so.2), with the t64 names
   # newer Ubuntu and Debian gave some of them first
   depends:
@@ -52,6 +60,8 @@ mac:
   category: public.app-category.developer-tools
   # Developer ID signing from CSC_LINK + CSC_KEY_PASSWORD or CSC_NAME, and notarization from
   # APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER (scripts/notarize-dmg.mjs); unsigned without them.
+  # The afterSign hook notarizes the app: electron-builder's own stapling gives up within seconds.
+  notarize: false
   # Signed under the hardened runtime (electron-builder's default): the app takes build/entitlements.mac.plist
   # and everything else inside build/entitlements.mac.inherit.plist, found by name. Resources holds the server's files too: sign only its programs (hc, Bun, the PTY host)
   # and native modules, not every data file in them. A new Mach-O there that this misses fails notarization.

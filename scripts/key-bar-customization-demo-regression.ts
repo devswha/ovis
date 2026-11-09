@@ -7,6 +7,7 @@ import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import { buildDemoApp } from "./demo-build.ts";
 import { openSettingsPage } from "./settings-page.ts";
+import { shownRows } from "./shown-rows.ts";
 import { keyBarItemLabel } from "../src/lib/keyBar.ts";
 
 // Production client over the demo's synthetic transport. Editing and typing stay in this
@@ -559,7 +560,9 @@ try {
         sidebarShortcut = dialog.getByRole("combobox", { name: "Toggle sidebar", exact: true });
         assert.match(await sidebarShortcut.locator('option[value="t"]').innerText(), /Reserved/);
         await sidebarShortcut.selectOption("t");
-        await dialog.getByText(`Your browser or operating system may intercept ${modifierLabel}+⇧+T.`, { exact: true }).waitFor({ timeout: 5_000 });
+        // the list's " — Reserved" is the warning; the changed row offers its own reset
+        await dialog.getByRole("button", { name: "Restore defaults: Toggle sidebar", exact: true }).waitFor({ timeout: 5_000 });
+        assert.match(await sidebarShortcut.evaluate((select: HTMLSelectElement) => select.selectedOptions[0]?.textContent ?? ""), /Reserved/);
         assert.equal(((await settingsOf(page)).shortcutOverrides as Record<string, string>)["toggle-sidebar"], "t", "a reservation warns without silently changing the configured key");
         await dialog.getByRole("button", { name: "Reset shortcuts", exact: true }).click();
         await page.waitForFunction((key) => Object.keys(JSON.parse(localStorage.getItem(key)!).shortcutOverrides).length === 0, SETTINGS_KEY, { timeout: 5_000 });
@@ -621,7 +624,7 @@ try {
         await shell.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.shell)}`);
         await ready(shell);
         const shellBar = shell.locator(".key-bar");
-        const screen = (): Promise<string> => shell.evaluate(() => (document.querySelector(".pane-terminal .xterm-rows")?.textContent ?? "").replaceAll("\u00a0", " "));
+        const screen = (): Promise<string> => shell.evaluate((shown) => (document.querySelector(shown)?.textContent ?? "").replaceAll("\u00a0", " "), shownRows());
         const shows = async (wanted: string): Promise<void> => {
           const deadline = Date.now() + 5_000;
           while (!(await screen()).includes(wanted)) {

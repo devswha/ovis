@@ -15,6 +15,7 @@ import { alertsOffMarked, alertsState, runMoreItem } from "./header-more.ts";
 import { routeDrained } from "./drained-route.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
 import { checkTerminalFileInput } from "./terminal-file-input-regression.ts";
+import { checkTerminalAttach } from "./terminal-attach-regression.ts";
 import { checkTerminalInput } from "./terminal-input-regression.ts";
 import { checkSafariIme } from "./terminal-safari-ime-regression.ts";
 import { checkIpadIme } from "./terminal-ipad-ime-regression.ts";
@@ -28,7 +29,7 @@ import { checkPaletteKeys } from "./palette-keys-regression.ts";
 import { checkFollowHerdrFocus } from "./follow-focus-regression.ts";
 import { checkRelayPanel } from "./relay-panel-regression.ts";
 import { systemUsageContext, UsageService } from "../server/usage.ts";
-import { openSettingsPage } from "./settings-page.ts";
+import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
 import { assertCspClean, watchCsp } from "./csp-violations.ts";
 import type { CspWatch } from "./csp-violations.ts";
 import { browserEvidencePage, browserEvidenceTracing, startBrowserEvidence } from "./browser-evidence.ts";
@@ -117,7 +118,7 @@ try {
   }
   const [paneA, paneB] = panes as [string, string];
   // no provider is asked with the test machine's own sign-ins
-  server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "push"), usage: new UsageService({ ...systemUsageContext(), home: root, env: {} }, []) });
+  server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "push"), usage: new UsageService({ ...systemUsageContext(), home: root, env: {} }, []), tailnetPcs: { readStatus: async () => null }, sshCandidates: { sshDir: join(root, "no-ssh"), readStatus: async () => null } });
   const origin = `http://127.0.0.1:${server.port}`;
   browser = await chromium.launch({
     executablePath: chromePath(),
@@ -758,12 +759,21 @@ try {
   await page.getByRole("button", { name: "Close settings", exact: true }).click();
   console.log("PASS settings shortcut and theme");
 
-  // Add PC lives in Settings → Remote PCs, not in the sidebar; opening it closes Settings behind it
+  // Add PC lives in Settings → Devices and PCs → Add a connection → SSH, not in the sidebar: a typed address opens it
+  // filled in, and opening it closes Settings behind it
   assert.equal(await page.locator(".sidebar").getByRole("button", { name: "Add PC", exact: true }).count(), 0, "the sidebar has no Add PC button");
   await page.keyboard.press("ControlOrMeta+Shift+Comma");
-  await openSettingsPage(page, "Remote PCs");
-  await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Add PC", exact: true }).click();
+  await openSettingsPage(page, "Devices and PCs");
+  await page.getByRole("dialog", { name: "Settings" }).getByRole("button", { name: "Add a connection", exact: true }).click();
+  const connectSheet = page.getByRole("dialog", { name: "Add a connection", exact: true });
+  await connectSheet.locator('.connect-tabs [data-tab="ssh"]').click();
+  const sshAdd = connectSheet.locator(".connect-ssh-form").getByRole("button", { name: "Add", exact: true });
+  assert.equal(await sshAdd.isDisabled(), true, "Add waits for an SSH address");
+  await connectSheet.getByLabel("Or type an SSH address", { exact: true }).fill("qa@pc.invalid");
+  await sshAdd.click();
   await page.getByRole("dialog", { name: "Add PC", exact: true }).waitFor();
+  assert.equal(await page.getByRole("dialog", { name: "Add PC", exact: true }).getByLabel("SSH alias or user@address", { exact: true }).inputValue(), "qa@pc.invalid", "Add PC opens with the typed address");
+  assert.equal(await connectSheet.count(), 0, "Add PC closes the Add a connection sheet");
   assert.equal(await page.getByRole("dialog", { name: "Settings" }).count(), 0, "Add PC closes Settings");
   await page.getByRole("button", { name: "Close PC setup", exact: true }).click();
   await page.getByRole("dialog", { name: "Add PC", exact: true }).waitFor({ state: "hidden" });
@@ -1564,14 +1574,14 @@ try {
   await until(async () => await initialRow.locator(".workspace-name").textContent() === "Existing checkout", "a named worktree's row is titled by its workspace name");
   assert.equal(await initialRow.locator(".worktree-workspace-label").textContent(), "browser/initial", "the list API discovers an existing worktree's exact branch, said after the name");
   assert.equal(await repoRow.locator(".workspace-name").textContent(), "ovis-test-repo", "the parent keeps its workspace name");
-  // A list read from before creation must not erase the branch supplied by the create response.
+  // An inventory read from before creation must not erase the branch supplied by the create response (#2661: one read per PC).
   let releaseWorktreeList!: () => void;
   const heldWorktreeList = new Promise<void>((resolve) => { releaseWorktreeList = resolve; });
   releases.push(releaseWorktreeList);
   let worktreeListCaptured = false;
   let staleWorktreeListFinished = false;
   let freshWorktreeListFinished = false;
-  await page.route("**/api/worktree/list?*", async (route) => {
+  await page.route("**/api/worktree/inventory?*", async (route) => {
     const response = await route.fetch();
     if (!worktreeListCaptured) {
       worktreeListCaptured = true;
@@ -1640,7 +1650,7 @@ try {
   await until(() => staleWorktreeListFinished && freshWorktreeListFinished, "the stale inventory is followed by a fresh one");
   assert.equal(await childHeader.locator(".worktree-workspace-label").textContent(), "browser/sidebar", "a pre-create inventory cannot erase the new branch");
   assert.equal(await childHeader.locator(".workspace-name").textContent(), "Sidebar redesign", "nor the name it was given");
-  await page.unroute("**/api/worktree/list?*");
+  await page.unroute("**/api/worktree/inventory?*");
   await childHeader.locator(".workspace-select").click({ button: "right" });
   await page.getByRole("menuitem", { name: "Rename workspace", exact: true }).click();
   const worktreeRename = childHeader.getByRole("textbox", { name: "Workspace name", exact: true });
@@ -1800,7 +1810,9 @@ try {
   await strip.waitFor();
   assert.deepEqual(await strip.getByRole("tab").allTextContents(), ["Tab 1", "second"]);
   assert.equal(await strip.getByRole("tab", { selected: true }).textContent(), "second");
-  assert.equal(await strip.locator(".tab-strip-close, .tab-strip-panes").count(), 0, "tab close buttons and chevrons are removed");
+  assert.equal(await strip.locator(".tab-strip-panes").count(), 0, "tab chevrons are removed");
+  // the header's row is a browser's tab strip: the open tab carries its close, a tab at rest only while hovered
+  assert.equal(await strip.locator(".tab-strip-close:visible").count(), 1, "only the open tab shows its close at rest");
   assert.equal(await strip.locator(".tab-strip-menu:visible").count(), 0, "desktop tabs show no menu button at rest");
   // the selected tab's actions button waits hidden in its place: the pointer over the strip or the
   // tab's keyboard focus brings it into view, and no other tab draws one
@@ -1948,7 +1960,8 @@ try {
   await herdrRpc("pane.focus", { pane_id: createdTab.pane_id });
   const neighbour = await herdrRpc<{ tab: { tab_id: string } }>("tab.create", { workspace_id: created.workspace_id, label: "neighbour", focus: false });
   await until(async () => (await tabsInHerdr()).length === 3, "build has two neighbours");
-  const tabPhone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  // a touch screen wider than a phone keeps the row (a phone's header title lists the tabs: mobile-tabs-regression.ts)
+  const tabPhone = await browser.newContext({ viewport: { width: 700, height: 900 }, isMobile: true, hasTouch: true });
   const tabPhonePage = await tabPhone.newPage();
   const tabPhoneEvidence = evidenceDirectory ? await watchBrowserEvidence(tabPhone, tabPhonePage, "touch-tab-menu") : undefined;
   csp.push(await watchCsp(tabPhonePage));
@@ -1959,12 +1972,13 @@ try {
   assert.equal(await phoneStrip.locator(".tab-strip-close, .tab-strip-panes").count(), 0, "no close button or chevron is rendered");
   assert.equal(await phoneStrip.locator(".tab-strip-menu:visible").count(), 1, "only the open tab has the touch menu button");
   await phoneStrip.getByRole("button", { name: "Actions for build", exact: true }).tap();
-  const tabSheet = tabPhonePage.getByRole("dialog", { name: "build", exact: true });
+  // wider than a phone's sheets, the touch menu is a popover at its button
+  const tabSheet = tabPhonePage.getByRole("menu", { name: "build", exact: true });
   await tabSheet.waitFor();
-  const touchTabItems = await tabSheet.locator(".row-sheet-item").allTextContents();
+  const touchTabItems = await tabSheet.getByRole("menuitem").allTextContents();
   assert.deepEqual(touchTabItems.slice(-6), ["Move tab left", "Move tab right", "Move to workspace…", "New tab with agent…", "Rename tab", "Close tab"], "a tab between siblings offers both adjacent moves on touch");
   assert.ok(touchTabItems.includes("Rename pane") && touchTabItems.includes("Close pane"), "the touch menu carries the open pane's actions");
-  await tabSheet.getByRole("button", { name: "Cancel", exact: true }).tap();
+  await tabPhonePage.keyboard.press("Escape");
   await tabSheet.waitFor({ state: "detached" });
   if (tabPhoneEvidence) await tabPhoneEvidence.finish();
   await tabPhone.close();
@@ -2183,7 +2197,7 @@ try {
     await page.mouse.move(box.x + box.width * 0.8, box.y + box.height / 2);
     await page.waitForFunction(() => {
       const guide = document.querySelector(".split-drop");
-      return guide?.classList.contains("is-visible") === true && guide.getAttribute("data-side") === "right";
+      return guide?.classList.contains("is-visible") === true && guide.getAttribute("data-edge") === "right";
     });
     await page.mouse.up();
     await until(async () => await page.locator(".pane-slot").count() === 2, "two halves after the drop");
@@ -2315,8 +2329,11 @@ try {
   await until(async () => await mobileComposer.getAttribute("placeholder") === "run the tests", "a phone shows the suggestion as the placeholder");
   assert.equal(await mobilePage.locator(".voice-mic").count(), 0, "a phone's chat has no mic until Settings asks for it");
   assert.equal(await mobilePage.getByTitle("Use the suggestion", { exact: true }).count(), 0, "a phone shows no suggestion chip by default");
-  await mobilePage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}&settings=chat&section=composer`);
-  await mobilePage.getByRole("switch", { name: "Suggestion chip", exact: true }).setChecked(true);
+  // the chip is one of Chat → Composer buttons, a chip each, pressed when on
+  await mobilePage.goto(`${origin}/?pane=${encodeURIComponent(paneB)}&settings=chat`);
+  const suggestion = mobilePage.getByRole("button", { name: "Suggestion (Claude Code)", exact: true });
+  await suggestion.click();
+  await until(async () => await suggestion.getAttribute("aria-pressed") === "true", "the Suggestion chip is pressed");
   await mobilePage.getByRole("button", { name: "Close settings", exact: true }).click();
   await mobileComposer.fill("");
   await mobilePage.getByTitle("Use the suggestion", { exact: true }).click();
@@ -2408,6 +2425,7 @@ try {
   if (touchEvidence) await touchEvidence.finish();
   await touch.close();
   console.log("PASS touch terminal input line sends whole lines, Enter alone, and yields to direct typing");
+  await checkTerminalAttach(browser, origin, paneB);
 
   // A closed pane and an obsolete saved pane both yield to a live pane. Local access
   // is automatic, so it must not offer a sign-out action that cannot lock the app.
@@ -2478,7 +2496,7 @@ try {
   if (pageEvidence) await pageEvidence.finish();
   await page.close();
 
-  const secured = createServer({ port: 0, hostname: "127.0.0.1", token: "browser-test-token", stateDir: join(root, "secured"), tailscaleOwner: null });
+  const secured = createServer({ port: 0, hostname: "127.0.0.1", token: "browser-test-token", stateDir: join(root, "secured"), tailscaleOwner: null, tailnetPcs: { readStatus: async () => null }, sshCandidates: { sshDir: join(root, "no-ssh"), readStatus: async () => null } });
   releases.push(() => secured.stop());
   const securedOrigin = `http://127.0.0.1:${secured.port}`;
   const securedContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -2500,8 +2518,10 @@ try {
   await securedPage.keyboard.press("Escape");
   await securedPage.getByRole("dialog", { name: "Command palette", exact: true }).waitFor({ state: "hidden" });
   await securedPage.keyboard.press("ControlOrMeta+Shift+Comma");
-  await openSettingsPage(securedPage, "Phone & devices");
-  const settingsSignOut = securedPage.getByRole("dialog", { name: "Settings", exact: true }).getByRole("button", { name: "Sign out", exact: true });
+  await openSettingsPage(securedPage, "Devices and PCs");
+  // sign out of this PC waits in More settings, under what is connected
+  await openSettingsFolds(securedPage);
+  const settingsSignOut = securedPage.getByRole("dialog", { name: "Settings", exact: true }).getByRole("button", { name: "Sign out of this PC", exact: true });
   const signOutConfirm = securedPage.getByRole("alertdialog", { name: "Sign out of this browser?", exact: true });
   await settingsSignOut.click();
   await signOutConfirm.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -2527,7 +2547,7 @@ try {
   await securedPage.reload();
   await securedPage.locator(".app-header.is-zoned").waitFor();
   await securedPage.keyboard.press("ControlOrMeta+Shift+Comma");
-  await openSettingsPage(securedPage, "Phone & devices");
+  await openSettingsPage(securedPage, "Devices and PCs");
   await settingsSignOut.click();
   await signOutConfirm.getByRole("button", { name: "Sign out", exact: true }).click();
   await securedPage.getByTestId("token-gate").waitFor();

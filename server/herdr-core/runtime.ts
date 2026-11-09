@@ -1,10 +1,12 @@
 import { chmodSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
 import { HcConnection, spawnHcConnect } from "./connection.ts";
+import { MachineScopedConnection } from "./machine-scope.ts";
 import { SeenMarker } from "./seen-label.ts";
 import { existsSync } from "node:fs";
-import { findHc, type FoundHc } from "./discovery.ts";
+import { coreSocket, findHc, type FoundHc } from "./discovery.ts";
 import { adapterAddress } from "./pipe.ts";
+import { opencodeDatabasePath, opencodeSessionsTitled } from "../opencode.ts";
 
 /**
  * Which runtime this PC's terminals run on. `OVIS_RUNTIME=herdr-core` serves the terminals of
@@ -76,6 +78,35 @@ export class NoHerdrCoreError extends Error {
   }
 }
 
+/**
+ * The other machine of the core this server shows as a PC of its own (OVIS_HC_MACHINE, set by
+ * machine-bridge.ts for the server it starts per machine); null for the core's own terminals.
+ */
+export function hcMachine(): { name: string; id: string } | null {
+  const name = process.env["OVIS_HC_MACHINE"];
+  const id = process.env["OVIS_HC_MACHINE_ID"];
+  return name && id ? { name, id } : null;
+}
+
+/**
+ * What `hc connect` runs in: a machine's server runs with a home of its own (machine-bridge.ts), and
+ * OVIS_HC_ENV holds what finds the core (HOME, HC_*, XDG_*) as the server that started it has them.
+ */
+export function hcEnv(): Record<string, string | undefined> | undefined {
+  const kept = process.env["OVIS_HC_ENV"];
+  return kept ? { ...process.env, ...(JSON.parse(kept) as Record<string, string>) } : undefined;
+}
+
+/** Where the core this server's `hc connect` reaches listens, found as hc finds it (discovery.ts coreSocket). */
+export function coreSocketPath(): string {
+  return coreSocket({ env: hcEnv() ?? process.env }).path;
+}
+
+/** HERDR_SOCKET as this process had it before startRuntime pointed it at the adapter (null until then): a core `hc connect` starts hands its env to every pane */
+let herdrSocketBefore: { HERDR_SOCKET: string | undefined } | null = null;
+/** the adapter socket startRuntime last put in HERDR_SOCKET: a later start in this process finds it there, not the one from before */
+let adapterSocket: string | null = null;
+
 let connection: HcConnection | null = null;
 /** whether this process serves herdr-core (startRuntime ran): a remote bridge inheriting OVIS_RUNTIME does not */
 let serving = false;
@@ -94,7 +125,9 @@ export function coreSeenMarker(): SeenMarker {
 
 /** The server's one line to hc, which the adapter answers through and live terminals stream on. */
 export function coreConnection(): HcConnection {
-  connection ??= new HcConnection(() => spawnHcConnect(hcBin()));
+  const spawn = () => spawnHcConnect(hcBin(), { ...(hcEnv() ?? process.env), ...herdrSocketBefore });
+  const machine = hcMachine();
+  connection ??= machine === null ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine.name, machine.id);
   return connection;
 }
 
@@ -125,8 +158,12 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
   if (unix) chmodSync(stateDir, 0o700);
   const hc = coreConnection();
   // on Windows the pipe is named after the folder itself: a junction or a short (8.3) spelling of it names the same pipe
-  const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels));
+  const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels),
+    // another machine's OpenCode keeps its sessions there: none of its panes is bound to one here
+    hcMachine() !== null ? { otherMachine: true } : { opencodeTitled: (title) => opencodeSessionsTitled(opencodeDatabasePath(), title) });
   if (unix) chmodSync(adapter.socketPath, 0o600);
+  if (herdrSocketBefore === null || process.env["HERDR_SOCKET"] !== adapterSocket) herdrSocketBefore = { HERDR_SOCKET: process.env["HERDR_SOCKET"] };
+  adapterSocket = adapter.socketPath;
   process.env["HERDR_SOCKET"] = adapter.socketPath;
   serving = true;
   return {
