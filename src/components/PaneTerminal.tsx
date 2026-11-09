@@ -1393,7 +1393,7 @@ export function PaneTerminal({
       {/* the queue is the composer's, so it shows under the chat lens only: there alone is an open
           Codex question known (heldByOpenQueue), and Send now must not type into one */}
       {/* under a peek the composer's column stays, inert: the grid has the keyboard */}
-      {presented && paneId !== null && chatMounted && !observing && !ended && queueOwner !== null && queued.length > 0 && (
+      {presented && paneId !== null && chatMounted && !viewOnly && !ended && queueOwner !== null && queued.length > 0 && (
         <section className={`composer-queue${readyForQueue ? " is-ready" : ""}${heldHidden ? " is-folded" : ""}`} aria-label={t("Queued messages")} inert={peek !== null || undefined}>
           {(() => {
             // one caption line: the sentence says the state
@@ -1460,7 +1460,7 @@ export function PaneTerminal({
           </ol>
         </section>
       )}
-      {presented && paneId !== null && chatMounted && !observing && queueOwner !== null && pending.length > 0 && <PendingMessages
+      {presented && paneId !== null && chatMounted && !viewOnly && queueOwner !== null && pending.length > 0 && <PendingMessages
         key={`pending-${queueOwner}`}
         active={active}
         inert={peek !== null}

@@ -172,6 +172,9 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
     const left = Math.min(Math.max(x - box.left - OFFER_W / 2, EDGE), Math.max(box.width - OFFER_W - EDGE, EDGE));
     setOffer({ quote, left, top: Math.min(Math.max(top - box.top, EDGE), Math.max(bottom - box.top - height - EDGE, EDGE)) });
   }, [scroller]);
+  // the first placement counted OFFER_H: once the offer is drawn (taller on a touch screen), it is placed again by its own height, before it is painted
+  const offerShown = offer !== null;
+  useLayoutEffect(() => { if (offerShown) place(); }, [offerShown, place]);
 
   // on the document, the scroller looked up as each event comes: the chat's timeline can arrive after this mounts
   useEffect(() => {

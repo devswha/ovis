@@ -14,7 +14,6 @@ export const PALETTE_ZH: Record<string, string> = {
   "Filter panes by status": "按状态筛选窗格",
   "Status filter": "状态筛选",
   "Search": "搜索",
-  "All": "全部",
   "Workspace": "工作区",
   "Unknown workspace": "未知工作区",
   "Actions": "操作",

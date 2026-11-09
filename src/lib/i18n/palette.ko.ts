@@ -14,7 +14,6 @@ export const PALETTE_KO: Record<string, string> = {
   "Filter panes by status": "상태별 패널 필터",
   "Status filter": "상태 필터",
   "Search": "검색",
-  "All": "전체",
   "Workspace": "워크스페이스",
   "Unknown workspace": "알 수 없는 워크스페이스",
   "Actions": "동작",

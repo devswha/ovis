@@ -14,7 +14,6 @@ export const PALETTE_JA: Record<string, string> = {
   "Filter panes by status": "状態でペインを絞り込む",
   "Status filter": "状態フィルター",
   "Search": "検索",
-  "All": "すべて",
   "Workspace": "ワークスペース",
   "Unknown workspace": "不明なワークスペース",
   "Actions": "操作",
