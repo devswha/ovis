@@ -140,11 +140,13 @@ async function drawerKeyboard(page: Page): Promise<void> {
     return active.classList.contains("drawer-toggle") ? "toggle" : active.className || active.tagName;
   });
   assert.equal(await focused(), "drawer", "the opened drawer holds the focus on a control, not on the filter's field");
+  // bounded by the drawer's own stops and the header's two: the demo's roster alone has some twenty rows' controls
+  const limit = await page.locator("#workspace-drawer").evaluate((drawer) => drawer.querySelectorAll("button, input, select, textarea, a[href], [tabindex]").length) + 3;
   const back: string[] = [];
-  while (back.at(-1) !== "toggle" && back.length < 12) { await page.keyboard.press("Shift+Tab"); back.push(await focused()); }
+  while (back.at(-1) !== "toggle" && back.length < limit) { await page.keyboard.press("Shift+Tab"); back.push(await focused()); }
   assert.deepEqual(back.slice(-2), ["plus", "toggle"], `Shift+Tab from the drawer reaches the header's + and then its toggle: ${back.join(" > ")}`);
   const ahead: string[] = [];
-  while (ahead.at(-1) !== "filter" && ahead.length < 12) { await page.keyboard.press("Tab"); ahead.push(await focused()); }
+  while (ahead.at(-1) !== "filter" && ahead.length < limit) { await page.keyboard.press("Tab"); ahead.push(await focused()); }
   assert.ok(ahead[0] === "plus" && ["drawer", "filter"].includes(ahead[1] ?? ""), `Tab from the toggle goes to the + and on into the drawer: ${ahead.join(" > ")}`);
   assert.equal(ahead.at(-1), "filter", `Tab still reaches the filter's field: ${ahead.join(" > ")}`);
   // Escape puts the drawer away and gives the focus back to the toggle that opened it; the drawer comes out again

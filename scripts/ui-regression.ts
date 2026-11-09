@@ -10,6 +10,8 @@ import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import type { SessionSnapshot, WorkspaceCreated, WorktreeOpened } from "../shared/protocol.ts";
 import type { Machine } from "../shared/machines.ts";
+import type { PluginActionsResponse } from "../shared/plugins.ts";
+import { offeredPluginActions } from "../src/lib/paletteSearch.ts";
 import { MAX_ATTACHMENT_BYTES } from "../shared/attachments.ts";
 import { alertsOffMarked, alertsState, runMoreItem } from "./header-more.ts";
 import { routeDrained } from "./drained-route.ts";
@@ -321,7 +323,12 @@ try {
   // browser's hover update after the scroll must not take the keyboard selection, and a real
   // pointer move still does.
   await page.setViewportSize({ width: 1280, height: 400 });
+  // each opening reads the PC's plugin actions: their rows land in one render after the answer, so the list is
+  // counted once they are in (a herdr session with plugins otherwise grows it under the arrow)
+  const pluginsAnswer = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith("/plugins/actions"));
   await openPalette();
+  const pluginsOffered = offeredPluginActions(((await (await pluginsAnswer).json()) as PluginActionsResponse).plugins, true, "").length;
+  if (pluginsOffered > 0) await palette.locator(".palette-plugin-action").first().waitFor();
   const restingOptionCount = await palette.getByRole("option").count();
   const firstOption = (await palette.locator("#palette-item-0").boundingBox())!;
   await page.mouse.move(firstOption.x + firstOption.width / 2, firstOption.y + firstOption.height / 2);
@@ -2520,13 +2527,16 @@ try {
   csp.push(await watchCsp(securedPage));
   await securedContext.request.post(`${securedOrigin}/api/auth`, { data: { token: "browser-test-token" } });
   await securedPage.goto(`${securedOrigin}/?pane=${encodeURIComponent(securedWorkspace.root_pane.pane_id)}`);
-  await securedPage.getByRole("button", { name: "Command palette", exact: true }).waitFor();
+  // with the sidebar out, the logo row's + for a new workspace stands where the palette's glass was (the shortcut opens it)
+  const securedHeaderButton = securedPage.locator(".header-side").getByRole("button", { name: "New workspace", exact: true });
+  await securedHeaderButton.waitFor();
+  assert.equal(await securedPage.getByRole("button", { name: "Command palette", exact: true }).isVisible(), false, "the + takes the glass's place in the logo row");
   assert.equal(await securedPage.getByRole("button", { name: "Sign out", exact: true }).count(), 0, "sign out is not in the header");
   await securedPage.keyboard.press("ControlOrMeta+Shift+K");
   await securedPage.getByRole("dialog", { name: "Command palette", exact: true }).waitFor();
   assert.equal(await securedPage.getByRole("option", { name: "Sign out", exact: true }).count(), 0, "the palette cannot bypass confirmation");
   // Simulate a late terminal focus change: Escape must still dismiss the modal.
-  await securedPage.getByRole("button", { name: "Command palette", exact: true }).focus();
+  await securedHeaderButton.focus();
   await securedPage.keyboard.press("Escape");
   await securedPage.getByRole("dialog", { name: "Command palette", exact: true }).waitFor({ state: "hidden" });
   await securedPage.keyboard.press("ControlOrMeta+Shift+Comma");
