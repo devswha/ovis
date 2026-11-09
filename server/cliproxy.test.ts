@@ -198,6 +198,37 @@ describe("CLIProxyAPI v8", () => {
     expect(back.map((entry) => [entry.key, entry.checked_at])).toEqual([["claude:cliproxy:claude-a.json", null], ["codex:cliproxy:codex-b.json", expect.any(String)]]);
   });
 
+  it("never reads a hidden filename's account on a fresh server, whoever signs in under it first", async () => {
+    // Given: a server started with Alice's file hidden; Bob's account is the first the Hub lists under that name
+    await configure();
+    const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    service.skipAccounts(() => hidden);
+    fake.files[0]!.email = "bob@example.test";
+    await service.report(false, hidden);
+    // When: Alice's sign-in is back under her file name
+    fake.files[0]!.email = "claude-a@example.test";
+    service.invalidate();
+    await service.report(false, hidden);
+    // Then: neither is read, as nothing says which of them was hidden
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["b", "b"]);
+  });
+
+  it("never reads a hidden account that moves to another file name on the Hub", async () => {
+    // Given: Alice read, then hidden
+    await configure();
+    await service.report();
+    const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    service.skipAccounts(() => hidden);
+    await service.report(false, hidden);
+    // When: her credential is now another file, at another index
+    Object.assign(fake.files[0]!, { name: "claude-moved.json", auth_index: "m" });
+    service.invalidate();
+    const moved = await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b", "b"]);
+    expect(moved.find((entry) => entry.key === "claude:cliproxy:claude-moved.json")?.checked_at).toBeNull();
+  });
+
   it("keeps hidden accounts unread across an invalidate, as after a Hub sign-in or a saved configuration", async () => {
     // Given
     await configure();

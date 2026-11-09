@@ -8,6 +8,11 @@ export class CLIProxyError extends Error {
   constructor(readonly code: string, readonly status: number, message: string) { super(message); }
 }
 export const proxyInvalid = () => new CLIProxyError("invalid_cliproxy_request", 400, "Invalid Hub request");
+/**
+ * Which account a Hub file is, whatever its file name: its provider and the account it names (email, ChatGPT
+ * workspace: `holder`), or, for a file naming neither, its auth index. Never reported.
+ */
+const accountIdentity = (provider: string, holder: string | null, index: string) => JSON.stringify([provider, holder ?? `index:${index}`]);
 type Config = { readonly url: string; readonly management_key: string };
 const DEFAULT_URL = "http://localhost:8317";
 
@@ -32,7 +37,16 @@ export class CLIProxyService {
   private readonly shownAt = new Map<string, number>();
   /** the account (email, ChatGPT workspace) each row's file named when it was read; never reported */
   private readonly holders = new WeakMap<ProviderUsage, string>();
-  /** the account (holder) each hidden key's file named when it was hidden: a file naming another is read anew (#3423) */
+  /** the account each row is (accountIdentity); never reported */
+  private readonly identities = new WeakMap<ProviderUsage, string>();
+  /** the rows read or listed while their key was not hidden: only these tell which account a key was when it was hidden */
+  private readonly shownRows = new WeakSet<ProviderUsage>();
+  /**
+   * The account each hidden key was when it was hidden, by identity, learned only from a row shown then (#3423): that
+   * account is not read under any file name, and another one under the key's file name is. A key hidden before any row
+   * of it was shown (a fresh server) has none, and its file name alone keeps whoever is under it unread. Kept only
+   * while the key is hidden, so bounded by the hidden list.
+   */
   private readonly hiddenAccounts = new Map<string, string>();
 
   constructor(stateDir: string) {
@@ -179,8 +193,8 @@ export class CLIProxyService {
     const hiddenNow = new Set([...skipped, ...this.hidden()]);
     // the account each hidden key named when it was hidden, kept while it is hidden: bounded by the hidden list
     for (const row of this.entries) {
-      const holder = this.holders.get(row);
-      if (holder !== undefined && hiddenNow.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, holder);
+      const identity = this.identities.get(row);
+      if (identity !== undefined && this.shownRows.has(row) && hiddenNow.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identity);
     }
     for (const key of this.hiddenAccounts.keys()) if (!hiddenNow.has(key)) this.hiddenAccounts.delete(key);
     if (!due && shown.length === 0) return Promise.resolve(this.entries);
@@ -239,12 +253,19 @@ export class CLIProxyService {
         const holder = email === null && workspace === null ? null : JSON.stringify([email, workspace]);
         const last = kept.has(entry.key) && holder !== null ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
         if (last) return [Promise.resolve(last)];
-        const held = (row: ProviderUsage): ProviderUsage => { if (holder !== null) this.holders.set(row, holder); return row; };
-        // a hidden account with no row kept (gone from the Hub and back, or never read by this server) is listed unread,
-        // and its credentials are not used; only a file now naming another account than the one hidden is read anew
+        const identity = accountIdentity(provider.id, holder, index);
+        const held = (row: ProviderUsage): ProviderUsage => {
+          if (holder !== null) this.holders.set(row, holder);
+          this.identities.set(row, identity);
+          if (!hidden.has(row.key)) this.shownRows.add(row);
+          return row;
+        };
+        // hidden is decided by account, the file name only a hint (#3423): an account hidden under any key is listed unread
+        // under whatever name it has now, and its credentials are not used; under a hidden key's name, only an account
+        // known to be another than the one hidden is read anew
+        const hiddenAs = [...this.hiddenAccounts].some(([key, account]) => account === identity && hidden.has(key));
         const named = this.hiddenAccounts.get(entry.key);
-        const replaced = holder !== null && named !== undefined && named !== holder;
-        if (hidden.has(entry.key) && !replaced) return [Promise.resolve(held({ ...entry, problem: null }))];
+        if (hiddenAs || (hidden.has(entry.key) && (named === undefined || named === identity))) return [Promise.resolve(held({ ...entry, problem: null }))];
         if (file["disabled"] === true || file["unavailable"] === true) return [Promise.resolve(held(entry))];
         return [(async (): Promise<ProviderUsage> => {
           try {
