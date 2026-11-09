@@ -508,6 +508,41 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(before)).toEqual(["c"]);
     });
 
+    it("knows a shown account hidden after a Hub sign-in, wherever its credential moves (#3444)", async () => {
+      await configure();
+      await service.report();
+      // a Hub sign-in drops every row but the hidden ones; Alice, shown, is hidden only after it
+      service.invalidate();
+      const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      moveAlice();
+      await service.report(false, hidden);
+      expect(reads()).toEqual(["a", "b", "b"]);
+    });
+
+    it("forgets which account a key was shown as once the key holds another (#3444)", async () => {
+      await configure();
+      await service.report();
+      let hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      // Alice's credential moves away and Bob's takes her file name; a report lists Bob there, hidden
+      fake.files.push({ ...fake.files[0]!, name: "alice-new.json", auth_index: "m" });
+      Object.assign(fake.files[0]!, { email: "bob@example.test", auth_index: "x" });
+      service.invalidate();
+      await service.report(false, hidden);
+      // shown again, and hidden again before any report: the key is Bob's now, not Alice's
+      hidden = new Set();
+      service.hiddenChanged();
+      hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.hiddenChanged();
+      const before = reads().length;
+      service.invalidate();
+      await service.report(false, hidden);
+      expect(reads().slice(before).sort()).toEqual(["b", "m"]);
+    });
+
     it("saves it at the next change after a save failed", async () => {
       await configure();
       await service.report();

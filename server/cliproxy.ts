@@ -77,6 +77,12 @@ export class CLIProxyService {
   /** the rows read or listed while their key was not hidden: only these tell which account a key was when it was hidden */
   private readonly shownRows = new WeakSet<ProviderUsage>();
   /**
+   * The account each shown Hub key is, by key, kept through an invalidation (a Hub sign-in drops every row but the hidden
+   * ones), so a hide made after it still knows the account wherever its file moves (#3444). Pruned to the keys the
+   * last full read listed, so it is bounded by the Hub's files; forgotten with the Hub.
+   */
+  private readonly shownIdentities = new Map<string, readonly string[]>();
+  /**
    * The account each hidden key was when it was hidden, by identity, learned only from a row shown then (#3423): that
    * account is not read under any file name, and another one under the key's file name is. A key hidden before any row
    * of it was shown (a fresh server) has none, and its file name alone keeps whoever is under it unread. Kept only
@@ -193,7 +199,7 @@ export class CLIProxyService {
     this.checked = false;
     this.invalidate();
     // an account known by its email is that account on any Hub; one known only by its auth index is so on its own Hub alone
-    if (moved) { this.entries = []; this.forgetIndexed(); this.saveHidden(); }
+    if (moved) { this.entries = []; this.shownIdentities.clear(); this.forgetIndexed(); this.saveHidden(); }
   }
 
   /** Drops what an auth index says of the hidden accounts: it names a file on one Hub alone. */
@@ -285,6 +291,11 @@ export class CLIProxyService {
       const identities = this.identities.get(row);
       // while blind, a hidden key naming a file the Hub lists is taken to be that file's account (listed, never read)
       if (identities !== undefined && (this.shownRows.has(row) || this.blind) && hidden.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identities);
+    }
+    // a shown account whose row an invalidation dropped is still known by the identity it was shown with
+    for (const key of hidden) {
+      const identities = this.shownIdentities.get(key);
+      if (identities !== undefined && !this.hiddenAccounts.has(key)) this.hiddenAccounts.set(key, identities);
     }
     // a key missing from a list read only in part may still be hidden: it is forgotten only once the whole list says so
     if (whole) for (const key of this.hiddenAccounts.keys()) if (!hidden.has(key)) this.hiddenAccounts.delete(key);
@@ -428,6 +439,8 @@ export class CLIProxyService {
         return this.entries;
       }
       this.entries = entries;
+      // the Hub's whole listing: only the keys it lists now stay known as shown, so the map stays bounded by its files
+      for (const key of this.shownIdentities.keys()) if (!entries.some((entry) => entry.key === key)) this.shownIdentities.delete(key);
       // a list read only in part let nothing be read: not a fresh read, so the next report reads again, the accounts
       // shown again included (#3437)
       if (!answer.whole) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
@@ -446,6 +459,8 @@ export class CLIProxyService {
    * when either was read only in part. null: the Hub could not be read
    */
   private async collect(kept: ReadonlySet<string>, start: ReadView, answer: { whole: boolean }): Promise<readonly ProviderUsage[] | null> {
+    // a report an invalidation (a Hub change) overtook teaches nothing: what it shows is of the Hub before
+    const generation = this.generation;
     try {
       const body = await this.call("/credentials");
       if (!Array.isArray(body["files"])) throw new CLIProxyError("cliproxy_response", 502, "Hub returned an unreadable response");
@@ -477,7 +492,13 @@ export class CLIProxyService {
         const held = (row: ProviderUsage): ProviderUsage => {
           if (holder !== null) this.holders.set(row, holder);
           this.identities.set(row, identities);
-          if (!start.hidden.has(row.key) && !live.hidden.has(row.key)) this.shownRows.add(row);
+          if (!start.hidden.has(row.key) && !live.hidden.has(row.key)) {
+            this.shownRows.add(row);
+            if (generation === this.generation) this.shownIdentities.set(row.key, identities);
+          } else if (JSON.stringify(this.shownIdentities.get(row.key)) !== JSON.stringify(identities)) {
+            // the key now holds another account than the one it was shown as: that account is not this key's any more
+            this.shownIdentities.delete(row.key);
+          }
           return row;
         };
         if (unreadableIn(start, entry.key, identities) || unreadableIn(live, entry.key, identities)) return [Promise.resolve(held({ ...entry, problem: null }))];
