@@ -45,6 +45,7 @@ import { handleHerdrUpdateRequest } from "./herdr-update.ts";
 import { handlePortalRequest } from "./portal.ts";
 import { handleRelayRequest } from "./relay/routes.ts";
 import { handleAccountRequest } from "./account/routes.ts";
+import type { AccountLimitsReader } from "./account/limits.ts";
 import type { AccountMailbox } from "./account/mailbox.ts";
 import type { AccountHolds } from "./account/holds.ts";
 import type { AccountIntroductions } from "./account/introductions.ts";
@@ -90,6 +91,7 @@ export interface RequestServices {
   readonly bootId: string;
   readonly devices: DeviceStore;
   readonly accountMailbox: AccountMailbox;
+  readonly accountLimits: AccountLimitsReader;
   readonly accountIntroductions: AccountIntroductions;
   readonly accountHolds: AccountHolds;
   readonly preferences: PreferenceStore;

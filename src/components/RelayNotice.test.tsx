@@ -1,0 +1,90 @@
+import { describe, expect, it } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import type { RelayStatus } from "../../shared/protocol.ts";
+import { translate } from "../lib/i18n.ts";
+import { relayNoticeFromStatus, relayNoticeOf } from "../lib/relayNotice.ts";
+import { SettingsProvider } from "../lib/settings.ts";
+import { RelayNotice, relayNoticeText } from "./RelayNotice.tsx";
+
+const baseRelay: RelayStatus = {
+  phase: "online",
+  relay: "wss://relay.ovis.sh",
+  app: "https://app.ovis.sh",
+  sessions: 0,
+  blocked: null,
+  error: null,
+};
+
+describe("relayNoticeFromStatus", () => {
+  it("stays hidden when the relay is off, self-hosted, or signed in with a valid pass", () => {
+    expect(relayNoticeFromStatus(undefined)).toBeUndefined();
+    expect(relayNoticeFromStatus(null)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, phase: "off" })).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, relay: "wss://relay.example.com" }, false)).toBeNull();
+    expect(relayNoticeFromStatus(baseRelay, true)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "ok", relay: "ok", enforce_at: null, refused: false } }, false)).toBeNull();
+    expect(relayNoticeOf({ auth: { required: true, authenticated: false } })).toBeUndefined();
+  });
+
+  it("derives grace, required, not-listed, pc-limit and data-limit states from the relay status", () => {
+    expect(relayNoticeFromStatus(baseRelay, false)).toEqual({ kind: "sign-in-grace", enforceAt: null });
+    expect(relayNoticeFromStatus({
+      ...baseRelay,
+      pass: { state: "no_account", relay: "missing", enforce_at: "2027-02-01T00:00:00.000Z", refused: false },
+    }, false)).toEqual({ kind: "sign-in-grace", enforceAt: "2027-02-01T00:00:00.000Z" });
+    expect(relayNoticeFromStatus({
+      ...baseRelay,
+      phase: "error",
+      pass: { state: "no_account", relay: null, enforce_at: null, refused: true },
+    }, false)).toEqual({ kind: "sign-in-required", enforceAt: null });
+    expect(relayNoticeFromStatus({
+      ...baseRelay,
+      pass: { state: "not_listed", relay: "missing", enforce_at: null, refused: false },
+    }, true)).toEqual({ kind: "not-listed", enforceAt: null });
+    expect(relayNoticeFromStatus({
+      ...baseRelay,
+      pass: { state: "limit", relay: null, enforce_at: null, refused: true },
+    }, true)).toEqual({ kind: "pc-limit", enforceAt: null });
+    expect(relayNoticeFromStatus({
+      ...baseRelay,
+      pass: { state: "ok", relay: "ok", enforce_at: null, refused: false, new_sessions: false },
+    }, true)).toEqual({ kind: "data-limit", enforceAt: null });
+  });
+});
+
+describe("RelayNotice", () => {
+  const t = (key: string, vars?: Record<string, string | number>) => translate("en", key, vars);
+
+  it("renders the sign-in notice and dismiss button for an unsigned PC on the Ovis relay", () => {
+    const languages = Object.getOwnPropertyDescriptor(navigator, "languages");
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+    try {
+      const html = renderToStaticMarkup(createElement(SettingsProvider, {
+        children: createElement(RelayNotice, {
+          notice: { kind: "sign-in-grace", enforceAt: null },
+          onOpen: () => undefined,
+          onDismiss: () => undefined,
+        }),
+      }));
+      expect(html).toContain(`data-testid="relay-notice"`);
+      expect(html).toContain(`data-relay-notice="sign-in-grace"`);
+      expect(html).toContain("Sign-in will be required for the Ovis relay.");
+      expect(html).toContain(">Sign in</button>");
+      expect(html).toContain(`aria-label="Dismiss"`);
+    } finally {
+      if (languages) Object.defineProperty(navigator, "languages", languages);
+      else Reflect.deleteProperty(navigator, "languages");
+    }
+  });
+
+  it("maps each notice kind to its action label and direct connection guidance", () => {
+    expect(relayNoticeText(t, { kind: "sign-in-required", enforceAt: null })).toEqual({
+      text: "The Ovis relay needs an Ovis account. Sign in, or connect over the same Wi-Fi or Tailscale.",
+      actionLabel: "Sign in",
+    });
+    expect(relayNoticeText(t, { kind: "not-listed", enforceAt: null }).actionLabel).toBe("Account");
+    expect(relayNoticeText(t, { kind: "pc-limit", enforceAt: null }).actionLabel).toBe("Devices and PCs");
+    expect(relayNoticeText(t, { kind: "data-limit", enforceAt: null }).actionLabel).toBe("Devices and PCs");
+  });
+});

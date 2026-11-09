@@ -259,6 +259,10 @@ export class RelayService {
   private relayAccountPath(): string { return join(this.options.stateDir, "relay", "account.json"); }
 
   /** The account a relay pass is asked for under: this PC's members' account, else the one its signed-in owner named. */
+  relayAccount(): string | null {
+    return this.passAccount();
+  }
+
   private passAccount(): string | null {
     const members = this.services?.devices.account() ?? null;
     if (members !== null) return members;

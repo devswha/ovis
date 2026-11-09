@@ -9,15 +9,16 @@
  */
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
+import type { AccountLimits } from "../../shared/protocol.ts";
 import { listThisPc, thisPcInNoAccount } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
-import { ApiError } from "../lib/api.ts";
+import { ApiError, fetchAccountLimits } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, pcAccountServiceOf, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
-import { currentLocale, useT } from "../lib/i18n.ts";
+import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
@@ -29,7 +30,35 @@ type View =
   | { kind: "signed-out"; error: string | null }
   | { kind: "signing-in" }
   | { kind: "device-code"; provider: DeviceSignInProvider; userCode: string | null; verificationUri: string; verificationUriComplete: string | null }
-  | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; methods: AccountIdentity[] | null; error: string | null };
+  | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; methods: AccountIdentity[] | null; limits: AccountLimits | null; error: string | null };
+
+/** Formats a byte count for an account's relay data allowance (B, KB, MB, GB). */
+export function formatRelayBytes(bytes: number): string {
+  const safe = Math.max(0, bytes);
+  if (safe < 1024) return `${Math.round(safe)} B`;
+  if (safe < 1024 * 1024) return `${Math.max(1, Math.round(safe / 1024))} KB`;
+  if (safe < 1024 * 1024 * 1024) {
+    const mb = safe / (1024 * 1024);
+    return `${mb < 10 ? Math.round(mb * 10) / 10 : Math.round(mb)} MB`;
+  }
+  const gb = safe / (1024 * 1024 * 1024);
+  const rounded = gb < 10 ? Math.round(gb * 10) / 10 : Math.round(gb);
+  return `${rounded} GB`;
+}
+
+/** The server-provided plan name, PC slots (used/max), and relay data (used/cap when present) as one line. */
+export function formatAccountLimits(t: Translate, limits: AccountLimits, listedPcs: number): { label: string; summary: string } {
+  const plan = limits.plan.length > 0 ? limits.plan[0]!.toUpperCase() + limits.plan.slice(1) : limits.plan;
+  const usedPcs = limits.pcs_used ?? listedPcs;
+  const pcsPart = t("{used}/{max} PCs", { used: usedPcs, max: limits.pcs_max });
+  const dataPart = typeof limits.data_cap_bytes === "number" && limits.data_cap_bytes > 0 && typeof limits.data_used_bytes === "number"
+    ? t("{used} / {cap} relay data", { used: formatRelayBytes(limits.data_used_bytes), cap: formatRelayBytes(limits.data_cap_bytes) })
+    : null;
+  return {
+    label: t("Plan · {plan}", { plan }),
+    summary: dataPart !== null ? `${pcsPart} · ${dataPart}` : pcsPart,
+  };
+}
 
 const isDeviceProvider = (provider: AccountProvider): provider is DeviceProvider => (DEVICE_PROVIDERS as readonly string[]).includes(provider);
 
@@ -205,17 +234,23 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     const session = await service.session();
     if (session === undefined) { show({ kind: "signed-out", error: null }); return; }
     const signedIn = { kind: "signed-in", provider: session.provider, account: session.account } as const;
-    show({ ...signedIn, pcs: null, methods: null, error: null });
+    show({ ...signedIn, pcs: null, methods: null, limits: null, error: null });
+    const readLimits = (): Promise<AccountLimits | null> =>
+      fetchAccountLimits(session.access_token).then((fromServer) => fromServer ?? service.limits()).catch(() => service.limits().catch(() => null));
     try {
-      const [pcs, methods] = await Promise.all([service.listPcs(), service.identities().catch((error: unknown) => {
-        // a service from before sign-in methods: the list is left out, the rest works
-        if (error instanceof AccountServiceError) return null;
-        throw error;
-      })]);
-      show({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, error: null });
+      const [pcs, methods, limits] = await Promise.all([
+        service.listPcs(),
+        service.identities().catch((error: unknown) => {
+          // a service from before sign-in methods: the list is left out, the rest works
+          if (error instanceof AccountServiceError) return null;
+          throw error;
+        }),
+        readLimits(),
+      ]);
+      show({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, limits, error: null });
     } catch (error) {
       if (error instanceof SignedOutError) show({ kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") });
-      else show({ ...signedIn, pcs: [], methods: null, error: t("The account service could not be reached. The PCs this device is paired with still work.") });
+      else show({ ...signedIn, pcs: [], methods: null, limits: null, error: t("The account service could not be reached. The PCs this device is paired with still work.") });
     }
   }, [t]);
 
@@ -439,6 +474,16 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
             description={<span title={view.account}>{t("Account")} <code className="account-id">{view.account.length > 12 ? `${view.account.slice(0, 12)}…` : view.account}</code></span>}>
             <button type="button" className="btn" onClick={signOut}>{t("Sign out of {provider}", { provider: PROVIDER_NAMES[view.provider] })}</button>
           </SettingsRow>
+          {view.limits !== null && (() => {
+            const listed = view.pcs?.filter((pc) => pc.listed).length ?? 0;
+            const { label, summary } = formatAccountLimits(t, view.limits, listed);
+            return (
+              <div className="settings-row account-limits-row" data-testid="account-limits-row">
+                <span className="settings-label">{label}</span>
+                <span className="settings-fact account-limits-summary">{summary}</span>
+              </div>
+            );
+          })()}
           {view.methods !== null && (
             <div className="settings-item account-methods">
               <p className="settings-label">{t("Ways to sign in")}</p>
