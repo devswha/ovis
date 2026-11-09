@@ -657,12 +657,14 @@ function LineImages({ paneId, images }: { paneId: string; images: readonly WorkI
  * A call's output in its opened row. A long one folds to its head with a "Show all" row, as a code
  * block does (Markdown.tsx), so the chat stays the only scroller.
  */
-function ToolOutputText({ output, whole }: { output: string; whole: boolean }) {
+function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output: string; whole: boolean }) {
   const t = useT();
   // the files an output names open from it ("saved /tmp/shot/t0.png")
   const openFile = useContext(OpenFileContext);
   const fold = useMemo(() => foldCode(output), [output]);
-  const [expanded, setExpanded] = useState(false);
+  // kept by the chat's row memory, under a key of its own: a row scrolled away and back keeps it
+  const [chosen, setExpanded] = useChatRowToggle(stateKey, false);
+  const expanded = chosen === true;
   const box = useRef<HTMLPreElement>(null);
   const folding = useRef(false);
   // "Show less" sits at the bottom of a long output: after folding, bring its top back into view
@@ -719,7 +721,7 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
       {/* opened, the row shows its pictures larger in its detail */}
       {!open && <LineImages paneId={paneId} images={images} />}
     </div>
-    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4><ToolOutputText output={output} whole={whole.text !== null} />
+    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4><ToolOutputText stateKey={`${stateKey}:output`} output={output} whole={whole.text !== null} />
       {part.output_ref !== undefined && whole.text === null && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
         {t(whole.state === "loading" ? "Loading the whole output…" : whole.state === "failed" ? "Couldn't load the whole output — retry" : "Show the whole output ({size} characters)", { size: formatTokens(part.output_size ?? 0) })}
       </button>}</section>}</div>}
