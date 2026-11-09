@@ -1,4 +1,5 @@
 ### Added
 - Settings → Devices and PCs → Account shows the account's server-provided plan name, PC slots,
-  and relay data allowance under the signed-in row, and a dismissible notice over the pane prompts
-  to sign in when the PC uses the Ovis relay without an account or reaches an account relay limit.
+  and relay data allowance under the signed-in row. A dismissible notice over the pane prompts to
+  sign in, or names an account relay limit, once the Ovis relay announces a date from when it needs
+  a sign-in or refuses this PC; until then nothing new shows.

@@ -27,12 +27,18 @@ describe("relayNoticeFromStatus", () => {
     expect(relayNoticeOf({ auth: { required: true, authenticated: false } })).toBeUndefined();
   });
 
+  it("stays hidden until the relay announces a date or refuses", () => {
+    expect(relayNoticeFromStatus(baseRelay, false)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "no_account", relay: "missing", enforce_at: null, refused: false } }, false)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "not_listed", relay: "missing", enforce_at: null, refused: false } }, true)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "ok", relay: "ok", enforce_at: null, refused: false, new_sessions: false } }, true)).toBeNull();
+  });
+
   it("derives grace, required, not-listed, pc-limit and data-limit states from the relay status", () => {
-    expect(relayNoticeFromStatus(baseRelay, false)).toEqual({ kind: "sign-in-grace", enforceAt: null });
     expect(relayNoticeFromStatus({
       ...baseRelay,
-      pass: { state: "no_account", relay: "missing", enforce_at: "2027-02-01T00:00:00.000Z", refused: false },
-    }, false)).toEqual({ kind: "sign-in-grace", enforceAt: "2027-02-01T00:00:00.000Z" });
+      pass: { state: "no_account", relay: "missing", enforce_at: "2001-02-03T00:00:00.000Z", refused: false },
+    }, false)).toEqual({ kind: "sign-in-grace", enforceAt: "2001-02-03T00:00:00.000Z" });
     expect(relayNoticeFromStatus({
       ...baseRelay,
       phase: "error",
@@ -40,7 +46,7 @@ describe("relayNoticeFromStatus", () => {
     }, false)).toEqual({ kind: "sign-in-required", enforceAt: null });
     expect(relayNoticeFromStatus({
       ...baseRelay,
-      pass: { state: "not_listed", relay: "missing", enforce_at: null, refused: false },
+      pass: { state: "not_listed", relay: "missing", enforce_at: "2001-02-03T00:00:00.000Z", refused: false },
     }, true)).toEqual({ kind: "not-listed", enforceAt: null });
     expect(relayNoticeFromStatus({
       ...baseRelay,
@@ -48,7 +54,7 @@ describe("relayNoticeFromStatus", () => {
     }, true)).toEqual({ kind: "pc-limit", enforceAt: null });
     expect(relayNoticeFromStatus({
       ...baseRelay,
-      pass: { state: "ok", relay: "ok", enforce_at: null, refused: false, new_sessions: false },
+      pass: { state: "ok", relay: "ok", enforce_at: "2001-02-03T00:00:00.000Z", refused: false, new_sessions: false },
     }, true)).toEqual({ kind: "data-limit", enforceAt: null });
   });
 });

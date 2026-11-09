@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import type { RelayStatus } from "../../shared/protocol.ts";
-import { GLOBAL_RELAY, REGIONAL_RELAYS } from "../../shared/relay-regions.ts";
 import type { HealthInfo } from "./api.ts";
 
 /**
@@ -33,24 +32,21 @@ function writeDismissed(dismissed: readonly string[]): void {
   } catch { /* storage blocked: the dismissal lasts until the page reloads */ }
 }
 
-function isOvisHostedRelay(relay: string): boolean {
-  return relay === GLOBAL_RELAY || (REGIONAL_RELAYS as readonly string[]).includes(relay);
-}
-
 /**
  * Derives the relay notice state from a health or relay status answer:
  * - undefined before a known answer arrives (so stored dismissals are kept)
  * - null when the relay is off, not Ovis-hosted, or needs no notice
  * - RelayNoticeInfo when this PC uses the Ovis-hosted relay and needs sign-in or hit a limit
+ *
+ * Nothing shows until the relay itself announces passes: a date from when they are needed
+ * (`enforce_at`, grace) or a refusal. A relay that says neither changes nothing on screen.
  */
 export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, signedIn = false): RelayNoticeInfo | null | undefined {
   if (relay === undefined) return undefined;
   if (relay === null || relay.phase === "off" || relay.blocked !== null) return null;
   const pass = relay.pass;
-  if (pass === undefined) {
-    if (!isOvisHostedRelay(relay.relay) || signedIn) return null;
-    return { kind: "sign-in-grace", enforceAt: null };
-  }
+  if (pass === undefined) return null;
+  if (pass.enforce_at === null && !pass.refused) return null;
   if (pass.new_sessions === false) {
     return { kind: "data-limit", enforceAt: null };
   }
