@@ -1,1 +1,3 @@
-- Fixed Agy Chat mode dropping to terminal scrollback on fresh start screens, first-turn startup before the JSONL ledger is flushed, and mid-turn SQLite WAL/ledger writes.
+### Fixed
+- Agy's Chat view no longer drops to the terminal on a fresh start screen, during its first turn
+  before the transcript is written, or while a turn writes its history.
