@@ -1,14 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PcInstallFailure, PcInstallJob, SshTarget } from "../shared/machines.ts";
 import type { BridgeDescriptor } from "./bridge.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { shellQuote } from "./machine-security.ts";
-import type { ProcessBirth } from "./process-owner.ts";
+import { parseBirth, type ProcessBirth } from "./process-owner.ts";
 import { posixHost, REMOTE_PATH } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { samePc } from "./ssh-address.ts";
+import { isCoreAdapterSocket } from "./herdr-core/pipe.ts";
 
 /**
  * Ovis installed or put right on another PC over SSH, from the PC in use (docs/remote-pcs.md): the official
@@ -83,21 +84,45 @@ export const bornAs = (pid: number, birth: ProcessBirth | undefined): string =>
 /**
  * A shell test, for a registration that recorded no birth (every 0.5.x bridge's), that the process at that pid started
  * no later than its registration file was written (2 s of slack): the server writes it after it starts, so a process
- * that took the pid after that server ended started later. Its file is the one in this account's bridge registry that
- * holds its token. Linux and macOS: ps's elapsed time, the file's mtime, the clock now.
+ * that took the pid after that server ended started later. Its file is the one the shell variable `f` names, so no token
+ * is on any command line. Linux and macOS: ps's elapsed time, the file's mtime, the clock now.
  */
-export const startedBeforeRegistration = (pid: number, token: string): string =>
-  `{ reg_of=${pid}; f=$(grep -l -F ${shellQuote(token)} "$HOME/.config/herdr-web-ui/bridges/"*.json 2>/dev/null | head -n 1); `
-  + `[ -n "$f" ] && m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f") && `
+const startedBeforeFile = (pid: number): string =>
+  `{ reg_of=${pid}; m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f") && `
   + `e=$(ps -o etime= -p $reg_of 2>/dev/null | awk '{ n = split($1, a, /[-:]/); if (index($1, "-")) print a[1]*86400 + a[2]*3600 + a[3]*60 + a[4]; else if (n == 3) print a[1]*3600 + a[2]*60 + a[3]; else print a[1]*60 + a[2] }') && `
   + `[ -n "$e" ] && [ $(( $(date +%s) - e )) -le $(( m + 2 )) ]; }`;
-/** the very server a registration names: by its recorded birth, or (none recorded) by having started before it registered */
-export const registeredAs = (pid: number, descriptor: { birth?: ProcessBirth; token: string }): string =>
-  descriptor.birth ? bornAs(pid, descriptor.birth) : startedBeforeRegistration(pid, descriptor.token);
+/** prints the birth of the process at that pid now, in the form a registration records it on that platform; nothing when it cannot be read */
+export const birthNow = (pid: number, platform: string | undefined): string =>
+  // only on the platform the birth was recorded on (macOS has no /proc), and only when every part of it reads
+  platform === "darwin" ? `[ -d /proc/self ] || LC_ALL=C TZ=UTC ps -o lstart= -p ${pid} 2>/dev/null | sed 's/^ *//;s/ *$//;s/  */ /g' | tr -d '\\n'`
+  : platform === undefined || platform === "linux" ? `if [ -d /proc/self ]; then b=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null); k=$(sed 's/.*) //' /proc/${pid}/stat 2>/dev/null | cut -d' ' -f20); [ -n "$b" ] && [ -n "$k" ] && printf '%s:%s' "$b" "$k"; fi; true`
+  : "true";
+/** a shell test that a process runs at that pid, and has not ended (a zombie, not yet reaped, serves nothing) */
+// alive by kill -0; ended only on positive evidence (kill -0 fails, or ps reports a zombie): a PC whose ps lacks -o or -p
+// (BusyBox, a minimal image) never makes a running server look gone
+export const runs = (pid: number): string => `kill -0 ${pid} 2>/dev/null && ! ps -o stat= -p ${pid} 2>/dev/null | grep -q '^ *Z'`;
+/**
+ * the very server the registration file the shell variable `f` names recorded: by its birth, or (none recorded) by having
+ * started before that file was written. A birth recorded but not in its shape (read as raw JSON from the PC) is no
+ * identity: nothing passes as it
+ */
+export const registeredIn = (pid: number, birth: unknown): string => {
+  if (birth === undefined) return startedBeforeFile(pid);
+  const parsed = parseBirth(birth);
+  return parsed ? bornAs(pid, parsed) : "false";
+};
+/**
+ * The very server a registration names, without its token on any command line (another account on that PC can read a
+ * process's arguments): its file, named after its socket as server/bridge.ts descriptorPath names it, still names that
+ * pid, and the process at that pid is the one it recorded (registeredIn).
+ */
+export const registeredAs = (pid: number, descriptor: { birth?: unknown; socket_path: string }): string =>
+  `{ f="$HOME/.config/herdr-web-ui/bridges/${createHash("sha256").update(descriptor.socket_path).digest("hex")}.json"; [ -f "$f" ] && [ ! -L "$f" ] && `
+  + `grep -Eq ${shellQuote(`"pid"[[:space:]]*:[[:space:]]*${pid}([^0-9]|$)`)} "$f" && ${registeredIn(pid, descriptor.birth)}; }`;
 /** a shell test that the process is still the one with that identity */
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, takes its address first, starts the program, and removes the copy */
-const RESTORE_LAUNCHER = "const { readFileSync, readlinkSync, rmSync, openSync, fstatSync, fchmodSync, closeSync, mkdirSync, constants } = require(\"node:fs\");\nconst { spawn } = require(\"node:child_process\");\nconst { createServer } = require(\"node:net\");\nconst d = process.argv.at(-1);\nconst parts = (name) => { const b = readFileSync(d + \"/\" + name); const out = []; let at = 0; for (let i = 0; i < b.length; i++) if (b[i] === 0) { out.push(b.subarray(at, i).toString()); at = i + 1; } if (at < b.length) out.push(b.subarray(at).toString()); return out; };\n(async () => {\n  try {\n    const argv = parts(\"cmdline\"); const env = {};\n    for (const entry of parts(\"environ\")) { const eq = entry.indexOf(\"=\"); if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1); }\n    const exe = readlinkSync(d + \"/exe\"), cwd = readlinkSync(d + \"/cwd\");\n    const host = env.HOST || \"127.0.0.1\", port = Number(env.PORT || __DEFAULT_PORT__);\n    const free = await new Promise((resolve) => { const probe = createServer(); probe.once(\"error\", (error) => resolve(error.code === \"EADDRINUSE\" ? false : error)); probe.listen({ host, port, exclusive: true }, () => probe.close(() => resolve(true))); });\n    if (free === false) { console.log(\"taken\"); return; }\n    if (free !== true) throw new Error(\"its address \" + host + \":\" + port + \" cannot be used: \" + (free.code || free.message));\n    const logs = (process.env.XDG_STATE_HOME || process.env.HOME + \"/.local/state\") + \"/ovis\";\n    mkdirSync(logs, { recursive: true, mode: 0o700 });\n    const log = openSync(logs + \"/restored-server.log\", constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);\n    const info = fstatSync(log);\n    if (!info.isFile() || info.uid !== process.getuid()) { closeSync(log); throw new Error(\"its log is not this account's own file\"); }\n    fchmodSync(log, 0o600);\n    const child = spawn(exe, argv.slice(1), { argv0: argv[0], cwd, env, detached: true, stdio: [\"ignore\", log, log] });\n    await new Promise((resolve, reject) => { child.once(\"spawn\", resolve); child.once(\"error\", reject); });\n    child.unref(); console.log(child.pid);\n  } catch (error) { console.error(String(error && error.message || error)); process.exitCode = 1; }\n  finally { rmSync(d, { recursive: true, force: true }); }\n})();".replace("__DEFAULT_PORT__", String(DEFAULT_PORT));
+const RESTORE_LAUNCHER = "const { readFileSync, readlinkSync, rmSync, openSync, fstatSync, fchmodSync, closeSync, mkdirSync, constants } = require(\"node:fs\");\nconst { spawn } = require(\"node:child_process\");\nconst { createServer } = require(\"node:net\");\nconst d = process.argv.at(-1);\nconst parts = (name) => { const b = readFileSync(d + \"/\" + name); const out = []; let at = 0; for (let i = 0; i < b.length; i++) if (b[i] === 0) { out.push(b.subarray(at, i).toString()); at = i + 1; } if (at < b.length) out.push(b.subarray(at).toString()); return out; };\n(async () => {\n  try {\n    const argv = parts(\"cmdline\"); const env = {};\n    for (const entry of parts(\"environ\")) { const eq = entry.indexOf(\"=\"); if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1); }\n    const exe = readlinkSync(d + \"/exe\"), cwd = readlinkSync(d + \"/cwd\");\n    const host = env.HOST || \"127.0.0.1\", loopback = [\"\", \"127.0.0.1\", \"localhost\"].includes(host), port = (loopback && Number(process.argv.at(-2))) || Number(env.PORT || __DEFAULT_PORT__);\n    const free = await new Promise((resolve) => { const probe = createServer(); probe.once(\"error\", (error) => resolve(error.code === \"EADDRINUSE\" ? false : error)); probe.listen({ host, port, exclusive: true }, () => probe.close(() => resolve(true))); });\n    if (free === false) { console.log(\"taken\"); return; }\n    if (free !== true) throw new Error(\"its address \" + host + \":\" + port + \" cannot be used: \" + (free.code || free.message));\n    const logs = (process.env.XDG_STATE_HOME || process.env.HOME + \"/.local/state\") + \"/ovis\";\n    mkdirSync(logs, { recursive: true, mode: 0o700 });\n    const log = openSync(logs + \"/restored-server.log\", constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);\n    const info = fstatSync(log);\n    if (!info.isFile() || info.uid !== process.getuid()) { closeSync(log); throw new Error(\"its log is not this account's own file\"); }\n    fchmodSync(log, 0o600);\n    const child = spawn(exe, argv.slice(1), { argv0: argv[0], cwd, env, detached: true, stdio: [\"ignore\", log, log] });\n    await new Promise((resolve, reject) => { child.once(\"spawn\", resolve); child.once(\"error\", reject); });\n    child.unref();\n    // its pid and its birth (this boot and its start ticks, as server/process-owner.ts records it): another process that takes the pid later is not it\n    let birth = \"\";\n    try { const stat = readFileSync(\"/proc/\" + child.pid + \"/stat\", \"utf8\"); birth = readFileSync(\"/proc/sys/kernel/random/boot_id\", \"utf8\").trim() + \":\" + stat.slice(stat.lastIndexOf(\") \") + 2).split(\" \")[19]; } catch {}\n    console.log(child.pid + \" \" + birth);\n  } catch (error) { console.error(String(error && error.message || error)); process.exitCode = 1; }\n  finally { rmSync(d, { recursive: true, force: true }); }\n})();".replace("__DEFAULT_PORT__", String(DEFAULT_PORT));
 /**
  * Starts the server captureServer copied again, as it was: its own program, the same arguments, in the same folder, with
  * exactly its environment, given to the new process directly (never on any command line, where another account could
@@ -108,8 +133,9 @@ const RESTORE_LAUNCHER = "const { readFileSync, readlinkSync, rmSync, openSync, 
  * server's own bind, which fails.
  * It prints the new process's id. The copy is removed whatever happens.
  */
-export const restoreServer = (dir: string): string =>
-  `d=${shellQuote(dir)}; [ -L "$d/exe" ] || { rm -rf "$d"; echo 'the copy of that server is gone' >&2; exit 1; }; "$d/exe" -e ${shellQuote(RESTORE_LAUNCHER)} "$d"`;
+export const restoreServer = (dir: string, port?: number): string =>
+  // the port its registration named, where it listened, is probed first; its environment's PORT only where none is known
+  `d=${shellQuote(dir)}; [ -L "$d/exe" ] || { rm -rf "$d"; echo 'the copy of that server is gone' >&2; exit 1; }; "$d/exe" -e ${shellQuote(RESTORE_LAUNCHER)} ${shellQuote(port && Number.isSafeInteger(port) && port > 0 && port < 65536 ? String(port) : "")} "$d"`;
 /** removes what captureServer saved, once the server it copied is not to be started again */
 export const forgetServer = (dir: string): string => `rm -rf ${shellQuote(dir)}`;
 export { samePc } from "./ssh-address.ts";
@@ -138,13 +164,14 @@ export const installerRun = (release: string, from = installerAt(release)): stri
 export type InstallConnect = (request: { target: SshTarget; name?: string; machine_id?: string; update: boolean; revision?: string; onJob?(job_id: string): void }) => { job_id: string; finished: Promise<string | null>; cancel(): void };
 /** what to put right on a PC added here whose own Ovis cannot update itself, and the process that runs it now */
 /** `token`: the shown server's descriptor token, so a server that took its pid since is never the one stopped */
-export interface InstallPlan { mode: "replace" | "restart"; pid: number; token?: string }
+/** `socket`: the socket of the registration the plan was made for (a herdr-core server's adapter); absent, herdr's default */
+export interface InstallPlan { mode: "replace" | "restart"; pid: number; token?: string; socket?: string }
 /**
  * The install a PC whose own Ovis refused to update can be offered (Machine.ovis_update how "install"): only on Linux
  * and macOS, where the official installer and this installer's checks run. A Windows PC keeps its plain refusal.
  */
-export function installPlanFor(fix: InstallPlan["mode"] | undefined, host: "posix" | "windows", pid: number, target: SshTarget, token?: string): (InstallPlan & { target: SshTarget }) | undefined {
-  return fix && host === "posix" ? { mode: fix, pid, ...(token ? { token } : {}), target: { ...target } } : undefined;
+export function installPlanFor(fix: InstallPlan["mode"] | undefined, host: "posix" | "windows", pid: number, target: SshTarget, token?: string, socket?: string): (InstallPlan & { target: SshTarget }) | undefined {
+  return fix && host === "posix" ? { mode: fix, pid, ...(token ? { token } : {}), ...(socket ? { socket } : {}), target: { ...target } } : undefined;
 }
 
 let release: string | undefined;
@@ -260,7 +287,9 @@ export class PcInstaller {
     state.connect?.cancel();
     this.options.onChange?.(state.public);
   }
-  stop(): void { for (const id of this.jobs.keys()) this.cancel(id); }
+  /** set once this app stops (stop()): a job it cancels then only removes its copy, never starts that server again */
+  private stopping = false;
+  stop(): void { this.stopping = true; for (const id of this.jobs.keys()) this.cancel(id); }
 
   /**
    * After an install that failed or was cancelled once its server was copied: starts that server again as captureServer
@@ -269,8 +298,11 @@ export class PcInstaller {
    * place ("replaced"), or when only the copy is to go (`restore` false: "forgotten"). Else "started", or why not. The copy
    * is removed in every case; the PC stays busy until this ends.
    */
-  private async startAgain(state: State, request: { target: SshTarget; machine_id?: string }, saved: string, socket: string, before: Set<string>, restore: number | null | false): Promise<string> {
+  private async startAgain(state: State, request: { target: SshTarget; machine_id?: string }, saved: string, socket: string, port: number | undefined, restore: number | null | false): Promise<string> {
     const job = state.public;
+    // this app shutting down opens no SSH connection (an unreachable PC would hold it past the teardown): the copy's own
+    // lease removes it there, as it does for a copy this app never came back to
+    if (restore === false && this.stopping) return "forgotten";
     job.step = restore === false ? "Removing the copy of that PC's Ovis…" : "Starting that PC's Ovis again as it was (this can take a few minutes, and is not cancelled)…";
     this.options.onChange?.(job);
     let ssh: SshConnection | undefined;
@@ -290,18 +322,40 @@ export class PcInstaller {
           await Bun.sleep(this.pollMs);
         }
       }
-      const fresh = async () => {
-        for (const d of await posixHost.descriptors(at)) {
-          // any live server on this herdr socket, managed or not, on any port: the old one is never started beside it
-          if (d.socket_path === socket && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== restore && await posixHost.alive(at, d.pid)) return true;
+      // the servers registered on this herdr socket, managed or not, on any port, that may still serve it: every one whose pid
+      // runs (not a zombie) unless its recorded birth, in its shape, shows another process took that pid since. One whose
+      // identity cannot be told (no birth, or one out of its shape) counts as there: fail closed, never a second server (#3385)
+      const serving = async (listed?: Awaited<ReturnType<typeof posixHost.descriptors>>): Promise<{ pid: number; birth: unknown; token: string }[]> => {
+        const live: { pid: number; birth: unknown; token: string }[] = [];
+        for (const d of listed ?? await posixHost.descriptors(at)) {
+          if (d.socket_path !== socket || !Number.isSafeInteger(d.pid) || d.pid <= 0) continue;
+          const birth = parseBirth(d.birth);
+          // its birth now: unread (or of a platform this PC is not) is no proof it is gone, only a birth read and different is
+          const now = (await at.run(`${runs(d.pid)} && { ${birthNow(d.pid, birth?.platform)}; echo; } || echo dead`)).trim();
+          if (now === "dead") continue;
+          if (birth && now !== "" && now !== birth.value) continue;
+          live.push({ pid: d.pid, birth: d.birth, token: d.token });
         }
-        return false;
+        return live;
       };
-      // one already there: never a second server for the same socket
-      if (await fresh()) return await forgotten("replaced");
+      // one listing, for both: one already there (never a second server for the same socket), and every registration on the
+      // socket before the launch, live or not, none of which is ever taken for the server about to start
+      const snapshot = await posixHost.descriptors(at);
+      if ((await serving(snapshot)).length > 0) return await forgotten("replaced");
+      const listedBefore = new Set(snapshot.filter((d) => d.socket_path === socket).map((d) => d.token));
+      // this app stopping meanwhile: nothing is started
+      if (this.stopping) return await forgotten("forgotten");
       // its address taken (in use): a live server is there, its replacement say, and nothing is started beside it
-      if ((await at.run(restoreServer(saved))).trim() === "taken") return "replaced";
-      for (const until = Date.now() + this.startMs; !(await fresh());) {
+      const launched = (await at.run(restoreServer(saved, port))).trim();
+      if (launched === "taken") return "replaced";
+      // started: once the very process it started (its pid and its birth, as the launcher told them) registers and still
+      // runs, never another's, nor one that took its pid after it ended
+      const [pidText, launchedBirth] = launched.split(" ");
+      const pid = Number(pidText);
+      const started = async () => Number.isSafeInteger(pid) && pid > 0 && !!launchedBirth
+        && (await serving()).some((d) => d.pid === pid && !listedBefore.has(d.token) && (parseBirth(d.birth)?.value ?? launchedBirth) === launchedBirth)
+        && (await at.run(`${bornAs(pid, { platform: "linux", value: launchedBirth })} && echo same || true`)).trim() === "same";
+      for (const until = Date.now() + this.startMs; !(await started());) {
         if (Date.now() >= until) return `it did not start within ${Math.round(this.startMs / 1000)} seconds (its output is in ~/.local/state/ovis/restored-server.log there).`;
         await Bun.sleep(this.pollMs);
       }
@@ -337,6 +391,8 @@ export class PcInstaller {
     let replaced: "no" | "maybe" | "yes" = "no";
     // the copy of the stopped server (captureServer), its socket, and the Ovis tokens seen before: what starting it again needs
     let saved: string | null = null;
+    // the port the stopped server's registration named: where a restore probes first
+    let savedPort: number | undefined;
     // the server the stop signal may have reached (sent, its end not seen yet): a cancel then still checks and restores it
     let signalled: number | null = null;
     let socket = "";
@@ -359,12 +415,14 @@ export class PcInstaller {
       if (!facts.writable) throw new InstallFailed("permission", "This SSH account cannot write to its own home folder on that PC, where Ovis installs.");
       if (facts.freeKb !== null && facts.freeKb < MIN_FREE_KB) throw new InstallFailed("disk", `That PC has only ${Math.floor(facts.freeKb / 1024)} MB free in its home folder; installing Ovis needs about 1 GB.`);
       const inspection = await posixHost.inspect(ssh);
-      const listed = inspection.descriptors.filter((d) => d.socket_path === inspection.expectedSocket);
+      // the planned server is looked for, and checked again up to its stop, on the socket of the registration the plan was
+      // made for (a herdr-core server's adapter): on herdr's default one, a live core server would seem gone
+      socket = plan?.socket ?? inspection.expectedSocket;
+      const listed = inspection.descriptors.filter((d) => d.socket_path === socket);
       const live: BridgeDescriptor[] = [];
       for (const descriptor of listed) if (Number.isSafeInteger(descriptor.pid) && descriptor.pid > 0 && await posixHost.alive(ssh, descriptor.pid)) live.push(descriptor);
       // a new Ovis registers anew, with a token of its own: a pid alone could be an old one's, reused
-      before = new Set(listed.map((d) => d.token));
-      socket = inspection.expectedSocket;
+      before = new Set(inspection.descriptors.filter((d) => d.socket_path === socket || d.socket_path === inspection.expectedSocket).map((d) => d.token));
       // an Ovis already installed there (a plugin, or its service) is started through that, and updated once it answers:
       // the installer would keep it as it is and only start it, whatever release it was asked for
       const installed = facts.launcher !== "none";
@@ -374,12 +432,23 @@ export class PcInstaller {
         if (live.some((d) => d.managed_remote)) throw new InstallFailed("bridge_there", "That PC runs this app's bridge for herdr; update it from its card with Update instead.");
         if (live.length) throw new InstallFailed("ovis_there", "Ovis already runs on that PC. Add it with Add PC, or update it from its card.");
       } else {
+        // a herdr-core Ovis started by hand: the official installer's Ovis would come back on herdr's default socket (a
+        // herdr Ovis, beside a herdr of its own), not as the Ovis this PC is set to use. Refused before anything is stopped
+        // a herdr-core plan names the core adapter's socket; a herdr session chosen for the PC (its own herdr.sock) is herdr's
+        const core = socket !== inspection.expectedSocket && isCoreAdapterSocket(socket);
+        if (core && plan.mode === "replace" && !installed) throw new InstallFailed("no_launcher", "Ovis on that PC was started by hand; update it there, or start it with its launcher first.");
+        // nor through a herdr plugin (one left from before the move, say): its Ovis, or the headless herdr started for it,
+        // comes back on herdr's default socket, never as the herdr-core Ovis this PC uses
+        if (core && (facts.launcher === "plugin" || facts.launcher === "plugin-legacy")) throw new InstallFailed("no_launcher", "Ovis on that PC is set up as a herdr plugin, not as the herdr-core Ovis this PC uses; update it there.");
         // only the very process the plan was made for, only a server this app did not start, and only while that pid
         // still runs an Ovis server: a pid reused by another program since is never signalled
         const shown = live.find((d) => d.pid === plan.pid && !d.managed_remote && (plan.token === undefined || d.token === plan.token));
+        // for a herdr-core plan, what runs on herdr's default socket counts too: nothing is installed or started beside it
+        let besideDefault = false;
+        if (core) for (const d of inspection.descriptors) if (d.socket_path === inspection.expectedSocket && Number.isSafeInteger(d.pid) && d.pid > 0 && await posixHost.alive(ssh, d.pid)) besideDefault = true;
         // gone already (an earlier try stopped it, or the launcher stopped it and failed to start one), with no other Ovis
         // running there: nothing is left to stop, and the install or the launcher's start is tried again
-        gone = !shown && live.length === 0;
+        gone = !shown && live.length === 0 && !besideDefault;
         // which process it is (when it started, whose it is), read on both sides of its command line: the copy and the stop
         // below go ahead only while it is still this one, never a process that took its pid since
         const identity = shown ? (await ssh.run(processIdentity(plan.pid))).trim() : "";
@@ -389,6 +458,10 @@ export class PcInstaller {
         const born = shown ? (await ssh.run(`${registeredAs(plan.pid, shown)} && echo born || true`)).trim() === "born" : false;
         if (!gone && (!shown || !OVIS_COMMAND.test(command) || !identity || identity !== still)) throw new InstallFailed("changed", CHANGED_WORDS);
         if (!gone && !born) throw new InstallFailed("changed", NOT_REGISTERED_WORDS(plan.pid));
+        // a herdr-core server started by hand beside its launcher is never stopped for that launcher's start: nothing
+        // shows the launcher starts a herdr-core Ovis at that socket (an ovis.service on herdr's runtime would not), and
+        // once the launcher is asked the stopped server is not restored. Started by its launcher, it is a restart instead
+        if (core && plan.mode === "replace" && !gone) throw new InstallFailed("no_launcher", "Ovis on that PC was started by hand; update it there, or start it with its launcher first.");
         if (gone && plan.mode === "replace") stopped = true;
         // a restart goes through the launcher that runs it, which must be there before anything is stopped
         if (plan.mode === "restart" && !installed) throw new InstallFailed("no_launcher", "That PC's Ovis was not installed as a herdr plugin or a user service, so it cannot be restarted from here. Restart it on that PC (Settings → Updates there tells how), then update it.");
@@ -402,6 +475,7 @@ export class PcInstaller {
           // stopped as on macOS, without a copy, and the job then says it stays stopped
           if (copy && copy !== "unfaithful" && !SAVED_SERVER.test(copy)) throw new InstallFailed("not_stopped", "That PC's Ovis could not be copied first, to start it again as it was if the install fails, so nothing was stopped. Try again.");
           saved = SAVED_SERVER.test(copy) ? copy : null;
+          savedPort = shown?.port;
           // the stop, in the same command as the check that it is still that process
           signalled = plan.pid;
           // ... and only the very server its registration names (its birth): never another that took the pid after it ended
@@ -430,8 +504,9 @@ export class PcInstaller {
           for (const until = Date.now() + this.stopMs; await posixHost.alive(ssh, plan.pid);) {
             if (Date.now() >= until) {
               // the launcher started an Ovis of its own beside the planned one: only that new one (a token not seen
-              // before, an Ovis server's command line) is stopped again, so one Ovis serves the socket, as before
-              for (const extra of (await posixHost.descriptors(ssh)).filter((d) => d.socket_path === inspection.expectedSocket && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== plan.pid)) {
+              // before, an Ovis server's command line) is stopped again, so one Ovis serves the socket, as before. It registers
+              // at the socket of the Ovis installed there: the planned one's (a herdr-core server's adapter), or herdr's default
+              for (const extra of (await posixHost.descriptors(ssh)).filter((d) => (d.socket_path === socket || d.socket_path === inspection.expectedSocket) && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== plan.pid)) {
                 if (OVIS_COMMAND.test(await ssh.run(`ps -o args= -p ${extra.pid} 2>/dev/null || true`))) await ssh.run(`kill -TERM ${extra.pid} 2>/dev/null || true`);
               }
               throw new InstallFailed("not_stopped", `That PC's Ovis (process ${plan.pid}) was not started by its launcher, so restarting the launcher did not restart it; the one the launcher started beside it was stopped again. Stop it on that PC, then update it.`);
@@ -464,8 +539,10 @@ export class PcInstaller {
         if (!facts.herdrRunning) await launch(HEADLESS_HERDR);
       }
       step("starting", "Waiting for Ovis to answer on that PC…");
+      // only where the PC is to be reached: the plan's socket. A herdr-core plan comes back there through its launcher (a
+      // core plan without one, or with a herdr plugin, is refused above); any other install at herdr's default socket
       for (const until = Date.now() + this.startMs; ;) {
-        const answering = (await posixHost.descriptors(ssh)).find((d) => d.socket_path === inspection.expectedSocket && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0);
+        const answering = (await posixHost.descriptors(ssh)).find((d) => d.socket_path === socket && !d.managed_remote && !before.has(d.token) && Number.isSafeInteger(d.pid) && d.pid > 0);
         if (answering && await posixHost.alive(ssh, answering.pid)) { await forget(); break; }
         if (Date.now() >= until) throw new InstallFailed("not_started", `Ovis is ${job.mode === "restart" ? "restarted" : "installed"} on that PC but did not start within ${Math.round(this.startMs / 1000)} seconds. Check herdr's plugin log there (herdr plugin log list).`);
         await pause();
@@ -487,7 +564,8 @@ export class PcInstaller {
       // the server stopped (or signalled) for this install, with nothing installed or launched in its place: started again
       // as it was, before the job ends. Not once the installer ran or the launcher was asked: a start of their own may
       // still be on its way there, and would come up beside it. The copy is removed either way
-      const again = saved ? await this.startAgain(state, request, saved, socket, before, (stopped || signalled !== null) && replaced === "no" ? signalled : false) : null;
+      // this app stopping (installer.stop()) neither restores nor connects: the copy's lease removes it
+      const again = saved ? await this.startAgain(state, request, saved, socket, savedPort, !this.stopping && (stopped || signalled !== null) && replaced === "no" ? signalled : false) : null;
       // the signal never stopped it: as if nothing was stopped
       if (again === "running") stopped = false;
       const restored = again === "started" ? " The Ovis started by hand on that PC was stopped for the install, and has been started again as it was."

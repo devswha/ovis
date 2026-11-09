@@ -16,7 +16,7 @@ import { fontScale, sanitizeUiFontSize, uiFontStack } from "./typography.ts";
 import { sanitizeKeyBarExtras, type KeyBarExtra } from "./keys.ts";
 import { themeFor } from "./themeFor.ts";
 import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems, sanitizeKeyBarItems, type KeyBarItem } from "./keyBar.ts";
-import { applyThemeEntry, DARK_QUERY, readStoredAppearance, resolveTheme, sanitizeAppearance, SETTINGS_STORAGE_KEY, THEMES_STORAGE_KEY, type ResolvedTheme, type ThemeSetting } from "./themeBoot.ts";
+import { applyThemeEntry, DARK_QUERY, defaultThemeSetting, readStoredAppearance, resolveTheme, sanitizeAppearance, SETTINGS_STORAGE_KEY, THEMES_STORAGE_KEY, type ResolvedTheme, type ThemeSetting } from "./themeBoot.ts";
 
 export { resolveTheme };
 export type { ResolvedTheme, ThemeSetting };
@@ -24,7 +24,7 @@ export type Density = "compact" | "comfortable";
 /** One line names the workspace; two lines say what its pane is doing, with the workspace under it. */
 export type SidebarRows = "one" | "two";
 /** the Agents list's order: herdr's workspace order, or a waiting agent first and then the latest change */
-export type AgentOrder = "workspace" | "activity";
+export type AgentOrder = "waiting" | "workspace" | "activity";
 /** Settings → Within a state: how each state group of the Agents list is ordered (lib/agentRoster.ts) */
 export const AGENT_GROUP_SORTS = ["wait", "recent", "name"] as const;
 export type AgentGroupSort = (typeof AGENT_GROUP_SORTS)[number];
@@ -98,8 +98,8 @@ export interface Settings {
   foldHelpers: boolean;
   /** each workspace's agents listed under its row in the PCs list (components/Sidebar.tsx), a PC > workspace > agent tree; off until chosen */
   sidebarAgentTree: boolean;
-  /** CPU, memory and the fullest disk under each open PC in the sidebar (components/MachineStats.tsx); null until
-   *  chosen on this device, which shows it while two or more PCs are connected (pcLoadOn) */
+  /** the selected PC's CPU, memory and fullest disk in the status bar (components/MachineStats.tsx PcLoadStatus); null until
+   *  chosen on this device, which keeps it off (pcLoadOn) */
   pcLoad: boolean | null;
   /** The Agents list's order. Activity is display-only: herdr's own order never changes. */
   agentOrder: AgentOrder;
@@ -317,7 +317,9 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
     theme: settings.theme,
     density: settings.density,
     sidebarRows: settings.sidebarRows,
-    agentOrder: settings.agentOrder,
+    // Waiting first is herdr's workspace order with the waiting agents lifted: reported as that order, so the
+    // receiver's schema (shared/telemetry.ts, changed only with its deploy) keeps accepting the snapshot
+    agentOrder: settings.agentOrder === "waiting" ? "workspace" : settings.agentOrder,
     agentMarks: settings.agentMarks,
     statusIndicators: settings.statusIndicators,
     palette: settings.palette,
@@ -442,7 +444,8 @@ export const DEFAULT_SETTINGS: Settings = {
   keyBarExpanded: false,
   shortcutOverrides: {},
   herdrPrefixKeys: false,
-  theme: "dark",
+  // the startup default (themeBoot.ts defaultThemeSetting): Reset puts back what a fresh device is drawn in
+  theme: "system",
   density: "comfortable",
   sidebarRows: "one",
   sidebarFilter: false,
@@ -450,7 +453,8 @@ export const DEFAULT_SETTINGS: Settings = {
   foldHelpers: false,
   sidebarAgentTree: false,
   pcLoad: null,
-  agentOrder: "workspace",
+  // the Agents list's order (the workspace list keeps herdr's): the agents that need you first, the resting ones folded
+  agentOrder: "waiting",
   agentGroups: false,
   agentGroupSort: "wait",
   agentMarks: "color",
@@ -675,7 +679,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     foldHelpers: typeof record["foldHelpers"] === "boolean" ? record["foldHelpers"] : DEFAULT_SETTINGS.foldHelpers,
     sidebarAgentTree: typeof record["sidebarAgentTree"] === "boolean" ? record["sidebarAgentTree"] : DEFAULT_SETTINGS.sidebarAgentTree,
     pcLoad: typeof record["pcLoad"] === "boolean" ? record["pcLoad"] : null,
-    agentOrder: record["agentOrder"] === "workspace" || record["agentOrder"] === "activity" ? record["agentOrder"] : DEFAULT_SETTINGS.agentOrder,
+    agentOrder: record["agentOrder"] === "waiting" || record["agentOrder"] === "workspace" || record["agentOrder"] === "activity" ? record["agentOrder"] : DEFAULT_SETTINGS.agentOrder,
     agentGroups: typeof record["agentGroups"] === "boolean" ? record["agentGroups"] : DEFAULT_SETTINGS.agentGroups,
     agentGroupSort: AGENT_GROUP_SORTS.includes(record["agentGroupSort"] as AgentGroupSort) ? record["agentGroupSort"] as AgentGroupSort : DEFAULT_SETTINGS.agentGroupSort,
     agentMarks: record["agentMarks"] === "color" || record["agentMarks"] === "mono" ? record["agentMarks"] : DEFAULT_SETTINGS.agentMarks,
@@ -986,9 +990,10 @@ function coarsePointer(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
 }
 
-/** Whether the sidebar shows each open PC's load: as chosen on this device, else while two or more PCs are connected. */
-export function pcLoadOn(settings: Pick<Settings, "pcLoad">, machines: readonly { state: string }[]): boolean {
-  return settings.pcLoad ?? machines.filter((machine) => machine.state === "connected").length >= 2;
+/** Whether the status bar shows the selected PC's load: as chosen on this device, else off. */
+export function pcLoadOn(settings: Pick<Settings, "pcLoad">, _machines: readonly { state: string }[]): boolean {
+  // off until chosen in Settings: the owner judged each PC's CPU, memory and disk line not needed by default
+  return settings.pcLoad ?? false;
 }
 
 /** Whether Enter (Return) sends from the composer: the device's choice, else not on a touch screen. */
@@ -999,7 +1004,8 @@ export function enterSendsOn(settings: Pick<Settings, "enterSends">, touch: bool
 export function loadSettings(): Settings {
   // read as the page's boot script reads them (themeBoot.ts), so React starts on the row the first frame showed
   const stored = readStoredAppearance(() => window.localStorage);
-  const settings = stored.main === null ? DEFAULT_SETTINGS : sanitizeSettings(stored.main.value);
+  // no main record: the same theme the boot script draws (the hosted shell follows the system)
+  const settings = stored.main === null ? { ...DEFAULT_SETTINGS, theme: defaultThemeSetting() } : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
   return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), pcLoad: readPcLoad(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), ...readFileFont(), composerArtifacts: readComposerArtifacts(),
     expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
