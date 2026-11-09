@@ -68,8 +68,9 @@ the PC with `4000` and retried. Refusing a data socket does not stop the control
   names this control socket's generation, new for each one),
   `{"type":"connected","connection_id":"..."}` when a client arrives and
   `{"type":"disconnected","connection_id":"..."}` when one leaves. The PC answers `connected` (or
-  `sync`) by opening the client's data socket. Anything else the PC sends on the control socket is
-  dropped.
+  `sync`) by opening the client's data socket. The PC may send `{"type":"relay_pass","pass":"..."}`
+  ("Relay pass" below) and `{"type":"new_session","connection_id":"..."}` ("New sessions" below);
+  anything else the PC sends on the control socket is dropped.
 - Warm socket: so that a client does not wait for the PC to open and prove a socket, the PC may
   keep one proven `warm` socket ready, opened with the generation its control socket's `sync` named.
   A client arriving while that control socket is connected takes it at once: the warm socket hears `{"type":"bound","connection_id":"..."}` before any of
@@ -137,10 +138,17 @@ pairing hosts, in a release most PCs run.
   relay without passes drops that frame like any other.
 - **New sessions.** The account service issues a pass with `new` 0 to a PC whose account is past
   its limits (a relay data limit, say). The room keeps what the pass that authorizes it says: the
-  one that runs out last, which is the one issued last, so a renewal with `new` 1 lifts it at once.
-  While enforced, a new client of a room whose pass says `new` 0 closes `4403` (`no new sessions
-  for this server`) before it takes any place; clients already connected, and the PC's own sockets,
-  stay. `off` and `grace` let every client in whatever the pass says.
+  one that runs out last, which is the one issued last, so a later renewal with `new` 1 lifts it at
+  once; of two passes issued the same second (the same expiry), the one with `new` 0 holds, in
+  whichever order they are proven. Only the PC can tell a device new to it from one it knows: the
+  relay sees no device, and the frames are end-to-end encrypted. So every client gets in as before,
+  and once the PC has identified a client as a device new to it, it says so on its control socket
+  with `{"type":"new_session","connection_id":"..."}`. While enforced and the room's pass says
+  `new` 0, the relay then closes that client `4403` (`no new sessions for this server`), whether it
+  arrived before or after the PC; otherwise it drops the frame. The PC's own devices, reconnecting
+  or not, its other clients and its own sockets stay, and a client the PC has not identified hears
+  nothing of the pass. `off` and `grace` let every client in whatever the pass says. Ovis's PCs do
+  not send `new_session` yet.
 - **Modes**, from `RELAY_PASS_MODE` (`--pass-mode`): `off` (the default) lets every PC in as
   before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at"}` to the control
   socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`) and, while the room has no pass
@@ -202,7 +210,7 @@ pairing hosts, in a release most PCs run.
 | `1013` | a limit above; try again later |
 | `4401` | to a PC socket, or a pairing host that offers a key: proof missing, a key that does not derive the `server_id`, or a wrong or late answer |
 | `4402` | to a PC socket or a pairing host: no relay pass that holds while the relay asks for one (`relay pass required`, `relay pass expired`, `relay pass invalid`) |
-| `4403` | to a new client, while passes are enforced: the PC's pass allows no new sessions (account limits; `no new sessions for this server`). Clients already connected stay |
+| `4403` | to a client the PC identified as a device new to it, while passes are enforced and the PC's pass allows no new sessions (account limits; `no new sessions for this server`). Its other clients stay |
 
 A socket that closes itself has its close answered at once, with its own code when that is `1000`
 or `3000`-`4999` (`1000` otherwise, such as for `1001` or `1005`), and its partner is closed as above. On Cloudflare the

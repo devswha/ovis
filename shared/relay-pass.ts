@@ -10,8 +10,8 @@
  * The payload is JSON with exactly `v` (1), `kid`, `aud`, `sid`, `iat` and `exp` (seconds), or a v2
  * payload: those fields with `v` 2 and `new`, 1 when new client sessions to the PC are allowed and 0
  * when they are not for the pass's lifetime. A v1 pass allows them. A relay that enforces passes
- * closes a new client of a PC whose room's latest pass says `new` 0 with RELAY_NEW_SESSIONS_CLOSE;
- * clients already connected stay. The prefix and signing prefix stay `1`: the signature covers the payload's
+ * closes a client the PC identified as a device new to it (relay/README.md "New sessions") with
+ * RELAY_NEW_SESSIONS_CLOSE while the room's pass says `new` 0; the PC's other clients stay. The prefix and signing prefix stay `1`: the signature covers the payload's
  * text, `v` and `new` included, so a v2 pass cannot be passed off as v1 or have `new` edited, and a
  * relay that knows only v1 refuses a v2 pass by its shape.
  */
@@ -31,7 +31,7 @@ export const RELAY_PASS_CLOSE = 4402;
 export const RELAY_PASS_REQUIRED = "relay pass required";
 export const RELAY_PASS_EXPIRED = "relay pass expired";
 export const RELAY_PASS_INVALID = "relay pass invalid";
-/** Close code for a new client of a PC whose pass allows no new sessions (account limits), and its reason. */
+/** Close code for a client the PC identified as a device new to it, while its pass allows no new sessions (account limits), and its reason. */
 export const RELAY_NEW_SESSIONS_CLOSE = 4403;
 export const RELAY_NEW_SESSIONS_REFUSED = "no new sessions for this server";
 

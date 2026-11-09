@@ -7,7 +7,8 @@
  *
  * Three kinds of socket meet in one room per `server_id` (`GET /v1/ws?server_id=..&v=1`):
  * - control (`role=server`): one per PC. It hears `sync`, `connected` and `disconnected` (JSON
- *   text) about clients, and sends nothing but keepalive pings.
+ *   text) about clients, and sends nothing but keepalive pings, pass renewals, and
+ *   `{"type":"new_session","connection_id":".."}` once it identified a client as a device new to it.
  * - client (`role=client`): a phone or browser. The relay picks its `connection_id` and says so
  *   in its first frame, `{"type":"assigned","connection_id":"..."}`.
  * - data (`role=server&connection_id=..`): the PC's socket for one client, opened once the PC
@@ -104,7 +105,7 @@ export const CLOSE = {
   SERVER_PROOF: SERVER_PROOF_CLOSE,
   /** a PC socket without a relay pass that holds, while the relay asks for one (pass.ts) */
   RELAY_PASS: RELAY_PASS_CLOSE,
-  /** a new client of a PC whose room's latest pass allows no new sessions, while passes are enforced (account limits); clients already in stay */
+  /** a client the PC identified as a device new to it, while passes are enforced and the room's pass allows no new sessions (account limits); its other clients stay */
   NEW_SESSIONS: RELAY_NEW_SESSIONS_CLOSE,
 } as const;
 
@@ -429,8 +430,6 @@ export class Room<S extends object> {
 
   private openClient(socket: S, serverId: string): void {
     const now = this.host.now();
-    // while enforced, a PC whose latest pass allows no new sessions takes no new client; those already in stay
-    if (this.refusesNewSessions(now)) return this.end(socket, CLOSE.NEW_SESSIONS, RELAY_NEW_SESSIONS_REFUSED);
     const peers = this.peers();
     const clients = peers.filter((peer) => peer.info.role === "client");
     const answered = clients.filter((peer) => peer.info.answered).length;
@@ -504,14 +503,14 @@ export class Room<S extends object> {
   /**
    * A proven PC socket's pass authorizes the room until its expiry, and says whether new client
    * sessions are allowed; an earlier expiry changes nothing while the saved one holds, so the pass
-   * issued last (which runs out last, or as late) decides.
+   * issued last (which runs out last) decides, and of two issued the same second the stricter.
    */
   private authorize(until: number, kid: string, noNew: boolean): void {
     const pass = this.host.pass;
     if (!pass) return;
     const current = pass.until();
-    // a pass with the same expiry (issued in the same second) still changes what the room says of new sessions
-    if (current && this.authorized(this.host.now()) && (until < current.until || (until === current.until && noNew === (current.noNew === true)))) return;
+    // one with the same expiry was issued the same second: the stricter of the two holds, whichever is proven last
+    if (current && this.authorized(this.host.now()) && (until < current.until || (until === current.until && (!noNew || current.noNew === true)))) return;
     pass.setUntil({ until, kid, ...(noNew ? { noNew: true as const } : {}) });
     this.host.wake?.(until + PASS_SKEW_MS);
   }
@@ -614,8 +613,13 @@ export class Room<S extends object> {
     if (info.role === "control" && typeof frame === "string" && size <= RENEWAL_BYTES) {
       let value: unknown;
       try { value = JSON.parse(frame); } catch { return; }
-      const { type, pass } = typeof value === "object" && value !== null ? value as { type?: unknown; pass?: unknown } : {};
+      const { type, pass, connection_id } = typeof value === "object" && value !== null ? value as { type?: unknown; pass?: unknown; connection_id?: unknown } : {};
       if (type === "relay_pass" && typeof pass === "string") return this.renew(socket, info, pass);
+      // the PC identified this client as a device new to it (the relay cannot: its frames are end-to-end encrypted)
+      if (type === "new_session" && typeof connection_id === "string" && this.refusesNewSessions(now)) {
+        const client = this.find("client", connection_id);
+        if (client) this.end(client.socket, CLOSE.NEW_SESSIONS, RELAY_NEW_SESSIONS_REFUSED);
+      }
       return;
     }
     if (info.role === "control" || info.role === "warm") return;
