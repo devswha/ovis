@@ -22,21 +22,32 @@ const isEmail = (identity: string) => identity.startsWith("email:");
 const sameAccount = (known: readonly string[], identities: readonly string[]) => known.some((identity) => identities.includes(identity));
 /**
  * Whether a remembered account (`known`) is the one now read as `identities`: one known by its email is so only under
- * that email when both have one (another account may take its old auth index, #3444); otherwise any identity tells it.
+ * that email (another account, with another email or none, may take its old auth index, #3444, #3449); otherwise any
+ * identity tells it.
  */
 const knownAs = (known: readonly string[], identities: readonly string[]): boolean => {
   const emails = known.filter(isEmail);
-  return emails.length > 0 && identities.some(isEmail) ? sameAccount(emails, identities) : sameAccount(known, identities);
+  return emails.length > 0 ? sameAccount(emails, identities) : sameAccount(known, identities);
 };
-/** most identities one remembered account keeps: its newest ones */
+/**
+ * most identities one remembered account keeps: its newest ones, and beyond them those a row the Hub lists now still
+ * carries, so a listed row is not forgotten (#3449), up to IDENTITIES_LISTED_MAX: the saved list must stay one a
+ * restart reads (HIDDEN_MAX_BYTES)
+ */
 const IDENTITIES_MAX = 6;
+const IDENTITIES_LISTED_MAX = 32;
 /**
  * `known` with what the same account is read as now added, so a later move or email change still tells it; never
  * replaced. An account known by its auth index alone gains a name only from a row shown (`named`): one first listed
- * hidden may be another account that took that index.
+ * hidden may be another account that took that index. Over IDENTITIES_MAX, the oldest identities no row in `listed`
+ * carries are dropped.
  */
-const widened = (known: readonly string[], identities: readonly string[], named: boolean): readonly string[] =>
-  [...new Set([...identities.filter((identity) => named || isIndexed(identity)), ...known])].slice(0, IDENTITIES_MAX);
+const widened = (known: readonly string[], identities: readonly string[], named: boolean, listed: ReadonlySet<string>): readonly string[] => {
+  const all = [...new Set([...identities.filter((identity) => named || isIndexed(identity)), ...known])];
+  const unlisted = all.filter((identity) => !listed.has(identity));
+  const dropped = new Set(unlisted.slice(Math.max(0, unlisted.length - Math.max(0, all.length - IDENTITIES_MAX))));
+  return all.filter((identity) => !dropped.has(identity)).slice(0, IDENTITIES_LISTED_MAX);
+};
 const isHubKey = (key: string) => key.includes(":cliproxy:");
 /** what a read is decided from: the hidden keys, whether read whole, blind, and which account each hidden key is (a copy) */
 interface ReadView { hidden: ReadonlySet<string>; blind: boolean; accounts: ReadonlyMap<string, readonly string[]> }
@@ -463,17 +474,19 @@ export class CLIProxyService {
       // what this report learned, kept only now it completed: a report an invalidation (a Hub change) overtook teaches
       // nothing, what it read being of the Hub before
       let widenedHidden = false;
+      const listed = new Set([...learned.values()].flatMap(({ identities }) => identities));
       for (const [key, { identities, shown }] of learned) {
         const known = this.shownIdentities.get(key);
         // a key still holding the account it was shown as stays known as it, by every identity it was read with; a hidden
         // one holding another account is not that account's any more, a shown one is now the account shown
-        if (known !== undefined && knownAs(known, identities)) this.shownIdentities.set(key, widened(known, identities, shown || known.some((identity) => !isIndexed(identity))));
+        if (known !== undefined && knownAs(known, identities)) this.shownIdentities.set(key, widened(known, identities, shown || known.some(isEmail), listed));
         else if (shown) this.shownIdentities.set(key, identities);
         else this.shownIdentities.delete(key);
-        // a hidden account read under a new index or name stays unread there after its email changes too
+        // a hidden account read under a new index or name stays unread there after its email changes too; one known by
+        // no email (a workspace alone, or a list saved before emails were) gains a name only as a shown one does (#3449)
         for (const [hiddenKey, account] of this.hiddenAccounts) {
           if (!knownAs(account, identities)) continue;
-          const next = widened(account, identities, account.some((identity) => !isIndexed(identity)));
+          const next = widened(account, identities, account.some(isEmail), listed);
           if (next.length !== account.length || next.some((identity, at) => identity !== account[at])) { this.hiddenAccounts.set(hiddenKey, next); widenedHidden = true; }
         }
       }
@@ -524,12 +537,13 @@ export class CLIProxyService {
         const email = typeof file["email"] === "string" ? file["email"] : null;
         const holder = email === null && workspace === null ? null : JSON.stringify([email, workspace]);
         const last = kept.has(entry.key) && holder !== null ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
-        if (last) return [Promise.resolve(last)];
         const identities = accountIdentities(provider.id, holder, email, index);
+        const shown = !start.hidden.has(entry.key) && !live.hidden.has(entry.key);
+        // a kept row teaches what its file says now too: its account may have moved to another auth index (#3449)
+        if (last) { this.identities.set(last, identities); learned.set(entry.key, { identities, shown }); return [Promise.resolve(last)]; }
         const held = (row: ProviderUsage): ProviderUsage => {
           if (holder !== null) this.holders.set(row, holder);
           this.identities.set(row, identities);
-          const shown = !start.hidden.has(row.key) && !live.hidden.has(row.key);
           if (shown) this.shownRows.add(row);
           learned.set(row.key, { identities, shown });
           return row;
