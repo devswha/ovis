@@ -50,6 +50,8 @@ it("lists the user's and the project's skills by Letta's names, the project's wi
   skill(join(home, ".letta", "skills", "review"), "name: review\ndescription: user review");
   skill(join(home, ".letta", "skills", "web", "scraper"), "description: nested, named by its folder");
   skill(join(home, ".letta", "skills", "quiet"), "name: quiet\ndescription: model only\nuser-invocable: false");
+  // Letta reads the flag without case or quotes
+  skill(join(home, ".letta", "skills", "shout"), "name: shout\ndescription: model only\nuser-invocable: \"FALSE\"");
   skill(join(home, ".letta", "skills", "clash"), "name: model\ndescription: named like a builtin");
   skill(join(cwd, ".agents", "skills", "review"), "name: review\ndescription: project review");
   // nested below another skill's folder, and one right in the root with no name: Letta lists both

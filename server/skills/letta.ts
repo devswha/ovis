@@ -133,7 +133,8 @@ export const source: AgentCommandSource = {
         // a SKILL.md right in the root has no folder: Letta names it "root"
         const name = field("id") || field("name") || folder || "root";
         if (!/^\S+$/.test(name)) continue;
-        const invocable = skill.fields["user-invocable"] !== false && skill.fields["user-invocable"] !== "false";
+        const flag = skill.fields["user-invocable"];
+        const invocable = flag !== false && !(typeof flag === "string" && flag.trim().replace(/^(["'])(.*)\1$/, "$2").toLowerCase() === "false");
         found.delete(name);
         found.set(name, invocable && !builtinNames.has(name) ? { name, description: skill.description, source: "skill", origin, id: skill.id } : null);
       }
