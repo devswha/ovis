@@ -305,7 +305,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     try { window.localStorage.setItem(RESTING_OPEN_KEY, restingOpen ? "0" : "1"); } catch { /* private mode: this page keeps it */ }
   };
   const people = useMemo(() => {
-    // Settings → Agents order → Waiting first; Workspaces (the default) and Activity keep their order
+    // Settings → Agents order → Waiting first (the default); a saved Workspaces or Activity order is kept as it is
     if (settings.agentOrder !== "waiting" || groups !== null || named !== null) return parts.people;
     // an agent moves with the helpers drawn under it (lib/agentRoster.ts nestHelpers): one waits when any of them does
     const families: AgentRow[][] = [];

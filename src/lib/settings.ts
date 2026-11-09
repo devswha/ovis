@@ -452,8 +452,8 @@ export const DEFAULT_SETTINGS: Settings = {
   foldHelpers: false,
   sidebarAgentTree: false,
   pcLoad: null,
-  // herdr's order: a row stays where it was each time the list is seen; Waiting first is chosen in Settings
-  agentOrder: "workspace",
+  // the Agents list's order (the workspace list keeps herdr's): the agents that need you first, the resting ones folded
+  agentOrder: "waiting",
   agentGroups: false,
   agentGroupSort: "wait",
   agentMarks: "color",

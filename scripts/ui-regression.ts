@@ -420,6 +420,9 @@ try {
   // The test session's only PC is the Host, drawn without its header: no caret folds it, and New workspace
   // stays available in the compact header. A PC's fold over Agents, with two PCs, is in sidebar-spacing-demo-regression.ts.
   await herdrRpc("pane.report_agent", { pane_id: paneB, source: "manual", agent: "codex", state: "idle" });
+  const resting = page.locator(".agents-sidebar .agent-resting-label .agent-background-toggle");
+  if (await resting.getAttribute("aria-expanded") === "false") await resting.click();
+  await page.locator('.agents-sidebar .agent-resting-label .agent-background-toggle[aria-expanded="true"]').waitFor();
   await agentRow(paneB).waitFor();
   assert.equal(await page.locator(".machine-group .machine-header").count(), 0, "the lone Host is drawn without its header");
   assert.equal(await page.getByRole("button", { name: "New workspace", exact: true }).count(), 1, "its + offers New workspace");
@@ -454,6 +457,9 @@ try {
     const offlinePage = await offlineContext.newPage();
     offlineEvidence = evidenceDirectory ? await watchBrowserEvidence(offlineContext, offlinePage, "offline-cached-roster") : undefined;
     await offlinePage.goto(`${origin}/?pane=${encodeURIComponent(paneA)}`);
+    const offlineResting = offlinePage.locator(".agents-sidebar .agent-resting-label .agent-background-toggle");
+    if (await offlineResting.getAttribute("aria-expanded") === "false") await offlineResting.click();
+    await offlinePage.locator('.agents-sidebar .agent-resting-label .agent-background-toggle[aria-expanded="true"]').waitFor();
     const offlineAgent = offlinePage.locator(`.agents-sidebar .agent-item[data-machine="local"][data-pane="${paneB}"] .agent-select`);
     await offlineAgent.waitFor();
     assert.equal(await offlineAgent.isDisabled(), true, "a cached offline agent cannot select its pane");
