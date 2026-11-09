@@ -375,6 +375,71 @@ describe("CLIProxyAPI v8", () => {
       expect(reads()).toEqual(["a", "b", "a", "b"]);
     });
 
+    it("reads no Hub account after a restart while the saved list is damaged and the hidden list is read only in part (#3428)", async () => {
+      await configure();
+      await service.report();
+      service.skipAccounts(() => new Set(["claude:cliproxy:claude-a.json"]));
+      service.hiddenChanged();
+      writeFileSync(join(dir, "cliproxy-hidden.json"), "{broken");
+      moveAlice();
+      // Alice is in the removed list, which cannot be read now: the hidden list the Hub gets leaves her out
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => new Set(), () => false);
+      await restarted.report(false, new Set());
+      expect(reads()).toEqual(["a", "b"]);
+      expect(restarted.status()).toMatchObject({ ok: false, problem: expect.any(String) });
+    });
+
+    it("says why it reads no Hub account, and reads again once each hidden key names a listed account (#3428)", async () => {
+      await configure();
+      await service.report();
+      const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      writeFileSync(join(dir, "cliproxy-hidden.json"), "{broken");
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => hidden);
+      await restarted.report(false, hidden);
+      expect(restarted.status()).toMatchObject({ ok: false, problem: expect.any(String) });
+      // the hidden key names a file the Hub lists: it is that account, and the rest is read again
+      restarted.hiddenChanged();
+      expect(restarted.status()).toMatchObject({ ok: true, problem: null });
+      moveAlice();
+      await restart(hidden);
+      expect(reads()).toEqual(["a", "b", "b"]);
+    });
+
+    it("reads again, the hidden keys by their file names, once the Hub is saved again while a hidden account is gone from its list (#3428)", async () => {
+      await configure();
+      await service.report();
+      const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      writeFileSync(join(dir, "cliproxy-hidden.json"), "{broken");
+      fake.files.splice(0, 1);
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => hidden);
+      await restarted.report(false, hidden);
+      restarted.hiddenChanged();
+      expect(reads()).toEqual(["a", "b"]);
+      expect(restarted.status().problem).toEqual(expect.any(String));
+      await new CLIProxyRoutes(restarted).handle(new Request("http://localhost/api/cliproxy", { method: "PUT", body: JSON.stringify({ url: fake.server.url.origin, management_key: KEY }) }));
+      await restart(hidden);
+      expect(reads()).toEqual(["a", "b", "b"]);
+    });
+
+    it("refuses a retried hide while which account it is still cannot be saved (#3428)", async () => {
+      mkdirSync(join(dir, "cliproxy-hidden.json"));
+      const app = createServer({ port: 0, hostname: "127.0.0.1", token: "t", stateDir: dir, tailscaleOwner: null, machines: false, registerBridge: false, terminalAttach: false, sidecar: false });
+      try {
+        const hide = () => fetch(`http://127.0.0.1:${app.port}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json", "x-herdr-machine": "1", authorization: "Bearer t" }, body: JSON.stringify({ settings: { usageHidden: ["claude:cliproxy:claude-a.json"] } }) });
+        expect((await hide()).status).toBe(500);
+        expect((await hide()).status).toBe(500);
+        rmSync(join(dir, "cliproxy-hidden.json"), { recursive: true });
+        expect((await hide()).status).toBe(200);
+      } finally { app.stop(); }
+    });
+
     it("writes the list and the Hub configuration through a fresh private file, never through a link left at a guessable name (#3428)", async () => {
       const elsewhere = join(dir, "elsewhere");
       writeFileSync(elsewhere, "", { mode: 0o644 });

@@ -333,7 +333,8 @@ export function createServer(
     const before = usageHidden;
     usageHidden = hiddenAccounts(next.settings.usageHidden);
     // which Hub account each hidden key is, saved now and with Plan limits off too: a restart before any report keeps it (#3427)
-    if (before.size !== usageHidden.size || [...before].some((key) => !usageHidden.has(key))) cliProxy.hiddenChanged();
+    // and again at every change while its last save failed: a retried hide is refused until it is saved (#3428)
+    if (before.size !== usageHidden.size || [...before].some((key) => !usageHidden.has(key)) || cliProxy.hiddenUnsaved()) cliProxy.hiddenChanged();
     if (!next.settings.showUsage || ![...before].some((key) => !usageHidden.has(key))) return;
     usage.report().catch((error: unknown) => console.warn("usage: could not be read after the hidden accounts changed", error instanceof Error ? error.message : String(error)));
   });

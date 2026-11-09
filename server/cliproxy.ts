@@ -20,6 +20,8 @@ const accountIdentities = (provider: string, holder: string | null, index: strin
 const isIndexed = (identity: string) => identity.startsWith("index:");
 const sameAccount = (known: readonly string[], identities: readonly string[]) => known.some((identity) => identities.includes(identity));
 const isHubKey = (key: string) => key.includes(":cliproxy:");
+/** why no Hub account is read while blind (CLIProxyService.blind): shown where Settings shows the Hub's state */
+const BLIND_PROBLEM = "Hidden accounts could not be told apart, so no hub account is read. Show again each hidden hub account, or save the hub again to read them by file name.";
 /** a saved hidden list larger than this is no list this server wrote */
 const HIDDEN_MAX_BYTES = 64 * 1024;
 
@@ -80,10 +82,15 @@ export class CLIProxyService {
   /**
    * Fail closed (#3428): set when the saved list cannot be trusted (unreadable, not the list, a link, not this user's,
    * too large) or does not cover a key hidden before this start (its save never landed). A hidden Hub key with no
-   * known account may then be any account under any file name, so while one is hidden no Hub account is read at all;
-   * it clears, and is saved cleared, once the whole hidden list holds no such key (each was shown again).
+   * known account may then be any account under any file name, so while one is hidden, or while the hidden list is
+   * read only in part (a key left out may be one), no Hub account is read at all. Ways out, each saved: the whole
+   * hidden list holds no such key, because each was shown again or names a file the Hub lists (that file's account is
+   * then taken as the one hidden, as a fresh server takes it by file name); or the user saves the Hub again, told why
+   * by status().problem, which keeps the hidden keys unread by file name alone.
    */
   private blind = false;
+  /** the last save of the hidden list failed: the next change of the preferences tries again, and fails while it does */
+  private hiddenSaveFailed = false;
   private hiddenWhole: () => boolean = () => true;
 
   constructor(stateDir: string) {
@@ -117,7 +124,8 @@ export class CLIProxyService {
   }
 
   status(): CLIProxyStatus {
-    return { configured: this.config !== null, url: this.config?.url ?? DEFAULT_URL, ok: this.checked && this.problem === null, problem: this.problem };
+    const problem = this.problem ?? (this.config !== null && this.blindTo(this.hidden()) ? BLIND_PROBLEM : null);
+    return { configured: this.config !== null, url: this.config?.url ?? DEFAULT_URL, ok: this.checked && problem === null, problem };
   }
 
   async save(value: unknown): Promise<CLIProxyStatus> {
@@ -129,6 +137,8 @@ export class CLIProxyService {
     const key = suppliedKey ?? this.config?.management_key;
     if (!key || key.length > 2000 || /\s/.test(key) || url.includes(key) || (this.config && url !== this.config.url && !suppliedKey)) throw proxyInvalid();
     this.persist({ url, management_key: key });
+    // saving the Hub again is the user's way out of blind (status().problem says so): hidden keys stay unread by file name
+    if (this.blind) { this.blind = false; this.saveHidden(); }
     return this.check();
   }
 
@@ -223,17 +233,22 @@ export class CLIProxyService {
     try {
       writePrivateState(this.hiddenPath, JSON.parse(document));
       this.savedHidden = document;
+      this.hiddenSaveFailed = false;
       return true;
     } catch {
+      this.hiddenSaveFailed = true;
       console.warn("cliproxy: could not save which accounts are hidden");
       return false;
     }
   }
 
-  /** while blind, a hidden Hub key with no known account may be any account: no Hub account is read */
+  /** while blind, a hidden Hub key with no known account, or one a list read in part left out, may be any account: no Hub account is read */
   private blindTo(hidden: ReadonlySet<string>): boolean {
-    return this.blind && [...hidden].some((key) => isHubKey(key) && !this.hiddenAccounts.has(key));
+    return this.blind && (!this.hiddenWhole() || [...hidden].some((key) => isHubKey(key) && !this.hiddenAccounts.has(key)));
   }
+
+  /** whether the last save of the hidden list failed, so a change of the preferences must try it again */
+  hiddenUnsaved(): boolean { return this.hiddenSaveFailed; }
 
   /**
    * Learns which account each key newly in `hidden` is, from a row shown before it was hidden, forgets the keys no longer
@@ -243,7 +258,8 @@ export class CLIProxyService {
   private syncHidden(hidden: ReadonlySet<string>): boolean {
     for (const row of this.entries) {
       const identities = this.identities.get(row);
-      if (identities !== undefined && this.shownRows.has(row) && hidden.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identities);
+      // while blind, a hidden key naming a file the Hub lists is taken to be that file's account (listed, never read)
+      if (identities !== undefined && (this.shownRows.has(row) || this.blind) && hidden.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identities);
     }
     const whole = this.hiddenWhole();
     // a key missing from a list read only in part may still be hidden: it is forgotten only once the whole list says so
