@@ -3,7 +3,7 @@ import { Bell, ChevronDown, Plus, CircleHelp, Ellipsis, FolderOpen, Link, Menu, 
 
 import type { HerdrPane, PaneDirection } from "../shared/protocol.ts";
 import { authenticate, createTab, movePaneBeside, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
-import { useGroupClosedWhenEmpty, useMoreMenu } from "./lib/moreMenu.ts";
+import { openGroupItems, useGroupClosedWhenEmpty, useMoreMenu } from "./lib/moreMenu.ts";
 import { layoutActions } from "./lib/layoutActions.ts";
 import { displayPaneTitle, storedBackgroundFolded, storedWorktreeCollapsed, tabPaneTitle } from "./components/Sidebar.tsx";
 import { endSignIn } from "./lib/signOut.ts";
@@ -750,10 +750,11 @@ export function App() {
   // at a phone's width, the find items and the pane's and tab's actions fold into one item each, More keeping the
   // palette, Files, Copy link, Alerts and the tab's panes in sight (G-143); a group of one is not folded
   const findGroup = [...findInTerminal, ...paneMoreItems.filter((item) => item.id === "search-conversation")].map((item) => ({ ...item, divider: false }));
+  // a group open when the window widens past a phone's closes: More lists its items itself there
   const paneGroup = paneMoreItems.filter((item) => item.id !== "search-conversation" && !item.id.startsWith("pane:"));
   const foldFind = isSheetWidth && findGroup.length > 1;
   const foldPane = isSheetWidth && paneGroup.length > 1;
-  const groupItems = moreGroup?.kind === "find" ? findGroup : moreGroup?.kind === "pane" ? paneGroup.map((item, index) => index === 0 ? { ...item, divider: false } : item) : [];
+  const groupItems = openGroupItems(moreGroup?.kind ?? null, isSheetWidth, findGroup, paneGroup);
   useGroupClosedWhenEmpty(moreMenu, groupItems.length === 0);
   const moreItems: RowMenuItem[] = [
     ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(sessionTally.waiting), icon: CircleHelp, run: openNextWaiting }] : []),
