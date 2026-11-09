@@ -311,7 +311,8 @@ export function createServer(
   // a sign-in runs in a herdr tab, which outlives this server: the next one must know its home is taken (#2313)
   usageLogin.persistTo(stateDir);
   const usage = options.usage ?? new UsageService(undefined, undefined, (refresh, skipped) => cliProxy.report(refresh, skipped));
-  const usageAccounts = new UsageAccountList(stateDir, usage);
+  // a removed or restored account changes which Hub accounts stay unread, saved at once (#3427)
+  const usageAccounts = new UsageAccountList(stateDir, usage, () => cliProxy.hiddenChanged());
   const hiddenAccounts = (hidden: unknown): Set<string> => new Set(Array.isArray(hidden) ? hidden.filter((key): key is string => typeof key === "string") : []);
   // an account hidden in Settings (the shared usageHidden) or removed from Ovis has its sign-in looked up no more (#3333)
   const skippedAccounts = () => {
@@ -329,6 +330,8 @@ export function createServer(
   preferences.subscribe((next) => {
     const before = usageHidden;
     usageHidden = hiddenAccounts(next.settings.usageHidden);
+    // which Hub account each hidden key is, saved now and with Plan limits off too: a restart before any report keeps it (#3427)
+    if (before.size !== usageHidden.size || [...before].some((key) => !usageHidden.has(key))) cliProxy.hiddenChanged();
     if (!next.settings.showUsage || ![...before].some((key) => !usageHidden.has(key))) return;
     usage.report().catch((error: unknown) => console.warn("usage: could not be read after the hidden accounts changed", error instanceof Error ? error.message : String(error)));
   });

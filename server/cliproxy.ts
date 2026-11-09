@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { CLIProxyStatus, ProviderUsage } from "../shared/protocol.ts";
@@ -18,7 +19,7 @@ const DEFAULT_URL = "http://localhost:8317";
 
 /** Only fixed messages cross this boundary; upstream errors can echo management credentials. */
 export class CLIProxyService {
-  private config: Config | null;
+  private config: Config | null = null;
   private readonly path: string;
   private blocked: CLIProxyError | null = null;
   private problem: string | null = null;
@@ -48,9 +49,19 @@ export class CLIProxyService {
    * while the key is hidden, so bounded by the hidden list.
    */
   private readonly hiddenAccounts = new Map<string, string>();
+  /** where hiddenAccounts is saved, with the Hub it was learned on, so a restart keeps a moved hidden account unread (#3427) */
+  private readonly hiddenPath: string;
+  private hiddenUnsaved = false;
 
   constructor(stateDir: string) {
     this.path = join(stateDir, "cliproxy.json");
+    this.hiddenPath = join(stateDir, "cliproxy-hidden.json");
+    // with no Hub configured too: a removed Hub's accounts known by their email stay known for the next one
+    this.load();
+    this.loadHidden();
+  }
+
+  private load(): void {
     try {
       const value: unknown = JSON.parse(readFileSync(this.path, "utf8"));
       if (isJsonObject(value) && Object.keys(value).length === 0) { this.config = null; return; }
@@ -120,8 +131,61 @@ export class CLIProxyService {
     this.problem = null;
     this.checked = false;
     this.invalidate();
-    if (moved) this.entries = [];
+    // an account known by its email is that account on any Hub; one known only by its auth index is so on its own Hub alone
+    if (moved) { this.entries = []; this.forgetIndexed(); this.saveHidden(); }
   }
+
+  /** Drops the hidden accounts known only by an auth index, which names a file on one Hub alone. */
+  private forgetIndexed(): void {
+    for (const [key, identity] of this.hiddenAccounts) if (identity.includes("\"index:")) this.hiddenAccounts.delete(key);
+  }
+
+  /** The Hub a saved hiddenAccounts belongs to: its address and management key, digested, so the key is never written there. */
+  private hub(): string | null {
+    return this.config === null ? null : createHash("sha256").update(`${this.config.url}\0${this.config.management_key}`).digest("hex");
+  }
+
+  /** hiddenAccounts as saved; from another Hub, only the accounts known by their email. Unreadable: none. */
+  private loadHidden(): void {
+    try {
+      const value: unknown = JSON.parse(readFileSync(this.hiddenPath, "utf8"));
+      if (!isJsonObject(value) || !isJsonObject(value["accounts"])) return;
+      for (const [key, identity] of Object.entries(value["accounts"])) if (typeof identity === "string") this.hiddenAccounts.set(key, identity);
+      if (value["hub"] !== this.hub()) this.forgetIndexed();
+    } catch { /* none saved yet: a fresh server knows no hidden account's identity */ }
+  }
+
+  /** A failed save is tried again at the next sync, so a restart does not find an older list. */
+  private saveHidden(): void {
+    try {
+      mkdirSync(join(this.hiddenPath, ".."), { recursive: true, mode: 0o700 });
+      const temporary = `${this.hiddenPath}.${process.pid}.tmp`;
+      writeFileSync(temporary, JSON.stringify({ hub: this.hub(), accounts: Object.fromEntries(this.hiddenAccounts) }), { mode: 0o600 });
+      renameSync(temporary, this.hiddenPath);
+      this.hiddenUnsaved = false;
+    } catch {
+      this.hiddenUnsaved = true;
+      console.warn("cliproxy: could not save which accounts are hidden");
+    }
+  }
+
+  /**
+   * Learns which account each key newly in `hidden` is, from a row shown before it was hidden, forgets the keys no longer
+   * in it, and saves the result: at every report, and as soon as the hidden list changes (hiddenChanged), since hiding
+   * an account starts no report and a restart before one must still know it.
+   */
+  private syncHidden(hidden: ReadonlySet<string>): void {
+    const before = JSON.stringify([...this.hiddenAccounts]);
+    for (const row of this.entries) {
+      const identity = this.identities.get(row);
+      if (identity !== undefined && this.shownRows.has(row) && hidden.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identity);
+    }
+    for (const key of this.hiddenAccounts.keys()) if (!hidden.has(key)) this.hiddenAccounts.delete(key);
+    if (this.hiddenUnsaved || JSON.stringify([...this.hiddenAccounts]) !== before) this.saveHidden();
+  }
+
+  /** The hidden or removed accounts changed (Settings, or the removed list): remember or forget which accounts they are now. */
+  hiddenChanged(): void { this.syncHidden(this.hidden()); }
 
   skipAccounts(keys: () => ReadonlySet<string>): void { this.hidden = keys; }
 
@@ -191,12 +255,8 @@ export class CLIProxyService {
     this.skipped = skipped;
     // hidden by this report's snapshot or since (the live list): never read, whatever rows are kept (#3423)
     const hiddenNow = new Set([...skipped, ...this.hidden()]);
-    // the account each hidden key named when it was hidden, kept while it is hidden: bounded by the hidden list
-    for (const row of this.entries) {
-      const identity = this.identities.get(row);
-      if (identity !== undefined && this.shownRows.has(row) && hiddenNow.has(row.key) && !this.hiddenAccounts.has(row.key)) this.hiddenAccounts.set(row.key, identity);
-    }
-    for (const key of this.hiddenAccounts.keys()) if (!hiddenNow.has(key)) this.hiddenAccounts.delete(key);
+    // which account a hidden key is follows the live list alone: a report's older snapshot must not bring back a key shown since
+    this.syncHidden(this.hidden());
     if (!due && shown.length === 0) return Promise.resolve(this.entries);
     // before their time only the accounts shown again are read: every other row is still fresh and stays
     // and a full read leaves out an account shown again and read less than MIN_REFRESH_MS ago
