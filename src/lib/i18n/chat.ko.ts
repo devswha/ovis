@@ -91,7 +91,7 @@ export const CHAT_KO: Record<string, string> = {
   "All {count} pictures": "이미지 {count}개 모두 보기",
   "Attached image": "첨부한 이미지",
   "Conversation compacted": "대화가 압축됨",
-  "Show summary": "요약 보기",
+  "Show summary": "요약 펼치기",
   "Hide summary": "요약 접기",
   "{n} tokens before": "압축 전 {n} 토큰",
   "{n} tokens after": "압축 후 {n} 토큰",

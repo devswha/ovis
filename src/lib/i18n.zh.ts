@@ -422,7 +422,7 @@ const BASE: Record<string, string> = {
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text · {destination}": "未发送的文本 · {destination}",
   "Put in message box adds this text to {destination}. Nothing is sent.": "点击“放入输入框”会将此文本放入 {destination}。不会发送。",
-  "Text you had not sent when herdr restarted. A new herdr gives pane IDs out again, so it waits here rather than in a pane it was not written for. Nothing here is sent.": "这是重启前未发送的文本。确认目标窗格后再放入输入框。",
+  "Text you had not sent before herdr restarted. Check the pane it was for, then put it in a message box. Nothing here is sent.": "这是重启前未发送的文本。确认目标窗格后再放入输入框。不会自动发送。",
   "Put in message box": "放入输入框",
   "Adds the text to this pane's message box. Nothing is sent.": "将文本添加到此面板的输入框中。不会发送。",
   "Message box": "输入框",
