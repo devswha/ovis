@@ -87,8 +87,10 @@ export const bornAs = (pid: number, birth: ProcessBirth | undefined): string =>
  * holds its token. Linux and macOS: ps's elapsed time, the file's mtime, the clock now.
  */
 export const startedBeforeRegistration = (pid: number, token: string): string =>
-  `{ reg_of=${pid}; f=$(grep -l -F ${shellQuote(token)} "$HOME/.config/herdr-web-ui/bridges/"*.json 2>/dev/null | head -n 1); `
-  + `[ -n "$f" ] && m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f") && `
+  `{ f=$(grep -l -F ${shellQuote(token)} "$HOME/.config/herdr-web-ui/bridges/"*.json 2>/dev/null | head -n 1); [ -n "$f" ] && ${startedBeforeFile(pid)}; }`;
+/** The same test against the registration file already named by the shell variable `f`: no token on any command line. */
+const startedBeforeFile = (pid: number): string =>
+  `{ reg_of=${pid}; m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f") && `
   + `e=$(ps -o etime= -p $reg_of 2>/dev/null | awk '{ n = split($1, a, /[-:]/); if (index($1, "-")) print a[1]*86400 + a[2]*3600 + a[3]*60 + a[4]; else if (n == 3) print a[1]*3600 + a[2]*60 + a[3]; else print a[1]*60 + a[2] }') && `
   + `[ -n "$e" ] && [ $(( $(date +%s) - e )) -le $(( m + 2 )) ]; }`;
 /** the very server a registration names: by its recorded birth, or (none recorded) by having started before it registered */
@@ -105,6 +107,8 @@ export const birthNow = (pid: number, platform: string | undefined): string =>
 // alive by kill -0; ended only on positive evidence (kill -0 fails, or ps reports a zombie): a PC whose ps lacks -o or -p
 // (BusyBox, a minimal image) never makes a running server look gone
 export const runs = (pid: number): string => `kill -0 ${pid} 2>/dev/null && ! ps -o stat= -p ${pid} 2>/dev/null | grep -q '^ *Z'`;
+/** registeredAs for a registration file the shell variable `f` already names, so its token is never on the command line */
+export const registeredIn = (pid: number, birth: ProcessBirth | undefined): string => birth ? bornAs(pid, birth) : startedBeforeFile(pid);
 /** a shell test that the process is still the one with that identity */
 export const sameProcess = (pid: number, identity: string): string => `[ -n ${shellQuote(identity)} ] && [ "$(${processIdentity(pid)})" = ${shellQuote(identity)} ]`;
 /** the launcher restoreServer runs with that server's own Bun: it reads the copy, takes its address first, starts the program, and removes the copy */

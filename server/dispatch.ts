@@ -353,11 +353,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   if (pathname === "/api/bridge") {
     setRequestRoute(pathname);
-    if (token === "" && !bridgeAuthorized) return unauthorizedJson();
-    if (url.searchParams.get("discover") === "herdr" && !bridgeAuthorized && !ownerAccess(access)) return jsonResponse({ error: { code: "forbidden", message: "Only the owner can discover this PC's sessions" } }, 403);
+    const discover = url.searchParams.get("discover") === "herdr";
+    // discovery is the owner's (a paired driving device, their Tailscale login, this PC) or the bridge token's, on a
+    // tokenless installation too; the identity alone stays the bridge token's there
+    if (discover && !bridgeAuthorized && !ownerAccess(access)) return jsonResponse({ error: { code: "forbidden", message: "Only the owner can discover this PC's sessions" } }, 403);
+    if (token === "" && !bridgeAuthorized && !discover) return unauthorizedJson();
     try {
       const identity = await bridgeIdentity(sidecar);
-      return jsonResponse(url.searchParams.get("discover") === "herdr" ? { ...identity, found_herdr_sessions: await discoverHerdrSessions() } : identity);
+      return jsonResponse(discover ? { ...identity, found_herdr_sessions: await discoverHerdrSessions() } : identity);
     } catch (error) { return errorResponse(error); }
   }
   if (pathname === "/api/machines" || pathname.startsWith("/api/machines/")) {
