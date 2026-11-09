@@ -1502,9 +1502,17 @@ export class MachineManager {
     if (job && host.kind === "windows") job.public.windows_startup = moving || !this.machines.has(runtime.machine.id);
     const { platform } = inspection;
     let expectedSocket = inspection.expectedSocket;
+    // a setup or a saved PC that asks for its own Ovis where SSH cannot reach one: the user must choose again, not a retry
+    if (target.own_ovis && host.kind !== "posix") throw new MachineActionRequired("Choosing this PC's Ovis server over SSH requires Linux or macOS", "setup");
+    // what already serves the expected socket (a live bridge registered for it, or herdr answering there) is connected as
+    // before: a saved PC that reconnects to it is never stopped by a choice nobody asked for
+    const servedAlready = async () => {
+      for (const d of inspection.descriptors) if (d.socket_path === expectedSocket && Number.isSafeInteger(d.pid) && d.pid > 0 && await host.alive(ssh, d.pid)) return true;
+      return await host.chosenSocketStatus?.(ssh, inspection, expectedSocket) === "usable";
+    };
     // The core adapter is not a TUI socket. Discover the account's own registered Ovis and prove
     // its loopback endpoint before offering it; an explicit selection is checked anew on each try.
-    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr) {
+    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || !await servedAlready())) {
       const found: FoundOvis[] = [];
       const sessions = new Map<string, FoundHerdrSession>();
       // answered: one of them proved itself through the tunnel; unlisted: one did not list the account's herdr sessions
@@ -1547,7 +1555,7 @@ export class MachineManager {
       } else if (found.length) {
         throw await offer(answered ? "Choose this PC's Ovis server or a running herdr session." : OWN_OVIS_UNANSWERED);
       }
-    } else if (target.own_ovis) throw new Error("Choosing this PC's Ovis server over SSH requires Linux or macOS");
+    }
     // what the PC's own Ovis said is read anew on every try: it may have been updated or replaced since
     // kept while its own Ovis is away (below): an install that stopped it and then failed is tried again from its card
     const offered = { remote_ovis: runtime.machine.remote_ovis, installFix: runtime.installFix, remoteRevision: runtime.remoteRevision };

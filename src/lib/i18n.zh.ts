@@ -167,6 +167,7 @@ const BASE: Record<string, string> = {
   "The other PC's answer was larger than this app accepts": "另一台电脑的响应超出了此应用可接受的大小",
   "The other PC's answer could not be read": "无法读取另一台电脑的响应",
   "Start Ovis on that PC, or start a new herdr here": "请在那台 PC 上启动 Ovis，或在此启动新的 herdr",
+  "Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.": "此 PC 上的 Ovis 正在运行，但现在没有响应。请稍后再试，或在此启动新的 herdr。",
   "Browse files": "浏览文件",
   "Copy link": "复制链接",
   "Goal: {objective}": "目标：{objective}",

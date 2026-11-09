@@ -163,6 +163,7 @@ const BASE: Record<string, string> = {
   "The other PC's answer was larger than this app accepts": "다른 PC의 응답이 이 앱이 받을 수 있는 크기보다 큽니다",
   "The other PC's answer could not be read": "다른 PC의 응답을 읽을 수 없습니다",
   "Start Ovis on that PC, or start a new herdr here": "그 PC에서 Ovis를 시작하거나, 여기에서 새 herdr를 시작하세요",
+  "Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.": "이 PC의 Ovis가 실행 중이지만 지금은 응답하지 않습니다. 잠시 후 다시 시도하거나, 여기에서 새 herdr를 시작하세요.",
   "Browse files": "파일 찾아보기",
   "Copy link": "링크 복사",
   "Goal: {objective}": "목표: {objective}",

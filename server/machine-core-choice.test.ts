@@ -7,13 +7,13 @@ import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type SetupJob, type SetupReques
 import { CompletionTracker } from "./completion.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
-import { posixHost } from "./remote-host.ts";
+import { posixHost, windowsHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { readProcessBirth } from "./process-owner.ts";
 
 // quiet: the live server cannot prove itself at first (no answer, an HTTP error); open: once chosen, it no longer can
 const quiet = ["unanswered", "server error"], open = ["wrong token", "redirect", "server error later", "server error after proof"];
-it.each(["connect", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect"])("chooses the PC's own core server: %s", async (outcome) => {
+it.each(["connect", "default bridge", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect"])("chooses the PC's own core server: %s", async (outcome) => {
   const dir = mkdtempSync(join(tmpdir(), "machine-core-choice-"));
   const id = "12345678-1234-1234-1234-123456789abc";
   const socket = "/home/fixture/.config/ovis/hc-adapter.sock";
@@ -22,6 +22,9 @@ it.each(["connect", "birthless", "unanswered", "server error", "server error lat
   if (birth.state !== "identified") throw new Error("Test process birth unavailable");
   // birthless: an older server's registration, which recorded no process birth
   const descriptor = { socket_path: socket, pid: process.pid, ...(outcome === "birthless" ? {} : { birth: birth.birth }), port: 12345, token: "a".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: false };
+  // default bridge: this app's bridge already serves the PC's default herdr socket, as on a saved PC that reconnects
+  const bridge = { socket_path: join(dir, ".config/herdr/herdr.sock"), pid: process.pid, port: 23456, token: "b".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
+  const listedHere = outcome === "default bridge" ? [bridge, descriptor] : [descriptor];
   const registry = join(dir, ".config/herdr-web-ui/bridges");
   mkdirSync(registry, { recursive: true });
   const registration = join(registry, createHash("sha256").update(socket).digest("hex") + ".json");
@@ -54,16 +57,18 @@ it.each(["connect", "birthless", "unanswered", "server error", "server error lat
       return out;
     }),
     spyOn(posixHost, "herdrVersion").mockResolvedValue("herdr 0.9.0"),
-    spyOn(posixHost, "inspect").mockResolvedValue({ platform: "linux-x64", home: dir, herdrPath: "/fixture/herdr", expectedSocket: join(dir, ".config/herdr/herdr.sock"), bundleReady: true, bundleOlder: false, descriptors: [descriptor], runtimeDir, registryDir: registry }),
-    spyOn(posixHost, "descriptors").mockResolvedValue([descriptor]),
+    spyOn(posixHost, "inspect").mockResolvedValue({ platform: "linux-x64", home: dir, herdrPath: "/fixture/herdr", expectedSocket: join(dir, ".config/herdr/herdr.sock"), bundleReady: true, bundleOlder: false, descriptors: listedHere, runtimeDir, registryDir: registry }),
+    spyOn(posixHost, "descriptors").mockResolvedValue(listedHere),
     spyOn(posixHost, "alive").mockImplementation(async () => !selected || outcome !== "stopped after proof"),
     spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
     spyOn(posixHost, "start").mockImplementation(async () => { starts++; throw new Error("must not start herdr"); }),
     spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {
-      expect(remotePort).toBe(descriptor.port);
+      const served = remotePort === bridge.port && outcome === "default bridge" ? bridge : descriptor;
+      expect(remotePort).toBe(served.port);
       relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
-        expect(request.headers.get("authorization")).toBe(`Bearer ${descriptor.token}`);
+        expect(request.headers.get("authorization")).toBe(`Bearer ${served.token}`);
         const path = new URL(request.url).pathname;
+        if (path === "/api/bridge" && served === bridge) return Response.json({ ...bridge, socket_id: "fixture:tui", herdr: { protocol: 22, version: "0.9.0", runtime: "herdr" } });
         if (path === "/api/bridge") {
           // the server cannot reach its core adapter right now: every identity request, or (after proof) the one after discovery
           const discovering = new URL(request.url).searchParams.get("discover") === "herdr";
@@ -89,6 +94,15 @@ it.each(["connect", "birthless", "unanswered", "server error", "server error lat
     job = manager.setup({ ...request, machine_id: id, update_remote: true }, { auto: true });
   });
   try {
+    if (outcome === "default bridge") {
+      // reconnects to its live bridge on its own, as before: no choice it did not ask for, nothing started, no retry
+      const reconnect = await run({ destination: "fixture-only" });
+      expect(reconnect).toMatchObject({ phase: "connected", runtime: "herdr" });
+      expect(reconnect.action_required ?? null).toBeNull();
+      expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ state: "connected", runtime: "herdr", action_required: null });
+      expect(starts).toBe(0);
+      return;
+    }
     const offer = await run({ destination: "fixture-only" });
     expect(offer).toMatchObject({ phase: "failed", action_required: "choose_herdr", found_herdr_sessions: sessions, found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
     expect(starts).toBe(0);
@@ -135,5 +149,34 @@ it.each(["connect", "birthless", "unanswered", "server error", "server error lat
     }
   } finally {
     manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); relays.forEach((relay) => relay.stop(true)); herdr?.stop(true); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+it("asks for a new choice instead of retrying when a saved Windows PC is set to use its own Ovis server", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "machine-core-windows-"));
+  const id = "12345678-1234-1234-1234-123456789abd";
+  writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: { destination: "fixture-only", own_ovis: "/home/fixture/.config/ovis/hc-adapter.sock" } }]));
+  const mocks = [
+    spyOn(SshConnection.prototype, "start").mockResolvedValue(undefined),
+    spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
+    spyOn(SshConnection.prototype, "run").mockRejectedValue(new Error("no command is expected on that PC")),
+    spyOn(posixHost, "inspect").mockRejectedValue(new Error("not a POSIX shell")),
+    spyOn(windowsHost, "inspect").mockResolvedValue({ platform: "win32-x64", home: "C:\\Users\\fixture", herdrPath: "", expectedSocket: "\\\\.\\pipe\\herdr", bundleReady: true, bundleOlder: false, descriptors: [], runtimeDir: "C:\\runtime", registryDir: "C:\\registry" }),
+    spyOn(windowsHost, "start").mockImplementation(async () => { throw new Error("must not start herdr"); }),
+  ];
+  const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+  // the PC's own reconnect ends in a retry scheduled (the bug) or a decision for the user, whichever comes first
+  const settled = Promise.withResolvers<"retry" | "decision">();
+  const retries = spyOn(MachineManager.prototype as unknown as { retryLater(runtime: unknown): void }, "retryLater").mockImplementation(() => settled.resolve("retry"));
+  const off = manager.subscribe(() => { if (manager.list().find((pc) => pc.id === id)?.state === "error") settled.resolve("decision"); });
+  const timeout = setTimeout(() => settled.reject(new Error("the reconnect did not settle")), 5000);
+  try {
+    manager.patch(id, { enabled: true });
+    expect(await settled.promise).toBe("decision");
+    // a decision for the user, as any MachineActionRequired: the PC waits for it instead of reconnecting
+    expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ state: "error", action_required: "setup" });
+    expect(retries).not.toHaveBeenCalled();
+  } finally {
+    clearTimeout(timeout); off(); manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); rmSync(dir, { recursive: true, force: true });
   }
 });

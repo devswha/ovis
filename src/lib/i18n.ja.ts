@@ -165,6 +165,7 @@ const BASE: Record<string, string> = {
   "The other PC's answer was larger than this app accepts": "別の PC の応答が、このアプリで受け取れるサイズを超えています",
   "The other PC's answer could not be read": "別の PC の応答を読み取れませんでした",
   "Start Ovis on that PC, or start a new herdr here": "その PC で Ovis を起動するか、ここで新しい herdr を起動してください",
+  "Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.": "この PC の Ovis は動作していますが、今は応答していません。少し待ってからもう一度試すか、ここで新しい herdr を起動してください。",
   "Browse files": "ファイルを参照",
   "Copy link": "リンクをコピー",
   "Goal: {objective}": "目標: {objective}",

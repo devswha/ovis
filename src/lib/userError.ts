@@ -119,6 +119,7 @@ export function machineErrorText(words: string, translateIn: Translate): string 
     ["The other PC's answer was larger than this app accepts", t("The other PC's answer was larger than this app accepts")],
     ["The other PC's answer could not be read", t("The other PC's answer could not be read")],
     ["Start Ovis on that PC, or start a new herdr here", t("Start Ovis on that PC, or start a new herdr here")],
+    ["Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.", t("Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.")],
   ];
   return known.reduce((text, [english, local]) => text.replaceAll(english, local), words);
 }

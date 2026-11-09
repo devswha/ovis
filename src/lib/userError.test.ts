@@ -87,7 +87,7 @@ describe("machineErrorText", () => {
   const inKorean = (key: string) => translate("ko", key);
 
   it("shows the server's sentences for an unusable PC answer in the UI language", () => {
-    for (const sentence of [new RemoteResponseTooLarge().message, new RemoteResponseInvalid().message, "Start Ovis on that PC, or start a new herdr here"]) {
+    for (const sentence of [new RemoteResponseTooLarge().message, new RemoteResponseInvalid().message, "Start Ovis on that PC, or start a new herdr here", "Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here."]) {
       const shown = machineErrorText(sentence, inKorean);
       expect(shown).toBe(translate("ko", sentence));
       expect(shown).not.toBe(sentence);
