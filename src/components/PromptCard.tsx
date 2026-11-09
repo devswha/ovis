@@ -158,7 +158,11 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
     return true;
   };
 
+  // a Retry sends the answer that failed: once the card's checks or text change, Send, Submit or Next take them as they are now
+  const dropRetry = (): void => setError((current) => current?.retry === undefined ? current : { ...current, retry: undefined });
+
   const toggle = (index: number): void => {
+    dropRetry();
     setSelected((current) => {
       const next = new Set(current);
       if (next.has(index)) next.delete(index); else next.add(index);
@@ -386,8 +390,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
               const next = event.currentTarget.value;
               setCustom(next);
               onTextChange?.(next);
-              // a Retry would send the text that failed, not this edit: Send takes the field as it is now
-              setError((current) => current?.retry?.custom_text !== undefined || current?.retry?.draft !== undefined ? { ...current, retry: undefined } : current);
+              dropRetry();
             }} onKeyDown={(event) => {
               // an IME's Enter commits the candidate; WebKit can send it after compositionend, as key code 229
               if (event.key === "Enter" && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && custom.trim().length > 0) void answer({ custom_text: custom.trim() });

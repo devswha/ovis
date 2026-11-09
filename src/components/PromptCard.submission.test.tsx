@@ -155,3 +155,87 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
     }
   });
 });
+
+/** A card for `prompt` whose answers fail with a 500 until `settle` is called with nothing. */
+async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: PromptAnswer[]; root: () => ReactTestRenderer["root"]; settle: (error?: unknown) => Promise<void> }) => Promise<void>): Promise<void> {
+  const sent: PromptAnswer[] = [];
+  let pending: ((error?: unknown) => void) | null = null;
+  const answerSpy = spyOn(machineContext, "useMachineApi").mockReturnValue({
+    answerPanePrompt: (answer: PromptAnswer) => {
+      sent.push(answer);
+      return new Promise<void>((resolve, reject) => { pending = (error) => { if (error !== undefined) reject(error); else resolve(); }; });
+    },
+  } as ReturnType<typeof machineContext.useMachineApi>);
+  const settingsSpy = spyOn(settingsModule, "useSettings").mockReturnValue({
+    settings: settingsModule.DEFAULT_SETTINGS,
+    resolvedLanguage: "en",
+  } as ReturnType<typeof settingsModule.useSettings>);
+  const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const savedDoc = Object.getOwnPropertyDescriptor(globalThis, "document");
+  const savedAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
+  const listen = { addEventListener() {}, removeEventListener() {} };
+  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
+  Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { ...listen, matchMedia: () => ({ matches: false, ...listen }) } });
+  Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: { activeElement: null, body: {} } });
+  Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+  let renderer: ReactTestRenderer | undefined;
+  try {
+    await act(async () => {
+      renderer = create(createElement(PromptCard, { paneId: "w1D:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {} }));
+    });
+    await run({ sent, root: () => renderer!.root, settle: (error) => act(async () => { pending!(error); }) });
+  } finally {
+    await act(async () => { renderer?.unmount(); });
+    settingsSpy.mockRestore();
+    answerSpy.mockRestore();
+    if (savedWindow) Object.defineProperty(globalThis, "window", savedWindow); else Reflect.deleteProperty(globalThis, "window");
+    if (savedDoc) Object.defineProperty(globalThis, "document", savedDoc); else Reflect.deleteProperty(globalThis, "document");
+    if (savedAct) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", savedAct); else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    if (savedLanguages) Object.defineProperty(navigator, "languages", savedLanguages); else Reflect.deleteProperty(navigator, "languages");
+  }
+}
+
+describe("a failed answer's Retry never sends a selection the user has since changed", () => {
+  const click = { nativeEvent: {}, currentTarget: {} };
+  const buttonWith = (root: ReactTestRenderer["root"], className: string) => root.findAll((node) => node.type === "button" && typeof node.props.className === "string" && node.props.className.includes(className));
+  const checkboxes = (root: ReactTestRenderer["root"]) => root.findAll((node) => node.type === "input" && node.props.type === "checkbox");
+  const options = [{ label: "A", description: null }, { label: "B", description: null }, { label: "C", description: null }];
+
+  it("Claude-style multi-select: A submitted and failed, then switched to B, sends B", async () => {
+    const prompt: InteractivePrompt = { id: "multi", agent: "claude", kind: "question", title: "Pick", question: "Pick", body: null, options, multi_select: true, custom_option_index: null };
+    await withFailingCard(prompt, async ({ sent, root, settle }) => {
+      await act(async () => { checkboxes(root())[0]!.props.onChange(); });
+      await act(async () => { buttonWith(root(), "prompt-card-submit")[0]!.props.onClick(click); });
+      await settle(new ApiError("herdr said no", 500, "internal_error", "internal_error"));
+      expect(buttonWith(root(), "prompt-card-retry")).toHaveLength(1);
+
+      await act(async () => { checkboxes(root())[0]!.props.onChange(); });
+      await act(async () => { checkboxes(root())[1]!.props.onChange(); });
+      for (const retry of buttonWith(root(), "prompt-card-retry")) await act(async () => { retry.props.onClick(click); });
+      await act(async () => { buttonWith(root(), "prompt-card-submit")[0]!.props.onClick(click); });
+      expect(sent.map((answer) => answer.option_indices)).toEqual([[0], [1]]);
+      await settle();
+    });
+  });
+
+  it("pi-ask multi-select: a failed Next with A, then switched to B, carries B", async () => {
+    const prompt: InteractivePrompt = {
+      id: "pi-multi", agent: "pi", kind: "question", title: "Pick", question: "Pick", body: null, options, multi_select: true, custom_option_index: null,
+      checks_with_text: true, drafts_saved: true, can_step_next: true,
+    };
+    await withFailingCard(prompt, async ({ sent, root, settle }) => {
+      await act(async () => { checkboxes(root())[0]!.props.onChange(); });
+      await act(async () => { buttonWith(root(), "prompt-card-next")[0]!.props.onClick(click); });
+      await settle(new ApiError("herdr said no", 500, "internal_error", "internal_error"));
+      expect(buttonWith(root(), "prompt-card-retry")).toHaveLength(1);
+
+      await act(async () => { checkboxes(root())[0]!.props.onChange(); });
+      await act(async () => { checkboxes(root())[1]!.props.onChange(); });
+      for (const retry of buttonWith(root(), "prompt-card-retry")) await act(async () => { retry.props.onClick(click); });
+      await act(async () => { buttonWith(root(), "prompt-card-next")[0]!.props.onClick(click); });
+      expect(sent.map((answer) => [answer.step_next, answer.draft?.option_indices])).toEqual([[true, [0]], [true, [1]]]);
+      await settle();
+    });
+  });
+});
