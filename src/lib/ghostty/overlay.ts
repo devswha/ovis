@@ -82,9 +82,10 @@ function xtermRowRenderer(term: Terminal): XtermRowRenderer | null {
 }
 
 /**
- * xterm's cell in device pixels, which follows the font alone, or null before it measured one. Its screen keeps the
- * last grid's size while its renderer is paused (a screen the chat lens covers, or out of view) and takes the new one
- * only when it shows again, but tells the resize at once: the screen measured then was the old grid's (#3366).
+ * xterm's cell in device pixels, which follows the font alone, or null before it measured one. While its renderer is
+ * paused (out of view) xterm tells a resize at once but resizes its screen later, from an idle task, so the screen
+ * measured then is the old grid's. Under the chat lens the pane sits in a `content-visibility: hidden` subtree, where
+ * the browser skips ResizeObserver, so nothing measured the screen again: the old screen over the new columns stuck (#3366).
  */
 function xtermDeviceCell(term: Terminal): { width: number; height: number } | null {
   const core = (term as unknown as { _core?: { _renderService?: { dimensions?: { device?: { cell?: { width: number; height: number } } } } } })._core;
