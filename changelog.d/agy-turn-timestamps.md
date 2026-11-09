@@ -1,0 +1,3 @@
+### Fixed
+- Fixed Agy background-task wakeups merging into a single assistant turn and chat reply footers
+  showing the turn start timestamp instead of the reply completion timestamp.
