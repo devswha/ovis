@@ -2415,6 +2415,14 @@ button {
     margin-block: calc((var(--lens-h) - var(--touch-target-header)) / 2);
     padding: 0 var(--space-2);
   }
+
+  /* the option's radius would cut a finger's target at its corners (Chromium hit-tests the rounded box): an
+     empty, square layer over the same box keeps the corners the option's */
+  .lens-option::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
 }
 
 /* the Ovis wordmark at the head of the sidebar (App.tsx SidebarBrand), the theme's own pair */

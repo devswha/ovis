@@ -1713,7 +1713,8 @@ try {
   await page.getByRole("button", { name: "notes", exact: true }).click();
   const refused = page.getByRole("dialog", { name: "notes.txt", exact: true });
   await refused.getByRole("alert").waitFor();
-  assert.equal(await refused.getByRole("alert").innerText(), "The PC could not read the file. Reopen it to try again.");
+  // a PC dropped mid-read keeps its machine code (lib/fileFailure.ts): the alert names the PC as away
+  assert.equal(await refused.getByRole("alert").innerText(), "That PC is not reachable right now.");
   assert.equal(await refused.getByText("machine_unavailable").count(), 0);
   assert.equal(await refused.locator(".file-viewer-text").count(), 0);
   console.log("PASS A file whose body is refused shows an error, not the error's JSON");
