@@ -52,4 +52,18 @@ describe("UnsentTextDialog", () => {
     expect(output).toContain("Build PC · release · chat");
     expect(output).toContain("Put in message box adds this text to Build PC · release · chat");
   });
+
+  it("does not point to a message box when the pane has none", async () => {
+    const pane = { pane_id: "w1:p1", workspace_id: "w1", label: "shell", title: "zsh" } as HerdrPane;
+    const machine: Machine = { id: "target-pc", name: "Build PC", kind: "local", enabled: true, state: "connected", error: null, snapshot: { protocol: 22, version: "test", workspaces: [{ workspace_id: "w1", label: "release", active_tab_id: "w1:t1", number: 1, pane_count: 1, tab_count: 1, agent_status: "idle", focused: false }], panes: [pane], tabs: [], agents: [], layouts: [] } };
+    localStorage.setItem("ovis:unsent:test", JSON.stringify({ id: "test", machine_id: "old-pc", pane_id: "old:p1", pane_title: "old", kind: "line", text: "draft", at: 1 }));
+    await act(async () => {
+      renderer = create(<SettingsProvider><UnsentTextDialog machines={[machine]} target={{ machineId: "target-pc", pane }} canRecover={false} onRecover={() => true} onClose={() => undefined} /></SettingsProvider>);
+    });
+    const lead = renderer?.root.findByProps({ className: "unsent-lead" });
+    const actions = renderer?.root.findAllByType("button").map((button) => button.children.join(""));
+    expect(actions).not.toContain("Put in message box");
+    expect(lead?.children.join("")).not.toMatch(/message box/i);
+    expect(lead?.children.join("")).toContain("Nothing here is sent.");
+  });
 });
