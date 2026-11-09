@@ -299,5 +299,27 @@ try {
       assert.equal(await size('.input[aria-label="Field"]'), body, `${where}: a cancelled press disarms the field`);
     } finally { await context.close(); }
   }
+  // an interface size over 16px: the press keeps the field at the interface size instead of shrinking it to 16px
+  for (const width of [393, 1180]) {
+    const context = await browser.newContext({ viewport: { width, height: 820 }, hasTouch: true });
+    try {
+      await context.addInitScript(() => {
+        Object.defineProperty(Navigator.prototype, "platform", { configurable: true, get: () => "iPhone" });
+      });
+      const page = await context.newPage();
+      await page.goto(`http://127.0.0.1:${server.port}/`);
+      // a 20px interface body size over the 14px default, as lib/settings.ts writes it on <html>
+      await page.evaluate(() => {
+        document.documentElement.style.setProperty("--ui-scale", String(20 / 14));
+        document.querySelector(".app")!.insertAdjacentHTML("afterbegin", '<input class="input" aria-label="Large field">');
+      });
+      const field = page.locator('.input[aria-label="Large field"]');
+      const rest = await field.evaluate((el) => getComputedStyle(el).fontSize);
+      assert.ok(Number.parseFloat(rest) > 16, `iOS ${width}px: the field follows a 20px interface (${rest})`);
+      await field.dispatchEvent("pointerdown");
+      await field.focus();
+      assert.equal(await field.evaluate((el) => getComputedStyle(el).fontSize), rest, `iOS ${width}px: the press keeps a size over 16px`);
+    } finally { await context.close(); }
+  }
   console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell, field size on iOS");
 } finally { await browser?.close(); server.stop(); }

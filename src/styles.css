@@ -3625,13 +3625,15 @@ button {
   color: var(--text-strong);
   font: inherit;
   /* a field follows the interface size like the label beside it; on iOS, lib/viewport.ts arms it to
-     --fs-input on the press before the focus, which is when Safari decides whether to zoom the page */
-  font-size: var(--fs-md);
+     at least --fs-input on the press before the focus, which is when Safari decides whether to zoom the
+     page; a larger interface size stays as it is */
+  --field-fs: var(--fs-md);
+  font-size: var(--field-fs);
 }
 
 .input[data-armed],
 .select[data-armed] {
-  font-size: var(--fs-input);
+  font-size: max(var(--fs-input), var(--field-fs));
 }
 
 .tab-strip .tab-strip-rename {
@@ -3673,7 +3675,7 @@ button {
 @media (min-width: 641px) {
   .input,
   .select {
-    font-size: var(--fs-sm);
+    --field-fs: var(--fs-sm);
   }
 }
 
