@@ -107,6 +107,10 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
  * GET /api/bridge -> authenticated BridgeIdentity (socket + runtime compatibility)
+ * GET /api/bridge?discover=herdr -> owner/bridge-token only; also found_herdr_sessions on this account.
+ * SetupRequest.own_ovis chooses a registered Ovis by socket identity, reverified over SSH each time;
+ * mutually exclusive with herdr_socket/start_new_herdr. choose_herdr offers found_ovis beside sessions.
+ * Machine/SetupJob.runtime names the verified runtime (herdr or herdr-core); absent until known.
  * GET /api/machines -> MachineRoster { machines: Machine[] }; GET /api/machines/events -> MachineEvent SSE
  * GET /api/machines?verify_source_boot=:id -> MachineRoster with verified_source_boot { machine_id, boot_id }:
  *   the boot id of the server behind that PC, asked for during this request (the local one directly,
@@ -189,8 +193,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *                                            install only, while it checks or builds (install_cancellable); 400 invalid_update_cancel,
  *                                            409 update_restart_required, or 409 update_not_cancellable alike for a wrong or expired
  *                                            install_id and for no update running (supervisor IPC: update-cancel-v2)
- *                                            (the bridge token may cancel any install that builds there, as it may start one: it is this
- *                                            PC owner's own connection server, which asks only for an install it requested)
+ *                                            (the bridge token may cancel only an install it asked for, by the install_id its
+ *                                            202 gave: never another device's, nor one the PC's own Settings started)
  *         (at most 1 KiB): 400 invalid_update_install for a missing or malformed revision,
  *         409 update_restart_required where the supervisor does not advertise
  *         revision_bound_install, 409 update_offer_changed when the offer is no longer that
