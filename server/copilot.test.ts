@@ -261,7 +261,7 @@ function foreignOwner(file: string) {
 }
 
 for (const chain of ["proven", "pruned", "unterminated", "linked", "foreign"] as const) {
-  it.skipIf(process.platform !== "linux")(`replays a ${chain} rotated log only when a fresh reader can prove it starts with the process`, async () => {
+  it.skipIf(process.platform !== "linux")(`replays a ${chain} rotated log for a fresh reader only from what it can prove`, async () => {
     const fixture = await logFixture([]);
     const { environment, log, pid } = fixture;
     const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
@@ -279,7 +279,8 @@ for (const chain of ["proven", "pruned", "unterminated", "linked", "foreign"] as
       if (chain === "foreign") stats = foreignOwner(copy(1));
       appendFileSync(log, "after rotation\n");
       const read = readCopilotProcessSession(environment, ["copilot"], pid);
-      if (chain === "proven") {
+      // a pruned chain cannot be proven to start with the process, but its latest registration still stands
+      if (chain === "proven" || chain === "pruned") {
         expect(read.session).toMatchObject({ sessionId: session, logged: true });
         // the open file's own lines follow the copies, and later rotations follow from there
         const before = fixture.binding();
@@ -337,8 +338,7 @@ for (const [tail, copied] of ["empty", "written", "in the same bytes"].flatMap((
       fs.copyFileSync(log, copy(1));
       fs.truncateSync(log, 0);
       appendFileSync(log, tail === "written" ? "later output\n" : output);
-      // the open log back in the very bytes read is no proof of what came between: unavailable, never the earlier session
-      expect(fixture.binding()?.sessionId).toBe(tail === "in the same bytes" ? undefined : other);
+      expect(fixture.binding()?.sessionId).toBe(other);
     } finally { await fixture.close(); }
   });
 }
@@ -363,7 +363,7 @@ it.skipIf(process.platform !== "linux")("never keeps the earlier session when tw
     rotate();
     // the newest copy now starts with the bytes read too, though the older one continued them
     appendFileSync(log, output);
-    expect(fixture.binding()).toBeNull();
+    expect(fixture.binding()?.sessionId).toBe(other);
   } finally { await fixture.close(); }
 });
 
@@ -385,11 +385,85 @@ it.skipIf(process.platform !== "linux")("keeps a binding the copies carried on w
     const stat = statSync(log);
     fs.utimesSync(log, stat.atime, new Date(stat.mtimeMs + 1000));
     expect(fixture.binding()).toEqual(before);
-    // a rotation since, into the same bytes, is not a metadata-only change
+    // a rotation since, of a log that registered another session, is not a metadata-only change
+    appendFileSync(log, register(other));
     fs.renameSync(copy, log.replace(/\.log$/, ".2.log"));
     writeFileSync(copy, readFileSync(log, "utf8"));
+    writeFileSync(log, "later output\n");
     fs.utimesSync(log, stat.atime, new Date(stat.mtimeMs + 2000));
-    expect(fixture.binding()).toBeNull();
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("never takes a log that still starts with the bytes read for an append across a rotation", async () => {
+  const fixture = await logFixture([]);
+  const { log } = fixture;
+  const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+  const output = "earlier output\n";
+  try {
+    writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+    appendFileSync(log, output);
+    expect(fixture.binding()?.sessionId).toBe(session);
+    appendFileSync(log, register(other));
+    fs.renameSync(copy(1), copy(2));
+    fs.copyFileSync(log, copy(1));
+    writeFileSync(log, output + "more output\n");
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("never trusts the same bytes again across a lookup inside Copilot's copy shift", async () => {
+  const fixture = await logFixture([]);
+  const { log } = fixture;
+  const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+  const output = "earlier output\n";
+  try {
+    writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+    appendFileSync(log, output);
+    expect(fixture.binding()?.sessionId).toBe(session);
+    // a lookup while .1.log is moved up and the new one is not yet in place
+    fs.renameSync(copy(1), copy(2));
+    appendFileSync(log, "ordinary output\n");
+    fixture.binding();
+    appendFileSync(log, register(other));
+    fs.copyFileSync(log, copy(1));
+    writeFileSync(log, output + "ordinary output\n");
+    fs.renameSync(copy(2), copy(3));
+    fs.renameSync(copy(1), copy(2));
+    expect(fixture.binding()?.sessionId).not.toBe(session);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("never follows the newest of two copies that start with the bytes read", async () => {
+  const fixture = await logFixture([]);
+  const { log } = fixture;
+  const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+  const output = "earlier output\n";
+  const rotate = () => {
+    for (let index = 3; index >= 1; index--) if (fs.existsSync(copy(index))) fs.renameSync(copy(index), copy(index + 1));
+    fs.copyFileSync(log, copy(1));
+    fs.truncateSync(log, 0);
+  };
+  try {
+    writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+    appendFileSync(log, output);
+    expect(fixture.binding()?.sessionId).toBe(session);
+    appendFileSync(log, register(other));
+    rotate();
+    appendFileSync(log, output);
+    rotate();
+    appendFileSync(log, "different output\n");
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("lets a pruned log's latest copied registration outrank an older held marker", async () => {
+  const fixture = await logFixture([session]);
+  const { log } = fixture;
+  try {
+    writeFileSync(log.replace(/\.log$/, ".1.log"), "1970-01-01T00:00:06.000Z [INFO] later output\n" + register(other));
+    appendFileSync(log, "ordinary output\n");
+    expect(fixture.binding()?.sessionId).toBe(other);
   } finally { await fixture.close(); }
 });
 

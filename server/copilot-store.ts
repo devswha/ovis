@@ -101,10 +101,10 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: big
   const archives: { fd: number; size: number; dev: bigint; ino: bigint }[] = [];
   try {
     const consumed = cached.hash.copy().digest("hex");
-    // Bytes read to find and replay the copy: only copies newer than the match count.
-    let total = 0;
+    // Bytes hashed to find the copy.
+    let hashed = 0;
     let continued = -1;
-    for (let index = 1; index <= MAX_LOG_ARCHIVES && continued < 0; index++) {
+    for (let index = 1; index <= MAX_LOG_ARCHIVES; index++) {
       let fd: number;
       try { fd = openSync(`${target.slice(0, -".log".length)}.${index}.log`, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW); }
       catch (error) {
@@ -118,14 +118,22 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: big
       Object.assign(archive, { size: Number(stat.size), dev: stat.dev, ino: stat.ino });
       // Copilot writes its copies as the user that owns the open log: another user's file in a shared folder is none.
       if (!stat.isFile() || stat.uid !== uid) return null;
-      if (archive.size < cached.size) { total += archive.size; continue; }
-      if ((total += archive.size) > LOG_HASH_BYTES) return null;
+      // The newest copy when the bytes were read, and those older, came before them. Moving a copy up
+      // changes only its ctime; one written over in place is another copy.
+      if (stat.dev === cached.newestCopy?.dev && stat.ino === cached.newestCopy.ino
+        && stat.size === cached.newestCopy.size && stat.mtimeNs === cached.newestCopy.mtimeNs) break;
+      if (archive.size < cached.size) continue;
+      if ((hashed += cached.size) > LOG_HASH_BYTES) return null;
+      // The first rotation since the read copied those bytes: of the copies that start with them, the oldest.
       if (logPrefix(fd, cached.size)?.digest("hex") === consumed) continued = archives.length - 1;
     }
     // No copy carries on from the bytes read (an older one could revive a session left since):
     // what was logged in between is unknown, so the rejection stands. A release already seen stays one,
     // naming no session a handoff could take.
     if (continued < 0) return cached.selection.kind === "unregistered" ? { kind: "unregistered", binding: null } : null;
+    let replayed = 0;
+    for (let index = continued; index >= 0; index--) replayed += archives[index]!.size;
+    if (replayed > LOG_HASH_BYTES) return null;
     let selected = cached.selection;
     // Until a rotated file holds a line, each read replays these copies from the same anchor: one binding.
     const epoch = cached.epoch;
@@ -182,6 +190,7 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
     const oldest = archives.at(-1);
     if (oldest === undefined || !Number.isSafeInteger(started)) return null;
     let selected: ForegroundState = legacy;
+    let proven = true;
     for (let index = archives.length - 1; index >= 0; index--) {
       const { fd, size, dev, ino, mtimeNs, ctimeNs } = archives[index]!;
       const bytes = Buffer.alloc(size);
@@ -190,7 +199,9 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
       if (after.size !== BigInt(size) || after.mtimeNs !== mtimeNs || after.ctimeNs !== ctimeNs) return LOG_READ_CHANGED;
       if (index === archives.length - 1) {
         const first = Date.parse(LOG_LINE_TIME.exec(bytes.subarray(0, 64).toString("utf8"))?.[1] ?? "");
-        if (!(first >= started && first - started <= LOG_START_MARGIN_MS)) return null;
+        // Pruned copies hid what came first: a lifecycle line kept still outranks a held marker.
+        proven = first >= started && first - started <= LOG_START_MARGIN_MS;
+        if (!proven) selected = unavailable("copilot_log_gap");
       }
       // Copilot renames each copy into place whole: one ending inside a line is not its copy.
       if (size > 0 && bytes[size - 1] !== 0x0a) return null;
@@ -205,7 +216,7 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
       if (now?.dev !== dev || now.ino !== ino) return LOG_READ_CHANGED;
     }
     if (lstatSync(`${base}.${archives.length + 1}.log`, { throwIfNoEntry: false })) return LOG_READ_CHANGED;
-    return selected;
+    return proven || selected.kind !== "unavailable" ? selected : null;
   } finally { for (const { fd } of archives) closeSync(fd); }
 }
 
@@ -331,12 +342,14 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
             : size < cached.size ? "copilot_log_truncated"
             : size - cached.size > LOG_WINDOW_BYTES ? "copilot_log_gap"
             : prefix?.copy().digest("hex") !== cached.hash.copy().digest("hex") ? "copilot_log_rewritten"
+            // Every rotation makes a new newest copy: bytes that still start the same are no append across one.
+            : !sameCopy(newest, cached.newestCopy) || (newest === null && olderLogCopy(target, 1)) ? "copilot_log_rewritten"
             // Copilot only appends and rotates, and every rotation makes a new newest copy: the same
             // bytes in the same file with that copy unchanged hide no lifecycle line, so a binding read
             // from them stands (Copilot itself touches its log every 15 minutes). Marker fallback still
             // needs an untouched initial log.
             : size === cached.size && (stat.mtimeNs !== cached.mtimeNs || stat.ctimeNs !== cached.ctimeNs)
-              && !(size > 0 && cached.observedSize === size && sameCopy(newest, cached.newestCopy)
+              && !(size > 0 && cached.observedSize === size
                 && (cached.selection.kind === "selected" || cached.selection.kind === "unregistered")) ? "copilot_log_metadata_changed" : undefined;
           const same = cached !== undefined && changed === undefined;
           // The open file shrank or no longer starts with what was read: a rotation, when a copy carries on from it.

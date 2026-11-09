@@ -73,19 +73,23 @@ revalidate the entire consumed prefix in 64 KiB chunks, including bytes outside 
 window; logs over 64 MiB use Terminal without reading or hashing them. Rehashed bytes that match,
 with the same newest copy as at the last read, keep a session the log registered even when only
 the timestamps moved, as when Copilot refreshes its log's timestamps every 15 minutes; a held
-marker's fallback still needs an untouched initial log. The same bytes after a new newest copy
-are not trusted: that lookup stays unavailable rather than guess what the rotation carried.
+marker's fallback still needs an untouched initial log.
 Copilot 1.0 rotates its log at about 10 MiB: it renames the copies up (`.1.log` to `.2.log`,
 keeping four), writes the new `.1.log` beside them as `.1.log.rotation-staging` and renames it
-into place, then empties the open log.
+into place, then empties the open log. Every rotation makes a new newest copy, so a newest copy
+other than the one last seen (by inode, size and timestamps), or none while an older one is there,
+is followed as a rotation even when the open log still starts with the bytes read. The rotation
+continues from the oldest copy that starts with those bytes and came after the newest copy seen
+at that read; copies of another user are never followed.
 A reader without a checkpoint, such as an Ovis started after a rotation, replays the `.N.log`
-copies oldest first, then the open log, only when the copies are numbered without a gap, the
-oldest begins within five seconds of the start time in the log's name (none was pruned), each is
-a whole-line regular file of the open log's owner, and no copy moved and the newest stayed the same
+copies oldest first, then the open log, when the copies are numbered without a gap, each is a
+whole-line regular file of the open log's owner, and no copy moved and the newest stayed the same
 while they and the open log were read; with the open log they count against the 64 MiB limit.
-Otherwise the open log stands alone, as before. A lookup that lands while Copilot moves its copies
-up decides nothing unless the open log itself registers or releases a session. While the open log
-is still empty, a binding from the copies alone is proven from the whole chain again on each lookup.
+When the oldest begins within five seconds of the start time in the log's name (none was pruned)
+the chain is complete; otherwise only a lifecycle line in the copies counts, and without one the
+open log stands alone, as before. A lookup that lands while Copilot moves its copies up decides
+nothing unless the open log itself registers or releases a session. While the open log is still
+empty, a binding from the copies alone is proven from the whole chain again on each lookup.
 This assumes filesystem timestamps trail this machine's clock by no more than that margin.
 A filesystem with greater timestamp lag, such as a skewed network mount, can retain a stale
 binding until the next append.
