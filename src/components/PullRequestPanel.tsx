@@ -17,6 +17,8 @@ export interface PullRequestPanelProps {
   paneId: string;
   /** the pane's folder, read when the pane is gone */
   directory: string;
+  /** the PC's name, said for a remote PC instead of its id */
+  machineName?: string;
 }
 
 type Load = { status: "pending" } | { status: "failed"; error: unknown } | { status: "ready"; view: PullRequestView };
@@ -34,7 +36,7 @@ const STATE_ICON: Record<PullRequestCheckState, typeof CircleCheck> = { pass: Ci
  * a review comment, into the pane's draft and sends nothing. Merge asks first, and merges only the
  * head that was shown, with the repository's default method.
  */
-export function PullRequestPanel({ paneId, directory }: PullRequestPanelProps) {
+export function PullRequestPanel({ paneId, directory, machineName }: PullRequestPanelProps) {
   const t = useT();
   const locale = useLocale();
   const machineId = useMachineId();
@@ -91,7 +93,8 @@ export function PullRequestPanel({ paneId, directory }: PullRequestPanelProps) {
   const passed = view?.checks.filter((check) => check.state === "pass").length ?? 0;
   const blocked = view === null ? null : mergeBlockedWord(t, view);
   const stateWord = view === null ? "" : view.state === "merged" ? t("Merged") : view.state === "closed" ? t("Closed without merging") : view.draft ? t("Draft") : t("Ready for review");
-  const pcPrefix = machineId !== LOCAL_MACHINE ? `${machineId} · ` : "";
+  const pcName = machineId !== LOCAL_MACHINE ? machineName ?? machineId : null;
+  const pcPrefix = pcName !== null ? `${pcName} · ` : "";
   const fallbackHeading = load.status === "pending"
     ? `${pcPrefix}${t("Loading…")}`
     : `${pcPrefix}${directory || t("Pull request")}`;
@@ -113,7 +116,7 @@ export function PullRequestPanel({ paneId, directory }: PullRequestPanelProps) {
         <span className="visually-hidden">{t("Loading…")}</span>
         {skeletonRows(4).map((width, index) => <Skeleton key={index} width={width} />)}
       </div>}
-      {load.status === "failed" && <p className="pull-request-note pull-request-error" role="alert">{pullRequestErrorMessage(t, load.error, machineId)}</p>}
+      {load.status === "failed" && <p className="pull-request-note pull-request-error" role="alert">{pullRequestErrorMessage(t, load.error, pcName ?? undefined)}</p>}
       {view !== null && <>
         <p className="pull-request-branches">
           <span className="pull-request-state" data-state={view.draft && view.state === "open" ? "draft" : view.state}>{stateWord}</span>

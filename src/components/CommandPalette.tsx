@@ -19,7 +19,7 @@ import { useSettings } from "../lib/settings.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { displayPaneTitle, StatusBadge } from "./Sidebar.tsx";
 import { PAGES } from "./SettingsDialog.tsx";
-import { folderName, placeLine, taskRowLines } from "../lib/paneName.ts";
+import { folderName, taskRowLines, unsaidLine } from "../lib/paneName.ts";
 import { agentTabName } from "../lib/sidebarAgents.ts";
 import { autoTabLabel, customTabLabel, tabLabel } from "../lib/tabName.ts";
 import { shownTabLabels, subscribeTabLabels } from "../lib/tabLabels.ts";
@@ -745,12 +745,14 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
                 // the row leads with the task's name: the tab's given name, else the pane's title, else (a shell titled by its
                 // folder, which the heading already says) the workspace, as the sidebar's rows do (lib/paneName.ts)
                 const named = givenTabName(row);
+                const branch = branches.get(row.machineId)?.get(pane.workspace_id)?.branch ?? null;
                 const title = named !== null && named !== paneTitle ? named
-                  : taskRowLines({ paneTitle, labelled: Boolean(pane.label?.trim()), folder, workspace: workspaceLabel, alias: branches.get(row.machineId)?.get(pane.workspace_id)?.branch ?? null }).title;
-                // what the lead left unsaid: the pane's own title under a tab's name, then the tab or workspace and the folder
-                const under = [title !== paneTitle && paneTitle !== folder ? paneTitle : null, section.placeNamesWorkspace
-                  ? placeLine(workspaceLabel, folder)
-                  : placeLine(named !== null ? "" : tabName(row) ?? "", folder)].filter((part) => part && part !== title).join(" · ");
+                  : taskRowLines({ paneTitle, labelled: Boolean(pane.label?.trim()), folder, workspace: workspaceLabel, alias: branch }).title;
+                // what the lead left unsaid, each part once: the pane's own title under a tab's name, then the tab, or (Recent,
+                // under no workspace heading) the workspace and its branch, and the folder
+                const under = unsaidLine(title, [title !== paneTitle && paneTitle !== folder ? paneTitle : null, ...(section.placeNamesWorkspace
+                  ? [workspaceLabel, branch, folder]
+                  : [named !== null ? "" : tabName(row) ?? "", folder])]);
                 const place = multiMachine && section.placeNamesWorkspace ? `${row.machine.name} › ${under}` : under;
                 const selected = row.machineId === machineId && pane.pane_id === selectedPaneId;
                 return (

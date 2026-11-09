@@ -17,7 +17,8 @@
  * { check, key, reason } whose reason names the owner's decision or the documented exception.
  * A surface whose staging fails is a `stage` failure: the gate cannot vouch for what it never saw.
  *
- * The focus check starts at the focused control (a dialog's first) and presses Tab until focus comes back to a
+ * The focus check walks the desktop visits (the 390px visit is a touch context; its focus is not walked). It starts
+ * at the focused control (a dialog's first) and presses Tab until focus comes back to a
  * control it already visited, measuring every stop; past FOCUS_CEILING presses it reports `focus-walk-incomplete`.
  * It also measures each focus indicator (outline or box-shadow ring) against the background next
  * to it and reports a `focus-contrast` failure under 3:1. The target check passes a control smaller than the
@@ -101,6 +102,8 @@ const OUT = resolve(outArg);
 const baselinePath = option("--baseline");
 const allowPath = option("--allow");
 const workers = Number(option("--workers") ?? 6);
+// "6x" or 0 would start no worker: no visit measured, no failure found, and a passing exit
+if (!Number.isInteger(workers) || workers < 1) throw new Error(`--workers ${option("--workers")}: a whole number of 1 or more`);
 // hidden: makes every chat turn's text #999 on #aaa, to prove the contrast check and the baseline diff can fail
 const SELF_TEST = args.includes("--self-test");
 // hidden: shifts the tab strip's More button and the composer status row's buttons (the context ring) 10px right,
@@ -992,7 +995,9 @@ function gateRuntime(): void {
     let id = focusIds.get(el);
     if (id === undefined) { id = focusCount += 1; focusIds.set(el, id); }
     const own = ringSnap(el);
-    const selfDrawn = (own.outlined || own.boxShadow !== "none") && opacity(el) > 0.01;
+    // a box-shadow counts only where a layer draws (a transparent or zero-size one is no ring): undrawn, the wrappers are read
+    const shadowDrawn = own.boxShadow !== "none" && ringVerdict(el, own, ["boxShadow"]) !== "none";
+    const selfDrawn = (own.outlined || shadowDrawn) && opacity(el) > 0.01;
     // the control's own border counts as its ring too, unless the control is not drawn (a terminal's hidden input)
     const wrappers = selfDrawn ? [] : [...(opacity(el) > 0.01 ? [el] : []), ...ringWrappers(el)].filter((node): node is HTMLElement => node instanceof HTMLElement);
     if (wrappers.length && el instanceof HTMLElement) {
@@ -1019,7 +1024,7 @@ function gateRuntime(): void {
         return { id, verdict: { ringOn: `${keyOf(el)} :: ringOn: ${ringOn}` } };
       }
     }
-    if (!own.outlined && own.boxShadow === "none") return { id, verdict: { check: "focus", key: keyOf(el), detail: `focused with no outline or box-shadow (outline ${own.outlineStyle} ${own.outlineWidth})` } };
+    if (!own.outlined && !shadowDrawn) return { id, verdict: { check: "focus", key: keyOf(el), detail: `focused with no outline or box-shadow (outline ${own.outlineStyle} ${own.outlineWidth}, box-shadow ${own.boxShadow})` } };
     const verdict = ringVerdict(el, own, ["outline", "boxShadow"]);
     if (verdict !== "ok" && verdict !== "none") return { id, verdict: { check: "focus-contrast", key: keyOf(el), detail: verdict } };
     return { id, verdict: { ringOn: null } };

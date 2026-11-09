@@ -46,8 +46,9 @@ export function mergeBlockedWord(t: Translate, view: PullRequestView): string | 
   }
 }
 
-export function pullRequestErrorMessage(t: Translate, error: unknown, machineId?: string): string {
-  const pcPrefix = machineId && machineId !== "local" ? `[${machineId}] ` : "";
+/** `pc`: the remote PC's name the words are prefixed with; none for this PC */
+export function pullRequestErrorMessage(t: Translate, error: unknown, pc?: string): string {
+  const pcPrefix = pc ? `[${pc}] ` : "";
   if (!(error instanceof ApiError)) return `${pcPrefix}${t("The pull request could not be loaded.")}`;
   if (routeMissing(error)) return `${pcPrefix}${t("This PC's bridge cannot show pull requests yet.")}`;
   switch (error.code) {
@@ -59,7 +60,7 @@ export function pullRequestErrorMessage(t: Translate, error: unknown, machineId?
     case "gh_timeout": return `${pcPrefix}${t("gh took too long to answer.")}`;
     case "merge_queue": return t("This base branch merges through a merge queue; merge it on GitHub.");
     case "pull_request_changed": return t("The pull request changed since it was shown. Refresh it, then merge.");
-    case "merge_refused": case "gh_failed": return error.detail || `${pcPrefix}${t("The pull request could not be loaded.")}`;
+    case "merge_refused": case "gh_failed": return `${pcPrefix}${error.detail || t("The pull request could not be loaded.")}`;
     case "read_only": return t("This device can only watch.");
     case "invalid_cwd": case "pane_not_found": return `${pcPrefix}${t("The pane's folder could not be read.")}`;
     case "machine_offline": case "machine_unavailable": case "machine_timeout": return `${pcPrefix}${t("That PC is not reachable right now.")}`;

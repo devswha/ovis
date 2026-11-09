@@ -447,6 +447,9 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
   );
 }
 
+/** the newest code request of any opening: the server keeps one pending code, so an older answer is a dead code */
+let latestPairRequest = 0;
+
 /**
  * A pairing code for a phone that can already open this address, with the QR code that opens it
  * with the code filled in. The server keeps one pending code: a code started here is announced, so
@@ -488,8 +491,11 @@ export function CodeRoute({ pairUrl, startAtOnce, phone = false, compact = false
     requesting.current = true;
     setBusy(true);
     setError(null);
+    const request = ++latestPairRequest;
     try {
       const fresh = await startPairing();
+      // a dialog closed and opened again asked after this one: its answer is the code that pairs, not this one
+      if (request !== latestPairRequest) return;
       setCode(fresh);
       announcing.current = true;
       try { announcePairingCode(fresh); } finally { announcing.current = false; }

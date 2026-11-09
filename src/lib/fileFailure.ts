@@ -19,6 +19,8 @@ export function fileFailure(reason: unknown): FileFailure {
       case 404: return "missing";
       case 429: return "limited";
       case 408: case 504: return "slow";
+      // a gateway's status alone does not say where the request failed (a relay tunnel, a proxy): no blame on the PC
+      case 502: case 503: return reason instanceof ApiError && reason.code !== null ? "server" : "unreadable";
       default: return status >= 500 ? "server" : "unreadable";
     }
   }

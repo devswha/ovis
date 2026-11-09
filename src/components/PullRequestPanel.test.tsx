@@ -118,3 +118,19 @@ test("shows the directory in the bar instead of repeating the tab title on error
   const alert = renderer!.root.findByProps({ role: "alert" });
   expect(textOf(alert)).toContain("[workstation] GitHub CLI (gh) on this PC is not signed in.");
 });
+
+test("names a remote PC by its name, not its id, and prefixes the PC's own gh words with it", async () => {
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => {
+    return Response.json({ error: { code: "gh_failed", message: "HTTP 502: bad gateway" } }, { status: 502 });
+  }, globalThis.fetch));
+  await act(async () => {
+    renderer = create(createElement(SettingsProvider, {
+      children: createElement(MachineContext.Provider, {
+        value: "3f1c2b9a-6d0e-4c1a-9b7e-2f4d8a0c5e11",
+        children: createElement(PullRequestPanel, { paneId: "fixture", directory: "/repo", machineName: "Build box" }),
+      }),
+    }));
+  });
+  expect(textOf(renderer!.root.findByProps({ className: "pull-request-heading" }))).toBe("Build box · /repo");
+  expect(textOf(renderer!.root.findByProps({ role: "alert" }))).toBe("[Build box] HTTP 502: bad gateway");
+});

@@ -21,3 +21,13 @@ it("distinguishes a failed network request and timeout from an unreadable file",
   expect(fileFailure(new DOMException("aborted", "AbortError"))).toBe("slow");
   expect(fileFailure(new Error("decoder failed"))).toBe("unreadable");
 });
+
+it("does not blame the PC for an uncoded gateway failure: the request may have failed in transit", async () => {
+  for (const status of [502, 503]) {
+    expect(fileFailure(new ApiError("/api/fs/file", status, "Bad Gateway", null))).toBe("unreadable");
+    const failure = await relayResourceBlob(new Response(null, { status })).then(() => null, (reason: unknown) => reason);
+    expect(fileFailure(failure)).toBe("unreadable");
+  }
+  // a code the bridge set is the PC's own answer
+  expect(fileFailure(new ApiError("/api/fs/file", 502, "bad answer", "remote_response_invalid"))).toBe("server");
+});

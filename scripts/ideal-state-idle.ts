@@ -31,7 +31,8 @@ export async function probeIdleState(demo: Demo): Promise<{ readonly status: "PA
         if (box.width === 0 || box.height === 0) return false;
         const style = getComputedStyle(node);
         const ownText = [...node.childNodes].some((child) => child.nodeType === Node.TEXT_NODE && child.textContent?.trim() !== "");
-        return (ownText && danger.has(style.color)) || tint.has(style.backgroundColor) || (parseFloat(style.borderTopWidth) > 0 && danger.has(style.borderTopColor)) || (parseFloat(style.borderLeftWidth) > 0 && danger.has(style.borderLeftColor));
+        const dangerBorder = (["Top", "Right", "Bottom", "Left"] as const).some((side) => parseFloat(style[`border${side}Width`]) > 0 && danger.has(style[`border${side}Color`]));
+        return (ownText && danger.has(style.color)) || tint.has(style.backgroundColor) || dangerBorder;
       }).map(name);
       const running = document.getAnimations().filter((animation) => animation.playState === "running").map((animation) => animation.effect instanceof KeyframeEffect && animation.effect.target instanceof Element ? name(animation.effect.target) : "unknown animation target");
       return { running, drawnDanger };

@@ -32,6 +32,7 @@ import { focusInOtherModal, nativeModalOver, useFocusTrap } from "../lib/useFocu
 import { catchTypeAhead } from "../lib/typeAhead.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { passingFolder, recentDirectories } from "../lib/recent-directories.ts";
+import { serverIdOfPath } from "../lib/shellMode.ts";
 
 /** The dialog as New tab: the workspace the tab joins, whose folder it uses, and the number herdr will give it. */
 export interface NewTabTarget {
@@ -84,8 +85,11 @@ interface NewSessionDraft {
 
 const newSessionDrafts = new Map<string, NewSessionDraft>();
 
+// the hosted shell keeps every server under one origin (/s/<server_id>/), so one tab's sessionStorage spans them:
+// a draft is the server's it was typed for, never offered to the next one opened in that tab
 function newSessionDraftKey(machineId: string, tab: NewTabTarget | null): string {
-  return `${machineId}\n${tab ? `tab:${tab.workspaceId}` : "workspace"}`;
+  const server = serverIdOfPath(window.location?.pathname ?? "") ?? "";
+  return `${server}\n${machineId}\n${tab ? `tab:${tab.workspaceId}` : "workspace"}`;
 }
 
 function readNewSessionDraft(key: string): NewSessionDraft | null {
@@ -489,7 +493,9 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
     } catch (reason: unknown) {
       ahead?.drop();
       setPending(false);
-      if (reason instanceof ApiError && reason.code === "invalid_cwd") {
+      // a new tab shows its folder without a field to mark: the dialog's own alert says it is gone
+      if (reason instanceof ApiError && reason.code === "invalid_cwd" && tab) setError({ message: t("Directory not found"), detail: null });
+      else if (reason instanceof ApiError && reason.code === "invalid_cwd") {
         setCwdError(t("Directory not found"));
         cwdField.current?.focus();
       } else setError(userErrorMessage(reason));

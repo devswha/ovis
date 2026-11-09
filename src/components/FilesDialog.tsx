@@ -34,12 +34,14 @@ export interface FilesDialogProps {
   panelStart?: ReactNode;
   /** docked, with a file or web page in its place: kept, folder and tab, for when that closes */
   covered?: boolean;
+  /** the PC's name, which the Pull request tab says for a remote PC */
+  machineName?: string;
 }
 
 type Tab = "browse" | "changes" | "pr" | "docs";
 
 /** The files of the pane's folder (and any other), each opened in the file viewer, and the changes of its repository, each opened as a diff. */
-export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, onBrowseFolders, onClose, docked = false, panelStart, covered = false }: FilesDialogProps) {
+export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, onBrowseFolders, onClose, docked = false, panelStart, covered = false, machineName }: FilesDialogProps) {
   const t = useT();
   const machineId = useMachineId();
   const phone = useMediaQuery("(max-width: 480px)");
@@ -89,6 +91,8 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
     { id: "docs", label: t("Documents") },
   ];
   const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number): void => {
+    // Alt+Left and the like are the browser's (Back); only the bare keys move between the tabs
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
     const count = tabs.length;
     const nextIndex = event.key === "ArrowRight" ? (index + 1) % count
       : event.key === "ArrowLeft" ? (index - 1 + count) % count
@@ -111,6 +115,8 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
       <div className="segmented files-dialog-tabs" role="group" aria-label={t("Show")}>
         {tabs.map((item, index) => {
           const selected = tab === item.id;
+          // a panel not visited yet is not in the page: only a mounted one is named as controlled
+          const mounted = item.id === "browse" || (item.id === "changes" ? changesVisited : item.id === "pr" ? prVisited : docsVisited);
           return (
             <button
               key={item.id}
@@ -118,7 +124,7 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
               id={`files-dialog-tab-${item.id}`}
               type="button"
               aria-pressed={selected}
-              aria-controls={`files-dialog-panel-${item.id}`}
+              aria-controls={mounted ? `files-dialog-panel-${item.id}` : undefined}
               onClick={() => show(item.id)}
               onKeyDown={(event) => onTabKeyDown(event, index)}
             >
@@ -137,7 +143,7 @@ export function FilesDialog({ start, paneId, viewing, onOpenFile, onOpenDiff, on
       {/* not keyed by PC and pane: Changes keeps its scope (Branch) across a switch and itself drops answers for the target left behind */}
       {changesVisited && <div id="files-dialog-panel-changes" className="files-dialog-panel" role="region" aria-labelledby="files-dialog-tab-changes" hidden={tab !== "changes"}><RepoChanges paneId={paneId} directory={start} onOpenDiff={onOpenDiff} /></div>}
       {/* one panel per PC and pane: an answer or a merge still on its way for the last pane never lands in this one */}
-      {prVisited && <div id="files-dialog-panel-pr" className="files-dialog-panel" role="region" aria-labelledby="files-dialog-tab-pr" hidden={tab !== "pr"}><PullRequestPanel key={`${machineId}:${paneId}`} paneId={paneId} directory={start} /></div>}
+      {prVisited && <div id="files-dialog-panel-pr" className="files-dialog-panel" role="region" aria-labelledby="files-dialog-tab-pr" hidden={tab !== "pr"}><PullRequestPanel key={`${machineId}:${paneId}`} paneId={paneId} directory={start} machineName={machineName} /></div>}
       {/* one list per PC and pane, as the browser: a pane switch reads the new pane's folder */}
       {docsVisited && <div id="files-dialog-panel-docs" className="files-dialog-panel" role="region" aria-labelledby="files-dialog-tab-docs" hidden={tab !== "docs"}><MarkdownDocuments key={`${machineId}:${paneId}`} paneId={paneId} onOpenFile={onOpenFile} /></div>}
     </div>

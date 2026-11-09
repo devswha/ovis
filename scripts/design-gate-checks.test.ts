@@ -62,6 +62,15 @@ describe("design gate layout comparison", () => {
     expect(moves(before, sidebarOnly, { requested: new Set(Object.keys(before)), narrowed: true, tolerance: 2 })).toEqual(lost);
     expect(moves(before, sidebarOnly, { requested: new Set(["sidebar|1440|light"]), narrowed: true, tolerance: 2 })).toEqual([]);
   });
+  it("reports every anchor of a visit the baseline does not have as added, as it does a new anchor of a baselined visit", () => {
+    const now: Layout = { ...before, "drawer-open|390|dark": { gear: { x: 1, y: 2, w: 4, h: 4 } } };
+    const requested = new Set(Object.keys(now));
+    expect(moves(sidebarOnly, now, { requested, narrowed: false, tolerance: 2 })).toEqual([
+      "MOVED header main-chat 1440 light added added",
+      "MOVED gear main-chat 1440 light added added",
+      "MOVED gear drawer-open 390 dark added added",
+    ]);
+  });
 });
 
 describe("design gate effective target", () => {

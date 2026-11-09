@@ -14,7 +14,7 @@ import { MarkdownOutline, OUTLINE_COLUMN_MIN_PX, useWideEnough } from "./Markdow
 
 import type { FileInfo } from "../../shared/protocol.ts";
 import { MAX_EDITABLE_TEXT_BYTES } from "../../shared/files.ts";
-import { ApiError } from "../lib/api.ts";
+import { ApiError, errorFrom } from "../lib/api.ts";
 import { formatBytes } from "../lib/bridgeProgress.ts";
 import { LOCAL_MACHINE, paneStorageId } from "../../shared/machines.ts";
 import { useOpeningPaneLane } from "../lib/chatLane.ts";
@@ -244,6 +244,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       try {
         const response = await getTransport().fetch(fileUrl(next.path, paneId), { signal: abort.signal, headers: { range: `bytes=0-${budget.bytes - 1}` } });
         if (!response.ok && !(response.status === 416 && response.headers.get("content-range")?.trim() === "bytes */0")) {
+          // a JSON answer is the bridge's own small error (a PC gone away keeps its code); any other body is never read
+          if (response.headers.get("content-type")?.includes("application/json")) throw await errorFrom(fileUrl(next.path, paneId), response);
           await response.body?.cancel();
           throw new ApiError(fileUrl(next.path, paneId), response.status, response.statusText, null);
         }
@@ -478,7 +480,8 @@ export function FileViewer({ path: asked, paneId, onClose, onOpen, keyboardActiv
       ? <p className="file-viewer-note" role="alert">{t("Too large to open on the phone - download on the PC")}</p>
       : <>
         <p className="file-viewer-note" role="alert">{fileFailureText(fileFailure(resourceError), t)}</p>
-        {fileFailure(resourceError) === "unreadable" && <p className="file-viewer-note file-viewer-note-hint">{t("Download it or open the raw file.")}</p>}
+        {/* a relay video or PDF shares its one transfer with the download link: failed, that link has no address to offer */}
+        {fileFailure(resourceError) === "unreadable" && downloadHref !== null && <p className="file-viewer-note file-viewer-note-hint">{t("Download it or open the raw file.")}</p>}
       </>;
     switch (info.kind) {
       case "image":

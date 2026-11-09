@@ -4,7 +4,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 
 import { MarkdownDocuments } from "./MarkdownDocuments.tsx";
 import type { PaneDocuments } from "../../shared/files.ts";
-import { SettingsProvider } from "../lib/settings.ts";
+import { SettingsProvider, useSettings, type Settings } from "../lib/settings.ts";
 
 const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator"];
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
@@ -131,4 +131,18 @@ test("says a PC on an older version cannot list documents, apart from any other 
   serve(() => Response.json({ error: { code: "pane_not_found", message: "no such pane" } }, { status: 404 }));
   await mount();
   expect(notes()).toEqual(["Documents could not be loaded."]);
+});
+
+test("a language change redraws the listing in place: no second read, the rows and root stay", async () => {
+  const asked = serve(() => Response.json(LISTING));
+  let update: (patch: Partial<Settings>) => void = () => undefined;
+  const Grab = () => { update = useSettings().update; return null; };
+  await act(async () => {
+    renderer = create(createElement(SettingsProvider, { children: [createElement(Grab, { key: "grab" }), createElement(MarkdownDocuments, { key: "docs", paneId: "w1:p1", onOpenFile: () => {} })] }));
+  });
+  expect(rows()).toHaveLength(2);
+  await act(async () => { update({ language: "ja" }); });
+  expect(asked).toHaveLength(1);
+  expect(rows()).toHaveLength(2);
+  expect(textOf(renderer!.root.findByProps({ className: "dir-browser-bar" }))).toContain("/repo");
 });

@@ -19,6 +19,7 @@ import { AddAgentPanel } from "./AddAgentPanel.tsx";
 import { AgentPicker, rememberAgent, rememberedAgent } from "./AgentPicker.tsx";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useT } from "../lib/i18n.ts";
+import { homeRelative } from "../lib/paletteFolders.ts";
 import { latestRead, READ_AGAIN_MS, READ_AGAIN_TIMES, readAgainUntil } from "../lib/latestRead.ts";
 import { useSettings } from "../lib/settings.ts";
 import { launchAgent, launchDefaults } from "../lib/agentLaunchMode.ts";
@@ -75,11 +76,6 @@ function writeWorktreeDraft(key: string, draft: WorktreeDraft | null): void {
   try { window.sessionStorage?.setItem(`ovis:worktree-draft:${key}`, JSON.stringify(draft)); } catch { /* private mode */ }
 }
 
-/** Shorten a home folder prefix (/home/<user>/... or /Users/<user>/...) to ~/... while keeping the checkout tail intact. */
-function shortHomePath(path: string): string {
-  return path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, "~");
-}
-
 /** herdr's own words about a refused worktree (a branch that exists, a folder that is no repository) */
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
 
@@ -90,7 +86,7 @@ export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened
   const machineId = useMachineId();
   const draftKey = worktreeDraftKey(machineId, workspace.workspace_id);
   const initialDraft = mode === "create" ? readWorktreeDraft(draftKey) : null;
-  const { createWorktree, fetchAgentKinds, listWorktrees, openWorktree } = useMachineApi();
+  const { createWorktree, fetchAgentKinds, fetchDirectories, listWorktrees, openWorktree } = useMachineApi();
   const [agents, setAgents] = useState<AgentKind[]>([]);
   const [agentKind, setAgentKind] = useState(() => initialDraft?.agentKind ?? rememberedAgent());
   // the checkout whose agent did not start: it is there, and the button opens it
@@ -101,6 +97,8 @@ export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened
   const [typedLabel, setTypedLabel] = useState<string | null>(() => initialDraft?.typedLabel ?? null);
   const label = typedLabel ?? worktreeLabel(branch);
   const [entries, setEntries] = useState<WorktreeEntry[] | null>(null);
+  // the home folder of the account this PC connects as: only a checkout under it is shown as ~/…
+  const [home, setHome] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Add another agent shows in place of the fields, which keep what was typed
@@ -169,8 +167,10 @@ export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened
       (listing) => { if (!cancelled) setEntries(listing.worktrees); },
       (reason: unknown) => { if (!cancelled) setError(said(reason)); },
     );
+    // unread, every path stays whole: another account's /home/<name>/… is never drawn as this one's ~
+    fetchDirectories("", false).then((listing) => { if (!cancelled) setHome(listing.home); }, () => undefined);
     return () => { cancelled = true; };
-  }, [mode, workspace.workspace_id, listWorktrees]);
+  }, [mode, workspace.workspace_id, listWorktrees, fetchDirectories]);
 
   // back from Add another agent, the focus returns to the picker it was opened from
   const wasAdding = useRef(false);
@@ -317,7 +317,7 @@ export function WorktreeDialog({ mode, workspace, machineName, onClose, onOpened
             <ul className="worktree-list">
               {others.map((entry) => {
                 const branchText = entry.branch ?? (entry.is_detached ? t("Detached HEAD") : entry.label);
-                const displayPath = shortHomePath(entry.path);
+                const displayPath = home === null ? entry.path : homeRelative(entry.path, home);
                 const pathTitle = displayPath === entry.path ? entry.path : `${displayPath} (${entry.path})`;
                 return (
                   <li key={entry.path}>

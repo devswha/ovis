@@ -51,7 +51,9 @@ interface DiffNoteDraft {
 }
 
 const diffTargetDrafts = new Map<string, DiffNoteDraft>();
-const diffLineDrafts = new Map<string, string>();
+/** a closed note's words, kept with the quote it was begun on: reopened on a changed patch it still goes with that code */
+interface DiffLineDraft { text: string; quote: string }
+const diffLineDrafts = new Map<string, DiffLineDraft>();
 
 function diffTargetDraftKey(target: RepoDiffTarget): string {
   return `${target.machineId}\n${target.paneId ?? ""}\n${target.directory ?? ""}\n${target.scope}\n${target.base ?? ""}\n${target.head ?? ""}\n${target.path}`;
@@ -87,26 +89,29 @@ function writeDiffTargetDraft(target: RepoDiffTarget, draft: DiffNoteDraft | nul
   try { window.sessionStorage?.setItem(`ovis:diff-note-target:${key}`, JSON.stringify(draft)); } catch { /* private mode */ }
 }
 
-function readDiffLineDraft(target: RepoDiffTarget, line: Pick<DiffFindLine, "side" | "line">): string {
+function readDiffLineDraft(target: RepoDiffTarget, line: Pick<DiffFindLine, "side" | "line">): DiffLineDraft | null {
   const key = diffLineDraftKey(target, line);
   const mem = diffLineDrafts.get(key);
   if (mem !== undefined) return mem;
   try {
-    return window.sessionStorage?.getItem(`ovis:diff-note-line:${key}`) ?? "";
-  } catch {
-    return "";
-  }
+    const raw = window.sessionStorage?.getItem(`ovis:diff-note-line:${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DiffLineDraft>;
+    if (typeof parsed.text === "string" && typeof parsed.quote === "string") return { text: parsed.text, quote: parsed.quote };
+  } catch { /* private mode, or a draft without its quote */ }
+  return null;
 }
 
-function writeDiffLineDraft(target: RepoDiffTarget, line: Pick<DiffFindLine, "side" | "line">, text: string): void {
-  const key = diffLineDraftKey(target, line);
+function writeDiffLineDraft(target: RepoDiffTarget, writing: Writing, text: string): void {
+  const key = diffLineDraftKey(target, writing.line);
   if (text.trim() === "") {
     diffLineDrafts.delete(key);
     try { window.sessionStorage?.removeItem(`ovis:diff-note-line:${key}`); } catch { /* private mode */ }
     return;
   }
-  diffLineDrafts.set(key, text);
-  try { window.sessionStorage?.setItem(`ovis:diff-note-line:${key}`, text); } catch { /* private mode */ }
+  const draft = { text, quote: writing.quote };
+  diffLineDrafts.set(key, draft);
+  try { window.sessionStorage?.setItem(`ovis:diff-note-line:${key}`, JSON.stringify(draft)); } catch { /* private mode */ }
 }
 
 /** `stale`: a branch patch answered for another identity than the list's, which is never drawn as this one */
@@ -354,17 +359,19 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
     // a note being written is never replaced by another line's
     if (note === undefined || answer === null || patch === null || blocked !== null || (writing !== null && noteText.trim() !== "")) return;
     const quote = diffNoteQuote({ machine: note.machine, repository: answer.repository.root, comparison: capturedComparison(answer, patch), path, line });
+    // a note closed on this line comes back with the quote it was written against, not the code now there
     const restored = readDiffLineDraft(target, line);
-    const nextWriting = { line, quote };
+    const nextWriting = { line, quote: restored?.quote ?? quote };
+    const text = restored?.text ?? "";
     setWriting(nextWriting);
-    setNoteText(restored);
-    writeDiffTargetDraft(target, { writing: nextWriting, text: restored, open: restored.trim() !== "" });
+    setNoteText(text);
+    writeDiffTargetDraft(target, { writing: nextWriting, text, open: text.trim() !== "" });
     setNoteError(null);
     setNoteAdded(false);
   };
   beginNoteRef.current = beginNote;
   const closeNote = (): void => {
-    if (writing !== null) writeDiffLineDraft(target, writing.line, noteText);
+    if (writing !== null) writeDiffLineDraft(target, writing, noteText);
     writeDiffTargetDraft(target, null);
     setWriting(null);
     setNoteError(null);
@@ -374,7 +381,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
     setNoteText(value);
     setNoteError(null);
     if (writing !== null) {
-      writeDiffLineDraft(target, writing.line, value);
+      writeDiffLineDraft(target, writing, value);
       writeDiffTargetDraft(target, { writing, text: value, open: value.trim() !== "" });
     }
   };
@@ -390,7 +397,7 @@ export function RepoDiffViewer({ target, onClose, onOpenFile, keyboardActive = t
       setNoteError(t("This note could not be saved on this device."));
       return;
     }
-    writeDiffLineDraft(target, writing.line, "");
+    writeDiffLineDraft(target, writing, "");
     writeDiffTargetDraft(target, null);
     setNoteAdded(true);
     setWriting(null);

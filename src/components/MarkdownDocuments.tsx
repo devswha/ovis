@@ -18,7 +18,8 @@ export interface MarkdownDocumentsProps {
   onOpenFile: (path: string) => void;
 }
 
-type Load = { status: "pending" } | { status: "done"; listing: PaneDocuments } | { status: "error"; message: string };
+/** an error is kept as its kind and worded at render: a language change redraws it, never reads the list again */
+type Load = { status: "pending" } | { status: "done"; listing: PaneDocuments } | { status: "error"; oldBridge: boolean };
 
 const folded = (text: string): string => text.normalize("NFC").toLowerCase();
 
@@ -49,10 +50,9 @@ export function MarkdownDocuments({ paneId, onOpenFile }: MarkdownDocumentsProps
     }, (reason: unknown) => {
       if (controller.signal.aborted) return;
       // an older PC answers the route it does not know with its generic 404; a missing pane has its own code
-      const old = reason instanceof ApiError && reason.status === 404 && reason.code === "not_found";
-      setLoad({ status: "error", message: old ? t("This PC's bridge cannot list documents yet.") : t("Documents could not be loaded.") });
+      setLoad({ status: "error", oldBridge: reason instanceof ApiError && reason.status === 404 && reason.code === "not_found" });
     });
-  }, [fetchPaneDocuments, paneId, t]);
+  }, [fetchPaneDocuments, paneId]);
   useEffect(() => {
     setLast(null);
     read();
@@ -103,7 +103,7 @@ export function MarkdownDocuments({ paneId, onOpenFile }: MarkdownDocumentsProps
             }} />
         </div>
       </div>
-      {load.status === "error" ? <p className="dir-browser-note dir-browser-error" role="alert">{load.message}</p> : (
+      {load.status === "error" ? <p className="dir-browser-note dir-browser-error" role="alert">{load.oldBridge ? t("This PC's bridge cannot list documents yet.") : t("Documents could not be loaded.")}</p> : (
         <ul className="dir-browser-list" aria-label={t("Markdown files")}>
           {load.status === "pending" && (
             <li className="md-docs-loading" role="status">

@@ -803,7 +803,7 @@ export function App() {
     else revealFiles();
   };
   const filesDialog = (docked: boolean): ReactNode => selectedPane && (
-    <FilesDialog docked={docked} covered={docked && filesCovered} panelStart={docked ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined}
+    <FilesDialog docked={docked} covered={docked && filesCovered} machineName={selectedMachine?.name} panelStart={docked ? <FilePanelResizer width={filePanelWidth} onResize={setFilePanelWidth} /> : undefined}
       start={selectedPane.foreground_cwd ?? selectedPane.cwd ?? ""} paneId={selectedPane.pane_id} viewing={(viewing !== null && !fileDocked) || diffViewing !== null} onOpenFile={viewFile}
       onOpenDiff={(comparison, file) => openDiff({ machineId: selectedMachineId, paneId: selectedPane.pane_id, directory: selectedPane.foreground_cwd ?? selectedPane.cwd ?? null, ...comparison, path: file.path, oldPath: file.old_path })}
       onBrowseFolders={(path) => actions.openPalette(folderQueryFor(path, null))}
@@ -1262,6 +1262,7 @@ export function App() {
       /></MachineContext.Provider>
       {sessionHistory && sessionHistoryWorkspace && <MachineContext.Provider value={sessionHistory.machineId}><SessionHistory
         workspace={sessionHistoryWorkspace.workspace}
+        machineName={machines.find((m) => m.id === sessionHistory.machineId)?.name}
         panes={sessionHistoryWorkspace.panes}
         agent={sessionHistory.agent}
         sourcePaneId={sessionHistory.paneId}

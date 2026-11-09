@@ -46,7 +46,8 @@ export async function walkFocus<Verdict>(driver: FocusDriver<Verdict>, ceiling: 
 
 /**
  * Every anchor of the baseline's visits that moved past `tolerance`, is missing or is new. A baseline visit this
- * run did not make is missing anchor by anchor, unless the run was narrowed (`--surfaces`) and did not ask for it.
+ * run did not make is missing anchor by anchor, unless the run was narrowed (`--surfaces`) and did not ask for it;
+ * a visit this run made that the baseline does not have is added anchor by anchor.
  */
 export function moves(before: Layout, now: Layout, scope: { requested: ReadonlySet<string>; narrowed: boolean; tolerance: number }): string[] {
   const lines: string[] = [];
@@ -65,6 +66,12 @@ export function moves(before: Layout, now: Layout, scope: { requested: ReadonlyS
       if (Math.abs(dx) > scope.tolerance || Math.abs(dy) > scope.tolerance) lines.push(`MOVED ${name} ${where} ${dx} ${dy}`);
     }
     for (const name of Object.keys(anchors)) if (!was[name]) lines.push(`MOVED ${name} ${where} added added`);
+  }
+  // a visit the baseline never recorded: each of its anchors is new, as a new anchor of a recorded visit is
+  for (const [visitKey, anchors] of Object.entries(now)) {
+    if (before[visitKey]) continue;
+    const where = visitKey.split("|").join(" ");
+    for (const name of Object.keys(anchors)) lines.push(`MOVED ${name} ${where} added added`);
   }
   return lines;
 }
