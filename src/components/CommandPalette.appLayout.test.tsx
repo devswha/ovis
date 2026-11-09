@@ -131,12 +131,33 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     expect(await rows(TUI, "p1", ">")).not.toContain("Open a page on this PC…");
   });
 
+  const checkout = (linked: boolean): SessionSnapshot => ({ ...snapshot, workspaces: [{ ...workspace("w1", 1), worktree: { repo_key: "r", repo_name: "r", repo_root: "/r", checkout_path: linked ? "/r-wt" : "/r", is_linked_worktree: linked } }, workspace("w2", 1)] });
+  const workspaceRows = ["New worktree", "Open worktree…", "Earlier sessions…"];
+  // the PC answers what the palette reads as it opens: no plugins, and no unmarked folder is a repository
+  const answering = () => spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => String(input).includes("worktree/list")
+    ? Response.json({ error: { code: "not_a_repository", message: "not a repository" } }, { status: 400 })
+    : Response.json({ plugins: [] }), globalThis.fetch));
+
   it("lists New worktree and Open worktree… for a repository's main checkout, where the PC offers worktrees", async () => {
-    const checkout = (linked: boolean): SessionSnapshot => ({ ...snapshot, workspaces: [{ ...workspace("w1", 1), worktree: { repo_key: "r", repo_name: "r", repo_root: "/r", checkout_path: linked ? "/r-wt" : "/r", is_linked_worktree: linked } }, workspace("w2", 1)] });
-    const worktreeRows = ["New worktree", "Open worktree…"];
-    expect((await rows(TUI, "p1", ">", undefined, checkout(false))).filter((row) => worktreeRows.includes(row))).toEqual(worktreeRows);
-    for (const listed of [await rows(TUI, "p1", ">", undefined, checkout(true)), await rows(APP_CORE, "p1", ">", undefined, checkout(false)), await rows(TUI, "p3", ">", undefined, checkout(false))]) {
-      expect(listed.filter((row) => worktreeRows.includes(row))).toEqual([]);
+    const fetched = answering();
+    try {
+      const worktreeRows = ["New worktree", "Open worktree…"];
+      expect((await rows(TUI, "p1", ">", undefined, checkout(false), true)).filter((row) => worktreeRows.includes(row))).toEqual(worktreeRows);
+      for (const listed of [await rows(TUI, "p1", ">", undefined, checkout(true), true), await rows(APP_CORE, "p1", ">", undefined, checkout(false), true), await rows(TUI, "p3", ">", undefined, checkout(false), true)]) {
+        expect(listed.filter((row) => worktreeRows.includes(row))).toEqual([]);
+      }
+    } finally {
+      fetched.mockRestore();
+    }
+  });
+
+  it("offers no worktree or earlier-sessions row while the PC is disconnected", async () => {
+    const fetched = answering();
+    try {
+      expect((await rows(TUI, "p1", ">", undefined, checkout(false), true)).filter((row) => workspaceRows.includes(row))).toEqual(workspaceRows);
+      expect((await rows(TUI, "p1", ">", undefined, checkout(false), false)).filter((row) => workspaceRows.includes(row))).toEqual([]);
+    } finally {
+      fetched.mockRestore();
     }
   });
 

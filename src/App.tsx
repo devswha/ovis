@@ -622,9 +622,10 @@ export function App() {
       openWorktree: (mode) => {
         const found = newTabTarget();
         // the workspaces the sidebar and the palette offer worktrees for (lib/repositoryWorkspaces.ts)
-        if (!found || !worktreesStartHere(found.machineId, found.workspace)) return;
+        const machine = machinesRef.current.find((candidate) => candidate.id === found?.machineId);
+        if (!found || machine?.state !== "connected" || !worktreesStartHere(found.machineId, found.workspace)) return;
         setDrawerOpen(false);
-        setWorktreeFor({ machineId: found.machineId, workspace: found.workspace, mode });
+        setWorktreeFor({ machineId: found.machineId, machineName: machine.name, workspace: found.workspace, mode });
       },
       openPalette,
       agentStarted: (machineId, paneId) => lenses.startedAgent(lensOwner(machineId, paneId), window.matchMedia?.("(pointer: coarse)").matches === true),

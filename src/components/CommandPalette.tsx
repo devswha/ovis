@@ -323,8 +323,9 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const { repositoryWorkspaces } = useRepositoryWorkspaces({ machineId, snapshot, online, watching, offered: worktreesOffered, listWorktrees: api.listWorktrees });
   const selectedWorkspaceInfo = snapshot?.workspaces.find((workspace) => workspace.workspace_id === selectedPane?.workspace_id);
   const startsWorktrees = selectedWorkspaceInfo !== undefined && (selectedWorkspaceInfo.worktree ? !selectedWorkspaceInfo.worktree.is_linked_worktree : repositoryWorkspaces.has(selectedWorkspaceInfo.workspace_id));
-  const worktreeHere = actions.openWorktree !== undefined && worktreesOffered && !watching && startsWorktrees;
-  const historyHere = selectedPaneId !== null && historyOffered && !watching;
+  // both ask the PC: a disconnected one offers neither (herdr's mark and the history answer outlive the connection)
+  const worktreeHere = online && actions.openWorktree !== undefined && worktreesOffered && !watching && startsWorktrees;
+  const historyHere = online && selectedPaneId !== null && historyOffered && !watching;
 
   const paletteActions = useMemo<PaletteAction[]>(() => [
     { id: "new", label: t("New workspace"), icon: MessageSquarePlus, shortcut: "new-session", run: actions.openNewSession },

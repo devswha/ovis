@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { SessionHistoryAgent, WorkspaceInfo } from "../../shared/protocol.ts";
+import type { SessionHistoryAgent } from "../../shared/protocol.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { NewTabTarget } from "../components/NewSessionDialog.tsx";
-import type { WorktreeDialogMode } from "../components/WorktreeDialog.tsx";
+import type { WorktreeRequest } from "../components/WorktreeDialog.tsx";
 import type { CreateDraft } from "./deepLink.ts";
 import { useRecentResumes } from "./useRecentResumes.ts";
 import { forgetSessionHistoryProbesOfPcsAway } from "./useSessionHistoryOffered.ts";
@@ -25,7 +25,7 @@ export function useNewSessionState({ initialLink, watching = false }: { initialL
   // the earlier sessions of a workspace's folder (components/SessionHistory.tsx), while open
   const [sessionHistory, setSessionHistory] = useState<{ machineId: string; workspaceId: string; agent: SessionHistoryAgent; paneId: string | null; askingPaneId: string | null; selectedPaneId: string | null } | null>(null);
   // the palette's New worktree / Open worktree… (the workspace row menu keeps its own, Sidebar), while open
-  const [worktreeFor, setWorktreeFor] = useState<{ machineId: string; workspace: WorkspaceInfo; mode: WorktreeDialogMode } | null>(null);
+  const [worktreeFor, setWorktreeFor] = useState<WorktreeRequest | null>(null);
   // worktrees are not offered to a watching device: one open when this device turns into one closes
   useEffect(() => { if (watching) setWorktreeFor(null); }, [watching]);
   return { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory, worktreeFor, setWorktreeFor };

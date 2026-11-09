@@ -74,6 +74,15 @@ describe("the palette's worktree dialog", () => {
     expect(branchField().props.value).toBe("feat/two");
   });
 
+  it("names the PC it was asked for by its name in the title, not by its id", async () => {
+    await act(async () => {
+      renderer = create(<SettingsProvider>
+        <WorktreeRequestDialog request={{ machineId: "4f1c2d9e-0b7a-4c55-9a39-2f6d1e8b7c10", machineName: "Office PC", workspace: repository("api"), mode: "create" }} onClose={() => undefined} onOpened={() => undefined} onOpenPane={() => undefined} />
+      </SettingsProvider>);
+    });
+    expect(renderer!.root.findByType("h2").props.children).toBe("New worktree · api · Office PC");
+  });
+
   it("ignores the answer of a dialog that another repository's replaced", async () => {
     const opened: string[] = [];
     await act(async () => { renderer = create(dialog(repository("api"), () => opened.push("api"))); });

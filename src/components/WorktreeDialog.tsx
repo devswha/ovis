@@ -80,7 +80,7 @@ function writeWorktreeDraft(key: string, draft: WorktreeDraft | null): void {
 const said = (reason: unknown): string => reason instanceof ApiError ? reason.detail : reason instanceof Error ? reason.message : String(reason);
 
 /** what the palette asked a worktree dialog for (App): New worktree or Open worktree… on a PC's workspace */
-export interface WorktreeRequest { machineId: string; workspace: WorkspaceInfo; mode: WorktreeDialogMode }
+export interface WorktreeRequest { machineId: string; machineName?: string; workspace: WorkspaceInfo; mode: WorktreeDialogMode }
 
 /**
  * The palette's worktree dialog, on the request's own PC. A request for another workspace or mode is
@@ -88,7 +88,7 @@ export interface WorktreeRequest { machineId: string; workspace: WorkspaceInfo; 
  */
 export function WorktreeRequestDialog({ request, onClose, onOpened, onOpenPane }: { request: WorktreeRequest; onClose: () => void; onOpened: (opened: WorktreeOpened) => void; onOpenPane: (paneId: string) => void }) {
   return <MachineContext.Provider value={request.machineId}>
-    <WorktreeDialog key={`${request.machineId}\n${request.workspace.workspace_id}\n${request.mode}`} mode={request.mode} workspace={request.workspace} onClose={onClose} onOpened={onOpened} onOpenPane={onOpenPane} />
+    <WorktreeDialog key={`${request.machineId}\n${request.workspace.workspace_id}\n${request.mode}`} mode={request.mode} workspace={request.workspace} machineName={request.machineName} onClose={onClose} onOpened={onOpened} onOpenPane={onOpenPane} />
   </MachineContext.Provider>;
 }
 
