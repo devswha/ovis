@@ -32,9 +32,8 @@ import { forgetPageMedia } from "./file-view.ts";
 import { textEditAllowed } from "./file-edit.ts";
 import { handleFileRequest } from "./file-routes.ts";
 import { BACKGROUND_AGENT_PATH, handleBackgroundAgentRequest } from "./background-agent.ts";
-import { paneGet, ping, herdrSocketPath } from "./herdr/client.ts";
+import { paneGet, ping } from "./herdr/client.ts";
 import { RUNTIME_MOVE_PATH, RUNTIME_MOVE_ROUTE } from "./runtime-move.ts";
-import { MOVE_LOCK_UNSAFE, moveLockPath } from "./runtime-move-lock.ts";
 import type { StopRefusal } from "./runtime-move-service.ts";
 import type { MoveService } from "./runtime-move-service.ts";
 import { handlePushRequest } from "./push.ts";
@@ -163,7 +162,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // replaced (server/machines.ts ownOffer). An install still names the offered revision and the
   // custom header (update-api.ts), and whoever holds the token already drives every pane here. Only those two
   // requests, each by its own method and with no query: the token opens nothing else of these routes (#2054)
-  const bridgeUpdatePath = url.search === "" && (pathname === "/api/updates" ? request.method === "GET" : pathname === "/api/updates/install" && request.method === "POST");
+  const bridgeUpdatePath = url.search === "" && (pathname === "/api/updates" ? request.method === "GET" : (pathname === "/api/updates/install" || pathname === "/api/updates/cancel") && request.method === "POST");
   // the same server runs the move to herdr-core here for the person on its side (docs/runtime-move.md,
   // "On another PC"); each move route still asks for the app's own header and no query (updateRequestAllowed)
   const bridgeMovePath = RUNTIME_MOVE_ROUTE.test(pathname);
@@ -491,7 +490,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   // installing an update on this PC (Ovis or herdr; a check installs too where OVIS_AUTO_UPDATE=1) is the owner's, as changing its PCs is (machine-api.ts): from any device
   // he signed in or paired himself. The connection server's bridge token asks its own install by revision (bridgeUpdatePath)
-  if (request.method === "POST" && (pathname === "/api/updates/install" || pathname === "/api/updates/check" || pathname === "/api/herdr/update") && !ownerAccess(access) && !(bridgeAuthorized && bridgeUpdatePath)) {
+  if (request.method === "POST" && (pathname === "/api/updates/install" || pathname === "/api/updates/cancel" || pathname === "/api/updates/check" || pathname === "/api/herdr/update") && !ownerAccess(access) && !(bridgeAuthorized && bridgeUpdatePath)) {
     setRequestRoute(pathname);
     return jsonResponse({ error: { code: "forbidden", message: "Only the owner's own signed-in or paired devices can update this PC, from this app's own page." } }, 403);
   }
@@ -728,8 +727,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const refused = await move.start(revision);
       if (refused === null) return jsonResponse({ accepted: true }, 202);
       // another Ovis server of this herdr session (the PC's own, or a connection server's bridge) moves it
-      if (refused === "locked") return jsonResponse({ error: { code: "already_moving", message: `Another Ovis on this PC is moving this herdr session already. If none is (one that stopped without telling), delete ${moveLockPath(herdrSocketPath())} on this PC and try again.` } }, 409);
-      if (refused === "lock_unsafe") return jsonResponse({ error: { code: "move_lock_unsafe", message: MOVE_LOCK_UNSAFE } }, 409);
+      if (refused === "locked") return jsonResponse({ error: { code: "already_moving", message: "Another Ovis on this PC is moving this herdr session already: its own page, or a connection server reaching it. Wait for that move to end; a holder that stopped lets go on its own." } }, 409);
+      // why the lock cannot be taken here, in MoveLockUnsafe's own words (none names a path)
+      if (typeof refused === "object") return jsonResponse({ error: { code: "move_lock_unsafe", message: refused.lock_unsafe } }, 409);
       return jsonResponse({ error: { code: refused, message: refused === "plan_changed" ? "the panes changed since the plan was shown: look again" : refused === "already_moving" ? "a move is already waiting or running" : refused === "runtime_switching" ? "the server is switching its runtime: try again once it is back" : "no move to herdr-core is offered here" } }, 409);
     } catch (error) {
       return errorResponse(error);
