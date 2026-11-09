@@ -399,6 +399,62 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(3)).toEqual([]);
     });
 
+    it("reads nothing for a report begun blind, though blind clears while the Hub answers (#3437)", async () => {
+      await configure();
+      await service.report();
+      const hidden = new Set(["codex:cliproxy:codex-b.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      writeFileSync(join(dir, "cliproxy-hidden.json"), "{broken");
+      // blind at the start: Bob's hidden key names no file the Hub lists, his credential having moved
+      Object.assign(fake.files[1]!, { name: "codex-moved.json", auth_index: "m" });
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => hidden);
+      const held = fake.holdCredentials();
+      const report = restarted.report(false, new Set(hidden));
+      await held.arrived;
+      hidden.delete("codex:cliproxy:codex-b.json");
+      restarted.hiddenChanged();
+      held.release();
+      await report;
+      expect(reads().slice(2)).toEqual([]);
+    });
+
+    it("keeps a hidden account unread when it is shown again while the Hub answers (#3437)", async () => {
+      await configure();
+      await service.report();
+      const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      moveAlice();
+      service.invalidate();
+      const held = fake.holdCredentials();
+      const report = service.report(false, new Set(hidden));
+      await held.arrived;
+      // shown again: which account Alice is goes from the live list, but this report began with her hidden
+      hidden.delete("claude:cliproxy:claude-a.json");
+      service.hiddenChanged();
+      held.release();
+      await report;
+      expect(reads().slice(2)).toEqual(["b"]);
+    });
+
+    it("keeps an account unread when it is hidden while the Hub answers (#3437)", async () => {
+      await configure();
+      await service.report();
+      const hidden = new Set<string>();
+      service.skipAccounts(() => hidden);
+      service.invalidate();
+      const held = fake.holdCredentials();
+      const report = service.report(false, new Set(hidden));
+      await held.arrived;
+      hidden.add("claude:cliproxy:claude-a.json");
+      service.hiddenChanged();
+      held.release();
+      await report;
+      expect(reads().slice(2)).toEqual(["b"]);
+    });
+
     it("reads again at the next report once a list read only in part is whole (#3437)", async () => {
       fake.files.push({ ...fake.files[0]!, name: "claude-c.json", email: "claude-c@example.test", auth_index: "c" });
       await configure();

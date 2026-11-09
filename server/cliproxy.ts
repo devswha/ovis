@@ -20,6 +20,18 @@ const accountIdentities = (provider: string, holder: string | null, index: strin
 const isIndexed = (identity: string) => identity.startsWith("index:");
 const sameAccount = (known: readonly string[], identities: readonly string[]) => known.some((identity) => identities.includes(identity));
 const isHubKey = (key: string) => key.includes(":cliproxy:");
+/** what a read is decided from: the hidden keys, whether read whole, blind, and which account each hidden key is (a copy) */
+interface ReadView { hidden: ReadonlySet<string>; blind: boolean; accounts: ReadonlyMap<string, readonly string[]> }
+/**
+ * Whether `view` keeps the account `identities`, under `key`, unread. Hidden is decided by account, the file name only a
+ * hint (#3423): an account hidden under any key stays unread under whatever name it has now; under a hidden key's name,
+ * only an account known to be another than the one hidden is read anew.
+ */
+const unreadableIn = (view: ReadView, key: string, identities: readonly string[]): boolean => {
+  if (view.blind || [...view.accounts].some(([hiddenKey, known]) => view.hidden.has(hiddenKey) && sameAccount(known, identities))) return true;
+  const named = view.accounts.get(key);
+  return view.hidden.has(key) && (named === undefined || sameAccount(named, identities));
+};
 /** why no Hub account is read while blind (CLIProxyService.blind): shown where Settings shows the Hub's state */
 const BLIND_PROBLEM = "Hidden accounts could not be told apart, so no hub account is read. Show again each hidden hub account, or save the hub again to read them by file name.";
 /** a saved hidden list larger than this is no list this server wrote */
@@ -255,6 +267,11 @@ export class CLIProxyService {
     return this.blind && (!whole || [...hidden].some((key) => isHubKey(key) && !this.hiddenAccounts.has(key)));
   }
 
+  /** the hidden list as `hidden` and `whole` say, with the accounts known now copied: a later change leaves it as it is */
+  private view(hidden: ReadonlySet<string>, whole: boolean): ReadView {
+    return { hidden, blind: !whole || this.blindTo(hidden, whole), accounts: new Map(this.hiddenAccounts) };
+  }
+
   /** whether the last save of the hidden list failed, so a change of the preferences must try it again */
   hiddenUnsaved(): boolean { return this.hiddenSaveFailed; }
 
@@ -377,8 +394,9 @@ export class CLIProxyService {
     const due = now >= this.nextAt || (refresh && now - this.readAt >= MIN_REFRESH_MS);
     const shown = this.entries.filter((entry) => this.skipped.has(entry.key) && !skipped.has(entry.key)).map((entry) => entry.key);
     this.skipped = skipped;
-    // the live list, and whether it was read whole, taken together once: every read of this report is decided from them,
-    // so a list that becomes whole while the Hub answers counts from the next report (#3437). The keys are read first,
+    // the live list, and whether it was read whole, taken together once: the view this report began with, which every
+    // read of it must pass as well as the view as the Hub answers (collect), so a list that becomes whole meanwhile
+    // counts from the next report (#3437). The keys are read first,
     // as reading them is what tells whether they were read whole (index.ts skippedAccounts)
     const live = this.hidden();
     const whole = this.hiddenWhole();
@@ -386,6 +404,9 @@ export class CLIProxyService {
     const hiddenNow = new Set([...skipped, ...live]);
     // which account a hidden key is follows the live list alone: a report's older snapshot must not bring back a key shown since
     this.syncHidden(live, whole);
+    // a list read only in part may leave out a hidden key whose save never landed, so its account may be any:
+    // nothing is read until the list is whole, blind or not (#3437)
+    const start = this.view(hiddenNow, whole);
     if (!due && shown.length === 0) return Promise.resolve(this.entries);
     // before their time only the accounts shown again are read: every other row is still fresh and stays
     // and a full read leaves out an account shown again and read less than MIN_REFRESH_MS ago
@@ -393,7 +414,8 @@ export class CLIProxyService {
       ? new Set([...skipped, ...[...this.shownAt].filter(([, at]) => now - at < MIN_REFRESH_MS).map(([key]) => key)])
       : new Set(this.entries.map((entry) => entry.key).filter((key) => !shown.includes(key)));
     const generation = this.generation;
-    const pass = this.collect(kept, hiddenNow, whole).then((entries) => {
+    const answer = { whole };
+    const pass = this.collect(kept, start, answer).then((entries) => {
       if (generation !== this.generation) return [];
       // a partial read that failed changes nothing: the cached rows, hidden ones included, stay, and the
       // accounts shown again count as just shown at the next report, so it reads them again
@@ -408,7 +430,7 @@ export class CLIProxyService {
       this.entries = entries;
       // a list read only in part let nothing be read: not a fresh read, so the next report reads again, the accounts
       // shown again included (#3437)
-      if (!whole) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
+      if (!answer.whole) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
       if (due) { this.readAt = now; this.nextAt = now + FRESH_MS; this.shownAt.clear(); }
       else for (const key of shown) this.shownAt.set(key, now);
       return this.entries;
@@ -418,20 +440,23 @@ export class CLIProxyService {
   }
 
   /**
-   * `kept`: the accounts whose last rows stay unread (while their file still names the same account); `hidden`: the
-   * accounts the hidden list names, asked by key before any api-call, never by whether a row of them is kept. null:
-   * the Hub could not be read
+   * `kept`: the accounts whose last rows stay unread (while their file still names the same account); `start`: the hidden
+   * list as the report began. An account is read only if both `start` and the hidden list as the Hub answers let it be
+   * (#3437): a hide, a show or a blind that changes meanwhile keeps it unread, never reads it. `answer.whole` turns false
+   * when either was read only in part. null: the Hub could not be read
    */
-  private async collect(kept: ReadonlySet<string>, hidden: ReadonlySet<string>, whole: boolean): Promise<readonly ProviderUsage[] | null> {
+  private async collect(kept: ReadonlySet<string>, start: ReadView, answer: { whole: boolean }): Promise<readonly ProviderUsage[] | null> {
     try {
       const body = await this.call("/credentials");
       if (!Array.isArray(body["files"])) throw new CLIProxyError("cliproxy_response", 502, "Hub returned an unreadable response");
       const files = body["files"].filter(isJsonObject);
       this.problem = null; this.checked = true;
       const ctx = systemUsageContext();
-      // a list read only in part may leave out a hidden key whose save never landed, so its account may be any:
-      // nothing is read until the list is whole, blind or not (#3437); `whole` as the report began, with `hidden`
-      const blind = !whole || this.blindTo(hidden, whole);
+      // the keys first: reading them is what tells whether they were read whole (index.ts skippedAccounts)
+      const liveKeys = this.hidden();
+      const liveWhole = this.hiddenWhole();
+      const live = this.view(liveKeys, liveWhole);
+      answer.whole &&= liveWhole;
       return await Promise.all(files.flatMap((file) => {
         const provider = USAGE_PROVIDERS.find((item) => (item.id === "claude" || item.id === "codex") && item.id === file["provider"]);
         const index = file["auth_index"];
@@ -452,15 +477,10 @@ export class CLIProxyService {
         const held = (row: ProviderUsage): ProviderUsage => {
           if (holder !== null) this.holders.set(row, holder);
           this.identities.set(row, identities);
-          if (!hidden.has(row.key)) this.shownRows.add(row);
+          if (!start.hidden.has(row.key) && !live.hidden.has(row.key)) this.shownRows.add(row);
           return row;
         };
-        // hidden is decided by account, the file name only a hint (#3423): an account hidden under any key is listed unread
-        // under whatever name it has now, and its credentials are not used; under a hidden key's name, only an account
-        // known to be another than the one hidden is read anew
-        const hiddenAs = [...this.hiddenAccounts].some(([key, known]) => hidden.has(key) && sameAccount(known, identities));
-        const named = this.hiddenAccounts.get(entry.key);
-        if (blind || hiddenAs || (hidden.has(entry.key) && (named === undefined || sameAccount(named, identities)))) return [Promise.resolve(held({ ...entry, problem: null }))];
+        if (unreadableIn(start, entry.key, identities) || unreadableIn(live, entry.key, identities)) return [Promise.resolve(held({ ...entry, problem: null }))];
         if (file["disabled"] === true || file["unavailable"] === true) return [Promise.resolve(held(entry))];
         return [(async (): Promise<ProviderUsage> => {
           try {
