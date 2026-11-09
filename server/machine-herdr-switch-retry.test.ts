@@ -49,6 +49,8 @@ it.each([
     }),
     spyOn(posixHost, "herdrVersion").mockResolvedValue("herdr 0.9.3"),
     spyOn(posixHost, "alive").mockResolvedValue(true),
+    // a chosen socket the PC verifies as this account's and answering
+    spyOn(posixHost, "chosenSocketStatus").mockResolvedValue("usable"),
     spyOn(posixHost, "start").mockImplementation(async () => { oldStarts++; resumed.resolve(); throw new Error("Old bridge unavailable"); }),
     spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
     spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {

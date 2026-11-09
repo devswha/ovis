@@ -15,7 +15,7 @@ import { FinishEpochLedger } from "./finish-epoch-ledger.ts";
 import { labelOmoPanes } from "./conversation.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
-import { sameSshSession, type HerdrMachineProfile } from "./herdr-profiles.ts";
+import { type HerdrMachineProfile, samePort, sameSshSession } from "./herdr-profiles.ts";
 import { appBuild } from "./app-revision.ts";
 import { validateTarget } from "./machine-security.ts";
 import { writePrivateState } from "./private-state.ts";
@@ -1239,7 +1239,7 @@ export class MachineManager {
     // review in this dialog, and a reconnect or an update that asks nobody goes only where the PC is (#2075)
     const moving = !!existing && (!sameSshSession(target, existing.machine.target!) || target.herdr_socket !== existing.machine.target!.herdr_socket);
     // A session switch gets a separate connection. Keep the saved PC serving its old workspaces until commit.
-    const switchingSession = !!existing && moving && target.destination === existing.machine.target!.destination && target.port === existing.machine.target!.port;
+    const switchingSession = !!existing && moving && target.destination === existing.machine.target!.destination && samePort(target.port, existing.machine.target!.port);
     if (switchingSession) { clearTimeout(existing.retry); existing.retry = undefined; }
     const resumeRetry = existing?.machine.state === "reconnecting";
     const job: JobState = { update: request.update_remote === true, auto, public: { id, machine_id: machineId, target, phase: "connecting", step: "Connecting with SSH keys and ssh-agent…", challenge: null, installations: [], error: null, ssh_output: null, progress: null }, abort: new AbortController(), timer: setTimeout(() => this.cancelJob(id, true), 600_000), stageStartedAt: Date.now(), finished: Promise.resolve() };
@@ -1498,6 +1498,13 @@ export class MachineManager {
       // whose server this socket has, running or not: what the PC waits for while none runs
       learnServer(descriptor);
       if (!(await host.alive(ssh, descriptor.pid))) { stalePid = descriptor.pid; descriptor = undefined; }
+    }
+    // a live bridge for a chosen socket is reused only once the PC verifies that socket by the rule its bridge applies
+    // (this account's, a socket and no link, inside its herdr dirs, answering). Otherwise it is never taken: the bridge
+    // started below checks the socket again and says why
+    if (descriptor && target.herdr_socket && host.kind !== "windows" && await host.chosenSocketStatus?.(ssh, inspection, target.herdr_socket) !== "usable") {
+      stalePid = descriptor.pid;
+      descriptor = undefined;
     }
     // The PC's own Ovis is away (#2047): the PC waits for it, as for a PC that cannot be reached, and nothing of this
     // app's is installed or started in its place, by a reconnect or by an update that asks nobody. Only a setup the

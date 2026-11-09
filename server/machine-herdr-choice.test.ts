@@ -30,6 +30,8 @@ it.each(["socket success", "socket failure", "session success", "session failure
         descriptors: [{ ...descriptor(selected!), ...(selected === b.herdr_socket && outcome === "stale independent socket" ? { managed_remote: false, pid: 9898 } : {}) }], runtimeDir: "/runtime", registryDir: "/registry" };
     }),
     spyOn(posixHost, "alive").mockImplementation(async (_ssh, pid) => pid !== 9898),
+    // a chosen socket the PC verifies as this account's and answering
+    spyOn(posixHost, "chosenSocketStatus").mockResolvedValue("usable"),
     spyOn(posixHost, "start").mockRejectedValue(new Error("B could not start")),
     spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
     spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {
@@ -94,6 +96,8 @@ it.each(["manual", "catalog socket", "catalog new"])("remembers %s choice throug
     spyOn(posixHost, "descriptors").mockImplementation(async () => started ? [descriptor] : []),
     spyOn(posixHost, "foundSessions").mockResolvedValue({ gone: false, sessions: found }),
     spyOn(posixHost, "alive").mockResolvedValue(true),
+    // a chosen socket the PC verifies as this account's and answering
+    spyOn(posixHost, "chosenSocketStatus").mockResolvedValue("usable"),
     spyOn(SshConnection.prototype, "forward").mockImplementation(async (port) => {
       relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
         const path = new URL(request.url).pathname;
@@ -179,4 +183,52 @@ it("puts a chosen session that stopped on the card as a choice, and never retrie
     expect(retries).not.toHaveBeenCalled();
     expect(starts).toBe(1);
   } finally { manager.stop(); retries.mockRestore(); for (const mock of mocks) mock.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each(["refused", "gone", "usable"] as const)("reuses a live bridge for a chosen socket only once the PC verifies that socket (%s)", async (status) => {
+  const dir = mkdtempSync(join(tmpdir(), "machine-herdr-reuse-"));
+  const id = "12345678-1234-1234-1234-123456789abe";
+  // a bridge registered for a socket that is not this account's (or no longer answers)
+  const socket = "/home/other/.config/herdr/herdr.sock";
+  const descriptor = { socket_path: socket, pid: 4242, port: 12345, token: "b".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
+  writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: { destination: "fixture-only", herdr_socket: socket } }]));
+  let starts = 0;
+  const checked: string[] = [];
+  const relays: ReturnType<typeof Bun.serve>[] = [];
+  const mocks = [
+    spyOn(SshConnection.prototype, "start").mockResolvedValue(undefined),
+    spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
+    spyOn(posixHost, "inspect").mockImplementation(async () => ({ platform: "linux-x64", home: "/home/fixture", herdrPath: "", expectedSocket: socket, bundleReady: true, bundleOlder: false, descriptors: [descriptor], runtimeDir: "/runtime", registryDir: "/registry" })),
+    spyOn(posixHost, "installBundle").mockResolvedValue(undefined),
+    spyOn(posixHost, "start").mockImplementation(async () => { starts++; }),
+    spyOn(posixHost, "descriptors").mockResolvedValue([descriptor]),
+    spyOn(posixHost, "alive").mockResolvedValue(true),
+    spyOn(posixHost, "chosenSocketStatus").mockImplementation(async (_ssh, _inspection, path) => { checked.push(path); return status; }),
+    spyOn(posixHost, "foundSessions").mockResolvedValue({ gone: true, sessions: [] }),
+    spyOn(SshConnection.prototype, "forward").mockImplementation(async (port) => {
+      relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
+        const path = new URL(request.url).pathname;
+        if (path === "/api/bridge") return Response.json({ ...descriptor, socket_id: "fixture:1", herdr: { protocol: 22, version: "0.9.3" } });
+        if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [] } });
+        if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
+        return new Response("absent", { status: 404 });
+      }, websocket: { message() {} } }));
+    }),
+  ];
+  const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+  try {
+    const settled = await new Promise<SetupJob>((resolve, reject) => {
+      let job: SetupJob | undefined;
+      const deadline = setTimeout(() => { off(); reject(new Error("setup did not finish")); }, 5000);
+      const off = manager.subscribe(() => { if (job && ["failed", "connected"].includes(job.phase)) { clearTimeout(deadline); off(); resolve(job); } });
+      job = manager.setup({ destination: "fixture-only", herdr_socket: socket, machine_id: id, update_remote: true }, { auto: true });
+    });
+    expect(checked).toEqual([socket]);
+    if (status === "usable") { expect(settled.phase).toBe("connected"); expect(starts).toBe(0); }
+    else {
+      // never taken: the bridge started instead checks the socket itself and says why
+      expect(starts).toBe(1);
+      expect(settled).toMatchObject({ phase: "failed", action_required: "choose_herdr" });
+    }
+  } finally { manager.stop(); for (const mock of mocks) mock.mockRestore(); for (const relay of relays) relay.stop(true); rmSync(dir, { recursive: true, force: true }); }
 });

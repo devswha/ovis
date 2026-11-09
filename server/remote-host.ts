@@ -138,6 +138,8 @@ export interface RemoteHost {
   startupNotice?(ssh: SshConnection, session?: string): Promise<string | null>;
   /** what the bridge asked the owner to choose: herdr sessions running there, or (`gone`) that the chosen one stopped */
   foundSessions?(ssh: SshConnection, inspection: HostInspection): Promise<{ gone: boolean; sessions: FoundHerdrSession[] } | null>;
+  /** a chosen socket checked on the PC by the rule its bridge applies (server/herdr-discovery.ts); null when it cannot be */
+  chosenSocketStatus?(ssh: SshConnection, inspection: HostInspection, socket: string): Promise<"usable" | "gone" | "refused" | null>;
   descriptors(ssh: SshConnection): Promise<BridgeDescriptor[]>;
 }
 
@@ -204,6 +206,12 @@ export const posixHost: RemoteHost = {
     const gone = result.code === "herdr_session_gone";
     // a stopped chosen session may leave no other one running
     return { gone, sessions: gone && Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions) };
+  },
+  async chosenSocketStatus(ssh, inspection, socket) {
+    // the installed bundle holds the rule; an older or missing one cannot say
+    if (!inspection.bundleReady || !validHerdrSocket(socket)) return null;
+    const status = (await ssh.run(REMOTE_PATH + `HERDR_CHECK_SOCKET=${shellQuote(socket)} "$HOME/${BUNDLE_DIR}/bin/bun" -e 'const { chosenHerdrSocketStatus } = await import(process.env.HOME + "/${BUNDLE_DIR}/server/herdr-discovery.ts"); console.log(await chosenHerdrSocketStatus(process.env.HERDR_CHECK_SOCKET))' 2>/dev/null || true`)).trim();
+    return status === "usable" || status === "gone" || status === "refused" ? status : null;
   },
   async descriptors(ssh) {
     return parseDescriptors((await ssh.run(`for f in "$HOME/.config/herdr-web-ui/bridges/"*.json; do test ! -f "$f" || cat "$f"; printf '\\n'; done`)).split("\n"));
