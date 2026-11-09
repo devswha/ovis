@@ -431,12 +431,19 @@ export class PcInstaller {
         if (live.some((d) => d.managed_remote)) throw new InstallFailed("bridge_there", "That PC runs this app's bridge for herdr; update it from its card with Update instead.");
         if (live.length) throw new InstallFailed("ovis_there", "Ovis already runs on that PC. Add it with Add PC, or update it from its card.");
       } else {
+        // a herdr-core Ovis started by hand: the official installer's Ovis would come back on herdr's default socket (a
+        // herdr Ovis, beside a herdr of its own), not as the Ovis this PC is set to use. Refused before anything is stopped
+        const core = socket !== inspection.expectedSocket;
+        if (core && plan.mode === "replace" && !installed) throw new InstallFailed("no_launcher", "Ovis on that PC was started by hand; update it there, or start it with its launcher first.");
         // only the very process the plan was made for, only a server this app did not start, and only while that pid
         // still runs an Ovis server: a pid reused by another program since is never signalled
         const shown = live.find((d) => d.pid === plan.pid && !d.managed_remote && (plan.token === undefined || d.token === plan.token));
+        // for a herdr-core plan, what runs on herdr's default socket counts too: nothing is installed or started beside it
+        let besideDefault = false;
+        if (core) for (const d of inspection.descriptors) if (d.socket_path === inspection.expectedSocket && Number.isSafeInteger(d.pid) && d.pid > 0 && await posixHost.alive(ssh, d.pid)) besideDefault = true;
         // gone already (an earlier try stopped it, or the launcher stopped it and failed to start one), with no other Ovis
         // running there: nothing is left to stop, and the install or the launcher's start is tried again
-        gone = !shown && live.length === 0;
+        gone = !shown && live.length === 0 && !besideDefault;
         // which process it is (when it started, whose it is), read on both sides of its command line: the copy and the stop
         // below go ahead only while it is still this one, never a process that took its pid since
         const identity = shown ? (await ssh.run(processIdentity(plan.pid))).trim() : "";

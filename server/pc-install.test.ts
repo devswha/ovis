@@ -1,11 +1,14 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, createReadStream, createWriteStream, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer as listenOn } from "node:net";
 import { tmpdir } from "node:os";
 import { readProcessBirth } from "./process-owner.ts";
 import { join } from "node:path";
-import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
+import { BRIDGE_PROTOCOL, REMOTE_BUNDLE_VERSION, type Machine, type PcInstallFailure, type PcInstallJob } from "../shared/machines.ts";
+import type { CompletionTracker } from "./completion.ts";
+import { MachineManager } from "./machines.ts";
+import type { PushService } from "./push.ts";
 import { birthNow, bornAs, captureServer, type InstallConnect, installerRun, installPlanFor, PcInstaller, processIdentity, registeredAs, restoreServer, runs, SAVED_SERVER } from "./pc-install.ts";
 import { SshConnection } from "./ssh.ts";
 
@@ -553,20 +556,61 @@ describe("installing Ovis on a PC over SSH", () => {
 
   it("looks for a herdr-core server the plan names on its own adapter socket, never on herdr's default one", async () => {
     const socket = "/home/fx/.local/state/ovis/herdr-core.sock";
-    // live there: found, checked and stopped before the install, so no second Ovis runs beside it. No launcher there, so
-    // the official installer's Ovis takes its place, at herdr's default socket (OVIS_RUNTIME=herdr)
-    const live = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], restoreOff: true, ovisSocket: socket });
+    // live there: found, checked and stopped, then started again by its launcher at its own socket: no second Ovis beside it
+    const live = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], launcher: "systemd", restoreOff: true, ovisSocket: socket });
     const replaced = await live.settled(live.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket } }));
     expect(replaced.phase).toBe("connected");
     expect(live.commands.some((command) => command.includes("&& kill -TERM 4242"))).toBe(true);
     expect(live.alive.has(4242)).toBe(false);
-    // really gone (its registration left behind): nothing to stop, and the plan goes ahead as before
-    const gone = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], restoreOff: true });
+    // really gone (its registration left behind), nothing else running: nothing to stop, and its launcher starts it as before
+    const gone = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }], launcher: "systemd", restoreOff: true, ovisSocket: socket });
     gone.alive.delete(4242);
-    const installed = await gone.settled(gone.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket } }));
-    expect(installed.phase).toBe("connected");
+    const started = await gone.settled(gone.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket } }));
+    expect(started.phase).toBe("connected");
     expect(gone.commands.some((command) => command.includes("kill -TERM 4242"))).toBe(false);
-    expect(installs(gone.commands)).toHaveLength(1);
+  });
+
+  it("refuses a herdr-core plan whose server is gone while another Ovis runs on herdr's default socket", async () => {
+    const socket = "/home/fx/.local/state/ovis/herdr-core.sock";
+    // an independent Ovis live on the default socket: not gone, so nothing is installed or started beside it
+    const pc = fixture({ descriptors: [{ ...descriptor(4242), socket_path: socket }, descriptor(4300, false, "c".repeat(64))], launcher: "systemd", restoreOff: true, ovisSocket: socket });
+    pc.alive.delete(4242);
+    const job = await pc.settled(pc.installer.start({ target, machine_id: "pc-1", plan: { mode: "replace", pid: 4242, socket } }));
+    expect(job).toMatchObject({ phase: "failed", error_code: "changed" });
+    expect(installs(pc.commands)).toEqual([]);
+    expect(pc.commands.some((command) => command.includes("systemctl --user start ovis.service"))).toBe(false);
+    expect(pc.commands.some((command) => command.includes("kill -TERM"))).toBe(false);
+    expect(pc.alive.has(4300)).toBe(true);
+    expect(pc.connects).toEqual([]);
+  });
+
+  it("refuses to replace a herdr-core Ovis started by hand before stopping anything, through the card's install", async () => {
+    const socket = "/home/fx/.local/state/ovis/herdr-core.sock";
+    const token = "a".repeat(64);
+    // the SSH PC as the fixture answers it; the install and its connect are the manager's own (installConnect)
+    const pc = fixture({ descriptors: [{ ...descriptor(4242, false, token), socket_path: socket }], restoreOff: true });
+    const dir = mkdtempSync(join(tmpdir(), "ovis-core-install-"));
+    const id = "00000000-0000-4000-8000-0000000000cc";
+    const saved = { destination: "me@lab.invalid", own_ovis: socket };
+    writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "Lab", target: saved, enabled: true }]));
+    // its own reconnects are not this test's: the install is started from its card as it offers it
+    const reconnect = spyOn(MachineManager.prototype as unknown as { reconnect(runtime: unknown): Promise<void> }, "reconnect").mockImplementation(async () => {});
+    const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
+    cleanups.push(() => { manager.stop(); reconnect.mockRestore(); rmSync(dir, { recursive: true, force: true }); });
+    const runtime = (manager as unknown as { machines: Map<string, { machine: Machine; installFix?: unknown }> }).machines.get(id)!;
+    Object.assign(runtime.machine, { state: "error", action_required: "setup", remote_ovis: { version: "0.4.9", latest_version: null, updatable: false, reason: "not started by its updater", address: "lab.invalid:7317", url: null } });
+    runtime.installFix = { mode: "replace", pid: 4242, token, socket, target: saved };
+    expect(manager.list().find((machine) => machine.id === id)?.ovis_update).toMatchObject({ how: "install", updatable: true });
+    const started = manager.install({ machine_id: id });
+    await (manager as unknown as { installer: { finished(id: string): Promise<void> } }).installer.finished(started.id);
+    const job = manager.installJob(started.id)!;
+    expect(job).toMatchObject({ phase: "failed", error_code: "no_launcher", error: "Ovis on that PC was started by hand; update it there, or start it with its launcher first." });
+    // nothing stopped, installed, launched or connected
+    expect(pc.commands.some((command) => command.includes("kill -TERM"))).toBe(false);
+    expect(installs(pc.commands)).toEqual([]);
+    expect(pc.commands.some((command) => command.includes(" server </dev/null"))).toBe(false);
+    expect(pc.alive.has(4242)).toBe(true);
+    expect(job.connect_job).toBeNull();
   });
 
   const coreSocket = "/home/fx/.local/state/ovis/herdr-core.sock";
