@@ -204,3 +204,13 @@ it("sends a draft no other tab sent, once (control)", async () => {
   await tab.press();
   expect(tab.sent).toEqual(["deploy"]);
 });
+
+it("disables the quick replies in a watch-only view", async () => {
+  const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, role: "observe", onSend: () => true, onAbort() {}, onUploadImage: async () => "" };
+  await act(async () => { renderer = create(<Composer {...props} />); });
+  const quick = renderer!.root.findAll((node) => node.type === "button" && node.props.className === "composer-quick-reply");
+  expect(quick.length).toBeGreaterThan(0);
+  expect(quick.map((button) => button.props.disabled)).toEqual(quick.map(() => true));
+  await act(async () => { renderer!.update(<Composer {...props} role={undefined} />); });
+  expect(renderer!.root.findAll((node) => node.type === "button" && node.props.className === "composer-quick-reply").map((button) => button.props.disabled)).toEqual(quick.map(() => false));
+});

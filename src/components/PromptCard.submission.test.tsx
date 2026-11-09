@@ -91,4 +91,67 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
       if (savedLanguages) Object.defineProperty(navigator, "languages", savedLanguages); else Reflect.deleteProperty(navigator, "languages");
     }
   });
+
+  it("after a failed typed answer is edited, never sends the old text: Retry goes and Send takes what the field shows", async () => {
+    const freeForm: InteractivePrompt = {
+      id: "demo-free", agent: "claude", kind: "question", title: "Which name?", question: "Which name?", body: null,
+      options: [{ label: "Type something", description: null }],
+      multi_select: false, custom_option_index: 0,
+    };
+    const sent: PromptAnswer[] = [];
+    let settle: ((error?: unknown) => void) | null = null;
+    const answerSpy = spyOn(machineContext, "useMachineApi").mockReturnValue({
+      answerPanePrompt: (answer: PromptAnswer) => {
+        sent.push(answer);
+        return new Promise<void>((resolve, reject) => {
+          settle = (error) => { if (error !== undefined) reject(error); else resolve(); };
+        });
+      },
+    } as ReturnType<typeof machineContext.useMachineApi>);
+    const settingsSpy = spyOn(settingsModule, "useSettings").mockReturnValue({
+      settings: settingsModule.DEFAULT_SETTINGS,
+      resolvedLanguage: "en",
+    } as ReturnType<typeof settingsModule.useSettings>);
+    const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const savedDoc = Object.getOwnPropertyDescriptor(globalThis, "document");
+    const savedAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    const savedLanguages = Object.getOwnPropertyDescriptor(navigator, "languages");
+    const listen = { addEventListener() {}, removeEventListener() {} };
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
+    Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { ...listen, matchMedia: () => ({ matches: false, ...listen }) } });
+    Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: { activeElement: null, body: {} } });
+    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(createElement(PromptCard, { paneId: "w1D:p1", prompt: freeForm, onPromptChanged: () => {}, onAnswered: () => {} }));
+      });
+      const field = () => renderer!.root.find((node) => node.type === "input");
+      const type = async (value: string) => { await act(async () => { field().props.onChange({ currentTarget: { value } }); }); };
+      const send = () => renderer!.root.find((node) => node.type === "button" && Array.isArray(node.children) && node.children.includes("Send"));
+      const retries = () => renderer!.root.findAll((node) => node.type === "button" && typeof node.props.className === "string" && node.props.className.includes("prompt-card-retry"));
+
+      await type("first");
+      await act(async () => { send().props.onClick({ nativeEvent: {}, currentTarget: {} }); });
+      await act(async () => { settle!(new ApiError("herdr said no", 500, "internal_error", "internal_error")); });
+      expect(retries()).toHaveLength(1);
+
+      await type("second");
+      for (const retry of retries()) await act(async () => { retry.props.onClick({ nativeEvent: {}, currentTarget: {} }); });
+      expect(sent.map((answer) => answer.custom_text)).toEqual(["first"]);
+      expect(renderer!.root.findAll((node) => node.props.role === "alert")).toHaveLength(1);
+
+      await act(async () => { send().props.onClick({ nativeEvent: {}, currentTarget: {} }); });
+      expect(sent.map((answer) => answer.custom_text)).toEqual(["first", "second"]);
+      await act(async () => { settle!(); });
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+      settingsSpy.mockRestore();
+      answerSpy.mockRestore();
+      if (savedWindow) Object.defineProperty(globalThis, "window", savedWindow); else Reflect.deleteProperty(globalThis, "window");
+      if (savedDoc) Object.defineProperty(globalThis, "document", savedDoc); else Reflect.deleteProperty(globalThis, "document");
+      if (savedAct) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", savedAct); else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+      if (savedLanguages) Object.defineProperty(navigator, "languages", savedLanguages); else Reflect.deleteProperty(navigator, "languages");
+    }
+  });
 });

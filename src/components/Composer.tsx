@@ -1253,7 +1253,7 @@ export function Composer({
               type="button"
               className="composer-quick-reply"
               title={t("Send “{reply}”", { reply })}
-              disabled={!connected || sending}
+              disabled={viewOnly || !connected || sending}
               onClick={() => sendQuick(reply)}
             >
               {reply}
