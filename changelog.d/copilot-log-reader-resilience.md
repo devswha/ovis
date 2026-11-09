@@ -1,3 +1,4 @@
 ### Fixed
-- Copilot Chat no longer stays unavailable after its log's timestamps change without new content,
-  and an Ovis started after a Copilot's log rotated reads its earlier copies when none was pruned.
+- Copilot Chat stays on its session when Copilot refreshes its log's timestamps after a log
+  rotation, and an Ovis started after a rotation finds the session in the log's copies when none
+  was pruned.
