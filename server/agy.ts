@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
+import { ConversationReadPending } from "./conversation-shared.ts";
 import { FileBusyError, fileTask } from "./file-pool.ts";
 import { agyInvokedSkills } from "./skill-invocations/agy.ts";
 import { skillDocument } from "./skill-activity.ts";
@@ -257,20 +258,23 @@ const historyReads = new Map<string, Promise<unknown>>();
 /**
  * Keep one fd through projection and page reads, and reject a cut during the read. One read of a
  * ledger at a time: each updates the ledger's shared index, and each now waits for its catalog.
+ * With `authorized`, only that file is read: another one at the path (renamed over it while this
+ * read waited) is pending, for the next read to authorize afresh.
  */
-export function withAgyHistory<T>(path: string, read: (projection: AgyProjection, fd: number) => T): Promise<T> {
-  const run = (historyReads.get(path) ?? Promise.resolve()).then(() => agyHistoryRead(path, read), () => agyHistoryRead(path, read));
+export function withAgyHistory<T>(path: string, read: (projection: AgyProjection, fd: number) => T, authorized?: { dev: number; ino: number }): Promise<T> {
+  const run = (historyReads.get(path) ?? Promise.resolve()).then(() => agyHistoryRead(path, read, authorized), () => agyHistoryRead(path, read, authorized));
   const settled = run.then(() => {}, () => {});
   historyReads.set(path, settled);
   void settled.then(() => { if (historyReads.get(path) === settled) historyReads.delete(path); });
   return run;
 }
 
-async function agyHistoryRead<T>(path: string, read: (projection: AgyProjection, fd: number) => T): Promise<T> {
+async function agyHistoryRead<T>(path: string, read: (projection: AgyProjection, fd: number) => T, authorized?: { dev: number; ino: number }): Promise<T> {
   const fd = openSync(path, "r");
   try {
     if (realpathSync(path) !== path) throw new AgyUnavailable();
     const before = fstatSync(fd);
+    if (authorized !== undefined && (before.dev !== authorized.dev || before.ino !== authorized.ino)) throw new ConversationReadPending();
     const index = agyScan(path, fd);
     const catalog = await agyCatalogOffThread(path);
     // forgotten or evicted while the catalog was read: parsing and output refs look it up by path

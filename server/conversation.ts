@@ -2520,17 +2520,23 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   // set by the read below, in a closure the checker does not follow
   let history = null as string | null;
   let prefix = null as string | null;
+  // the Agy ledger readSettled authorized (its page handle's file): every read of it below reads only that file
+  let ledger = undefined as { dev: number; ino: number } | undefined;
   let answer: RecognizedConversation;
   try {
     const settled = await readSettled({ path: transcript.path, checkWindow: transcript.source === "muse-transcript", live }, () => {
       rememberPaneRead(paneId, transcript.path);
-      if (transcript.source === "agy-transcript") return null;
+      if (transcript.source === "agy-transcript") {
+        const opened = fstatSync(pageFile!.fd);
+        ledger = { dev: opened.dev, ino: opened.ino };
+        return null;
+      }
       history = transcript.source === "copilot-transcript" ? copilotHistoryIdentity(transcript.path) : null;
       prefix = history !== null && transcript.source === "copilot-transcript" ? copilotPrefix(paneId, `${transcript.binding}\0${history}`, transcript.path) : null;
       return transcriptPage(transcript.source, transcript.path, prefix === null ? page : copilotPage(page, prefix), transcript.codexHome ?? codexHome, transcript.piAgentDir);
     });
     if (settled === null) throw new ConversationUnavailable("no_session_id");
-    const readAgy = () => agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome);
+    const readAgy = () => agyTranscriptPage(resolved.path, page, resolved.codexHome ?? codexHome, ledger);
     answer = settled.value ?? await readAgy().catch((error) => {
       if (error instanceof ConversationUnavailable && error.message === "transcript_missing" && live()) return readAgy();
       throw error;
@@ -2897,11 +2903,12 @@ export function transcriptPage(source: Exclude<StreamSource, "agy-transcript">, 
 }
 
 /** One page of an Agy ledger (transcriptPage), whose catalog is read on a file thread (#2706). */
-export async function agyTranscriptPage(path: string, page: ConversationPage = {}, codexHome?: string): Promise<RecognizedConversation> {
-  try { return await withAgyHistory(path, (projection, fd) => ({ ...transcriptPageRead("agy-transcript", path, page, codexHome, projection, fd), activity: projection.activity })); }
+export async function agyTranscriptPage(path: string, page: ConversationPage = {}, codexHome?: string, authorized?: { dev: number; ino: number }): Promise<RecognizedConversation> {
+  try { return await withAgyHistory(path, (projection, fd) => ({ ...transcriptPageRead("agy-transcript", path, page, codexHome, projection, fd), activity: projection.activity }), authorized); }
   catch (error) {
-    // every file thread busy: worth another try soon (http.ts answers 503)
-    if (error instanceof HistoryChanged || error instanceof ConversationUnavailable || error instanceof FileBusyError) throw error;
+    // every file thread busy: worth another try soon (http.ts answers 503); another file than the
+    // authorized one is pending (withAgyHistory)
+    if (error instanceof HistoryChanged || error instanceof ConversationUnavailable || error instanceof FileBusyError || error instanceof ConversationReadPending) throw error;
     throw new ConversationUnavailable("transcript_missing");
   }
 }

@@ -4038,6 +4038,40 @@ describe("Agy native ledger through shared paging", () => {
       expect(await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error)).toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
   });
+  it("never retries a failed catalog race into a ledger renamed over the one it authorized", async () => {
+    const session = "00000000-0000-4000-8000-000000000001";
+    add(0, "USER_INPUT", "one");
+    add(1, "PLANNER_RESPONSE", "answer");
+    const pane = { pane_id: "agy-replaced", cwd: root, agent: "agy", agent_status: "working" } as HerdrPane;
+    const snapshot = spyOn(herdr, "sessionSnapshot").mockImplementation(async () => ({ panes: [pane], agents: [] }) as unknown as SessionSnapshot);
+    const store = spyOn(agyStore, "resolveAgyStore").mockResolvedValue({ root, session, path, pid: 2, started: "test" });
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } } as never);
+    let spy: ReturnType<typeof spyOn> | undefined;
+    try {
+      const initial = await paneConversation(pane.pane_id);
+      expect(initial.turns).toHaveLength(2);
+      // the first read's catalog fails, as in a write race, while another ledger is renamed over the authorized one
+      const other = `${path}.other`;
+      let calls = 0;
+      spy = spyOn(filePool, "fileTask").mockImplementation(async (task) => {
+        if (task.op !== "agy-catalog") throw new Error(`unexpected ${task.op}`);
+        if (++calls === 1) { renameSync(other, path); throw new Error("transient WAL copy race"); }
+        return [...agyCatalog(task.path)] as never;
+      });
+      utimesSync(join(root, "conversations", `${session}.db`), new Date(), new Date());
+      writeFileSync(other, row(0, "USER_INPUT", "OTHER SESSION SECRET") + row(1, "PLANNER_RESPONSE", "OTHER SESSION SECRET"));
+      // the retry reads no other file: the history the request named is no longer at the path
+      const held = await paneConversation(pane.pane_id, undefined, { history_id: initial.history_id }).catch((error: unknown) => error);
+      expect(JSON.stringify(held)).not.toContain("OTHER SESSION SECRET");
+      expect(held).toBeInstanceOf(HistoryChanged);
+      // and a refresh that names no history is pending, for the next read to authorize afresh
+      calls = 0;
+      writeFileSync(other, row(0, "USER_INPUT", "THIRD SESSION SECRET") + row(1, "PLANNER_RESPONSE", "THIRD SESSION SECRET"));
+      const fresh = await paneConversation(pane.pane_id).catch((error: unknown) => error);
+      expect(JSON.stringify(fresh)).not.toContain("THIRD SESSION SECRET");
+      expect(fresh).toBeInstanceOf(ConversationReadPending);
+    } finally { spy?.mockRestore(); snapshot.mockRestore(); store.mockRestore(); rpc.mockRestore(); }
+  });
   it.skipIf(process.platform === "win32")("greets an Agy started in the terminal on its unused start screen", async () => {
     const screen = [
       "❯ agy",
