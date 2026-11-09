@@ -422,7 +422,9 @@ export class CLIProxyService {
       const files = body["files"].filter(isJsonObject);
       this.problem = null; this.checked = true;
       const ctx = systemUsageContext();
-      const blind = this.blindTo(hidden);
+      // a list read only in part may leave out a hidden key whose save never landed, so its account may be any:
+      // nothing is read until the list is whole, blind or not (#3437)
+      const blind = !this.hiddenWhole() || this.blindTo(hidden);
       return await Promise.all(files.flatMap((file) => {
         const provider = USAGE_PROVIDERS.find((item) => (item.id === "claude" || item.id === "codex") && item.id === file["provider"]);
         const index = file["auth_index"];

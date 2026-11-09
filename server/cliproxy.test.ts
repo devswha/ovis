@@ -359,6 +359,22 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(3)).toEqual([]);
     });
 
+    it("reads no Hub account while the hidden list is read only in part, blind or not (#3437)", async () => {
+      fake.files.push({ ...fake.files[0]!, name: "claude-c.json", email: "claude-c@example.test", auth_index: "c" });
+      await configure();
+      await service.report();
+      service.skipAccounts(() => new Set(["claude:cliproxy:claude-a.json"]));
+      service.hiddenChanged();
+      // Bob's hide was never saved, and the removed list naming him cannot be read: the hidden list leaves him out
+      const restarted = new CLIProxyService(dir);
+      const partial = new Set(["claude:cliproxy:claude-a.json"]);
+      restarted.skipAccounts(() => partial, () => false);
+      restarted.hiddenChanged();
+      Object.assign(fake.files[1]!, { name: "codex-moved.json", auth_index: "m" });
+      await restarted.report(false, partial);
+      expect(reads().slice(3)).toEqual([]);
+    });
+
     it("keeps the way out of a start that found a lost save, through a restart (#3437)", async () => {
       fake.files.push({ ...fake.files[0]!, name: "claude-c.json", email: "claude-c@example.test", auth_index: "c" });
       await configure();

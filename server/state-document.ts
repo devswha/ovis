@@ -120,7 +120,7 @@ export function writeStateDocument(path: string, text: string, keepDamaged: bool
       chmodSync(path, 0o600);
       renameSync(path, damagedCopy(path));
     } catch (error) {
-      rmSync(temporary, { force: true });
+      try { rmSync(temporary, { force: true }); } catch { /* the reason below says why */ }
       const reason = (error as NodeJS.ErrnoException).code ?? (error instanceof Error ? error.message : String(error));
       throw new Error(`Cannot keep the damaged ${basename(path)} as ${basename(damagedCopy(path))} (${reason}), so it was not replaced`);
     }
