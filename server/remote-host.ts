@@ -207,7 +207,7 @@ export const posixHost: RemoteHost = {
     if (typeof result !== "object" || result === null || !("code" in result) || (result.code !== "herdr_sessions_found" && result.code !== "herdr_session_gone") || !("sessions" in result)) throw new Error("The PC returned an invalid startup result");
     const gone = result.code === "herdr_session_gone";
     // a stopped chosen session may leave no other one running
-    return { gone, sessions: Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions) };
+    return { gone, sessions: gone && Array.isArray(result.sessions) && result.sessions.length === 0 ? [] : parseFoundHerdrSessions(result.sessions) };
   },
   async discoverSessions(ssh, inspection) {
     const script = `import { discoverHerdrSessions } from ${JSON.stringify(inspection.runtimeDir + "/server/herdr-discovery.ts")}; console.log(JSON.stringify(await discoverHerdrSessions()));`;

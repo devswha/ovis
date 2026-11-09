@@ -292,6 +292,11 @@ const OWN_CHECK_RUNNING = "That PC's Ovis is still checking for updates; this PC
 const OWN_OVIS_AWAY = "This PC's own Ovis is not running; this PC tries again until it is back. If it stays away, start it on that PC.";
 /** a choice offered for a live Ovis of this account's that cannot answer right now: nothing is started in its place */
 const OWN_OVIS_UNANSWERED = "Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.";
+/**
+ * The Ovis chosen for this PC is gone (no registration, or its process not running). A reconnect waits for it as for an
+ * own Ovis that is away (#2047): after a reboot SSH answers before that Ovis has started. A setup in its dialog asks.
+ */
+const OWN_OVIS_GONE = "Start Ovis on that PC, or start a new herdr here";
 /** the host an SSH destination names, without its user: where that PC's own Ovis is opened */
 function sshHost(destination: string): string { return destination.slice(destination.lastIndexOf("@") + 1); }
 /** a release version as a PC's updater tells it (`0.4.18`, or a beta `0.5.0-beta.2`), or null */
@@ -1335,7 +1340,7 @@ export class MachineManager {
         // closes the connection.
         // A PC whose own Ovis is away, or still checking for releases, waits the same way: both end by themselves.
         const unreachable = ownsRuntime && job.update && !!existing && !(e instanceof MachineActionRequired)
-          && (error === OWN_OVIS_AWAY || error === OWN_CHECK_RUNNING || (reached ? !ssh.connected() : !SSH_REFUSED.test(error)));
+          && (error === OWN_OVIS_AWAY || error === OWN_OVIS_GONE || error === OWN_CHECK_RUNNING || (reached ? !ssh.connected() : !SSH_REFUSED.test(error)));
         // a cancel asking that PC to stop its update goes over this connection: it is closed only once that is done
         if (job.cancelling) await job.cancelling;
         if (ownsRuntime) this.disconnect(runtime);
@@ -1495,7 +1500,10 @@ export class MachineManager {
       if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
       return sessions;
     };
-    const coreUnavailable = async () => new MachineActionRequired("Start Ovis on that PC, or start a new herdr here", "choose_herdr", false, await localSessions());
+    const coreUnavailable = async () => new MachineActionRequired(OWN_OVIS_GONE, "choose_herdr", false, await localSessions());
+    // the chosen Ovis is gone: a reconnect (or an update that asks nobody) waits for it, starting nothing in its place; a
+    // setup the user started in its dialog gets the choice at once
+    const ownOvisGone = async () => !job || job.auto ? new Error(OWN_OVIS_GONE) : await coreUnavailable();
     // the chosen Ovis, proven this account's and live, did not prove what it is (no answer, an HTTP error): it still runs,
     // and stays the choice it was
     const chosenOvisFailed = async () => new MachineActionRequired(OWN_OVIS_UNANSWERED, "choose_herdr", false, await localSessions(), [{ socket_path: target.own_ovis!, runtime: "herdr-core" }]);
@@ -1521,6 +1529,10 @@ export class MachineManager {
       // answered: one of them proved itself through the tunnel; unlisted: one did not list the account's herdr sessions
       // (an older server, or one not answering), so they are found on the PC itself before the choice is offered
       let answered = false, unlisted = false;
+      if (target.own_ovis) {
+        const chosen = inspection.descriptors.find((d) => d?.managed_remote === false && d.socket_path === target.own_ovis);
+        if (!chosen || !Number.isSafeInteger(chosen.pid) || chosen.pid <= 0 || !await host.alive(ssh, chosen.pid)) throw await ownOvisGone();
+      }
       for (const candidate of inspection.descriptors) {
         if (candidate?.managed_remote !== false || typeof candidate.socket_path !== "string") continue;
         if (target.own_ovis && candidate.socket_path !== target.own_ovis) continue;
@@ -1587,7 +1599,7 @@ export class MachineManager {
       stalePid = descriptor.pid;
       descriptor = undefined;
     }
-    if (target.own_ovis && !descriptor) throw await coreUnavailable();
+    if (target.own_ovis && !descriptor) throw await ownOvisGone();
     // The PC's own Ovis is away (#2047): the PC waits for it, as for a PC that cannot be reached, and nothing of this
     // app's is installed or started in its place, by a reconnect or by an update that asks nobody. Only a setup the
     // user reviews in its dialog may start this app's bridge there.
@@ -1736,7 +1748,7 @@ export class MachineManager {
           if (descriptor) break;
           const found = await host.foundSessions?.(ssh, inspection);
           if (found?.gone) throw new MachineActionRequired("The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.", "choose_herdr", false, found.sessions);
-          if (found) throw new MachineActionRequired(found.sessions.length ? "A herdr session is already running on this PC. Choose it, or start a new one." : "No Ovis or herdr is running for this account. Start Ovis on that PC, or explicitly choose to start a new herdr here.", "choose_herdr", false, found.sessions);
+          if (found?.sessions.length) throw new MachineActionRequired("A herdr session is already running on this PC. Choose it, or start a new one.", "choose_herdr", false, found.sessions);
           if (!headless) notice = await host.startupNotice?.(ssh, session) ?? null;
           if (notice) break;
           await Bun.sleep(250);

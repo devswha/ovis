@@ -87,11 +87,12 @@ it.each(["connect", "default bridge", "birthless", "unanswered", "server error",
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
   const retries = spyOn(MachineManager.prototype as unknown as { retryLater(runtime: unknown): void }, "retryLater");
-  const run = (request: SetupRequest) => new Promise<SetupJob>((resolve, reject) => {
+  // auto: a reconnect or an update that asks nobody; false, a setup the user started in its dialog
+  const run = (request: SetupRequest, auto = true) => new Promise<SetupJob>((resolve, reject) => {
     let job: SetupJob | undefined;
     const timeout = setTimeout(() => { off(); reject(new Error("setup did not settle")); }, 5000);
     const off = manager.subscribe(() => { if (job && ["failed", "connected"].includes(job.phase)) { clearTimeout(timeout); off(); resolve(job); } });
-    job = manager.setup({ ...request, machine_id: id, update_remote: true }, { auto: true });
+    job = manager.setup({ ...request, machine_id: id, update_remote: true }, { auto });
   });
   try {
     if (outcome === "default bridge") {
@@ -124,7 +125,9 @@ it.each(["connect", "default bridge", "birthless", "unanswered", "server error",
     if (outcome === "symlink") { writeFileSync(join(dir, "outside.json"), JSON.stringify(descriptor)); symlinkSync(join(dir, "outside.json"), registration); }
     if (outcome === "reused pid") descriptor.birth = { ...birth.birth, value: "not-this-process" };
     if (outcome === "changed port") writeFileSync(registration, JSON.stringify({ ...descriptor, port: 12346 }));
-    const chosen = await run({ destination: "fixture-only", own_ovis: socket });
+    // a chosen Ovis that is gone (no registration, its process stopped) asks only a setup started in its dialog; a
+    // reconnect waits for it (below)
+    const chosen = await run({ destination: "fixture-only", own_ovis: socket }, !["gone", "stopped after proof"].includes(outcome));
     const connects = ["connect", "birthless", "older peer", ...quiet].includes(outcome);
     expect(chosen.phase).toBe(connects ? "connected" : "failed");
     expect(starts).toBe(0);
@@ -149,6 +152,42 @@ it.each(["connect", "default bridge", "birthless", "unanswered", "server error",
     }
   } finally {
     manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); relays.forEach((relay) => relay.stop(true)); herdr?.stop(true); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// After a reboot SSH answers before the user's Ovis has started: the saved PC waits for it (#2047), starting nothing
+it.each(["registration removed", "process stopped"])("retries a saved PC whose chosen Ovis is gone instead of asking: %s", async (gone) => {
+  const dir = mkdtempSync(join(tmpdir(), "machine-core-gone-"));
+  const id = "12345678-1234-1234-1234-123456789abe";
+  const socket = "/home/fixture/.config/ovis/hc-adapter.sock";
+  writeFileSync(join(dir, "machines.json"), JSON.stringify([{ id, name: "fixture", enabled: false, target: { destination: "fixture-only", own_ovis: socket } }]));
+  const descriptor = { socket_path: socket, pid: 4242, port: 12345, token: "a".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: false };
+  const listed = gone === "registration removed" ? [] : [descriptor];
+  let starts = 0;
+  const mocks = [
+    spyOn(SshConnection.prototype, "start").mockResolvedValue(undefined),
+    spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
+    spyOn(SshConnection.prototype, "run").mockRejectedValue(new Error("no command is expected on that PC")),
+    spyOn(posixHost, "inspect").mockResolvedValue({ platform: "linux-x64", home: "/home/fixture", herdrPath: "", expectedSocket: "/home/fixture/.config/herdr/herdr.sock", bundleReady: true, bundleOlder: false, descriptors: listed, runtimeDir: "/runtime", registryDir: "/registry" }),
+    spyOn(posixHost, "descriptors").mockResolvedValue(listed),
+    spyOn(posixHost, "alive").mockResolvedValue(false),
+    spyOn(posixHost, "installBundle").mockImplementation(async () => { starts++; }),
+    spyOn(posixHost, "start").mockImplementation(async () => { starts++; }),
+  ];
+  const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+  // the PC's own reconnect ends in a retry scheduled or a decision for the user, whichever comes first
+  const settled = Promise.withResolvers<"retry" | "decision">();
+  const retries = spyOn(MachineManager.prototype as unknown as { retryLater(runtime: unknown): void }, "retryLater").mockImplementation(() => settled.resolve("retry"));
+  const off = manager.subscribe(() => { if (manager.list().find((pc) => pc.id === id)?.state === "error") settled.resolve("decision"); });
+  const timeout = setTimeout(() => settled.reject(new Error("the reconnect did not settle")), 5000);
+  try {
+    manager.patch(id, { enabled: true });
+    expect(await settled.promise).toBe("retry");
+    expect(starts).toBe(0);
+    // the plain words stay on the PC while it waits; no choice is pending
+    expect(manager.list().find((pc) => pc.id === id)).toMatchObject({ error: "Start Ovis on that PC, or start a new herdr here", action_required: null, target: { own_ovis: socket } });
+  } finally {
+    clearTimeout(timeout); off(); manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); rmSync(dir, { recursive: true, force: true });
   }
 });
 
