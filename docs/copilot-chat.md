@@ -74,8 +74,11 @@ window; logs over 64 MiB use Terminal without reading or hashing them. Rehashed 
 with the same newest copy as at the last read, keep a session the log registered even when only
 the timestamps moved, as when Copilot refreshes its log's timestamps every 15 minutes, but only
 while mtime and ctime differ: a write or truncation sets both to one instant, so a log emptied and
-written back to the same bytes fails closed (a later timestamp refresh cannot be told from that).
-A held marker's fallback still needs an untouched initial log.
+written back to the same bytes fails closed. A later timestamp refresh cannot be told from that
+by any stat field, so the binding also needs its session's marker to be the only one Copilot holds:
+every switch opens the new session's marker and Copilot keeps the old one. With more than one
+session held, as after `/new`, a timestamp-only change fails closed and the open log is read again
+from its own lines. A held marker's fallback still needs an untouched initial log.
 Copilot 1.0 rotates its log at about 10 MiB: it renames the copies up (`.1.log` to `.2.log`,
 keeping four), writes the new `.1.log` beside them as `.1.log.rotation-staging` and renames it
 into place, then empties the open log. Every rotation makes a new newest copy, so a newest copy

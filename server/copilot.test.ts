@@ -368,7 +368,8 @@ it.skipIf(process.platform !== "linux")("never keeps the earlier session when tw
 });
 
 it.skipIf(process.platform !== "linux")("keeps a binding the copies carried on when Copilot touches its rotated log", async () => {
-  const fixture = await logFixture([session, other]);
+  // a Copilot that has used one session holds one marker: its timestamp refresh is provably a refresh
+  const fixture = await logFixture([session]);
   const { log } = fixture;
   const copy = log.replace(/\.log$/, ".1.log");
   try {
@@ -396,7 +397,8 @@ it.skipIf(process.platform !== "linux")("keeps a binding the copies carried on w
 });
 
 it.skipIf(process.platform !== "linux")("never keeps a binding when the log is emptied and rewritten to the same bytes", async () => {
-  const fixture = await logFixture([session, other]);
+  // one session held, so the timestamp move below is a provable refresh and the rewrite is what fails
+  const fixture = await logFixture([session]);
   const { environment, log, pid } = fixture;
   const copy = log.replace(/\.log$/, ".1.log");
   try {
@@ -415,6 +417,91 @@ it.skipIf(process.platform !== "linux")("never keeps a binding when the log is e
     fs.truncateSync(log, 0);
     appendFileSync(log, "later output\n");
     expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_log_metadata_changed" });
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("never keeps a binding when a switch lost to a rewrite is followed by Copilot's timestamp refresh", async () => {
+  // Copilot keeps holding the previous session's marker after a switch
+  const fixture = await logFixture([session, other]);
+  const { environment, log, pid } = fixture;
+  const copy = log.replace(/\.log$/, ".1.log");
+  try {
+    appendFileSync(log, register(session));
+    writeFileSync(`${copy}.rotation-staging`, readFileSync(log));
+    fs.renameSync(`${copy}.rotation-staging`, copy);
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "ordinary output\n");
+    expect(fixture.binding()?.sessionId).toBe(session);
+    // the switch is logged, the log is emptied and written back to the same bytes, then Copilot refreshes its timestamps
+    appendFileSync(log, register(session, "Unregistering") + register(other));
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "ordinary output\n");
+    const refreshed = new Date(statSync(log).mtimeMs + 1000);
+    fs.utimesSync(log, refreshed, refreshed);
+    expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_log_metadata_changed" });
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("leaves a timestamp refresh unproven while Copilot holds more than one session", async () => {
+  const fixture = await logFixture([session, other]);
+  const { environment, log, pid } = fixture;
+  const copy = log.replace(/\.log$/, ".1.log");
+  try {
+    appendFileSync(log, register(session));
+    writeFileSync(`${copy}.rotation-staging`, readFileSync(log));
+    fs.renameSync(`${copy}.rotation-staging`, copy);
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "later output\n");
+    expect(fixture.binding()?.sessionId).toBe(session);
+    const refreshed = new Date(statSync(log).mtimeMs + 1000);
+    fs.utimesSync(log, refreshed, refreshed);
+    expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_metadata_changed");
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("reads a timestamp refresh again when the scan of held sessions cannot say", async () => {
+  const fixture = await logFixture([session]);
+  const { environment, log, pid } = fixture;
+  const copy = log.replace(/\.log$/, ".1.log");
+  const realOpendir = fs.opendirSync;
+  try {
+    appendFileSync(log, register(session));
+    writeFileSync(`${copy}.rotation-staging`, readFileSync(log));
+    fs.renameSync(`${copy}.rotation-staging`, copy);
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "later output\n");
+    const before = fixture.binding();
+    expect(before?.sessionId).toBe(session);
+    const refreshed = new Date(statSync(log).mtimeMs + 1000);
+    fs.utimesSync(log, refreshed, refreshed);
+    // every second look at the process's descriptors (the held-session scan) fails, as when it runs out of them
+    let looks = 0;
+    const dirs = spyOn(fs, "opendirSync").mockImplementation(((path: fs.PathLike, ...rest: [fs.OpenDirOptions?]) => {
+      if (path === `/proc/${pid}/fd` && ++looks % 2 === 0) throw Object.assign(new Error("EMFILE"), { code: "EMFILE" });
+      return realOpendir(path, ...rest);
+    }) as typeof fs.opendirSync);
+    try { expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_read_raced"); }
+    finally { dirs.mockRestore(); }
+    expect(fixture.binding()).toEqual(before);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("keeps a released session for its handoff through Copilot's timestamp refresh", async () => {
+  const fixture = await logFixture([session]);
+  const { environment, log, pid } = fixture;
+  const copy = log.replace(/\.log$/, ".1.log");
+  const released = () => readCopilotProcessSession(environment, ["copilot"], pid, "unregistered").session?.sessionId;
+  try {
+    appendFileSync(log, register(session) + register(session, "Unregistering"));
+    expect(released()).toBe(session);
+    writeFileSync(`${copy}.rotation-staging`, readFileSync(log));
+    fs.renameSync(`${copy}.rotation-staging`, copy);
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "later output\n");
+    expect(released()).toBe(session);
+    const refreshed = new Date(statSync(log).mtimeMs + 1000);
+    fs.utimesSync(log, refreshed, refreshed);
+    expect(released()).toBe(session);
   } finally { await fixture.close(); }
 });
 
@@ -634,7 +721,7 @@ it.skipIf(process.platform !== "linux")("reads the log again when it rotates whi
 });
 
 it.skipIf(process.platform !== "linux")("keeps a logged binding when only the log's timestamps change", async () => {
-  const fixture = await logFixture([]);
+  const fixture = await logFixture([session]);
   const { environment, log, pid } = fixture;
   try {
     appendFileSync(log, register(session));

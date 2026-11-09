@@ -243,15 +243,15 @@ function olderLogCopy(target: string, missing: number): boolean {
 }
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
-function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundState {
+function loggedForeground(pid: number, logDirectories: readonly string[], store: string): ForegroundState {
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = scanForegroundLog(pid, logDirectories);
+    const result = scanForegroundLog(pid, logDirectories, store);
     if (result !== LOG_READ_CHANGED) return result;
   }
   return unavailable("copilot_log_read_raced");
 }
 
-function scanForegroundLog(pid: number, logDirectories: readonly string[]): ForegroundState | typeof LOG_READ_CHANGED {
+function scanForegroundLog(pid: number, logDirectories: readonly string[], store: string): ForegroundState | typeof LOG_READ_CHANGED {
   if (process.platform !== "linux") return unavailable("copilot_process_unproved");
   const birth = readProcessBirth(pid);
   if (birth.state !== "identified") return unavailable("copilot_process_unproved");
@@ -347,6 +347,19 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
             continue;
           }
           const prefix = cached && size >= cached.size ? logPrefix(fd, cached.size) : null;
+          // The same bytes with new timestamps and no data written by the last change (see below): the
+          // sessions Copilot holds decide whether a binding read from them stands. A scan that cannot
+          // say reads again rather than deny.
+          let held: Set<string> | null = null;
+          if (cached !== undefined && size > 0 && size === cached.size && cached.observedSize === size && stat.mtimeNs !== stat.ctimeNs
+            && (stat.mtimeNs !== cached.mtimeNs || stat.ctimeNs !== cached.ctimeNs)
+            && (cached.selection.kind === "selected" || (cached.selection.kind === "unregistered" && cached.selection.binding !== null))) {
+            try { held = heldSessions(pid, store); } catch { held = null; }
+            if (held === null) {
+              cached.readConflict = true;
+              return LOG_READ_CHANGED;
+            }
+          }
           const changed: StoreDiagnostic | undefined = !cached ? undefined
             : cached.dev !== stat.dev || cached.ino !== stat.ino || cached.path !== target ? "copilot_log_replaced"
             : size < cached.size ? "copilot_log_truncated"
@@ -363,7 +376,10 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
             // written back to the same bytes, which hid whatever was logged in between, fails closed.
             : size === cached.size && (stat.mtimeNs !== cached.mtimeNs || stat.ctimeNs !== cached.ctimeNs)
               && !(size > 0 && cached.observedSize === size && stat.mtimeNs !== stat.ctimeNs
-                && (cached.selection.kind === "selected" || cached.selection.kind === "unregistered")) ? "copilot_log_metadata_changed" : undefined;
+                // A rewrite followed by a timestamp refresh passes the stat check, but every switch
+                // opens the new session's marker and Copilot keeps holding the old one.
+                && refreshKeeps(cached.selection, held))
+              ? "copilot_log_metadata_changed" : undefined;
           const same = cached !== undefined && changed === undefined;
           // The open file shrank or no longer starts with what was read: a rotation, when a copy carries on from it.
           const rotation = cached !== undefined && size <= LOG_WINDOW_BYTES && (changed === "copilot_log_truncated" || changed === "copilot_log_rewritten")
@@ -527,6 +543,21 @@ function scanHeldSessions(pid: number, store: string): Set<string> | null | unde
   return sessions;
 }
 
+/**
+ * Whether a binding stands through a timestamp-only change: Copilot holds no session marker beyond
+ * the bound one (a selected binding needs its own). A release that names no session stays one.
+ */
+function refreshKeeps(selection: ForegroundState, held: Set<string> | null): boolean {
+  const onlyBound = (sessionId: string): boolean => held !== null && [...held].every((id) => id === sessionId);
+  switch (selection.kind) {
+    case "selected": return held?.has(selection.binding.sessionId) === true && onlyBound(selection.binding.sessionId);
+    case "unregistered": return selection.binding === null || onlyBound(selection.binding.sessionId);
+    case "legacy":
+    case "unavailable": return false;
+    default: { const unreachable: never = selection; throw new Error(`unknown foreground state ${JSON.stringify(unreachable)}`); }
+  }
+}
+
 /** A disappearing descriptor invalidates that scan; retry once, then fall back. */
 export function heldSessions(pid: number, store: string): Set<string> | null {
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -605,7 +636,7 @@ export function readCopilotProcessSession(environment: readonly string[] | null,
   const { store, logs } = layout;
   let stage: StoreDiagnostic = "copilot_log_unreadable";
   try {
-    const foreground = loggedForeground(pid, logs);
+    const foreground = loggedForeground(pid, logs, store);
     if (foreground.kind === "unavailable") return fail(foreground.diagnostic);
     stage = "copilot_session_directory_unproved";
     if (mode === "unregistered") {
