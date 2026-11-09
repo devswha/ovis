@@ -1,5 +1,6 @@
 import { expect, it, spyOn } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,9 +21,9 @@ const waits = [...quiet, "server error later"];
 // enter, or another socket than the one the server reports
 // enter, or another socket than the one the server reports; or in a folder another account could swap: outside the
 // account's own roots, or below a folder others may write or another account owns
-const confinement = ["socket link", "not a socket", "open folder", "other socket id", "outside home", "writable parent", "foreign parent"];
+const confinement = ["socket link", "not a socket", "open folder", "other socket id", "outside home", "writable parent", "foreign parent", "foreign root parent", "runtime dir"];
 it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthless", "unanswered", "server error", "server error later", "server error after proof", "older peer", "gone", "symlink", "reused pid", "changed port", "stopped after proof", "wrong token", "wrong pid", "managed", "wrong runtime", "redirect", ...confinement])("chooses the PC's own core server: %s", async (outcome) => {
-  const dir = mkdtempSync(join(tmpdir(), "machine-core-choice-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "machine-core-choice-")));
   const id = "12345678-1234-1234-1234-123456789abc";
   // the core adapter's socket in its server's own state folder (server/herdr-core/runtime.ts), as startRuntime leaves it
   const shared = join(dir, "shared");
@@ -30,7 +31,22 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
   mkdirSync(shared, { mode: 0o755 });
   mkdirSync(stateDir, { mode: 0o700 });
   // the SSH account's home on that PC, and the PATH its commands run with (a stand-in stat, below)
-  let home = dir, path = process.env["PATH"] ?? "";
+  // xdgRuntime: its XDG_RUNTIME_DIR; foreign: a folder a stand-in stat says another account owns
+  let home = dir, xdgRuntime = "", foreign = "";
+  // The PC's folders above the fixture's are root's and writable by root alone, as on a usual system (this host's own
+  // temporary folder may be shared and sticky): a stand-in stat says so, and says which folder another account owns
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "stat"), [
+    "#!/bin/sh",
+    "for last; do :; done",
+    `if [ "$1" = -c ] && [ "$2" = %u ] && [ -n "$FIXTURE_FOREIGN" ] && [ "$last" = "$FIXTURE_FOREIGN" ]; then echo 4242; exit 0; fi`,
+    `if [ "$1" = -c ] && { [ "$last" = / ] || case "$FIXTURE_DIR" in "$last"/*) true ;; *) false ;; esac; }; then`,
+    `  case "$2" in %u) echo 0; exit 0 ;; %a) echo 755; exit 0 ;; esac`,
+    "fi",
+    `exec ${JSON.stringify(Bun.which("stat"))} "$@"`,
+  ].join("\n") + "\n", { mode: 0o755 });
+  const path = `${bin}:${process.env["PATH"] ?? ""}`;
   const socket = join(stateDir, "herdr-core.sock");
   let adapter = Bun.listen({ unix: socket, socket: { data() {} } });
   // what the server reports of its socket, read as server/bridge.ts reads it (through a link)
@@ -72,7 +88,7 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
     spyOn(SshConnection.prototype, "close").mockImplementation(() => {}),
     spyOn(SshConnection.prototype, "run").mockImplementation(async (command) => {
       commands.push(command);
-      const shell = Bun.spawn(["sh", "-c", command], { env: { ...process.env, HOME: home, XDG_RUNTIME_DIR: "", PATH: path, XDG_CONFIG_HOME: join(dir, ".config") }, stdout: "pipe", stderr: "pipe" });
+      const shell = Bun.spawn(["sh", "-c", command], { env: { ...process.env, HOME: home, XDG_RUNTIME_DIR: xdgRuntime, PATH: path, FIXTURE_DIR: dir, FIXTURE_FOREIGN: foreign, XDG_CONFIG_HOME: join(dir, ".config") }, stdout: "pipe", stderr: "pipe" });
       const [out, err, code] = await Promise.all([new Response(shell.stdout).text(), new Response(shell.stderr).text(), shell.exited]);
       if (code !== 0) throw new Error(err);
       return out;
@@ -186,13 +202,12 @@ it.each(["connect", "default bridge", "unbridged herdr", "newer bundle", "birthl
       // (its registration is still found: that home's .config is the fixture's)
       if (outcome === "outside home") { home = join(dir, "home"); mkdirSync(home); symlinkSync(join(dir, ".config"), join(home, ".config")); }
       if (outcome === "writable parent") chmodSync(shared, 0o777);
-      if (outcome === "foreign parent") {
-        // another account owns the folder above: a stand-in stat says so, as that PC's would
-        const bin = join(dir, "bin");
-        mkdirSync(bin);
-        writeFileSync(join(bin, "stat"), `#!/bin/sh\nfor last; do :; done\nif [ "$1" = -c ] && [ "$2" = %u ] && [ "$last" = ${JSON.stringify(shared)} ]; then echo 4242; exit 0; fi\nexec ${JSON.stringify(Bun.which("stat"))} "$@"\n`, { mode: 0o755 });
-        path = `${bin}:${path}`;
-      }
+      // another account owns the folder above
+      if (outcome === "foreign parent") foreign = shared;
+      // or the folder above the account's home itself (the root): it could rename that root and put another in its place
+      if (outcome === "foreign root parent") foreign = dirname(dir);
+      // an XDG_RUNTIME_DIR of the account's own that is not /run/user/<uid> is no root of its own
+      if (outcome === "runtime dir") { home = join(dir, "home"); mkdirSync(home); symlinkSync(join(dir, ".config"), join(home, ".config")); xdgRuntime = dir; }
       // the fresh setup (it reuses the live server: its update is not needed) and the saved PC's own reconnect both refuse
       for (const attach of [() => run({ destination: "fixture-only", own_ovis: socket }), reconnect]) {
         retries.mockClear();

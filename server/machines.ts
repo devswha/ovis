@@ -1847,9 +1847,10 @@ export class MachineManager {
    * (server/herdr-core/pipe.ts adapterAddress) in a folder of the SSH uid's that no other account may enter (startRuntime
    * makes it 0700) and that no link leads to, the socket itself a socket of that uid's and no link; and the very socket the
    * server reported (bridge.ts socket_id, its device and inode).
-   * That folder sits under a root the account controls (its home, XDG_RUNTIME_DIR or /run/user/<uid>), and every folder
-   * from it up to that root is the account's or root's and writable by no one else: no other account can swap any of them
-   * for a folder holding another socket between this check and the server's use of that path.
+   * That folder sits under a root of the account's (its home, or /run/user/<uid>: an XDG_RUNTIME_DIR anywhere else is no
+   * root), and every folder from it up to `/`, those roots included, is the account's or root's and writable by no one
+   * else (a sticky shared folder such as /tmp included), as sshd's StrictModes asks: no other account can rename or swap
+   * any of them for a folder holding another socket between this check and the server's use of that path.
    */
   private async coreSocketConfined(ssh: SshConnection, socket: string, socketId: string): Promise<boolean> {
     if (!socket.startsWith("/") || socket.length > 4096 || /[\0\r\n]/.test(socket) || posix.normalize(socket) !== socket || posix.basename(socket) !== "herdr-core.sock") return false;
@@ -1861,7 +1862,7 @@ export class MachineManager {
       `  test ! -L "$d" && test -d "$d" && test "$(cd -P "$d" 2>/dev/null && pwd -P)" = "$d" || return 1`,
       `  test "$(owner "$d")" = "$uid" && m=$(mode "$d") && test $((0$m & 077)) -eq 0 || return 1`,
       `  root=`,
-      `  for r in "$HOME" "\${XDG_RUNTIME_DIR:-}" "/run/user/$uid"; do`,
+      `  for r in "$HOME" "/run/user/$uid"; do`,
       `    test -n "$r" && test -d "$r" || continue`,
       `    p=$(cd -P "$r" 2>/dev/null && pwd -P) || continue`,
       `    case "$d" in "$p"/*) root=$p; break ;; esac`,
@@ -1871,9 +1872,9 @@ export class MachineManager {
       `  while :; do`,
       `    o=$(owner "$a") && m=$(mode "$a") || return 1`,
       `    { test "$o" = "$uid" || test "$o" = 0; } && test $((0$m & 022)) -eq 0 || return 1`,
-      `    test "$a" = "$root" && return 0`,
+      `    test "$a" = / && return 0`,
       `    a=\${a%/*}`,
-      `    test -n "$a" || return 1`,
+      `    test -n "$a" || a=/`,
       `  done`,
       `}`,
       `confined && test ! -L "$s" && test -S "$s" && test "$(owner "$s")" = "$uid" && { stat -c %d:%i "$s" 2>/dev/null || stat -f %d:%i "$s"; } || true`,
