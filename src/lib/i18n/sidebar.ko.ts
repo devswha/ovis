@@ -5,10 +5,10 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const SIDEBAR_KO: Record<string, string> = {
+  "{count} working": "작업 중 {count}개",
   "Pin agent": "에이전트 고정",
   "Unpin agent": "에이전트 고정 해제",
   "Lock agent": "에이전트 잠금",
-  "Unlock agent": "에이전트 잠금 해제",
   "Locked": "잠김",
   "Mute alerts": "알림 끄기",
   "Unmute alerts": "알림 켜기",
@@ -67,7 +67,6 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Close group": "그룹 닫기",
   "Collapse": "접기",
   "Expand": "펼치기",
-  "Shell": "셸",
   "Working": "작업 중",
   "Idle": "대기",
   "{count} need you": "{count}개가 기다림",

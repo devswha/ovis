@@ -13,9 +13,9 @@ import type { UpdateStatus } from "../../../shared/update.ts";
 import { RelayShell } from "../../components/RelayShell.tsx";
 import { myPcs } from "../account/myPcs.ts";
 import type { MyPc } from "../account/myPcs.ts";
-import { accountProvidersOf, accountServiceOf, AccountService, SignedOutError } from "../account/service.ts";
+import { accountProvidersOf, AccountService, offeredProviders, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import { beginSignIn, finishSignIn, SignInError, signInReturn } from "../account/signin.ts";
-import { enrollOnPc, keepRemovals, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { indexedAccountStore } from "../account/store.ts";
@@ -24,7 +24,7 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import type { AccountProvider, AccountStore } from "../account/store.ts";
 import { fetchUpdateStatus, requestUpdate } from "../api.ts";
 import { t } from "../i18n.ts";
-import { deviceLabel } from "../phone.ts";
+import { deviceLabel, deviceOs } from "../phone.ts";
 import { registerPendingPush } from "../push.ts";
 import type { PendingPushStore } from "../push.ts";
 import { alertPrefs, loadSettings, SettingsProvider } from "../settings.ts";
@@ -35,12 +35,15 @@ import { setTransport } from "../transport.ts";
 import { DEVICES_CHANGED_EVENT } from "../useRelay.ts";
 import { takeEntryUrl } from "./boot.ts";
 import { RelayUnreachableError } from "./channel.ts";
+import { nativeDirectSocket, nativeDirectTailnet } from "./directSocket.ts";
 import { indexedDeviceStore, indexedPendingPush, ServerIdentityChangedError } from "./device.ts";
 import type { RelayDeviceStore } from "./device.ts";
 import { failureOf, forgedOffer, forgetsDevice, iosBrowserTab, keyMismatch, offerOf, pairsAgainWithoutKey, shellEntry } from "./shellState.ts";
 import type { AccountView, PcUpdate, RelayShellState } from "./shellState.ts";
 import { relaySkew, reloadOnce } from "./skew.ts";
 import type { ReloadMemory } from "./skew.ts";
+import { checkPc, sweepOf } from "./pcStatus.ts";
+import type { PcStatus } from "./pcStatus.ts";
 import { openRelayTransport } from "./transport.ts";
 import { offerFromCode, TypedCodeError } from "./pairCode.ts";
 import type { RelayTransport } from "./transport.ts";
@@ -65,13 +68,15 @@ export interface RelayShellMount {
   findByCode?: typeof offerFromCode;
   /** this client's account key and sign-in; the `ovis-account` database by default */
   accountStore?: AccountStore;
-  /** the account service's origin; the page's `ovis-account-service` meta by default, and no sign-in without one */
+  /** the account service's origin; the page's `ovis-account-service` meta by default (shellAccountServiceOf), and no sign-in without one */
   accountService?: string | null;
   /** the sign-ins offered; the page's `ovis-account-providers` meta by default */
   accountProviders?: readonly AccountProvider[];
   accountFetch?: (input: Request | string | URL, init?: RequestInit) => Promise<Response>;
   /** takes the page to the provider's sign-in; the return comes back to the front page */
   openSignIn?: (url: string) => void;
+  /** probes a saved PC for the front page's list (pcStatus.ts); tests hand in their own */
+  checkPc?: typeof checkPc;
 }
 
 declare const __APP_VERSION__: string;
@@ -136,11 +141,26 @@ function signInFailure(error: unknown): string {
   return t("The sign-in did not finish. Try again.");
 }
 
+/** The front page's checks of saved PCs (checkPcs): how many PCs, how many at once, how often, and where the last one is noted. */
+const CHECK_PCS = 8;
+const CHECK_AT_ONCE = 2;
+/** a minute: one sweep's CHECK_PCS connections (up to two each, with the global relay's fallback) stay well under the relay's 30 a minute */
+const CHECK_GAP_MS = 60_000;
+const CHECK_KEY = "ovis-pc-check-at";
+const CHECK_CURSOR_KEY = "ovis-pc-check-cursor";
+
+function localStorageGet(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function localStorageSet(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch { /* no storage: lastCheck keeps the gap for this page */ }
+}
+
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const store = mount.store ?? indexedDeviceStore;
   const accountStore = mount.accountStore ?? indexedAccountStore;
-  const accountService = mount.accountService === undefined ? accountServiceOf(document) : mount.accountService;
-  const accountProviders = mount.accountProviders ?? accountProvidersOf(document);
+  const accountService = mount.accountService === undefined ? shellAccountServiceOf(document, window.location.origin, nativeSignInAvailable()) : mount.accountService;
+  let accountProviders = mount.accountProviders ?? accountProvidersOf(document);
   const account = new AccountService({ store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
   const openSignIn = mount.openSignIn ?? ((url: string) => { window.location.assign(url); });
   let accountView: AccountView | null = accountService === null ? null : { kind: "signed-out", error: null };
@@ -164,7 +184,23 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let outdated: { opened: RelayTransport; attempt: Attempt; name: string | null; version: string } | null = null;
   let updating = false;
   /** the comparison on screen: its digits, and the phone's answer that they match */
-  let comparison: { name: string | null; digits: string; matched: () => void } | null = null;
+  let comparison: { name: string | null; digits: string; matched: () => void; typed: boolean } | null = null;
+  /**
+   * A PC of the account joined from its card: this phone types the digits that PC shows, as it may not
+   * be the owner's (directory names are anyone's). Kept in this tab's session storage, since opening the
+   * PC loads its page anew; only ever makes a comparison stricter.
+   */
+  const TYPED_JOIN = "ovis-typed-join";
+  const typedJoinFor = (serverId: string): boolean => {
+    try { return sessionStorage.getItem(TYPED_JOIN) === serverId; } catch { return false; }
+  };
+  const setTypedJoin = (serverId: string | null): void => {
+    try { if (serverId === null) sessionStorage.removeItem(TYPED_JOIN); else sessionStorage.setItem(TYPED_JOIN, serverId); } catch { /* no storage: the plain comparison stays */ }
+  };
+  /** the phone apps' way to the PC's direct carriers; none in a browser, which reaches the PC through the relay only */
+  const directSocket = nativeDirectSocket();
+  /** whether that socket opens the PC's Tailscale address too, asked now so no connect waits for the answer */
+  const directTailnet = directSocket ? nativeDirectTailnet() : undefined;
   /** the offer a typed code found, until its ID is compared on screen */
   let codeOffer: RelayOffer | null = null;
   const findByCode = mount.findByCode ?? offerFromCode;
@@ -188,16 +224,83 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
 
   const toFront = (): void => navigate("/");
 
+  let shown: RelayShellState | null = null;
+  /** how each saved PC answered the front page's latest check, by server id */
+  const pcStatus = new Map<string, PcStatus>();
+  const probe = mount.checkPc ?? checkPc;
+  /** the front page checks its PCs once when first shown, then on Check now */
+  let checked = false;
+  /**
+   * Each probe is a relay connection, which the relay limits per address (30 a minute, shared with
+   * everything else this network opens): a sweep probes at most CHECK_PCS PCs, CHECK_AT_ONCE at a time,
+   * and not again within CHECK_GAP_MS of the last, a reload included.
+   */
+  let lastCheck = -Infinity;
+  let deferred: ReturnType<typeof setTimeout> | undefined;
+  /** the sweep under way: another waits for it, so CHECK_AT_ONCE holds across sweeps */
+  let sweeping: Promise<void> | undefined;
+  const redraw = (): void => { if (shown?.kind === "list") show(shown); };
+  const cursorNow = (): number => Number(localStorageGet(CHECK_CURSOR_KEY) ?? "0");
+  const checkPcs = async (): Promise<void> => {
+    if (sweeping) return;
+    const stored = Number(localStorageGet(CHECK_KEY) ?? "");
+    const wait = CHECK_GAP_MS - (Date.now() - Math.max(lastCheck, Number.isFinite(stored) ? stored : -Infinity));
+    // too soon after the last sweep (a reload, or Check now again): this one runs once the gap is over,
+    // and the rows say a check is on its way meanwhile
+    if (wait > 0) {
+      deferred ??= setTimeout(() => { deferred = undefined; if (shown?.kind === "list") void checkPcs(); }, wait);
+      for (const device of sweepOf(await store.list(), cursorNow(), CHECK_PCS)) pcStatus.set(device.server_id, { kind: "checking" });
+      redraw();
+      return;
+    }
+    lastCheck = Date.now();
+    localStorageSet(CHECK_KEY, String(lastCheck));
+    sweeping = sweepPcs().finally(() => { sweeping = undefined; });
+    await sweeping;
+  };
+  const sweepPcs = async (): Promise<void> => {
+    // past CHECK_PCS, each sweep starts where the last one stopped (kept across reloads), so every saved PC gets its turn
+    const cursor = cursorNow();
+    const saved = sweepOf(await store.list(), cursor, CHECK_PCS);
+    localStorageSet(CHECK_CURSOR_KEY, String(cursor + CHECK_PCS));
+    for (const device of saved) pcStatus.set(device.server_id, { kind: "checking" });
+    redraw();
+    const sockets = { relay: (url: string) => new WebSocket(url), ...(directSocket ? { direct: directSocket } : {}) };
+    const queue = [...saved];
+    await Promise.all(Array.from({ length: CHECK_AT_ONCE }, async () => {
+      for (let device = queue.shift(); device; device = queue.shift()) {
+        // a check that throws knows nothing more of the PC than that no relay answered
+        const found = await probe(device, sockets).catch((): PcStatus => ({ kind: "offline", reason: "relay" }));
+        pcStatus.set(device.server_id, found);
+        redraw();
+      }
+    }));
+  };
+  // the build's list shows at once; the service's own answer replaces it, so a Google button
+  // appears only once the service says it is set up for Google
+  if (accountService !== null && mount.accountProviders === undefined) {
+    offeredProviders(accountService, accountProviders, mount.accountFetch ? { fetch: mount.accountFetch } : {}).then((offered) => {
+      if (offered.providers.join() === accountProviders.join()) return;
+      accountProviders = offered.providers;
+      if (shown !== null) show(shown);
+    }, (error: unknown) => console.warn("Ovis: the account service's sign-ins could not be read", error instanceof Error ? error.name : error));
+  }
+
   const show = (state: RelayShellState): void => {
+    shown = state;
     shell ??= createRoot(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null,
-      createElement(RelayShell, { state, scoped, iosTab, onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, ...(accountService === null ? {} : { onSignIn: signIn, accountProviders, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
+      createElement(RelayShell, { state, scoped, iosTab, pcStatus: new Map(pcStatus), onCheckPcs: () => void checkPcs(), onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget, onUpdate: update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, ...(accountService === null ? {} : { onSignIn: signIn, accountProviders, onJoin: joinPc, onSignOut: signOut, onLeave: leave }) }))));
   };
 
   /** The front page: the saved PCs, or the account's once signed in. */
   const showFront = async (): Promise<void> => {
     const devices = await store.list();
     show(devices.length === 0 ? { kind: "empty", account: accountView } : { kind: "list", devices, account: accountView });
+    if (devices.length > 0 && !checked) {
+      checked = true;
+      void checkPcs();
+    }
   };
 
   /** The account's directory merged with the PCs this device is paired with; the pairings work whatever the service says. */
@@ -223,11 +326,15 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     await showFront();
   };
 
-  /** A PC of the account this device is not paired with: compare digits with it, as a link without a code does. */
-  const joinPc = (pc: MyPc): void => {
+  /**
+   * A PC of the account this device is not paired with: compare digits with it, as a link without a
+   * code does. `typed`: from the new-PC card, whose PC shows its digits on its own screen (docs/account.md, "Adding a PC").
+   */
+  const joinPc = (pc: MyPc, options: { typed?: boolean } = {}): void => {
     const join = pc.join;
     if (join === undefined) return;
     const link = new URL(encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: join.server_public_key, relay: join.relay, name: pc.name }, window.location.origin));
+    setTypedJoin(options.typed ? pc.server_id : null);
     navigate(link.pathname + link.hash);
   };
 
@@ -311,7 +418,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // service (approvers check that ring); without one, it asks to pair this PC only
     let intent: "pc" | "account" = "pc";
     if (accountKey && attempt.offer.code === undefined && (await store.get(attempt.offer.server_id))?.device_id == null) {
-      try { await account.postAdmission(attempt.offer.server_id, label.slice(0, 48), accountKey.public_spki); intent = "account"; }
+      try {
+        await account.postAdmission(attempt.offer.server_id, label.slice(0, 48), accountKey.public_spki, deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0));
+        intent = "account";
+      }
       catch (error) { console.warn("Ovis: the account service did not take the join; pairing this PC only", error instanceof Error ? error.name : error); }
     }
     let opened: RelayTransport;
@@ -319,12 +429,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
         ...(accountKey ? { accountKey, intent } : {}),
+        ...(directSocket ? { directSocket, ...(directTailnet ? { directTailnet } : {}) } : {}),
         // a link without a code: the digits wait on screen until this phone says they match
         compare: (digits) => new Promise<void>((resolve) => {
           if (controller.signal.aborted) return;
           attempt.compared = true;
-          comparison = { name: attempt.offer.name ?? null, digits, matched: resolve };
-          show({ kind: "compare", name: comparison.name, digits, confirmed: false });
+          comparison = { name: attempt.offer.name ?? null, digits, matched: resolve, typed: typedJoinFor(attempt.offer.server_id) };
+          show({ kind: "compare", name: comparison.name, digits, confirmed: false, ...(comparison.typed ? { typed: true } : {}) });
         }),
         // the PC turned this phone away after it was in: the app goes, and the reason takes its place
         onFatal: (error) => {
@@ -384,8 +495,9 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const fetch = (path: string, init?: RequestInit) => through.fetch(path, init);
       const status = await pcAccountStatus(fetch);
       const linking = needsLink(status, device, session.account);
-      // a PC this link brings into the account gets the removals this client signed (enrollPc)
-      if (linking && status.account === null) await planEnroll(accountStore, serverId, session.account);
+      // a PC this link brings into the account, or one still waiting for the member that linked it (who may be gone),
+      // gets this client's enrollment: the account's removals first, read from its other PCs
+      if (linking && (status.account === null || status.enrolling === true)) await planEnroll(accountStore, serverId, session.account);
       if (linking) device = await linkThisDevice({ fetch, device, key, account: session.account, store });
       // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
       if (linking || fresh) {
@@ -408,11 +520,33 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if ((await accountStore.get("enrolls"))?.[serverId] !== undefined) {
         // the PC takes an enrollment only from a session that signed in with the account key, which the ones above did not
         let signedIn = opened;
+        // the account's other PCs this device is in, read first for what they keep out (docs/account.md, "Enrolling a PC")
+        const peers: RelayTransport[] = [];
         try {
           if (linking || fresh) signedIn = await open(offerOf(device), { store, label });
-          await enrollOnPc({ fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId });
+          const others = (await store.list()).filter((other) => other.server_id !== serverId && other.device_id !== null && other.account === session.account && other.public_spki === key.public_spki);
+          const reached = await Promise.allSettled(others.map(async (other) => {
+            const controller = new AbortController();
+            // fixed wait: a PC that does not open within the deadline counts as not checked, as one that does not answer
+            const timer = setTimeout(() => controller.abort(), PEER_STATUS_MS);
+            const peer = await open(offerOf(other), { store, label, signal: controller.signal }).finally(() => clearTimeout(timer));
+            peers.push(peer);
+            return { serverId: other.server_id, fetch: (path: string, init?: RequestInit) => peer.fetch(path, init) };
+          }));
+          const pc = { server_id: serverId, server_public_key: device.server_public_key, relay: device.relay, name: (device.name ?? serverId.slice(0, 8)).slice(0, 48) };
+          // PCs the directory lists that this device cannot read: their removals are unknown here
+          // the directory unread counts as one more PC this device cannot read
+          const listed = await account.listPcs().then((pcs) => pcs.filter((entry) => entry.server_id !== serverId).length, () => 1);
+          await enrollOnPc({
+            fetch: (path, init) => signedIn.fetch(path, init), store: accountStore, account: session.account, serverId, pc, listed,
+            // a PC that could not be opened is one more that was not checked
+            others: reached.map((result) => result.status === "fulfilled" ? result.value : { serverId: "", fetch: () => Promise.reject(result.reason) }),
+          });
         } catch (error) { console.warn("Ovis: this PC did not get the account's devices yet", error instanceof Error ? error.name : error); }
-        finally { if (signedIn !== opened) signedIn.close(); }
+        finally {
+          if (signedIn !== opened) signedIn.close();
+          for (const peer of peers) peer.close();
+        }
       }
       // the approver hands the introduction over once this device's row exists, which may be a moment after it
       const deadline = Date.now() + (fresh ? INTRODUCTION_WAIT_MS : 0);
@@ -529,9 +663,19 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     void connect(last);
   };
 
-  const match = (): void => {
+  const match = (typed?: string): void => {
     const current = comparison;
     if (current === null) return;
+    if (current.typed && typed !== current.digits) {
+      // one wrong entry ends this comparison: a guess never gets a second try at the same digits
+      comparison = null;
+      setTypedJoin(null);
+      opening?.abort();
+      opening = null;
+      show({ kind: "compare", name: current.name, digits: "", confirmed: false, typed: true, wrong: true });
+      return;
+    }
+    setTypedJoin(null);
     show({ kind: "compare", name: current.name, digits: current.digits, confirmed: true });
     current.matched();
   };
@@ -570,6 +714,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
 
   const cancel = (): void => {
     comparison = null;
+    setTypedJoin(null);
     codeOffer = null;
     opening?.abort();
     opening = null;

@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { legacyName } from "../../../server/legacy-env.ts";
-import { choosePort, compareVersions, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, processStart, processStartSync, readSaved, serverEnv, startServer, stopServer, withoutInherited, writeSaved } from "./children.ts";
+import { choosePort, compareVersions, coreEnv, endLeftover, installCore, layout, openLog, portFree, processCommand, processStart, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, withoutInherited, writeSaved } from "./children.ts";
 
 const dirs: string[] = [];
 const listeners: Server[] = [];
@@ -36,6 +36,32 @@ describe("environments", () => {
     expect(coreEnv({ HC_SESSION: " test-1 " })["HC_SESSION"]).toBe("test-1");
     expect(coreEnv({ ELECTRON_RUN_AS_NODE: "1" })).not.toHaveProperty("ELECTRON_RUN_AS_NODE");
     expect(coreEnv({ HC_SOCKET: "/run/user/1000/herdr-core/default.sock" })).not.toHaveProperty("HC_SOCKET");
+  });
+
+  it("keeps the AppImage's own settings out of hc and the terminals that outlive the app", () => {
+    const mount = "/tmp/.mount_OvisAb12";
+    const env = coreEnv({
+      APPDIR: mount, APPIMAGE: "/home/u/Ovis.AppImage", ARGV0: "Ovis.AppImage", OWD: "/home/u",
+      PATH: `${mount}:${mount}/usr/sbin:/usr/bin::/bin`,
+      LD_LIBRARY_PATH: `${mount}/usr/lib`,
+      XDG_DATA_DIRS: `${mount}/usr/share/:/usr/local/share:/usr/share:/usr/share/gnome:/usr/local/share/:/usr/share/`,
+      GSETTINGS_SCHEMA_DIR: `${mount}/usr/share/glib-2.0/schemas:/opt/schemas`,
+    }, `${mount}/ovis`);
+    for (const name of ["APPDIR", "APPIMAGE", "ARGV0", "OWD", "LD_LIBRARY_PATH"]) expect(env).not.toHaveProperty(name);
+    // the user's own empty entry (the current folder) stays
+    expect(env["PATH"]).toBe("/usr/bin::/bin");
+    expect(env["XDG_DATA_DIRS"]).toBe("/usr/local/share:/usr/share:/usr/share/gnome:/usr/local/share/:/usr/share/");
+    expect(env["GSETTINGS_SCHEMA_DIR"]).toBe("/opt/schemas");
+  });
+
+  it("leaves the environment alone outside an AppImage", () => {
+    const base = { PATH: "/usr/bin", LD_LIBRARY_PATH: "/opt/lib", XDG_DATA_DIRS: "/usr/share" };
+    expect(coreEnv(base, "/opt/Ovis/ovis")).toMatchObject(base);
+  });
+
+  it("keeps another AppImage's settings the app was only started under", () => {
+    const base = { APPDIR: "/tmp/.mount_Other", APPIMAGE: "/home/u/Other.AppImage", PATH: "/tmp/.mount_Other/usr/bin:/usr/bin", LD_LIBRARY_PATH: "/tmp/.mount_Other/usr/lib" };
+    expect(coreEnv(base, "/opt/Ovis/ovis")).toMatchObject(base);
   });
 
   it("runs the server on herdr-core through the bundled hc, on loopback, in the app's state folder", () => {
@@ -83,6 +109,30 @@ describe("layout", () => {
 
 // the stand-ins below are POSIX shell scripts, which Windows cannot run
 const posix = process.platform !== "win32";
+
+describe.skipIf(!posix)("startCore", () => {
+  it("starts the core in the home folder, where a workspace with no folder opens, not in the app's", async () => {
+    const root = tempDir();
+    const hc = join(root, "herdr-core");
+    writeFileSync(hc, `#!/bin/sh\npwd > "$(dirname "$0")/cwd"\n`);
+    chmodSync(hc, 0o755);
+    const log = openLog(join(root, "ovis.log"));
+    await startCore(hc, process.env, log);
+    expect(realpathSync(readFileSync(join(root, "cwd"), "utf8").trim())).toBe(realpathSync(homedir()));
+    await new Promise<void>((resolve) => log.end(resolve));
+  });
+
+  it("still starts the core when the home folder is not there", async () => {
+    const root = tempDir();
+    const hc = join(root, "herdr-core");
+    writeFileSync(hc, `#!/bin/sh\npwd > "$(dirname "$0")/cwd"\n`);
+    chmodSync(hc, 0o755);
+    const log = openLog(join(root, "ovis.log"));
+    await startCore(hc, process.env, log, 30_000, join(root, "gone"));
+    expect(realpathSync(readFileSync(join(root, "cwd"), "utf8").trim())).toBe(realpathSync(process.cwd()));
+    await new Promise<void>((resolve) => log.end(resolve));
+  });
+});
 
 describe.skipIf(!posix)("startServer", () => {
   it("resolves with the address the server says it listens on, and stops it", async () => {

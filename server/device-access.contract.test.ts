@@ -1001,21 +1001,24 @@ it("a repository's checkouts are refused to a watching device on this PC, its al
   store.match(drive.token);
   const server = createServer({ port: 0, stateDir: root, token: "test-worktree-list", tailscaleOwner: null });
   const base = `http://127.0.0.1:${server.port}`;
-  // every checkout of the workspace's repository: paths and branches, those not open in herdr too
-  const route = "worktree/list?workspace_id=ovis-test-absent";
+  // every checkout of the workspace's repository: paths and branches, those not open in herdr too;
+  // the inventory answers the same for several workspaces at once (#2661)
   try {
-    for (const prefix of ["api", "api/machines/local", "api/machines/pc1"]) {
+    for (const route of ["worktree/list?workspace_id=ovis-test-absent", "worktree/inventory?workspace_id=ovis-test-absent"]) for (const prefix of ["api", "api/machines/local", "api/machines/pc1"]) {
       const path = `${prefix}/${route}`;
       const response = await fetch(`${base}/${path}`, { headers: { cookie: `ovis_device=${watch.token}` } });
       expect([path, response.status, ((await response.json()) as { error: { code: string } }).error.code]).toEqual([path, 403, "read_only"]);
     }
     // a driving device reaches the route: this PC asks herdr, its alias too, and no such PC is connected
     const driving = { cookie: `ovis_device=${drive.token}` };
+    const route = "worktree/list?workspace_id=ovis-test-absent";
     for (const prefix of ["api", "api/machines/local"]) {
       const response = await fetch(`${base}/${prefix}/${route}`, { headers: driving });
       expect([prefix, response.status, ((await response.json()) as { error: { code: string } }).error.code]).toEqual([prefix, 404, "workspace_not_found"]);
+      const inventory = await fetch(`${base}/${prefix}/worktree/inventory?workspace_id=ovis-test-absent`, { headers: driving });
+      expect([prefix, inventory.status, ((await inventory.json()) as { entries: { error?: { code: string } }[] }).entries.map((entry) => entry.error?.code)]).toEqual([prefix, 200, ["workspace_not_found"]]);
     }
-    expect((await fetch(`${base}/api/machines/pc1/${route}`, { headers: driving })).status).toBe(503);
+    for (const path of [route, "worktree/inventory?workspace_id=ovis-test-absent"]) expect((await fetch(`${base}/api/machines/pc1/${path}`, { headers: driving })).status).toBe(503);
   } finally {
     server.stop(); rmSync(root, { recursive: true, force: true });
   }
@@ -1302,5 +1305,48 @@ it("a key re-paired on a PC in no account with a code another device started sta
     expect(new DeviceStore(stateDir).hasKey(publicKey)).toBe(true);
   } finally {
     rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("POST /api/devices/pair/cancel takes back the pending code, so it pairs nothing", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-device-cancel-"));
+  const server = createServer({ port: 0, stateDir: root, token: "test-device-cancel", tailscaleOwner: null });
+  const base = `http://127.0.0.1:${server.port}`;
+  const admin = { ...guard, authorization: "Bearer test-device-cancel" };
+  try {
+    const { code } = await (await fetch(`${base}/api/devices/pair/start`, { method: "POST", headers: admin })).json() as { code: string };
+    expect((await fetch(`${base}/api/devices/pair/cancel`, { method: "POST", headers: { authorization: admin.authorization } })).status).toBe(403);
+    expect((await fetch(`${base}/api/devices/pair/cancel`, { method: "POST", headers: admin })).status).toBe(200);
+    const late = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: guard, body: JSON.stringify({ code, label: "Too late" }) });
+    expect(late.status).not.toBe(204);
+  } finally {
+    server.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("POST /api/devices/pair/cancel with a code ends only that pairing, not one started after it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-device-cancel-own-"));
+  const server = createServer({ port: 0, stateDir: root, token: "test-device-cancel-own", tailscaleOwner: null });
+  const base = `http://127.0.0.1:${server.port}`;
+  const admin = { ...guard, authorization: "Bearer test-device-cancel-own" };
+  try {
+    const start = async () => (await (await fetch(`${base}/api/devices/pair/start`, { method: "POST", headers: admin })).json() as { code: string }).code;
+    const shown = await start();
+    // Settings, or another device, starts a pairing of its own while `link --code` still runs
+    const newer = await start();
+    const stale = await fetch(`${base}/api/devices/pair/cancel`, { method: "POST", headers: admin, body: JSON.stringify({ code: shown }) });
+    expect(stale.status).toBe(200);
+    expect(await stale.json()).toEqual({ ok: true, cancelled: false });
+    const paired = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: guard, body: JSON.stringify({ code: newer, label: "Newer" }) });
+    expect(paired.ok).toBe(true);
+    const third = await start();
+    const own = await fetch(`${base}/api/devices/pair/cancel`, { method: "POST", headers: admin, body: JSON.stringify({ code: third }) });
+    expect(await own.json()).toEqual({ ok: true, cancelled: true });
+    const late = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: guard, body: JSON.stringify({ code: third, label: "Too late" }) });
+    expect(late.ok).toBe(false);
+  } finally {
+    server.stop();
+    rmSync(root, { recursive: true, force: true });
   }
 });

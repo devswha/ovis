@@ -1,5 +1,6 @@
 {
-  "scripts/ui-contexts-regression.ts": 395,
+  "scripts/ui-contexts-regression.ts": 300,
+  "scripts/ui-contexts-layout-regression.ts": 120,
   "scripts/ui-regression.ts": 290,
   "scripts/background-agent-detail-demo-regression.ts": 273,
   "scripts/security-summary-demo-regression.ts": 219,
@@ -110,6 +111,7 @@
   "scripts/keyboard-viewport-regression.ts": 5,
   "scripts/palette-machines-demo-regression.ts": 5,
   "scripts/phone-glass-header-demo-regression.ts": 4,
+  "scripts/phone-safe-area-demo-regression.ts": 5,
   "scripts/context-menu-inputs-demo-regression.ts": 4,
   "scripts/phone-worktree-sheet-regression.ts": 4,
   "scripts/machine-dialog-regression.ts": 4,

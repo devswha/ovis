@@ -175,6 +175,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
  *         404 relay_pairing_gone once it left, was decided or ran out of time
+ *  POST   /api/relay/direct              -> RelayStatus; JSON { on: boolean }: direct connections on this PC's
+ *         networks while the relay is on (on unless turned off; off ends every direct session); 400 invalid_relay_direct, 409 direct_unavailable on a server without them
  *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
  *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
  *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
@@ -182,7 +184,13 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
- *  POST   /api/updates/install           -> 202 { accepted: true }; UpdateInstallRequest JSON body
+ *  POST   /api/updates/install           -> 202 { accepted: true, install_id }; UpdateInstallRequest JSON body
+ *  POST   /api/updates/cancel            -> 202 { accepted: true }; { install_id } JSON body, as the install's 202 gave it: stops that
+ *                                            install only, while it checks or builds (install_cancellable); 400 invalid_update_cancel,
+ *                                            409 update_restart_required, or 409 update_not_cancellable alike for a wrong or expired
+ *                                            install_id and for no update running (supervisor IPC: update-cancel-v2)
+ *                                            (the bridge token may cancel any install that builds there, as it may start one: it is this
+ *                                            PC owner's own connection server, which asks only for an install it requested)
  *         (at most 1 KiB): 400 invalid_update_install for a missing or malformed revision,
  *         409 update_restart_required where the supervisor does not advertise
  *         revision_bound_install, 409 update_offer_changed when the offer is no longer that
@@ -450,6 +458,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         409 repository_without_commits when no base is named and the repository has no commit yet;
  *         both worktree routes refuse a label over MAX_LABEL_CHARS with 400 label_too_long)
  *  GET    /api/worktree/list?workspace_id= -> WorktreeListing (worktree.list: the repo's checkouts)
+ *  GET    /api/worktree/inventory?workspace_id=&workspace_id=... -> WorktreeInventory (the same listing for up to
+ *         MAX_INVENTORY_WORKSPACES workspaces in one read, each with its listing or the error the list route would give;
+ *         400 missing_workspace_id, too_many_workspaces; a bridge from before it answers 404 not_found)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
  *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
@@ -457,7 +468,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         dirty_worktree_requires_force)
  *  POST   /api/auth        { token }     -> 204 + Set-Cookie ovis_token (401 invalid_token on mismatch)
  *  DELETE /api/auth                      -> 204, clears the token and the device cookies
- *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices; `current` marks the caller's)
+ *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices; `current` marks the caller's,
+ *         `connection` how one with an encrypted session up reaches the PC; `?check=1` measures their round trips first, within 3 s)
  *  POST   /api/devices/pair/start        -> PairingCode: a six-digit code good for ten minutes, replacing any pending one
  *         (X-Herdr-Machine: 1 + same origin, from a client with full access)
  *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
@@ -511,7 +523,7 @@ export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProb
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
-export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
+export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, DirectExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, DeviceConnection, DeviceRoute, PairingCode, PortalLogin, TailscaleAccess } from "./access.ts";
 /** Older servers and the Tailscale-only builder omit relay state. */
 export type RemoteAccess = import("./access.ts").RemoteAccess & { readonly relay?: RelayStatus };
 
@@ -543,6 +555,25 @@ export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
 export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalStatus } from "./portal.ts";
 
+/**
+ * Why the relay is not online, as a fixed code a client puts in its own words (RelayStatus.error_code;
+ * docs/relay.md, "Why it is not online"). Each says whether the PC tries again by itself:
+ * - `start_failed`: the relay did not start; starting it again may work.
+ * - `identity_unreadable`: this PC's relay identity cannot be read (`blocked` says so too); nothing retries.
+ * - `relay_unreachable`: the relay did not answer or the connection dropped; the PC tries again.
+ * - `server_key_refused`: the relay refused this PC's key for good; the PC does not try again.
+ * - `pass_required`: an Ovis relay needs a relay pass and no account names this PC: sign in on it and add it.
+ * - `pass_not_listed`: the account this PC names does not list it: add it to that account.
+ * - `pass_limit`: that account has as many PCs on the Ovis relay as it may: remove one from it.
+ * - `pass_unavailable`: the relay needs a pass the account service has not given yet; the PC keeps asking.
+ * - `pass_refused`: the relay refused the pass this PC holds (a key it does not trust, a PC it revoked); the PC asks
+ *   for another now and then.
+ * - `pass_unsupported`: the relay needs a pass and this PC asks no account service for one (turned off or
+ *   unusable, or a relay that is not Ovis's): waiting brings none; use the same Wi-Fi, Tailscale or another relay.
+ */
+export type RelayErrorCode = "start_failed" | "identity_unreadable" | "relay_unreachable" | "server_key_refused"
+  | "pass_required" | "pass_not_listed" | "pass_limit" | "pass_unavailable" | "pass_refused" | "pass_unsupported";
+
 /** GET /api/relay; relay and app are configured secure origins, never pairing credentials. */
 export interface RelayStatus {
   readonly phase: "off" | "connecting" | "online" | "error";
@@ -551,6 +582,27 @@ export interface RelayStatus {
   readonly sessions: number;
   readonly blocked: null | "serve_only" | "identity_unreadable";
   readonly error: string | null;
+  /** why, as a fixed code, whenever `error` says something (null otherwise); absent from an older server */
+  readonly error_code?: RelayErrorCode | null;
+  /**
+   * Direct connections on this PC's networks (docs/relay.md): whether they are on, and the carriers
+   * listened on now (none while the relay is off). Absent from a server without them.
+   */
+  readonly direct?: { readonly on: boolean; readonly carriers: readonly string[] };
+  /**
+   * This PC's relay pass, on Ovis's own relays only (docs/relay.md, "Relay pass"): `state` is where
+   * getting one stands (server/relay/pass.ts), `relay` what the relay last said of it (null before it
+   * said anything, or on a relay that asks for none) and `enforce_at` from when it will be needed.
+   */
+  readonly pass?: {
+    readonly state: "ok" | "no_account" | "not_listed" | "limit" | "unavailable";
+    readonly relay: "ok" | "missing" | "invalid" | "expired" | null;
+    readonly enforce_at: string | null;
+    /** the relay refused this PC for its pass (4402) and it has not been let in since */
+    readonly refused: boolean;
+    /** false while the pass in use says new client sessions to this PC are not allowed and the relay says it holds; absent otherwise */
+    readonly new_sessions?: false;
+  };
 }
 
 /** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */
@@ -804,7 +856,7 @@ export type { AgentKind } from "./agents.ts";
 
 export type { AgentIntegration, IntegrationsResponse } from "./integrations.ts";
 
-export type { CreateWorkspaceRequest, MoveTabRequest, TabMoved, MoveTabToWorkspaceRequest, TabMovedToWorkspace, CreateTabRequest, CreateWorktreeRequest, OpenWorktreeRequest, WorktreeOpened, RemoveWorktreeRequest, WorktreeRemoved, WorktreeEntry, WorktreeListing, WorkspaceCreated, TabCreated } from "./workspace-lifecycle.ts";
+export type { CreateWorkspaceRequest, MoveTabRequest, TabMoved, MoveTabToWorkspaceRequest, TabMovedToWorkspace, CreateTabRequest, CreateWorktreeRequest, OpenWorktreeRequest, WorktreeOpened, RemoveWorktreeRequest, WorktreeRemoved, WorktreeEntry, WorktreeListing, WorktreeInventory, WorktreeInventoryEntry, WorkspaceCreated, TabCreated } from "./workspace-lifecycle.ts";
 
 /** POST /api/agent/rename: the live name of the agent in the pane; null clears it. */
 export interface AgentRenameRequest {
@@ -1245,8 +1297,10 @@ export type ServerMessage =
   /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server
    * supports and this socket's `connection` id (the snapshot names the same), and the herdr it reads now
    * (`herdr_lifetime` as a snapshot names it; absent when unproven). A page acts on it before the snapshot only
-   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot */
-  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string }
+   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot.
+   * `paste_dir`: the absolute folder `OVIS_PASTE_DIR` sends this PC's uploads to, so the page reads an upload's
+   * path whole through it (src/lib/pasteFolders.ts, #2771); absent when uploads go to each pane's `<cwd>/.ovis` */
+  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string; paste_dir?: string }
   /** `connection`: this socket's id on the PC, for a create request's `first_message_connection`; older bridges send none */
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[]; connection?: string }
   /** raw PTY bytes: append to the terminal, never repaint over it. A mirrored pane (HerdrIdentity.terminal_mirror) sends whole screens the same way. */
@@ -1277,8 +1331,11 @@ export type ServerMessage =
    * `typed_now`: on a queued send, this request typed the message at once (the turn had ended
    * before it arrived); on a held copy's resend (`resend_id`), this request typed it. A replayed id, a
    * row sent or discarded since, or a copy another connection sent answers ok without it; an older
-   * server never sends it. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; code?: string; message?: string; draft?: string; box?: string }
+   * server never sends it.
+   * `sending_at`: on an ok for a message this request typed (an immediate send, or one with
+   * `typed_now`), the PC's clock (ISO 8601) before it typed anything, as a queued row's `sending_at`:
+   * the message's turn is written after it on that clock. An older server never sends it. */
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes

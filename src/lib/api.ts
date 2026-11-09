@@ -7,6 +7,7 @@ import type { ConversationSearchResponse } from "../../shared/conversation-searc
 import { resumeConnectionTraces } from "./connectionTrace.ts";
 import type { PullRequestCheckLog, PullRequestMergeRequest, PullRequestView } from "../../shared/pull-request.ts";
 import type { SystemReport } from "../../shared/system.ts";
+import type { MovePlanResponse, MoveStartRequest, MoveStopAllOffer, MoveStopAllRequest, MoveStopRequest } from "../../shared/runtime-move.ts";
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
 import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
@@ -28,6 +29,7 @@ import type {
   HealthAuth,
   IntegrationsResponse,
   LanExposure,
+  DirectExposure,
   SecuritySummary,
   InteractivePrompt,
   MoveTabRequest,
@@ -89,6 +91,7 @@ import type {
   PluginActionResult,
   PluginActions,
   PluginActionsResponse,
+  WorktreeInventory,
   WorktreeListing,
   WorktreeOpened,
   WorktreeRemoved,
@@ -221,6 +224,55 @@ export async function switchRuntime(runtime: "herdr" | "herdr-core"): Promise<vo
   if (!response.ok) throw await errorFrom(url, response);
 }
 
+/** Settings → About → Terminals: the move of this PC's whole herdr session to herdr-core, as it stands now (server/runtime-move.ts). */
+export function fetchMovePlan(): Promise<MovePlanResponse> {
+  return getJson<MovePlanResponse>("/api/runtime/move", { cache: "no-store" });
+}
+
+/** Starts the move of the plan shown, by its revision; a busy pane makes it wait, and the server goes by itself once none is. */
+export async function startMove(revision: string): Promise<void> {
+  const url = "/api/runtime/move";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ revision } satisfies MoveStartRequest) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** While the move waits: Ctrl+C to a shell pane running the command shown, or once the wait offers it, `force` (SIGTERM to its command). */
+export async function stopMovePane(paneId: string, command: string | null, force = false): Promise<void> {
+  const url = "/api/runtime/move/stop";
+  const body: MoveStopRequest = { pane_id: paneId, ...(command === null ? {} : { command }), ...(force ? { force: true } : {}) };
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** End all and move now, asked: the running commands it would end, under a token for exactly that list. */
+export async function prepareStopAll(): Promise<MoveStopAllOffer> {
+  const url = "/api/runtime/move/stop-all";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({} satisfies MoveStopAllRequest) });
+  if (!response.ok) throw await errorFrom(url, response);
+  return (await response.json()) as MoveStopAllOffer;
+}
+
+/** End all and move now, confirmed: refused when the panes changed since the offer, so the person is asked again. */
+export async function confirmStopAll(token: string): Promise<void> {
+  const url = "/api/runtime/move/stop-all";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ token } satisfies MoveStopAllRequest) });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** Installs herdr-core where the move offers it (`install` in the plan's answer); the move is offered once it is in. */
+export async function installHerdrCore(): Promise<void> {
+  const url = "/api/runtime/move/install";
+  const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** Ends a wait for busy panes; a move under way is not stopped. */
+export async function cancelMove(): Promise<void> {
+  const url = "/api/runtime/move";
+  const response = await apiFetch(url, { method: "DELETE", headers: { "x-herdr-update": "1" } });
+  if (!response.ok) throw await errorFrom(url, response);
+}
+
 export async function requestHerdrUpdate(): Promise<void> {
   const url = "/api/herdr/update";
   const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
@@ -273,6 +325,11 @@ export async function requestRelay(action: "start" | "stop" | "reset-identity"):
   return (await response.json()) as RelayStatus;
 }
 
+/** POST /api/relay/direct: whether paired phones may connect straight to this PC on its networks while the relay is on. */
+export function requestRelayDirect(on: boolean): Promise<RelayStatus> {
+  return getJson<RelayStatus>("/api/relay/direct", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ on }) });
+}
+
 export function requestRelayOffer(): Promise<RelayOffer> {
   return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
@@ -293,9 +350,12 @@ export function cancelRelayCode(): Promise<{ readonly ok: true }> {
   return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
-/** POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC. */
-export function requestRelayLink(): Promise<{ readonly url: string }> {
-  return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1" } });
+/**
+ * POST /api/relay/link: a pairing link without a code; the phone that opens it compares six digits with this PC.
+ * `localOnly`: this PC's screen waits to be added to an account, so what comes is approved on this PC only.
+ */
+export function requestRelayLink(options: { localOnly?: boolean } = {}): Promise<{ readonly url: string }> {
+  return getJson<{ readonly url: string }>("/api/relay/link", { method: "POST", headers: { "x-herdr-update": "1", ...(options.localOnly ? { "x-ovis-local-only": "1" } : {}) } });
 }
 
 /** POST /api/relay/pairing: the owner's answer to a phone waiting with the same digits (`relay-pairings` events). */
@@ -841,6 +901,8 @@ export interface HealthInfo {
   auth?: HealthAuth;
   /** present only while this server is reachable beyond this PC with no token and nothing paired */
   lan_exposure?: LanExposure;
+  /** present only while lan_exposure is not: the relay's direct carrier listens on this PC's network, for relay-paired devices only */
+  direct_exposure?: DirectExposure;
   /** authenticated only; absent from an older server, which the summary shows as unavailable */
   security?: SecuritySummary;
   /** authenticated only; absent from an older server and until the server's first look for hc has ended */
@@ -875,8 +937,9 @@ export async function pairDevice(code: string, label: string): Promise<void> {
   resumeConnectionTraces();
 }
 
-export async function fetchDevices(): Promise<PairedDevice[]> {
-  return (await getJson<{ devices: PairedDevice[] }>("/api/devices")).devices;
+/** `check`: the PC measures every connected device's round trip first (Check now), within a few seconds */
+export async function fetchDevices(check = false): Promise<PairedDevice[]> {
+  return (await getJson<{ devices: PairedDevice[] }>(check ? "/api/devices?check=1" : "/api/devices")).devices;
 }
 
 export async function startPairing(): Promise<PairingCode> {
@@ -1272,6 +1335,14 @@ export function listWorktrees(workspaceId: string, machineId = "local"): Promise
   return getJson<WorktreeListing>(`${machinePath(machineId, "worktree/list")}?workspace_id=${encodeURIComponent(workspaceId)}`);
 }
 
+/**
+ * GET /api/worktree/inventory: what listWorktrees answers for each workspace, in one read (at most
+ * MAX_INVENTORY_WORKSPACES). A PC whose bridge is from before it answers 404 not_found (routeMissing).
+ */
+export function readWorktreeInventory(workspaceIds: readonly string[], machineId = "local"): Promise<WorktreeInventory> {
+  return getJson<WorktreeInventory>(`${machinePath(machineId, "worktree/inventory")}?${workspaceIds.map((id) => `workspace_id=${encodeURIComponent(id)}`).join("&")}`);
+}
+
 /** POST /api/worktree/open: an existing checkout as a workspace; the one it already has when it is open. */
 export async function openWorktree(request: OpenWorktreeRequest, machineId = "local"): Promise<WorktreeOpened> {
   const response = await sendJson(machinePath(machineId, "worktree/open"), "POST", request);
@@ -1513,19 +1584,23 @@ export async function verifySourceBoot(machineId: string, signal: AbortSignal): 
   }
 }
 export async function machineRequest<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-  const response = await apiFetch(`/api/machines${path}`, { method, headers: { "content-type": "application/json", "x-herdr-machine": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  // x-herdr-update: an owner's actions on its PCs (updates, turning one on, approving an install) need it, as this PC's own updates do
+  const response = await apiFetch(`/api/machines${path}`, { method, headers: { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   if (!response.ok) throw await errorFrom("/api/machines", response);
   return response.json();
 }
-/** POST /api/machines/relay: pairs with the PC whose relay pairing link this is and adds it (server/relay-pc.ts). */
-export const addRelayPc = (link: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { link });
-/**
- * POST /api/machines/relay/code: finds the PC that shows this typed code. This PC's server keeps what it found, the
- * one-time pairing code in it, under a ticket only this window gets, and answers the ID to compare; addFoundRelayPc then adds that PC.
- * ApiError code `typed_code_<failure>` (shared/relay-code-offer.ts) when it finds none.
- */
-export const findRelayPc = (code: string) => machineRequest<{ ticket: string; server_id: string; name: string | null }>("/relay/code", "POST", { code });
-export const addFoundRelayPc = (ticket: string) => machineRequest<{ machine: Machine }>("/relay", "POST", { found: ticket });
+/** A PC this PC's server could reach over SSH: a host of its ssh config, or a PC of its Tailscale login (server/ssh-candidates.ts). */
+export interface SshCandidate {
+  readonly name: string; readonly destination: string; readonly detail: string | null; readonly source: "ssh_config" | "tailscale";
+  /** the MagicDNS name of the Tailscale PC it is, when it is one (a config host may name one) */
+  readonly tailnet?: string;
+}
+/** GET /api/machines/ssh-candidates: Add a connection → SSH's list, each added through the Add PC dialog. */
+export const findSshCandidates = () => machineRequest<{ pcs: SshCandidate[] }>("/ssh-candidates");
+/** A PC of this PC's Tailscale login whose Ovis lets this PC in as its owner (server/tailnet-pcs.ts); `outdated`: older than 0.5. */
+export interface TailnetPc { readonly name: string; readonly url: string; readonly relay: string | null; readonly outdated: boolean }
+/** GET /api/machines/tailnet: those PCs, each asked over Tailscale which Ovis it runs. */
+export const findTailnetPcs = () => machineRequest<{ pcs: TailnetPc[] }>("/tailnet");
 export const startMachineSetup = (request: SetupRequest) => machineRequest<SetupJob>("/setup", "POST", request);
 export const fetchMachineSetup = (id: string) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`);
 export const answerMachineSetup = (id: string, action: SetupAction) => machineRequest<SetupJob>(`/setup/${encodeURIComponent(id)}`, "POST", action);

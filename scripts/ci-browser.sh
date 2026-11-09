@@ -28,7 +28,7 @@ run_script() {
   if [ -n "${CI:-}${CHECK_DIR:-}" ]; then
     # These evidence branches add viewport changes, assertions or font waits, not just captures.
     case "$1" in
-      scripts/ui-regression.ts|scripts/ui-contexts-regression.ts|scripts/key-bar-customization-demo-regression.ts) evidence="";;
+      scripts/ui-regression.ts|scripts/ui-contexts-regression.ts|scripts/ui-contexts-layout-regression.ts|scripts/key-bar-customization-demo-regression.ts) evidence="";;
     esac
   fi
   UI_EVIDENCE_DIR="$evidence" bun "$@" 2>&1 | while IFS= read -r line || [ -n "$line" ]; do
@@ -60,6 +60,7 @@ export HERDR_DEMO_BUILD
 run_script scripts/demo-build.ts "$HERDR_DEMO_BUILD"
 run_script scripts/ui-regression.ts
 run_script scripts/ui-contexts-regression.ts
+run_script scripts/ui-contexts-layout-regression.ts
 run_script scripts/machine-events-browser-regression.ts
 run_script scripts/workspace-rows-regression.ts
 run_script scripts/pending-pane-switch-regression.ts
@@ -79,6 +80,7 @@ run_script scripts/terminal-touch-burst-regression.ts
 run_script scripts/omo-question-wheel-regression.ts
 run_script scripts/mirror-scroll-demo-regression.ts
 run_script scripts/core-history-scroll-demo-regression.ts
+run_script scripts/codex-drag-demo-regression.ts
 run_script scripts/terminal-images-demo-regression.ts
 run_script scripts/terminal-ghostty-demo-regression.ts
 run_script scripts/mirror-fold-demo-regression.ts
@@ -108,6 +110,7 @@ run_script scripts/old-safari-demo-regression.ts
 run_script scripts/security-summary-demo-regression.ts
 run_script scripts/push-health-demo-regression.ts
 run_script scripts/alert-webhook-demo-regression.ts
+run_script scripts/relay-direct-demo-regression.ts
 run_script scripts/install-hint-demo-regression.ts
 run_script scripts/device-security-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts
@@ -163,6 +166,7 @@ run_script scripts/keyboard-viewport-regression.ts
 run_script scripts/file-viewer-mobile-regression.ts
 run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
+run_script scripts/phone-safe-area-demo-regression.ts
 run_script scripts/reconnect-header-demo-regression.ts
 run_script scripts/chat-greeting-demo-regression.ts
 run_script scripts/restored-draft-demo-regression.ts

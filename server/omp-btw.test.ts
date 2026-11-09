@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -104,8 +104,13 @@ describe("ompBtwTopics", () => {
     save(history, { ...topic("r1", 1), answer: "first" });
     utimesSync(join(history, "entry-r1.json"), when, when);
     expect(ompBtwTopics(transcript).topics[0]?.answer).toBe("first");
-    save(history, { ...topic("r1", 1), answer: "again" });
-    utimesSync(join(history, "entry-r1.json"), when, when);
+    // a kernel stamping files from a coarse clock (WSL2 ticks at 250 Hz) gives a rewrite within the same
+    // tick the old change time too; rewrite until it moves, as it has for any later real rewrite
+    const before = statSync(join(history, "entry-r1.json"), { bigint: true }).ctimeNs;
+    do {
+      save(history, { ...topic("r1", 1), answer: "again" });
+      utimesSync(join(history, "entry-r1.json"), when, when);
+    } while (statSync(join(history, "entry-r1.json"), { bigint: true }).ctimeNs === before);
     expect(ompBtwTopics(transcript).topics[0]?.answer).toBe("again");
   });
 
@@ -162,6 +167,17 @@ describe("GET /api/pane/btw hard caps", () => {
   it("skips a topic file of too many items to parse cheaply, such as a million discarded pictures, and says so", async () => {
     const { transcript, folder } = history("pictures");
     writeFileSync(join(folder, "entry-p.json"), JSON.stringify({ ...topic("p", 2), images: Array.from({ length: 1_000_000 }, () => ({})) }));
+    writeFileSync(join(folder, "entry-q.json"), JSON.stringify(topic("q", 1)));
+    const { body } = await answer(transcript);
+    expect(body.topics.map((found) => found.id)).toEqual(["q"]);
+    expect(body.more).toBe(true);
+  });
+
+  it("counts the first item of every container, so nested single-item arrays cannot pass for half their items", async () => {
+    const { transcript, folder } = history("nested");
+    // 1,500 chains of eleven nested single-item containers: about 34,500 items, about 18,000 when first items go uncounted
+    const chain = JSON.parse(`${"[".repeat(10)}{}${"]".repeat(10)}`);
+    writeFileSync(join(folder, "entry-n.json"), JSON.stringify({ ...topic("n", 2), images: Array.from({ length: 1500 }, () => chain) }));
     writeFileSync(join(folder, "entry-q.json"), JSON.stringify(topic("q", 1)));
     const { body } = await answer(transcript);
     expect(body.topics.map((found) => found.id)).toEqual(["q"]);

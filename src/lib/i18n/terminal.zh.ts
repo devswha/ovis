@@ -61,7 +61,6 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Input held:": "保留的输入：",
   "Send held input": "发送保留的输入",
   "Discard held input": "丢弃保留的输入",
-  "View only": "仅查看",
   "Terminal text size {px} px": "终端文字大小 {px} px",
   "{command} ran": "{command} 已运行",
   "Back to Chat": "返回聊天",
@@ -89,6 +88,8 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Tab name": "标签页名称",
   "Actions for {tab}": "{tab} 的操作",
   "Close {tab}": "关闭 {tab}",
+  "{n} more tabs": "另外 {n} 个标签页",
+  "More tabs": "其他标签页",
   "Close tab {name}?": "关闭标签页 {name}？",
   "Close failed: {reason}": "关闭失败：{reason}",
   "Split right": "向右拆分",
@@ -124,4 +125,6 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Fewer keys": "收起按键",
   "{key}, locked": "{key}，已锁定",
   "Recover unsent text": "恢复未发送的文本",
+  "Codex selected this: Shift+drag copies or quotes it here": "Codex 已选择：按住 Shift 拖动可在此复制或引用",
+  "Codex selected this: Option+drag copies or quotes it here": "Codex 已选择：按住 Option 拖动可在此复制或引用",
 };

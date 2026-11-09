@@ -47,10 +47,10 @@ const POWERLINE_GLYPH = /^[\ue0a4-\ue0d6]$/u;
 const MEASURED_MAX = 4096;
 
 const latin1 = new TextDecoder("latin1");
-/** an iTerm2 inline picture (OSC 1337 File=) or a sixel one (DCS ... q): the pictures xterm's image addon draws */
+/** an iTerm2 inline picture (OSC 1337 File=, or MultipartFile= as imgcat sends it) or a sixel one (DCS ... q): the pictures xterm's image addon draws */
 export function hasXtermPicture(data: string | Uint8Array): boolean {
   const text = typeof data === "string" ? data : latin1.decode(data);
-  return text.includes("\x1b]1337;File=") || /\x1bP[0-9;]*q/.test(text);
+  return text.includes("\x1b]1337;File=") || text.includes("\x1b]1337;MultipartFile=") || /\x1bP[0-9;]*q/.test(text);
 }
 
 /** hasXtermPicture over a stream of writes: a picture's start split between two writes is told too */
@@ -58,7 +58,7 @@ export function xtermPictureScanner(): (data: string | Uint8Array) => boolean {
   let tail = "";
   return (data) => {
     const text = tail + (typeof data === "string" ? data : latin1.decode(data));
-    // longer than any start it looks for (`ESC ] 1337 ; File =`, a sixel DCS with its parameters)
+    // longer than any start it looks for (`ESC ] 1337 ; MultipartFile =`, a sixel DCS with its parameters)
     tail = text.slice(-64);
     return hasXtermPicture(text);
   };
@@ -161,10 +161,12 @@ export async function attachGhosttyOverlay(term: Terminal, host: HTMLElement, ta
     Object.assign(layer.style, { fontFamily: font, fontSize: `${size}px`, width: `${box.width}px`, height: `${box.height}px` });
     layer.style.setProperty("--ghostty-cw", `${cellW}px`);
     layer.style.setProperty("--ghostty-ch", `${cellH}px`);
-    // each cell is xterm's width: a font whose advance differs is spaced to it
+    // each cell is xterm's width: a font whose advance differs is spaced to it. The probe measures the font's own
+    // advance, not the spacing the last fit gave the layer: inherited, a wrong spacing flipped sign at every fit and
+    // never healed, and Latin was drawn squashed over itself or spread apart
     const probe = document.createElement("span");
     probe.textContent = "W".repeat(50);
-    probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+    probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre;letter-spacing:0";
     text.append(probe);
     const advance = probe.getBoundingClientRect().width / 50;
     probe.remove();

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,11 +19,12 @@ type PendingFrame = Extract<ServerMessage, { type: "pending-messages" }>;
 
 // The agent in front is replaced while a check's read is awaited: the read answers for the process that was there,
 // and the message must not go to the one that came (#1986 gate G1). Birth read 2 is the check before the paste, birth
-// read 3 the check before Enter, screen read 2 the screen that check reads before the paste, and the catalog the
-// paste is prepared with after that check; each is held open until the replacement is in place.
+// read 6 the check before Enter (3 to 5 are the starts the last checks before the paste compare), screen read 2
+// the screen that check reads before the paste, and the catalog the paste is prepared with after that check; each is
+// held open until the replacement is in place.
 it.each([
   { hold: "birth", call: 2, label: "the birth read before the paste", writes: [] as string[], state: "held" },
-  { hold: "birth", call: 3, label: "the birth read before Enter", writes: ["paste 41001"] as string[], state: "uncertain" },
+  { hold: "birth", call: 6, label: "the birth read before Enter", writes: ["paste 41001"] as string[], state: "uncertain" },
   { hold: "screen", call: 2, label: "the screen read before the paste", writes: [] as string[], state: "held" },
   { hold: "catalog", call: 1, label: "the catalog read before the paste", writes: [] as string[], state: "held" },
 ])("keeps a queued message from an agent that replaces its target during $label", async ({ hold, call, writes: expected, state }) => {
@@ -223,7 +224,8 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
         if (allowed && !allowed()) throw new client.HerdrError("cancelled", "Input guard refused the key");
         writes.push(...keys);
       });
-      spyOn(pi, "piTranscriptPath").mockResolvedValue({ path, agentDir: null });
+      const written = statSync(path, { bigint: true });
+      spyOn(pi, "piTranscriptPath").mockResolvedValue({ path, agentDir: null, identity: `${written.dev}:${written.ino}` });
       const capture = piDelivery.capturePiDeliveryAnchorRetrying;
       let waits = 0;
       spyOn(piDelivery, "capturePiDeliveryAnchorRetrying").mockImplementation((file, allowMissing, expected) =>
