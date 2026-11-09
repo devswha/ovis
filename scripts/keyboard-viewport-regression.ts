@@ -297,6 +297,16 @@ try {
       await page.locator('.input[aria-label="Field"]').dispatchEvent("pointerdown");
       await page.locator('.input[aria-label="Field"]').dispatchEvent("pointercancel");
       assert.equal(await size('.input[aria-label="Field"]'), body, `${where}: a cancelled press disarms the field`);
+      // a press on a button whose handler focuses a field (Find in diff, Rename tab) arms the field it focuses
+      await page.evaluate(() => {
+        document.querySelector(".app")!.insertAdjacentHTML("afterbegin", '<button type="button" id="fixture-find">Find</button><input id="fixture-search" class="input">');
+        document.querySelector("#fixture-find")!.addEventListener("click", () => document.querySelector<HTMLElement>("#fixture-search")!.focus());
+      });
+      await page.locator("#fixture-find").dispatchEvent("pointerdown");
+      await page.locator("#fixture-find").click();
+      assert.equal(await size("#fixture-search"), ios ? "16px" : body, `${where}: ${ios ? "16px for a field a button's press focuses" : "a focused field keeps the interface size"}`);
+      await page.locator("#fixture-search").blur();
+      assert.equal(await size("#fixture-search"), body, `${where}: the interface size again after the blur`);
     } finally { await context.close(); }
   }
   // an interface size over 16px: the press keeps the field at the interface size instead of shrinking it to 16px

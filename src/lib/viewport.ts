@@ -120,9 +120,9 @@ const applyKeyboard = (): void => {
 // iOS Safari zooms the page into a field whose text is under 16px when it gets the focus. Fields draw at
 // the interface size (styles.css .input/.select), like the labels beside them; on iOS the press that
 // precedes the focus arms the field to --fs-input, and the field keeps it while it has the focus. A press
-// on a field's label arms the field the label focuses. A press the browser cancels (a scroll) disarms a
-// field that did not take the focus. Keyboard focus without a press (Tab on a hardware keyboard) is left
-// to iOS, which does not zoom for it.
+// on a field's label arms the field the label focuses. A field focused by a handler (a press on Find in
+// diff or Rename tab focuses a field it did not touch) is armed as it takes the focus. A press the browser
+// cancels (a scroll) disarms a field that did not take the focus.
 const ios = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 if (ios) {
   const field = (target: EventTarget | null): HTMLElement | null => {
@@ -141,6 +141,7 @@ if (ios) {
     if (pressed && document.activeElement !== pressed) pressed.removeAttribute("data-armed");
     pressed = null;
   }, true);
+  document.addEventListener("focusin", (event) => field(event.target)?.setAttribute("data-armed", ""), true);
   document.addEventListener("focusout", (event) => field(event.target)?.removeAttribute("data-armed"), true);
 }
 viewport?.addEventListener("resize", syncKeyboard);
