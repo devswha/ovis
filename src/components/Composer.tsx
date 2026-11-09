@@ -1119,7 +1119,8 @@ export function Composer({
       const hold = altEnter && !mobile;
       const shouldSend = !altEnter && event.key === "Enter" && (enterSends
         ? !event.shiftKey && !event.metaKey && !event.ctrlKey
-        : (event.metaKey || event.ctrlKey) && !event.shiftKey);
+        // not with Alt: Windows reports AltGr as Ctrl+Alt, and Cmd+Option is no send either (#3460)
+        : (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey);
       // a typed pick waits in the card above: the empty box's Enter is its Confirm and Escape its
       // Cancel, so the keyboard alone answers, as it does in the agent's own menu. A held Enter's
       // repeats confirm nothing: its first press was the pick

@@ -143,6 +143,20 @@ it.each([
   if (enterSends === true || layout === "narrow") expect(await pressIn({}, "working", layout, enterSends)).toEqual([[undefined, undefined]]);
 });
 
+// #3460: with Enter sends off, Ctrl/Cmd+Enter sends but not with Alt held: AltGr (Ctrl+Alt on Windows) and Cmd+Option
+// leave the key to the box, as they do where Enter sends
+it.each([
+  ["Ctrl+Alt+Enter with Enter sends off", { ctrlKey: true, altKey: true }, false, []],
+  ["Cmd+Option+Enter with Enter sends off", { metaKey: true, altKey: true }, false, []],
+  ["Ctrl+Enter with Enter sends off", { ctrlKey: true }, false, [[undefined, undefined]]],
+  ["Cmd+Enter with Enter sends off", { metaKey: true }, false, [[undefined, undefined]]],
+  ["Ctrl+Alt+Enter where Enter sends", { ctrlKey: true, altKey: true }, true, []],
+  ["Enter where Enter sends", {}, true, [[undefined, undefined]]],
+] as const)("%s sends only without Alt", async (_name, keys, enterSends, expected) => {
+  expect(await pressIn(keys, "working", "desktop", enterSends)).toEqual(expected.map((call) => [...call]));
+  expect(prevented).toBe(expected.length > 0);
+});
+
 it("keeps the draft and says why when a hold is refused", async () => {
   const calls: unknown[][] = [];
   const refusal = "Update this PC to hold messages. Your draft stayed here.";
