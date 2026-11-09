@@ -476,7 +476,7 @@ function MachineGroup({ machine, headerless = false, canHide, onHide, ...props }
     <span className={`machine-dot is-${machine.action_required === "setup" ? "setup" : machine.state}`} title={machine.action_required === "setup" ? t("Setup needed") : t(STATE_WORD[machine.state])} aria-hidden="true" />
   </>;
   // the PC's name is the head of its workspaces, and the caret beside its + the one fold over them
-  return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
+  return <section className={`machine-group${current ? " is-current" : ""}${online ? "" : " is-offline"}${context ? " is-filter-context" : ""}${headerless ? " is-headerless" : ""}${folded ? " is-folded" : ""}${compact ? "" : " is-two-line"}`} hidden={hidden} aria-label={t("PC {name}", { name: machine.name })}>
     {!headerless && <header className={`machine-header${compact ? " is-compact" : ""}`}>
       {renaming
         ? <div className="machine-title">{titleBody}</div>

@@ -113,8 +113,8 @@ export function MachineStats({ machine, active }: { machine: Machine; active: bo
 }
 
 /**
- * Settings → Devices and PCs' switch for the line above, on this device only. Until it is flipped it
- * follows the roster: on while two or more PCs are connected, where telling them apart is the point.
+ * Settings → Devices and PCs' switch for the selected PC's load in the status bar, on this device only.
+ * It stays off until it is flipped.
  */
 export function PcLoadSetting({ machines }: { machines: readonly Machine[] }) {
   const t = useT();
