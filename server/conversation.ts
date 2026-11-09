@@ -2352,6 +2352,10 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
   return noteBinding(paneId, await resolveTranscript(pane, pane.cwd, codexHome, panes, opencodeDb, hermesHome, grokHome, museData, known));
 }
 
+// Agy commits a step to its catalog and then to its ledger: a catalog read that fails this soon after
+// a write may be racing it, and a later one is not
+const AGY_WRITE_RACE_MS = 5000;
+
 /**
  * The pane's live screen, or "" when nothing proves it: herdr's viewport, read while herdr reports
  * it at the bottom with the same history before and after the read. Scrolled up, on this device or
@@ -2362,10 +2366,6 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
  * no geometry, and a viewport scrolled up into the blank rows under a short screen reads the same
  * as the live one, so no screen is read rather than guessed (unlike viewportShowsLive's text check).
  */
-// Agy commits a step to its catalog and then to its ledger: a catalog read that fails this soon after
-// a write may be racing it, and a later one is not
-const AGY_WRITE_RACE_MS = 5000;
-
 async function bottomViewport(paneId: string): Promise<string> {
   const scroll = () => paneScrollInfo(paneId).catch(() => null);
   const before = await scroll();

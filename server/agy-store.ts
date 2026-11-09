@@ -286,10 +286,7 @@ async function heldPaths(pid: number): Promise<string[] | null> {
     if (await child.exited !== 0 || text.length > 1024 * 1024) return null;
     return text.split("\n").filter((line) => line.startsWith("n")).map((line) => line.slice(1));
   }
-  if (process.platform === "win32") {
-    const held = await windowsHeldPaths(pid);
-    return windowsScan?.complete === true ? held : null;
-  }
+  if (process.platform === "win32") return windowsHeldPaths(pid);
   if (process.platform !== "linux") return null;
   try {
     const dir = opendirSync(`/proc/${pid}/fd`);
@@ -344,7 +341,8 @@ function agyProcessArgv(owner: { pid: number; argv?: string[] | null }): string[
  * without a resume/prompt/remote flag, and it holds no presence lock yet.
  */
 export async function agyFreshSession(pane: HerdrPane, screen: string): Promise<string | null> {
-  if (pane.agent !== "agy" || !agyStartScreenUnused(screen)) return null;
+  // Windows names held locks from a shared, cached scan: an empty answer there proves no absence
+  if (process.platform === "win32" || pane.agent !== "agy" || !agyStartScreenUnused(screen)) return null;
   try {
     const info = await paneProcessInfo(pane.pane_id);
     const owners = (info?.foreground_processes ?? []).filter((p) => isAgyProcessName(p.name) && Number.isSafeInteger(p.pid) && p.pid > 1);
