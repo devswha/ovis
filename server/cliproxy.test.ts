@@ -565,6 +565,26 @@ describe("CLIProxyAPI v8", () => {
       expect(reads().slice(before)).toEqual(["b"]);
     });
 
+    it("never takes another email under a shown key's auth index for the account it was shown as (#3444)", async () => {
+      await configure();
+      await service.report();
+      service.invalidate();
+      let hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      // Alice moves to another file at index m, and Bob takes her file name at her old index a
+      fake.files.push({ ...fake.files[0]!, email: "bob@example.test" });
+      moveAlice();
+      await service.report(false, hidden);
+      // shown again, and hidden again before any report: the key is Bob's now, never remembered as Alice's account
+      hidden = new Set();
+      service.hiddenChanged();
+      hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.hiddenChanged();
+      const accounts = (service as unknown as { hiddenAccounts: Map<string, readonly string[]> }).hiddenAccounts;
+      expect(accounts.get("claude:cliproxy:claude-a.json")).toBeUndefined();
+    });
+
     it("learns no shown identity from a report a Hub change overtook (#3444)", async () => {
       await configure();
       await service.report();

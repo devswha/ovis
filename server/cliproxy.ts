@@ -447,8 +447,11 @@ export class CLIProxyService {
       for (const [key, { identities, shown }] of learned) {
         const known = this.shownIdentities.get(key);
         // a hidden key still holding the account it was shown as stays known as it, by its identities now (its auth
-        // index may have changed); one holding another account is not that account's any more
-        if (shown || (known !== undefined && sameAccount(known, identities))) this.shownIdentities.set(key, identities);
+        // index may have changed); one holding another account is not that account's any more. An account shown with
+        // its email is the same only under that email (another one at its old auth index is another account); one
+        // shown with its auth index alone, only at that index
+        const named = known?.filter((identity) => !isIndexed(identity)) ?? [];
+        if (shown || (known !== undefined && sameAccount(named.length > 0 ? named : known, identities))) this.shownIdentities.set(key, identities);
         else this.shownIdentities.delete(key);
       }
       // a list read only in part let nothing be read: not a fresh read, so the next report reads again, the accounts
