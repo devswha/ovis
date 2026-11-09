@@ -395,6 +395,50 @@ it.skipIf(process.platform !== "linux")("keeps a binding the copies carried on w
   } finally { await fixture.close(); }
 });
 
+it.skipIf(process.platform !== "linux")("never keeps a binding when the log is emptied and rewritten to the same bytes", async () => {
+  const fixture = await logFixture([session, other]);
+  const { environment, log, pid } = fixture;
+  const copy = log.replace(/\.log$/, ".1.log");
+  try {
+    appendFileSync(log, register(session));
+    expect(fixture.binding()?.sessionId).toBe(session);
+    writeFileSync(`${copy}.rotation-staging`, readFileSync(log));
+    fs.renameSync(`${copy}.rotation-staging`, copy);
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "later output\n");
+    // an older mtime, so the rewrite below always moves it
+    const stat = statSync(log);
+    fs.utimesSync(log, stat.atime, new Date(stat.mtimeMs - 10_000));
+    expect(fixture.binding()?.sessionId).toBe(session);
+    // another session is registered, then the log is emptied without a copy and the same bytes written again
+    appendFileSync(log, register(other));
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "later output\n");
+    expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_log_metadata_changed" });
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("replays a large rotated copy for a fresh reader without splitting it into every line", async () => {
+  const fixture = await logFixture([]);
+  const { log } = fixture;
+  const realSplit = String.prototype.split;
+  let longest = 0;
+  const splits = spyOn(String.prototype, "split").mockImplementation(function (this: string, ...args: Parameters<string["split"]>) {
+    const parts = realSplit.apply(this, args);
+    longest = Math.max(longest, parts.length);
+    return parts;
+  } as typeof String.prototype.split);
+  try {
+    writeFileSync(log.replace(/\.log$/, ".1.log"), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session) + "\n".repeat(32 * 1024 * 1024));
+    appendFileSync(log, "later output\n");
+    expect(fixture.binding()?.sessionId).toBe(session);
+    expect(longest).toBeLessThan(1000);
+  } finally {
+    splits.mockRestore();
+    await fixture.close();
+  }
+});
+
 it.skipIf(process.platform !== "linux")("never takes a log that still starts with the bytes read for an append across a rotation", async () => {
   const fixture = await logFixture([]);
   const { log } = fixture;

@@ -18,6 +18,8 @@ const LOG_START_MARGIN_MS = 5_000;
 const LOG_LINE_TIME = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z) /;
 const FOREGROUND_PREFIXES = ["Registering foreground session: ", "Unregistering foreground session: "] as const;
 const FOREGROUND_EVENT = new RegExp(String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (${FOREGROUND_PREFIXES.join("|")})([\da-f-]{36})$`);
+// Common to both foreground events.
+const LIFECYCLE_WORDS = "egistering foreground session: ";
 const LOG_READ_CHANGED = Symbol("log read changed");
 const ROTATION_GAP = Symbol("rotation gap");
 type StoreDiagnostic = typeof COPILOT_STORE_DIAGNOSTICS[number];
@@ -69,8 +71,17 @@ function logPrefix(fd: number, size: number): Hash | null {
 
 /** Applies complete log lines' lifecycle events in order; null when one names no valid session. */
 function applyLifecycle(selected: ForegroundState, complete: string, position: number, generation: (position: number) => string): ForegroundState | null {
-  for (const line of complete.split("\n")) {
-    const match = FOREGROUND_EVENT.exec(line);
+  // Only a line holding the event's words can be one: find those instead of splitting every line,
+  // which costs a string per line of a whole copy.
+  let counted = 0;
+  for (let hit = complete.indexOf(LIFECYCLE_WORDS); hit >= 0;) {
+    const start = complete.lastIndexOf("\n", hit) + 1;
+    const newline = complete.indexOf("\n", hit);
+    const end = newline < 0 ? complete.length : newline;
+    position += Buffer.byteLength(complete.slice(counted, start));
+    counted = start;
+    hit = complete.indexOf(LIFECYCLE_WORDS, end);
+    const match = FOREGROUND_EVENT.exec(complete.slice(start, end));
     if (match) {
       if (!SESSION_ID.test(match[2]!)) return null;
       if (match[1] === FOREGROUND_PREFIXES[0]) {
@@ -82,7 +93,6 @@ function applyLifecycle(selected: ForegroundState, complete: string, position: n
         selected = { kind: "unregistered", binding: released };
       }
     }
-    position += Buffer.byteLength(line) + 1;
   }
   return selected;
 }
@@ -347,9 +357,12 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
             // Copilot only appends and rotates, and every rotation makes a new newest copy: the same
             // bytes in the same file with that copy unchanged hide no lifecycle line, so a binding read
             // from them stands (Copilot itself touches its log every 15 minutes). Marker fallback still
-            // needs an untouched initial log.
+            // needs an untouched initial log. Same bytes again are proof only when the last change
+            // wrote no data: a write or truncation sets mtime and ctime to one instant, while a
+            // timestamp refresh to a given time (or a chmod) leaves them apart. A log emptied and
+            // written back to the same bytes, which hid whatever was logged in between, fails closed.
             : size === cached.size && (stat.mtimeNs !== cached.mtimeNs || stat.ctimeNs !== cached.ctimeNs)
-              && !(size > 0 && cached.observedSize === size
+              && !(size > 0 && cached.observedSize === size && stat.mtimeNs !== stat.ctimeNs
                 && (cached.selection.kind === "selected" || cached.selection.kind === "unregistered")) ? "copilot_log_metadata_changed" : undefined;
           const same = cached !== undefined && changed === undefined;
           // The open file shrank or no longer starts with what was read: a rotation, when a copy carries on from it.
