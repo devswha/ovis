@@ -9,6 +9,7 @@ import { moveDestinations } from "../lib/layoutTargets.ts";
 import { useAppLayout, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { PANE_DRAG_TYPE, paneDragData, type SplitSide } from "../lib/split.ts";
 import { PaneSubmitRetention } from "../lib/paneSubmitRetention.ts";
+import { keepPressedButtonClick } from "../lib/pressedButton.ts";
 import { PaneCachedContext, PanePresentedContext, PaneShownContext, PaneSubmitContext, PaneWatchedContext } from "../lib/paneSubmitContext.ts";
 import { cachedPaneCells, visitPaneTab } from "../lib/paneTabCache.ts";
 import { routeMissing } from "../lib/api.ts";
@@ -22,6 +23,7 @@ import { userErrorMessage, type UserError } from "../lib/userError.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
+import { SHEET_QUERY } from "../lib/sheets.ts";
 import type { RenameRequest } from "../lib/useRenameRequest.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { usePaneLocked } from "../lib/paneLocks.ts";
@@ -96,6 +98,8 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const appLayout = useAppLayout();
   const apple = /Mac|iPhone|iPad/.test(navigator.platform);
   const coarse = useMediaQuery("(pointer: coarse)");
+  // at a phone's width the pane's menu is a bottom sheet, a dialog (RowMenu): its ellipsis says so (G-037)
+  const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
   const narrow = useMediaQuery(SOLO_PANE_QUERY);
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const api = useMachineApi();
@@ -189,6 +193,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   };
   // a long press on a touch screen is the phone's own: select text, copy (the tab's menu has the pane's actions)
   const touchPress = useRef(false);
+  const pressedButton = useRef<AbortController | null>(null);
   const context = (event: MouseEvent<HTMLElement>, target: HerdrPane): void => {
     const pointer = (event.nativeEvent as Partial<globalThis.PointerEvent>).pointerType;
     // Android Chrome ends a dragged text selection with a second contextmenu typed "mouse" and no
@@ -405,6 +410,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
           // A right press must not change focus before the menu's Swap with focused pane.
           if (event.button === 0 && !paneContextPress(event, apple) && !active) {
             onSelect(item.pane_id, false);
+            keepPressedButtonClick(event, pressedButton);
           }
           const element = event.target instanceof Element ? event.target : null;
           const titleOrFrame = element?.closest(".pane-frame-head") || element === event.currentTarget;
@@ -434,17 +440,19 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
         }}
         onContextMenuCapture={(event) => context(event, item)}>
         {!(single && !offTab && loneRowHidden) && <div className="pane-frame-head" draggable={onOpenInHalf !== undefined && !coarse}
-          onClick={(event) => {
-            if (!onOpenInHalf || coarse || paneContextPress(event, apple) || (event.target instanceof Element && event.target.closest("button"))) return;
-            paneInput(event.currentTarget.parentElement)?.focus({ preventScroll: true });
-          }}
           onDragStart={(event: DragEvent<HTMLDivElement>) => {
             // dropped on a half of the pane area, the title opens its pane there (App's drop)
             event.dataTransfer.effectAllowed = "move";
             event.dataTransfer.setData(PANE_DRAG_TYPE, paneDragData({ machineId, paneId: item.pane_id }));
           }}>
-          <span className="pane-frame-title">{displayPaneTitle(item)}</span>
-          <button type="button" className="icon-button pane-frame-menu" aria-label={t("Pane actions for {name}", { name: displayPaneTitle(item) })}
+          <span className="pane-frame-title" role={active && !offTab ? "heading" : undefined} aria-level={active && !offTab ? 2 : undefined}><span role="button" tabIndex={0} style={{ display: "block", lineHeight: "var(--pointer-target)", overflow: "hidden", textOverflow: "ellipsis" }} onClick={(event) => {
+            if (!paneContextPress(event, apple)) paneInput(event.currentTarget.closest(".pane-frame"))?.focus({ preventScroll: true });
+          }} onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            paneInput(event.currentTarget.closest(".pane-frame"))?.focus({ preventScroll: true });
+          }}>{displayPaneTitle(item)}</span></span>
+          <button type="button" className="icon-button pane-frame-menu" aria-label={t("Pane actions for {name}", { name: displayPaneTitle(item) })} title={t("Pane actions for {name}", { name: displayPaneTitle(item) })} aria-haspopup={popup} aria-expanded={menu?.paneId === item.pane_id}
             onClick={(event) => showMenu(item, event.currentTarget)}><Ellipsis aria-hidden="true" /></button>
           {zoomable && !offTab && <button type="button" className="icon-button pane-frame-zoom" aria-label={t(zoomedHere ? "Unzoom pane" : "Zoom pane")} title={t(zoomedHere ? "Unzoom pane" : "Zoom pane")}
             // a click selects this pane, so its typing goes there too, as a click on the title does;
