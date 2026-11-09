@@ -83,6 +83,38 @@ describe("the hosted shell's front page", () => {
     await drain();
   });
 
+  it("reads the directory for a native sign-in made while a read from before the sign-out is still out", async () => {
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+    const stale = Promise.withResolvers<Response>();
+    const tokened = Promise.withResolvers<void>();
+    let reads = 0;
+    const savedFetch = globalThis.fetch;
+    try {
+      await mountRelayShell(mountFor({
+        accountService: SERVICE, accountProviders: ["github", "apple"], accountStore, store: deviceStore([]),
+        accountFetch: async (input) => {
+          if (new URL(String(input)).pathname === "/v1/signout") return Response.json({});
+          return ++reads === 2 ? stale.promise : Response.json({ pcs: [] });
+        },
+      }));
+      last().onRefreshAccount?.();
+      await until(() => reads === 2, "the read held over the sign-out");
+      last().onSignOut?.();
+      // the phone app's Sign in with Apple, and the token the service answers it with
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }], nativePromise: async () => ({ idToken: "apple-id-token" }) } });
+      globalThis.fetch = Object.assign(async () => { tokened.resolve(); return Response.json({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 3600, account: "acct-test", provider: "apple" }); }, { preconnect: savedFetch.preconnect });
+      last().onSignIn?.("apple");
+      await tokened.promise;
+      await until(() => { const { state } = last(); return (state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-in" && state.account.pcs !== null; }, "the new sign-in's directory drawn");
+      expect(reads).toBe(3);
+    } finally {
+      stale.resolve(Response.json({ pcs: [] }));
+      Reflect.deleteProperty(globalThis, "Capacitor");
+      globalThis.fetch = savedFetch;
+    }
+  });
+
   it("retains the selected provider while signing in and ignores a second provider tap", async () => {
     const accountStore = memoryAccountStore();
     const redirects: string[] = [];

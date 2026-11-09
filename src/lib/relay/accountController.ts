@@ -45,11 +45,12 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let directory: readonly DirectoryPc[] = [];
   let generation = 0;
   let leaving = false;
-  let reading: Promise<void> | undefined;
+  // the read out now and the sign-in it is for: a read of an earlier sign-in never holds back the next one's
+  let reading: { readonly epoch: number; readonly read: Promise<void> } | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const changed = async (): Promise<void> => { await view.changed(); armRefresh(); };
   const refresh = async (initial = false): Promise<void> => {
-    if (reading || leaving || accountService === null || (!initial && (!view.active() || accountView?.kind !== "signed-in"))) return;
+    if (reading?.epoch === generation || leaving || accountService === null || (!initial && (!view.active() || accountView?.kind !== "signed-in"))) return;
     const epoch = generation;
     const current = accountView;
     const live = (): boolean => epoch === generation;
@@ -77,8 +78,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         }
       }
       if (live()) await changed();
-    })().finally(() => { if (reading === read) reading = undefined; });
-    reading = read;
+    })().finally(() => { if (reading?.read === read) reading = undefined; });
+    reading = { epoch, read };
     await read;
   };
   const armRefresh = (): void => {
