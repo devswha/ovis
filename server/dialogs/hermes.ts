@@ -220,7 +220,7 @@ const HERMES_CHOICE_LIKE_RE = /^\s*(?:❯\s*)?\d+\.\s/u;
  * Hermes's classic spinner line between the panel and its hint (0.21.5): an icon, the tool and its timer in
  * parentheses, e.g. "  💻 rm -rf ./scratch  (  6.7s · ↓ 5 tok)"; nothing else may stand there
  */
-const HERMES_SPINNER_LINE_RE = /^ {2}\S{1,2} .+ {2}\( *\d[^()]*\)$/u;
+const HERMES_SPINNER_LINE_RE = /^ {2}\p{Extended_Pictographic}\uFE0F? \S.* {2}\((?: *\d+\.\ds|\d{2}m\d{2}s)(?: · [^()]*)?\)$/u;
 
 /** what Hermes left out, in its own words: "… (choose Show full command)", "… (command truncated — …)", "… (description truncated)" */
 const HERMES_APPROVAL_CUT_RE = /^… \((?:choose |command truncated|description truncated)/u;
@@ -271,10 +271,11 @@ export function hermesModalWaits(screen: string): boolean {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
   // a draft longer than the pane wraps the input onto more lines: its mark is on the first of them, so the lines
   // up to the rule over the input (or Hermes's own line above it) are looked at, not only the last
-  for (let at = hermesInputLine(lines), seen = 0; at >= 0 && seen < 12; at -= 1, seen += 1) {
+  // (a draft can hold blank rows, so only Hermes's own lines over the input end the look: a rule, the status bar, the hint)
+  for (let at = hermesInputLine(lines); at >= 0; at -= 1) {
     const line = lines[at]!;
     if (HERMES_MODAL_INPUT_RE.test(line)) return true;
-    if (!line.trim() || /^─{2,}/u.test(line) || line.startsWith(HERMES_STATUS_BAR) || HERMES_APPROVAL_HINT_RE.test(line)) return false;
+    if (/^─{2,}/u.test(line) || line.startsWith(HERMES_STATUS_BAR) || HERMES_APPROVAL_HINT_RE.test(line)) return false;
   }
   return false;
 }

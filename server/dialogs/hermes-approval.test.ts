@@ -128,6 +128,8 @@ describe("Hermes's dangerous-command approval", () => {
       ["a line under the hint", screen.replace(/^( ☤ fixture-model)/mu, "  ▸ subagent: tidy\n$1")],
       // more than the spinner's lines between the panel and its hint: not the panel over the input
       ["lines over the hint", screen.replace(/^( {2}💻 rm -rf)/mu, "  one\n  two\n  three\n$1")],
+      // a line shaped like Hermes's spinner but not it: no icon, no timer of its own
+      ["a forged spinner", screen.replace(/^ {2}💻 rm -rf \.\/scratch {2}\(.*\)$/mu, "  X forged output  (1)")],
       // even one line that is not Hermes's spinner, right under the panel
       ["one line under the panel", (() => {
         // the panel's bottom border, the last one: the banner's box comes first
@@ -219,6 +221,9 @@ describe("Hermes's dangerous-command approval", () => {
       expect(wrapped).not.toBe(screen);
       expect(card(wrapped)).toBeNull();
       expect(registry.waits("hermes", wrapped)).toBe(true);
+      // however many rows it takes, blank-looking ones among them
+      const long = screen.replace(/^⚠$/mu, ["⚠ a long draft", ...Array.from({ length: 14 }, (_, row) => `row ${row}`), "", "the last row"].join("\n"));
+      expect(registry.waits("hermes", long)).toBe(true);
     });
 
   });

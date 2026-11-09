@@ -847,13 +847,22 @@ export function isHermesForeground(entry: { name?: string | null; argv0?: string
   if (named(first)) return true;
   const interpreter = (first.split(/[\\/]/).pop() ?? "").toLowerCase();
   if (!/^python[\d.]*(?:\.exe)?$/u.test(interpreter)) return false;
-  // Python's own options before the script; -c and -m run something else, and -X/-W take a value
+  // Python's own options before the script, read as Python reads them, combined flags included (-uX opt): -c and -m
+  // run something else, -X/-W/-Q take a value (the rest of the argument, or the next one), and a long option this
+  // does not know may take one too, so it is no Hermes
   for (let at = 1; at < argv.length; at += 1) {
     const arg = argv[at]!;
-    if (arg === "-c" || arg === "-m" || arg.startsWith("-c") || arg.startsWith("-m")) return false;
-    if (arg === "-X" || arg === "-W") { at += 1; continue; }
-    if (arg.startsWith("-")) continue;
-    return named(arg);
+    if (arg === "--") return named(argv[at + 1] ?? "");
+    if (arg.startsWith("--")) return false;
+    if (!arg.startsWith("-") || arg === "-") return named(arg);
+    for (let flag = 1; flag < arg.length; flag += 1) {
+      const option = arg[flag]!;
+      if (option === "c" || option === "m") return false;
+      if (option === "X" || option === "W" || option === "Q") {
+        if (flag === arg.length - 1) at += 1;
+        break;
+      }
+    }
   }
   return false;
 }

@@ -6960,11 +6960,14 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   });
 
   test("takes only Hermes itself as the foreground that may take an approval's keys", () => {
-    for (const argv of [["/usr/local/bin/hermes"], ["hermes"], ["/usr/bin/python3", "/home/u/.local/bin/hermes", "chat"], ["python3.14", "-u", "/opt/hermes/bin/hermes"]]) {
+    for (const argv of [["/usr/local/bin/hermes"], ["hermes"], ["/usr/bin/python3", "/home/u/.local/bin/hermes", "chat"], ["python3.14", "-u", "/opt/hermes/bin/hermes"],
+      ["python3", "-X", "utf8", "/opt/hermes/bin/hermes"], ["python3", "-IsX", "utf8", "/opt/hermes/bin/hermes"]]) {
       expect([argv, isHermesForeground({ argv })]).toEqual([argv, true]);
     }
     // "hermes" as an argument of something else, or Python running other code
-    for (const argv of [["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"]]) {
+    for (const argv of [["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"],
+      // combined flags: /tmp/hermes is -X's value, and -c's code runs
+      ["python3", "-uX", "/tmp/hermes", "-c", "print(1)"], ["python3", "-uc", "print(1)", "/tmp/hermes"], ["python3", "--check-hash-based-pycs", "always", "/tmp/hermes"]]) {
       expect([argv, isHermesForeground({ argv })]).toEqual([argv, false]);
     }
   });
