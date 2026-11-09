@@ -59,6 +59,36 @@ describe("relayNoticeFromStatus", () => {
   });
 });
 
+describe("relayNoticeFromStatus before the announced date", () => {
+  const now = Date.parse("2030-01-01T00:00:00.000Z");
+  const future = "2030-02-01T00:00:00.000Z";
+
+  it("shows only the reminder naming the date, refused or not", () => {
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "no_account", relay: "missing", enforce_at: future, refused: false } }, false, now))
+      .toEqual({ kind: "sign-in-grace", enforceAt: future });
+    expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "no_account", relay: null, enforce_at: future, refused: true } }, false, now))
+      .toEqual({ kind: "sign-in-grace", enforceAt: future });
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true } }, true, now)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "ok", relay: "ok", enforce_at: future, refused: false, new_sessions: false } }, true, now)).toBeNull();
+  });
+
+  it("shows the limit notices once the date has passed", () => {
+    const after = Date.parse("2030-03-01T00:00:00.000Z");
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, after)).toEqual({ kind: "pc-limit", enforceAt: null });
+  });
+});
+
+describe("relayNoticeOf", () => {
+  const relay: RelayStatus = { ...baseRelay, phase: "error", pass: { state: "limit", relay: null, enforce_at: null, refused: true } };
+
+  it("shows nothing to a watch-only or Portal session", () => {
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "device", role: "drive" }, relay })).toEqual({ kind: "pc-limit", enforceAt: null });
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "device", role: "watch" }, relay })).toBeNull();
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "portal", role: "drive" }, relay })).toBeNull();
+  });
+});
+
 describe("RelayNotice", () => {
   const t = (key: string, vars?: Record<string, string | number>) => translate("en", key, vars);
 

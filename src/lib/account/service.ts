@@ -173,7 +173,7 @@ export async function failure(response: Response): Promise<AccountServiceError> 
 export function parseAccountLimits(value: unknown): AccountLimits | null {
   if (!isRecord(value)) return null;
   const { plan, pcs_max, pcs_used, data_cap_bytes, data_used_bytes, data_metering, until } = value;
-  if (typeof plan !== "string" || plan.trim() === "" || plan.length > 32) return null;
+  if (typeof plan !== "string" || plan.trim() === "") return null;
   if (typeof pcs_max !== "number" || !Number.isSafeInteger(pcs_max) || pcs_max < 0) return null;
   if (pcs_used !== undefined && pcs_used !== null && (typeof pcs_used !== "number" || !Number.isSafeInteger(pcs_used) || pcs_used < 0)) return null;
   if (data_cap_bytes !== undefined && data_cap_bytes !== null && (typeof data_cap_bytes !== "number" || !Number.isSafeInteger(data_cap_bytes) || data_cap_bytes < 0)) return null;
@@ -181,7 +181,8 @@ export function parseAccountLimits(value: unknown): AccountLimits | null {
   if (until !== undefined && until !== null && (typeof until !== "number" || !Number.isFinite(until))) return null;
   const metered = data_metering === undefined || data_metering === "on";
   return {
-    plan: plan.trim(),
+    // a long name is shortened, never a reason to drop the limits
+    plan: plan.trim().length > 32 ? `${plan.trim().slice(0, 31)}…` : plan.trim(),
     pcs_max,
     ...(typeof pcs_used === "number" ? { pcs_used } : {}),
     ...(typeof data_cap_bytes === "number" ? { data_cap_bytes } : {}),

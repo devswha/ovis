@@ -1038,7 +1038,7 @@ export function App() {
         {layoutNotice && <p className="pane-notice" role="alert">{layoutNotice}</p>}
         {/* the last answer that got through: a listener does not stop because herdr's ping failed */}
         {exposure && !(exposureDirect && directNotice.dismissed) && <LanExposureNotice host={exposure.host} direct={exposureDirect} onOpen={() => { setSettingsLinkPage("devices"); setSettingsOpen(true); }} onDismiss={directNotice.dismiss} />}
-        {relayNoticeInfo && !relayNotice.dismissed && <RelayNotice notice={relayNoticeInfo} onOpen={() => { setSettingsLinkPage("devices"); setSettingsLinkSection(relayNoticeInfo.kind === "pc-limit" || relayNoticeInfo.kind === "data-limit" ? null : "account"); setSettingsOpen(true); }} onDismiss={relayNotice.dismiss} />}
+        {relayNoticeInfo && !relayNotice.dismissed && <RelayNotice notice={relayNoticeInfo} onOpen={() => { setSettingsLinkPage("devices"); setSettingsLinkSection("account"); setSettingsOpen(true); }} onDismiss={relayNotice.dismiss} />}
         <PushHealthNotice onRepair={repairNotifications} onOpen={() => { setSettingsLinkPage("alerts"); setSettingsOpen(true); }} />
         <InstallHint />
         {setupGuide.guide !== null && setupGuide.paused && <SetupGuideResume onResume={setupGuide.resume} />}

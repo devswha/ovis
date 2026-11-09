@@ -1,7 +1,9 @@
 import { expect, it } from "bun:test";
 
+import { AccountService } from "../lib/account/service.ts";
+import { memoryAccountStore, memoryLock, type AccountSession } from "../lib/account/store.ts";
 import { translate } from "../lib/i18n.ts";
-import { formatAccountLimits, formatRelayBytes, probeUntilReachable, reachabilityProbe, REPROBE_MS } from "./AccountSection.tsx";
+import { accountLimitsOf, formatAccountLimits, formatRelayBytes, probeUntilReachable, reachabilityProbe, REPROBE_MS } from "./AccountSection.tsx";
 
 // the relay tab offers the relay's own pairing while the account service cannot be reached (ConnectPhoneDialog's RelayTab)
 it("counts an answer the service could give as reachable, and a server error or no answer as not", async () => {
@@ -36,6 +38,22 @@ it("asks an account service that did not answer again, sooner first, until it an
   stop();
   expect(next).toBeNull();
   expect(asked).toBe(1);
+});
+
+it("reads the limits for the sign-in the section shows, and none once another account signed in", async () => {
+  const session = (account: string): AccountSession => ({ service: "https://account.test", account, provider: "github", access_token: `at_${account}`, refresh_token: `rt_${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: account });
+  const store = memoryAccountStore();
+  // the service answers for whichever account the token belongs to
+  const fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const account = new Headers(init?.headers).get("authorization")?.replace("Bearer at_", "") ?? "";
+    return Response.json({ plan: `plan of ${account}`, pcs_max: 3 });
+  };
+  const service = new AccountService({ store, fetch: fetch as typeof globalThis.fetch, lock: memoryLock() });
+  const shown = session("acct_a");
+  await store.set("session", shown);
+  expect(await accountLimitsOf(service, shown)).toEqual({ plan: "plan of acct_a", pcs_max: 3 });
+  await store.set("session", session("acct_b"));
+  expect(await accountLimitsOf(service, shown)).toBeNull();
 });
 
 it("formats account limits with server-provided plan name, PCs used/max, and optional relay data", () => {

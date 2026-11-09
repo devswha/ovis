@@ -60,6 +60,11 @@ export function formatAccountLimits(t: Translate, limits: AccountLimits, listedP
   };
 }
 
+/** The account's limits as `session` reads them; null when the service reports none, or once another sign-in is stored. */
+export function accountLimitsOf(service: AccountService, session: AccountSession): Promise<AccountLimits | null> {
+  return service.forSignIn(session).limits().catch(() => null);
+}
+
 const isDeviceProvider = (provider: AccountProvider): provider is DeviceProvider => (DEVICE_PROVIDERS as readonly string[]).includes(provider);
 
 /** The link page as a person reads it off the screen: account.ovis.sh/link. */
@@ -236,7 +241,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     const signedIn = { kind: "signed-in", provider: session.provider, account: session.account } as const;
     show({ ...signedIn, pcs: null, methods: null, limits: null, error: null });
     // the limits row is optional: read from the session's own service, apart, so it never holds up the rest
-    void service.limits().catch(() => null).then((limits: AccountLimits | null) => {
+    void accountLimitsOf(service, session).then((limits) => {
       if (loads.current !== generation || limits === null) return;
       setView((current) => current.kind === "signed-in" && current.account === session.account ? { ...current, limits } : current);
     });
@@ -252,7 +257,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
       if (loads.current === generation) setView((current) => ({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: null }));
     } catch (error) {
       if (error instanceof SignedOutError) show({ kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") });
-      else show({ ...signedIn, pcs: [], methods: null, limits: null, error: t("The account service could not be reached. The PCs this device is paired with still work.") });
+      else if (loads.current === generation) setView((current) => ({ ...signedIn, pcs: [], methods: null, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: t("The account service could not be reached. The PCs this device is paired with still work.") }));
     }
   }, [t]);
 

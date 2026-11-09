@@ -40,13 +40,19 @@ function writeDismissed(dismissed: readonly string[]): void {
  *
  * Nothing shows until the relay itself announces passes: a date from when they are needed
  * (`enforce_at`, grace) or a refusal. A relay that says neither changes nothing on screen.
+ * Before a date still to come nothing is refused yet, a refusal included: only the sign-in reminder that
+ * names the date shows.
  */
-export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, signedIn = false): RelayNoticeInfo | null | undefined {
+export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, signedIn = false, now = Date.now()): RelayNoticeInfo | null | undefined {
   if (relay === undefined) return undefined;
   if (relay === null || relay.phase === "off" || relay.blocked !== null) return null;
   const pass = relay.pass;
   if (pass === undefined) return null;
   if (pass.enforce_at === null && !pass.refused) return null;
+  const remind = pass.state === "no_account" && ((pass.relay !== null && pass.relay !== "ok") || !signedIn);
+  if (pass.enforce_at !== null && now < Date.parse(pass.enforce_at)) {
+    return remind ? { kind: "sign-in-grace", enforceAt: pass.enforce_at } : null;
+  }
   if (pass.new_sessions === false) {
     return { kind: "data-limit", enforceAt: null };
   }
@@ -60,7 +66,7 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
     if (pass.refused && relay.phase === "error") {
       return { kind: "sign-in-required", enforceAt: null };
     }
-    if ((pass.relay !== null && pass.relay !== "ok") || !signedIn) {
+    if (remind) {
       return { kind: "sign-in-grace", enforceAt: pass.enforce_at };
     }
   }
@@ -69,6 +75,8 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
 
 export function relayNoticeOf(health: Pick<HealthInfo, "auth" | "relay"> | null, signedIn = false): RelayNoticeInfo | null | undefined {
   if (health === null || health.auth?.required === true) return undefined;
+  // the relay's pass is the PC owner's business: a watch-only or Portal visitor can act on none of it
+  if (health.auth?.role === "watch" || health.auth?.via === "portal") return null;
   return relayNoticeFromStatus(health.relay ?? null, signedIn);
 }
 

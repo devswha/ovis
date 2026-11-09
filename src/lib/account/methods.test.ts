@@ -233,4 +233,8 @@ describe("the account's limits", () => {
     expect(parseAccountLimits({ plan: "personal", pcs_max: -1 })).toBeNull();
     expect(parseAccountLimits(null)).toBeNull();
   });
+
+  it("keeps the limits when the plan name is long, shortening only the name", () => {
+    expect(parseAccountLimits({ plan: "p".repeat(40), pcs_max: 3 })).toEqual({ plan: `${"p".repeat(31)}…`, pcs_max: 3 });
+  });
 });

@@ -1255,11 +1255,13 @@ const demoRelayServerId = (): string => `${demoRelayIdentities.toString(16).padS
 let demoRelayDirect = true;
 function demoRelayPass(): RelayStatus["pass"] | undefined {
   switch (DEMO_RELAY_PASS) {
-    case "grace": return { state: "no_account", relay: "missing", enforce_at: null, refused: false };
+    // passes needed from a month on: the reminder names that date
+    case "grace": return { state: "no_account", relay: "missing", enforce_at: new Date(Date.now() + 30 * 86_400_000).toISOString(), refused: false };
     case "required": return { state: "no_account", relay: null, enforce_at: null, refused: true };
     case "not-listed": return { state: "not_listed", relay: null, enforce_at: null, refused: true };
     case "limit": return { state: "limit", relay: null, enforce_at: null, refused: true };
-    case "data-limit": return { state: "ok", relay: "ok", enforce_at: null, refused: false, new_sessions: false };
+    // passes needed since yesterday: the data limit holds now
+    case "data-limit": return { state: "ok", relay: "ok", enforce_at: new Date(Date.now() - 86_400_000).toISOString(), refused: false, new_sessions: false };
     default: return undefined;
   }
 }
