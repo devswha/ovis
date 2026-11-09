@@ -137,8 +137,16 @@ export class CLIProxyService {
     const key = suppliedKey ?? this.config?.management_key;
     if (!key || key.length > 2000 || /\s/.test(key) || url.includes(key) || (this.config && url !== this.config.url && !suppliedKey)) throw proxyInvalid();
     this.persist({ url, management_key: key });
-    // saving the Hub again is the user's way out of blind (status().problem says so): hidden keys stay unread by file name
-    if (this.blind) { this.blind = false; this.saveHidden(); }
+    // saving the Hub again is the user's way out of blind (status().problem says so): hidden keys stay unread by file name.
+    // Not while the hidden list is read only in part (a key left out has no file name to keep unread), and not unsaved:
+    // a restart would find the list still blind, so the save says it failed and blind holds here too
+    if (this.blind && this.hiddenWhole()) {
+      this.blind = false;
+      if (!this.saveHidden()) {
+        this.blind = true;
+        throw new CLIProxyError("cliproxy_hidden_unsaved", 500, "Could not save which Hub accounts are hidden");
+      }
+    }
     return this.check();
   }
 

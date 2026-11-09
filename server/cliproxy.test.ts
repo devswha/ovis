@@ -428,6 +428,42 @@ describe("CLIProxyAPI v8", () => {
       expect(reads()).toEqual(["a", "b", "b"]);
     });
 
+    it("stays blind when the Hub is saved again while the hidden list is read only in part (#3428)", async () => {
+      await configure();
+      await service.report();
+      service.skipAccounts(() => new Set(["claude:cliproxy:claude-a.json"]));
+      service.hiddenChanged();
+      writeFileSync(join(dir, "cliproxy-hidden.json"), "{broken");
+      moveAlice();
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => new Set(), () => false);
+      await restarted.report(false, new Set());
+      await new CLIProxyRoutes(restarted).handle(new Request("http://localhost/api/cliproxy", { method: "PUT", body: JSON.stringify({ url: fake.server.url.origin, management_key: KEY }) }));
+      expect(restarted.status()).toMatchObject({ ok: false, problem: expect.any(String) });
+      const again = new CLIProxyService(dir);
+      again.skipAccounts(() => new Set(), () => false);
+      await again.report(false, new Set());
+      expect(reads()).toEqual(["a", "b"]);
+    });
+
+    it("refuses saving the Hub again as the way out while that way out cannot be saved (#3428)", async () => {
+      await configure();
+      await service.report();
+      const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      rmSync(join(dir, "cliproxy-hidden.json"));
+      mkdirSync(join(dir, "cliproxy-hidden.json"));
+      fake.files.splice(0, 1);
+      const restarted = new CLIProxyService(dir);
+      restarted.skipAccounts(() => hidden);
+      await restarted.report(false, hidden);
+      const response = await new CLIProxyRoutes(restarted).handle(new Request("http://localhost/api/cliproxy", { method: "PUT", body: JSON.stringify({ url: fake.server.url.origin, management_key: KEY }) }));
+      expect(response.status).toBe(500);
+      expect(restarted.status()).toMatchObject({ ok: false, problem: expect.any(String) });
+      expect(reads()).toEqual(["a", "b"]);
+    });
+
     it("refuses a retried hide while which account it is still cannot be saved (#3428)", async () => {
       mkdirSync(join(dir, "cliproxy-hidden.json"));
       const app = createServer({ port: 0, hostname: "127.0.0.1", token: "t", stateDir: dir, tailscaleOwner: null, machines: false, registerBridge: false, terminalAttach: false, sidecar: false });
