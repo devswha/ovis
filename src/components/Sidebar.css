@@ -1146,9 +1146,10 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 .machine-workspaces:not(.is-two-line) .workspace-select > .sidebar-pane-meta { width: var(--space-6); }
 
+/* the badge fills that cell: a state that draws nothing (ready, unknown) keeps its box, label and tooltip */
 .machine-workspaces:not(.is-two-line) .workspace-select > .sidebar-pane-meta > .sidebar-status {
-  flex-basis: auto;
-  width: auto;
+  flex-basis: 100%;
+  width: 100%;
 }
 
 /* under a pointer the ⋯ shows just before the state's cell, over the end of the name and branch, which fade out under

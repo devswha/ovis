@@ -391,9 +391,10 @@
 
 .agents-sidebar.is-one-line .agent-row > .agent-row-state { width: var(--space-6); }
 
+/* the badge fills that cell: a state that draws nothing (ready, unknown) keeps its box, label and tooltip */
 .agents-sidebar.is-one-line .agent-row > .agent-row-state > .sidebar-status {
-  flex-basis: auto;
-  width: auto;
+  flex-basis: 100%;
+  width: 100%;
 }
 
 /* the ⋯ shows just before the state's cell, over the end of the row's words, which fade out under it into the row's own
