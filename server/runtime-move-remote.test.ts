@@ -97,6 +97,10 @@ it("refuses a Portal visitor that drives this PC a runtime switch, before the sw
     // nor is it told the runtime facts a switch is offered from
     const facts = async (headers: Record<string, string>) => (await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json() as { herdr_runtime?: unknown }).herdr_runtime;
     expect(await facts(visitor)).toBeUndefined();
+    // nor which runtime this server serves, which the launcher still reads with the bridge token
+    const served = async (headers: Record<string, string>) => (await (await fetch(`${base}/api/health?scope=bridge`, { headers })).json() as { runtime?: unknown }).runtime;
+    expect(await served(visitor)).toBeUndefined();
+    expect(await served(bridge)).toBeDefined();
     expect(await facts({ authorization: `Bearer ${SECRET}` })).toEqual(facts_);
   } finally { vouches.mockRestore(); roleFor.mockRestore(); switches.mockRestore(); }
 });

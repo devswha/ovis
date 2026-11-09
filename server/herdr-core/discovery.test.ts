@@ -121,7 +121,7 @@ it("counts group write as harmless only in the user's own private group, known f
   const passwd = "root:x:0:0::/root:/bin/sh\nme:x:1000:1000::/home/me:/bin/sh\nyou:x:1001:100::/home/you:/bin/sh\n";
   const local = "passwd: files systemd\ngroup: files [SUCCESS=merge] systemd\n";
   expect(privateGroup("me", 1000, "root:x:0:\nme:x:1000:\nusers:x:100:me,you\n", passwd, local)).toBe(1000);
-  expect(privateGroup("me", 1000, "me:x:1000:me\n", passwd, "")).toBe(1000);
+  expect(privateGroup("me", 1000, "me:x:1000:me\n", passwd, local)).toBe(1000);
   // another member, another name, another account's primary group, or a group not listed
   expect(privateGroup("me", 1000, "me:x:1000:you\n", passwd, local)).toBeNull();
   expect(privateGroup("me", 1000, "staff:x:1000:\n", passwd, local)).toBeNull();
@@ -132,6 +132,11 @@ it("counts group write as harmless only in the user's own private group, known f
   expect(privateGroup("me", 1000, "me:x:1000:\n", passwd, "passwd: files systemd sss\ngroup: files systemd sss\n")).toBeNull();
   expect(privateGroup("me", 1000, "me:x:1000:\n", passwd, "group: files ldap\n")).toBeNull();
   expect(privateGroup("me", 1000, "me:x:1000:\n", "", local)).toBeNull();
+  // no group line (glibc's default may reach further), none at all, or compat's NIS entries: unproven
+  expect(privateGroup("me", 1000, "me:x:1000:\n", passwd, "passwd: files\n")).toBeNull();
+  expect(privateGroup("me", 1000, "me:x:1000:\n", passwd, "")).toBeNull();
+  expect(privateGroup("me", 1000, "me:x:1000:\n", passwd, "passwd: compat\ngroup: compat\n")).toBeNull();
+  expect(privateGroup("me", 1000, "me:x:1000:\n", passwd, "passwd: files\ngroup: files\ninitgroups: files ldap\n")).toBeNull();
 });
 
 it("trusts no root or admin group write but Homebrew's", () => {
@@ -149,6 +154,11 @@ it("reads a macOS ACL that lets anybody but the user write", () => {
   expect(macAclGrantsWrite(head + " 0: group:everyone deny delete\n 1: user:you allow list,add_file\n", "me")).toBe(true);
   expect(macAclGrantsWrite(head + " 0: group:staff inherited allow write,append\n", "me")).toBe(true);
   expect(macAclGrantsWrite(head + " 0: group:staff allow list,search,readattr\n", "me")).toBe(false);
+  // a principal with spaces, and an entry not read at all, that grants a write right
+  expect(macAclGrantsWrite(head + " 0: group:Domain Users allow add_file,delete_child\n", "me")).toBe(true);
+  expect(macAclGrantsWrite(head + " 0: group:Domain Users deny add_file\n", "me")).toBe(false);
+  expect(macAclGrantsWrite(head + " 0: something new: write\n", "me")).toBe(true);
+  expect(macAclGrantsWrite(head + " 0: user:me inherited allow write,append\n", "me")).toBe(false);
 });
 
 const setfacl = Bun.which("setfacl");
@@ -158,8 +168,34 @@ it.skipIf(process.platform !== "linux" || setfacl === null)("refuses a group-wri
   chmodSync(join(root, "bin"), 0o775);
   const anyGroup = () => true;
   expect(ownedByUser(bin, anyGroup)).toBe(true);
+  // a named entry that only reads leaves it the user's
+  expect(Bun.spawnSync([setfacl!, "-m", "u:nobody:r-x", join(root, "bin")]).exitCode).toBe(0);
+  expect(ownedByUser(bin, anyGroup)).toBe(true);
   expect(Bun.spawnSync([setfacl!, "-m", "u:nobody:rwx", join(root, "bin")]).exitCode).toBe(0);
   expect(ownedByUser(bin, anyGroup)).toBe(false);
+  // a named group the check does not trust
+  expect(Bun.spawnSync([setfacl!, "-x", "u:nobody", "-m", "g:nogroup:rwx", join(root, "bin")]).exitCode).toBe(0);
+  expect(ownedByUser(bin, (gid) => gid === process.getgid!())).toBe(false);
+});
+
+it.skipIf(!unix)("gives the probe only absolute, checked PATH folders, never an empty PATH that would search the server's folder", async () => {
+  const { root } = scratch();
+  const seenPath = join(root, "path.seen");
+  mkdirSync(join(root, "real"), { mode: 0o755 });
+  writeFileSync(join(root, "real", "hc"), `#!/bin/sh\nprintf '%s' "$PATH" > '${seenPath}'\nprintf 'hc 0.1.17\\n'\n`, { mode: 0o755 });
+  const look = (PATH: string, usualDirs: string[]) => findHc({ env: { PATH }, home: root, loginShellPath: async () => null, usualDirs });
+  // a relative PATH folder is handed on resolved, so a wrapper that changes folder finds the same one
+  expect((await look(relative(process.cwd(), join(root, "real")), []))?.version).toBe("0.1.17");
+  expect(readFileSync(seenPath, "utf8")).toBe(join(root, "real"));
+  // every PATH folder refused: still a PATH, of absolute folders only
+  mkdirSync(join(root, "open"), { mode: 0o755 });
+  chmodSync(join(root, "open"), 0o777);
+  try {
+    expect((await look(join(root, "open"), [join(root, "real")]))?.version).toBe("0.1.17");
+  } finally { chmodSync(join(root, "open"), 0o755); }
+  const given = readFileSync(seenPath, "utf8").split(":");
+  expect(given.length).toBeGreaterThan(0);
+  expect(given.every((dir) => isAbsolute(dir) && dir !== join(root, "open"))).toBe(true);
 });
 
 it.skipIf(!unix)("runs a candidate with only the PATH folders that pass the same check", async () => {

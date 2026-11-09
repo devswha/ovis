@@ -893,7 +893,12 @@ the usual install places (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`,
 cargo), then the `PATH`, then your login shell's `PATH`, taking `herdr-core` before `hc` in each.
 On Linux and macOS a candidate found there is run only when it and every folder on the way to it
 belong to you or root and nobody else can write them; a path you set in `OVIS_HC_BIN` is run as
-you named it. A candidate counts only when `--version` says `hc …`, since some window
+you named it. Two exceptions: a folder further up may be writable by anyone when it is sticky
+(like `/tmp`), since nobody can then rename or replace what is yours in it; and on macOS, folders
+under Homebrew's `/opt/homebrew` and `/usr/local` may be writable by the `admin` group, as
+Homebrew leaves them, so another administrator of that Mac could change an `hc` found there.
+Group write by your own private group counts as yours only when `/etc/nsswitch.conf` takes
+accounts from local files alone. A candidate counts only when `--version` says `hc …`, since some window
 managers ship an unrelated `hc`. Looking runs nothing but `--version`: every other hc command
 starts a core when none runs. When no candidate answers, Ovis does not start and says where it
 looked, rather than run an `hc` that may not be herdr-core's.

@@ -65,9 +65,14 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
   const seen = new Set<string>();
   const harmless = process.platform === "win32" ? null : harmlessGroups();
   // what the candidate runs by name (`#!/usr/bin/env python3`, a wrapper's commands) comes only from
-  // PATH folders that pass the same check
+  // PATH folders that pass the same check, resolved (a wrapper may change folder first); none passing
+  // gives the system's own, never an empty PATH, which a shell searches the working folder for
   let probeEnv: Env | undefined;
-  const probing = () => probeEnv ??= harmless === null ? env : { ...env, PATH: dirsOn(env["PATH"]).filter((dir) => ownedByUser(resolve(dir), harmless, true)).join(delimiter) };
+  const checkedDirs = (dirs: string[]) => dirs.map((dir) => resolve(dir)).filter((dir) => ownedByUser(dir, harmless!, true));
+  const probing = () => probeEnv ??= harmless === null ? env : {
+    ...env,
+    PATH: [...new Set(checkedDirs(dirsOn(env["PATH"])))].join(delimiter) || checkedDirs(SYSTEM_PATH).join(delimiter) || "/nonexistent",
+  };
   const pick = async (candidates: string[], named = false): Promise<FoundHc | null> => {
     for (const candidate of candidates) {
       // absolute: a terminal attach runs it from another folder (server/core/terminal-process.ts),
@@ -95,6 +100,9 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
     ?? await pick(dirsOn(await (options.loginShellPath ?? (() => loginShellPath(env, platform)))() ?? "").flatMap(names));
 }
 
+/** the PATH a probe gets when no PATH folder passes the check */
+const SYSTEM_PATH = ["/usr/bin", "/bin"];
+
 /** the most links followed to reach one candidate, as the kernel allows (Linux's MAXSYMLINKS) */
 const MAX_LINKS = 40;
 
@@ -120,7 +128,7 @@ export function ownedByUser(path: string, harmless: (gid: number, path: string) 
     // macOS ACL never shows in the mode
     if (!group && process.platform !== "darwin") return false;
     let grants = acls.get(at);
-    if (grants === undefined) acls.set(at, grants = aclGrantsWrite(at));
+    if (grants === undefined) acls.set(at, grants = aclGrantsWrite(at, uid, harmless));
     return grants;
   };
   const parts = (path: string) => path.split("/").filter((part) => part !== "" && part !== ".");
@@ -188,20 +196,28 @@ function ownGroup(): number | null {
   }
 }
 
-/** the account sources whose every account /etc lists: anything else (sss, ldap, nis, winbind) may add members unseen */
-const LOCAL_SOURCES = new Set(["files", "compat", "systemd"]);
+/**
+ * The account sources whose every account /etc lists. Anything else may add members unseen: sss,
+ * ldap, nis, winbind, and compat, whose `+` lines pull in NIS accounts.
+ */
+const LOCAL_SOURCES = new Set(["files", "systemd"]);
 
 /**
  * `gid` when it is `user`'s private group, from /etc/group and /etc/passwd: named after them, with
- * no other member, and no other account's primary group; else null. Only when nsswitch.conf takes
- * accounts from local files alone: a group a directory service could add a member to is not taken
- * on trust, nor one whose passwd could not be read.
+ * no other member, and no other account's primary group; else null. Only when nsswitch.conf has a
+ * passwd and a group line and every account line takes local files alone: a group a directory
+ * service could add a member to (a missing line means the C library's default, which may) is not
+ * taken on trust, nor one whose passwd could not be read.
  */
 export function privateGroup(user: string, gid: number, groups: string, passwd: string, nsswitch: string): number | null {
+  const databases = new Set<string>();
   for (const line of nsswitch.split("\n")) {
-    const match = /^\s*(passwd|group)\s*:(.*)$/.exec(line);
-    if (match && match[2]!.split(/\s+/).some((source) => source !== "" && !source.startsWith("[") && !LOCAL_SOURCES.has(source))) return null;
+    const match = /^\s*(passwd|group|initgroups)\s*:(.*)$/.exec(line);
+    if (!match) continue;
+    databases.add(match[1]!);
+    if (match[2]!.split(/\s+/).some((source) => source !== "" && !source.startsWith("[") && !LOCAL_SOURCES.has(source))) return null;
   }
+  if (!databases.has("passwd") || !databases.has("group")) return null;
   if (passwd.trim() === "") return null;
   const lines = (text: string) => text.split("\n").map((line) => line.split(":")).filter((fields) => fields.length >= 4 && /^\d+$/.test(fields[2]!.trim()));
   const named = lines(groups).filter((fields) => Number(fields[2]) === gid);
@@ -214,29 +230,63 @@ export function privateGroup(user: string, gid: number, groups: string, passwd: 
 }
 
 /**
- * Whether an ACL lets anybody else write `path` (a file or folder, never a link), read from
- * `/bin/ls`: on Linux one marked `+` (only asked when the group bits show write, which an ACL
- * granting it always does), on macOS an `allow` entry with any write right for anybody but this
- * user. What cannot be read counts as granting.
+ * Whether an ACL lets anybody else write `path` (a file or folder, never a link). On Linux (only
+ * asked when the group bits, which then show the ACL's mask, allow write) from `getfacl`: a named
+ * user other than this one or root, or a named group or the owning group `harmless` does not name,
+ * holding write that the mask lets through. On macOS from `ls -lde` (macAclGrantsWrite). What
+ * cannot be read counts as granting.
  */
-function aclGrantsWrite(path: string): boolean {
+function aclGrantsWrite(path: string, uid: number, harmless: (gid: number, path: string) => boolean): boolean {
   const darwin = process.platform === "darwin";
-  try {
-    const run = Bun.spawnSync(["/bin/ls", darwin ? "-lde" : "-ld", "--", path], { env: { LC_ALL: "C" }, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-    if (run.exitCode !== 0) return true;
-    const listing = run.stdout.toString();
-    return darwin ? macAclGrantsWrite(listing, userInfo().username) : /^\S{10}\+/.test(listing);
-  } catch {
-    return true;
+  const read = (argv: string[]) => {
+    try {
+      const run = Bun.spawnSync(argv, { env: { LC_ALL: "C" }, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      return run.exitCode === 0 ? run.stdout.toString() : null;
+    } catch {
+      return null;
+    }
+  };
+  if (darwin) {
+    const listing = read(["/bin/ls", "-lde", "--", path]);
+    return listing === null || macAclGrantsWrite(listing, userInfo().username);
   }
+  const getfacl = Bun.which("getfacl", { PATH: SYSTEM_PATH.join(delimiter) });
+  const acl = getfacl === null ? null : read([getfacl, "-cpn", "--", path]);
+  if (acl === null) return true;
+  let owningGroup: number;
+  try { owningGroup = statSync(path).gid; } catch { return true; }
+  return linuxAclGrantsWrite(acl, uid, (gid) => harmless(gid, path), owningGroup);
 }
 
-/** a macOS `ls -lde` listing: whether an ACL entry allows anybody but `user` to write, add, delete or take over */
+/** a Linux `getfacl -cpn` listing: whether an entry the mask lets through gives anybody else write */
+export function linuxAclGrantsWrite(acl: string, uid: number, harmless: (gid: number) => boolean, owningGroup: number): boolean {
+  const entries = acl.split("\n").map((line) => line.replace(/#.*$/, "").trim()).filter((line) => line !== "").map((line) => line.split(":"));
+  if (entries.some((fields) => fields.length !== 3)) return true;
+  const mask = entries.find(([kind]) => kind === "mask");
+  if (mask !== undefined && !mask[2]!.includes("w")) return false;
+  return entries.some(([kind, who, perms]) => {
+    if (!perms!.includes("w")) return false;
+    if (kind === "user") return who !== "" && Number(who) !== uid && Number(who) !== 0;
+    if (kind === "group") return !harmless(who === "" ? owningGroup : Number(who));
+    return kind === "other";
+  });
+}
+
+/** what a macOS ACL entry may allow that lets its holder change what is there */
+const MAC_WRITE_RIGHTS = new Set(["write", "append", "add_file", "add_subdirectory", "delete", "delete_child", "writeattr", "writeextattr", "writesecurity", "chown"]);
+
+/**
+ * A macOS `ls -lde` listing: whether an ACL entry may let anybody but `user` write, add, delete or
+ * take over. A principal may hold spaces (`group:Domain Users`); an entry not read as
+ * `<principal> [inherited] allow|deny <rights>` that names a write right counts as allowing it.
+ */
 export function macAclGrantsWrite(listing: string, user: string): boolean {
   return listing.split("\n").some((line) => {
-    const entry = /^\s*\d+:\s+(\S+)\s+(?:inherited\s+)?allow\s+(.*)$/.exec(line);
-    return entry !== null && entry[1] !== `user:${user}`
-      && /\b(write|append|add_file|add_subdirectory|delete|delete_child|writeattr|writeextattr|writesecurity|chown)\b/.test(entry[2]!);
+    const body = /^\s*\d+:\s+(.*?)\s*$/.exec(line)?.[1];
+    if (body === undefined) return false;
+    const entry = /^(.+?)\s+(?:inherited\s+)?(allow|deny)\s+([A-Za-z_,]+)$/.exec(body);
+    if (entry === null) return body.split(/[\s,:]+/).some((word) => MAC_WRITE_RIGHTS.has(word));
+    return entry[2] === "allow" && entry[1] !== `user:${user}` && entry[3]!.split(",").some((right) => MAC_WRITE_RIGHTS.has(right));
   });
 }
 
