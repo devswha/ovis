@@ -1504,15 +1504,18 @@ export class MachineManager {
     let expectedSocket = inspection.expectedSocket;
     // a setup or a saved PC that asks for its own Ovis where SSH cannot reach one: the user must choose again, not a retry
     if (target.own_ovis && host.kind !== "posix") throw new MachineActionRequired("Choosing this PC's Ovis server over SSH requires Linux or macOS", "setup");
+    // the own Ovis an unasked search could offer: a server of this account's at another socket than the expected one
+    const candidates = inspection.descriptors.filter((d) => d?.managed_remote === false && typeof d.socket_path === "string" && d.socket_path !== expectedSocket);
     // what already serves the expected socket (a live bridge registered for it, or herdr answering there) is connected as
-    // before: a saved PC that reconnects to it is never stopped by a choice nobody asked for
+    // before: a saved PC that reconnects to it is never stopped by a choice nobody asked for. Asked only when there is a
+    // choice to offer, the live registration first: the socket's probe (a command on that PC) only when none is live
     const servedAlready = async () => {
       for (const d of inspection.descriptors) if (d.socket_path === expectedSocket && Number.isSafeInteger(d.pid) && d.pid > 0 && await host.alive(ssh, d.pid)) return true;
       return await host.chosenSocketStatus?.(ssh, inspection, expectedSocket) === "usable";
     };
     // The core adapter is not a TUI socket. Discover the account's own registered Ovis and prove
     // its loopback endpoint before offering it; an explicit selection is checked anew on each try.
-    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || !await servedAlready())) {
+    if (host.kind === "posix" && !target.herdr_socket && !target.start_new_herdr && (target.own_ovis || candidates.length > 0 && !await servedAlready())) {
       const found: FoundOvis[] = [];
       const sessions = new Map<string, FoundHerdrSession>();
       // answered: one of them proved itself through the tunnel; unlisted: one did not list the account's herdr sessions
