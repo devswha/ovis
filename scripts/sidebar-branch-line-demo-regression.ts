@@ -123,8 +123,9 @@ try {
           const one = await height(page, "w1K");
           for (const id of ["w1C", "w1J", "w1D"]) assert.equal(await height(page, id), one, `${id} keeps one line's height, its branch beside its name`);
           // the branch follows the name a gap's width after it, and the state sits at the row's very end in a cell its
-          // glyph's size; under a pointer the ⋯ comes over that cell, so nothing in the row moves when it shows, while a
-          // finger keeps the ⋯ in the row beside a state still in sight. The Agents list's one-line rows do the same.
+          // glyph's size; under a pointer the ⋯ shows just before that cell, over the words' faded end, so nothing in the
+          // row moves and the state stays in sight, while a finger keeps the ⋯ in the row beside the state. The Agents
+          // list's one-line rows do the same.
           const gap = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--space-2")));
           const cell = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--space-6")));
           const measure = (item: Locator, parts: { start: string; after?: string; state: string; menu: string }) => item.evaluate((node, parts) => {
@@ -137,6 +138,7 @@ try {
               stateShown: getComputedStyle(node.querySelector(parts.state)!).visibility !== "hidden",
               menuShown: getComputedStyle(menu).visibility !== "hidden" && menuRect.width > 0,
               menuOverState: menuRect.left >= state.left - 0.5 && menuRect.right <= state.right + 0.5,
+              menuBeforeState: Math.abs(node.querySelector(`${parts.menu} button`)!.getBoundingClientRect().right - state.left) <= 0.5,
             };
           }, parts);
           const header = row(page, "w1D").locator(":scope > .workspace-header");
@@ -161,7 +163,7 @@ try {
             await item.hover();
             const hovered = await measure(item, parts);
             assert.deepEqual([hovered.startLeft, hovered.startRight, hovered.afterLeft], [rest.startLeft, rest.startRight, rest.afterLeft], `${what}: the name and branch stay put under the pointer`);
-            assert.equal(hovered.menuShown && hovered.menuOverState && !hovered.stateShown, true, `${what}: the ⋯ comes over the state's cell`);
+            assert.equal(hovered.menuShown && hovered.menuBeforeState && !hovered.menuOverState && hovered.stateShown, true, `${what}: the ⋯ shows just before the state, which stays in sight`);
             await page.mouse.move(1270, 890);
           }
           // herdr's tree: the first worktree's branch runs on (a tee), the last one's stops halfway (an elbow)
@@ -179,7 +181,7 @@ try {
             await page.locator(".machine-workspaces").first().screenshot({ path: join(evidence, `branch-line-${phone ? "phone" : "desktop"}-${theme}.png`) });
           }
           assert.deepEqual(errors, []);
-          console.log(`PASS ${phone ? "phone" : "desktop"} ${theme}: every row is one line, a non-default branch dim right after its name, the state at its end with the ⋯ over it under a pointer`);
+          console.log(`PASS ${phone ? "phone" : "desktop"} ${theme}: every row is one line, a non-default branch dim right after its name, the state at its end with the ⋯ just before it under a pointer`);
         } finally { await context.close(); }
       }
       const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });

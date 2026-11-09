@@ -1151,23 +1151,23 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   width: auto;
 }
 
-/* under a pointer the ⋯ comes over the state's cell instead of taking room from the name, so nothing in the row moves
-   when it shows; a finger and the drawer keep it in the row, the state beside it */
+/* under a pointer the ⋯ shows just before the state's cell, over the end of the name and branch, which fade out under
+   it: nothing in the row moves and the state stays in sight. A finger and the drawer keep it in the row, the state beside it */
 @media (hover: hover) and (pointer: fine) and (min-width: 769px) {
   .machine-workspaces:not(.is-two-line) .workspace-header > .workspace-actions {
     position: absolute;
     inset-block: 0;
-    right: 0;
+    right: var(--space-6);
     width: var(--space-6);
-    border-radius: inherit;
-    background: inherit;
   }
 
   .machine-workspaces:not(.is-two-line) .workspace-header > .workspace-actions .sidebar-row-action { width: 100%; }
 
-  .machine-workspaces:not(.is-two-line) .workspace-header:is(:hover, :focus-within) .workspace-select > .sidebar-pane-meta,
-  .machine-workspaces:not(.is-two-line) .workspace-header:has(> .workspace-actions [aria-expanded="true"]) .workspace-select > .sidebar-pane-meta {
-    visibility: hidden;
+  /* the text ends where the state's cell starts: its last --space-6 is under the ⋯, the --space-4 before it fades */
+  .machine-workspaces:not(.is-two-line) .workspace-header:is(:hover, :focus-within) .workspace-copy,
+  .machine-workspaces:not(.is-two-line) .workspace-header:has(> .workspace-actions [aria-expanded="true"]) .workspace-copy {
+    -webkit-mask-image: linear-gradient(to left, transparent var(--space-6), var(--bg-panel) calc(var(--space-6) + var(--space-4)));
+    mask-image: linear-gradient(to left, transparent var(--space-6), var(--bg-panel) calc(var(--space-6) + var(--space-4)));
   }
 }
 
