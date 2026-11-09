@@ -46,7 +46,7 @@ describe("relayNoticeFromStatus", () => {
     }, false)).toEqual({ kind: "sign-in-required", enforceAt: null });
     expect(relayNoticeFromStatus({
       ...baseRelay,
-      pass: { state: "not_listed", relay: "missing", enforce_at: "2001-02-03T00:00:00.000Z", refused: false },
+      pass: { state: "not_listed", relay: "missing", enforce_at: "2001-02-03T00:00:00.000Z", refused: true },
     }, true)).toEqual({ kind: "not-listed", enforceAt: null });
     expect(relayNoticeFromStatus({
       ...baseRelay,
@@ -77,6 +77,20 @@ describe("relayNoticeFromStatus before the announced date", () => {
     const after = Date.parse("2030-03-01T00:00:00.000Z");
     expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, after)).toEqual({ kind: "pc-limit", enforceAt: null });
   });
+
+  it("shows no limit notice when only this browser's clock is past the date and the relay refuses nothing", () => {
+    const after = Date.parse("2030-03-01T00:00:00.000Z");
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "limit", relay: "ok", enforce_at: future, refused: false } }, true, after)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: false } }, true, after)).toBeNull();
+  });
+
+  it("treats a date that does not parse as not yet enforced", () => {
+    const after = Date.parse("2030-03-01T00:00:00.000Z");
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "limit", relay: null, enforce_at: "soon", refused: true } }, true, after)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "ok", relay: "ok", enforce_at: "soon", refused: false, new_sessions: false } }, true, after)).toBeNull();
+    expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "no_account", relay: "missing", enforce_at: "soon", refused: false } }, false, after))
+      .toEqual({ kind: "sign-in-grace", enforceAt: null });
+  });
 });
 
 describe("relayNoticeOf", () => {
@@ -86,6 +100,15 @@ describe("relayNoticeOf", () => {
     expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "device", role: "drive" }, relay })).toEqual({ kind: "pc-limit", enforceAt: null });
     expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "device", role: "watch" }, relay })).toBeNull();
     expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "portal", role: "drive" }, relay })).toBeNull();
+  });
+
+  it("shows nothing to a relay driver or a Portal visitor signed in with the token or a device", () => {
+    const portal = { token_configured: true, pairing_gate: "closed", bind_scope: "loopback", observed_ingress: "portal", public_exposure: "unknown" } as const;
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "local", role: "drive" }, relay })).toEqual({ kind: "pc-limit", enforceAt: null });
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "relay", role: "drive" }, relay })).toBeNull();
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "token", role: "drive" }, relay, security: portal })).toBeNull();
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "device", role: "drive" }, relay, security: portal })).toBeNull();
+    expect(relayNoticeOf({ auth: { required: false, authenticated: true, via: "device", role: "drive" }, relay, security: { ...portal, observed_ingress: "relay" } })).toBeNull();
   });
 });
 

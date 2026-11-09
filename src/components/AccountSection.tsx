@@ -15,7 +15,7 @@ import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/
 import { ApiError } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, pcAccountServiceOf, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
+import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
@@ -60,9 +60,12 @@ export function formatAccountLimits(t: Translate, limits: AccountLimits, listedP
   };
 }
 
-/** The account's limits as `session` reads them; null when the service reports none, or once another sign-in is stored. */
-export function accountLimitsOf(service: AccountService, session: AccountSession): Promise<AccountLimits | null> {
-  return service.forSignIn(session).limits().catch(() => null);
+/** The account's limits as `session` reads them; null when the service reports none, or once another sign-in (or none) is stored. */
+export async function accountLimitsOf(service: AccountService, session: AccountSession): Promise<AccountLimits | null> {
+  const limits = await service.forSignIn(session).limits().catch(() => null);
+  // another tab may have signed out or in while the answer was on its way: then it is no longer this section's to show
+  const current = await service.session();
+  return current !== undefined && sameSignIn(current, session) ? limits : null;
 }
 
 const isDeviceProvider = (provider: AccountProvider): provider is DeviceProvider => (DEVICE_PROVIDERS as readonly string[]).includes(provider);

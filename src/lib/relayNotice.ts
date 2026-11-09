@@ -50,16 +50,19 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
   if (pass === undefined) return null;
   if (pass.enforce_at === null && !pass.refused) return null;
   const remind = pass.state === "no_account" && ((pass.relay !== null && pass.relay !== "ok") || !signedIn);
-  if (pass.enforce_at !== null && now < Date.parse(pass.enforce_at)) {
-    return remind ? { kind: "sign-in-grace", enforceAt: pass.enforce_at } : null;
+  const at = pass.enforce_at === null ? null : Date.parse(pass.enforce_at);
+  // a date that does not parse names no time at all: nothing counts as enforced on it
+  if (at !== null && (Number.isNaN(at) || now < at)) {
+    return remind ? { kind: "sign-in-grace", enforceAt: Number.isNaN(at) ? null : pass.enforce_at } : null;
   }
   if (pass.new_sessions === false) {
     return { kind: "data-limit", enforceAt: null };
   }
-  if (pass.state === "limit") {
+  // past the date by this browser's clock, which may be off: a PC limit shows only once the relay refused this PC
+  if (pass.state === "limit" && pass.refused) {
     return { kind: "pc-limit", enforceAt: null };
   }
-  if (pass.state === "not_listed") {
+  if (pass.state === "not_listed" && pass.refused) {
     return { kind: "not-listed", enforceAt: null };
   }
   if (pass.state === "no_account") {
@@ -73,10 +76,13 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
   return null;
 }
 
-export function relayNoticeOf(health: Pick<HealthInfo, "auth" | "relay"> | null, signedIn = false): RelayNoticeInfo | null | undefined {
+export function relayNoticeOf(health: Pick<HealthInfo, "auth" | "relay" | "security"> | null, signedIn = false): RelayNoticeInfo | null | undefined {
   if (health === null || health.auth?.required === true) return undefined;
-  // the relay's pass is the PC owner's business: a watch-only or Portal visitor can act on none of it
-  if (health.auth?.role === "watch" || health.auth?.via === "portal") return null;
+  // the relay's pass is the PC owner's business: a relay driver, a Portal visitor (whatever signed it in:
+  // Portal itself, the token or a paired device) or a watch-only session can act on none of it
+  const via = health.auth?.via;
+  const ingress = health.security?.observed_ingress;
+  if (health.auth?.role === "watch" || via === "portal" || via === "relay" || ingress === "portal" || ingress === "relay") return null;
   return relayNoticeFromStatus(health.relay ?? null, signedIn);
 }
 

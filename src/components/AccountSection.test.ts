@@ -56,6 +56,22 @@ it("reads the limits for the sign-in the section shows, and none once another ac
   expect(await accountLimitsOf(service, shown)).toBeNull();
 });
 
+it("drops a limits answer that arrives after the sign-in it was asked for ended in another tab", async () => {
+  const session = (account: string): AccountSession => ({ service: "https://account.test", account, provider: "github", access_token: `at_${account}`, refresh_token: `rt_${account}`, expires_at: Date.now() + 3_600_000, sign_in_id: account });
+  for (const meanwhile of [session("acct_b"), undefined]) {
+    const store = memoryAccountStore();
+    const shown = session("acct_a");
+    await store.set("session", shown);
+    // another tab signs in as someone else, or signs out, while the request is on its way
+    const fetch = async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      await store.set("session", meanwhile);
+      return Response.json({ plan: "plan of acct_a", pcs_max: 3 });
+    };
+    const service = new AccountService({ store, fetch: fetch as typeof globalThis.fetch, lock: memoryLock() });
+    expect(await accountLimitsOf(service, shown)).toBeNull();
+  }
+});
+
 it("formats account limits with server-provided plan name, PCs used/max, and optional relay data", () => {
   const t = (key: string, vars?: Record<string, string | number>) => translate("en", key, vars);
   expect(formatRelayBytes(500)).toBe("500 B");
