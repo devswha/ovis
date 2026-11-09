@@ -1,4 +1,4 @@
-import { createContext, isValidElement, useContext, type ComponentProps, type ReactNode } from "react";
+import { createContext, isValidElement, useContext, useState, type ComponentProps, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Minus, Plus, RotateCcw, type LucideIcon } from "lucide-react";
 
 import { DEFAULT_SETTINGS, useSettings, type Settings } from "../lib/settings.ts";
@@ -197,12 +197,35 @@ export function ChipToggles({ label, chips }: { label: string; chips: readonly {
   );
 }
 
-/** A number moved one step at a time between its limits, shown as `text`. The glyph buttons carry their names as tooltips too (G-167). */
-export function Stepper({ label, value, text, min, max, decreaseLabel, increaseLabel, onChange }: { label: string; value: number; text: string; min: number; max: number; decreaseLabel: string; increaseLabel: string; onChange: (value: number) => void }) {
+/** The whole number `draft` holds when it lies within `min`..`max`; null for anything else, which is refused, never clamped (G-179). */
+export function typedStep(draft: string, min: number, max: number): number | null {
+  if (!/^\d+$/.test(draft.trim())) return null;
+  const value = Number(draft.trim());
+  return value >= min && value <= max ? value : null;
+}
+
+/**
+ * A number moved one step at a time between its limits, shown as `text`. The glyph buttons carry their names as tooltips too (G-167).
+ * `unit`: the number can be typed in its place too, followed by this unit; a number out of range is refused and the field goes back (G-179).
+ */
+export function Stepper({ label, value, text, min, max, decreaseLabel, increaseLabel, onChange, unit }: { label: string; value: number; text: string; min: number; max: number; decreaseLabel: string; increaseLabel: string; onChange: (value: number) => void; unit?: string }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? String(value);
+  const commit = () => {
+    const typed = draft === null ? null : typedStep(draft, min, max);
+    if (typed !== null && typed !== value) onChange(typed);
+    setDraft(null);
+  };
   return (
     <div className="settings-stepper" role="group" aria-label={label}>
       <button type="button" className="icon-button" aria-label={decreaseLabel} title={decreaseLabel} disabled={value <= min} onClick={() => onChange(value - 1)}><Minus aria-hidden="true" /></button>
-      <output aria-live="polite">{text}</output>
+      {unit === undefined ? <output aria-live="polite">{text}</output> : <span className="settings-stepper-field">
+        <input className="settings-stepper-value" type="text" inputMode="numeric" aria-label={label} title={`${min}–${max}${unit}`} value={shown} maxLength={String(max).length}
+          aria-invalid={draft !== null && typedStep(draft, min, max) === null ? true : undefined} autoComplete="off" spellCheck={false}
+          onChange={(event) => setDraft(event.target.value)} onBlur={commit}
+          onKeyDown={(event) => { if (event.key === "Enter") commit(); else if (event.key === "Escape" && draft !== null) { event.stopPropagation(); setDraft(null); } }} />
+        <span aria-hidden="true">{unit}</span>
+      </span>}
       <button type="button" className="icon-button" aria-label={increaseLabel} title={increaseLabel} disabled={value >= max} onClick={() => onChange(value + 1)}><Plus aria-hidden="true" /></button>
     </div>
   );

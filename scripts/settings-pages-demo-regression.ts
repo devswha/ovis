@@ -564,7 +564,18 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
       // a setting found is changed where it is shown
       await results.getByRole("button", { name: "Increase terminal font size", exact: true }).click();
       await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 14);
-      assert.equal(await results.getByRole("group", { name: "Terminal font size", exact: true }).locator("output").textContent(), "14px");
+      const typedSize = results.getByRole("group", { name: "Terminal font size", exact: true }).getByRole("textbox", { name: "Terminal font size", exact: true });
+      assert.equal(await typedSize.inputValue(), "14");
+      // the number is typed in its place too: one out of range is refused and the field goes back (G-179)
+      await typedSize.fill("30");
+      await typedSize.press("Enter");
+      assert.equal(await typedSize.inputValue(), "14", `${width}px: a size out of range is refused`);
+      await typedSize.fill("16");
+      await typedSize.press("Enter");
+      await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 16);
+      await typedSize.fill("14");
+      await typedSize.press("Enter");
+      await page.waitForFunction(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").terminalFontSize === 14);
 
       // a group named by the words shows each of its settings, and one with a form but no setting row shows the form
       await search.fill("quick replies");
