@@ -68,10 +68,11 @@
 
 /* a finger keeps the touch target through an invisible expander, as the segmented options do (styles.css): the
    button stays the row's size, and the two-line row is taller than the target */
-@media (pointer: coarse) {
+@media (pointer: coarse), (any-pointer: coarse) {
   .my-device-check .btn {
     position: relative;
     height: calc(var(--control-h) - var(--space-2));
+    min-width: var(--touch-target);
   }
 
   /* measured from inside the button's border, so the border's width is added back on each side */
