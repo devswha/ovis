@@ -351,21 +351,23 @@ export class AccountService {
   /**
    * Ends the sign-in on the service, then here. An expired access token is refreshed first, so the
    * service really ends the sign-in's tokens; the session goes here whatever the service answers, and
-   * a revocation the service did not confirm throws, so the caller can say so.
+   * a revocation the service did not confirm throws, so the caller can say so. Only the session it
+   * ended goes: a new sign-in made while the service answers (the phone app's page stays open) stays.
    */
   async signOut(): Promise<void> {
     await this.lock(async () => {
       const session = await this.session();
       if (session === undefined) return;
+      let live = session;
       try {
-        const live = session.expires_at - REFRESH_EARLY_MS > this.now() ? session : await this.refreshed(session);
+        live = session.expires_at - REFRESH_EARLY_MS > this.now() ? session : await this.refreshed(session);
         const response = await this.fetch(new URL("/v1/signout", live.service), { method: "POST", headers: { authorization: `Bearer ${live.access_token}` } });
         if (!response.ok) throw await failure(response);
       } catch (error) {
         // a refresh the service refused: the sign-in had already ended there
         if (!(error instanceof SignedOutError)) throw error;
       } finally {
-        await this.options.store.set("session", undefined);
+        await this.options.store.update("session", (current) => current?.refresh_token === session.refresh_token || current?.refresh_token === live.refresh_token ? undefined : current);
       }
     });
   }
