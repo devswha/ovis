@@ -105,6 +105,7 @@ const BASE: Record<string, string> = {
   "Input line": "输入框",
   // ---- settings ----
   "Settings": "设置",
+  "PCs": "PC",
   "Chat": "聊天",
   "Agent default": "代理默认",
   "Devices and PCs": "设备和电脑",
@@ -498,7 +499,6 @@ const BASE: Record<string, string> = {
   "Needs approval": "需要批准",
   "Offline": "离线",
   "Update Ovis on it": "需要更新 Ovis",
-  "PCs": "PC",
   "Open": "打开",
   "Relay": "中继",
   "Add": "添加",

@@ -103,6 +103,7 @@ const BASE: Record<string, string> = {
   "Input line": "入力欄",
   // ---- settings ----
   "Settings": "設定",
+  "PCs": "PC",
   "Chat": "チャット",
   "Agent default": "エージェントの既定",
   "Devices and PCs": "デバイスと PC",
@@ -496,7 +497,6 @@ const BASE: Record<string, string> = {
   "Needs approval": "承認が必要",
   "Offline": "オフライン",
   "Update Ovis on it": "Ovis の更新が必要",
-  "PCs": "PC",
   "Open": "開く",
   "Relay": "リレー",
   "Add": "追加",

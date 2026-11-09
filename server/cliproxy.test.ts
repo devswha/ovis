@@ -124,11 +124,12 @@ describe("CLIProxyAPI v8", () => {
     const hidden = new Set(["claude:cliproxy:claude-a.json"]);
     const first = await service.report(false, hidden);
     const reads = () => fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index);
-    expect(reads()).toEqual(["a", "b"]);
+    // a hidden account is listed but never read, not even by a fresh server (#3423)
+    expect(reads()).toEqual(["b"]);
     // When
     const shown = await service.report();
     // Then
-    expect(reads()).toEqual(["a", "b", "a"]);
+    expect(reads()).toEqual(["b", "a"]);
     expect(shown[1]).toBe(first[1]);
   });
 
@@ -153,8 +154,8 @@ describe("CLIProxyAPI v8", () => {
     fake.setDown(false);
     // When
     await service.report();
-    // Then: a fresh server reads the hidden account once; the retry reads only the account shown again
-    expect(reads()).toEqual(["a", "b", "a"]);
+    // Then: a fresh server does not read the hidden account; the retry reads only the account shown again
+    expect(reads()).toEqual(["b", "a"]);
   });
 
   it("does not read an account shown again a second time at the scheduled read that follows", async () => {
@@ -163,6 +164,8 @@ describe("CLIProxyAPI v8", () => {
     const start = Date.now();
     const reads = () => fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index);
     try {
+      // the first read schedules the next one from its own clock reading: pin it to `start`
+      setSystemTime(start);
       await service.report(false, new Set(["claude:cliproxy:claude-a.json"]));
       setSystemTime(start + FRESH_MS - 1000);
       await service.report();
@@ -170,8 +173,60 @@ describe("CLIProxyAPI v8", () => {
       setSystemTime(start + FRESH_MS);
       await service.report();
       // Then
-      expect(reads()).toEqual(["a", "b", "a", "b"]);
+      expect(reads()).toEqual(["b", "a", "b"]);
     } finally { setSystemTime(); }
+  });
+
+  it.each([1, 50])("never asks the Hub for a hidden account that signs in again after %i searches without it", async (searches) => {
+    // Given: Alice read, then hidden
+    await configure();
+    await service.report();
+    const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    service.skipAccounts(() => hidden);
+    const alice = fake.files.splice(0, 1);
+    // When: the Hub lists only Bob until Alice's row is gone, then Alice signs in to it again
+    for (let round = 0; round < searches; round++) {
+      service.invalidate();
+      await service.report(false, hidden);
+    }
+    fake.files.unshift(...alice);
+    service.invalidate();
+    const back = await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index))
+      .toEqual(["a", "b", ...Array.from({ length: searches + 1 }, () => "b")]);
+    expect(back.map((entry) => [entry.key, entry.checked_at])).toEqual([["claude:cliproxy:claude-a.json", null], ["codex:cliproxy:codex-b.json", expect.any(String)]]);
+  });
+
+  it("never reads a hidden filename's account on a fresh server, whoever signs in under it first", async () => {
+    // Given: a server started with Alice's file hidden; Bob's account is the first the Hub lists under that name
+    await configure();
+    const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    service.skipAccounts(() => hidden);
+    fake.files[0]!.email = "bob@example.test";
+    await service.report(false, hidden);
+    // When: Alice's sign-in is back under her file name
+    fake.files[0]!.email = "claude-a@example.test";
+    service.invalidate();
+    await service.report(false, hidden);
+    // Then: neither is read, as nothing says which of them was hidden
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["b", "b"]);
+  });
+
+  it("never reads a hidden account that moves to another file name on the Hub", async () => {
+    // Given: Alice read, then hidden
+    await configure();
+    await service.report();
+    const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    service.skipAccounts(() => hidden);
+    await service.report(false, hidden);
+    // When: her credential is now another file, at another index
+    Object.assign(fake.files[0]!, { name: "claude-moved.json", auth_index: "m" });
+    service.invalidate();
+    const moved = await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b", "b"]);
+    expect(moved.find((entry) => entry.key === "claude:cliproxy:claude-moved.json")?.checked_at).toBeNull();
   });
 
   it("keeps hidden accounts unread across an invalidate, as after a Hub sign-in or a saved configuration", async () => {
@@ -186,6 +241,68 @@ describe("CLIProxyAPI v8", () => {
     // Then
     expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").length).toBe(2);
     expect(after).toEqual(first);
+  });
+
+  it("keeps an account hidden since the last report unread across a Hub sign-in", async () => {
+    // Given
+    await configure();
+    let hidden = new Set<string>();
+    service.skipAccounts(() => hidden);
+    await service.report(false, hidden);
+    hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    // When
+    service.invalidate();
+    await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b", "b"]);
+  });
+
+  it("keeps a hidden account's row unread when the Hub cannot be read right after a sign-in", async () => {
+    // Given
+    await configure();
+    const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    service.skipAccounts(() => hidden);
+    const first = await service.report(false, hidden);
+    service.invalidate();
+    fake.setDown(true);
+    await service.report(false, hidden);
+    fake.setDown(false);
+    // When
+    const after = await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["b", "b"]);
+    expect(after[0]).toEqual(first[0]);
+  });
+
+  it("keeps the row of an account hidden after the report's snapshot when the Hub cannot be read", async () => {
+    // Given
+    await configure();
+    await service.report();
+    let hidden = new Set<string>();
+    service.skipAccounts(() => hidden);
+    hidden = new Set(["claude:cliproxy:claude-a.json"]);
+    service.invalidate();
+    fake.setDown(true);
+    await service.report(false, new Set());
+    fake.setDown(false);
+    // When
+    await service.report(false, hidden);
+    // Then
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b", "b"]);
+  });
+
+  it("never asks the Hub for a hidden file that names no account", async () => {
+    // Given
+    Reflect.deleteProperty(fake.files[0]!, "email");
+    await configure();
+    const hidden = new Set((await service.report()).map((entry) => entry.key));
+    service.skipAccounts(() => hidden);
+    await service.report(false, hidden);
+    // When
+    service.invalidate();
+    await service.report(false, hidden);
+    // Then: with no account to tell it by, the hidden key alone keeps it unread (#3423)
+    expect(fake.calls.filter((entry) => entry.path === "/requests/api-call").map((entry) => (entry.body as { auth_index: string }).auth_index)).toEqual(["a", "b"]);
   });
 
   it("drops hidden rows when the Hub URL changes", async () => {

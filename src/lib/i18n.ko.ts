@@ -101,6 +101,7 @@ const BASE: Record<string, string> = {
   "Input line": "입력창",
   // ---- settings ----
   "Settings": "설정",
+  "PCs": "PC",
   "Chat": "채팅",
   "Agent default": "에이전트 기본값",
   "Devices and PCs": "기기와 PC",
@@ -494,7 +495,6 @@ const BASE: Record<string, string> = {
   "Needs approval": "승인 필요",
   "Offline": "오프라인",
   "Update Ovis on it": "Ovis 업데이트 필요",
-  "PCs": "PC",
   "Open": "열기",
   "Relay": "릴레이",
   "Add": "추가",
