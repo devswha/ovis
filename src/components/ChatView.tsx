@@ -54,6 +54,7 @@ import { usePageVisible } from "../lib/visibility.ts";
 import { dismissKeyboardOn } from "../lib/keyboard.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
+import { foldCode } from "../../shared/markdown.ts";
 import { FileNameLookupContext, useFileNameLookup } from "../lib/fileNameLookup.ts";
 import { toolPathLabel, toolPathRoot } from "../lib/workspacePath.ts";
 import { linkFilePaths } from "./FilePathLink.tsx";
@@ -653,14 +654,41 @@ function LineImages({ paneId, images }: { paneId: string; images: readonly WorkI
 }
 
 /**
+ * A call's output in its opened row. A long one folds to its head with a "Show all" row, as a code
+ * block does (Markdown.tsx), so the chat stays the only scroller.
+ */
+function ToolOutputText({ output, whole }: { output: string; whole: boolean }) {
+  const t = useT();
+  // the files an output names open from it ("saved /tmp/shot/t0.png")
+  const openFile = useContext(OpenFileContext);
+  const fold = useMemo(() => foldCode(output), [output]);
+  const [expanded, setExpanded] = useState(false);
+  const box = useRef<HTMLPreElement>(null);
+  const folding = useRef(false);
+  // "Show less" sits at the bottom of a long output: after folding, bring its top back into view
+  useLayoutEffect(() => {
+    if (!folding.current) return;
+    folding.current = false;
+    const node = box.current;
+    const view = node?.closest(".chat-view");
+    if (node && view && node.getBoundingClientRect().top < view.getBoundingClientRect().top) node.scrollIntoView({ block: "start" });
+  }, [expanded]);
+  return <>
+    <pre ref={box} className={`chat-tool-io chat-tool-result${whole ? " is-whole" : ""}`}>{linkFilePaths(fold !== null && !expanded ? fold.head : output, openFile)}</pre>
+    {fold !== null && <button type="button" className="markdown-code-more chat-tool-result-more" aria-expanded={expanded}
+      onClick={() => { folding.current = expanded; setExpanded(!expanded); }}>
+      {expanded ? t("Show less") : t("Show all {n} lines", { n: fold.lines })}
+    </button>}
+  </>;
+}
+
+/**
  * One row of a work block: `▸ Ran bun test`, expanding to the call's input and output. A tool the
  * verb table knows reads as verb + object, and its id moves to the title and the opened detail;
  * any other keeps its id in front, as the agent names it.
  */
 function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: ToolPartType; stateKey: string; state?: TodoAttempt["state"] }) {
   const t = useT();
-  // the files an output names open from it ("saved /tmp/shot/t0.png")
-  const openFile = useContext(OpenFileContext);
   const [chosen, setOpen] = useChatRowToggle(stateKey, false);
   const open = chosen === true;
   const focus = useRowFocus<HTMLButtonElement>(stateKey);
@@ -691,7 +719,7 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
       {/* opened, the row shows its pictures larger in its detail */}
       {!open && <LineImages paneId={paneId} images={images} />}
     </div>
-    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4><pre className={`chat-tool-io${whole.text !== null ? " is-whole" : ""}`}>{linkFilePaths(output, openFile)}</pre>
+    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4><ToolOutputText output={output} whole={whole.text !== null} />
       {part.output_ref !== undefined && whole.text === null && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
         {t(whole.state === "loading" ? "Loading the whole output…" : whole.state === "failed" ? "Couldn't load the whole output — retry" : "Show the whole output ({size} characters)", { size: formatTokens(part.output_size ?? 0) })}
       </button>}</section>}</div>}
