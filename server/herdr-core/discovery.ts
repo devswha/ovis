@@ -34,6 +34,8 @@ export interface FindHcOptions {
   usualDirs?: readonly string[];
   /** how long one --version may take; PROBE_TIMEOUT_MS unset */
   timeoutMs?: number;
+  /** getfacl's path, or null when it is not installed; the default looks in /usr/bin and /bin */
+  getfacl?: string | null;
 }
 
 /** a slow or interactive shell profile, or a hanging binary, must not hold the server up */
@@ -63,12 +65,16 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
   const names = (dir: string) => [join(dir, `herdr-core${exe}`), join(dir, `hc${exe}`)];
   const dirsOn = (path: string | undefined) => (path ?? "").split(platform === "win32" ? ";" : delimiter).filter((dir) => dir !== "");
   const seen = new Set<string>();
-  const harmless = process.platform === "win32" ? null : harmlessGroups();
+  const harmless = platform === "win32" ? null : harmlessGroups(platform);
+  // one look reads each ACL once
+  const acl = aclReader({ platform, ...(options.getfacl !== undefined ? { getfacl: options.getfacl } : {}) });
   // what the candidate runs by name (`#!/usr/bin/env python3`, a wrapper's commands) comes only from
   // PATH folders that pass the same check, resolved (a wrapper may change folder first); none passing
-  // gives the system's own, never an empty PATH, which a shell searches the working folder for
+  // gives the system's own, never an empty PATH, which a shell searches the working folder for. This
+  // covers the --version probe only: `hc connect` keeps the user's PATH on purpose, since a core it
+  // starts hands that environment to every pane (connection.ts)
   let probeEnv: Env | undefined;
-  const checkedDirs = (dirs: string[]) => dirs.map((dir) => resolve(dir)).filter((dir) => ownedByUser(dir, harmless!, true));
+  const checkedDirs = (dirs: string[]) => dirs.map((dir) => resolve(dir)).filter((dir) => ownedByUser(dir, harmless!, true, acl));
   const probing = () => probeEnv ??= harmless === null ? env : {
     ...env,
     PATH: [...new Set(checkedDirs(dirsOn(env["PATH"])))].join(delimiter) || checkedDirs(SYSTEM_PATH).join(delimiter) || "/nonexistent",
@@ -81,7 +87,7 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
       if (seen.has(bin)) continue;
       seen.add(bin);
       if (!isFile(bin)) continue;
-      if (!named && harmless !== null && !ownedByUser(bin, harmless)) continue;
+      if (!named && harmless !== null && !ownedByUser(bin, harmless, false, acl)) continue;
       const version = await hcVersion(bin, probing(), options.timeoutMs ?? PROBE_TIMEOUT_MS);
       if (version !== null) return { bin, version };
     }
@@ -112,24 +118,21 @@ const MAX_LINKS = 40;
  * the check and the run that follows see the same file. The file and the folder holding it are
  * writable by nobody else; a folder on the way may be when it is sticky (/tmp), where nobody can
  * rename or replace an entry they do not own. Group write counts as nobody else's only for a
- * group `harmless` names, and no ACL may grant write either (aclGrantsWrite). With `asFolder`,
- * the path is a folder held to the same rule as a file's.
+ * group `harmless` names, and no ACL may grant write either (`acl`, aclReader). With
+ * `asFolder`, the path is a folder held to the same rule as a file's.
  */
-export function ownedByUser(path: string, harmless: (gid: number, path: string) => boolean, asFolder = false): boolean {
+export function ownedByUser(path: string, harmless: (gid: number, path: string) => boolean, asFolder = false, acl: AclReader = aclReader()): boolean {
   const uid = process.getuid?.();
   if (uid === undefined) return false;
   const owned = (stats: Stats) => stats.uid === uid || stats.uid === 0;
-  const acls = new Map<string, boolean>();
   const writable = (stats: Stats, at: string) => {
     if ((stats.mode & 0o002) !== 0) return true;
     const group = (stats.mode & 0o020) !== 0;
     if (group && !harmless(stats.gid, at)) return true;
     // on Linux a named ACL entry can write only through the group bits (they show its mask); a
     // macOS ACL never shows in the mode
-    if (!group && process.platform !== "darwin") return false;
-    let grants = acls.get(at);
-    if (grants === undefined) acls.set(at, grants = aclGrantsWrite(at, uid, harmless));
-    return grants;
+    if (!group && !acl.darwin) return false;
+    return acl.grantsWrite(at, uid, harmless);
   };
   const parts = (path: string) => path.split("/").filter((part) => part !== "" && part !== ".");
   try {
@@ -229,33 +232,59 @@ export function privateGroup(user: string, gid: number, groups: string, passwd: 
   return others ? null : gid;
 }
 
+/** how long reading one ACL may take: one that does not answer counts as granting */
+const ACL_READ_TIMEOUT_MS = 2_000;
+
+export interface AclReader {
+  darwin: boolean;
+  /** whether an ACL lets anybody else write `path` (a file or folder, never a link) */
+  grantsWrite(path: string, uid: number, harmless: (gid: number, path: string) => boolean): boolean;
+}
+
 /**
- * Whether an ACL lets anybody else write `path` (a file or folder, never a link). On Linux (only
- * asked when the group bits, which then show the ACL's mask, allow write) from `getfacl`: a named
- * user other than this one or root, or a named group or the owning group `harmless` does not name,
- * holding write that the mask lets through. On macOS from `ls -lde` (macAclGrantsWrite). What
- * cannot be read counts as granting.
+ * Reads ACLs, each path once. On Linux (only asked when the group bits allow write) from
+ * `getfacl`: a named user other than this one or root, or a named group or the owning group
+ * `harmless` does not name, holding write that the mask lets through (linuxAclGrantsWrite). Without
+ * getfacl, `ls -ld` says whether the path has an ACL at all: with none the group bits are the
+ * owning group's own, already checked; one that cannot be read counts as granting. On macOS from
+ * `ls -lde` (macAclGrantsWrite). Whatever cannot be read, or does not answer in time, grants.
  */
-function aclGrantsWrite(path: string, uid: number, harmless: (gid: number, path: string) => boolean): boolean {
-  const darwin = process.platform === "darwin";
+export function aclReader(options: { platform?: NodeJS.Platform; getfacl?: string | null } = {}): AclReader {
+  const darwin = (options.platform ?? process.platform) === "darwin";
+  const cache = new Map<string, boolean>();
+  let getfacl = options.getfacl;
   const read = (argv: string[]) => {
     try {
-      const run = Bun.spawnSync(argv, { env: { LC_ALL: "C" }, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      const run = Bun.spawnSync(argv, { env: { LC_ALL: "C" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: ACL_READ_TIMEOUT_MS });
       return run.exitCode === 0 ? run.stdout.toString() : null;
     } catch {
       return null;
     }
   };
-  if (darwin) {
-    const listing = read(["/bin/ls", "-lde", "--", path]);
-    return listing === null || macAclGrantsWrite(listing, userInfo().username);
-  }
-  const getfacl = Bun.which("getfacl", { PATH: SYSTEM_PATH.join(delimiter) });
-  const acl = getfacl === null ? null : read([getfacl, "-cpn", "--", path]);
-  if (acl === null) return true;
-  let owningGroup: number;
-  try { owningGroup = statSync(path).gid; } catch { return true; }
-  return linuxAclGrantsWrite(acl, uid, (gid) => harmless(gid, path), owningGroup);
+  const grants = (path: string, uid: number, harmless: (gid: number, path: string) => boolean): boolean => {
+    if (darwin) {
+      const listing = read(["/bin/ls", "-lde", "--", path]);
+      return listing === null || macAclGrantsWrite(listing, userInfo().username);
+    }
+    if (getfacl === undefined) getfacl = Bun.which("getfacl", { PATH: SYSTEM_PATH.join(delimiter) });
+    if (getfacl === null) {
+      const listing = read(["/bin/ls", "-ld", "--", path]);
+      return listing === null || /^\S{10}\+/.test(listing);
+    }
+    const acl = read([getfacl, "-cpn", "--", path]);
+    if (acl === null) return true;
+    let owningGroup: number;
+    try { owningGroup = statSync(path).gid; } catch { return true; }
+    return linuxAclGrantsWrite(acl, uid, (gid) => harmless(gid, path), owningGroup);
+  };
+  return {
+    darwin,
+    grantsWrite(path, uid, harmless) {
+      let answer = cache.get(path);
+      if (answer === undefined) cache.set(path, answer = grants(path, uid, harmless));
+      return answer;
+    },
+  };
 }
 
 /** a Linux `getfacl -cpn` listing: whether an entry the mask lets through gives anybody else write */

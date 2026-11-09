@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isAbsolute, relative } from "node:path";
-import { coreSocket, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup } from "./discovery.ts";
+import { aclReader, coreSocket, discoverHc, findHc, harmlessGroups, macAclGrantsWrite, ownedByUser, plainSession, privateGroup } from "./discovery.ts";
 
 const unix = process.platform !== "win32";
 let cleanup = () => {};
@@ -176,6 +176,34 @@ it.skipIf(process.platform !== "linux" || setfacl === null)("refuses a group-wri
   // a named group the check does not trust
   expect(Bun.spawnSync([setfacl!, "-x", "u:nobody", "-m", "g:nogroup:rwx", join(root, "bin")]).exitCode).toBe(0);
   expect(ownedByUser(bin, (gid) => gid === process.getgid!())).toBe(false);
+});
+
+it.skipIf(process.platform !== "linux" || setfacl === null)("without getfacl, trusts a group-writable private folder that has no ACL, and refuses one that has", async () => {
+  const { root, log } = scratch();
+  // umask 002 on Debian and Ubuntu: the installer's ~/.local/bin is 775
+  const bin = fake(join(root, "bin"), "hc", "hc 0.1.17", log);
+  chmodSync(join(root, "bin"), 0o775);
+  const ownGroup = (gid: number) => gid === process.getgid!();
+  const noGetfacl = () => aclReader({ platform: "linux", getfacl: null });
+  expect(ownedByUser(bin, ownGroup, false, noGetfacl())).toBe(true);
+  // an ACL there, even one that only reads, cannot be read without getfacl
+  expect(Bun.spawnSync([setfacl!, "-m", "u:nobody:r-x", join(root, "bin")]).exitCode).toBe(0);
+  expect(ownedByUser(bin, ownGroup, false, noGetfacl())).toBe(false);
+  // gone again: trusted again
+  expect(Bun.spawnSync([setfacl!, "-b", join(root, "bin")]).exitCode).toBe(0);
+  expect(ownedByUser(bin, ownGroup, false, noGetfacl())).toBe(true);
+});
+
+it.skipIf(process.platform !== "linux")("checks with the platform it is given: none on Windows", async () => {
+  const { root } = scratch();
+  const marker = join(root, "ran");
+  planted(join(root, "open"), 0o755, marker);
+  writeFileSync(join(root, "open", "hc.exe"), readFileSync(join(root, "open", "hc")), { mode: 0o755 });
+  chmodSync(join(root, "open"), 0o777);
+  try {
+    // a Windows look reads no modes, so this PC's 0777 folder is not refused for it
+    expect((await findHc({ env: { PATH: join(root, "open") }, home: root, platform: "win32", loginShellPath: async () => null, usualDirs: [] }))?.version).toBe("0.1.99");
+  } finally { chmodSync(join(root, "open"), 0o755); }
 });
 
 it.skipIf(!unix)("gives the probe only absolute, checked PATH folders, never an empty PATH that would search the server's folder", async () => {
