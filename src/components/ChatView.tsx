@@ -1,5 +1,5 @@
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
   ArrowDown, BookOpen, Check, ChevronDown, ChevronRight, Circle, CircleAlert, CircleCheck, CircleDot, CircleQuestionMark, CircleSlash, CircleX, Copy, Hourglass, Layers, SquareTerminal, Target,
   type LucideProps,
@@ -54,7 +54,7 @@ import { usePageVisible } from "../lib/visibility.ts";
 import { dismissKeyboardOn } from "../lib/keyboard.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
-import { foldCode } from "../../shared/markdown.ts";
+import { foldToolOutput } from "../../shared/markdown.ts";
 import { FileNameLookupContext, useFileNameLookup } from "../lib/fileNameLookup.ts";
 import { toolPathLabel, toolPathRoot } from "../lib/workspacePath.ts";
 import { linkFilePaths } from "./FilePathLink.tsx";
@@ -654,25 +654,6 @@ function LineImages({ paneId, images }: { paneId: string; images: readonly WorkI
 }
 
 /**
- * Past this many characters an output folds even in few lines: one long line wraps into hundreds on
- * a phone. About 20 wrapped lines on a phone, as the line fold shows.
- */
-const FOLD_OUTPUT_CHARS = 1000;
-
-/**
- * The folded head of a long output: a code block's line fold, its head cut to FOLD_OUTPUT_CHARS;
- * `lines` is null when only the length folds it. Null when it shows whole.
- */
-function foldToolOutput(output: string): { head: string; lines: number | null } | null {
-  const byLines = foldCode(output);
-  const head = byLines?.head ?? output;
-  if (head.length <= FOLD_OUTPUT_CHARS) return byLines;
-  // at a line's end when one is near, else mid-line
-  const end = head.lastIndexOf("\n", FOLD_OUTPUT_CHARS);
-  return { head: head.slice(0, end > FOLD_OUTPUT_CHARS / 2 ? end : FOLD_OUTPUT_CHARS), lines: byLines?.lines ?? null };
-}
-
-/**
  * A call's output in its opened row. A long one folds to its head with a "Show all" row, as a code
  * block does (Markdown.tsx), so the chat stays the only scroller.
  */
@@ -684,6 +665,22 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
   // kept by the chat's row memory, under a key of its own: a row scrolled away and back keeps it
   const [chosen, setExpanded] = useChatRowToggle(stateKey, false);
   const expanded = chosen === true;
+  const folded = fold !== null && !expanded;
+  // where the browser can find hidden text (hidden=until-found), a folded output's tail stays in the
+  // page, drawn as nothing: its find reaches it and unfolds the output; elsewhere only the head is drawn
+  // (rendered without a page, as to static markup, nothing is found)
+  const findable = folded && typeof HTMLElement !== "undefined" && "onbeforematch" in HTMLElement.prototype;
+  const tail = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    const node = tail.current;
+    if (node === null) return;
+    // React writes `hidden` only as true or false
+    node.setAttribute("hidden", "until-found");
+    // unfolded before the browser scrolls to the match, so it lands where the unfolded text puts it
+    const found = () => flushSync(() => setExpanded(true));
+    node.addEventListener("beforematch", found);
+    return () => node.removeEventListener("beforematch", found);
+  }, [folded, setExpanded]);
   const box = useRef<HTMLPreElement>(null);
   const more = useRef<HTMLButtonElement>(null);
   const folding = useRef(false);
@@ -692,10 +689,13 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
   useLayoutEffect(() => {
     const node = box.current;
     const view = node?.closest(".chat-view");
-    // "Show less" sits at the bottom of a long output: after folding, bring its top back into view
+    // "Show less" sits at the bottom of a long output: after folding, bring its top back into view.
+    // Not for a reader at the end: the list's next measure puts the view at the new end, where they
+    // follow on (scrolled up first, they would be reading there with that end in view)
     if (folding.current) {
       folding.current = false;
-      if (node && view && node.getBoundingClientRect().top < view.getBoundingClientRect().top) node.scrollIntoView({ block: "start" });
+      const atEnd = view instanceof HTMLElement && view.scrollHeight - view.clientHeight - view.scrollTop <= 1;
+      if (node && view && !atEnd && node.getBoundingClientRect().top < view.getBoundingClientRect().top) node.scrollIntoView({ block: "start" });
     }
     // the revealed text pushes the button below the view: the focus goes to the output it opened,
     // so the next Tab reads on into it rather than past it; the button stays the next stop after it
@@ -707,7 +707,7 @@ function ToolOutputText({ stateKey, output, whole }: { stateKey: string; output:
   }, [expanded]);
   return <>
     {/* the head of a folded output links its paths as the whole text finds them: a path the fold cuts stays text */}
-    <pre ref={box} tabIndex={-1} className={`chat-tool-io chat-tool-result${whole ? " is-whole" : ""}`}>{linkFilePaths(output, openFile, fold !== null && !expanded ? fold.head.length : output.length)}</pre>
+    <pre ref={box} tabIndex={-1} className={`chat-tool-io chat-tool-result${whole ? " is-whole" : ""}`}>{linkFilePaths(output, openFile, folded ? fold.head.length : output.length)}{folded && findable && <span ref={tail} className="chat-tool-result-tail">{output.slice(fold.head.length)}</span>}</pre>
     {fold !== null && <button ref={more} type="button" className="markdown-code-more chat-tool-result-more" aria-expanded={expanded}
       onClick={(event) => { folding.current = expanded; revealing.current = !expanded && event.detail === 0; setExpanded(!expanded); }}>
       {expanded ? t("Show less") : fold.lines !== null ? t("Show all {n} lines", { n: fold.lines }) : t("Show all {size} characters", { size: formatTokens(output.length) })}
@@ -752,7 +752,8 @@ function WorkRow({ paneId, part, stateKey, state }: { paneId: string; part: Tool
       {/* opened, the row shows its pictures larger in its detail */}
       {!open && <LineImages paneId={paneId} images={images} />}
     </div>
-    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4><ToolOutputText stateKey={`${stateKey}:output`} output={output} whole={whole.text !== null} />
+    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}{attempt ? <RawToolInput part={part} /> : <ToolInputView part={part} />}<ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4>{/* each whole output folds on its own, whatever the preview or an earlier one was: another element, another key */}
+      <ToolOutputText key={whole.text !== null ? `whole:${part.output_ref ?? ""}` : "preview"} stateKey={`${stateKey}:${whole.text !== null ? `whole:${part.output_ref ?? ""}` : "output"}`} output={output} whole={whole.text !== null} />
       {part.output_ref !== undefined && whole.text === null && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
         {t(whole.state === "loading" ? "Loading the whole output…" : whole.state === "failed" ? "Couldn't load the whole output — retry" : "Show the whole output ({size} characters)", { size: formatTokens(part.output_size ?? 0) })}
       </button>}</section>}</div>}

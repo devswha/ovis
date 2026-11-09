@@ -44,7 +44,7 @@ function foldChat(): ConversationTurn[] {
     say("user", "Run the tests."),
     { role: "assistant", ts: "2026-10-12T00:00:00.000Z", parts: [
       { kind: "tool", name: "Bash", summary: "bun test", input: JSON.stringify({ command: "bun test" }), output: Array.from({ length: 100 }, (_, n) => `(pass) test ${n + 1}`).join("\n") },
-      { kind: "tool", name: "Bash", summary: "cat big.json", input: JSON.stringify({ command: "cat big.json" }), output: LONG_LINE_OUTPUT },
+      { kind: "tool", name: "Bash", summary: "cat big.json", input: JSON.stringify({ command: "cat big.json" }), output: LONG_LINE_OUTPUT, output_ref: "fold-output", output_size: WHOLE_OUTPUT.length },
       { kind: "text", text: "FOLD-CHAT-END" },
     ] },
   ];
@@ -98,6 +98,21 @@ async function settleBottom(page: Page) {
     const node = document.querySelector(".chat-view");
     return node && node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
   });
+}
+/** Until the view and the transcript's height have not changed for 20 frames: where the view rests. */
+async function settled(page: Page): Promise<number> {
+  return await page.evaluate(() => new Promise<number>((resolve) => {
+    let last = "", same = 0;
+    const sample = () => {
+      const node = document.querySelector<HTMLElement>(".chat-view")!;
+      const now = `${node.scrollTop}:${node.scrollHeight}`;
+      same = now === last ? same + 1 : 0;
+      last = now;
+      if (same >= 20) resolve(node.scrollTop);
+      else requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  }));
 }
 /** Back to the end by the chat's own button, then until the chat follows it and this pane's stored place says so: what a reload after it opens at. */
 async function toFollowedEnd(page: Page, jump: Locator) {
@@ -356,27 +371,45 @@ try {
     const before = await page.locator(".chat-view").evaluate((node) => node.scrollTop);
     await more.click();
     await testRow.locator(".chat-tool-result-more[aria-expanded=true]").waitFor();
-    // settled: the view and the transcript's height unchanged for 20 frames
-    const after = await page.evaluate(() => new Promise<number>((resolve) => {
-      let last = "", same = 0;
-      const sample = () => {
-        const node = document.querySelector<HTMLElement>(".chat-view")!;
-        const now = `${node.scrollTop}:${node.scrollHeight}`;
-        same = now === last ? same + 1 : 0;
-        last = now;
-        if (same >= 20) resolve(node.scrollTop);
-        else requestAnimationFrame(sample);
-      };
-      requestAnimationFrame(sample);
-    }));
+    const after = await settled(page);
     assert.ok(Math.abs(after - before) <= 1, `unfolding the newest output keeps a following reader where they were: ${before} -> ${after}`);
     console.log(`PASS ${width}: unfolding the newest tool output at the end stops following and keeps the view`);
+    // back at the end and following it again, the reader folds the output: they stay at the new end,
+    // following it, with Jump to latest hidden (not taken up to the output's top, still following an
+    // end out of view, or at the end with Jump to latest shown)
+    await jump.click();
+    await jump.waitFor({ state: "detached" });
+    await page.locator(".chat-view").evaluate((node) => { node.scrollTop = node.scrollHeight; });
+    await settleBottom(page);
+    const less = testRow.locator(".chat-tool-result-more[aria-expanded=true]");
+    assert.ok(await less.evaluate((node) => {
+      const box = node.getBoundingClientRect(), view = document.querySelector(".chat-view")!.getBoundingClientRect();
+      return box.top >= view.top && box.bottom <= view.bottom;
+    }), "Show less is in view at the end, so its click scrolls nothing first");
+    await less.click();
+    await testRow.locator(".chat-tool-result-more[aria-expanded=false]").waitFor();
+    await settled(page);
+    const folded = { away: await page.locator(".chat-view").evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop > 1), jump: await jump.count() > 0 };
+    assert.deepEqual(folded, { away: false, jump: false }, "a following reader who folds an output stays at the end, following");
+    console.log(`PASS ${width}: folding an output while following the end keeps the reader at the end, following`);
+    // the folded tail stays in the page, drawn as nothing, so the browser's find reaches it; a match
+    // there (the browser's beforematch) unfolds the output
+    const testOutput = testRow.locator(".chat-tool-result");
+    const tail = testOutput.locator(".chat-tool-result-tail");
+    assert.equal(await tail.getAttribute("hidden"), "until-found");
+    assert.ok((await testOutput.textContent())?.endsWith("(pass) test 100"), "the folded tail is in the page");
+    assert.ok(!(await testOutput.evaluate((node) => (node as HTMLElement).innerText)).includes("(pass) test 100"), "the folded tail is not drawn");
+    assert.equal(await tail.evaluate((node) => node.getBoundingClientRect().height), 0, "the folded tail takes no room");
+    await tail.evaluate((node) => node.dispatchEvent(new Event("beforematch")));
+    await testRow.locator(".chat-tool-result-more[aria-expanded=true]").waitFor();
+    assert.ok((await testOutput.evaluate((node) => (node as HTMLElement).innerText)).includes("(pass) test 100"), "a find match in the tail unfolds the output");
+    console.log(`PASS ${width}: a folded output's tail stays findable and a match unfolds it`);
     // one very long line folds by its length, with the same row
     const longLine = newest.locator(".work-row").filter({ has: page.locator(".work-row-head", { hasText: "cat big.json" }) });
     await longLine.locator(".work-row-head").click();
     const longMore = longLine.locator(".chat-tool-result-more");
     await longMore.waitFor();
-    const shown = await longLine.locator(".chat-tool-result").evaluate((node) => ({ length: node.textContent?.length ?? 0, height: node.getBoundingClientRect().height }));
+    const shown = await longLine.locator(".chat-tool-result").evaluate((node) => ({ length: (node as HTMLElement).innerText.length, height: node.getBoundingClientRect().height }));
     assert.ok(shown.length < 5_000 && shown.height < 900, `a 100 KB single-line output shows a capped preview: ${JSON.stringify(shown)}`);
     // unfolded from the keyboard: the revealed text pushes the button screens below, so the focus
     // moves to the output it opened, in view, and Tab still reaches the button that folds it again
@@ -393,7 +426,11 @@ try {
     assert.deepEqual(focused, { output: true, inView: true }, "a keyboard unfold moves the focus to the output it reveals, in view");
     await page.keyboard.press("Tab");
     assert.ok(await longLine.locator(".chat-tool-result-more[aria-expanded=true]").evaluate((node) => node === document.activeElement), "Tab from the revealed output reaches the button that folds it");
-    console.log(`PASS ${width}: a single 100 KB line folds by its length; a keyboard unfold keeps the focus in view`);
+    // the whole output, loaded under the unfolded preview, opens folded: its own Show all unfolds it
+    await longLine.locator(".chat-tool-more").click();
+    await longLine.locator(".chat-tool-io.is-whole").waitFor();
+    assert.equal(await longLine.locator(".chat-tool-result-more").getAttribute("aria-expanded"), "false", "the whole output opens folded, whatever the preview was");
+    console.log(`PASS ${width}: a single 100 KB line folds by its length; a keyboard unfold keeps the focus in view; its whole output opens folded`);
     await context.close();
   }
   for (const [width, theme] of [[1440, "dark"], [1440, "light"], [390, "dark"], [390, "light"]] as const) {
@@ -770,7 +807,7 @@ try {
     await work.locator(".chat-tool-more").click();
     await work.locator(".chat-tool-io.is-whole").waitFor();
     // the whole output is long: it folds to its head until the reader asks for every line
-    assert.notEqual(await work.locator(".chat-tool-io.is-whole").textContent(), WHOLE_OUTPUT);
+    assert.notEqual(await work.locator(".chat-tool-io.is-whole").evaluate((node) => (node as HTMLElement).innerText), WHOLE_OUTPUT);
     assert.ok(Math.abs(await work.evaluate((row) => row.getBoundingClientRect().top) - beforeOutput) <= 1, "opening output does not skip past the expanded work");
     await work.locator(".chat-tool-result-more").click();
     assert.equal(await work.locator(".chat-tool-io.is-whole").textContent(), WHOLE_OUTPUT);

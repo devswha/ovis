@@ -1987,6 +1987,12 @@ ol.markdown-list {
   overflow: visible;
 }
 
+/* a folded output's tail, kept for the browser's find (hidden=until-found hides it by
+   content-visibility, which a block takes): no room until a match unfolds it */
+.chat-tool-result-tail {
+  display: block;
+}
+
 /* Skills remain discoverable when the work rows are folded. */
 .chat-skills {
   display: flex;

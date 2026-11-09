@@ -159,7 +159,9 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
     : picking.result === null ? t("Loading earlier messages…")
     : picking.result === "missing" ? t("This message is no longer in the conversation.")
     : t("Couldn't load the earlier messages.");
-  const footerLine = pickLine ?? (matches.length === 0 ? "" : status);
+  // with no match the list shows the status: the footer's live region still says it, drawn as nothing
+  const listShows = pickLine === null && matches.length === 0;
+  const footerLine = listShows ? "" : pickLine ?? status;
   const canRetry = search !== null && (search.state === "failed" || search.state === "changed");
 
   return createPortal(
@@ -187,13 +189,14 @@ export function ConversationSearch({ paneId, agent, historyId, title = null, onC
               </button>
             );
           })}
-          {matches.length === 0 && <p className="palette-empty" role="status">{status}</p>}
+          {matches.length === 0 && <p className="palette-empty">{status}</p>}
         </div>
         {/* with no match the list says it; the line under it tells a pick and the search's progress.
             With nothing to tell and no retry the band takes no room (the input stays at the top), but
-            stays mounted: its live region is there before the first status, so that one is announced */}
+            stays mounted: the dialog's one live region is there before the first status, so each one
+            is announced, the list's own included */}
         <footer className={`palette-footer conversation-search-footer${footerLine === "" && !canRetry ? " is-empty" : ""}`}>
-          <p className="conversation-search-status" role="status">{footerLine}</p>
+          <p className={`conversation-search-status${listShows ? " visually-hidden" : ""}`} role="status">{pickLine ?? status}</p>
           {canRetry && <button type="button" className="btn" onClick={() => setRetry((count) => count + 1)}>{t("Try again")}</button>}
         </footer>
       </section>

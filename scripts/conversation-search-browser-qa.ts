@@ -117,12 +117,22 @@ try {
     assert.ok(((await dialog(page).locator(".conversation-search-footer").boundingBox())?.height ?? 0) < 1, "an empty footer takes no room");
     await live.evaluate((node) => { (node as HTMLElement).dataset.qaFirst = "1"; });
     await search(page, "z");
-    await dialog(page).getByText("Type at least 2 characters.").waitFor();
+    await dialog(page).locator(".palette-empty").getByText("Type at least 2 characters.").waitFor();
     // newest first, the user's words and the agent's answers only: the tool's output is no match
     await search(page, "ZEBRA");
     await dialog(page).getByText("Searched the whole conversation.").waitFor();
     assert.equal(await live.getAttribute("data-qa-first"), "1", "the status that tells the search's end is the live region mounted at the start");
     assert.equal(await live.textContent(), "Searched the whole conversation.");
+    // shortened to one character, the guidance goes to the same live region, mounted all along, while
+    // the list shows it: the only live region in the dialog, so it is announced once
+    await search(page, "z");
+    await dialog(page).locator(".palette-empty").getByText("Type at least 2 characters.").waitFor();
+    assert.equal(await live.getAttribute("data-qa-first"), "1");
+    assert.equal(await live.textContent(), "Type at least 2 characters.", "the guidance goes to the live region mounted at the start");
+    assert.equal(await dialog(page).locator("[role=status]").count(), 1, "the dialog has one live region");
+    assert.ok(((await dialog(page).locator(".conversation-search-footer").boundingBox())?.height ?? 0) < 1, "the footer still takes no room");
+    await search(page, "ZEBRA");
+    await dialog(page).getByText("Searched the whole conversation.").waitFor();
     const options = dialog(page).getByRole("option");
     assert.deepEqual(await options.locator(".conversation-search-snippet").allTextContents(), [
       "The zebra test moved to crossing.test.ts, beside the other crossing tests.",
@@ -155,7 +165,7 @@ try {
     // nothing found, a pick the conversation no longer holds, and Escape
     await page.evaluate(() => window.searchQa.open());
     await search(page, "nothing like it");
-    await dialog(page).getByText("No message or answer holds this.").waitFor();
+    await dialog(page).locator(".palette-empty").getByText("No message or answer holds this.").waitFor();
     await search(page, "ghost");
     await dialog(page).getByRole("option").click();
     await dialog(page).getByText("This message is no longer in the conversation.").waitFor();
