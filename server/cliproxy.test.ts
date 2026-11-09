@@ -585,6 +585,71 @@ describe("CLIProxyAPI v8", () => {
       expect(accounts.get("claude:cliproxy:claude-a.json")).toBeUndefined();
     });
 
+    it("keeps a shown Codex account known by its email whatever its workspace (#3444)", async () => {
+      await configure();
+      await service.report();
+      service.invalidate();
+      let hidden = new Set(["codex:cliproxy:codex-b.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      // the same email, another workspace, at a new auth index, under the hidden key
+      Object.assign(fake.files[1]!, { auth_index: "c", id_token: { chatgpt_account_id: "workspace-c" } });
+      let before = reads().length;
+      await service.report(false, hidden);
+      expect(reads().slice(before)).toEqual(["a"]);
+      // shown again, and hidden again before any report: still that account wherever it moves
+      hidden = new Set();
+      service.hiddenChanged();
+      hidden = new Set(["codex:cliproxy:codex-b.json"]);
+      service.hiddenChanged();
+      Object.assign(fake.files[1]!, { name: "codex-n.json", auth_index: "n" });
+      before = reads().length;
+      service.invalidate();
+      await service.report(false, hidden);
+      expect(reads().slice(before)).toEqual(["a"]);
+    });
+
+    it("keeps a hidden account unread when its email changes after it moved (#3444)", async () => {
+      await configure();
+      await service.report();
+      const hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      // Alice moves to index m under her email, a report lists her there, then her email changes while at m
+      moveAlice();
+      service.invalidate();
+      await service.report(false, hidden);
+      fake.files[0]!.email = "alice-renamed@example.test";
+      const before = reads().length;
+      service.invalidate();
+      await service.report(false, hidden);
+      expect(reads().slice(before)).toEqual(["b"]);
+    });
+
+    it("never gives an account shown by its auth index alone the email of one first listed hidden (#3444)", async () => {
+      // an account with no email: known by its auth index alone
+      delete (fake.files[0] as { email?: string }).email;
+      await configure();
+      await service.report();
+      service.invalidate();
+      let hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.skipAccounts(() => hidden);
+      service.hiddenChanged();
+      // Bob takes its file name and auth index, listed only while hidden
+      fake.files[0]!.email = "bob@example.test";
+      await service.report(false, hidden);
+      hidden = new Set();
+      service.hiddenChanged();
+      hidden = new Set(["claude:cliproxy:claude-a.json"]);
+      service.hiddenChanged();
+      // Bob, never shown, moves on: the hidden key's account is the one without an email, not Bob
+      Object.assign(fake.files[0]!, { name: "bob.json", auth_index: "m" });
+      const before = reads().length;
+      service.invalidate();
+      await service.report(false, hidden);
+      expect(reads().slice(before).sort()).toEqual(["b", "m"]);
+    });
+
     it("learns no shown identity from a report a Hub change overtook (#3444)", async () => {
       await configure();
       await service.report();

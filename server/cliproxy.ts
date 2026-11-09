@@ -12,13 +12,31 @@ export class CLIProxyError extends Error {
 export const proxyInvalid = () => new CLIProxyError("invalid_cliproxy_request", 400, "Invalid Hub request");
 /**
  * Which account a Hub file is, whatever its file name: its provider and the account it names (email, ChatGPT
- * workspace: `holder`), and its auth index, either of which tells it (#3428: an email may change while the index
- * stays). Never reported.
+ * workspace: `holder`), its email alone (whatever its workspace) and its auth index, any of which tells it (#3428: an
+ * email may change while the index stays). Never reported.
  */
-const accountIdentities = (provider: string, holder: string | null, index: string): readonly string[] =>
-  [...(holder === null ? [] : [JSON.stringify([provider, holder])]), `index:${provider}:${index}`];
+const accountIdentities = (provider: string, holder: string | null, email: string | null, index: string): readonly string[] =>
+  [...(holder === null ? [] : [JSON.stringify([provider, holder])]), ...(email === null ? [] : [`email:${provider}:${email}`]), `index:${provider}:${index}`];
 const isIndexed = (identity: string) => identity.startsWith("index:");
+const isEmail = (identity: string) => identity.startsWith("email:");
 const sameAccount = (known: readonly string[], identities: readonly string[]) => known.some((identity) => identities.includes(identity));
+/**
+ * Whether a remembered account (`known`) is the one now read as `identities`: one known by its email is so only under
+ * that email when both have one (another account may take its old auth index, #3444); otherwise any identity tells it.
+ */
+const knownAs = (known: readonly string[], identities: readonly string[]): boolean => {
+  const emails = known.filter(isEmail);
+  return emails.length > 0 && identities.some(isEmail) ? sameAccount(emails, identities) : sameAccount(known, identities);
+};
+/** most identities one remembered account keeps: its newest ones */
+const IDENTITIES_MAX = 6;
+/**
+ * `known` with what the same account is read as now added, so a later move or email change still tells it; never
+ * replaced. An account known by its auth index alone gains a name only from a row shown (`named`): one first listed
+ * hidden may be another account that took that index.
+ */
+const widened = (known: readonly string[], identities: readonly string[], named: boolean): readonly string[] =>
+  [...new Set([...identities.filter((identity) => named || isIndexed(identity)), ...known])].slice(0, IDENTITIES_MAX);
 const isHubKey = (key: string) => key.includes(":cliproxy:");
 /** what a read is decided from: the hidden keys, whether read whole, blind, and which account each hidden key is (a copy) */
 interface ReadView { hidden: ReadonlySet<string>; blind: boolean; accounts: ReadonlyMap<string, readonly string[]> }
@@ -444,16 +462,22 @@ export class CLIProxyService {
       for (const key of this.shownIdentities.keys()) if (!entries.some((entry) => entry.key === key)) this.shownIdentities.delete(key);
       // what this report learned, kept only now it completed: a report an invalidation (a Hub change) overtook teaches
       // nothing, what it read being of the Hub before
+      let widenedHidden = false;
       for (const [key, { identities, shown }] of learned) {
         const known = this.shownIdentities.get(key);
-        // a hidden key still holding the account it was shown as stays known as it, by its identities now (its auth
-        // index may have changed); one holding another account is not that account's any more. An account shown with
-        // its email is the same only under that email (another one at its old auth index is another account); one
-        // shown with its auth index alone, only at that index
-        const named = known?.filter((identity) => !isIndexed(identity)) ?? [];
-        if (shown || (known !== undefined && sameAccount(named.length > 0 ? named : known, identities))) this.shownIdentities.set(key, identities);
+        // a key still holding the account it was shown as stays known as it, by every identity it was read with; a hidden
+        // one holding another account is not that account's any more, a shown one is now the account shown
+        if (known !== undefined && knownAs(known, identities)) this.shownIdentities.set(key, widened(known, identities, shown || known.some((identity) => !isIndexed(identity))));
+        else if (shown) this.shownIdentities.set(key, identities);
         else this.shownIdentities.delete(key);
+        // a hidden account read under a new index or name stays unread there after its email changes too
+        for (const [hiddenKey, account] of this.hiddenAccounts) {
+          if (!knownAs(account, identities)) continue;
+          const next = widened(account, identities, account.some((identity) => !isIndexed(identity)));
+          if (next.length !== account.length || next.some((identity, at) => identity !== account[at])) { this.hiddenAccounts.set(hiddenKey, next); widenedHidden = true; }
+        }
       }
+      if (widenedHidden) this.saveHidden();
       // a list read only in part let nothing be read: not a fresh read, so the next report reads again, the accounts
       // shown again included (#3437)
       if (!answer.whole) { this.skipped = new Set([...this.skipped, ...shown]); return this.entries; }
@@ -501,7 +525,7 @@ export class CLIProxyService {
         const holder = email === null && workspace === null ? null : JSON.stringify([email, workspace]);
         const last = kept.has(entry.key) && holder !== null ? this.entries.find((held) => held.key === entry.key && this.holders.get(held) === holder) : undefined;
         if (last) return [Promise.resolve(last)];
-        const identities = accountIdentities(provider.id, holder, index);
+        const identities = accountIdentities(provider.id, holder, email, index);
         const held = (row: ProviderUsage): ProviderUsage => {
           if (holder !== null) this.holders.set(row, holder);
           this.identities.set(row, identities);
