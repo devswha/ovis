@@ -567,6 +567,10 @@ it.skipIf(process.platform === "win32")("greets a fresh Agy only while the pane 
     expect(await agyFreshSession(pane, screen)).toBeNull();
     expect(asked()).toBe(2);
     expect(idle.killed).toBe(true);
+    // And a process whose start identity cannot be read is not asked about again, as in resolveAgyStore.
+    answers(names([idle.pid]));
+    expect(await agyFreshSession(pane, screen)).toBeNull();
+    expect(asked()).toBe(1);
   } finally {
     restore();
     idle.kill();
