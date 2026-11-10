@@ -29,6 +29,8 @@ struct WebPage: View {
                 }
             }
         }
+        // up to the window's top, where the page's header takes the title bar's place (TitleBar.swift)
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     /// Hides the web view's empty white frame, which a dark window would flash.
@@ -43,11 +45,80 @@ private struct WebViewHost: NSViewRepresentable {
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 }
 
-/// Typing goes to the page from the start, as it does in a browser tab.
+/// Typing goes to the page from the start, as it does in a browser tab. The main window's page also
+/// stands in for that window's title bar while it is in it (TitleBar.swift).
 final class OvisWebView: WKWebView {
+    /// The main window's page, rather than the page of a window it opened.
+    var drawsTitleBar = false
+    /// The page's part of the folded bar, while its window has the bar folded.
+    private var titleBarScript: String?
+    private var windowWatch: [NSObjectProtocol] = []
+    /// The press under way, and whether the page found it on its header's bare surface.
+    private var press: NSEvent?
+    private var dragArmed = false
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if let window, newWindow !== window, titleBarScript != nil {
+            windowWatch.forEach(NotificationCenter.default.removeObserver)
+            windowWatch = []
+            TitleBar.unfold(window)
+            titleBarScript = nil
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         window?.makeFirstResponder(self)
+        guard drawsTitleBar, let window, titleBarScript == nil, let script = TitleBar.fold(window) else { return }
+        titleBarScript = script
+        let center = NotificationCenter.default
+        windowWatch = [
+            center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { if window.occlusionState.contains(.visible) { TitleBar.refresh(window) } }
+            },
+            center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { window.toolbar = nil }
+            },
+            center.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { TitleBar.addToolbar(window) }
+            },
+        ]
+        showHeaderInTitleBar()
+    }
+
+    /// Hands the page in the window its part of the folded bar: once the bar is folded, and as each page commits.
+    func showHeaderInTitleBar() {
+        if let titleBarScript { evaluateJavaScript(titleBarScript) }
+    }
+
+    /// The press under way may move the window. It does once the mouse moves, so a click or a double
+    /// click on the header stays the page's.
+    func armDrag() {
+        dragArmed = press != nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        press = event
+        dragArmed = false
+        super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard dragArmed, let press, let window else { return super.mouseDragged(with: event) }
+        dragArmed = false
+        window.performDrag(with: press)
+        // the drag took the mouse-up, which the page still waits for to end its press
+        if let up = NSEvent.mouseEvent(with: .leftMouseUp, location: window.mouseLocationOutsideOfEventStream, modifierFlags: [],
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                       context: nil, eventNumber: 0, clickCount: 1, pressure: 0) {
+            super.mouseUp(with: up)
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragArmed = false
+        super.mouseUp(with: event)
     }
 }
 
@@ -62,7 +133,7 @@ final class WebPageController: NSObject, ObservableObject {
     }
 
     @Published private(set) var state: State = .loading
-    let webView: WKWebView
+    let webView: OvisWebView
     private let origin: URL
     private weak var model: Model?
     /// A window the page opened, rather than the main window's page.
@@ -99,6 +170,7 @@ final class WebPageController: NSObject, ObservableObject {
         self.model = model
         isPopup = popupConfiguration != nil
         webView = OvisWebView(frame: .zero, configuration: popupConfiguration ?? Self.configuration())
+        webView.drawsTitleBar = !isPopup
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -107,6 +179,7 @@ final class WebPageController: NSObject, ObservableObject {
         guard !isPopup else { return }
         model.page = self
         reloads = model.$reloads.dropFirst().sink { [weak self] _ in self?.reload() }
+        webView.configuration.userContentController.add(TitleBarMessages(webView), name: "ovisTitleBar")
         // drafts go only to this Mac's own server, as they came only from it
         if Self.isLoopback(origin) {
             // a window the page opened outlives it: one still open on this address keeps using its storage
@@ -354,6 +427,7 @@ extension WebPageController: WKNavigationDelegate {
     /// leaves no empty window behind.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         if isPopup, let url = webView.url, isOvis(url) { showWindow() }
+        if !isPopup { self.webView.showHeaderInTitleBar() }
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
