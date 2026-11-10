@@ -1067,7 +1067,7 @@ it("returns an error when revocation cannot be persisted, then allows a successf
   } finally { server.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
-it("never announces a pairing to a stream that came in through the open LAN, before or after every device is revoked", async () => {
+it("never announces a pairing to a stream that came in through the open LAN: it ends with the gate, before any news", async () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-open-stream-"));
   const server = createServer({ port: 0, stateDir: root, token: "", tailscaleOwner: null });
   const base = `http://127.0.0.1:${server.port}`;
@@ -1090,18 +1090,21 @@ it("never announces a pairing to a stream that came in through the open LAN, bef
     const heardFirst = local.next(isPairing("First"), "this PC hears of First");
     await pair("First");
     await heardFirst;
-    // the gate is closed: the LAN client is refused on any new request, while the stream it opened before is still open
+    // the gate is closed: the LAN client is refused on any new request, and the stream it opened before has ended
+    // without a word of the pairing that closed it
     expect((await fetch(`${base}/api/session`, { headers: lan })).status).toBe(401);
+    await Promise.race([open.ended, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the open stream outlived the gate")), 5000))]);
+    expect(pairedLabels(open)).toEqual([]);
     const revoked = await fetch(`${base}/api/devices/revoke-all`, { method: "POST", headers: guard });
     expect(await revoked.json()).toEqual({ revoked: 1 } satisfies DevicesRevokedAll);
     const heardSecond = local.next(isPairing("Second"), "this PC hears of Second");
     await pair("Second");
     await heardSecond;
-    // a stream is ordered: a change made after both pairings reaches the open stream, so had either pairing reached it, it came first
-    const barrier = open.next((event) => event.type === "preferences" && event.preferences.settings["theme"] === "light", "the open stream hears the barrier");
+    // a stream is ordered: a change made after both pairings reaches this PC's stream after them, and the ended one hears none of it
+    const barrier = local.next((event) => event.type === "preferences" && event.preferences.settings["theme"] === "light", "this PC hears the barrier");
     expect((await fetch(`${base}/api/preferences`, { method: "PUT", headers: guard, body: JSON.stringify({ settings: { theme: "light" } }) })).status).toBe(200);
     await barrier;
-    expect(pairedLabels(open)).toEqual([]);
+    expect(open.events.filter((event) => event.type === "device-paired" || event.type === "preferences" && event.preferences.settings["theme"] === "light")).toEqual([]);
     expect(pairedLabels(local)).toEqual(["First", "Second"]);
   } finally {
     abort.abort();
