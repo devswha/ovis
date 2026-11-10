@@ -57,7 +57,7 @@ const lettaPane = (path: string) => {
     spyOn(herdr, "paneProcessInfo").mockResolvedValue({ pane_id: target.pane_id, foreground_processes: [] } as never),
     spyOn(herdr, "herdrRpc").mockImplementation(async () => ({}) as never));
   return {
-    id: target.pane_id, resolution,
+    id: target.pane_id, resolution, found,
     rebind: (at: string, after = 0) => {
       for (let kept = 0; kept < after; kept += 1) resolution.mockResolvedValueOnce(found(path));
       resolution.mockResolvedValue(found(at));
@@ -262,6 +262,30 @@ describe("Letta transcript", () => {
     expect(await output).toBeNull();
     // the pane was not resolved again for it
     expect(own.resolution.mock.calls.length).toBe(resolved);
+  });
+
+  test("refuses a pane another read saw bound to another conversation while it was resolved for the last time", async () => {
+    const path = join(root, "transcript.jsonl");
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, call("Bash-1-1", "the old conversation"));
+    writeFileSync(other, call("Bash-2-2", "the new conversation"));
+    const own = lettaPane(path);
+    // the lookup's last resolution, begun before `/new` in the pane, is held: it will name the conversation
+    // the output was read from
+    const last = Promise.withResolvers<ReturnType<typeof own.found>>();
+    let resolving!: () => void;
+    const began = new Promise<void>((resolve) => { resolving = resolve; });
+    own.resolution.mockResolvedValueOnce(own.found(path)).mockImplementationOnce(() => { resolving(); return last.promise; });
+    const output = toolOutput(own.id, "Bash-1-1");
+    await began;
+    // meanwhile another read finds the pane on the new conversation
+    own.rebind(other);
+    expect((await paneTranscript(own.id)).path).toBe(other);
+    last.resolve(own.found(path));
+    expect(await output).toBeNull();
+    // and with nothing seen in between, the same resolution answers
+    own.rebind(path);
+    expect(await toolOutput(own.id, "Bash-1-1")).toBe("the old conversation");
   });
 
   test("answers busy, not missing, when no file thread is free to scan the transcript", async () => {
