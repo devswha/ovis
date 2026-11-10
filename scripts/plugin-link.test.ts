@@ -849,6 +849,29 @@ describe("ovis link, on the PC itself", () => {
     }
   }, 30_000);
 
+  it("approves with the digits as an input method types them: full-width digits and its wide space are the same digits", async () => {
+    for (const line of ["２２２", "１１１２２２", "１１１　２２２", "１１１ ２２２", "2２2", "　222　"]) {
+      const { code, out, decisions } = await prompting({
+        pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+        said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer(line); },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect(code).toBe(0);
+      expect([line, decisions]).toEqual([line, [{ id: "p1", decision: "approve" }]]);
+      expect(out.filter((said) => said.includes("Enter to decline"))).toEqual([PROMPT]);
+    }
+    // other digits in the same width are still other digits, and a wide space by itself is Enter by itself
+    for (const [line, decision] of [["２２３", null], ["１１１", null], ["　", "decline"]] as const) {
+      let asked = 0;
+      const { decisions } = await prompting({
+        pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+        said: (said, _type, answer) => { if (said.includes("Phone p1 wants") && ++asked === 1) answer(line); },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect([line, decisions]).toEqual([line, decision === null ? [] : [{ id: "p1", decision }]]);
+    }
+  }, 30_000);
+
   it("answers nothing with a line that is neither the digits nor empty: a habitual y or a typo declines nothing, and the question is asked again", async () => {
     for (const then of ["222", ""]) {
       for (const line of ["n", "no", "y", "Y", "yes", "111", "223", "22", "2222", "1112222", "111222 222", "y222", "222y", "٢٢٢"]) {

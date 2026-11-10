@@ -201,7 +201,8 @@ export function approvalPrompt(device: AskingDevice): string {
  * approved by nothing (a bare Enter must never match digits that are missing).
  */
 export function answerOf(line: string, digits: string): "approve" | "decline" | null {
-  const typed = line.replace(/\s/g, "");
+  // NFKC first: an input method left in its wide mode types the digits full-width (２２２), and they are the same digits
+  const typed = line.normalize("NFKC").replace(/\s/g, "");
   if (typed === "") return "decline";
   if (!SIX_DIGITS.test(digits)) return null;
   return typed === digits || typed === digits.slice(3) ? "approve" : null;
