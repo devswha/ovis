@@ -927,6 +927,24 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).not.toBeNull();
   });
 
+  it("tells the queue herdr's blocked through the hold: only a pane herdr reads at rest is held as one at work", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    fires(h.path); resumes(h.path); h.poll();
+    queue(h);
+    expect(h.pending.current(id)).toBe("working");
+    // When the resumed turn stops on a permission prompt, and herdr tells that.
+    says(h, "blocked");
+    // Then the queue is told so, as for any turn: the hold stands for no status of herdr's but its rest words.
+    expect(h.status.claudeAgents.loopHolds(id)).toBe(true);
+    expect(h.pending.current(id)).toBe("blocked");
+    expect(h.pending.next(id)).toBeNull();
+    // And once herdr reads the pane at rest with no rest written, the hold is what the queue goes by again.
+    says(h, "idle");
+    expect(h.pending.current(id)).toBe("working");
+    expect(h.pending.next(id)).toBeNull();
+  });
+
   it("lets the queue go when herdr never tells the resumed turn, however long nothing is written", async () => {
     const drained: string[] = [];
     const h = await rested(drained);
