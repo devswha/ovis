@@ -4,7 +4,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, realpat
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, noteBindingProof, screenProvesBinding, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -1714,72 +1714,5 @@ describe("a Codex pane whose last answer the screen never shows whole (#3262 cas
     expect(footedTailTranscript(codexTurnScreen(null, tail).replace("  Worked for 12s • 7:05 PM", ""), candidates, owners)).toBeNull();
     expect(footedTailTranscript(codexTurnScreen(null, tail).replace("› Ask Codex to do anything", "› and then"), candidates, owners)).toBeNull();
     expect(footedTailTranscript(codexTurnScreen(null, tail.slice(-1)), candidates, owners)).toBeNull();
-  });
-});
-
-/**
- * The screen a pane shows after a second Codex started in its folder: its own finished turn, a Stop hook's message,
- * then the idle composer with the model and hint rows (Codex 0.164, macOS).
- */
-const boundPaneScreen = (answer: string, width = 96): string => [
-  "  >_ OpenAI Codex (v0.164.0)",
-  "     /tmp/proj",
-  "",
-  "› Reply with just the word ok.",
-  "",
-  "",
-  `• ${answer}`,
-  "",
-  "  Worked for 1s • 7:05 PM",
-  "",
-  "",
-  "",
-  "› Ask Codex to do anything",
-  "",
-  `  GPT-6-Luna low · /tmp/proj · ${"Reply with one word".padEnd(width, " ")}`,
-  "  ← for agents · ? for shortcuts",
-].join("\n");
-
-describe("a bound Codex pane keeps its conversation while its screen stands unmoved (#3262 case 3)", () => {
-  const pane = "pane-under-test";
-  const processes = "4242:/usr/local/bin/codex\u00004250:/usr/local/bin/codex";
-  const path = "/tmp/rollouts/kept.jsonl";
-
-  it("keeps the binding while the same processes show the same screen", () => {
-    noteBindingProof(pane, processes, path, boundPaneScreen("ok"));
-    expect(screenProvesBinding(pane, processes, path, boundPaneScreen("ok"))).toBe(true);
-  });
-
-  it("keeps it when only the pane's width moved the rows", () => {
-    noteBindingProof(pane, processes, path, boundPaneScreen("ok", 96));
-    expect(screenProvesBinding(pane, processes, path, boundPaneScreen("ok", 40))).toBe(true);
-  });
-
-  it("ends it when another Codex process took the pane", () => {
-    noteBindingProof(pane, "4242:/usr/local/bin/codex", path, boundPaneScreen("ok"));
-    expect(screenProvesBinding(pane, "5150:/usr/local/bin/codex", path, boundPaneScreen("ok"))).toBe(false);
-  });
-
-  it("ends it when the screen redrew (/new, or a turn under way)", () => {
-    noteBindingProof(pane, processes, path, boundPaneScreen("ok"));
-    const redrawn = boundPaneScreen("ok").replace("• ok", "• Welcome to Codex");
-    expect(screenProvesBinding(pane, processes, path, redrawn)).toBe(false);
-  });
-
-  it("ends it when a draft is typed into the composer", () => {
-    noteBindingProof(pane, processes, path, boundPaneScreen("ok"));
-    const draft = boundPaneScreen("ok").replace("› Ask Codex to do anything", "› hello there");
-    expect(screenProvesBinding(pane, processes, path, draft)).toBe(false);
-  });
-
-  it("never vouches for another conversation", () => {
-    noteBindingProof(pane, processes, path, boundPaneScreen("ok"));
-    expect(screenProvesBinding(pane, processes, "/tmp/rollouts/other.jsonl", boundPaneScreen("ok"))).toBe(false);
-  });
-
-  it("forgets the proof once the pane moved on to a screen that proves nothing else", () => {
-    noteBindingProof(pane, processes, path, boundPaneScreen("ok"));
-    noteBindingProof(pane, processes, null, boundPaneScreen("ok").replace("• ok", "• Welcome to Codex"));
-    expect(screenProvesBinding(pane, processes, path, boundPaneScreen("ok"))).toBe(false);
   });
 });
