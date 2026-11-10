@@ -913,6 +913,8 @@ async function linkCommand(): Promise<number> {
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),
     out: (text) => process.stdout.write(text),
     lines: console[Symbol.asyncIterator](),
+    // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
+    terminal: process.stdin.isTTY === true,
   });
 }
 

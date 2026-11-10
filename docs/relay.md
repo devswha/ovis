@@ -301,13 +301,18 @@ it is off, and wait until it is online.
   this PC only. The waiting goes on under that question: a request that stops waiting unanswered
   is dropped with a line saying so, and an answer the server did not take is asked for again
   rather than sent a second time. Only a line typed after a request's question showed, with its
-  digits, answers it: the terminal is read all through the wait, so a line typed ahead (during the
-  sign-in, while nothing is asked, before the question is on the screen, a second line at one
-  question, or one begun for a request that went away) is dropped with a line saying so and never
-  kept for a later request. Input that is not a terminal (a pipe, a closed stdin) declines every
-  request, whatever it carried. It asks for that window again every 30 seconds, and with every
+  digits, answers it: the terminal is read from the moment the PC is listed to the end of the
+  wait, so a line typed ahead (during the sign-in, while nothing is asked, before the question is
+  on the screen, or a second line at one question) is dropped with a line saying so and never
+  kept for a later request. So is a line that comes within a second and a half of a question
+  showing, too soon to have compared its digits: one begun for the request answered or gone just
+  before, or a key pressed twice; the question is then asked again. Input that is not a terminal
+  (a pipe, a file, a closed stdin) answers nothing, whatever it carries and whenever: the command
+  says so and declines every request as it shows. So does a terminal whose input ended (Ctrl+D),
+  from then on. It asks for that window again every 30 seconds, and with every
   look of the last half minute in which a window may still be opened, so the last one ends with
-  the run however long a look takes. Every nine minutes, and once more in that last half minute,
+  the run however long a look takes (short of one look that alone takes over half a minute, after
+  which the last window is the one before it). Every nine minutes, and once more in that last half minute,
   it lists the PC anew so the account's devices keep showing it as new until the run is all but
   over; a renewal the account service does not take is tried again until it is, also once the PC
   is in the account, so the PC never stays off the list. An Ovis server that stops

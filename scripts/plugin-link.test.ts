@@ -40,23 +40,34 @@ function localPc(route: (request: Request, path: string) => Response | Promise<R
 function clock() {
   let now = Date.parse("2026-11-06T12:00:00Z");
   const waits: number[] = [];
+  const due: (() => void)[] = [];
   return {
     now: () => now,
     waits,
     /** time a call took */
     pass: (ms: number) => { now += ms; },
+    /** what a person does a while later: once the next wait has passed, as it ends */
+    after: (act: () => void) => { due.push(act); },
     wait: async (ms: number, signal: AbortSignal) => {
       signal.throwIfAborted();
       waits.push(ms);
-      now += ms;
-      // a turn, so a test's abort on the last answer lands before the next round
+      // A turn, so a test's abort on the last answer lands before the next round. The time passes after it, not as the
+      // wait begins: a line typed just before the wait comes at the time it was typed
       await new Promise((resolve) => setTimeout(resolve, 0));
+      now += ms;
+      const acts = due.splice(0);
+      for (const act of acts) act();
+      // what was typed just now is handed over before the wait ends
+      if (acts.length > 0) await new Promise((resolve) => setTimeout(resolve, 0));
       signal.throwIfAborted();
     },
   };
 }
 
 async function* answers(...lines: string[]): AsyncGenerator<string> { for (const line of lines) yield line; }
+
+/** A terminal at which nothing is ever typed. */
+const silent = (): AsyncIterator<string> => ({ next: () => new Promise(() => {}) });
 
 /**
  * Lines a person types when they choose to, as a terminal hands them over: one typed while nothing reads is kept
@@ -260,13 +271,13 @@ describe("ovis link, on the PC itself", () => {
     const keys = keyboard();
     const code = await link(options.args ?? [], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
-      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines,
+      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines, terminal: true,
       out: (text) => {
         out.push(text);
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
         if (shown) options.approve(service, shown[1]!);
-        // the answer, typed once the digits are on the screen
-        if (text.includes("Approve?")) keys.type("y");
+        // the answer, typed once the digits were on the screen long enough to compare
+        if (text.includes("Approve?")) time.after(() => keys.type("y"));
       },
     });
     return { code, text: out.join(""), service, pc, decisions, named };
@@ -313,7 +324,7 @@ describe("ovis link, on the PC itself", () => {
     });
     const out: string[] = [];
     const code = await link([], {
-      origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal, lines: answers(), accountService: SERVICE,
+      origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal, lines: silent(), terminal: true, accountService: SERVICE,
       serviceFetch: (input, init) => {
         const request = new Request(input, init);
         if (request.method === "PUT" || request.method === "DELETE") writes.push(`${request.method} ${new URL(request.url).pathname} at poll ${polls}`);
@@ -581,8 +592,8 @@ describe("ovis link, on the PC itself", () => {
     const keys = keyboard();
     await link([], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
-      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines,
-      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); if (text.includes("Approve?")) keys.type("n"); },
+      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines, terminal: true,
+      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); if (text.includes("Approve?")) time.after(() => keys.type("n")); },
     });
     const text = out.join("");
     expect(text).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
@@ -603,11 +614,10 @@ describe("ovis link, on the PC itself", () => {
       return undefined;
     });
     let token = "";
-    const never: AsyncIterator<string> = { next: () => new Promise(() => {}) };
     const out: string[] = [];
     const code = await link([], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: stop.signal,
-      accountService: SERVICE, lines: never,
+      accountService: SERVICE, lines: silent(), terminal: true,
       serviceFetch: async (input, init) => {
         const request = new Request(input, init);
         const answer = await service.fetch(request);
@@ -629,9 +639,10 @@ describe("ovis link, on the PC itself", () => {
 
   /**
    * `link` signed in to acct_1 and waiting, with requests to approve: `pending` names the ones waiting at each poll,
-   * `said` hears every line (to type an answer at), and `decide` may fail the call that carries an answer.
+   * `said` hears every line, to `type` a line at that very moment or to `answer` after the next wait (two seconds: the
+   * time a person takes to compare the digits), and `decide` may fail the call that carries an answer.
    */
-  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void) => void; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string> }) {
+  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string> }) {
     const pc = identity();
     const time = clock();
     const service = new FakeAccountService(time.now);
@@ -659,12 +670,12 @@ describe("ovis link, on the PC itself", () => {
     const out: string[] = [];
     const code = await link([], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
-      accountService: SERVICE, lines: options.lines ?? keys.lines, serviceFetch: (input, init) => service.fetch(new Request(input, init)),
+      accountService: SERVICE, lines: options.lines ?? keys.lines, terminal: options.terminal ?? true, serviceFetch: (input, init) => service.fetch(new Request(input, init)),
       out: (text) => {
         out.push(text);
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
         if (shown) service.approveDevice(shown[1]!, "acct_1");
-        options.said(text, keys.type);
+        options.said(text, keys.type, (line) => time.after(() => keys.type(line)));
       },
     });
     return { code, out, text: out.join(""), calls: local.calls, decisions, polls: () => polls, refused: () => refused };
@@ -687,10 +698,10 @@ describe("ovis link, on the PC itself", () => {
     const { code, out, decisions } = await prompting({
       // p1 for three polls, nothing for two, then p2 until it is answered
       pending: (polls, decisions) => polls <= 3 ? ["p1"] : polls <= 5 || decisions.length > 0 ? [] : ["p2"],
-      said: (text, type) => {
+      said: (text, type, answer) => {
         // typed too late: nothing is asked about any more
         if (text.includes("Phone p1 is no longer waiting")) type("y");
-        if (text.includes("Phone p2 wants")) type("n");
+        if (text.includes("Phone p2 wants")) answer("n");
       },
       joined: (decisions) => decisions.length > 0,
     });
@@ -705,10 +716,10 @@ describe("ovis link, on the PC itself", () => {
     const { code, out, decisions } = await prompting({
       // p1 for three polls, then p2 in the very poll that drops p1
       pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
-      said: (text, type) => {
+      said: (text, type, answer) => {
         // meant for p1, sent as its prompt ends: p2's digits were never on the screen
         if (text.includes("Phone p1 is no longer waiting")) type("y");
-        if (text.includes("Phone p2 wants")) type("n");
+        if (text.includes("Phone p2 wants")) answer("n");
       },
       joined: (decisions) => decisions.length > 0,
     });
@@ -718,18 +729,18 @@ describe("ovis link, on the PC itself", () => {
     expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
   });
 
-  it("never hands a read begun under a request that went away to the next one: its line answers nothing, also when it comes after the next prompt", async () => {
+  it("never takes a line begun under a request that went away as the answer to the next one: it answers nothing, also when it comes right after the next prompt", async () => {
     let shown = 0;
     const { code, out, text, decisions } = await prompting({
       pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
-      said: (said, type) => {
-        // the y begun at p1's prompt is sent only once p2's prompt is on the screen; the answer to p2 follows at its second showing
-        if (said.includes("Phone p2 wants")) type(++shown === 1 ? "y" : "n");
+      said: (said, type, answer) => {
+        // the y begun at p1's prompt is sent only as p2's prompt comes on the screen; the answer to p2 follows its second showing
+        if (said.includes("Phone p2 wants")) { if (++shown === 1) type("y"); else answer("n"); }
       },
       joined: (decisions) => decisions.length > 0,
     });
     expect(code).toBe(0);
-    expect(text).toContain("That line answered nothing");
+    expect(text).toContain("That line answered nothing: it came as the request showed, too soon to have compared its digits.");
     // p2 is asked again under the notice
     expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
     expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
@@ -774,7 +785,7 @@ describe("ovis link, on the PC itself", () => {
     let prompts = 0;
     const { code, text, out, decisions, calls } = await prompting({
       pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
-      said: (said, type) => { if (said.includes("Approve?")) type(++prompts === 1 ? "y" : "n"); },
+      said: (said, _type, answer) => { if (said.includes("Approve?")) answer(++prompts === 1 ? "y" : "n"); },
       // the first answer's call is never answered
       decide: (attempt) => { if (attempt === 1) throw new TypeError("timed out"); },
       joined: (decisions) => decisions.length > 0,
@@ -821,11 +832,11 @@ describe("ovis link, on the PC itself", () => {
       let answered = false;
       const { code, out, text, decisions } = await prompting({
         pending: (polls, decisions) => polls <= 2 || decisions.length > 0 ? [] : ["p1"],
-        said: (said, type) => {
+        said: (said, type, answer) => {
           // typed ahead, twice, and an empty line that would decline
           if (said.includes(when)) { type("y"); type("y"); type(""); }
           // the answer at the prompt that follows the notice
-          if (said.includes("Phone p1 wants") && !answered) { answered = true; type("n"); }
+          if (said.includes("Phone p1 wants") && !answered) { answered = true; answer("n"); }
         },
         joined: (decisions) => decisions.length > 0,
       });
@@ -856,10 +867,10 @@ describe("ovis link, on the PC itself", () => {
   it("answers one request with one line: a second line at its prompt never answers the next request", async () => {
     const { code, out, decisions } = await prompting({
       pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
-      said: (said, type) => {
+      said: (said, _type, answer) => {
         // y for p1, and Enter once more: an empty line would decline p2 unseen
-        if (said.includes("Phone p1 wants")) { type("y"); type(""); }
-        if (said.includes("Phone p2 wants")) type("yes");
+        if (said.includes("Phone p1 wants")) { answer("y"); answer(""); }
+        if (said.includes("Phone p2 wants")) answer("yes");
       },
       joined: (decisions) => decisions.length > 1,
     });
@@ -871,7 +882,7 @@ describe("ovis link, on the PC itself", () => {
   it("declines every request when its input is not a terminal, whatever was piped in, and still ends", async () => {
     for (const piped of [[], ["y"], ["y", "y", "y"]]) {
       const { code, out, decisions } = await prompting({
-        lines: answers(...piped),
+        lines: answers(...piped), terminal: false,
         pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
         said: () => undefined,
         joined: (decisions) => decisions.length > 1,
@@ -882,6 +893,93 @@ describe("ovis link, on the PC itself", () => {
       expect(out.filter((said) => said === "Declined.\n")).toHaveLength(2);
       expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
     }
+  });
+
+  it("approves nothing with a line from an input that is not a terminal, also when it comes long after a request's prompt", async () => {
+    // `(sleep 60; echo y) | ovis add`, or `yes | ovis add`: every line comes after a prompt, and nobody compared its digits
+    const { code, out, text, decisions } = await prompting({
+      terminal: false,
+      pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
+      said: (said, _type, answer) => { if (said.includes("wants")) { answer("y"); answer("y"); } },
+      joined: (decisions) => decisions.length > 1,
+    });
+    expect(code).toBe(0);
+    expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
+    // said once, before the first request is declined
+    expect(out.filter((said) => said.includes("This is not run in a terminal"))).toHaveLength(1);
+    expect(text.indexOf("This is not run in a terminal")).toBeLessThan(text.indexOf("Phone p1 wants"));
+  });
+
+  it("approves nothing with a second line typed right after an answer: the next request's prompt was only just shown", async () => {
+    let again = false;
+    const { code, out, text, decisions } = await prompting({
+      // p1 and p2 wait together: p2's prompt shows in the look that sends p1's answer
+      pending: (_polls, decisions) => decisions.length === 0 ? ["p1", "p2"] : ["p2"],
+      said: (said, type, answer) => {
+        if (said.includes("Phone p1 wants")) answer("y");
+        // y and Enter once more, a moment after the first: p2's digits were not compared
+        if (said.includes("Phone p2 wants") && !again) { again = true; type("y"); }
+      },
+    });
+    // p2 was asked about, again under the notice, and never answered
+    expect(code).toBe(1);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
+    expect(text).toContain("That line answered nothing: it came as the request showed, too soon to have compared its digits.");
+    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
+  });
+
+  it("takes the answer typed at a request's prompt long after an earlier request went away with nothing typed", async () => {
+    const { code, text, decisions } = await prompting({
+      // p1 runs out after three polls; p2 comes minutes later
+      pending: (polls, decisions) => polls <= 3 ? ["p1"] : polls <= 200 || decisions.length > 0 ? [] : ["p2"],
+      said: (said, _type, answer) => { if (said.includes("Phone p2 wants")) answer("y"); },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(code).toBe(0);
+    expect(text).not.toContain("That line answered nothing");
+    expect(decisions).toEqual([{ id: "p2", decision: "approve" }]);
+  });
+
+  it("says so when the terminal's input ends while nothing is asked, before it declines the requests that follow", async () => {
+    let end: (() => void) | null = null;
+    const closing: AsyncIterator<string> = { next: () => new Promise((resolve) => { end = () => resolve({ value: undefined, done: true }); }) };
+    const { code, out, text, decisions } = await prompting({
+      lines: closing,
+      pending: (polls, decisions) => polls <= 5 || decisions.length > 0 ? [] : ["p1"],
+      // Ctrl+D while waiting for the phone
+      called: (path, _type, polls) => { if (path === "/api/relay/pairings" && polls === 2) end?.(); },
+      said: () => undefined,
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(code).toBe(0);
+    expect(decisions).toEqual([{ id: "p1", decision: "decline" }]);
+    expect(out.filter((said) => said.includes("The terminal's input ended"))).toHaveLength(1);
+    expect(text.indexOf("The terminal's input ended")).toBeLessThan(text.indexOf("Phone p1 wants"));
+  });
+
+  it("ends the run when reading the terminal fails, when it does and not at the next request", async () => {
+    const { code, text, polls } = await prompting({
+      lines: { next: () => Promise.reject(new Error("EIO: read failed")) },
+      pending: () => [],
+      said: () => undefined,
+    });
+    expect(code).toBe(1);
+    expect(text).toContain("Could not link this PC: EIO: read failed");
+    expect(polls()).toBeLessThan(3);
+  });
+
+  it("reads the terminal only once this PC is listed and the person was told what to do, so a run in the background stops no sooner", async () => {
+    let listed = false;
+    let readWhenListed: boolean | null = null;
+    const keys = keyboard();
+    const { code } = await prompting({
+      lines: { next: () => { readWhenListed ??= listed; return keys.lines.next(); } },
+      pending: () => [],
+      said: (said) => { if (said.includes("Its request shows here to approve")) listed = true; },
+      joined: () => listed,
+    });
+    expect(code).toBe(0);
+    expect(readWhenListed).toBe(true);
   });
 
   it("declines a request when the input ends at its prompt (Ctrl+D), and the ones after it", async () => {
