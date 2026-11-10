@@ -226,7 +226,7 @@ describe("the Add-a-PC sheet", () => {
     // a new PC that stopped waiting: its window lapsed or Ovis restarted there, and the PC is where it starts again
     await mount(props("new", pcOf(), { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(problem()).toBe("desk2 stopped waiting to be added");
-    expect(all()).toContain("Its add window closed, or Ovis restarted there. On desk2, open Settings → Devices and PCs → Account and choose Add this PC to my account again, then try again here.");
+    expect(all()).toContain("Its add window closed, or Ovis restarted there. On desk2, open Settings → Devices and PCs → Account and choose Add this PC to my account again, then try again here. If it still refuses, wait a few minutes: it pauses after too many tries.");
     expect(all()).not.toContain("Copy a new link");
     expect(buttons()).toEqual(["Close", "Try again"]);
     await click("Try again");
@@ -241,10 +241,10 @@ describe("the Add-a-PC sheet", () => {
     expect(all()).toContain("It was declined on desk2, or not approved there within 90 seconds. Try again, then press Approve on desk2.");
     expect(all()).not.toContain("Open the link again");
     expect(buttons()).toEqual(["Close", "Try again"]);
-    // a join the PC could not take: no device of the account is there to approve it
+    // a join the PC refused before any digits: it has not learned this device yet, or it is paused (nobody connected is a timeout, not this)
     await update(props("join", expired, { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(problem()).toBe("desk2 cannot take this device yet");
-    expect(all()).toContain("No device of your account is connected to desk2 to approve it. Open desk2 in Ovis on a device that already uses it and keep it open, then try again. If no device of your account uses desk2 yet, choose Add this PC to my account on desk2 again.");
+    expect(all()).toContain("desk2 did not take this request. It may not know this device yet (it learns your account's devices within a few minutes), or it is paused after too many tries. Wait a moment, then try again. If no device of your account uses desk2 yet, pair this device with a QR or code from desk2 instead.");
     expect(all()).not.toContain("Copy a new link");
     expect(buttons()).toEqual(["Close", "Try again"]);
     // a refused join differs from a refused new PC
@@ -266,6 +266,16 @@ describe("the Add-a-PC sheet", () => {
     expect(all()).toContain("The relay could not be reached");
     expect(all()).not.toContain("Add window closed");
     expect(all()).toContain("Check this device's connection, then try again.");
+    // the relay's refusal of a new device is the account's limit, not the window or the flow: both flows say what the link says, with Try again
+    for (const flow of ["new", "join"] as const) {
+      const plain = relayFailureText((key) => key, "new-devices-refused", "desk2", null);
+      expect(relayFailureText((key) => key, "new-devices-refused", "desk2", null, flow)).toEqual(plain);
+      await update(props(flow, expired, { kind: "failed", failure: "new-devices-refused", name: "desk2", detail: null, server_id: SERVER_ID }));
+      expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("desk2 cannot add new devices right now");
+      expect(all()).toContain("Devices already added still connect.");
+      expect(all()).not.toContain("Add window closed");
+      expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toContain("Try again");
+    }
     await update(props("join", expired, { kind: "failed", failure: "pc-offline", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(all()).toContain("desk2 is offline");
     expect(all()).toContain("Start Ovis on the PC");

@@ -69,6 +69,8 @@ export const RELAY_ZH: Record<string, string> = {
   "Does {name}'s screen show this ID?": "{name} 的屏幕上显示的是这个 ID 吗？",
   "ID of the PC this code found": "此代码找到的电脑的 ID",
   "{name} did not approve this device": "{name} 没有批准此设备",
+  "{name} cannot add new devices right now": "{name} 现在无法添加新设备",
+  "Its Ovis account is past its relay limit, so the relay lets no new device in. Devices already added still connect. Check the account in Settings on the PC, or try again later.": "这台电脑的 Ovis 账户已超出中继限额，中继不再接受新设备。已添加的设备仍可连接。请在电脑的设置中查看账户，或稍后再试。",
   "{name} is not taking new devices right now": "{name} 现在不接受新设备",
   "{name} stopped waiting to be added": "{name} 已不再等待添加",
   "{name} cannot take this device yet": "{name} 暂时无法接受此设备",

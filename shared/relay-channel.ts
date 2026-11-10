@@ -14,6 +14,7 @@ import { isWssOrigin, SERVER_ID_PATTERN } from "./relay-offer.ts";
 import type { RelayOffer } from "./relay-offer.ts";
 import { relayFallback } from "./relay-regions.ts";
 import { getDevice, sign } from "./relay-device.ts";
+import { RELAY_NEW_SESSIONS_CLOSE } from "./relay-pass.ts";
 import type { RelayDevice, RelayDeviceStore } from "./relay-device.ts";
 
 export class UnsafeRelayDestinationError extends Error {
@@ -42,6 +43,19 @@ export class RelayUnreachableError extends Error {
  * The PC answered the relay (its handshake began) but did not finish admitting this device within
  * ADMISSION_MS: it is online, and something on it stalled. Neither the relay nor an offline PC.
  */
+/**
+ * The relay closed this client RELAY_NEW_SESSIONS_CLOSE: the PC named it as a device new to it while its relay pass
+ * allows no new sessions (relay/README.md, "New sessions"). Only a device that was pairing hears it; ones the PC
+ * knows still sign in.
+ */
+export class RelayNewSessionsRefusedError extends Error {
+  readonly code = "new_sessions_refused";
+  constructor() {
+    super("The relay takes no new devices for this PC");
+    this.name = "RelayNewSessionsRefusedError";
+  }
+}
+
 export class RelayAdmissionTimeoutError extends Error {
   readonly code = "admission_timeout";
   constructor(readonly phase: "handshake" | "welcome" | "auth") {
@@ -348,6 +362,8 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     };
     const failed = (error: unknown): void => stop(error instanceof Error ? error : new Error(String(error)));
     socket.onclose = (event) => {
+      // said first: the secure channel's own close below would report a plain lost socket
+      if (event.code === RELAY_NEW_SESSIONS_CLOSE) stop(new RelayNewSessionsRefusedError());
       transport.onclose?.(event.code, event.reason);
       stop(phase === "assigned" ? new RelayUnreachableError(event.code) : new MuxProtocolError("internal_error", "Relay socket closed"));
     };
