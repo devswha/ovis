@@ -300,9 +300,12 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal((await offered).status(), 200, "the press asks for the offer");
     await relayQr.waitFor();
     assert.equal(await sheet.isVisible(), true, "the sheet stays open under its QR code");
+    // the QR code alone: no code to type that could be read off the screen and typed on another device
+    assert.equal(await accountQr.getByLabel("Code to type", { exact: true }).count(), 0, "the account QR code shows no code to type");
     // a device that pairs while the QR code may still put this PC in an account does not close the sheet: it stays
-    // to say which account, and by which device
+    // to say which account and by which device, and to ask about a device nobody vouched for
     const qrCode = decodeOffer(((await (await offered).json()) as { url: string }).url)?.code;
+    const codeEnded = answered(page, "/api/devices/pair/cancel");
     const scanned = await fetch(`${fixture.origin}/api/devices/pair`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-herdr-machine": "1", origin: fixture.origin },
@@ -311,9 +314,26 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(scanned.status, 204, "a device paired with the QR code's code");
     await dialog.locator('[data-section="devices"]').getByText("Paired: Scanner.", { exact: true }).waitFor();
     assert.equal(await sheet.isVisible(), true, "the sheet stays open across a pairing while its QR code is up");
-    const codeEnded = answered(page, "/api/devices/pair/cancel");
+    // it paired at this PC's own address and is in no account: asked about at once, with Not me first
+    const asked = accountQr.getByTestId("connect-account-alone");
+    await asked.getByText("Paired with this PC at its own address with the code shown here, not through the relay: Scanner.", { exact: true }).waitFor();
+    assert.equal((await codeEnded).status(), 200, "the question takes the QR code down and ends its pairing code");
+    assert.equal(await relayQr.count(), 0, "no QR code stays up beside the question");
+    assert.deepEqual(await asked.getByRole("button").allInnerTexts(), ["Not me: remove it", "Keep it"], "Not me comes first");
+    const removedScanner = page.waitForResponse((response) => response.request().method() === "DELETE" && new URL(response.url()).pathname.startsWith("/api/devices/"));
+    await asked.getByRole("button", { name: "Not me: remove it", exact: true }).click();
+    assert.equal((await removedScanner).status(), 204, "Not me revokes that device");
+    await accountQr.getByText("Removed: Scanner.", { exact: true }).waitFor();
+    assert.equal(await sheet.isVisible(), true, "the sheet stays open after the answer");
+    await accountQr.getByRole("button", { name: "Show a new code", exact: true }).waitFor();
+    // a QR code that is up comes down with its code when another tab opens
+    const offeredAgain = answered(page, "/api/relay/offer");
+    await accountQr.getByRole("button", { name: "Show a new code", exact: true }).click();
+    assert.equal((await offeredAgain).status(), 200, "Show a new code asks for a new offer");
+    await relayQr.waitFor();
+    const codeEndedAgain = answered(page, "/api/devices/pair/cancel");
     await ui.openTab("ssh");
-    assert.equal((await codeEnded).status(), 200, "another tab ends the QR code's pairing code");
+    assert.equal((await codeEndedAgain).status(), 200, "another tab ends the QR code's pairing code");
     await ui.openTab("relay");
     await accountQr.getByRole("button", { name: "Show a new code", exact: true }).waitFor();
     assert.equal(await relayQr.count(), 0, "the QR code is down until it is asked for again");

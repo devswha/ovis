@@ -106,8 +106,11 @@ function announceFromRelay(code: PairingCode): void {
  * up at once: a code another one announces is the one this shows already, or this asks for the offer
  * again without announcing it (the server's offer reuses its pending code), so the two never keep
  * answering each other.
+ * `qrOnly`: the QR code alone, with New code. No code to type is asked for (`POST /api/relay/code` is never sent), so
+ * nothing on the screen can be read and typed on another device: the relay tab's account QR code, which puts a PC in
+ * the account of whoever redeems it (ConnectPhoneDialog `AccountQr`).
  */
-export function RelayPairing({ phone = false, compact = false }: { phone?: boolean; compact?: boolean }) {
+export function RelayPairing({ phone = false, compact = false, qrOnly = false }: { phone?: boolean; compact?: boolean; qrOnly?: boolean }) {
   const t = useT();
   const [offer, setOffer] = useState<RelayOffer | null>(null);
   const [left, setLeft] = useState("");
@@ -129,7 +132,7 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
   useEffect(() => {
     // compact: the code to type is asked for first and asks for the offer once it is in (CompactRelay's onMinted).
     // Asked for together, a new six-digit code the offer starts ends the code being minted on the PC.
-    if (compact && generation === 0) return;
+    if (compact && !qrOnly && generation === 0) return;
     let cancelled = false;
     const silent = quiet.current;
     quiet.current = false;
@@ -180,7 +183,7 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
         // a code that ran out while shown is replaced by itself; one that arrived already expired
         // (the PC's clock and this one apart) is not, or the asking would never end
         // compact: CompactRelay renews both, the code to type first and then this offer, so the two never race
-        if (wasLive) { if (!compact) again(); } else setState("expired");
+        if (wasLive) { if (!compact || qrOnly) again(); } else setState("expired");
         return;
       }
       wasLive = true;
@@ -206,6 +209,23 @@ export function RelayPairing({ phone = false, compact = false }: { phone?: boole
     }
   };
 
+  if (qrOnly) return (
+    <div className="relay-pairing-compact relay-pairing-qr-only" role="status">
+      <div className="compact-pair">
+        {offer !== null ? <QrCode value={offer.url} label={t("QR code that pairs a phone through the relay")} size={132} /> : <div className="compact-pair-qr-empty" role="status">{state === "minting" ? t("Getting a code…") : ""}</div>}
+        <div className="compact-pair-side">
+          <p className="settings-description">
+            {state === "live" && t("Expires in {time}.", { time: left })}
+            {state === "expired" && t("This code expired.")}
+          </p>
+          <div className="compact-pair-actions">
+            <button type="button" className="btn" disabled={state === "minting"} aria-busy={state === "minting" || undefined} onClick={() => void renew()}><RefreshCw aria-hidden="true" />{t("New code")}</button>
+          </div>
+        </div>
+      </div>
+      {state === "failed" && failure !== null && <p className="settings-hint relay-error" role="alert">{failure}</p>}
+    </div>
+  );
   // Connect a device: the QR code and the code to type side by side, one Refresh for both
   if (compact) return <CompactRelay qr={offer?.url ?? null} qrExpires={offer?.expires_at ?? null} failure={state === "failed" ? failure : null} reset={typedReset} onMinted={again} />;
   const countdown = (

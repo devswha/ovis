@@ -18,7 +18,7 @@ import { QrCode } from "./QrCode.tsx";
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, connectTabs, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
-const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrNoticeWaiting, newestRelayDevice, accountQrPending, resetAccountQrWatch } = await import("../lib/accountQrWatch.ts");
+const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrNoticeWaiting, addedBy, newestRelayDevice, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
 
 // Connect a phone on the phone itself: the QR codes wait behind Show QR code, a phone online with
 // the relay pairs itself in one tap through its own offer, and the desktop keeps its QR codes.
@@ -329,6 +329,9 @@ describe("the relay tab's QR code behind a press", () => {
   let endsPairings: boolean;
   /** GET /api/account/status answers once this settles */
   let statusGate: Promise<void>;
+  /** the ids DELETE /api/devices/:id got; `removable` false: the PC refuses it */
+  let removed: string[];
+  let removable: boolean;
 
   const device = (extra: Partial<PairedDevice>): PairedDevice => ({ id: "a", label: "Laptop · Chrome", role: "drive", created_at: "2026-10-01T00:00:00Z", last_seen_at: null, current: false, ...extra });
   const phoneDevice = (extra: Partial<PairedDevice> = {}) => device({ id: "b", label: "iPhone · Safari", created_at: "2026-11-10T00:00:00Z", via_relay: true, ...extra });
@@ -347,6 +350,8 @@ describe("the relay tab's QR code behind a press", () => {
     keptAlive = [];
     endsPairings = true;
     statusGate = Promise.resolve();
+    removed = [];
+    removable = true;
     for (const key of ["window", "document", "navigator", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
@@ -380,6 +385,14 @@ describe("the relay tab's QR code behind a press", () => {
       if (path === "/api/account/status") await statusGate;
       if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
       if (path === "/api/devices") return Response.json({ devices });
+      if (path.startsWith("/api/devices/") && init?.method === "DELETE") {
+        if (!removable) return Response.json({ error: { code: "busy", message: "not now" } }, { status: 500 });
+        const id = decodeURIComponent(path.slice("/api/devices/".length));
+        if (!devices.some((entry) => entry.id === id)) return Response.json({ error: { code: "not_found", message: "no such device" } }, { status: 404 });
+        removed.push(id);
+        devices = devices.filter((entry) => entry.id !== id);
+        return new Response(null, { status: 204 });
+      }
       if (path === "/api/relay/code") return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID });
       if (path === "/api/relay/offer") return Response.json({ url: OFFER_URL, expires_at });
       if (path === "/api/relay/code/cancel") return Response.json({ ok: true });
@@ -408,10 +421,11 @@ describe("the relay tab's QR code behind a press", () => {
     descriptors.clear();
   });
 
-  interface TabOptions { signedIn?: boolean; joinBySignIn?: boolean; relay?: RelayState; active?: boolean }
-  const tab = ({ signedIn = true, joinBySignIn = false, relay = relayState(), active = true }: TabOptions = {}) => (
+  /** `accountId`: the account this browser is signed in to; the default is the one the PC joins in most cases here */
+  interface TabOptions { signedIn?: boolean; accountId?: string | null; joinBySignIn?: boolean; relay?: RelayState; active?: boolean }
+  const tab = ({ signedIn = true, accountId = signedIn ? ACCOUNT_ID : null, joinBySignIn = false, relay = relayState(), active = true }: TabOptions = {}) => (
     <SettingsProvider>
-      <RelayTab relay={relay} closesGate={false} signedIn={signedIn} joinBySignIn={joinBySignIn} account={SERVICE} phone={false} active={active}
+      <RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} account={SERVICE} phone={false} active={active}
         onPairingHeld={(next) => { held.push(next); }} onRevokedAll={() => { revokedAll += 1; }} />
     </SettingsProvider>
   );
@@ -449,10 +463,12 @@ describe("the relay tab's QR code behind a press", () => {
       expect(qrCodes()).toHaveLength(0);
       expect(minted()).toEqual([]);
       await press("Show the QR code");
-      expect(minted()).toEqual(["/api/relay/code", "/api/relay/offer"]);
+      // the QR code alone: no code to type is made, so nothing here can be read off the screen and typed elsewhere
+      expect(minted()).toEqual(["/api/relay/offer"]);
       expect(qrCodes()).toHaveLength(1);
-      expect(text(section())).toContain("7K3QD-M2XHA");
-      expect(buttons()).not.toContain("Show the QR code");
+      expect(text(section())).not.toContain("7K3QD-M2XHA");
+      expect(section().findAll((node) => node.props["aria-label"] === "Code to type")).toHaveLength(0);
+      expect(buttons()).toEqual(["New code"]);
     });
   }
 
@@ -485,9 +501,10 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(1000);
     expect(qrCodes()).toHaveLength(0);
     expect(buttons()).toEqual(["Show a new code"]);
-    // the six-digit code's end takes the typed code bound to it along (server/devices.ts endPairing)
     expect(count("/api/relay/code/cancel")).toBe(0);
     expect(ended).toEqual([{ code: "482913" }]);
+    // no code to type was made in all that time, renewals included
+    expect(count("/api/relay/code")).toBe(0);
     // nothing renews it afterwards
     const before = minted().length;
     await advance(ACCOUNT_QR_MAX_MS);
@@ -638,7 +655,7 @@ describe("the relay tab's QR code behind a press", () => {
       pcAccount = ACCOUNT_ID;
       await advance(ACCOUNT_QR_POLL_MS);
       const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
-      expect(text(notice)).toContain("This PC joined an Ovis account (acct_0123456).");
+      expect(text(notice)).toContain("This PC is in your account (acct_0123456).");
       expect(text(notice)).toContain("Added by iPhone · Safari.");
       expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
       expect(held.at(-1)).toBe(true);
@@ -706,9 +723,9 @@ describe("the relay tab's QR code behind a press", () => {
     await update({ active: false });
     await update({ active: true });
     await advance(ACCOUNT_QR_ALONE_MS + ACCOUNT_QR_POLL_MS);
-    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-alone" }))).toContain("iPhone · Safari is paired with this PC alone so far");
-    // Done leaves the watch on: it signs in later
-    await press("Done");
+    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-alone" }))).toContain("Paired with this PC but not signed in to an Ovis account, so this PC is in no account yet: iPhone · Safari.");
+    // kept, the PC is watched on: it signs in later
+    await press("Keep it");
     expect(buttons()).toEqual(["Show a new code"]);
     expect(held.at(-1)).toBe(false);
     devices = [devices[0]!, phoneDevice({ account: ACCOUNT_ID })];
@@ -758,7 +775,7 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_POLL_MS);
     expect(qrCodes()).toHaveLength(0);
     const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
-    expect(text(notice)).toContain("This PC joined an Ovis account (acct_0123456).");
+    expect(text(notice)).toContain("This PC is in your account (acct_0123456).");
     expect(text(notice)).toContain("Added by iPhone · Safari.");
     expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
     expect(held.at(-1)).toBe(true);
@@ -789,7 +806,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(buttons()).toEqual(["Show a new code"]);
   });
 
-  it("names a device that paired without an account as paired with this PC alone, after ten seconds, and still tells a later join", async () => {
+  it("asks about a device that paired without an account, after ten seconds, with Not me first, and still tells a later join", async () => {
     await mount();
     await press("Show the QR code");
     devices = [...devices, phoneDevice()];
@@ -797,8 +814,8 @@ describe("the relay tab's QR code behind a press", () => {
     expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
     await advance(ACCOUNT_QR_ALONE_MS);
     const notice = renderer!.root.findByProps({ "data-testid": "connect-account-alone" });
-    // it may be signed in and still on its way into the account: nothing says it is not
-    expect(text(notice)).toBe("iPhone · Safari is paired with this PC alone so far: it has not added this PC to an account. Sign in on it to add this PC to your account.Done");
+    // it may be signed in and still on its way into the account, and it may be nobody the owner knows
+    expect(text(notice)).toBe("Paired with this PC but not signed in to an Ovis account, so this PC is in no account yet: iPhone · Safari.If that is your device, keep it and sign in on it to add this PC to your account.Not me: remove itKeep it");
     expect(qrCodes()).toHaveLength(0);
     expect(held.at(-1)).toBe(true);
     // it signed in after all
@@ -806,6 +823,205 @@ describe("the relay tab's QR code behind a press", () => {
     pcAccount = ACCOUNT_ID;
     await advance(ACCOUNT_QR_POLL_MS);
     expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("Added by iPhone · Safari.");
+  });
+
+  // (2) a scan by a device that is not signed in gets a Not me too: one press removes it
+  it("Not me on a device that paired without an account removes that device, and watches for nothing more", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice()];
+    await advance(ACCOUNT_QR_POLL_MS);
+    await advance(ACCOUNT_QR_ALONE_MS);
+    await press("Not me: remove it");
+    expect(removed).toEqual(["b"]);
+    expect(count("/api/devices/revoke-all")).toBe(0);
+    expect(text(section())).toContain("Removed: iPhone · Safari.");
+    expect(buttons()).toEqual(["Show a new code"]);
+    expect(held.at(-1)).toBe(false);
+    expect(accountQrPending()).toBe(false);
+    const asked = count("/api/account/status");
+    await advance(ACCOUNT_QR_POLL_MS * 4);
+    expect(count("/api/account/status")).toBe(asked);
+  });
+
+  it("keeps the question up when the device could not be removed, and counts one already gone as removed", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice()];
+    await advance(ACCOUNT_QR_POLL_MS);
+    await advance(ACCOUNT_QR_ALONE_MS);
+    removable = false;
+    await press("Not me: remove it");
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(1);
+    expect(section().findAllByProps({ role: "alert" })).toHaveLength(1);
+    removable = true;
+    // revoked meanwhile from the device list
+    devices = [devices[0]!];
+    await press("Not me: remove it");
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
+    expect(buttons()).toEqual(["Show a new code"]);
+  });
+
+  it("a question nobody answered waits for the next opening: closing the dialog keeps nobody", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice()];
+    await advance(ACCOUNT_QR_POLL_MS);
+    await advance(ACCOUNT_QR_ALONE_MS);
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(1);
+    await act(async () => { renderer!.unmount(); });
+    renderer = undefined;
+    await flush();
+    // Devices and PCs opens Add a connection on its relay tab for it the next time it is opened
+    expect(accountQrNoticeWaiting()).toBe(true);
+    await mount();
+    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-alone" }))).toContain("iPhone · Safari");
+    expect(buttons()).toEqual(["Not me: remove it", "Keep it"]);
+    // and what the PC became meanwhile is read again: the device signed in to an account that is not this browser's
+    devices = [devices[0]!, phoneDevice({ account: "acct_stranger_000000000" })];
+    pcAccount = "acct_stranger_000000000";
+    await advance(ACCOUNT_QR_POLL_MS);
+    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("This PC joined another Ovis account (acct_strange), not the one this browser is signed in to (acct_0123456).");
+  });
+
+  // (1) the page knows which account it is signed in to: a PC that joined another one is told apart
+  it("says so when the PC joined an account that is not the one this browser is signed in to, with Not me first", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice({ account: "acct_stranger_000000000" })];
+    pcAccount = "acct_stranger_000000000";
+    await advance(ACCOUNT_QR_POLL_MS);
+    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    expect(notice.props["data-account"]).toBe("other");
+    expect(text(notice)).toContain("This PC joined another Ovis account (acct_strange), not the one this browser is signed in to (acct_0123456).");
+    expect(text(notice)).toContain("Added by iPhone · Safari.");
+    expect(text(notice)).not.toContain("This PC is in your account");
+    expect(buttons()).toEqual(["Not me: revoke every device", "Keep it"]);
+    const [notMe, keep] = section().findAll((node) => node.type === "button");
+    expect(notMe!.props.className).toContain("btn-danger");
+    expect(keep!.props.className).not.toContain("btn-primary");
+  });
+
+  it("signed out, says that this browser cannot tell whose account the PC joined, and tells once it is signed in", async () => {
+    await mount({ signedIn: false });
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice({ account: ACCOUNT_ID })];
+    pcAccount = ACCOUNT_ID;
+    await advance(ACCOUNT_QR_POLL_MS);
+    const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    expect(notice().props["data-account"]).toBe("unknown");
+    expect(text(notice())).toContain("This PC joined an Ovis account (acct_0123456).");
+    expect(text(notice())).toContain("This browser is not signed in, so it cannot tell whether that account is yours: sign in above to check.");
+    expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
+    expect(section().findAll((node) => node.type === "button")[0]!.props.className).not.toContain("btn-primary");
+    await update({ signedIn: true, accountId: "acct_mine_0000000000000" });
+    expect(notice().props["data-account"]).toBe("other");
+    await update({ signedIn: true, accountId: ACCOUNT_ID });
+    expect(notice().props["data-account"]).toBe("mine");
+    expect(text(notice())).toContain("This PC is in your account (acct_0123456).");
+  });
+
+  // (4) only a member of the account is named as the one that added the PC; a device that only holds the code is asked about
+  it("never names a device that is no member of the joined account as the one that added the PC, and asks about it", async () => {
+    await mount();
+    await press("Show the QR code");
+    // a stranger took the code and is signed in to nothing; the owner's laptop, paired before, linked itself meanwhile
+    devices = [device({ account: ACCOUNT_ID }), phoneDevice({ label: "Stranger · Firefox" })];
+    pcAccount = ACCOUNT_ID;
+    await advance(ACCOUNT_QR_POLL_MS);
+    const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    expect(text(notice())).toContain("Added by Laptop · Chrome.");
+    expect(text(notice())).not.toContain("Added by Stranger");
+    // through the relay it gets its ten seconds to become a member
+    expect(text(notice())).not.toContain("Stranger · Firefox");
+    await advance(ACCOUNT_QR_ALONE_MS);
+    expect(text(notice())).toContain("Paired with this PC with the code shown here, and not in that account: Stranger · Firefox.");
+    // no Done while a device nobody vouched for is unanswered
+    expect(buttons()).toEqual(["Not me: remove it", "Keep it", "Not me: revoke every device"]);
+    await press("Not me: remove it");
+    expect(removed).toEqual(["b"]);
+    expect(text(notice())).toContain("Added by Laptop · Chrome.");
+    expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
+  });
+
+  it("with the dialog closed, still names only a member and asks about the device that is none when the dialog is back", async () => {
+    await mount();
+    await press("Show the QR code");
+    // a stranger took the code just before the dialog closed
+    devices = [...devices, phoneDevice({ label: "Stranger · Firefox" })];
+    codePending = false;
+    await act(async () => { renderer!.unmount(); });
+    renderer = undefined;
+    await flush();
+    expect(accountQrPending()).toBe(true);
+    // the PC joined the owner's account by the laptop paired long before
+    devices = [device({ account: ACCOUNT_ID }), phoneDevice({ label: "Stranger · Firefox" })];
+    pcAccount = ACCOUNT_ID;
+    await advance(ACCOUNT_QR_POLL_MS);
+    expect(accountQrNoticeWaiting()).toBe(true);
+    await mount();
+    const notice = () => renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    expect(text(notice())).toContain("Added by Laptop · Chrome.");
+    expect(text(notice())).not.toContain("Added by Stranger");
+    await advance(ACCOUNT_QR_POLL_MS);
+    await advance(ACCOUNT_QR_ALONE_MS);
+    expect(text(notice())).toContain("not in that account: Stranger · Firefox.");
+    expect(buttons()).toEqual(["Not me: remove it", "Keep it", "Not me: revoke every device"]);
+    // kept, it is asked about no more, and Done is offered
+    await press("Keep it");
+    expect(removed).toEqual([]);
+    expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
+    await advance(ACCOUNT_QR_POLL_MS * 2);
+    expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
+    await press("Done");
+    expect(buttons()).toEqual(["Show a new code"]);
+  });
+
+  it("a joined notice the dialog closed over waits for the next opening, and Done ends it", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice({ account: "acct_stranger_000000000" })];
+    pcAccount = "acct_stranger_000000000";
+    await advance(ACCOUNT_QR_POLL_MS);
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-joined" })).toHaveLength(1);
+    await act(async () => { renderer!.unmount(); });
+    renderer = undefined;
+    await flush();
+    expect(accountQrNoticeWaiting()).toBe(true);
+    await mount();
+    expect(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }).props["data-account"]).toBe("other");
+    await press("Keep it");
+    await act(async () => { renderer!.unmount(); });
+    renderer = undefined;
+    await flush();
+    expect(accountQrNoticeWaiting()).toBe(false);
+  });
+
+  it("names nobody when no device on the PC is a member of the account it joined", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice()];
+    pcAccount = ACCOUNT_ID;
+    await advance(ACCOUNT_QR_POLL_MS);
+    await advance(ACCOUNT_QR_ALONE_MS);
+    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    expect(text(notice)).not.toContain("Added by");
+    expect(text(notice)).toContain("not in that account: iPhone · Safari.");
+  });
+
+  it("asks at once about a device that paired at this PC's own address with the code, and keeping it asks no more", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, device({ id: "c", label: "Tablet · Chrome", created_at: "2026-11-10T00:00:00Z" })];
+    await advance(ACCOUNT_QR_POLL_MS);
+    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-alone" });
+    expect(text(notice)).toContain("Paired with this PC at its own address with the code shown here, not through the relay: Tablet · Chrome.");
+    await press("Keep it");
+    expect(removed).toEqual([]);
+    expect(buttons()).toEqual(["Show a new code"]);
+    await advance(ACCOUNT_QR_POLL_MS * 2);
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
+    expect(accountQrNoticeWaiting()).toBe(false);
   });
 
   it("on a PC already in an account, a device that pairs is named and the dialog is not held", async () => {
@@ -826,5 +1042,24 @@ describe("the relay tab's QR code behind a press", () => {
     expect(newestRelayDevice([device({ via_relay: true })], known)).toBeNull();
     expect(newestRelayDevice([device({ id: "c" })], known)).toBeNull();
     expect(newestRelayDevice([phoneDevice({ id: "c", label: "old", created_at: "2026-11-09T00:00:00Z" }), phoneDevice()], known)?.label).toBe("iPhone · Safari");
+  });
+
+  it("names as the adder only a member of the account: the newest that came since the press, else the account's newest", () => {
+    const known = new Set(["a"]);
+    const stranger = phoneDevice({ id: "s", label: "Stranger", created_at: "2026-11-10T09:00:00Z" });
+    // a newcomer that is no member is never the adder, however new
+    expect(addedBy([device({}), stranger], known, ACCOUNT_ID)).toBeNull();
+    expect(addedBy([device({ account: ACCOUNT_ID }), stranger], known, ACCOUNT_ID)?.label).toBe("Laptop · Chrome");
+    expect(addedBy([device({ account: ACCOUNT_ID }), stranger, phoneDevice({ account: ACCOUNT_ID })], known, ACCOUNT_ID)?.label).toBe("iPhone · Safari");
+    // a member of another account is not vouched for either
+    expect(addedBy([device({}), phoneDevice({ account: "acct_other" })], known, ACCOUNT_ID)).toBeNull();
+  });
+
+  it("counts as unvouched every device that came since the press and is no member of the PC's account", () => {
+    const known = new Set(["a"]);
+    const list = [device({}), phoneDevice({ account: ACCOUNT_ID }), phoneDevice({ id: "s", label: "Stranger" }), device({ id: "c", label: "Tablet" })];
+    expect(unvouched(list, known, ACCOUNT_ID).map((entry) => entry.id)).toEqual(["s", "c"]);
+    expect(unvouched(list, known, null).map((entry) => entry.id)).toEqual(["b", "s", "c"]);
+    expect(unvouched(list, new Set(["a", "s", "c"]), ACCOUNT_ID)).toEqual([]);
   });
 });

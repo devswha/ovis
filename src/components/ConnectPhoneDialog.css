@@ -239,6 +239,17 @@
   flex-wrap: wrap;
 }
 
+/* what the owner has to answer: a device nobody vouched for, or an account this browser cannot call its own */
+.connect-account-qr-warning {
+  color: var(--text);
+}
+
+/* the PC joined an account that is not this browser's */
+.connect-account-qr-notice[data-account="other"] {
+  border-color: var(--status-blocked);
+  background: var(--danger-tint);
+}
+
 /* on a phone the address goes under the name, so the name, its source and its button keep one line */
 @media (max-width: 480px) {
   .connect-found-row {

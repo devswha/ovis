@@ -9,8 +9,8 @@ import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { pcAccountStatus } from "../lib/account/join.ts";
-import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrNoticeWaiting, accountQrPending, joinedBy, newestRelayDevice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline } from "../lib/accountQrWatch.ts";
-import { ApiError, cancelRelayCode, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, startPairing, type SshCandidate } from "../lib/api.ts";
+import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrNoticeWaiting, accountQrPending, addedBy, dueStrays, holdAccountQrNotice, newestRelayDevice, resetAccountQrWatch, stopAccountQrWatch, strayOf, takeAccountQrNotice, unvouched, watchEndedAccountQr, type AccountQrBaseline, type AccountQrStray } from "../lib/accountQrWatch.ts";
+import { ApiError, cancelRelayCode, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, revokeDevice, startPairing, type SshCandidate } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { useT } from "../lib/i18n.ts";
@@ -19,7 +19,7 @@ import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
-import { announcePairingCode, inRelayShell, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
+import { announcePairingCode, DEVICES_CHANGED_EVENT, inRelayShell, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
 import type { PairedDevice, PairingCode } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
@@ -85,6 +85,8 @@ export interface ConnectPhoneDialogProps {
   canPair: boolean;
   /** this browser is signed in to the Ovis account */
   signedIn: boolean;
+  /** that account's id, for the relay tab to tell a PC that joined it from one that joined another; null when not known */
+  accountId?: string | null;
   /**
    * Signed in, with this PC in that account and its relay on: a new device joins by signing in to the
    * same account, and a device already in it approves it once by picking the matching number
@@ -100,8 +102,9 @@ export interface ConnectPhoneDialogProps {
   /** Connect on a PC saved in herdr: its own setup dialog */
   onConnectMachine: (machine: Machine) => void;
   /**
-   * The relay tab's QR code may put this PC in an account, and the dialog then says which and by which device: while
-   * that can still come, or is on screen, a device that pairs does not close the dialog (`held`).
+   * The relay tab's QR code may put this PC in an account, and the dialog then says which and by which device, and asks
+   * about a device nobody vouched for: while that can still come, or is on screen, a device that pairs does not close
+   * the dialog (`held`).
    */
   onPairingHeld?: (held: boolean) => void;
   /** every device was revoked from the relay tab's "Not me": the page reads how it is in again */
@@ -117,7 +120,7 @@ export interface ConnectPhoneDialogProps {
  * The Ovis relay is used through the Ovis account, so its tab is the sign-in, or once signed in how a new device
  * joins. The relay and Tailscale stay apart: nothing on the SSH tab goes through the relay.
  */
-export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate, canPair, signedIn, joinBySignIn, account, onAddPc, machines, onConnectMachine, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
+export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate, canPair, signedIn, accountId = null, joinBySignIn, account, onAddPc, machines, onConnectMachine, onPairingHeld, onRevokedAll, onClose }: ConnectPhoneDialogProps) {
   const t = useT();
   const id = useId();
   const surface = useFocusTrap<HTMLDivElement>(true);
@@ -182,7 +185,7 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
           )}
           {opened.current.has("relay") && tabs.includes("relay") && (
             <div className="connect-tab" data-tab-panel="relay" hidden={tab !== "relay"}>
-              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} joinBySignIn={joinBySignIn} account={account} phone={phone} active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} />
+              <RelayTab relay={relay} closesGate={closesGate} signedIn={signedIn} accountId={accountId} joinBySignIn={joinBySignIn} account={account} phone={phone} active={tab === "relay"} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll} />
             </div>
           )}
         </div>
@@ -325,8 +328,10 @@ function DevicesTab({ plan, pairUrl, readOnly, canPair, phone }: { plan: PhonePl
  * type. One short line at most: what a blocked relay or the device gate means stays in More settings, or in the
  * switch's tooltip. With an account, either state also ends in the relay's QR code behind a press (AccountQr).
  */
-export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, phone, active = true, onPairingHeld, onRevokedAll }: {
+export function RelayTab({ relay, closesGate, signedIn, accountId = null, joinBySignIn, account, phone, active = true, onPairingHeld, onRevokedAll }: {
   relay: RelayState; closesGate: boolean; signedIn: boolean; joinBySignIn: boolean; account: RelayAccount | null; phone: boolean;
+  /** the account this browser is signed in to; null when signed out, or not known */
+  accountId?: string | null;
   /** this tab is the one showing: its QR code comes down when another is opened */
   active?: boolean;
   onPairingHeld?: (held: boolean) => void;
@@ -374,7 +379,7 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, p
   const startFailure = switchError === null && startError !== null && <p className="settings-hint relay-error" role="alert">{t("The relay did not start: {message}", { message: startError })}</p>;
   // the same place in both account states, so a sign-in that finishes while the QR code is up leaves it up
   const qr = (ownSwitch: boolean) => (
-    <AccountQr relay={relay} phone={phone} active={active} signedIn={signedIn} inAccount={joinBySignIn} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll}
+    <AccountQr relay={relay} phone={phone} active={active} signedIn={signedIn} accountId={signedIn ? accountId : null} inAccount={joinBySignIn} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll}
       relayControls={ownSwitch ? <>{relaySwitch}{switchFailure}{startFailure}</> : null} />
   );
   if (!signedIn) return (
@@ -437,9 +442,13 @@ type AccountQrView =
   /** the press read the PC's account and devices, to tell afterwards what the QR code changed */
   | { kind: "starting" }
   | { kind: "shown" }
-  /** a device paired and the PC is still in no account */
-  | { kind: "alone"; device: string; id: string }
-  | { kind: "joined"; account: string; device: string | null };
+  /** devices paired and the PC is still in no account: each is asked about */
+  | { kind: "alone"; strays: readonly AccountQrStray[] }
+  /** the PC joined `account`; `device`: the member of it that added the PC; `strays`: the devices that got in and are no members */
+  | { kind: "joined"; account: string; device: string | null; strays: readonly AccountQrStray[] };
+
+const sameView = (a: AccountQrView, b: AccountQrView): boolean => JSON.stringify(a) === JSON.stringify(b);
+const names = (strays: readonly AccountQrStray[]): string => strays.map((stray) => stray.label).join(", ");
 
 /**
  * The relay's QR code where the page has an Ovis account, behind a press: a signed-in device that scans it is paired
@@ -449,14 +458,21 @@ type AccountQrView =
  * - nothing is asked of the PC until Show the QR code is pressed, and the code is ended when the QR code comes down:
  *   as the dialog closes or another tab opens, as the page goes (a reload, a closed tab), once the page was hidden
  *   for a minute, and 30 minutes after the press;
- * - when the PC goes from no account to one, the QR code gives way to which account and which device, with
- *   "Not me: revoke every device";
- * - a device that paired while the PC stays in no account is named as paired with this PC alone;
+ * - the QR code is shown alone: no code to type is made, which could be read off the screen and typed elsewhere;
+ * - when the PC goes from no account to one, the QR code gives way to which account, told apart as the one this
+ *   browser is signed in to, another one, or one it cannot tell (`accountId`), and to the device that added it: only a
+ *   member of that account is named. "Not me: revoke every device" undoes it, and comes first when it is another account;
+ * - every device that came since the press and is no member of the PC's account got in by the code alone: it is named
+ *   and asked about, "Not me: remove it" first, whether or not the PC joined an account;
+ * - a notice goes only by one of its buttons: one the dialog closed over waits for the next opening;
  * - a device that took the code just before it was ended links only afterwards: the PC is watched on after the QR
  *   code came down, outside this component (lib/accountQrWatch.ts), and what that finds is shown here.
+ * On a PC already in an account the scan only pairs the device, as any pairing code does: it is named in a line.
  */
-export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccountHint, relayControls, onPairingHeld, onRevokedAll }: {
+export function AccountQr({ relay, phone, active, signedIn, accountId = null, inAccount: inAccountHint, relayControls, onPairingHeld, onRevokedAll }: {
   relay: RelayState; phone: boolean; active: boolean; signedIn: boolean;
+  /** the account this browser is signed in to; null when signed out, or not known */
+  accountId?: string | null;
   /** what the page knows before this PC answered: it is in the account this browser is signed in to */
   inAccount: boolean;
   /** the relay's switch and its failures, where the tab shows them nowhere else; null where it does */
@@ -475,11 +491,13 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  /** the devices asked about are being removed */
+  const [removing, setRemoving] = useState(false);
   /** the account this PC is in, as it last said; undefined until it answered */
   const [pcAccount, setPcAccount] = useState<string | null | undefined>(undefined);
   /** a QR code that came down is still being checked for a device it let in (lib/accountQrWatch.ts) */
   const [late, setLate] = useState(accountQrPending);
-  /** the PC's account and devices as the press found them */
+  /** the PC's account and devices as the press found them, with the devices kept since */
   const before = useRef<AccountQrBaseline | null>(null);
   /** bumped by every press and every take-down: an answer to an older one changes nothing */
   const run = useRef(0);
@@ -493,7 +511,16 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
   useEffect(() => {
     let live = true;
     pcAccountStatus(apiFetch).then((status) => { if (live) setPcAccount((known) => known === undefined ? status.account : known); }, () => undefined);
-    return () => { live = false; run.current++; };
+    return () => {
+      live = false;
+      run.current++;
+      // a notice the dialog closed over was not answered: it waits for the next opening, read on from the same baseline
+      const left = drawn.current;
+      const known = before.current;
+      if (known === null) return;
+      if (left.kind === "alone") holdAccountQrNotice({ kind: "alone", strays: left.strays, known });
+      else if (left.kind === "joined") holdAccountQrNotice({ kind: "joined", account: left.account, device: left.device, strays: left.strays, known });
+    };
   }, []);
 
   // what the watch after a take-down found: shown here, wherever this was meanwhile (another tab, a closed dialog)
@@ -507,16 +534,17 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
       if (found === null) return;
       run.current++;
       setNote(null);
+      setError(null);
       setAgain(true);
+      // from here on this reads the PC again, from where that QR code began
+      stopAccountQrWatch();
+      before.current = found.known;
       if (found.kind === "joined") {
         setPcAccount(found.account);
-        setView({ kind: "joined", account: found.account, device: found.device });
+        setView({ kind: "joined", account: found.account, device: found.device, strays: found.strays });
         return;
       }
-      // from here on this reads the PC again, with that device still to name when the PC joins an account
-      stopAccountQrWatch();
-      before.current = { account: null, ids: new Set([...found.known.ids].filter((known) => known !== found.id)) };
-      setView({ kind: "alone", device: found.device, id: found.id });
+      setView({ kind: "alone", strays: found.strays });
     };
     adopt();
     window.addEventListener(ACCOUNT_QR_WATCH_EVENT, adopt);
@@ -541,17 +569,23 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
       // the QR code shown before may have let a device in, which the PC is still watched for or which waits to be
       // told: this press goes on from there
       const found = takeAccountQrNotice();
-      const earlier = stopAccountQrWatch();
+      const earlier = found?.known ?? stopAccountQrWatch();
+      stopAccountQrWatch();
       setPcAccount(status.account);
-      if (status.account !== null && (found?.kind === "joined" || earlier !== null)) {
-        run.current++;
-        setAgain(true);
-        setView({ kind: "joined", account: status.account, device: found?.kind === "joined" ? found.device : joinedBy(devices, earlier!.ids, status.account)?.label ?? null });
-        return;
+      if (earlier !== null && earlier.account === null) {
+        const strays = unvouched(devices, earlier.ids, status.account).map(strayOf);
+        // a device got in, or the PC joined an account: that is told, and no new code is made over it
+        if (status.account !== null || strays.length > 0) {
+          run.current++;
+          before.current = earlier;
+          setAgain(true);
+          setView(status.account !== null
+            ? { kind: "joined", account: status.account, device: addedBy(devices, earlier.ids, status.account)?.label ?? null, strays }
+            : { kind: "alone", strays });
+          return;
+        }
       }
-      // a device named as paired alone stays one this QR code has yet to tell of
-      const ids = found?.kind === "alone" ? new Set([...found.known.ids].filter((known) => known !== found.id)) : earlier?.ids;
-      before.current = { account: status.account, ids: status.account === null && ids !== undefined ? ids : new Set(devices.map((device) => device.id)) };
+      before.current = { account: status.account, ids: status.account === null && earlier !== null ? earlier.ids : new Set(devices.map((device) => device.id)) };
       setView({ kind: "shown" });
     } catch (reason) {
       if (mine !== run.current) return;
@@ -596,62 +630,60 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
     };
   }, [shown, takeDown]);
 
-  // a device named as paired alone may still put the PC in its account after its notice went (Done, a closed dialog)
-  const aloneId = view.kind === "alone" ? view.id : null;
-  useEffect(() => {
-    if (aloneId === null) return;
-    stopAccountQrWatch();
-    return () => {
-      const known = before.current;
-      if (known === null || drawn.current.kind === "joined") return;
-      watchEndedAccountQr({ account: null, ids: new Set([...known.ids, aloneId]) }, Promise.resolve(true), true);
-    };
-  }, [aloneId]);
-
-  // while the QR code is up, and after a device paired without an account: what the PC says of its account and devices
-  const watching = shown || view.kind === "alone";
+  // while the QR code is up, and while a notice is: what the PC says of its account and devices. A notice follows the
+  // PC (a device that became a member is asked about no more, one that came late is), until a button answers it
+  const watching = shown || view.kind === "alone" || view.kind === "joined";
   useEffect(() => {
     if (!watching) return;
     const mine = run.current;
-    const known = before.current!;
     let asking = false;
-    let alone: number | undefined;
     let hidden: number | undefined;
     let hiddenAt = 0;
+    /** when each device that came since the press was first seen, and the timers that look again once its wait is over */
+    const seen = new Map<string, number>();
+    const waits: number[] = [];
     const until = Date.now() + ACCOUNT_QR_MAX_MS;
+    /** the limits are the QR code's: a notice stays until it is answered */
+    const up = () => drawn.current.kind === "shown";
     /** either limit passed by the clock: a device that slept ran no timer, and may wake with the page still in sight */
     const overdue = () => Date.now() >= until || (hidden !== undefined && Date.now() - hiddenAt >= ACCOUNT_QR_HIDDEN_MS);
     const ask = async () => {
-      if (overdue()) { takeDown(); return; }
+      if (up() && overdue()) { takeDown(); return; }
       if (asking) return;
       asking = true;
       try {
         const [status, devices] = await Promise.all([pcAccountStatus(apiFetch), fetchDevices()]);
-        if (mine !== run.current) return;
+        const known = before.current;
+        if (mine !== run.current || known === null) return;
         setPcAccount(status.account);
-        if (known.account === null && status.account !== null) {
-          run.current++;
-          setView({ kind: "joined", account: status.account, device: joinedBy(devices, known.ids, status.account)?.label ?? null });
+        if (known.account !== null) {
+          // a PC already in an account: the device is paired, as with any pairing code, and its code is spent
+          const paired = newestRelayDevice(devices, known.ids);
+          if (paired !== null) { setNote(t("Paired: {name}.", { name: paired.label })); takeDown(); }
           return;
         }
-        const paired = newestRelayDevice(devices, known.ids);
-        if (paired === null) return;
-        // a PC already in an account: the device is paired, and its code is spent
-        if (known.account !== null) { setNote(t("Paired: {name}.", { name: paired.label })); takeDown(); return; }
-        alone ??= window.setTimeout(() => {
-          if (mine === run.current) setView((current) => current.kind === "shown" ? { kind: "alone", device: paired.label, id: paired.id } : current);
-        }, ACCOUNT_QR_ALONE_MS);
+        const strays = unvouched(devices, known.ids, status.account);
+        const fresh = strays.filter((device) => !seen.has(device.id) && device.via_relay === true);
+        const due = dueStrays(strays, seen, Date.now());
+        // each gets its ten seconds: looked at again as they end, not only at the next round
+        fresh.forEach(() => { waits.push(window.setTimeout(() => void ask(), ACCOUNT_QR_ALONE_MS)); });
+        const next: AccountQrView | null = status.account !== null ? { kind: "joined", account: status.account, device: addedBy(devices, known.ids, status.account)?.label ?? null, strays: due }
+          : due.length > 0 ? { kind: "alone", strays: due }
+          : null;
+        if (next !== null) { setView((current) => sameView(current, next) ? current : next); return; }
+        // nothing is left of what a notice said (the device was revoked elsewhere, or the PC left the account again)
+        if (!up() && strays.length === 0) takeDown();
       } catch { /* the next round asks again */ } finally { asking = false; }
     };
     const poll = window.setInterval(() => void ask(), ACCOUNT_QR_POLL_MS);
-    const cap = window.setTimeout(takeDown, ACCOUNT_QR_MAX_MS);
+    const cap = window.setTimeout(() => { if (up()) takeDown(); }, ACCOUNT_QR_MAX_MS);
     const onVisibility = () => {
       if (document.hidden) {
-        if (hidden === undefined) { hiddenAt = Date.now(); hidden = window.setTimeout(takeDown, ACCOUNT_QR_HIDDEN_MS); }
+        if (hidden === undefined) { hiddenAt = Date.now(); hidden = window.setTimeout(() => { if (up()) takeDown(); }, ACCOUNT_QR_HIDDEN_MS); }
         return;
       }
       // back in sight: the clock says whether either limit passed meanwhile
-      if (overdue()) takeDown();
+      if (up() && overdue()) takeDown();
       window.clearTimeout(hidden);
       hidden = undefined;
     };
@@ -660,7 +692,7 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
     return () => {
       window.clearInterval(poll);
       window.clearTimeout(cap);
-      window.clearTimeout(alone);
+      for (const wait of waits) window.clearTimeout(wait);
       window.clearTimeout(hidden);
       document.removeEventListener("visibilitychange", onVisibility);
     };
@@ -675,6 +707,39 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
   const dismiss = () => {
     takeDown();
     setRefocus((count) => count + 1);
+  };
+  const strays = view.kind === "alone" || view.kind === "joined" ? view.strays : [];
+  /** Keep: the person vouches for those devices, which count as known from here on. */
+  const keepStrays = () => {
+    const known = before.current;
+    if (known === null) return;
+    setError(null);
+    before.current = { account: known.account, ids: new Set([...known.ids, ...strays.map((stray) => stray.id)]) };
+    if (view.kind === "joined") { setView({ ...view, strays: [] }); return; }
+    // still in no account: a kept device may put the PC in its account later, which is told then
+    watchEndedAccountQr(before.current, Promise.resolve(true), true);
+    dismiss();
+  };
+  /** Not me: each device asked about is revoked on the PC; one that is gone already was. */
+  const removeStrays = async () => {
+    setError(null);
+    setRemoving(true);
+    try {
+      for (const stray of strays) {
+        try { await revokeDevice(stray.id); } catch (reason) { if (!(reason instanceof ApiError && reason.status === 404)) throw reason; }
+      }
+    } catch (reason) {
+      setError(t("Could not remove it: {message} Revoke it in the device list.", { message: failureText(reason) }));
+      return;
+    } finally { setRemoving(false); }
+    // the device list behind the dialog reads itself again
+    window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT));
+    if (drawn.current.kind === "joined") { setView((current) => current.kind === "joined" ? { ...current, strays: [] } : current); return; }
+    if (drawn.current.kind !== "alone") return;
+    // nobody is left that the code let in: nothing more is watched for
+    before.current = null;
+    setNote(t("Removed: {devices}.", { devices: names(strays) }));
+    dismiss();
   };
   const revokeAll = async () => {
     await revokeAllDevices();
@@ -694,6 +759,16 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
   const needsAccount = !signedIn && relay.status?.phase === "error" && pass?.refused === true && pass.state !== "ok";
   // the switch says Connecting… itself
   const connecting = relay.status !== null && relay.status.blocked === null && relay.status.phase === "connecting";
+  /** whose account the PC joined, as far as this browser can tell: its own, another one, or it is not signed in */
+  const whose = view.kind !== "joined" ? null : accountId === null ? "unknown" : accountId === view.account ? "mine" : "other";
+  const one = strays.length === 1;
+  const strayButtons = strays.length > 0 && (
+    <>
+      <button type="button" className="btn btn-danger" disabled={removing} aria-busy={removing || undefined} onClick={() => void removeStrays()}>{one ? t("Not me: remove it") : t("Not me: remove them")}</button>
+      <button type="button" className="btn" disabled={removing} onClick={keepStrays}>{one ? t("Keep it") : t("Keep them")}</button>
+    </>
+  );
+  const revokeEvery = <button type="button" className="btn btn-danger" onClick={() => setConfirming(true)}>{t("Not me: revoke every device")}</button>;
   return (
     <section className="connect-account-qr" aria-labelledby={id} data-testid="connect-account-qr">
       <p className="settings-label" id={id}>{inAccount ? t("Add a device with a QR code") : t("Add with a QR code")}</p>
@@ -701,18 +776,31 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
         ? t("A signed-in device that scans it is paired with this PC. Its other PCs still ask for one approval.")
         : t("Scan it with a device that is signed in to your Ovis account: this PC joins that account, with no number to type. A device that is not signed in is paired with this PC alone.")}</p>
       {view.kind === "joined" ? (
-        <div className="connect-account-qr-notice" role="status" data-testid="connect-account-joined">
-          <p className="settings-label" title={view.account}>{t("This PC joined an Ovis account ({id}).", { id: view.account.slice(0, 12) })}</p>
+        <div className="connect-account-qr-notice" role="status" data-testid="connect-account-joined" data-account={whose}>
+          <p className="settings-label" title={view.account}>{whose === "mine" ? t("This PC is in your account ({id}).", { id: view.account.slice(0, 12) })
+            : whose === "other" ? t("This PC joined another Ovis account ({id}), not the one this browser is signed in to ({mine}).", { id: view.account.slice(0, 12), mine: accountId!.slice(0, 12) })
+            : t("This PC joined an Ovis account ({id}).", { id: view.account.slice(0, 12) })}</p>
           {view.device !== null && <p className="settings-description">{t("Added by {device}.", { device: view.device })}</p>}
+          {whose === "other" && <p className="settings-description connect-account-qr-warning">{t("If that was not you, revoke every device: this PC then leaves that account.")}</p>}
+          {whose === "unknown" && <p className="settings-description connect-account-qr-warning">{t("This browser is not signed in, so it cannot tell whether that account is yours: sign in above to check.")}</p>}
+          {strays.length > 0 && <p className="settings-description connect-account-qr-warning" data-testid="connect-account-strays">{t("Paired with this PC with the code shown here, and not in that account: {devices}.", { devices: names(strays) })}</p>}
           <div className="phone-actions">
-            <button type="button" className="btn btn-primary" onClick={dismiss}>{t("Done")}</button>
-            <button type="button" className="btn btn-danger" onClick={() => setConfirming(true)}>{t("Not me: revoke every device")}</button>
+            {strayButtons}
+            {/* no Done while a device nobody vouched for is unanswered; with another account, Not me comes first */}
+            {whose === "other" && revokeEvery}
+            {strays.length === 0 && <button type="button" className={whose === "mine" ? "btn btn-primary" : "btn"} onClick={dismiss}>{whose === "other" ? t("Keep it") : t("Done")}</button>}
+            {whose !== "other" && revokeEvery}
           </div>
         </div>
       ) : view.kind === "alone" ? (
         <div className="connect-account-qr-notice" role="status" data-testid="connect-account-alone">
-          <p className="settings-description">{t("{device} is paired with this PC alone so far: it has not added this PC to an account. Sign in on it to add this PC to your account.", { device: view.device })}</p>
-          <div className="phone-actions"><button type="button" className="btn" onClick={dismiss}>{t("Done")}</button></div>
+          {strays.every((stray) => stray.relay) ? (
+            <>
+              <p className="settings-description connect-account-qr-warning">{t("Paired with this PC but not signed in to an Ovis account, so this PC is in no account yet: {devices}.", { devices: names(strays) })}</p>
+              <p className="settings-description">{one ? t("If that is your device, keep it and sign in on it to add this PC to your account.") : t("If those are your devices, keep them and sign in on one to add this PC to your account.")}</p>
+            </>
+          ) : <p className="settings-description connect-account-qr-warning">{t("Paired with this PC at its own address with the code shown here, not through the relay: {devices}.", { devices: names(strays) })}</p>}
+          <div className="phone-actions">{strayButtons}</div>
         </div>
       ) : !online ? (
         <>
@@ -720,7 +808,7 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
           {needsAccount ? <p className="settings-hint">{t("Sign in above first; then this PC can show its QR code.")}</p>
             : relay.status !== null && !(connecting && relayControls !== null) && <p className="settings-hint" role="status">{statusText(t, relay.status)}</p>}
         </>
-      ) : shown ? <RelayRoute relay={relay} readOnly={false} phone={phone} compact /> : (
+      ) : shown ? <RelayRoute relay={relay} readOnly={false} phone={phone} compact qrOnly /> : (
         <div className="phone-actions">
           <button ref={showButton} type="button" className="btn" disabled={view.kind === "starting"} aria-busy={view.kind === "starting" || undefined} onClick={() => void show()}>{again ? t("Show a new code") : t("Show the QR code")}</button>
         </div>
@@ -742,8 +830,10 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
  * On a phone, online, the phone pairs itself through its own offer in one tap, and the offer for
  * another device is a link to send, its QR code behind Show QR code.
  */
-export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, sameName = null, compact = false }: {
+export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, sameName = null, compact = false, qrOnly = false }: {
   relay: RelayState;
+  /** the QR code alone: no code to type is made (RelayPairing `qrOnly`) */
+  qrOnly?: boolean;
   /** Add a connection: no state line (the switch above says it), the QR code beside the code to type, no reset (More settings has it) */
   compact?: boolean;
   readOnly: boolean;
@@ -790,7 +880,7 @@ export function RelayRoute({ relay, readOnly, phone = false, pairHere = false, s
         </div>
       )}
       {error !== null && <p className="settings-hint relay-error" role="alert">{error}</p>}
-      {status.phase === "online" && !readOnly && <RelayPairing phone={phone} compact={compact} />}
+      {status.phase === "online" && !readOnly && <RelayPairing phone={phone} compact={compact} qrOnly={qrOnly} />}
       {/* a serve-only install refuses the reset too; an unreadable identity is what the reset mends */}
       {!compact && !readOnly && status.blocked !== "serve_only" && (
         <div className="phone-actions connect-phone-reset">

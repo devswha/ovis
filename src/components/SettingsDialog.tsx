@@ -1447,7 +1447,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       {connecting && (
         <ConnectPhoneDialog plan={plan} pairUrl={pairUrl}
           relay={relay} readOnly={relayReadOnly} closesGate={closesGate} canPair={auth?.via !== "portal"}
-          signedIn={account.signedIn} joinBySignIn={joinBySignIn}
+          signedIn={account.signedIn} accountId={account.account} joinBySignIn={joinBySignIn}
           account={accountService !== null && account.reachable ? { service: accountService, onOpen: openAccount, onSignedIn: readAccountAgain } : null}
           onAddPc={(preset) => { setConnecting(false); openAddPc(preset); }} machines={machines}
           onConnectMachine={(machine) => { setConnecting(false); connectPc(machine); }}
