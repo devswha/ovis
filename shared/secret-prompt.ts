@@ -24,15 +24,19 @@ const SECRET_PROMPT = new RegExp(`^(?:${[
   /password(?: for (?:['’][^'’\r\n]+['’]|[^:]+))?/,
   // ssh names its key in quotes, ssh-keygen in double quotes, ssh-add as it is: a path or the key's comment, which
   // may hold colons (`/keys/id:work`, `C:\Users\…`), so the prompt ends at the line's last one. ssh-add asks again
-  /enter passphrase(?: for .+)?/,
-  /bad passphrase, try again for .+/,
+  /enter passphrase(?: for [^\r\n]+)?/,
+  /bad passphrase, try again for [^\r\n]+/,
+  // ssh-keygen's other asks: a new key's passphrase and its repeat, and -p's old and new one
+  /enter (?:old |new |same )?passphrase(?: again)?(?: \(empty for no passphrase\))?/,
   /enter pin(?: for [^:]+)?/,
   /(?:repeat|verify|confirm) password/,
 ].map((prompt) => prompt.source).join("|")}):$`, "i");
 
-// a yes/no choice is no secret: `y/n` on its own, not the letters around a path's slash
-// (`/home/andy/notes/key`) nor two folders of a path (`/home/y/n/key`)
-const ASKS_CHOICE = /\?|(?:^|[^a-z0-9/])y\s*\/\s*n(?![a-z0-9/])/i;
+// a yes/no choice is no secret: `y/n` in brackets, with more options or not (`[Y/n]`, `(y/n/q)`), or as a word of
+// its own after a space. Not inside a name: the letters around a path's slash (`/home/andy/notes/key`), two of its
+// folders (`/home/y/n/key`), a repository (`team-y/n-tools.git`), or the start of a wrapped row, which is tested
+// before the rows above it are joined (`…/compan` then `y/n-prod:`)
+const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|\sy\s*\/\s*n(?=\s|:|$)/i;
 
 // Both as a server without the `secret-prompts-2` feature has them: it answers `invalid_secret` to a
 // masked input for any other prompt, so a page sends such a server one only for these (ws.ts sendSecret).

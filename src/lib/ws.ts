@@ -1223,21 +1223,31 @@ export class HerdrSocket {
   /**
    * Send once on this connection. Only a result callback is retained, never the value. A prompt that only a bridge
    * with `secret-prompts-2` takes (shared/secret-prompt.ts) goes to any other bridge as typing at a masked prompt does:
-   * the value and Enter as `input`, never kept. That bridge would answer `invalid_secret`, and the masked field has
-   * taken the input line's place, so nothing else could answer the prompt.
+   * the value, then Enter, as `input`, never kept. That bridge would answer `invalid_secret`, and the masked field has
+   * taken the input line's place, so nothing else could answer the prompt. No bridge checks its screen for typing, so
+   * it goes only into the attachment the field was sent for and only while the page still shows the prompt (`shown`).
    */
-  sendSecret(paneId: string, prompt: string, secret: string): Promise<SubmitResult> | null {
+  sendSecret(paneId: string, prompt: string, secret: string, shown: () => boolean = () => true): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
+    // the pane's input as it was when the field was sent, as insert reads it
+    const lease = this.inputLease(paneId);
     return (async (): Promise<SubmitResult> => {
       // right after a reconnect the terminal's output can arrive before the frame that says
       // whether the server takes masked input: wait for it, as a submit does
       await Promise.race([this.featuresSeen, new Promise((resolve) => window.setTimeout(resolve, FEATURES_WAIT_MS))]);
       if (!(await this.probeSettled(socket))) { secret = ""; return DISCONNECTED; }
-      if (!this.features.has("secret-prompts-2") && secretPrompt(prompt, Infinity, true) !== prompt) {
-        const typed = this.sendInput(paneId, `${secret}\r`, false, false, true);
-        secret = "";
-        return typed ? { ok: true } : { ok: false, code: "input_unavailable", message: "Check the terminal before trying again." };
+      if (secretPrompt(prompt, Infinity, true) !== prompt) {
+        // the wait ended before the bridge said what it takes: one that takes the prompt checks its own screen, so
+        // nothing is typed past it
+        if (!this.featuresKnown) { secret = ""; return CAPABILITIES_UNKNOWN; }
+        if (!this.features.has("secret-prompts-2")) {
+          if (this.inputLease(paneId) !== lease || !shown()) { secret = ""; return { ok: false, code: "prompt_changed", message: "Check the terminal before trying again." }; }
+          // Enter in a frame of its own, as a key is typed: a mirrored pane's shell may not take a `\r` inside the text for it
+          const typed = this.sendInput(paneId, secret, false, false, true) && this.sendInput(paneId, "\r", false, false, true);
+          secret = "";
+          return typed ? { ok: true } : { ok: false, code: "input_unavailable", message: "Check the terminal before trying again." };
+        }
       }
       if (!this.features.has("secret-input")) { secret = ""; return { ok: false, code: "unsupported", message: "Update this PC to use masked input." }; }
       const id = this.nextSubmit++;

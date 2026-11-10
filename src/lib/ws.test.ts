@@ -569,23 +569,31 @@ it("sends a secret entered before the reconnect's snapshot arrived, once the sna
 it("types a secret for a prompt only a newer bridge takes as direct input to a bridge that does not say it takes it", async () => {
   const git = "Password for 'https://alice@github.com':";
   const typed = (socket: FakeSocket) => socket.sent.filter((frame) => frame.type === "input");
+  // the value, then Enter in a frame of its own, neither with an id
+  const asTyped = [{ type: "input", pane_id: "w1:p1", text: "hunter2" }, { type: "input", pane_id: "w1:p1", text: "\r" }];
   // a bridge with masked input but not the wider prompts, and one with neither: both would refuse the `secret`
   for (const features of [["submit", "secret-input"], ["submit"]]) {
     const { client, socket } = liveClient(features);
     expect(await client.sendSecret("w1:p1", git, "hunter2")).toEqual({ ok: true });
     expect(secrets(socket)).toEqual([]);
-    // the value and Enter, with no id: it is neither awaited nor kept to be held for review
-    expect(typed(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "hunter2\r" }]);
-    expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+    expect(typed(socket)).toEqual(asTyped);
     // a prompt every bridge takes still goes as a `secret` where masked input is known
     const earlier = client.sendSecret("w1:p1", "Password:", "hunter2");
     if (features.includes("secret-input")) {
       for (let turn = 0; turn < 10 && secrets(socket).length === 0; turn++) await Promise.resolve();
       expect(secrets(socket)).toMatchObject([{ type: "secret", pane_id: "w1:p1", prompt: "Password:", secret: "hunter2" }]);
     } else expect(await earlier).toMatchObject({ ok: false, code: "unsupported" });
-    expect(typed(socket)).toHaveLength(1);
+    expect(typed(socket)).toEqual(asTyped);
     client.close();
   }
+  // a released bridge gives typing an id and keeps it until the bridge has read it, to hold it for review when the
+  // connection ends first: a typed secret gets no id and is never kept
+  const { client, socket } = liveClient(["submit", "secret-input", "ping", "input-receipt"]);
+  expect(await client.sendSecret("w1:p1", git, "hunter2")).toEqual({ ok: true });
+  expect(typed(socket)).toEqual(asTyped);
+  socket.disconnect();
+  expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+  client.close();
   // a pane that takes no typing: nothing goes out, and the field says to check the terminal
   const idle = new HerdrSocket("ws://test/ws");
   idle.connect();
@@ -595,6 +603,48 @@ it("types a secret for a prompt only a newer bridge takes as direct input to a b
   expect(await idle.sendSecret("w1:p1", git, "hunter2")).toMatchObject({ ok: false, code: "input_unavailable" });
   expect([...secrets(idleSocket), ...typed(idleSocket)]).toEqual([]);
   idle.close();
+});
+
+it("types no secret into another attachment, past a prompt that left, or before the bridge said what it takes", async () => {
+  const git = "Password for 'https://alice@github.com':";
+  const sent = (socket: FakeSocket) => socket.sent.filter((frame) => frame.type === "input" || frame.type === "secret");
+  // nothing on an older bridge checks its screen for typing, so the page does
+  const left = liveClient(["submit", "secret-input"]);
+  expect(await left.client.sendSecret("w1:p1", git, "hunter2", () => false)).toMatchObject({ ok: false, code: "prompt_changed" });
+  expect(sent(left.socket)).toEqual([]);
+  left.client.close();
+  // the pane was let go and attached again while the features were awaited: the field was sent for the first attachment
+  const again = new HerdrSocket("ws://test/ws");
+  again.attach("w1:p1", 100, 30);
+  again.connect();
+  const againSocket = FakeSocket.last;
+  againSocket.open();
+  againSocket.receive({ type: "input-ready", pane_id: "w1:p1" });
+  const waiting = again.sendSecret("w1:p1", git, "hunter2");
+  again.detach("w1:p1");
+  again.attach("w1:p1", 100, 30);
+  againSocket.receive(snapshot(["input-ready", "submit", "secret-input"]));
+  againSocket.receive({ type: "input-ready", pane_id: "w1:p1" });
+  expect(await waiting).toMatchObject({ ok: false, code: "prompt_changed" });
+  expect(sent(againSocket)).toEqual([]);
+  again.close();
+  // a snapshot that never came: a bridge that takes the prompt would have checked its own screen (#1591)
+  jest.useFakeTimers();
+  const late = new HerdrSocket("ws://test/ws");
+  late.attach("w1:p1", 100, 30);
+  late.connect();
+  const lateSocket = FakeSocket.last;
+  lateSocket.open();
+  lateSocket.receive({ type: "input-ready", pane_id: "w1:p1" });
+  try {
+    const result = late.sendSecret("w1:p1", git, "hunter2");
+    jest.advanceTimersByTime(2_000);
+    expect(await result).toMatchObject({ ok: false, code: "capabilities_unknown" });
+    expect(sent(lateSocket)).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    late.close();
+  }
 });
 
 it("sends a secret for a prompt of the wider set as a secret to a bridge that takes it", async () => {

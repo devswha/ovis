@@ -13,7 +13,8 @@ it("recognizes only a short secret request on the last nonempty line", () => {
 // git: "Password for '%s': ", the remote as git describes it (read from git 2.53 through an askpass helper)
 // ssh: "%s@%s's password: "
 // ssh-add: "Enter passphrase for %s%s: " and "Bad passphrase, try again for %s%s: ", a path or the key's comment
-// ssh-keygen: 'Enter passphrase for "%s": '
+// ssh-keygen: 'Enter passphrase for "%s": ' (OpenSSH 10), "Enter passphrase (empty for no passphrase): " (9.6),
+// "Enter same passphrase again: ", and -p's "Enter old passphrase: " and "Enter new passphrase (empty for no passphrase): "
 const NEWER = [
   "Password for 'https://alice@github.com':",
   "Password for 'https://alice@git.example.com:8443':",
@@ -36,10 +37,16 @@ const NEWER = [
   "Bad passphrase, try again for /home/alice/keys/my:key:",
   'Enter passphrase for "/home/alice/.ssh/id_ed25519":',
   'Enter passphrase for "C:\\Users\\alice\\.ssh\\id_ed25519":',
+  'Enter passphrase for "/home/alice/.ssh/id_ed25519" (empty for no passphrase):',
+  "Enter passphrase (empty for no passphrase):",
+  "Enter same passphrase again:",
+  "Enter old passphrase:",
+  "Enter new passphrase (empty for no passphrase):",
   // the letters around a path's slash are no yes/no choice, nor are two of its folders
   "Enter passphrase for key '/home/andy/notes/id_ed25519':",
   "Enter passphrase for /home/andy/notes/id_ed25519:",
   "Enter passphrase for /home/y/n/id_ed25519:",
+  "Password for 'https://alice@example.com/team-y/n-tools.git':",
   "Enter passphrase for key 'C:/y/n/id_ed25519':",
 ];
 
@@ -47,6 +54,10 @@ it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen
   for (const prompt of NEWER) expect(secretPrompt(`$ git push\n${prompt} `)).toBe(prompt);
   // wrapped at the right edge, inside the remote's name
   expect(secretPrompt("$ git push\nPassword for 'https:\n//alice@github.com':", 20)).toBe("Password for 'https://alice@github.com':");
+  // a row that begins `y/n` is the rest of a name, read with the row above it
+  expect(secretPrompt("Enter passphrase for /home/alice/keys/compan\ny/n-prod:", 44)).toBe("Enter passphrase for /home/alice/keys/company/n-prod:");
+  // a line separator in a key's name, which the earlier patterns take too
+  expect(secretPrompt("Enter passphrase for key '/keys/a\u2028b':")).toBe("Enter passphrase for key '/keys/a\u2028b':");
   for (const screen of [
     // git's other question is no secret
     "Username for 'https://github.com':",
@@ -60,7 +71,11 @@ it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen
     "Password for alice (y/N):",
     "Password for alice y / n:",
     "Password for alice, y/n:",
-    "y/n password:",
+    // with a third option too
+    "Password for alice (y/n/q):",
+    "Enter passphrase for key [Y/n/skip]:",
+    // ssh-keygen's asks, not anything that mentions a passphrase
+    "Enter the passphrase again:",
   ]) {
     expect(secretPrompt(screen)).toBeNull();
   }
