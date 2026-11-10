@@ -3113,6 +3113,79 @@ describe("Claude's suggestion on a prompt poll", () => {
   }, 4_000);
 });
 
+describe("gjc's and omp's suggestion on a prompt poll", () => {
+  const dim = (text: string) => `\u001b[0m\u001b[38;2;111;71;67m${text}\u001b[0m`;
+  // gjc 0.20.0's box (red-claw's dim) and omp 18.18.3's band composer (its dark theme's dim), each holding its grey suggestion
+  const SCREENS: Record<string, string> = {
+    gjc: ["Done.", "", `╭${"─".repeat(40)}╮`, `│ > ${dim("open the PR")}${" ".repeat(25)} │`, `╰${"─".repeat(40)}╯`, ""].join("\r\n"),
+    omp: ["Done.", "", " π > GPT-6.1 Sol > ▶─2%────", `╰─ \u001b[0m\u001b[38;2;95;102;115mopen the PR\u001b[0m`, ""].join("\r\n"),
+  };
+
+  /** a herdr with one pane of `agent`, scrolled `offset` rows into its history, whose screen shows the suggestion */
+  async function suggestingHerdr(agent: string, status: string, offset: number | null, run: (reads: string[]) => Promise<void>): Promise<void> {
+    const root = mkdtempSync(join(tmpdir(), "herdr-prompt-suggestion-"));
+    const path = join(root, "herdr.sock");
+    const reads: string[] = [];
+    const sockets = new Set<Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+      socket.on("error", () => undefined);
+      let input = "";
+      socket.on("data", (chunk) => {
+        input += chunk.toString();
+        if (!input.includes("\n")) return;
+        const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { format?: string } };
+        const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+        if (request.method === "session.snapshot") {
+          // a herdr that reports no scroll (null) is read as at the bottom
+          const scroll = offset === null ? null : { offset_from_bottom: offset, max_offset_from_bottom: 100, viewport_rows: 40 };
+          return answer({ snapshot: { panes: [{ pane_id: "p_1", agent, agent_status: status, scroll }], layouts: [] } });
+        }
+        if (request.method !== "pane.read") throw new Error(`unexpected fixture RPC: ${request.method}`);
+        reads.push(request.params.format ?? "");
+        const text = request.params.format === "ansi" ? SCREENS[agent]! : SCREENS[agent]!.replace(ANSI_RE, "");
+        answer({ read: { text } });
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(path, resolve); });
+    const previous = process.env["HERDR_SOCKET"];
+    process.env["HERDR_SOCKET"] = path;
+    try { await run(reads); } finally {
+      if (previous === undefined) delete process.env["HERDR_SOCKET"];
+      else process.env["HERDR_SOCKET"] = previous;
+      for (const socket of sockets) socket.destroy();
+      server.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  async function poll(): Promise<unknown> {
+    const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
+    return (await (await handlePromptRequest(new Request(url), url))!.json());
+  }
+
+  for (const agent of ["gjc", "omp"]) {
+    test(`${agent}: the grey words in its empty box, and never a restored send`, async () => {
+      for (const offset of [0, null]) {
+        await suggestingHerdr(agent, "done", offset, async (reads) => {
+          expect(await poll()).toEqual({ prompt: null, suggestion: "open the PR", restored: null });
+          expect(reads.at(-1)).toBe("ansi");
+        });
+      }
+    });
+
+    test(`${agent}: not read while it works, or while the viewport is scrolled into the history`, async () => {
+      for (const [status, offset] of [["working", 0], ["idle", 3]] as const) {
+        await suggestingHerdr(agent, status, offset, async (reads) => {
+          expect(await poll()).toEqual({ prompt: null, suggestion: null, restored: null });
+          expect(reads).not.toContain("ansi");
+        });
+      }
+    });
+  }
+});
+
 describe("Claude's plan card on a prompt poll", () => {
   const SCREEN = `
 Ready to code?
