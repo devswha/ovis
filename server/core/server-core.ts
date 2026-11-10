@@ -13,7 +13,7 @@ import type { WebSocketHandler } from "bun";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import type { DeviceStore } from "../devices.ts";
 import { ping } from "../herdr/client.ts";
-import { servingCore } from "../herdr-core/runtime.ts";
+import { capabilities } from "../runtime/capabilities.ts";
 import type { PreferenceStore } from "../preferences.ts";
 import { type OmpLookups, OpenCodePromptState, shownPromptText } from "../prompt.ts";
 import { attachableIdentity, sidecarAvailable } from "../pty/sidecar.ts";
@@ -91,11 +91,11 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
 
   const { mayType, authorizeSocket, admit, setRole, watchPane, unwatchPane, killWatches, end } = createConnections({ clients, present, pending: { close: closeConnection }, devices, detachClaimed,
     dropClaims: (client) => { dropClaims(client); promptWatch.drop(client); } });
-  const { push, alertWebhook, omo, gjc, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector, waitTimer } = createStatusHub({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, usage, usageLogin,
+  const { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, plans, clientSnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector, waitTimer } = createStatusHub({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, usage, usageLogin,
     // the messages first: the old ID's terminal closing holds what it still leases
     paneMoved: (from, to) => { movePendingPane(from, to); paneMoved(from, to); } });
   const socketHandlers = createSocket({
-    clients, present, stopped: () => stopped, admit, setRole, watchable: () => !servingCore(), terminalHistory: () => servingCore(), watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime: currentHerdrLifetime, browserSnapshot, countVisit, drainOutput,
+    clients, present, stopped: () => stopped, admit, setRole, watchable: () => capabilities().attach === "pty-cli", terminalHistory: () => capabilities().attach !== "pty-cli", watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime: currentHerdrLifetime, browserSnapshot, countVisit, drainOutput,
     // each frame type by name, with the handler of the module that owns it: anything else on a frame object never
     // becomes a frame a client can send, and a type named twice fails the build instead of replacing a handler
     frames: {
@@ -153,6 +153,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
       collector.stop();
       omo.stop();
       gjc.stop();
+      letta.stop();
       claudeAgents.stop();
       opencodeAgents.stop();
       clearInterval(waitTimer);

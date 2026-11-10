@@ -338,16 +338,24 @@ messages):
    The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens
    a pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. What that window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
-   once the PC has members. The screen keeps the window open while it waits.
-2. On any device already in the account, the PC shows as a card, **Add {name} to your account?**,
-   for 10 minutes after the directory took it. Its key comes from the directory and is checked
-   against its id, as for any PC there; the person then **types the six digits the new PC shows**
-   (not a tap: the directory's name is anyone's), and approves on the PC.
+   once the PC has members. The screen keeps the window open while it waits. The window is kept
+   across a restart of the PC's server (an update) for the rest of its ten minutes, local-only as it
+   was opened, and is closed by `POST /api/relay/link/close`, **Revoke all**,
+   **Reset relay identity** or turning the relay off.
+   A close declines the comparisons the PC was showing and one whose digits arrive after it, and is
+   written to disk (as is a window that ran out). A close does not reach an Add-this-PC screen that
+   is still open on the PC: that screen asks for its window again at its next relist, which is an
+   act of the PC's own page, so **Stop waiting** on it is what ends the wait.
+2. On any device already in the account, the dashboard lists the PC as new in the account, with
+   **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
+   The PC's key comes from the directory and is checked against its id, as for any PC there; the
+   person then **types the six digits the new PC shows** (not a tap: the directory's name is
+   anyone's), and approves on the PC.
 3. The device is then the PC's first member: it links, and enrolls the PC
    ([Enrolling a PC](#enrolling-a-pc)), so the account's other devices are let in and introduced.
 
-A wrong number ends that comparison; the person starts again from the card. QR codes and pairing
-codes stay under **Other ways** for a device without an account.
+A wrong number ends that comparison; the person starts again from **Add** on the dashboard. A device without an account
+pairs with a QR code or pairing code behind **Pair with a QR or code** on the sign-in screen.
 
 ### Introductions
 
@@ -395,7 +403,9 @@ is what authenticates the PC.
 - A `remove` writes its tombstone before it revokes the device; the device's relay connections
   close at once (`auth_revoked`). A `remove` signed before this PC itself paired the key again leaves
   that pairing be (`unchanged`), so a late or replayed one cannot undo it. A row an `add` or a remote
-  approval made goes, however late the `remove` arrives.
+  approval made goes, however late the `remove` arrives, and so does a row a `link` moved onto the
+  key from another one (`link_moved_key`): this PC paired its former key, never this one. A `link`
+  whose `old_key` is its `key` leaves the row a pairing of that key.
 - **Revoke** and **Revoke all** on the PC leave a tombstone too, so no record brings the key back,
   even after the PC joins an account. An account `remove` for a key the PC revoked first takes over
   its tombstone.
@@ -406,7 +416,9 @@ is what authenticates the PC.
   account removed), and clears its tombstone.
 - A stop between two such writes leaves a row and a tombstone for one key. On start the PC tells them
   apart by time: a row made before the key's removal is revoked, one made after it keeps its device
-  and the tombstone goes. Until then no such row signs in, signs or approves.
+  and the tombstone goes. A row that is no pairing of its key here (an `add`, a remote approval, a
+  `link` that moved it onto the key) is revoked whatever its time. Until then no such row signs in,
+  signs or approves.
 - Where two state dirs share one device list, their tombstones are merged too.
 - **Reset relay identity** removes every relay device, members included, so the PC leaves the
   account; a client adds it again by pairing with its new identity, after the client's usual "this
@@ -501,6 +513,11 @@ OAuth's authorization code flow with PKCE, `S256` only:
    no device: adding still needs an approval on a device already in the account. The start may
    carry `label` (1-48 characters, no control characters) and `os`, which the page's confirmation
    shows (Who is asking, below); a provider's own device start takes neither.
+   The relay tab of Add a connection signs in this way too, from its own Sign in rather than Settings:
+   it opens `verification_uri_complete` (else `verification_uri`) in a new tab, opened blank in the
+   click so no popup blocker takes it (the desktop app hands it to the system browser), shows the code
+   beside it, or the page's link and code alone when the tab was blocked, and stops polling when the
+   sheet closes. Where the link page cannot start a sign-in it falls back to GitHub's device page.
 6. `POST /v1/signout` (Bearer) answers 204 and ends that sign-in's family.
 
 `GET /v1/providers` (no sign-in) answers `{ "providers": ["github", "google"], "device": ["github",
@@ -614,7 +631,14 @@ directory, so mailboxes are kept per PC **and account**: the PC asks only for it
 only in that account's directory. `ack` is the highest `seq` the PC processed, whatever the
 outcome, refused included (or `null`); the service deletes those records before answering, and
 deletes any record after 30 days. The PC pulls when it starts and every five minutes while it
-belongs to an account.
+belongs to an account. It also pulls when a sign-in fails, since a member may have added that
+device on another PC a moment ago, and then checks the sign-in once more. Such sign-ins start at
+most one pull a minute (a pull that could not read the mailbox lets the next start 10 seconds after
+it began), and each waits at most five seconds for it. A sign-in that still fails is refused with
+the same `auth_failed`, so a device whose add reached the mailbox after that pull, or after another
+failed sign-in spent it, is let in up to a minute later. An unknown id and a signature that does
+not hold take the same way, so the delay does not tell which ids have a row; it does tell a PC in
+an account (the refusal may wait for the pull) from one in none (it never does).
 
 The `account` role keeps the two proofs apart: the relay verifies `control` and `data` only, so an
 answer the PC gave the account service is no use to the relay, and a relay's challenge passed on by

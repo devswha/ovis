@@ -41,7 +41,7 @@ async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, lab
   throw new Error(`Timed out ${label}: ${JSON.stringify(last)}`);
 }
 async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-  const r = await fetch(`http://127.0.0.1:${server!.port}${path}`, { method, headers: { "x-herdr-machine": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const r = await fetch(`http://127.0.0.1:${server!.port}${path}`, { method, headers: { "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   assert.ok(r.ok, `${path}: ${r.status} ${r.ok ? "" : await r.text()}`);
   return r.json() as Promise<T>;
 }
@@ -119,7 +119,9 @@ try {
   assert.ok(remoteFile(join(remoteHome, ".ssh/authorized_keys")).includes(`ovis:${machineId}`));
   assert.ok(!readFileSync(join(state, "machines.json"), "utf8").includes(password), "password is never persisted");
   console.log("PASS first install, fingerprint, secret authentication and dedicated-key registration");
-  const second = await setup({ ...target, identity_file: join(state, "ssh", machineId), session: "ssh-second", name: "QA second PC" });
+  // A second herdr beside the first is asked for: a setup that only names another session is offered the running one
+  // (choose_herdr) instead of starting its own.
+  const second = await setup({ ...target, identity_file: join(state, "ssh", machineId), session: "ssh-second", name: "QA second PC", start_new_herdr: true });
   assert.equal(second.phase, "connected", second.error ?? "");
   const secondPath = `/api/machines/${second.machine_id}`;
   const secondCreated = await api<WorkspaceCreated>(secondPath + "/workspace/create", "POST", { cwd: remoteHome, label: "ovis-test-ssh-second" });

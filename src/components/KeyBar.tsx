@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { useCallback, useId, useLayoutEffect, useMemo, useRef, useSyncExternalStore, type MouseEvent, type PointerEvent, type ReactNode } from "react";
 import { ChevronDown, ChevronUp, ClipboardPaste, Ellipsis, Keyboard, PanelBottomClose, PanelBottomOpen, Paperclip } from "lucide-react";
 
 import "./KeyBar.css";
@@ -67,6 +67,38 @@ function keepFocus(event: PointerEvent<HTMLButtonElement> | MouseEvent<HTMLButto
   event.preventDefault();
 }
 
+/**
+ * Android's Back puts the soft keyboard away but leaves the field focused, and Chrome raises the
+ * keyboard again on any tap while a text field has the focus, a key's tap too (#3274). For the touch
+ * of a key that leaves the focus where it is (a key, a modifier, More keys), the focused field asks for no keyboard (inputmode=none), which also leaves a keyboard that
+ * is up where it is; it gets its own inputmode back once the tap's click is handled, at the next
+ * press anywhere, or when it loses the focus.
+ */
+let keyboardHold: (() => void) | null = null;
+function releaseKeyboardHold(): void {
+  const release = keyboardHold;
+  keyboardHold = null;
+  release?.();
+}
+function holdKeyboardForTap(): void {
+  releaseKeyboardHold();
+  const field = document.activeElement;
+  if (!(field instanceof HTMLElement) || !(field.matches("textarea, input") || field.isContentEditable)) return;
+  const previous = field.getAttribute("inputmode");
+  if (previous === "none") return;
+  field.setAttribute("inputmode", "none");
+  keyboardHold = (): void => {
+    document.removeEventListener("pointerdown", releaseKeyboardHold, true);
+    field.removeEventListener("blur", releaseKeyboardHold);
+    if (field.getAttribute("inputmode") !== "none") return;
+    if (previous === null) field.removeAttribute("inputmode");
+    else field.setAttribute("inputmode", previous);
+  };
+  // added while this press is dispatched, past the document's capture phase: the next press ends it
+  document.addEventListener("pointerdown", releaseKeyboardHold, true);
+  field.addEventListener("blur", releaseKeyboardHold);
+}
+
 interface KeyProps {
   disabled?: boolean;
   /**
@@ -75,10 +107,14 @@ interface KeyProps {
    */
   refused?: boolean;
   /**
-   * a command no hardware keyboard has (the keyboard control): a Tab stop, with its name as the
-   * tooltip, where a key is neither. A press still keeps the focus where it is (keepFocus)
+   * a command no hardware keyboard has (the mode switch, Paste, the keyboard control, Attach, More
+   * keys): a Tab stop in either input mode, with its name as the tooltip, where a key is neither.
+   * A press still keeps the focus where it is (keepFocus)
    */
   command?: boolean;
+  describedBy?: string;
+  /** a key that leaves the focus alone: its touch keeps a keyboard that is down, down (holdKeyboardForTap) */
+  holdsKeyboard?: boolean;
   dataKey: string;
   label?: string;
   pressed?: boolean;
@@ -95,7 +131,7 @@ interface KeyProps {
   children: ReactNode;
 }
 
-function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, children, disabled, refused, command, repeatable, holdScope }: KeyProps) {
+function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, children, disabled, refused, command, describedBy, holdsKeyboard, repeatable, holdScope }: KeyProps) {
   const onPressRef = useRef(onPress);
   onPressRef.current = onPress;
   const onHoldEndRef = useRef(onHoldEnd);
@@ -145,6 +181,7 @@ function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, chi
       data-key={dataKey}
       data-latch={latch}
       aria-label={label}
+      aria-describedby={describedBy}
       aria-pressed={pressed}
       aria-expanded={expanded}
       aria-disabled={refused || undefined}
@@ -152,6 +189,7 @@ function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, chi
       tabIndex={command ? 0 : -1}
       onPointerDown={(event) => {
         keepFocus(event);
+        if (event.pointerType === "touch" && holdsKeyboard) holdKeyboardForTap();
         if (!repeatable || disabled || event.button !== 0 || !event.isPrimary || pointerRef.current.id !== null) return;
         const pointer = pointerRef.current;
         pointer.id = event.pointerId;
@@ -171,11 +209,17 @@ function Key({ dataKey, label, pressed, latch, expanded, onPress, onHoldEnd, chi
         // Ignore the lost capture that follows release, preserving the click gate.
         pointerRef.current.id = null;
       } : undefined}
-      onPointerCancel={repeatable ? cancelPointer : undefined}
+      onPointerCancel={(event) => {
+        // a touch that turned into the row's scroll brings no click
+        releaseKeyboardHold();
+        if (repeatable) cancelPointer(event);
+      }}
       onLostPointerCapture={repeatable ? cancelPointer : undefined}
       onMouseDown={keepFocus}
       onContextMenu={keepFocus}
       onClick={() => {
+        // Chrome raises the keyboard right after the tap's click: the field asks for none until then
+        if (keyboardHold !== null) window.setTimeout(releaseKeyboardHold, 0);
         if (refused) return;
         if (!repeatable) {
           onPress(false);
@@ -268,6 +312,7 @@ export const KEY_SPOKEN_NAMES: ReadonlyArray<{ key: string; label: string }> = [
  */
 export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onToggleModifier, items, expanded = false, onToggleExpanded, directTyping, onToggleDirect, directDisabled, onPaste, pasteDisabled, note, onNoteDismiss, onToggleKeyboard, keyboardOwner = "", keyboardDisabled, keyboardRefused, onAttach, disabled, holdScope }: KeyBarProps) {
   const t = useT();
+  const noteId = useId();
   // the control says what its next tap does, not what a mid-animation keyboard measures
   const keyboardView = useCallback(() => keyboardControl.view(keyboardOwner), [keyboardOwner]);
   const keyboard = useSyncExternalStore(keyboardControl.subscribe, keyboardView, keyboardView);
@@ -344,7 +389,7 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
     const label = item.modifiers !== undefined
       ? t("Press {key}", { key: [item.modifiers.ctrl && "Ctrl", item.modifiers.alt && "Alt", item.modifiers.shift && "Shift", spoken].filter(Boolean).join("+") })
       : spoken === keyBarItemLabel(item) ? undefined : spoken;
-    return <Key key={keyBarItemId(item)} disabled={disabled} dataKey={item.modifiers === undefined ? item.key : keyBarItemId(item)} label={label} onPress={(repeat) => onKey(item, repeat)}
+    return <Key key={keyBarItemId(item)} disabled={disabled} holdsKeyboard dataKey={item.modifiers === undefined ? item.key : keyBarItemId(item)} label={label} onPress={(repeat) => { onNoteDismiss?.(); onKey(item, repeat); }}
       onHoldEnd={item.modifiers === undefined ? onKeyHoldEnd : undefined} repeatable={isRepeatableKeyBarItem(item)} holdScope={holdScope}>
       {arrow && item.modifiers === undefined ? <Chevron direction={arrow.direction} /> : keyBarItemLabel(item)}
     </Key>;
@@ -356,7 +401,7 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
     // Alt and Shift are said as written; Ctrl is not. A locked one says so: held past the next key
     const name = modifier === "ctrl" ? t("Control") : cap;
     const label = latch === "locked" ? t("{key}, locked", { key: name }) : modifier === "ctrl" ? name : undefined;
-    return <Key key={`modifier:${modifier}`} disabled={disabled} dataKey={dataKey} label={label} pressed={modifiers[modifier]} latch={latch} onPress={() => onToggleModifier(modifier)}>{cap}</Key>;
+    return <Key key={`modifier:${modifier}`} disabled={disabled} holdsKeyboard dataKey={dataKey} label={label} pressed={modifiers[modifier]} latch={latch} onPress={() => { onNoteDismiss?.(); onToggleModifier(modifier); }}>{cap}</Key>;
   };
   return (
     <div className={`key-bar${expanded ? " is-expanded" : ""}`} ref={barRef} role="group" aria-label={t("Terminal keys")}>
@@ -366,13 +411,13 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
       <div className="key-bar-row" ref={rowRef}>
         {/* first: on a narrow cover screen the row scrolls, and the keyboard controls must not be the keys cut off */}
         {onToggleDirect && (
-          <Key disabled={disabled || directDisabled} dataKey="direct" label={t("Input line")} pressed={!directTyping} onPress={onToggleDirect}>
+          <Key disabled={disabled || directDisabled} command describedBy={note ? noteId : undefined} dataKey="direct" label={t("Input line")} pressed={!directTyping} onPress={onToggleDirect}>
             <Keyboard aria-hidden="true" />
           </Key>
         )}
         {/* beside the mode toggle it belongs with: a tap, never a hold (a repeat would read the clipboard again) */}
         {onPaste && (
-          <Key disabled={disabled || pasteDisabled} dataKey="paste" label={t("Paste into the input line")} onPress={onPaste}>
+          <Key disabled={disabled || pasteDisabled} command describedBy={note ? noteId : undefined} dataKey="paste" label={t("Paste into the input line")} onPress={onPaste}>
             <ClipboardPaste aria-hidden="true" />
           </Key>
         )}
@@ -386,15 +431,15 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
         )}
         {/* beside the keyboard control, a tap that opens the system picker; never a hold */}
         {onAttach && (
-          <Key disabled={disabled} dataKey="attach" label={t("Attach files")} onPress={() => {
+          <Key disabled={disabled} command dataKey="attach" label={t("Attach files")} onPress={() => {
             attachTo.current = onAttach();
             if (attachTo.current !== null) picker.current?.click();
           }}>
             <Paperclip aria-hidden="true" />
           </Key>
         )}
-        {note ? <p className="key-bar-note" role="status" onClick={onNoteDismiss}>{note}</p>
-          : rowItems.map((item) => item.type === "modifier" ? renderModifier(item.modifier) : renderKey(item))}
+        {note && <p id={noteId} className="key-bar-note" role="status">{note}</p>}
+        {rowItems.map((item) => item.type === "modifier" ? renderModifier(item.modifier) : renderKey(item))}
       </div>
       {/* the inverted T: Up in the second row, over Down, between Left and Right */}
       {expanded && <div className="key-bar-arrow-pad">
@@ -409,7 +454,7 @@ export function KeyBar({ onKey, onKeyHoldEnd, modifiers, lockedModifiers, onTogg
       }} />}
       {/* pinned at the row's end, out of its scroll: the way to the second row is never scrolled away */}
       {onToggleExpanded && (
-        <Key command dataKey="more" label={t(expanded ? "Fewer keys" : "More keys")} expanded={expanded} onPress={onToggleExpanded}>
+        <Key command holdsKeyboard dataKey="more" label={t(expanded ? "Fewer keys" : "More keys")} expanded={expanded} onPress={onToggleExpanded}>
           {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronUp aria-hidden="true" />}
         </Key>
       )}

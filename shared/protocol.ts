@@ -46,7 +46,7 @@ export interface HerdrUiConfig {
 export type HerdrWorkspace = WorkspaceInfo;
 export type HerdrTab = TabInfo;
 /**
- * `background_tasks`: an OmO pane's `task` children, or a Claude Code pane's subagents and background commands, still running, counted by the server; absent when none.
+ * `background_tasks`: an OmO pane's `task` children, a Claude Code or OpenCode pane's subagents and background commands, or an agy or grok pane's background tasks, still running, counted by the server; absent when none.
  * `background_wait`: the pane is at rest while work its turn started still runs, and the turn goes on when it ends (server/background-wait.ts); absent when not.
  * `plan`: how far the pane's agent's task list or checklist has progressed; absent when it keeps none.
  * `context`: how much of its context a Claude Code or Codex pane's last request filled, read from its transcript as the chat's ring reads it; absent before one reports it.
@@ -107,6 +107,10 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
  * GET /api/bridge -> authenticated BridgeIdentity (socket + runtime compatibility)
+ * GET /api/bridge?discover=herdr -> owner/bridge-token only; also found_herdr_sessions on this account.
+ * SetupRequest.own_ovis chooses a registered Ovis by socket identity, reverified over SSH each time;
+ * mutually exclusive with herdr_socket/start_new_herdr. choose_herdr offers found_ovis beside sessions.
+ * Machine/SetupJob.runtime names the verified runtime (herdr or herdr-core); absent until known.
  * GET /api/machines -> MachineRoster { machines: Machine[] }; GET /api/machines/events -> MachineEvent SSE
  * GET /api/machines?verify_source_boot=:id -> MachineRoster with verified_source_boot { machine_id, boot_id }:
  *   the boot id of the server behind that PC, asked for during this request (the local one directly,
@@ -172,6 +176,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
  *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
+ *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
+ *         comparisons this PC was shown under it; from this PC only (403 local_required through the relay)
+ *         500 internal_error when the saved window could not be cleared (closed until a restart)
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
  *         404 relay_pairing_gone once it left, was decided or ran out of time
@@ -184,7 +191,13 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
  *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
- *  POST   /api/updates/install           -> 202 { accepted: true }; UpdateInstallRequest JSON body
+ *  POST   /api/updates/install           -> 202 { accepted: true, install_id }; UpdateInstallRequest JSON body
+ *  POST   /api/updates/cancel            -> 202 { accepted: true }; { install_id } JSON body, as the install's 202 gave it: stops that
+ *                                            install only, while it checks or builds (install_cancellable); 400 invalid_update_cancel,
+ *                                            409 update_restart_required, or 409 update_not_cancellable alike for a wrong or expired
+ *                                            install_id and for no update running (supervisor IPC: update-cancel-v2)
+ *                                            (the bridge token may cancel only an install it asked for, by the install_id its
+ *                                            202 gave: never another device's, nor one the PC's own Settings started)
  *         (at most 1 KiB): 400 invalid_update_install for a missing or malformed revision,
  *         409 update_restart_required where the supervisor does not advertise
  *         revision_bound_install, 409 update_offer_changed when the offer is no longer that
@@ -549,6 +562,25 @@ export const STREAM_COOKIE_PREFIX = "ovis_stream_";
 
 export type { PortalAuth, PortalAuthMethod, PortalInvite, PortalSignIn, PortalStatus } from "./portal.ts";
 
+/**
+ * Why the relay is not online, as a fixed code a client puts in its own words (RelayStatus.error_code;
+ * docs/relay.md, "Why it is not online"). Each says whether the PC tries again by itself:
+ * - `start_failed`: the relay did not start; starting it again may work.
+ * - `identity_unreadable`: this PC's relay identity cannot be read (`blocked` says so too); nothing retries.
+ * - `relay_unreachable`: the relay did not answer or the connection dropped; the PC tries again.
+ * - `server_key_refused`: the relay refused this PC's key for good; the PC does not try again.
+ * - `pass_required`: an Ovis relay needs a relay pass and no account names this PC: sign in on it and add it.
+ * - `pass_not_listed`: the account this PC names does not list it: add it to that account.
+ * - `pass_limit`: that account has as many PCs on the Ovis relay as it may: remove one from it.
+ * - `pass_unavailable`: the relay needs a pass the account service has not given yet; the PC keeps asking.
+ * - `pass_refused`: the relay refused the pass this PC holds (a key it does not trust, a PC it revoked); the PC asks
+ *   for another now and then.
+ * - `pass_unsupported`: the relay needs a pass and this PC asks no account service for one (turned off or
+ *   unusable, or a relay that is not Ovis's): waiting brings none; use the same Wi-Fi, Tailscale or another relay.
+ */
+export type RelayErrorCode = "start_failed" | "identity_unreadable" | "relay_unreachable" | "server_key_refused"
+  | "pass_required" | "pass_not_listed" | "pass_limit" | "pass_unavailable" | "pass_refused" | "pass_unsupported";
+
 /** GET /api/relay; relay and app are configured secure origins, never pairing credentials. */
 export interface RelayStatus {
   readonly phase: "off" | "connecting" | "online" | "error";
@@ -557,6 +589,8 @@ export interface RelayStatus {
   readonly sessions: number;
   readonly blocked: null | "serve_only" | "identity_unreadable";
   readonly error: string | null;
+  /** why, as a fixed code, whenever `error` says something (null otherwise); absent from an older server */
+  readonly error_code?: RelayErrorCode | null;
   /**
    * Direct connections on this PC's networks (docs/relay.md): whether they are on, and the carriers
    * listened on now (none while the relay is off). Absent from a server without them.
@@ -573,7 +607,29 @@ export interface RelayStatus {
     readonly enforce_at: string | null;
     /** the relay refused this PC for its pass (4402) and it has not been let in since */
     readonly refused: boolean;
+    /**
+     * Whether the relay enforces passes now, as the PC knows it: its last `sync` said `enforce`, or an `enforce_at`
+     * that has passed by the PC's clock, or it refused this PC for its pass. While it does, and the PC is on the relay
+     * with `new_sessions: false`, the PC refuses a device new to it. Absent from a server that does not say (one that
+     * refuses no device either).
+     */
+    readonly enforced?: boolean;
+    /** false while the pass the relay holds this PC to says new client sessions to it are not allowed and the relay says it holds; absent otherwise */
+    readonly new_sessions?: false;
   };
+}
+
+/**
+ * The account service's GET /v1/account/limits, as Settings → Account reads it: the account's plan
+ * name, PC slot limit, and optional relay data allowance as reported by the account service.
+ */
+export interface AccountLimits {
+  readonly plan: string;
+  readonly pcs_max: number;
+  readonly pcs_used?: number;
+  readonly data_cap_bytes?: number;
+  readonly data_used_bytes?: number | null;
+  readonly until?: number | null;
 }
 
 /** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */

@@ -46,6 +46,10 @@ export interface Env extends PassSettings {
   RELAY_LIMITER: RateLimiter;
   /** the backstop over all addresses together */
   RELAY_GLOBAL_LIMITER: RateLimiter;
+  /** keyed by server_id, for a PC whose relay pass holds (core.ts Limiters.perPc); without it and RELAY_PASS_CHECK_LIMITER every PC counts under its address */
+  RELAY_PC_LIMITER?: RateLimiter;
+  /** keyed by the address: the passes it may have checked before its own limit */
+  RELAY_PASS_CHECK_LIMITER?: RateLimiter;
   /** Workers Analytics Engine dataset for usage counters (wrangler.toml); without it nothing is counted */
   USAGE?: { writeDataPoint(point: { indexes: string[]; blobs: string[]; doubles: number[] }): void };
 }
@@ -77,7 +81,8 @@ function isPassResult(value: unknown): value is PassResult {
   return ["ok", "missing", "invalid", "expired"].includes(result["state"] as string)
     && (result["reason"] === undefined || typeof result["reason"] === "string")
     && (result["exp"] === undefined || typeof result["exp"] === "number")
-    && (result["kid"] === undefined || typeof result["kid"] === "string");
+    && (result["kid"] === undefined || typeof result["kid"] === "string")
+    && (result["noNew"] === undefined || result["noNew"] === true);
 }
 
 /** the key a PC's usage is kept under: not its server_id itself */
@@ -120,6 +125,7 @@ function isInfo(value: unknown): value is SocketInfo {
     && (info["usage"] === undefined || isUsage(info["usage"]))
     && (info["pass_exp"] === undefined || typeof info["pass_exp"] === "number")
     && (info["pass_kid"] === undefined || typeof info["pass_kid"] === "string")
+    && (info["pass_no_new"] === undefined || info["pass_no_new"] === true)
     && (info["pass_state"] === undefined || ["ok", "missing", "invalid", "expired"].includes(info["pass_state"] as string))
     && (info["ended"] === undefined || info["ended"] === true);
 }
@@ -141,7 +147,7 @@ export class RelayRoom {
     if (this.passLoaded || !this.policy || this.policy.mode === "off") return undefined;
     this.passLoad ??= this.state.storage.get<unknown>(PASS_UNTIL).then((saved) => {
       const value = typeof saved === "object" && saved !== null ? saved as Partial<RoomAuthorization> : {};
-      this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid } : null;
+      this.passUntil = typeof value.until === "number" && typeof value.kid === "string" ? { until: value.until, kid: value.kid, ...(value.noNew === true ? { noNew: true as const } : {}) } : null;
       this.passLoaded = true;
     });
     return this.passLoad;
@@ -222,6 +228,7 @@ export class RelayRoom {
       wake: host.wake,
       keepaliveAt: host.keepaliveAt,
       now: host.now,
+      get pass() { return room.policy; },
     });
   }
 
@@ -231,12 +238,13 @@ export class RelayRoom {
     if ("error" in socket) return new Response(socket.error, { status: 400 });
     const pair = new (runtime().WebSocketPair)();
     this.state.acceptWebSocket(pair[1]);
-    if ("kind" in socket) this.pairRoom.open(pair[1], socket);
+    let pass: unknown;
+    try { pass = JSON.parse(request.headers.get(PASS_CHECKED) ?? "null"); } catch { pass = null; }
+    const checked = isPassResult(pass) ? { pass } : {};
+    if ("kind" in socket) this.pairRoom.open(pair[1], { ...socket, ...checked });
     else {
       await this.loadPass();
-      let pass: unknown;
-      try { pass = JSON.parse(request.headers.get(PASS_CHECKED) ?? "null"); } catch { pass = null; }
-      this.room.open(pair[1], isPassResult(pass) ? { ...socket, pass } : socket);
+      this.room.open(pair[1], { ...socket, ...checked });
     }
     await this.armBy(Date.now() + IDLE_MS);
     return new Response(null, { status: 101, webSocket: pair[0] } as ResponseInit);
@@ -290,7 +298,9 @@ export class RelayRoom {
 
 export async function handle(request: Request, env: Env): Promise<Response> {
   const policy = await policyOf(env);
-  const admitted = await admit(request, request.headers.get("cf-connecting-ip") ?? "", { perAddress: env.RELAY_LIMITER, global: env.RELAY_GLOBAL_LIMITER }, policy);
+  const limiters = { perAddress: env.RELAY_LIMITER, global: env.RELAY_GLOBAL_LIMITER,
+    ...(env.RELAY_PC_LIMITER && env.RELAY_PASS_CHECK_LIMITER ? { perPc: env.RELAY_PC_LIMITER, passChecks: env.RELAY_PASS_CHECK_LIMITER } : {}) };
+  const admitted = await admit(request, request.headers.get("cf-connecting-ip") ?? "", limiters, policy);
   if (admitted instanceof Response) return admitted;
   // a PC socket refused for its pass closes here, so it wakes no Durable Object (an HTTP refusal would reach the PC as a bare 1006)
   const refused = passRefusal(admitted, policy, Date.now());
@@ -302,7 +312,7 @@ export async function handle(request: Request, env: Env): Promise<Response> {
   }
   const headers = new Headers(request.headers);
   headers.delete(PASS_CHECKED);
-  if (!("kind" in admitted) && admitted.pass) headers.set(PASS_CHECKED, JSON.stringify(admitted.pass));
+  if (admitted.pass) headers.set(PASS_CHECKED, JSON.stringify(admitted.pass));
   // a pairing room's name cannot be a server_id, which is 32 hex digits
   return env.RELAY.get(env.RELAY.idFromName("kind" in admitted ? `pair:${admitted.nameplate}` : admitted.server_id)).fetch(new Request(request, { headers }));
 }

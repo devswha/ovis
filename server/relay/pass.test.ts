@@ -23,8 +23,18 @@ async function keeper(answer: () => Response | Promise<Response>) {
     : answer();
   const signed = () => signRelayPass(keys.privateKey, "0badc0de", identity.server_id, Math.floor(clock.now() / 1000));
   const made = new RelayPassKeeper({ stateDir, identity: () => identity, account: () => "acct_1", service: "https://account.test", fetch, clock, onPass: (pass) => passes.push(pass) });
-  return { made, clock, passes, signed };
+  return { made, clock, passes, signed, stateDir, identity };
 }
+
+test("a pass saved under another account service (a staging one, say) is never sent where that service's passes go", async () => {
+  const k = await keeper(async () => Response.json({ pass: await k.signed(), expires_in: 172_800, refresh_in: 43_200 }));
+  k.made.start();
+  await k.made.refresh();
+  k.made.stop();
+  const saved = (service: string) => new RelayPassKeeper({ stateDir: k.stateDir, identity: () => k.identity, account: () => "acct_1", service, clock: k.clock, onPass: () => {} }).current();
+  expect(saved("https://account.test")).toBe(k.passes[0]!);
+  expect(saved("https://account-staging.test")).toBeNull();
+});
 
 test("the account's refusals are told apart, and asked again later", async () => {
   for (const [status, code, state] of [[403, "not_listed", "not_listed"], [409, "relay_limit", "limit"]] as const) {
@@ -106,6 +116,37 @@ test("a pass that ran out with no new one is no longer reported ok", async () =>
   expect(k.made.current()).toBeNull();
   expect(k.made.state).toBe("unavailable");
   k.made.stop();
+});
+
+test("a pass no longer sent is still the one a relay holds the PC to, until the relay stops honoring it", async () => {
+  let answer: () => Promise<Response> = async () => Response.json({ pass: await k.signed(), expires_in: 172_800, refresh_in: 43_200 });
+  const k = await keeper(() => answer());
+  k.made.start();
+  await k.made.refresh();
+  const pass = k.passes[0]!;
+  expect(k.made.honored()).toBe(pass);
+  answer = async () => new Response("down", { status: 503 });
+  // sent until 5 minutes before it runs out, honored by the relay until 5 minutes after
+  k.clock.advance(172_800_000 - 300_000 - 1);
+  expect([k.made.current(), k.made.honored()]).toEqual([pass, pass]);
+  k.clock.advance(1);
+  expect([k.made.current(), k.made.honored()]).toEqual([null, pass]);
+  k.clock.advance(600_000 - 1);
+  expect([k.made.current(), k.made.honored(), k.made.issuer()]).toEqual([null, pass, "https://account.test"]);
+  k.clock.advance(1);
+  expect([k.made.current(), k.made.honored(), k.made.issuer()]).toEqual([null, null, null]);
+  k.made.stop();
+});
+
+test("a pass the relay refused is no longer one it holds the PC to", async () => {
+  const k = await keeper(async () => Response.json({ pass: await k.signed(), expires_in: 172_800, refresh_in: 43_200 }));
+  k.made.start();
+  await k.made.refresh();
+  expect(k.made.honored()).toBe(k.passes[0]!);
+  k.made.stop();
+  // dropped, so no limit it named outlives it
+  await k.made.rejected();
+  expect(k.made.honored()).toBeNull();
 });
 
 test("a refresh asked for while a request is out is asked again once it ends", async () => {

@@ -1,4 +1,5 @@
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeEach, expect, spyOn, test } from "bun:test";
+import { Terminal } from "@xterm/xterm";
 import { attachGhosttyOverlay } from "./overlay.ts";
 
 /** just enough of an element for the overlay: children, attributes, style and a box */
@@ -29,15 +30,27 @@ class FakeElement {
 }
 
 const screen = new FakeElement();
-const frames: FrameRequestCallback[] = [];
-const flush = (): void => { for (const frame of frames.splice(0)) frame(0); };
+const frames = new Map<number, FrameRequestCallback>();
+let nextFrame = 0;
+const flush = (): void => {
+  const due = [...frames.values()];
+  frames.clear();
+  for (const frame of due) frame(0);
+};
+const page = Object.assign(new EventTarget(), { hidden: false, createElement: () => new FakeElement() });
 const fakes = {
-  document: { createElement: () => new FakeElement() },
-  requestAnimationFrame: (frame: FrameRequestCallback) => frames.push(frame),
+  document: page,
+  requestAnimationFrame: (frame: FrameRequestCallback) => { frames.set(++nextFrame, frame); return nextFrame; },
+  cancelAnimationFrame: (id: number) => { frames.delete(id); },
   ResizeObserver: class { observe(): void {} disconnect(): void {} },
 };
 const saved = Object.fromEntries(Object.keys(fakes).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 Object.assign(globalThis, fakes);
+beforeEach(() => {
+  page.hidden = false;
+  frames.clear();
+  screen.children = [];
+});
 afterAll(() => {
   for (const [key, descriptor] of Object.entries(saved)) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -169,6 +182,33 @@ test("on herdr's own server, the screen herdr repaints for a wheel is not announ
   }
 });
 
+test("the cursor follows a write that only moves it: a space herdr sends as a cursor move, an arrow key (#3266, #3268)", async () => {
+  screen.box = { width: 40 * 8, height: 4 * 16 };
+  screen.children = [];
+  const render: (() => void)[] = [];
+  const term: any = {
+    cols: 40, rows: 4, element: screen, buffer: { active: { baseY: 0, viewportY: 0 } },
+    options: { fontFamily: "monospace", fontSize: 13, theme: {}, scrollback: 0 },
+    write: () => {}, reset: () => {}, refresh: () => {},
+    onResize: () => ({ dispose: () => {} }), onRender: (listener: () => void) => { render.push(listener); return { dispose: () => {} }; }, onScroll: () => ({ dispose: () => {} }),
+  };
+  const overlay = await attachGhosttyOverlay(term, new FakeElement() as unknown as HTMLElement, () => ["$ a"]);
+  try {
+    const cursor = screen.children[0]!.children.find((child) => child.className === "ghostty-cursor")!;
+    const frame = (): unknown => { for (const callback of render) callback(); flush(); return cursor.style.left; };
+    flush();
+    expect(cursor.style.left).toBe("24px");
+    term.write("\x1b[C");
+    expect(frame()).toBe("32px");
+    term.write("\x1b[1;9H");
+    expect(frame()).toBe("64px");
+    term.write("\x1b[D");
+    expect(frame()).toBe("56px");
+  } finally {
+    overlay?.dispose();
+  }
+});
+
 test("colours as xterm draws them: readable at its minimum contrast except a Powerline glyph, faint text dimmed by half, a bold box bold", async () => {
   screen.box = { width: 40 * 8, height: 4 * 16 };
   screen.children = [];
@@ -191,4 +231,39 @@ test("colours as xterm draws them: readable at its minimum contrast except a Pow
   } finally {
     overlay?.dispose();
   }
+});
+
+test("an overlay attached while hidden paints its latest bytes once the page returns (IS-092)", async () => {
+  page.hidden = true;
+  screen.box = { width: 320, height: 96 };
+  const term = new Terminal({ cols: 40, rows: 6 });
+  Object.defineProperty(term, "element", { value: screen });
+  const overlay = await attachGhosttyOverlay(term, document.createElement("div"), () => ["HIDDEN"]);
+  try {
+    expect(frames.size).toBe(0);
+    const text = screen.children[0]?.children.find((child) => child.className === "ghostty-text");
+    expect(text?.children.every((row) => row.innerHTML === "")).toBe(true);
+    page.hidden = false;
+    page.dispatchEvent(new Event("visibilitychange"));
+    expect(frames.size).toBe(1);
+    flush();
+    expect(text?.children.map((row) => row.innerHTML).join("")).toContain("HIDDEN");
+  } finally {
+    overlay?.dispose();
+    term.dispose();
+  }
+});
+
+test.each([false, true])("disposing an overlay cancels its pending paint (hidden=%s)", async (hidden) => {
+  page.hidden = hidden;
+  screen.box = { width: 320, height: 96 };
+  const term = new Terminal({ cols: 40, rows: 6 });
+  Object.defineProperty(term, "element", { value: screen });
+  const overlay = await attachGhosttyOverlay(term, document.createElement("div"), () => ["DISPOSED"]);
+  overlay?.dispose();
+  term.dispose();
+  page.hidden = false;
+  page.dispatchEvent(new Event("visibilitychange"));
+  expect(frames.size).toBe(0);
+  expect(screen.children).toEqual([]);
 });

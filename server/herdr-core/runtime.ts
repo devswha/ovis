@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { coreSocket, findHc, type FoundHc } from "./discovery.ts";
 import { adapterAddress } from "./pipe.ts";
 import { opencodeDatabasePath, opencodeSessionsTitled } from "../opencode.ts";
+import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 
 /**
  * Which runtime this PC's terminals run on. `OVIS_RUNTIME=herdr-core` serves the terminals of
@@ -102,13 +103,12 @@ export function coreSocketPath(): string {
   return coreSocket({ env: hcEnv() ?? process.env }).path;
 }
 
-let connection: HcConnection | null = null;
-/** whether this process serves herdr-core (startRuntime ran): a remote bridge inheriting OVIS_RUNTIME does not */
-let serving = false;
+/** HERDR_SOCKET as this process had it before startRuntime pointed it at the adapter (null until then): a core `hc connect` starts hands its env to every pane */
+let herdrSocketBefore: { HERDR_SOCKET: string | undefined } | null = null;
+/** the adapter socket startRuntime last put in HERDR_SOCKET: a later start in this process finds it there, not the one from before */
+let adapterSocket: string | null = null;
 
-export function servingCore(): boolean {
-  return serving;
-}
+let connection: HcConnection | null = null;
 
 let marker: SeenMarker | null = null;
 
@@ -120,7 +120,7 @@ export function coreSeenMarker(): SeenMarker {
 
 /** The server's one line to hc, which the adapter answers through and live terminals stream on. */
 export function coreConnection(): HcConnection {
-  const spawn = () => spawnHcConnect(hcBin(), hcEnv());
+  const spawn = () => spawnHcConnect(hcBin(), { ...(hcEnv() ?? process.env), ...herdrSocketBefore });
   const machine = hcMachine();
   connection ??= machine === null ? new HcConnection(spawn) : new MachineScopedConnection(spawn, machine.name, machine.id);
   return connection;
@@ -132,16 +132,19 @@ export function coreConnection(): HcConnection {
  * HERDR_SOCKET pointed at it before anything reads it; on herdr, nothing. Another Ovis still serving the same state folder is an error, and so is a PC
  * where no hc answers as herdr-core's: nothing is started, and nothing else is run as hc.
  */
-export async function startRuntime(stateDir: string, find: () => Promise<FoundHc | null> = () => findHc()): Promise<HerdrCoreAdapter | null> {
+export async function startRuntime(stateDir: string, find: (onRefused?: (bin: string, reason: string) => void) => Promise<FoundHc | null> = (onRefused) => findHc(onRefused ? { onRefused } : {})): Promise<HerdrCoreAdapter | null> {
   if (runtime() !== "herdr-core") return null;
   const platform = process.platform;
   if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
     throw new Error(`OVIS_RUNTIME=herdr-core is served on Linux, macOS and Windows, not ${platform}`);
   }
   // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one
-  const core = await find();
+  const refused: string[] = [];
+  const core = await find((bin, reason) => { refused.push(`${bin}: ${reason}`); });
   if (core === null) {
-    throw new NoHerdrCoreError("no herdr-core found: no OVIS_HC_BIN, nor herdr-core or hc on the PATH, the login shell's PATH, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, mise, Nix or cargo, answered `--version` with `hc …`. Install herdr-core (https://herdr.dev/core) or set OVIS_HC_BIN to its full path");
+    // the message is what the server logs as it gives up: each refused hc is named there, once
+    const passedOver = refused.length === 0 ? "" : ` Passed over as another account could change them: ${refused.join("; ")}. Make the folder yours alone (\`chmod g-w <folder>\`) or set OVIS_HC_BIN to the hc you trust.`;
+    throw new NoHerdrCoreError(`no herdr-core found: no OVIS_HC_BIN, nor herdr-core or hc in ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, mise, Nix, cargo, the PATH or the login shell's PATH, answered \`--version\` with \`hc …\` (one in a folder another account can change is not run). Install herdr-core (https://herdr.dev/core) or set OVIS_HC_BIN to its full path.${passedOver}`);
   }
   found = core.bin;
   search = find;
@@ -157,8 +160,11 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
     // another machine's OpenCode keeps its sessions there: none of its panes is bound to one here
     hcMachine() !== null ? { otherMachine: true } : { opencodeTitled: (title) => opencodeSessionsTitled(opencodeDatabasePath(), title) });
   if (unix) chmodSync(adapter.socketPath, 0o600);
+  if (herdrSocketBefore === null || process.env["HERDR_SOCKET"] !== adapterSocket) herdrSocketBefore = { HERDR_SOCKET: process.env["HERDR_SOCKET"] };
+  adapterSocket = adapter.socketPath;
   process.env["HERDR_SOCKET"] = adapter.socketPath;
-  serving = true;
+  // only now: a remote bridge inheriting OVIS_RUNTIME starts no runtime, and serves herdr
+  serveRuntime(HERDR_CORE);
   return {
     socketPath: adapter.socketPath,
     stop: () => {
@@ -166,7 +172,7 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
       hc.close();
       connection = null;
       marker = null;
-      serving = false;
+      serveRuntime(null);
       found = null;
       search = null;
       lost = false;

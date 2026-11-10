@@ -1,4 +1,4 @@
-/** The Markdown outline (#636), always on, in the real viewer, built with the app's CSP: column, drawer, docked, and a stored old "off" ignored. */
+/** The Markdown outline (#636), always on, in the real viewer, built with the app's CSP: column, drawer, docked, and a stored old "off" ignored; on a phone a stroke begun on a table, code, a diagram or a failed image still scrolls the document (#3287, #3475). */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,7 +12,14 @@ import { sheetsSettled } from "./sheets-settled.ts";
 // a title, then sections that each end in a "Notes" heading: the same title thirty times
 const SECTIONS = 30;
 const prose = "A paragraph long enough to wrap over a few lines of the preview, so each section takes room. ".repeat(4);
-const markdown = ["# Guide", prose, ...Array.from({ length: SECTIONS }, (_, index) => [
+// a table and a code block: boxes that scroll sideways only, in the document's first screens
+const table = ["| Name | Value |", "| --- | --- |", ...Array.from({ length: 12 }, (_, index) => `| row ${index + 1} | value ${index + 1} |`)].join("\n");
+const code = ["```ts", ...Array.from({ length: 12 }, (_, index) => `const line${index + 1} = ${index + 1};`), "```"].join("\n");
+// a diagram and an image that cannot load: boxes that clip their content, and scroll nothing
+const mermaid = ["```mermaid", "flowchart TD", "  A[Start] --> B[Read]", "  B --> C[Write]", "  C --> D[Done]", "```"].join("\n");
+// absolute: the fixture's document path (guide.md) has no folder to resolve a relative one against
+const image = "![x](/missing.png)";
+const markdown = ["# Guide", prose, table, code, mermaid, image, ...Array.from({ length: SECTIONS }, (_, index) => [
   `## Section ${index + 1}`, prose, prose, "### Notes", prose,
 ].join("\n\n"))].join("\n\n") + "\n";
 const ENTRIES = 1 + SECTIONS * 2;
@@ -36,6 +43,9 @@ async function open(width: number, height: number, { outline, theme = "dark", do
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server!.port}/${docked ? "?docked" : ""}`);
   await page.locator(".file-viewer-markdown > h3").nth(ENTRIES - 1).waitFor();
+  // the diagram is drawn once its chunk loads and the image gives up: both change the document's height
+  await page.locator(".markdown-mermaid svg").waitFor();
+  await page.locator(".image-slot.is-failed").waitFor();
   await sheetsSettled(page);
   return { page, errors, close: () => context.close() };
 }
@@ -85,6 +95,11 @@ try {
   assert.ok(policy, "build the app before its enforcing CSP regression");
   server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const url = new URL(request.url), path = url.searchParams.get("path");
+    // the image is listed as one, but its bytes are gone: its slot stays, "Image unavailable"
+    if (path?.endsWith("missing.png")) {
+      if (url.pathname === "/api/fs/stat") return Response.json({ path, name: "missing.png", kind: "image", size: 100, mime: "image/png", modified: "2026-01-01T00:00:00Z" });
+      if (url.pathname === "/api/fs/file") return new Response("gone", { status: 404 });
+    }
     if (url.pathname === "/api/fs/stat") return Response.json({ path, name: path, kind: "text", size: markdown.length, mime: "text/markdown", modified: "2026-01-01T00:00:00Z" });
     if (url.pathname === "/api/fs/file") return new Response(markdown);
     if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
@@ -265,6 +280,38 @@ try {
     assert.deepEqual(errors, []);
     await close();
     console.log(`PASS narrow ${theme}: drawer on request, full-width document, centered on open, Escape/choice/outside close it, the More menu's Escape is its own`);
+  }
+
+  {
+    // a phone: an upward stroke begun on a table or a code block scrolls the document; the box,
+    // which scrolls only sideways, does not keep the stroke to itself (#3287). Nor does a box that
+    // only clips: a diagram, or the slot of an image that cannot load (#3475)
+    const { page, errors, close } = await open(390, 844, { outline: true });
+    const cdp = await page.context().newCDPSession(page);
+    for (const selector of [".markdown-table-wrap", ".markdown-code .hl-code", ".markdown-mermaid", ".image-slot.is-failed"]) {
+      const before = await page.locator(".file-viewer-body").evaluate((body, selector) => {
+        const box = document.querySelector<HTMLElement>(selector)!;
+        body.scrollTop += box.getBoundingClientRect().top - body.getBoundingClientRect().top - 40;
+        // the stroke's fling ends past its start; the next stroke waits for it, or the fling still
+        // moving the document would carry it off the box
+        const done = body.scrollTop + 60;
+        body.dataset["flung"] = "";
+        const ended = () => { if (body.scrollTop < done) return; body.dataset["flung"] = "yes"; body.removeEventListener("scrollend", ended); };
+        body.addEventListener("scrollend", ended);
+        return body.scrollTop;
+      }, selector);
+      const box = (await page.locator(selector).first().boundingBox())!;
+      const x = box.x + box.width / 2, y = box.y + Math.min(box.height / 2, 120);
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+      for (let step = 1; step <= 8; step++) await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - step * 20 }] });
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      await page.waitForFunction(([before]) => document.querySelector<HTMLElement>(".file-viewer-body")!.scrollTop >= before! + 60, [before])
+        .catch((error: unknown) => { throw new Error(`a stroke begun on ${selector} did not scroll the document`, { cause: error }); });
+      await page.locator(".file-viewer-body[data-flung=yes]").waitFor();
+    }
+    assert.deepEqual(errors, []);
+    await close();
+    console.log("PASS narrow: a stroke begun on a table, a code block, a diagram or a failed image scrolls the document");
   }
 
   {
