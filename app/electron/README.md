@@ -124,7 +124,13 @@ A development run never checks. The app checks after it starts and every hour (n
 release to it), and downloads in the background. A version it already holds is not downloaded
 again by the next check, unless the updater reported a failure since. An update whose file is
 gone from the updater's folder (a later download that fails empties it) is no longer offered,
-anywhere, until it is downloaded again.
+anywhere, until it is downloaded again. Once the app is on its way out for an update, it checks
+no more.
+
+On a Mac the update is offered only once Squirrel, the system's side of the updater, says it
+holds it: the download alone is not enough there, and Squirrel can refuse it (an app run from
+its disk image, a signature it does not accept). An error before that leaves nothing offered,
+and the next check hands the download over again.
 
 A downloaded update says so, in three places:
 
@@ -142,11 +148,16 @@ The line is drawn by the pages, from what the app's preload tells them (`ovisUpd
 downloaded version and whether its line was closed. Only the connection screen and the server's
 own pages are answered.
 
-On Linux the AppImage replaces itself; a .deb install installs the new .deb with
-`apt-get install --no-remove` behind the system's password prompt (pkexec, or sudo), only from
-**Restart to Update** (the tray's or the line's), never on a plain quit, and cancelling the
-prompt keeps Ovis running as it was. On macOS an update needs a signed app, and so does its
-notification.
+On Linux the AppImage replaces itself, so one kept in a folder the user cannot write (under
+`/opt`, say) does not update itself: the log says why its updates are off. A .deb install
+installs the new .deb with `apt-get install --no-remove` behind the system's password prompt
+(pkexec, or sudo), only from **Restart to Update** (the tray's or the line's), never on a plain
+quit, and cancelling the prompt keeps Ovis running as it was. On macOS an update needs a signed
+app, and so does its notification.
+
+Except for a .deb, Restart to Update stops the server before it installs, since the new copy
+starts at once. An install that then cannot go ahead (the downloaded file gone meanwhile, an
+installer that fails at once) starts Ovis again as it was.
 
 ## Build
 
@@ -210,10 +221,12 @@ bun scripts/e2e.ts --update --from-tray       # the same, restarting from the tr
 It covers the first launch (connection screen, then Ovis), a terminal and an agent pane (a
 stand-in `claude`) in the app's core, quit and relaunch (the terminals keep running, the address
 stays), the tray's items, a killed app (the next start ends the server left behind) and, with
-`--update`, a downloaded update: its one notification and that notification's click, its line in
-the window and on the connection screen, a later check that leaves the held version alone, and
-Restart to Update from the line (with `--from-tray` the line is closed first, stays closed, and
-the tray restarts). The app's main process is driven
+`--update`, the app's updates: an AppImage in a folder that cannot be written keeps them off; a
+downloaded update's one notification and that notification's click, its line in the window and
+on the connection screen, a later check that leaves the held version alone, the downloaded file
+lost while the server stops for the install (Ovis starts again, and the next check brings the
+update back), and Restart to Update from the line (with `--from-tray` the line is closed first,
+stays closed, and the tray restarts). The app's main process is driven
 through its inspector. Terminals are made and typed into through the server's API, and the window
 is checked to list them. Tray items are pressed through their menu (enabled, with their handlers);
 whether the desktop draws the tray icon is not checked. The notification is read as the app shows

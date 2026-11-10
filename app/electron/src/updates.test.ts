@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // not the package itself: it sets up an updater for this platform as its exports are read, which needs Electron
 import { DebUpdater } from "electron-updater/out/DebUpdater";
-import { BETA_FEED, checkForUpdates, debInstallCommand, downloadsUpdate, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices } from "./updates.ts";
+import { BETA_FEED, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices } from "./updates.ts";
 
 const packaged = { packaged: true, platform: "darwin", builtWithFeed: true, env: {} };
 
@@ -52,6 +52,18 @@ describe("updatePlan", () => {
     expect(updatePlan({ ...linux, execPath: "/opt/Ovis/ovis", env: inherited }).enabled).toBe(false);
     // an inherited APPDIR of / would contain every program
     expect(updatePlan({ ...linux, linuxPackage: "deb", execPath: "/opt/Ovis/ovis", env: { APPIMAGE: "/home/u/Other.AppImage", APPDIR: "/" } })).toEqual(plan("deb"));
+  });
+
+  it("does not update an AppImage in a folder that cannot be written, where it could not replace itself", () => {
+    const appImage = { ...packaged, platform: "linux", env: { APPIMAGE: "/opt/ovis/Ovis.AppImage", APPDIR: "/tmp/.mount_OvisAb" }, execPath: "/tmp/.mount_OvisAb/ovis" };
+    const asked: string[] = [];
+    expect(updatePlan({ ...appImage, writable: (folder) => { asked.push(folder); return false; } })).toEqual({ enabled: false, reason: "the AppImage is in a folder that cannot be written (/opt/ovis), so it cannot replace itself there" });
+    expect(asked).toEqual(["/opt/ovis"]);
+    expect(updatePlan({ ...appImage, writable: () => true })).toEqual({ enabled: true, feed: null, channel: "stable", installer: "appimage" });
+    // it stays an AppImage: the deb's package-type file left in it does not make it a .deb install
+    expect(updatePlan({ ...appImage, linuxPackage: "deb", writable: () => false }).enabled).toBe(false);
+    // a .deb install, started from another AppImage, is not asked about that AppImage's folder
+    expect(updatePlan({ ...appImage, linuxPackage: "deb", execPath: "/opt/Ovis/ovis", writable: () => false })).toEqual({ enabled: true, feed: null, channel: "stable", installer: "deb" });
   });
 
   it("takes the beta builds from the beta feed only on the beta channel", () => {
@@ -201,6 +213,49 @@ describe("downloadsUpdate", () => {
 
   it("downloads the held version again after the updater reported an error, as electron-updater alone would", () => {
     expect(downloadsUpdate({ found: "0.5.3", held, failed: true, exists: there })).toBe(true);
+  });
+});
+
+describe("nextOffer", () => {
+  const v3 = { version: "0.5.3", file: "/cache/pending/Ovis-mac-arm64.zip" };
+  const v4 = { version: "0.5.4", file: "/cache/pending/Ovis-mac-arm64.zip" };
+  const after = (platform: string, ...events: Parameters<typeof nextOffer>[1][]) => events.reduce((offer, event) => nextOffer(offer, event, platform), NO_OFFER);
+
+  it("offers a download at once everywhere but on a Mac", () => {
+    for (const platform of ["linux", "win32"]) {
+      expect(after(platform, { is: "downloaded", update: v3 })).toEqual({ staging: null, ready: v3 });
+      // an error leaves it: whether its file is still there is stillHeld's question
+      expect(after(platform, { is: "downloaded", update: v3 }, { is: "error" })).toEqual({ staging: null, ready: v3 });
+      expect(after(platform, { is: "downloaded", update: v3 }, { is: "downloaded", update: v4 })).toEqual({ staging: null, ready: v4 });
+    }
+  });
+
+  it("offers a Mac's download only once Squirrel holds it", () => {
+    expect(after("darwin", { is: "downloaded", update: v3 })).toEqual({ staging: v3, ready: null });
+    expect(after("darwin", { is: "downloaded", update: v3 }, { is: "staged" })).toEqual({ staging: null, ready: v3 });
+  });
+
+  it("never offers a Mac's download that Squirrel could not take, and offers it when a later try works", () => {
+    // run from the disk image or translocated, a signature it refuses: Squirrel's error comes after "update-downloaded"
+    const failed = after("darwin", { is: "downloaded", update: v3 }, { is: "error" });
+    expect(failed).toEqual(NO_OFFER);
+    // Squirrel saying it holds something nobody is waiting for changes nothing
+    expect(nextOffer(failed, { is: "staged" }, "darwin")).toEqual(NO_OFFER);
+    expect(after("darwin", { is: "downloaded", update: v3 }, { is: "error" }, { is: "downloaded", update: v3 }, { is: "staged" })).toEqual({ staging: null, ready: v3 });
+  });
+
+  it("keeps what Squirrel holds on offer while a newer version stages, and when that fails", () => {
+    const held = after("darwin", { is: "downloaded", update: v3 }, { is: "staged" });
+    const staging = nextOffer(held, { is: "downloaded", update: v4 }, "darwin");
+    expect(staging).toEqual({ staging: v4, ready: v3 });
+    expect(nextOffer(staging, { is: "error" }, "darwin")).toEqual({ staging: null, ready: v3 });
+    expect(nextOffer(staging, { is: "staged" }, "darwin")).toEqual({ staging: null, ready: v4 });
+  });
+
+  it("gives back the same offer when nothing changed, so nothing is announced again", () => {
+    const held = after("darwin", { is: "downloaded", update: v3 }, { is: "staged" });
+    expect(nextOffer(held, { is: "error" }, "darwin")).toBe(held);
+    expect(nextOffer(held, { is: "staged" }, "darwin")).toBe(held);
   });
 });
 

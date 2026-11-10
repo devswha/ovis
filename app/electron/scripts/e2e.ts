@@ -235,7 +235,7 @@ class Inspector {
 /** run before the app's own code: the tray's menu, the browser opener and the notifications, made visible to the checks */
 const HOOK = `(() => {
   const electron = require("electron");
-  const e2e = globalThis.__ovisE2e = { electron, trayMenu: null, opened: [], loads: [], notifications: [], updateChecks: [] };
+  const e2e = globalThis.__ovisE2e = { electron, fs: require("fs"), trayMenu: null, opened: [], loads: [], notifications: [], updateChecks: [] };
   electron.app.on("web-contents-created", (_event, contents) => contents.on("did-finish-load", () => e2e.loads.push(contents.getURL())));
   const setContextMenu = electron.Tray.prototype.setContextMenu;
   electron.Tray.prototype.setContextMenu = function (menu) { e2e.trayMenu = menu; return setContextMenu.call(this, menu); };
@@ -535,6 +535,25 @@ async function update(): Promise<void> {
     mkdirSync(join(root, "Applications"));
     copyFileSync(join(builds, "old", oldImage), installed);
     chmodSync(installed, 0o755);
+
+    // in a folder that cannot be written the AppImage cannot replace itself: it says its updates are off, and asks its feed for nothing
+    if (process.getuid?.() === 0) {
+      log("run as root, who can write everywhere: the AppImage in a folder that cannot be written is not checked");
+    } else {
+      const fixedData = join(root, "user-data-fixed");
+      chmodSync(join(root, "Applications"), 0o555);
+      try {
+        const fixed = await launch(installed, fixedData, { label: "5a-update-unwritable", env: { OVIS_UPDATES: "1", OVIS_UPDATE_URL: `https://127.0.0.1:${feed.port}/` }, args: ["--ignore-certificate-errors"] });
+        await ovisLoaded(fixed);
+        const said = await until("the app's word on its updates", () => readFileSync(join(fixedData, "logs", "ovis.log"), "utf8").split("\n").find((line) => line.startsWith("Updates")) ?? null, 30_000).catch(() => "");
+        check("an AppImage in a folder that cannot be written does not update itself", /^Updates are off: the AppImage is in a folder that cannot be written/.test(said) && requests.length === 0, `${said}; feed asked ${requests.length} times`);
+        await quit(fixed, "quit");
+        await within(hc(fixedData, "server", "stop"), 30_000, "hc server stop").catch(() => {});
+      } finally {
+        chmodSync(join(root, "Applications"), 0o755);
+      }
+    }
+
     // the app's default folder, as a user runs it: the relaunch after the update must find the same one
     const app = await launch(installed, null, {
       label: "5-update",
@@ -616,9 +635,23 @@ async function update(): Promise<void> {
     await screenshot(app, "8-update-ready-connection-screen");
     await pressButton(app, "Try again");
     await ovisLoaded(app);
-    const server = await until("a new server", () => { const pid = saved(app).server?.pid; return pid !== undefined && pid !== stopped ? pid : null; }, 60_000).catch(() => -1);
-    // no second check or start happens here: that a version is not announced again is src/updates.test.ts's
+    let server = await until("a new server", () => { const pid = saved(app).server?.pid; return pid !== undefined && pid !== stopped ? pid : null; }, 60_000).catch(() => -1);
     if (notifies) check("one notification so far, recorded for its version", (await app.inspector.eval<unknown[]>("e2e.notified()")).length === 1 && notices().notified === "0.0.2", JSON.stringify(notices()));
+
+    // the held file goes while the server stops for Restart to Update (as a later download that fails removes it):
+    // Ovis starts again as it was, without the offer, and the next check brings the update back without announcing it twice
+    const heldFile = join(home, ".cache", "ovis-desktop-updater", "pending", newImage);
+    const offers = async () => (await app.inspector.eval<string[] | null>("e2e.tray()"))?.includes("Restart to Update") === true;
+    // pressed and removed in one turn of the app: the press has passed its own look at the file, and the server has not stopped yet
+    const lost = existsSync(heldFile) && await app.inspector.eval<boolean>(`(e2e.press("Restart to Update"), e2e.fs.rmSync(${JSON.stringify(heldFile)}), true)`).catch(() => false);
+    const resumed = await until("Ovis started again", () => { const pid = saved(app).server?.pid; return pid !== undefined && pid !== server ? pid : null; }, 60_000).catch(() => -1);
+    await ovisLoaded(app).catch(() => null);
+    check("an update gone by the time the server has stopped starts Ovis again as it was, without the offer", lost === true && resumed !== -1 && !alive(server) && alive(app.mainPid) && !(await offers()),
+      `server ${server} -> ${resumed}, tray: ${(await app.inspector.eval<string[] | null>("e2e.tray()"))?.join(" / ")}`);
+    if (resumed !== -1) server = resumed;
+    await app.inspector.eval("(e2e.updateChecks.forEach((run) => run()), true)");
+    const back = await until("Restart to Update in the tray again", async () => (await offers()) || null, 120_000).catch(() => false);
+    check("the next check downloads it again, and announces nothing twice", back === true && existsSync(heldFile) && (!notifies || await notifiedCount() === 1), `notifications ${await notifiedCount()}`);
 
     if (fromTray) {
       // a reload later, the closed line is still closed

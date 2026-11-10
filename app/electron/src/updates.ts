@@ -49,7 +49,7 @@ export function updateChannel(env: Env, stateDir: string): UpdateChannel {
   catch { return "stable"; }
 }
 
-export function updatePlan(options: { packaged: boolean; env: Env; platform: string; builtWithFeed: boolean; channel?: UpdateChannel; linuxPackage?: string | null; execPath?: string }): UpdatePlan {
+export function updatePlan(options: { packaged: boolean; env: Env; platform: string; builtWithFeed: boolean; channel?: UpdateChannel; linuxPackage?: string | null; execPath?: string; writable?: (folder: string) => boolean }): UpdatePlan {
   const { env } = options;
   const channel = options.channel ?? "stable";
   if (["0", "false", "off", "no"].includes(env["OVIS_UPDATES"]?.trim().toLowerCase() ?? "")) return { enabled: false, reason: "turned off with OVIS_UPDATES" };
@@ -66,7 +66,13 @@ export function updatePlan(options: { packaged: boolean; env: Env; platform: str
     // AppImage updater would overwrite that file.
     // (an APPDIR of / would contain every program)
     const mount = env["APPDIR"]?.replace(/\/+$/, "");
-    if (env["APPIMAGE"] && mount && options.execPath?.startsWith(`${mount}/`)) installer = "appimage";
+    if (env["APPIMAGE"] && mount && options.execPath?.startsWith(`${mount}/`)) {
+      // the AppImage updater puts the new file in the place of the old one. In a folder the user cannot
+      // write (one under /opt, say) that fails, after Restart to Update has stopped the server for it
+      const folder = dirname(env["APPIMAGE"]);
+      if (options.writable && !options.writable(folder)) return { enabled: false, reason: `the AppImage is in a folder that cannot be written (${folder}), so it cannot replace itself there` };
+      installer = "appimage";
+    }
     else if (options.linuxPackage === "deb") installer = "deb";
     else return { enabled: false, reason: "only the AppImage and the .deb install update themselves" };
   }
@@ -93,6 +99,38 @@ export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 export interface HeldUpdate {
   version: string;
   file: string;
+}
+
+/**
+ * A downloaded update on its way to Restart to Update. Everywhere but a Mac the downloaded file is
+ * all an install needs, and the update is `ready` at once. On a Mac electron-updater's
+ * "update-downloaded" only means the zip was handed to Squirrel, which still has to take it, check
+ * its signature and unpack it, and says so with an event of its own: until then the update is
+ * `staging`. Offered before that, Restart to Update stops the server and waits for a Squirrel that
+ * may have failed for good (an app run from its disk image or translocated, a signature it
+ * refuses).
+ */
+export interface UpdateOffer {
+  /** a Mac only: downloaded and handed to Squirrel, which has not said it holds it */
+  staging: HeldUpdate | null;
+  /** what Restart to Update installs */
+  ready: HeldUpdate | null;
+}
+
+export const NO_OFFER: UpdateOffer = { staging: null, ready: null };
+
+/** What the updater said: a download done, Squirrel holding it (a Mac only), or an error. */
+export type UpdaterEvent = { is: "downloaded"; update: HeldUpdate } | { is: "staged" } | { is: "error" };
+
+/**
+ * The offer after `event`. An error drops what Squirrel had not taken yet (the next check hands it
+ * over again); what it already holds stays, also while a newer version stages, since that is what
+ * a restart installs until the newer one is held.
+ */
+export function nextOffer(offer: UpdateOffer, event: UpdaterEvent, platform: string): UpdateOffer {
+  if (event.is === "downloaded") return platform === "darwin" ? { ...offer, staging: event.update } : { staging: null, ready: event.update };
+  if (offer.staging === null) return offer;
+  return event.is === "staged" ? { staging: null, ready: offer.staging } : { ...offer, staging: null };
 }
 
 /**

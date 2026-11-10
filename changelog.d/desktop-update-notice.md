@@ -8,6 +8,8 @@
   downloads again a version it already holds.
 
 ### Fixed
-- The desktop app no longer offers Restart to Update for a downloaded update whose file is gone
-  (a newer download that failed removed it): choosing it stopped the Ovis server and installed
-  nothing. The update is downloaded again at the next check.
+- Restart to Update in the desktop app no longer leaves Ovis with its server stopped and nothing
+  installed. A downloaded update whose file is gone (a newer download that failed removed it) is
+  no longer offered and is downloaded again at the next check; on a Mac the update is offered
+  only once the system's updater holds it; an AppImage in a folder it cannot write does not
+  offer updates it could not install; and an install that fails at once starts Ovis again.

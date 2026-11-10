@@ -4,15 +4,15 @@
  * connection screen (renderer/connect.html) with what failed. Closing the window keeps Ovis in
  * the tray; Quit stops the server. The core and its terminals keep running, as for every hc client.
  */
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, session, shell, Tray, type MenuItemConstructorOptions } from "electron";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, type WriteStream } from "node:fs";
+import { app, autoUpdater as squirrel, BrowserWindow, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, session, shell, Tray, type MenuItemConstructorOptions } from "electron";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, rmSync, type WriteStream } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ChildProcess } from "node:child_process";
 import { choosePort, coreEnv, endLeftover, installCore, isFile, layout, openLog, processCommand, processStartSync, readSaved, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
-import { checkForUpdates, debInstallCommand, downloadsUpdate, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type HeldUpdate, type UpdateNotices } from "./updates.ts";
+import { checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
 import { extractedAppDir, othersRunFrom } from "./appimage.ts";
 import { desktopLocale, desktopText } from "./text.ts";
 import { hideWindow } from "./windowClose.ts";
@@ -60,8 +60,12 @@ let busy: Promise<void> | null = null;
 let spawning: ChildProcess | null = null;
 let quitting = false;
 let stopped = false;
-/** the update downloaded and waiting for Restart to Update, and what installs it */
-let updateReady: (HeldUpdate & { install: () => void }) | null = null;
+/** the downloaded update (updates.ts UpdateOffer): `ready` is what Restart to Update installs */
+let offer: UpdateOffer = NO_OFFER;
+/** installs `offer.ready`, once the app updates itself */
+let installOffer: (() => void) | null = null;
+/** the pages whose Restart to Update waits to hear that Ovis keeps running after all */
+let installWaiters: (() => void)[] = [];
 const noticesPath = join(app.getPath("userData"), "update-notice.json");
 let notices = readUpdateNotices(noticesPath);
 /** held so its click still arrives: a notification nothing holds is collected, and its click with it */
@@ -303,7 +307,7 @@ function rebuildTrayMenu(): void {
     },
     { type: "separator" },
     { label: text("Restart Ovis Server"), enabled: busy === null, click: () => void restart() },
-    ...(updateReady ? [{ label: text("Restart to Update"), click: installUpdate }] : []),
+    ...(offer.ready ? [{ label: text("Restart to Update"), click: installUpdate }] : []),
     { type: "separator" },
     { label: text("Quit Ovis"), click: () => app.quit() },
   ];
@@ -370,8 +374,8 @@ function updateLog(line: string): void {
 }
 
 function updateLine(): UpdateLine | null {
-  if (!updateReady) return null;
-  const { version } = updateReady;
+  if (!offer.ready) return null;
+  const { version } = offer.ready;
   return { version, closed: !updateNotice(version, notices).line, text: text("Ovis {version} is ready", { version }), action: text("Restart to Update") };
 }
 
@@ -384,14 +388,14 @@ function sendUpdateLine(): void {
  * The update still held. One whose file is gone is no longer offered (the tray's item and the
  * lines go), and the next check downloads it again.
  */
-function heldUpdate(): typeof updateReady {
-  if (updateReady !== null && stillHeld(updateReady, existsSync) === null) {
-    updateLog(`The downloaded update ${updateReady.version} is gone from the updater's folder: no longer offered until it is downloaded again.`);
-    updateReady = null;
+function heldUpdate(): HeldUpdate | null {
+  if (offer.ready !== null && stillHeld(offer.ready, existsSync) === null) {
+    updateLog(`The downloaded update ${offer.ready.version} is gone from the updater's folder: no longer offered until it is downloaded again.`);
+    offer = { ...offer, ready: null };
     rebuildTrayMenu();
     sendUpdateLine();
   }
-  return updateReady;
+  return offer.ready;
 }
 
 function saveNotices(next: UpdateNotices): void {
@@ -406,9 +410,9 @@ function saveNotices(next: UpdateNotices): void {
  * by the next start.
  */
 function announceUpdate(): void {
-  if (!updateReady) return;
-  const { version } = updateReady;
   sendUpdateLine();
+  if (!offer.ready) return;
+  const { version } = offer.ready;
   if (handedToNotify === version || !updateNotice(version, notices).notify || !Notification.isSupported()) return;
   handedToNotify = version;
   const notification = new Notification({
@@ -436,15 +440,42 @@ function announceUpdate(): void {
  * be asked again.
  */
 function installUpdate(): void {
-  if (quitting) return;
-  heldUpdate()?.install();
+  if (quitting || heldUpdate() === null) return;
+  installOffer?.();
+}
+
+/**
+ * Restart to Update where the app is replaced as it runs (the AppImage, Windows, a Mac): the
+ * server stops first, since the new copy starts at once. An install that then cannot go ahead
+ * (the held file gone while the server stopped, an installer that fails at once) starts Ovis
+ * again as it was, instead of leaving the window on a server that is gone.
+ */
+async function stopAndInstall(updater: { quitAndInstall(): void; once(event: "error", listener: () => void): unknown; removeListener(event: "error", listener: () => void): unknown }): Promise<void> {
+  await stopForQuit();
+  let refused = heldUpdate() === null;
+  if (!refused) {
+    // an installer that fails at once says so before quitAndInstall returns
+    const failed = () => { refused = true; };
+    updater.once("error", failed);
+    updater.quitAndInstall();
+    updater.removeListener("error", failed);
+  }
+  if (!refused) return;
+  updateLog("Restart to Update could not install the update: Ovis starts again as it was.");
+  quitting = false;
+  stopped = false;
+  for (const answer of installWaiters.splice(0)) answer();
+  void start();
 }
 
 async function startUpdates(): Promise<void> {
   let linuxPackage: string | null = null;
   try { linuxPackage = readFileSync(join(process.resourcesPath, "package-type"), "utf8").trim(); } catch { /* not a Linux package */ }
+  const writable = (folder: string) => {
+    try { accessSync(folder, constants.W_OK | constants.X_OK); return true; } catch { return false; }
+  };
   const plan = updatePlan({ packaged: app.isPackaged, env: process.env, platform: process.platform, builtWithFeed: existsSync(join(process.resourcesPath, "app-update.yml")),
-    channel: updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath });
+    channel: updateChannel(process.env, stateDir), linuxPackage, execPath: process.execPath, writable });
   if (!plan.enabled) {
     updateLog(`Updates are off: ${plan.reason}.`);
     return;
@@ -484,24 +515,43 @@ async function startUpdates(): Promise<void> {
   // after any failure the next check takes what it finds again, the version held too, as
   // electron-updater alone would: whatever failed (a Mac's staging of the download) gets another try
   let failed = false;
+  /** what the updater said, taken into the offer; a new one is announced, one withdrawn leaves the tray and the lines */
+  const told = (event: UpdaterEvent) => {
+    const before = offer.ready;
+    offer = nextOffer(offer, event, process.platform);
+    if (offer.ready === before) return;
+    rebuildTrayMenu();
+    announceUpdate();
+  };
   autoUpdater.on("error", (error) => {
     failed = true;
     updateLog(`Update failed: ${message(error)}`);
+    told({ is: "error" });
     // a download that failed emptied the updater's folder, the update held until now with it
     heldUpdate();
   });
   // the .deb installs first and the app quits (stopping the server) only once it did, then starts again;
   // a cancelled prompt leaves the app and its server running. The AppImage starts its new copy at
   // once, so the server stops before.
-  const install = plan.installer === "deb" ? () => autoUpdater.quitAndInstall() : () => void stopForQuit().then(() => autoUpdater.quitAndInstall());
+  installOffer = plan.installer === "deb" ? () => autoUpdater.quitAndInstall() : () => void stopAndInstall(autoUpdater);
+  const mac = process.platform === "darwin";
   autoUpdater.on("update-downloaded", (downloaded) => {
     failed = false;
-    updateReady = { version: downloaded.version, file: downloaded.downloadedFile, install };
-    updateLog(`Update ${downloaded.version} is downloaded: Restart to Update installs it.`);
-    rebuildTrayMenu();
-    announceUpdate();
+    updateLog(`Update ${downloaded.version} is downloaded: ${mac ? "the system's updater takes it now" : "Restart to Update installs it"}.`);
+    told({ is: "downloaded", update: { version: downloaded.version, file: downloaded.downloadedFile } });
   });
-  const check = () => void checkForUpdates(autoUpdater, updateLog, (version) => downloadsUpdate({ found: version, held: heldUpdate(), failed, exists: existsSync }));
+  // a Mac: the update is offered once Squirrel says it holds it (updates.ts UpdateOffer)
+  if (mac) {
+    squirrel.on("update-downloaded", () => {
+      if (offer.staging) updateLog(`Update ${offer.staging.version} is ready: Restart to Update installs it.`);
+      told({ is: "staged" });
+    });
+  }
+  const check = () => {
+    // not once the app is on its way out: a download that fails then empties the folder the install reads
+    if (quitting) return;
+    void checkForUpdates(autoUpdater, updateLog, (version) => !quitting && downloadsUpdate({ found: version, held: offer.staging ?? heldUpdate(), failed, exists: existsSync }));
+  };
   check();
   setInterval(check, UPDATE_CHECK_INTERVAL_MS);
 }
@@ -523,14 +573,15 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.handle("ovis:update-install", (event) => {
     if (!ownPage(event.senderFrame?.url)) return undefined;
     installUpdate();
-    // not answered once the app is on its way out, so the line's button stays held. Answered when the
-    // install returned: a .deb's prompt cancelled, with Ovis running on (or a .deb installed, a moment before it quits)
-    return quitting ? new Promise<void>(() => {}) : undefined;
+    // not answered while the app is on its way out, so the line's button stays held: answered if Ovis
+    // starts again after all (stopAndInstall). Answered at once when the install returned: a .deb's prompt
+    // cancelled, with Ovis running on (or a .deb installed, a moment before it quits)
+    return quitting ? new Promise<void>((answer) => { installWaiters.push(answer); }) : undefined;
   });
   // the page names the version whose line it closes: a newer one downloaded meanwhile keeps its own
   ipcMain.on("ovis:update-close", (event, version: unknown) => {
-    if (!ownPage(event.senderFrame?.url) || !updateReady || version !== updateReady.version) return;
-    saveNotices({ ...notices, closed: updateReady.version });
+    if (!ownPage(event.senderFrame?.url) || !offer.ready || version !== offer.ready.version) return;
+    saveNotices({ ...notices, closed: offer.ready.version });
     sendUpdateLine();
   });
   // signing in to the account (accountSignIn.ts): only the server's own pages may, and only to the account service named

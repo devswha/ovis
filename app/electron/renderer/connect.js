@@ -50,5 +50,12 @@ install.addEventListener("click", () => {
   const again = () => { install.disabled = false; };
   window.ovisUpdate.install().then(again, again);
 });
-window.ovisUpdate.onChange(showUpdate);
-void window.ovisUpdate.current().then(showUpdate);
+// the app may tell of a download before its answer to the asking arrives: that answer was read before it, and is dropped
+let updateTold = false;
+window.ovisUpdate.onChange((update) => {
+  updateTold = true;
+  showUpdate(update);
+});
+void window.ovisUpdate.current().then((update) => {
+  if (!updateTold) showUpdate(update);
+});
