@@ -128,6 +128,13 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   directly on the PC (any window there with drive access, as before), or by a drive account member
   through the relay (`403 account_required` for any other relay device, `read_only` for a watch
   device). A PC in no account keeps letting any driving relay device start one, as before.
+- **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
+  `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
+  itself as the PC's first member, so the PC joins that device's account. The code is therefore
+  made only by that command, shown only on a terminal and cleared from it, kept for 30 minutes at
+  most, and the command says afterwards which account the PC joined and by which device
+  ([A PC with no screen](relay.md#a-pc-with-no-screen)). `add --approve` keeps the approval in the
+  terminal: no code, and the adding device's digits are compared there.
 - **Every admission is announced** on every device connected to the PC: the new device's name and who
   approved it.
 

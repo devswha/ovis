@@ -878,8 +878,9 @@ async function approvePairings(): Promise<number> {
 }
 
 /**
- * `link [--code] [--github | --google]`, also `add` and `login`: this PC joins the relay from its own terminal
- * (scripts/plugin-link.ts), signed in to the account by a device code, or with a code to type and a QR code.
+ * `link [--code | --approve] [--print] [--github | --google]`, also `add` and `login`: this PC joins the relay from
+ * its own terminal (scripts/plugin-link.ts), signed in to the account by a device code and then added by a QR code
+ * (`--approve`: by an approval here), or with a code to type and a QR code.
  */
 async function linkCommand(): Promise<number> {
   // the checkout survives in-app updates: the release that runs has the link that fits its server (as phone-setup)
@@ -915,6 +916,9 @@ async function linkCommand(): Promise<number> {
     lines: console[Symbol.asyncIterator](),
     // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
     terminal: process.stdin.isTTY === true,
+    // the QR code that adds this PC is a key to it: drawn on a terminal only, unless --print asks for it anyway
+    isTty: process.stdout.isTTY === true,
+    size: () => process.stdout.isTTY === true ? { rows: process.stdout.rows, columns: process.stdout.columns } : null,
   });
 }
 
@@ -1063,7 +1067,8 @@ if (import.meta.main) {
   else {
     process.stderr.write([
       "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup>",
-      "add (also login, link): sign this PC in and add it to your Ovis account. link --code: show a code and a QR code to pair one device instead.",
+      "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
+      "link --code: show a code and a QR code to pair one device instead.",
       "",
     ].join("\n"));
     process.exit(2);

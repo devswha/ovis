@@ -157,7 +157,7 @@ bun "$root/scripts/plugin.ts" add    # plugin install
 bun scripts/plugin.ts add            # from a checkout
 ```
 
-`add` (also `login` and `link`: one command) signs the PC in to your Ovis account with a code you enter on any device, lists it there, and asks y/N in the terminal for the device of your account that adds it. It ends once the PC is in the account you signed in to, and stops by itself after 30 minutes of waiting. `link --code` shows a code to type and the relay QR code instead, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout; one from before `add` and `login` still has `link`.
+`add` (also `login` and `link`: one command) signs the PC in to your Ovis account with a code you enter on any device, lists it there, and shows one QR code: scan it with a device signed in to the same account and the PC joins the account, with nothing to approve. The QR code is a key to the PC, so it is drawn only on a terminal and cleared when it ends. It ends once the PC is in the account you signed in to, naming the device that added it, and stops by itself after 30 minutes. `add --approve` asks y/N in the terminal for the device of your account that adds it instead. `link --code` shows a code to type and the relay QR code instead, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout; one from before `add` and `login` still has `link`.
 
 The actions start, stop and report on the server:
 

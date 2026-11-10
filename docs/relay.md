@@ -281,8 +281,9 @@ terminal, with the same two ways its Settings page offers and the same rules. In
 plugin, run the plugin's script as in [In a terminal](guide.md#in-a-terminal); from a checkout:
 
 ```bash
-bun scripts/plugin.ts add             # sign in to your account, then approve the device that adds this PC
-bun scripts/plugin.ts add --google    # the same, at Google's own device page (--github: GitHub's)
+bun scripts/plugin.ts add             # sign in to your account, then scan this PC's QR code with a device of the account
+bun scripts/plugin.ts add --approve   # the same sign-in, then approve here the device that adds this PC
+bun scripts/plugin.ts add --google    # either, at Google's own device page (--github: GitHub's)
 bun scripts/plugin.ts link --code     # a code to type and the relay QR code, renewed until Ctrl+C
 ```
 
@@ -293,9 +294,49 @@ it is off, and wait until it is online.
   (`https://account.ovis.sh/link`), a code and a QR code of the page with the code filled in. On any
   device, open it, check the code, choose **Continue with GitHub** or **Continue with Google**, sign
   in, and confirm. An account service without that page, or `--github` / `--google`, uses the
-  provider's own device page and its code instead. Signing in adds nothing by itself. Then it lists this PC in your
-  account ([Adding a PC](account.md#adding-a-pc)) and waits. On a device already signed in to this
-  account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the terminal shows the request with its six digits
+  provider's own device page and its code instead. Signing in adds nothing by itself. Then it lists
+  this PC in your account ([Adding a PC](account.md#adding-a-pc)) and, once the relay is online,
+  shows **one QR code** with a code to type and this PC's ID. A device signed in to the same
+  account that scans it (or types the code at app.ovis.sh, **Pair with a code**) is paired, puts
+  this PC in the account and brings in the account's other devices: there is no **Add** to press,
+  no digits to compare and nothing to answer in the terminal. That code admits whoever holds it
+  ([Who may admit a device](account.md#who-may-admit-a-device)), so the command guards it:
+  - It is made only by running the command, after the sign-in, and drawn only on a terminal.
+    Where the output is not one (a pipe, a file, a CI log) the command stops before the sign-in
+    with **The QR code is a key to this PC**; `--print` writes it anyway, as plain lines that stay.
+  - On a terminal it is drawn on the terminal's other screen, which the command leaves, so the
+    code is gone from the window and its scrollback, as soon as a device paired, when the run
+    stops, on Ctrl+C and on any error. That screen keeps nothing that scrolled off it: in a window
+    too small for the QR code the command says so and shows the code to type, and draws the QR
+    code when the window grew.
+  - However the run ends, the code is taken back (`POST /api/devices/pair/cancel` with the six
+    digits its QR code carried, as `link --code` does). A new code comes as one runs out, three at
+    most, about 30 minutes; then the command stops. Once a device paired, no code is shown again.
+  - It says what the code let in. It ends well only once this PC is in the account that signed in
+    and that account's other devices are in: **This PC is in your account (the start of its id),
+    added by (the device)**, where the device is the newest one paired through the relay since the
+    command started. A PC that ended in another account is reported with both ids, that device and
+    what to do (**Revoke all** in Settings → Devices and PCs), is taken off the list of the
+    account that signed in, and the command fails.
+  - A device that paired and left the PC in no account for 15 seconds is not signed in: the
+    command names it and asks **Keep that device? [y/N]**. Anything but y, no answer in the time
+    left, and an input that is not a terminal remove it (`DELETE /api/devices/{id}`); either way
+    the command fails with **Sign in on that device, then run ovis add again**. Only a line typed
+    at least a second and a half after the question showed answers it. When that device adds the
+    PC after all while the question waits, the question is dropped and the command ends well. A
+    run stopped with Ctrl+C names a device that got in and stays paired.
+
+  The approve-here window that listing the PC opens is closed at once
+  (`POST /api/relay/link/close`): this way takes no approval. An Ovis server that stops answering
+  for a moment is waited for; one that restarted lost the code, and the next comes when that one
+  would have run out. However it ends, the sign-in ends with it: nothing of it is kept on
+  the PC. On a PC already in an account it says so, with the start of that account's id, and
+  signs in to nothing; when that account's other devices are still being brought in, it waits for
+  them, up to 30 minutes, and fails if they are not in by then. With
+  `OVIS_ACCOUNT_SERVICE_URL=off` it points to `--code` instead.
+- **`add --approve`** signs in and lists the PC the same way, shows no code, and waits. On a device
+  already signed in to this account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the
+  terminal shows the request with its six digits
   (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
   y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
   this PC only. The waiting goes on under that question: a request that stops waiting unanswered
@@ -328,11 +369,7 @@ it is off, and wait until it is online.
   that reaches the 30 minutes leaves no window behind and no card showing the PC as new, and a
   server that goes away in those last ten minutes ends it unless the PC is in the account by then. A run
   that ends sooner (the PC was added, Ctrl+C) leaves the window to run out by itself, within ten
-  minutes. However it ends, the sign-in ends with it: nothing of it is kept on the PC. On a PC
-  already in an account it says so, with the start of that account's id, and signs in to nothing;
-  when that account's other devices are still being brought in, it waits for them, up to 30
-  minutes, and fails if they are not in by then. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to
-  `--code` instead.
+  minutes.
 - **`link --code`** prints what **Connect a device** shows: the code to type at app.ovis.sh
   (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
   ID for the other device to compare. Both renew when they run out. When the relay mints no typed

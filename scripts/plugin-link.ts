@@ -5,7 +5,12 @@
  * - `link` (also `add` and `login`, COMMAND_ALIASES): sign in to the account with a device code (as a PC's own page does,
  *   src/lib/account/deviceSignIn.ts): the Ovis link page's where the service has it, else, or with
  *   `--github` / `--google`, the provider's own device flow. Then list this PC in the account (src/lib/account/addThisPc.ts),
- *   then approve here, after comparing six digits, the device of the account that adds it.
+ *   then show one QR code: a device signed in to that account that scans it puts this PC in the account, with nothing
+ *   to type and nothing to approve here (docs/account.md, "Who may admit a device": a code admits whoever holds it).
+ *   So the code is shown only on a terminal (or with `--print`), on a screen of its own that goes when it ends, for
+ *   30 minutes at most, and the command says which account this PC joined and by which device.
+ * - `link --approve`: the same sign-in, then approve here, after comparing six digits, the device of the account that
+ *   adds it.
  * - `link --code`: the code to type and the relay QR code that Connect a device shows, renewed
  *   as they run out, until Ctrl+C.
  *
@@ -42,6 +47,13 @@ export interface LinkOptions {
    * its lines come: nobody compared the digits a line of `yes | ovis add` arrives under. Unset counts as not one.
    */
   readonly terminal?: boolean;
+  /**
+   * `out` is a terminal: the only place the QR code that adds this PC is drawn without `--print`, since whoever reads
+   * it can pair with this PC. Unset counts as not one.
+   */
+  readonly isTty?: boolean;
+  /** the terminal's size, when `out` is one that tells it: the QR code is drawn again when it changes */
+  readonly size?: () => { readonly rows: number; readonly columns: number } | null;
   /** Ctrl+C */
   readonly signal: AbortSignal;
   readonly fetch?: Fetch;
@@ -80,6 +92,17 @@ const LAST_MS = 30_000;
  * or is a key pressed twice. It is dropped, and the question is asked again.
  */
 const DWELL_MS = 1_500;
+/** How many codes one run shows, one after another: each lasts ten minutes, so about the run's 30 in all. */
+const MAX_CODES = 3;
+/**
+ * How long a device that paired gets to put this PC in its account before it is taken as not signed in: one that is
+ * links itself and lists the PC within seconds (src/lib/relay/accountController.ts).
+ */
+const ALONE_MS = 15_000;
+/** The terminal's other screen: what is drawn there is gone, scrollback and all, once it is left. */
+const SCREEN_ON = "\x1b[?1049h";
+const SCREEN_OFF = "\x1b[?1049l";
+const SCREEN_CLEAR = "\x1b[2J\x1b[H";
 
 function waitFor(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -109,12 +132,12 @@ class AwayError extends Error {}
 function localApi(options: LinkOptions) {
   const fetchImpl = options.fetch ?? fetch;
   const control = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: options.origin };
-  return async <T>(method: "GET" | "POST", path: string, extra: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<T> => {
+  return async <T>(method: "GET" | "POST" | "DELETE", path: string, extra: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal } = {}): Promise<T> => {
     let response: Response;
     try {
       response = await fetchImpl(`${options.origin}${path}`, {
-        method, headers: { ...(method === "POST" ? control : {}), ...options.headers, ...extra.headers },
-        ...(method === "POST" ? { body: JSON.stringify(extra.body ?? {}) } : {}),
+        method, headers: { ...(method === "GET" ? {} : control), ...options.headers, ...extra.headers },
+        ...(method === "GET" ? {} : { body: JSON.stringify(extra.body ?? {}) }),
         signal: extra.signal ?? AbortSignal.any([options.signal, AbortSignal.timeout(15_000)]),
       });
     } catch (error) {
@@ -130,6 +153,8 @@ function localApi(options: LinkOptions) {
       } catch { /* a body that is not the app's JSON: the status alone */ }
       throw new LocalError(`${path}: ${message}`, response.status);
     }
+    // a revoked device is answered with no body
+    if (response.status === 204) return undefined as T;
     return await response.json() as T;
   };
 }
@@ -289,17 +314,24 @@ async function linkWithCode(options: LinkOptions, api: Api): Promise<number> {
  * started it. An Ovis from before /api/devices/pair/cancel can take back the typed code only.
  */
 async function takeBack(api: Api, out: (text: string) => void, code: string | null): Promise<void> {
+  const ended = await endCode(api, code);
+  if (ended === "both") out("Stopped: the code and the QR code no longer work.\n");
+  else if (ended === "typed") out("Stopped: the code no longer works. The QR code works until it runs out, as this Ovis cannot take it back.\n");
+  else out(`Stopped, but the code could not be taken back (${ended.failed}): it works until it runs out.\n`);
+}
+
+/** Ends the pairing `code` names (takeBack): `both` the code and its QR code, `typed` the typed code alone, or why neither. */
+async function endCode(api: Api, code: string | null): Promise<"both" | "typed" | { readonly failed: string }> {
   const signal = AbortSignal.timeout(5_000);
   try {
     await api("POST", "/api/devices/pair/cancel", { signal, ...code === null ? {} : { body: { code } } });
-    out("Stopped: the code and the QR code no longer work.\n");
+    return "both";
   } catch (error) {
     if (error instanceof LocalError && error.status === 404) {
       await api("POST", "/api/relay/code/cancel", { signal }).catch(() => undefined);
-      out("Stopped: the code no longer works. The QR code works until it runs out, as this Ovis cannot take it back.\n");
-      return;
+      return "typed";
     }
-    out(`Stopped, but the code could not be taken back (${error instanceof Error ? error.message : String(error)}): it works until it runs out.\n`);
+    return { failed: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -356,11 +388,282 @@ async function putListing(service: AccountService, listing: Listing): Promise<bo
 /** The start of an account's id, enough to tell two accounts apart on a terminal line. */
 const shortId = (account: string): string => plainLabel(account).slice(0, 12);
 
+/** A device paired with this PC, as GET /api/devices lists it. */
+interface Device { readonly id: string; readonly label: string; readonly created_at: string; readonly via_relay?: true; readonly account?: string }
+
+const newest = (devices: readonly Device[]): Device | null => devices.reduce<Device | null>((latest, device) => latest === null || device.created_at > latest.created_at ? device : latest, null);
+
+/** The newest device paired through the relay that `known` does not hold: the one a code shown since `known` was read let in. */
+const newcomer = (devices: readonly Device[], known: ReadonlySet<string>): Device | null => newest(devices.filter((device) => device.via_relay === true && !known.has(device.id)));
+
+/** Who put this PC in `account`: the device the code let in; without one, the account's newest member on this PC. */
+const addedBy = (devices: readonly Device[], known: ReadonlySet<string>, account: string): Device | null => newcomer(devices, known) ?? newest(devices.filter((device) => device.account === account));
+
+/** What `add` needs of the sign-in to end by a QR code. */
+interface Joining {
+  /** the account that signed in: the one this PC must end up in */
+  readonly signedIn: string;
+  readonly status: () => Promise<{ account: string | null; enrolling?: boolean }>;
+  /** `--print`, or no terminal: the QR code is written as lines that stay, not on a screen of its own */
+  readonly plain: boolean;
+  /** this PC ended in another account: what is said of it, once its entry in the signed-in account is dealt with */
+  readonly elsewhere: (account: string, by: string | null) => Promise<string>;
+  /** puts back a listing the account service did not take */
+  readonly tend: () => Promise<void>;
+}
+
 /**
- * `link`: sign in, list this PC in the account, and approve here the account's device that adds it. It
- * ends well only once this PC is in the account that signed in and that account's other devices are in.
+ * The end of `add`: one QR code (and its code to type) that a device signed in to the account scans. That device is
+ * paired by the code alone, links itself as this PC's first member, lists the PC and enrolls it
+ * (src/lib/relay/accountController.ts): nothing is approved here. So the code is a key to this PC, and is kept like
+ * one: on a screen of its own that goes when a device got in, when the run stops and on Ctrl+C; taken back however
+ * the run ends; three codes at most; and never shown again once a device paired. It ends well only once this PC is
+ * in the account that signed in, with that account's other devices in, and names the device that added it.
  */
-async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvider | undefined): Promise<number> {
+async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promise<number> {
+  const { out, signal } = options;
+  const now = options.now ?? Date.now;
+  const wait = options.wait ?? waitFor;
+  const devices = async (): Promise<Device[]> => (await api<{ devices: Device[] }>("GET", "/api/devices")).devices;
+  // the window the listing opened is for approving here, which this way does not do: nothing is taken through it
+  await api("POST", "/api/relay/link/close").catch((error: unknown) => { if (!(error instanceof LocalError)) throw error; });
+  // the devices this PC had before any code was shown
+  const known = new Set((await devices()).map((device) => device.id));
+  const startedAt = now();
+  const stopAt = startedAt + WAITING_MS;
+  let minted = 0;
+  // a code is out that was not taken back yet; `shown` is the six digits its QR code carries (linkWithCode)
+  let live = false;
+  let shown: string | null = null;
+  let card: { readonly url: string; readonly typed: string | null; readonly refused: string; readonly serverId: string; readonly until: number } | null = null;
+  // on the terminal's other screen, and the size it was last drawn for
+  let screen = false;
+  let drawnFor = "";
+  // the cursor stands after the question: what is said next starts on a line of its own
+  let atPrompt = false;
+  const say = (text: string): void => { out(atPrompt ? `\n${text}` : text); atPrompt = false; };
+  const sizeNow = () => joining.plain ? null : options.size?.() ?? null;
+  const draw = (): void => {
+    if (card === null) return;
+    const size = sizeNow();
+    drawnFor = size === null ? "" : `${size.columns}x${size.rows}`;
+    const left = remaining(Math.max(0, card.until - now()));
+    const code = qr(card.url).replace(/\n+$/, "").split("\n");
+    const width = Math.max(...code.map((row) => row.length));
+    const head = ["Scan this QR code with a device that is signed in to this Ovis account. It adds this PC to the account; there is no number to type.", ""];
+    const tail = [
+      ...card.typed !== null
+        ? [`Code to type: ${card.typed}   (works once, expires in ${left})`, "Or, on that device, open app.ovis.sh, choose Pair with a code and type it."]
+        : [`No code to type this time (${card.refused}). The QR code expires in ${left}.`],
+      `That device then shows an ID: pair only if it matches this PC's ID, every group: ${groups(card.serverId)}`,
+      "Anyone who can read this screen can pair with this PC while the code is shown.",
+      `${minted < MAX_CODES ? "A new one comes when this one runs out. " : ""}Press Ctrl+C to stop.`,
+    ];
+    // a line longer than the window takes several of its rows
+    const rows = (lines: readonly string[], columns: number): number => lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / columns)), 0);
+    // the other screen keeps nothing that scrolled off it: a code that does not fit is not drawn until the window grew
+    const fits = size === null || (size.columns >= width && size.rows > rows(head, size.columns) + code.length + rows(tail, size.columns));
+    const text = [...head, ...fits ? code : [`This window is too small for the QR code (it needs ${width} columns and ${code.length + head.length + tail.length + 1} rows). Make it larger and the code is drawn, or type the code.`, ""], ...tail];
+    if (joining.plain) { out(["", ...text, ""].join("\n")); return; }
+    out(`${screen ? "" : SCREEN_ON}${SCREEN_CLEAR}${text.join("\n")}\n`);
+    screen = true;
+  };
+  /** Takes the code off the screen and back from the PC; `used`: a device got in with it, so only a failure is said. */
+  const end = async (used: boolean): Promise<void> => {
+    if (screen) { out(SCREEN_OFF); screen = false; }
+    card = null;
+    if (!live) return;
+    live = false;
+    const ended = await endCode(api, shown);
+    if (ended === "both") { if (!used) say("The code and the QR code no longer work.\n"); }
+    else if (ended === "typed") say("The code no longer works. The QR code works until it runs out, as this Ovis cannot take it back.\n");
+    else say(`The code could not be taken back (${ended.failed}): it works until it runs out.\n`);
+  };
+  const mint = async (): Promise<void> => {
+    minted++;
+    live = true;
+    // until this round's offer names its code, the pending pairing is the one this round asks for
+    shown = null;
+    let typed: { code: string; expires_at: string; server_id: string } | null = null;
+    let refused = "";
+    try { typed = await api<{ code: string; expires_at: string; server_id: string }>("POST", "/api/relay/code"); } catch (error) {
+      if (!(error instanceof LocalError)) throw error;
+      refused = error.message;
+    }
+    const offer = await api<{ url: string; expires_at: string }>("POST", "/api/relay/offer");
+    const decoded = decodeOffer(offer.url);
+    if (decoded === null) throw new LocalError("The relay's pairing link did not parse.");
+    shown = decoded.code ?? null;
+    card = { url: offer.url, typed: typed?.code ?? null, refused, serverId: typed?.server_id ?? decoded.server_id, until: Math.min(typed === null ? Infinity : Date.parse(typed.expires_at), Date.parse(offer.expires_at)) };
+    draw();
+  };
+  // a device got in: from then on no code is shown again, whatever becomes of that device
+  let over = false;
+  // the device the code let in, and when it was first seen
+  let paired: Device | null = null;
+  let pairedAt = 0;
+  // that device left this PC in no account: the person is asked what becomes of it. `shownAt`: when the question first was on the screen
+  let asking: { readonly device: Device; readonly label: string; readonly prompt: string; shownAt: number | null } | null = null;
+  let keys: ReturnType<typeof typing> | null = null;
+  let reply: string | null = null;
+  let added = false;
+  let enrollingSaid = false;
+  // the PC's own server did not answer the last look
+  let away = false;
+  // Only a line that came once the question was on the screen long enough to read (DWELL_MS) answers it: the terminal
+  // is read from the question on, and hands over then what was typed before it
+  const sort = (): void => {
+    // not before the question is on the screen: what came by then is said under it, as too soon
+    if (keys === null || asking === null || asking.shownAt === null) return;
+    let early = false;
+    for (const line of keys.take()) {
+      atPrompt = false;
+      if (line.at - asking.shownAt >= DWELL_MS) reply ??= line.text;
+      else early = true;
+    }
+    if (early && reply === null) say("That line answered nothing: it came before the question could be read. Answer again.\n");
+  };
+  /** A device that got in and is not in the account, said as the run ends without having dealt with it. */
+  const stays = async (): Promise<string> => {
+    // one that took the code just before it was taken back shows only now
+    if (paired === null) {
+      try { paired = newcomer((await api<{ devices: Device[] }>("GET", "/api/devices", { signal: AbortSignal.timeout(5_000) })).devices, known); } catch { /* not known: nothing is said of it */ }
+    }
+    return paired === null || added ? "" : ` ${plainLabel(paired.label)} paired with this PC and stays paired: if it is not yours, revoke it in Settings → Devices and PCs on this PC.`;
+  };
+  try {
+    for (;;) {
+      if (!over && (card === null || now() >= card.until)) {
+        if (minted >= MAX_CODES) {
+          await end(false);
+          say(`Stopped after ${Math.max(1, Math.round((now() - startedAt) / 60_000))} minutes. Run ovis add again.${await stays()}\n`);
+          return 1;
+        }
+        await mint();
+      }
+      // a window that changed its size is drawn again: the other screen does not reflow what it cut off
+      const size = sizeNow();
+      if (screen && (size === null ? "" : `${size.columns}x${size.rows}`) !== drawnFor) draw();
+      sort();
+      if (asking !== null && !atPrompt && reply === null) {
+        asking.shownAt ??= now();
+        out(asking.prompt);
+        atPrompt = true;
+      }
+      const answered = asking !== null && keys !== null && (reply !== null || keys.ended);
+      if (asking !== null && keys !== null && !answered) {
+        // the poll's wait ends early when a line comes
+        const early = new AbortController();
+        const pause = wait(POLL_MS, AbortSignal.any([signal, early.signal]));
+        const first = await Promise.race([pause.then(() => "waited" as const), keys.arrived().then(() => "typed" as const)]);
+        if (first === "typed") { pause.catch(() => undefined); early.abort(); }
+        signal.throwIfAborted();
+      } else if (!answered || away) await wait(POLL_MS, signal);
+      // the answer is already there: it is acted on before any waiting (not while the PC's server is away, which would spin)
+      away = false;
+      try {
+        sort();
+        if (keys !== null && keys.failed !== undefined) throw keys.failed;
+        const joined = await joining.status();
+        await joining.tend();
+        if (joined.account !== null) {
+          over = true;
+          await end(true);
+          // the question about a device not signed in is moot: this PC is in an account now
+          asking = null;
+          reply = null;
+          const by = addedBy(await devices().catch((error: unknown) => { if (signal.aborted) throw error; return []; }), known, joined.account);
+          const label = by === null ? null : plainLabel(by.label);
+          if (joined.account !== joining.signedIn) {
+            say(await joining.elsewhere(joined.account, label));
+            return 1;
+          }
+          if (joined.enrolling !== true) {
+            say(`This PC is in your account (${shortId(joined.account)})${label === null ? "" : `, added by ${label}`}: every device of your account can use it.\n`);
+            return 0;
+          }
+          added = true;
+          // in the account, while the device that added it still brings in the account's other devices
+          if (!enrollingSaid) {
+            enrollingSaid = true;
+            say(`Added${label === null ? "" : ` by ${label}`}. Bringing in your account's other devices…\n`);
+          }
+        } else {
+          added = false;
+          const fresh = asking === null ? newcomer(await devices(), known) : null;
+          if (fresh !== null && paired?.id !== fresh.id) {
+            paired = fresh;
+            pairedAt = now();
+            over = true;
+            await end(true);
+            say(`${plainLabel(fresh.label)} paired with this PC. Waiting for it to add this PC to your account…\n`);
+          }
+          if (asking === null && paired !== null && now() - pairedAt >= ALONE_MS) {
+            const label = plainLabel(paired.label);
+            asking = { device: paired, label, prompt: `${label} paired with this PC but is not signed in to an Ovis account, so this PC is in no account yet. Keep that device? [y/N] `, shownAt: null };
+            // read from here on, not sooner: a run in the background is stopped by its first read of the terminal.
+            // What is not a terminal is never read: it answers nothing
+            keys = typing(options.terminal === true ? options.lines : NO_LINES, signal, () => asking, now);
+          } else if (asking !== null && keys !== null && asking.shownAt !== null && (reply !== null || keys.ended || now() >= stopAt)) {
+            const { device, label } = asking;
+            // no answer (not a terminal, Ctrl+D, or none in time) keeps nothing: nobody vouched for that device
+            const keep = reply !== null && /^y(es)?$/i.test(reply.trim());
+            if (reply === null) say(keys.ended ? "No answer can be typed here, so it is not kept.\n" : "No answer came in time, so it is not kept.\n");
+            atPrompt = false;
+            if (keep) out("Kept.\n");
+            else {
+              try {
+                await api("DELETE", `/api/devices/${encodeURIComponent(device.id)}`);
+                out("Removed.\n");
+              } catch (error) {
+                if (signal.aborted) throw error;
+                out(error instanceof LocalError && error.status === 404 ? `${label} is no longer paired with this PC.\n`
+                  : `${label} could not be removed (${error instanceof Error ? error.message : String(error)}): revoke it in Settings → Devices and PCs on this PC.\n`);
+              }
+            }
+            out("Sign in on that device, then run ovis add again.\n");
+            return 1;
+          }
+        }
+      } catch (error) {
+        // a server that is restarting answers again in a moment. One that did restart lost the code it kept in memory:
+        // the QR code on the screen is then dead, and the next comes when it would have run out
+        if (signal.aborted || !(error instanceof AwayError)) throw error;
+        away = true;
+      }
+      if (now() >= stopAt) {
+        await end(false);
+        say(added
+          ? "Stopped waiting after 30 minutes: this PC is in your account, but its other devices are not in yet. Open the Ovis app on the device that added it, then run ovis add again.\n"
+          : `Stopped after 30 minutes. Run ovis add again.${await stays()}\n`);
+        return 1;
+      }
+    }
+  } catch (error) {
+    if (!signal.aborted) throw error;
+    await end(false);
+    say(`Stopped. Run ovis add again to add this PC.${await stays()}\n`);
+    return 1;
+  } finally {
+    // however it ends (an error among them): the code is taken off the screen and back
+    await end(false);
+  }
+}
+
+/** What is said of a PC that ended in another account than the one that signed in, whose entry there, whose Add could not work, goes. */
+async function joinedElsewhere(api: Api, service: AccountService, serverId: string, account: string, signedIn: string, by: string | null): Promise<string> {
+  const unlistedThere = await service.deletePc(serverId).then(() => true, () => false);
+  // its relay pass is asked under the account it is in, not the one that signed in here
+  await api("POST", "/api/account/relay-account", { body: { account } }).catch(() => undefined);
+  return `This PC joined another Ovis account (${shortId(account)})${by === null ? "" : `, added by ${by}`}, not the one you signed in to (${shortId(signedIn)}). ${unlistedThere ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`;
+}
+
+/**
+ * `link`: sign in, list this PC in the account, and show the QR code that a device of the account adds it with
+ * (addByQr); with `approve`, approve here the account's device that adds it instead. It ends well only once this
+ * PC is in the account that signed in and that account's other devices are in.
+ */
+async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvider | undefined, mode: { readonly approve: boolean; readonly print: boolean }): Promise<number> {
   const { out, signal } = options;
   const now = options.now ?? Date.now;
   const wait = options.wait ?? waitFor;
@@ -403,6 +706,11 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   }
   if (options.accountService === null) {
     out("The account service is off on this PC (OVIS_ACCOUNT_SERVICE_URL=off). Link it with a code instead: run this again with --code.\n");
+    return 1;
+  }
+  // said before the sign-in, not after it: the QR code admits whoever reads it, so it goes to a terminal only
+  if (!mode.approve && !mode.print && options.isTty !== true) {
+    out("The QR code is a key to this PC. Run this in a terminal, or pass --print to write it anyway.\n");
     return 1;
   }
   // only on: online waits until the account is named, which a relay asking for a pass needs first
@@ -454,6 +762,14 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       throw new LocalError(`This PC stays listed in your account, but its Ovis relay is not online yet (${error.message}) Run this again once it is.`);
     }
     const name = first.entry.label;
+    if (!mode.approve) {
+      out(`Signed in. This PC is listed in your account as ${name}.\n`);
+      return await addByQr(options, api, {
+        signedIn, status, plain: mode.print || options.isTty !== true,
+        elsewhere: (account, by) => { pending.listing = null; return joinedElsewhere(api, service, first.serverId, account, signedIn, by); },
+        tend: async () => { if (pending.listing !== null && await putListing(service, pending.listing)) pending.listing = null; },
+      });
+    }
     let listedAt = now();
     let openedAt = listedAt;
     const stopAt = listedAt + WAITING_MS;
@@ -481,10 +797,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     // it is not this account's PC: its entry there, whose Add could not work, goes, and nothing puts it back
     const elsewhere = async (account: string): Promise<number> => {
       pending.listing = null;
-      const unlistedThere = await service.deletePc(first.serverId).then(() => true, () => false);
-      // its relay pass is asked under the account it is in, not the one that signed in here
-      await api("POST", "/api/account/relay-account", { body: { account } }).catch(() => undefined);
-      say(`This PC joined another Ovis account (${shortId(account)}), not the one you signed in to (${shortId(signedIn)}). ${unlistedThere ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
+      say(await joinedElsewhere(api, service, first.serverId, account, signedIn, null));
       return 1;
     };
     // the run's last listing was made
@@ -678,7 +991,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   }
 }
 
-/** Runs `link [--code] [--github | --google]` (also `add` and `login`); the exit code. */
+/** Runs `link [--code | --approve] [--print] [--github | --google]` (also `add` and `login`); the exit code. */
 export async function link(args: readonly string[], options: LinkOptions): Promise<number> {
   let host: string;
   try { host = new URL(options.origin).host; } catch { host = ""; }
@@ -689,7 +1002,7 @@ export async function link(args: readonly string[], options: LinkOptions): Promi
   const provider = DEVICE_PROVIDERS.find((name) => args.includes(`--${name}`));
   const api = localApi(options);
   try {
-    return args.includes("--code") ? await linkWithCode(options, api) : await linkToAccount(options, api, provider);
+    return args.includes("--code") ? await linkWithCode(options, api) : await linkToAccount(options, api, provider, { approve: args.includes("--approve"), print: args.includes("--print") });
   } catch (error) {
     if (options.signal.aborted) { options.out("Stopped.\n"); return 1; }
     options.out(`Could not link this PC: ${error instanceof Error ? error.message : String(error)}\n`);
