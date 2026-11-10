@@ -454,10 +454,45 @@ describe("AgentTaskStatus", () => {
     expect(told.at(-1)).toEqual(count(0, 0, null));
     // let go, nothing is known of the pane: it is asked for as herdr reports it
     busy = false;
-    now += 10_000;
     await status.refresh([pane("grok")]);
     expect(asked).toEqual(["one", "one", "one", "one", "one", "one", "none"]);
     expect(status.countOf("p1")).toBe(0);
+  });
+
+  it("remembers a grok miss with the session it was of: it holds no lookup of another session off", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "two.jsonl");
+    writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["build", "running", 1], ["serve", "running", 1]]))}\n`);
+    const session = (agent: "agy" | "grok", value: string, paneId = "p1"): HerdrPane => ({ pane_id: paneId, agent, agent_session: { agent, kind: "id", source: `herdr:${agent}`, value } } as HerdrPane);
+    const asked: string[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async (looked) => { asked.push(`${looked.agent}:${looked.agent_session?.value ?? "none"}`); return looked.agent_session?.value === "two" ? { path, started: null, owner: null } : null; }, onChange: () => undefined, onReset: () => undefined, now: () => now });
+    // grok has just started: herdr names no session for the pane yet, and it is asked for only each ten seconds
+    await status.refresh([pane("grok")]);
+    now += 1000;
+    await status.refresh([pane("grok")]);
+    expect(asked).toEqual(["grok:none"]);
+    // herdr names its session: that miss was not of this one, whose lookup waits for nothing
+    await status.refresh([session("grok", "one")]);
+    expect(asked).toEqual(["grok:none", "grok:one"]);
+    // not found either, it is asked for again only each ten seconds, as before
+    now += 1000;
+    await status.refresh([session("grok", "one")]);
+    expect(asked).toHaveLength(2);
+    // and another session herdr reports there is looked up at once, again
+    await status.refresh([session("grok", "two")]);
+    expect(asked).toEqual(["grok:none", "grok:one", "grok:two"]);
+    expect(status.countOf("p1")).toBe(2);
+    // an agy session is found by the pane's process, whatever the pane says of a session: its miss
+    // holds the next lookup off whichever id herdr names
+    await status.refresh([session("grok", "two"), session("agy", "a", "p2")]);
+    now += 1000;
+    await status.refresh([session("grok", "two"), session("agy", "b", "p2")]);
+    expect(asked).toEqual(["grok:none", "grok:one", "grok:two", "agy:a"]);
+    now += 9000;
+    await status.refresh([session("grok", "two"), session("agy", "b", "p2")]);
+    expect(asked).toEqual(["grok:none", "grok:one", "grok:two", "agy:a", "agy:b"]);
   });
 
   it("lets a pane go at once when the lookup that failed is another agent's there", async () => {
