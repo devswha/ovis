@@ -23,12 +23,14 @@
   what declines, and the question is asked again; Enter by itself still declines. Full-width
   digits typed with an input method approve as the digits they are. A request whose last three
   digits another request shares (one asked about earlier in the run, or waiting now) asks for
-  all six, and only all six approve it.
+  all six, and only all six approve it; one already asked about with three is asked about again
+  with all six when such a request comes to wait beside it.
 - `ovis add` and `pair --approve` no longer take what was typed before a question as part of
   its answer: the terminal's input is discarded as a request's question first shows, and the
   first line after an answer that did not reach the PC's server answers nothing. Where the
   input cannot be discarded (Windows), the first line after each question answers nothing
-  instead and the question is asked again.
+  instead and the question is asked again. Digits typed before a question showed are discarded
+  with the rest, so Enter pressed at it then declines: type them once the question shows.
 - `pair --approve` asks as `ovis add` does: a second line sent right behind an answer no longer
   answers the next request, a line counts only a second and a half after its question showed,
   and input that is not a terminal (`printf '456\n' | ovis pair --approve`) approves nothing:

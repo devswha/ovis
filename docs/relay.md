@@ -314,7 +314,10 @@ it is off, and wait until it is online.
   any, cannot approve this one. Full-width digits, as an input method types them, are the same
   digits. When the last three are also those of another request (one asked about earlier in the
   run, or waiting now: once in a thousand pairs), they name neither: the question says so and
-  asks for all six, and only all six approve. Only Enter by itself declines. Any other line (a
+  asks for all six, and only all six approve. A request already asked about with its last three
+  is asked about again with all six as soon as such a request waits beside it, and `add` reads the
+  waiting requests once more before it sends an approval typed as three digits: three digits
+  typed for the other request approve nothing then. Only Enter by itself declines. Any other line (a
   `y` out of habit, a mistyped digit) answers nothing: a decline ends the request for good, so
   it is not read into a line that was not one. One line says what approves and what declines,
   and the question is asked again. That approval is this PC's own, as on its screen:
@@ -337,6 +340,10 @@ it is off, and wait until it is online.
   question first shows (the terminal's input is emptied, with `tcflush`), so it is no part of the
   line sent at it. Where the input cannot be emptied (Windows, or no C library found), the first
   line after each question answers nothing instead, and the question is asked again.
+  That costs an answer typed too early: digits typed before the question showed stay on the
+  screen in front of it, but they were discarded, so Enter pressed at the question is an empty
+  line and declines the request, and the device has to ask again. Type the digits after the
+  question shows.
   One limit remains, as the terminal is read a line at a time and shows only when Enter was
   pressed, not when a line was begun: keys pressed in the moment after a question showed, before
   it was read, are part of the line sent at it. Such a line approves only if it is that request's
