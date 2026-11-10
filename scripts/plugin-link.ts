@@ -79,7 +79,7 @@ const LAST_MS = 30_000;
  * sooner was not typed after comparing them: it is a key pressed twice, or a second line typed right after the answer
  * to the request before. It is dropped, and the question is asked again. A line begun at a request that then went
  * away can come at any time after the next question shows, so that one is dropped by itself (`held`), and no answer
- * approves without the request's own digits (`approves`).
+ * approves without the request's own digits (`answerOf`).
  */
 const DWELL_MS = 1_500;
 
@@ -182,31 +182,30 @@ export interface AskingDevice { readonly label: string; readonly digits: string;
 
 /**
  * The question a terminal asks about a device that wants in: its six digits, to compare with that device's screen,
- * and what to type. The answer that approves carries the request's own digits (`approves`), so it names the request
+ * and what to type. The answer that approves carries the request's own digits (`answerOf`), so it names the request
  * it is for.
  */
 export function approvalPrompt(device: AskingDevice): string {
   const what = device.intent === "account" ? "join your account" : "pair with this PC";
-  // digits that are not six digits approve nothing (`approves`): the question does not ask for them
+  // digits that are not six digits approve nothing (`answerOf`): the question does not ask for them
   if (!SIX_DIGITS.test(device.digits)) return `${plainLabel(device.label)} wants to ${what}, but its request came without six digits to compare, so it cannot be approved here. Press Enter to decline: `;
   return `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${device.digits.slice(0, 3)} ${device.digits.slice(3)}. Type ${device.digits.slice(3)} to approve, or press Enter to decline: `;
 }
 
 /**
- * Whether a line approves the request that shows `digits`: only those six digits, with or without the space between
- * the halves, or the last three. Anything else declines, a bare Enter and `y` among them: a line begun for another
- * request, or typed ahead of any, does not carry this one's digits. A request whose digits are not six digits is
+ * What a line typed at the prompt of the request that shows `digits` answers. Only those six digits approve it, with
+ * or without the space between the halves, or the last three: a line begun for another request, or typed ahead of
+ * any, does not carry this one's digits. Only an empty line (Enter by itself) declines it. Anything else is no answer
+ * (null), a `y` typed out of habit and a mistyped digit among them: a decline ends the request for good, so it is not
+ * read into a line that was not one, and the question is asked again. A request whose digits are not six digits is
  * approved by nothing (a bare Enter must never match digits that are missing).
  */
-export function approves(line: string, digits: string): boolean {
-  if (!SIX_DIGITS.test(digits)) return false;
+export function answerOf(line: string, digits: string): "approve" | "decline" | null {
   const typed = line.replace(/\s/g, "");
-  return typed === digits || typed === digits.slice(3);
+  if (typed === "") return "decline";
+  if (!SIX_DIGITS.test(digits)) return null;
+  return typed === digits || typed === digits.slice(3) ? "approve" : null;
 }
-
-/** What is said of a decline: a person used to y/N is told what approves. */
-export const declinedNote = (line: string | null): string =>
-  line !== null && /^y(es)?$/i.test(line.trim()) ? "Declined: only a request's digits approve it, not y.\n" : "Declined.\n";
 
 /** The next answer, or the abort: Ctrl+C at a prompt stops at once rather than after the next line. */
 function answer(lines: AsyncIterator<string>, signal: AbortSignal): Promise<IteratorResult<string>> {
@@ -293,8 +292,8 @@ function asking(input: AnswerInput) {
   const terminal = input.terminal === true;
   // the request asked about: one at a time. `shownAt`: when its prompt, with its digits, first was on the screen
   let open: { readonly id: string; readonly label: string; readonly digits: string; readonly prompt: string; shownAt: number | null } | null = null;
-  // the line that answers the request asked about: one that came after its prompt was shown
-  let reply: string | null = null;
+  // what the request asked about is answered with: by a line that came after its prompt was shown
+  let reply: "approve" | "decline" | null = null;
   // the cursor stands after the prompt: what is said next starts on a line of its own
   let atPrompt = false;
   // A request left the screen unanswered. The terminal hands a line over only when Enter is pressed, and it is
@@ -322,7 +321,10 @@ function asking(input: AnswerInput) {
       if (open !== null && line.under === open && open.shownAt !== null) {
         if (line.at - open.shownAt >= DWELL_MS) {
           // a second line at one prompt: the first is the answer
-          reply ??= line.text;
+          if (reply !== null) continue;
+          reply = answerOf(line.text, open.digits);
+          // neither the digits nor Enter by itself: it declines nothing, and the question is asked again
+          if (reply === null) dropped = `${SIX_DIGITS.test(open.digits) ? "only the digits shown approve a request" : "this request cannot be approved here"}, and only Enter by itself declines it. Answer again.`;
           continue;
         }
         // one that came too soon does not stand in the way of the answer typed after it
@@ -381,18 +383,18 @@ function asking(input: AnswerInput) {
     /** the request asked about has its answer: a line typed at its prompt, or an input that ended */
     get answered(): boolean { return open !== null && open.shownAt !== null && (reply !== null || keys.ended); },
     /**
-     * The answer to the request asked about, which is then asked about no more. Only the request's own digits approve
-     * it; an input that ended (Ctrl+D), or is no terminal, declines. `line`: what was typed, null when nothing was.
+     * The answer to the request asked about, which is then asked about no more: what was typed at its prompt
+     * (`answerOf`); an input that ended (Ctrl+D), or is no terminal, declines.
      */
-    answer(): { readonly id: string; readonly label: string; readonly decision: "approve" | "decline"; readonly line: string | null } | null {
+    answer(): { readonly id: string; readonly label: string; readonly decision: "approve" | "decline" } | null {
       if (open === null || open.shownAt === null || (reply === null && !keys.ended)) return null;
-      const { id, label, digits } = open;
-      const line = reply;
+      const { id, label } = open;
+      const decision = reply ?? "decline";
       open = null;
       reply = null;
       // what is said next follows the answer's Enter, or the prompt itself when the input ended
       atPrompt = false;
-      return { id, label, line, decision: line !== null && approves(line, digits) ? "approve" : "decline" };
+      return { id, label, decision };
     },
     /** settles with the next line, or the end of the input */
     arrived: keys.arrived,
@@ -420,7 +422,7 @@ export async function approveWaiting(pairings: readonly WaitingDevice[], options
       const answer = desk.answer();
       if (answer !== null) {
         const sent = await options.decide(answer.id, answer.decision);
-        if (sent === "taken") out(answer.decision === "approve" ? "Approved.\n" : declinedNote(answer.line));
+        if (sent === "taken") out(answer.decision === "approve" ? "Approved.\n" : "Declined.\n");
         else if (sent === "gone") out(`${answer.label} is no longer waiting.\n`);
         else {
           // whether it was taken is not known: the rest is left to a run made once the server answers
@@ -732,7 +734,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           const { id, label, decision } = answer;
           try {
             await api("POST", "/api/relay/pairing", { body: { id, decision } });
-            out(decision === "approve" ? "Approved.\n" : declinedNote(answer.line));
+            out(decision === "approve" ? "Approved.\n" : "Declined.\n");
           } catch (error) {
             if (error instanceof AwayError) {
               // whether it was taken is not known: the request is asked about again while it still waits, never answered by itself
