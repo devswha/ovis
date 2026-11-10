@@ -180,7 +180,8 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
       case "failed": {
         const failureKind = state.kind === "failed" ? state.failure : null;
         // a connection that failed says why even after the window closed: the window is not what stopped it
-        const connectionFailure = failureKind === "pc-offline" || failureKind === "pc-unresponsive" || failureKind === "relay-unreachable";
+        // (so does the relay's refusal of a new device: the PC's account is past its limits, whatever the window)
+        const connectionFailure = failureKind === "pc-offline" || failureKind === "pc-unresponsive" || failureKind === "relay-unreachable" || failureKind === "new-devices-refused";
         const expiredWindowFailure = mode === "new" && (failureKind === "pair-unavailable" || (windowExpired && !connectionFailure));
         const failure = state.kind === "failed" ? relayFailureText(t, state.failure, name, state.detail) : null;
         body = failure && (

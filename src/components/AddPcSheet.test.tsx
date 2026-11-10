@@ -221,6 +221,12 @@ describe("the Add-a-PC sheet", () => {
     await update(props("new", expired, { kind: "failed", failure: "relay-unreachable", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(all()).toContain("The relay could not be reached");
     expect(all()).not.toContain("Add window closed");
+    // the relay's refusal of a new device is the account's limit, not the window: it says so, and can be tried again
+    await update(props("new", expired, { kind: "failed", failure: "new-devices-refused", name: "desk2", detail: null, server_id: SERVER_ID }));
+    expect(all()).toContain("desk2 cannot add new devices right now");
+    expect(all()).toContain("Devices already added still connect.");
+    expect(all()).not.toContain("Add window closed");
+    expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toContain("Try again");
     await update(props("new", expired, { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
     expect(all()).toContain("Add window closed · an account member must approve");
   });
