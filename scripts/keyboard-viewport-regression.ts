@@ -332,6 +332,30 @@ try {
       assert.equal(await size("#fixture-search"), ios ? "16px" : body, `${where}: ${ios ? "16px for a field a button's press focuses" : "a focused field keeps the interface size"}`);
       await page.locator("#fixture-search").blur();
       assert.equal(await size("#fixture-search"), body, `${where}: the interface size again after the blur`);
+      // a button drawn as a select (the agent picker) opens a menu and Safari never zooms into it, and it may not even
+      // take the focus: a press leaves its size alone, during the press and after it
+      await page.evaluate(() => document.querySelector(".app")!.insertAdjacentHTML("afterbegin", '<button type="button" class="select" id="fixture-picker">Agent</button>'));
+      await page.locator("#fixture-picker").dispatchEvent("pointerdown");
+      assert.equal(await size("#fixture-picker"), body, `${where}: a pressed picker button keeps the interface size`);
+      for (const type of ["pointerup", "click"]) await page.locator("#fixture-picker").dispatchEvent(type);
+      assert.equal(await size("#fixture-picker"), body, `${where}: a picker button keeps the interface size after its press`);
+      // a press that ends in a click without the field taking the focus (a handler refused it) leaves nothing armed
+      // once the click is done, and the label of a disabled field arms nothing
+      await page.evaluate(() => {
+        document.querySelector(".app")!.insertAdjacentHTML("afterbegin", '<input id="fixture-refused" class="input"><label for="fixture-off">Off</label><input id="fixture-off" class="input" disabled>');
+        document.querySelector("#fixture-refused")!.addEventListener("mousedown", (event) => event.preventDefault());
+      });
+      await page.locator("#fixture-refused").dispatchEvent("pointerdown");
+      assert.equal(await size("#fixture-refused"), ios ? "16px" : body, `${where}: ${ios ? "16px while the press lasts" : "a press leaves the size"}`);
+      for (const type of ["pointerup", "click"]) await page.locator("#fixture-refused").dispatchEvent(type);
+      await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+      assert.equal(await size("#fixture-refused"), body, `${where}: a press that ends without the focus disarms the field`);
+      await page.locator('label[for="fixture-off"]').dispatchEvent("pointerdown");
+      assert.equal(await size("#fixture-off"), body, `${where}: the label of a disabled field arms nothing`);
+      // a press that never ends in a click (the finger slid off) is cleared by the next press anywhere
+      await page.locator("#fixture-refused").dispatchEvent("pointerdown");
+      await page.locator("#fixture-find").dispatchEvent("pointerdown");
+      assert.equal(await size("#fixture-refused"), body, `${where}: the next press clears a field an earlier press left armed`);
     } finally { await context.close(); }
   }
   // an interface size over 16px: the press keeps the field at the interface size instead of shrinking it to 16px
