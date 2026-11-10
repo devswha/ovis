@@ -401,6 +401,19 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const again = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
       expect(again.calls.split("\n").filter((call) => call.includes(`-v ${first}:/outbox `) && call.includes("--user 1001:1001"))).toHaveLength(1);
       expect(again.calls.split("\n").filter((call) => call.includes(`--cap-add DAC_OVERRIDE --user 0:0 -v ${outboxes}/.taken:/taken `)).length).toBeGreaterThanOrEqual(1);
+      // an outbox that cannot be emptied (here: one this user may not write) still holds the earlier job's claim:
+      // its runner starts without the build cache, so nothing reads that claim as the new job's
+      writeFileSync(join(first, `${"a".repeat(64)}.claim`), "7 1\n");
+      chmodSync(first, 0o555);
+      try {
+        const kept = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
+        expect(kept.result.stderr).toContain("its build cache outbox could not be emptied: starting it without the build cache");
+        const started = kept.calls.split("\n").filter((call) => call.includes(`--name herdr-ci-${host}-1 `));
+        expect(started).toHaveLength(1);
+        expect(started[0]).not.toMatch(/:\/build-cache|OVIS_BUILD_CACHE_|build-cache-locks/);
+      } finally {
+        chmodSync(first, 0o1777);
+      }
       for (const mb of ["0", "00", "0000"]) expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", mb] }).result.status).toBe(2);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
     } finally {
@@ -889,9 +902,11 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
    * negative number: before it, as an earlier container's job), `runnerId` puts it on another
    * runner, `registered` names the runner registered under the slot's name now (null: none), and
    * `container` says what docker answers for the slot: nothing at all, one that never started, one
-   * that has stopped, or another container by the time GitHub has answered about the jobs.
+   * that has stopped, one that started after the build was left in the outbox, or another
+   * container by the time GitHub has answered about the jobs. `older` has the system say that the
+   * claim, or the build, was last changed one millisecond before the container started.
    */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean; runnerId?: number; jobStarted?: number; registered?: number | null; container?: "none" | "created" | "stopped" | "changes" } = {}, build: "files" | "link" | "sealed" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean; runnerId?: number; jobStarted?: number; registered?: number | null; container?: "none" | "created" | "stopped" | "younger" | "changes"; older?: "claim" | "tar" } = {}, build: "files" | "link" | "sealed" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -942,8 +957,11 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       // what docker names as the slot's container, and whether it is another once GitHub was asked about the jobs
       // as `docker container inspect -f '{{.Id}} {{.State.Running}} {{.State.StartedAt}}'` prints it
       if (github.container === "none") rmSync(join(dir, "container"), { force: true });
-      else writeFileSync(join(dir, "container"), github.container === "created" ? "c1 false 0001-01-01T00:00:00Z\n" : `c1 ${github.container !== "stopped"} 2026-11-10T12:00:00.123456789Z\n`);
+      else if (github.container === "created") writeFileSync(join(dir, "container"), "c1 false 0001-01-01T00:00:00Z\n");
+      // the build above was written just now: an hour from now is after it, the fixed day before it
+      else writeFileSync(join(dir, "container"), `c1 ${github.container !== "stopped"} ${github.container === "younger" ? new Date(Date.now() + 3_600_000).toISOString() : "2026-11-10T12:00:00.123456789Z"}\n`);
       if (github.container === "changes") writeFileSync(join(dir, "next-container"), "c2 true 2026-11-10T12:00:30.5Z\n"); else rmSync(join(dir, "next-container"), { force: true });
+      if (github.older) writeFileSync(join(dir, "older"), `${github.older} ${((Date.UTC(2026, 10, 10, 12, 0, 0) + 122) / 1000).toFixed(3)}\n`); else rmSync(join(dir, "older"), { force: true });
       const registered = github.registered === undefined ? 31 : github.registered;
       const jobStarted = new Date(Date.UTC(2026, 10, 10, 12, 0, 0) + (github.jobStarted ?? 10) * 1000).toISOString().replace(/\.\d+Z$/, "Z");
       const answers: Record<string, unknown> = {
@@ -979,6 +997,15 @@ esac
 cat "\${0%/bin/docker}/container"
 `);
       chmodSync(join(bin, "docker"), 0o755);
+      // stat -c %.3Z <file>: when the file was last changed, which the test says for the claim or the build; the system's stat otherwise
+      writeFileSync(join(bin, "stat"), `#!/bin/sh
+if [ "$1 $2" = "-c %.3Z" ] && [ -f "\${0%/bin/stat}/older" ]; then
+  read -r which at < "\${0%/bin/stat}/older"
+  case "$3" in *."$which") echo "$at"; exit 0 ;; esac
+fi
+PATH="\${PATH#*:}" exec stat "$@"
+`);
+      chmodSync(join(bin, "stat"), 0o755);
       const pass = () => spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
       const result = pass();
       // later passes, each after the job claimed again (the claim's run and attempt), each for another build
@@ -1150,6 +1177,23 @@ cat "\${0%/bin/docker}/container"
       expect(none.runs).toEqual([]);
       expect(none.ghCalls).toEqual([]);
       expect(none.outbox).toEqual([`judged-${key}`]);
+    }
+  });
+
+  it("refuses a build an earlier job left in the outbox, which the slot's container did not write", () => {
+    // the launcher could not empty the outbox before it started this container: the claim names a run this container's job is of
+    const left = promote({ container: "younger" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(left.stderr).toContain("written before the slot's container started");
+    // GitHub was not asked about it, and the slot is not held off: the container's own build, written after it started, is taken in
+    expect(left.callsBefore[0]).toBe(0);
+    expect(left.entries).toEqual([`7/${"0".padStart(64, "f")}`]);
+    expect(left.outbox.sort()).toEqual([`judged-${"0".padStart(64, "f")}`, `judged-${key}`].sort());
+    // by the claim's time and by the build's, each to the millisecond (the container started at 12:00:00.123)
+    for (const older of ["claim", "tar"] as const) {
+      const one = promote({ older });
+      expect(one.stderr).toContain("written before the slot's container started");
+      expect(one.runs).toEqual([]);
+      expect(one.ghCalls).toEqual([]);
     }
   });
 

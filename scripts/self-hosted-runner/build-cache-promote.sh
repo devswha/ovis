@@ -8,9 +8,11 @@
 #
 # A slot runs one job per container, under the same runner name each time, and GitHub answers for
 # the job the slot runs when it answers. So a claim is its container's: it is taken in only while the
-# container that was the slot's when the claim was taken still is, and only for a job that started
-# once that container had, on the runner registered under the slot's name now. A claim naming the run
-# of the slot's next job, or of an earlier job GitHub still lists as running, is refused.
+# container that was the slot's when the claim was taken still is, only when the claim was written
+# once that container had started, and only for a job that started once it had, on the runner
+# registered under the slot's name now. A claim naming the run of the slot's next job, or of an
+# earlier job GitHub still lists as running, is refused, and so is one an earlier container's job
+# left behind.
 #
 # A build is filed under the run GitHub confirmed for its slot, entries/<run id>/<key>, and a job
 # reads only its own run's directory (scripts/build-cache.ts). The key is the job's word for what it
@@ -220,15 +222,24 @@ for path in "$ENTRIES"/*; do
 done
 
 # The container that is the slot $1's now, as docker names it: its id and when it started, in
-# seconds since the epoch. Nothing when the slot has none running, or when docker does not answer.
-# run.sh empties a slot's outbox before it starts the slot's next container.
+# milliseconds since the epoch. Nothing when the slot has none running, or when docker does not answer.
 container() {
-  local id running at started
+  local id running at started part=000
   read -r id running at < <(timeout 10 docker container inspect -f '{{.Id}} {{.State.Running}} {{.State.StartedAt}}' "$1" 2>/dev/null) || return 0
   [ "$running" = true ] || return 0
   started="$(jq -rn --arg at "$at" '$at | sub("\\.[0-9]+"; "") | fromdateiso8601' 2>/dev/null)" || return 0
-  if [[ "$started" =~ ^[0-9]+$ ]]; then echo "$id $started"; fi
+  if [[ "$at" =~ \.([0-9]+)Z$ ]]; then part="${BASH_REMATCH[1]}000"; fi
+  if [[ "$started" =~ ^[0-9]+$ ]]; then echo "$id $(( started * 1000 + 10#${part:0:3} ))"; fi
   return 0
+}
+
+# When the file $1 was last changed, in milliseconds since the epoch: the time the system keeps of
+# its own, which whoever wrote the file cannot set. 0 when there is no such file.
+changed() {
+  local at
+  at="$(LC_ALL=C stat -c %.3Z "$1" 2>/dev/null)" || at=0
+  at="${at/./}"
+  if [[ "$at" =~ ^[0-9]+$ ]]; then echo "$at"; else echo 0; fi
 }
 
 promoted=0
@@ -257,8 +268,13 @@ for name in "$@"; do
       continue
     fi
     judged=1
-    # read before the claim is taken: what is in the outbox while this container is the slot's, its job wrote
+    # Read before the claim is taken. What is in the outbox while this container is the slot's, its
+    # job wrote: run.sh empties the outbox before it starts the slot's next container, and a claim or
+    # a build last changed before this container started is an earlier job's all the same (their
+    # times are read here, since taking a file changes its own).
     wrote="$(container "$name")"
+    left=0
+    if [ -n "$wrote" ] && { [ "$(changed "$claim")" -lt "${wrote#* }" ] || [ "$(changed "$tar")" -lt "${wrote#* }" ]; }; then left=1; fi
     work="$(mktemp -d "$TAKEN/XXXXXX")" || continue
     # only plain files, and small claims: a link could make this host user read or keep a file of its own
     if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && take "$tar" "$work/build.tar" && take "$claim" "$work/claim" &&
@@ -269,11 +285,13 @@ for name in "$@"; do
       [ "$(stat -c %s "$work/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ]; then
       if [ -z "$wrote" ]; then
         log "refused $key from $name: the slot has no container now, so GitHub cannot say whose build it is"
+      elif [ "$left" = 1 ]; then
+        log "refused $key from $name: it was written before the slot's container started, by an earlier job"
       elif refused_before "$name" "$run" "$attempt"; then
         log "refused $key from $name: run $run or this slot was refused before"
       else
         verdict=0
-        trusted "$name" "$run" "$attempt" "${wrote#* }" || verdict=$?
+        trusted "$name" "$run" "$attempt" "$(( ${wrote#* } / 1000 ))" || verdict=$?
         # GitHub answered for the job the slot runs now: that is the claim's only while the container is the same
         if [ "$verdict" = 0 ] && [ "$(container "$name")" != "$wrote" ]; then verdict=5; fi
         case "$verdict" in

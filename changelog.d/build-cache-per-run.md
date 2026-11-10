@@ -8,5 +8,6 @@
   is restored there and every job builds.
 - The runner's build cache takes a build in only from the container whose job handed it in, for a
   job that started once that container had: a claim naming the run of the slot's next job, or of a
-  killed container's job that GitHub still lists as running, is refused. An old entry that cannot
-  be removed is moved out of the names jobs read instead of being tried and logged every second.
+  killed container's job that GitHub still lists as running, is refused, and so is a build an
+  earlier job left in an outbox that could not be emptied. An old entry that cannot be removed is
+  moved out of the names jobs read instead of being tried and logged every second.

@@ -154,7 +154,11 @@ the two clocks), on the runner registered under the slot's name now. GitHub goes
 of a container that was killed as running, for minutes and sometimes for days, and the container
 after it registers over the dead one's runner and keeps its id, so the start time is what tells
 that job from the container's own. `run.sh` empties a slot's outbox before it starts the slot's next
-container, so a claim naming the run of the slot's next job, or of an earlier one, is refused. The
+container, so a claim naming the run of the slot's next job, or of an earlier one, is refused. Were
+the outbox not emptied, what an earlier job left would be read as the next one's: a claim or a
+build last changed before the slot's container started (the system's own time of the change, which
+a job cannot set) is refused, and a runner whose outbox still holds a file starts without the build
+cache. The
 launcher unpacks only files and directories and writes the sha256 of each into the entry's
 `.manifest`; a restore refuses an entry with a link, a missing, changed or extra file. Every other
 outbox file is deleted. One claim per outbox is judged per pass, and a refusal is remembered (the
