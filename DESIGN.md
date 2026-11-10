@@ -502,6 +502,44 @@ blocks of `src/styles.css`.
   size as a dim mono `--fs-xs` line; "Opening…" is a `role="status"` note that is in the document from
   the viewer's first render, clipped and empty (`.visually-hidden`, never `display: none`), and gets its
   words a frame later: a live region that appears together with its content is not announced.
+- A page's scripts wait for the person. The Page view draws an HTML file in a frame that allows no
+  script (`sandbox=""`): its HTML and CSS show, with the files the renderer put into it, and nothing
+  in it runs. One line above the frame says **Scripts in this page are off.** beside **Run scripts**
+  (`.file-viewer-scripts`, `--text-dim`, `--fs-sm`); the press loads the page again in a frame with
+  `allow-scripts`, and the line goes. The choice is that file's for as long as the viewer stays open,
+  also through Source and back. Another file, a viewer opened again and a reload start without
+  scripts: nothing is remembered. Over a relay the render host draws the script-less page in a frame
+  of its own inside it, under the same page policy, and writes the page into its own document only
+  once the scripts were asked for. **Open in a new tab** is a press of the same kind: on a direct
+  connection it opens the rendered page in a tab of its own, where its scripts run and no part of
+  the app is; over a relay it opens the reader, which is this viewer and starts without scripts.
+  The reason is what the page's sandbox was measured to hold, by probes that frame a page as the
+  viewer does (Chrome 156 and WebKit 26.6; the scripts are kept outside the tree, in
+  `~/.local/state/ovis-probes/page-sandbox/` on the maintainer's PC). A page's script reaches no
+  other host by a fetch, an image, a form, a popup or a navigation. It does reach one by WebRTC (a
+  STUN or TURN server of its choosing carries its data), in WebKit by a `preconnect` too; it can
+  move its frame to another port of the host name the browser used for the app; and it takes the
+  keyboard focus with `window.focus()`. The press closes none of that: a page whose scripts the
+  person runs can still do all of it, so the press is the person's decision about that file. A page
+  without scripts sent no request to any host in the same probes (a `preconnect` hint, a meta
+  refresh, an image, a stylesheet, a CSS background). One thing is left to it in WebKit: for a
+  `preconnect` hint WebKit opens a connection to the host the page names, with no request on it;
+  Chrome opens none, and a name lookup could not be watched in WebKit. Such a page reads nothing
+  and takes no key, so that connection tells the host that the file was opened and whatever its
+  author wrote into the host's name, nothing the person did.
+  Beside the pane (**Show beside the pane**) the app stays in reach while a page's scripts run, so
+  the page must not take its keys. Nothing on the frame stops a script from taking the focus
+  (`inert`, `tabindex` and a permissions policy were tried), the app sees neither a hover nor a
+  press inside a frame of another origin, and it cannot take the focus back while that frame is
+  there. So the focus is the page's only by the person's doing: the press on **Run scripts**, until
+  the app has the focus again; a press on the page; or Tab into it. While the app has the focus the
+  frame takes no pointer, so a press on the page comes to the viewer, which puts the focus in the
+  page: that press is not the page's, the next one is, and the wheel scrolls the page only once it
+  has the focus. A frame that has the focus otherwise took it. Its scripts are turned off again at
+  once, which is the one thing that gives the keys back, the focus returns to where it was, and the
+  line reads **This page took the keyboard, so its scripts are off again.** It is a `role="status"`
+  line that stays in the document, clipped and without words, while the scripts run, so those
+  words are announced. The popup needs none of this: it holds the focus itself while it is open.
 - A rendered page (Page) looks as before; what changed is where its files come from. The pictures,
   scripts and stylesheets it takes from its folder, and the videos it plays from this server, are
   read only from a descriptor whose opened file was shown to lie in the page's folder (or a folder
@@ -1938,28 +1976,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 
 ### PC load (`.machine-stats`)
-- Shown while Settings → Remote PCs → **PC load in the sidebar** is on, for this device only. Until
-  it is flipped it follows the roster: on while two or more PCs are connected, off for a lone PC,
-  whose load is not what tells PCs apart.
-- Under an expanded, connected PC's name and above its workspaces: one button holding three
-  meters in a row, each a label, the percent in `tabular-nums` and a 3px bar on a `--border-strong`
-  track (the plan meters' construction): **CPU**, **Memory** (without the file cache) and
-  **Disk** (the fullest of the disks that hold the root and home folder), and a caret at the end
-  that opens the numbers behind them: memory used and total, load average and core count, uptime
-  and a bar per disk. From 85% the percent and bar take `--status-blocked`, as the plan meters do
-  from 80%; amber stays chrome. The open or closed choice is kept per PC in this browser.
+- Shown while Settings → Devices and PCs → **PC load in the status bar** is on, for this device
+  only. It is on until it is turned off: the reading is one small ask every 5 s for the selected PC
+  while the page is visible, read from counters the kernel keeps anyway.
+- In the desktop status bar (a `.status-bar-text` item), as one line of plain text for the selected PC:
+  `CPU 4% · Memory 22% · Disk 50%`, memory without the file cache and the disk the fullest of
+  those that hold the root and home folder. It is text only: no bar, no colour at a high figure
+  and nothing to open. Selecting another PC shows that PC's load. A phone has no status bar and
+  shows none; the sidebar draws no load.
 - It is drawn only for a PC that can say: a PC whose bridge is from before `GET /api/system`
-  shows nothing, and so does one that has not answered yet. A figure the PC cannot measure
-  is a dash, never `0%`. The meters are drawn only; the button's label carries the numbers for a
-  screen reader ("Show system details for Work PC. CPU 4%, Memory 22%, Disk 50%").
-- Nothing is read for a PC that is folded, offline or in a hidden tab, nor while the sidebar, its
-  PCs list or a phone's drawer is closed. The next ask starts 5 s after the last one came back or
-  timed out, so a stuck PC never has more than one open, and a reading no ask has renewed for a
-  minute is dropped rather than shown as now. A herdr-core machine shows none: its server runs on
-  the PC that reaches it, which cannot read that machine's load.
-- Reference: no app listed in `src/AGENTS.md` shows a machine's load in its project list that I
-  know of (they assume one machine); this follows the app's own plan meters and PC group header,
-  and differs only in measuring a PC instead of a subscription. No code is borrowed.
+  shows nothing, and so does one that has not answered yet. A figure the PC cannot measure is
+  left out of the line, never shown as `0%`.
+- Nothing is read for a PC that is not selected, is offline or is in a hidden tab. The next ask
+  starts 5 s after the last one came back or timed out, so a stuck PC never has more than one
+  open, and a reading no ask has renewed for a minute is dropped rather than shown as now. A
+  herdr-core machine shows none: its server runs on the PC that reaches it, which cannot read
+  that machine's load.
+- Reference: no app listed in `src/AGENTS.md` shows a machine's load that I know of (they assume
+  one machine); this follows the app's own status bar text. No code is borrowed.
 
 ### New workspace dialog
 - Agent select comes from `GET /api/agents`; shell-only is always available. The bridge offers the
@@ -2642,7 +2676,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the middle so the file's type stays. The press opens the file in the file viewer, where an HTML
   file is its Page view, as the person has the viewer set: its dialog, which holds the focus
   while it is open, or with **Show beside the pane** its panel beside the pane, where the rest of
-  the app stays in reach. Either way the page runs only until that viewer is closed. The card
+  the app stays in reach. Either way the page is drawn without its scripts until the person
+  presses **Run scripts** there, and nothing of it stays once that viewer is closed. The card
   itself looks nothing up and draws no frame. Each card's button names its file to a screen reader
   (`aria-describedby`), since several cards carry the same words. A copied selection of a card is
   the name and the title on two lines, as plain and as rich text, without the button's words.
@@ -3437,7 +3472,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ones; same browser resume ID and device). A `sent` one is never dropped before its ten minutes, and
   neither is the note of a Send now that may have typed the copy, which answers every later resend of
   it "not confirmed" and is told to no browser: a copy another tab still holds on a held receipt is
-  not typed again. A pane herdr moves under a new ID takes its receipts with it. They are replayed
+  not typed again. That note also outlives its owner's record, which ages out as `dismissed` a minute
+  after its connection closed: a dismissed record ends a held receipt and nothing else. A pane herdr
+  moves under a new ID takes its receipts with it. A pane that ends takes its held receipts away:
+  herdr may give its ID to another pane, so no browser there is told the old pane's copy is held, and
+  a follow-up the bridge still holds for the pane that ended gets no held receipt when its connection
+  closes later. What was sent, or may have been, stays and only refuses. Receipts are replayed
   with `resumed: true` on its
   browser's reattach, or to that browser's already attached successor when the Enter's reply or the
   hold comes after the reload. `sent` and `discarded` settle only that exact ID's saved copy, while
@@ -3453,11 +3493,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   from the reconnect: a browser that returns after nine has one left. The page holds the copy until the
   sooner of its arrival plus `held_ms` and `held_until`
   on its own clock, on this page only (saved, the copy stays uncertain), then shows it uncertain again;
-  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. The
+  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. What
+  is left of the proof runs on a clock that steps forward by the larger of what the device's clock and
+  `performance.now()` moved since it was last read (`proofNow`): a device clock set back does not
+  stretch a proof past the bridge's receipt, and a sleep the forward-only clock did not count still
+  ends it. The
   proof also ends with the connection that brought it, and only with that one: a page that shows several
   PCs keeps one PC's held copies when another PC's connection drops. A resend checks and claims the
   receipt in the pane's serialized turn, by its original ID and for its own pane and browser only, so two
-  resends of one copy type it once. A connection that may no longer resume when it closes (read-only, a
+  resends of one copy type it once. The claim is made before anything is typed and is itself among the
+  receipts (`sending`, told to no browser): while it stands, every resend of that ID, under any pane
+  ID, is answered `pending_busy` and types nothing. A turn is its pane ID's, so a pane herdr moves
+  while the text is on its way would otherwise let the other tab's copy, under the new ID, be typed
+  beside it. The move carries the claim, and the send's end is recorded under the ID the pane has
+  then: `sent`, the "not confirmed" note, or the held receipt back in place when nothing was typed.
+  A connection that may no longer resume when it closes (read-only, a
   revoked device) leaves no held receipt; a send of its that ends after the close still leaves its `sent`
   receipt for that browser's next connection.
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to
