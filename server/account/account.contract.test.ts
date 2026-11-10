@@ -10,7 +10,7 @@ import { mergeRegistries } from "../state-merge.ts";
 import { rotateRelayIdentity } from "../relay/identity.ts";
 import { bounded, deferred, relayAccountFixture, relayConnection, relayDevice, relayFixture } from "../relay/test-helpers.ts";
 import { AccountHolds } from "./holds.ts";
-import { AccountMailbox, PENDING_MAX } from "./mailbox.ts";
+import { AccountMailbox, PENDING_MAX, SIGN_IN_PULL_MS, SIGN_IN_PULL_RETRY_MS } from "./mailbox.ts";
 import { AccountIntroductions, INTRODUCTION_TTL_MS } from "./introductions.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -957,13 +957,20 @@ test("unknown devices make the PC read its mailbox at most once a minute, and ar
   expect([first, second]).toEqual(["auth_failed", "auth_failed"]);
 });
 
-test("a device this PC knows, with a signature that does not hold, makes it read no mailbox", async () => {
+test("a member's own sign-in reads no mailbox, and a signature that does not hold is treated as an unknown device is", async () => {
   const { f, service, identity, member } = await accountPc();
+  await (await relayConnection(f, { serverId: identity.server_id })).auth(member);
+  expect(service.requests).toEqual([]);
+  // the same way for an id with a row here as for one without, so the refusal's delay does not tell them apart
   const link = await relayConnection(f, { serverId: identity.server_id });
   const other = await accountKey();
   void link.auth({ keys: other.keys, publicKey: other.spki, id: member.id }).catch(() => {});
   expect(await bounded(link.serverError)).toBe("auth_failed");
-  expect(service.requests).toEqual([]);
+  expect(pulls(service)).toBeGreaterThan(0);
+  const asked = service.requests.length;
+  // and on the same count: an unknown device within the minute asks the service nothing
+  expect(await signInAs(f, identity.server_id, await accountKey())).toBe("auth_failed");
+  expect(service.requests.length).toBe(asked);
 });
 
 test("a PC in no account reads no mailbox for an unknown device", async () => {
@@ -992,22 +999,64 @@ test("a key removed from the account stays out when its add waits in the mailbox
   expect(f.app.context.services.devices.hasKey(removed.spki)).toBe(false);
 });
 
-test("an unknown device's sign-in waits for a slow account service only so long, and joins a pull under way", async () => {
+test("a refused sign-in waits for a slow account service only so long, and joins a pull under way", async () => {
   const { f, identity } = await accountPc();
   const answer = deferred<Response>();
   let calls = 0;
   const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test",
     fetch: () => { calls++; return answer.promise; } });
-  await mailbox.pullForUnknownDevice(1);
+  await mailbox.pullForRefusedSignIn(1);
   expect(calls).toBe(1);
   // the pull is still under way: a second device joins it rather than being turned away by the once-a-minute count
-  await mailbox.pullForUnknownDevice(1);
+  await mailbox.pullForRefusedSignIn(1);
   expect(calls).toBe(1);
   answer.resolve(new Response("{}", { status: 503 }));
   await mailbox.pull();
-  // once it ended, the minute holds
-  await mailbox.pullForUnknownDevice(1);
+});
+
+test("a pull that could not read the mailbox does not spend the minute: the next refused sign-in may ask again 10 seconds on", async () => {
+  const { f, service, identity, leave, signer } = await accountPc();
+  const devices = f.app.context.services.devices;
+  let down = true;
+  let calls = 0;
+  const mailbox = new AccountMailbox({ devices, identity: () => identity, service: "https://account.test",
+    fetch: (request) => { calls++; return down ? Promise.resolve(new Response("{}", { status: 503 })) : service.fetch(request); } });
+  const joining = await accountKey();
+  await leave(await add(signer, joining.spki));
+  const start = 1_000_000;
+  await mailbox.pullForRefusedSignIn(1_000, start);
   expect(calls).toBe(1);
+  expect(mailbox.error).not.toBeNull();
+  // the service is back, but a retry inside the short floor asks nothing
+  down = false;
+  await mailbox.pullForRefusedSignIn(1_000, start + SIGN_IN_PULL_RETRY_MS - 1);
+  expect(calls).toBe(1);
+  expect(devices.hasKey(joining.spki)).toBe(false);
+  // after it, the retry reads the mailbox and finds the add
+  await mailbox.pullForRefusedSignIn(1_000, start + SIGN_IN_PULL_RETRY_MS);
+  expect(mailbox.error).toBeNull();
+  expect(devices.hasKey(joining.spki)).toBe(true);
+  // that pull read the mailbox: now the minute holds
+  const read = calls;
+  const again = start + SIGN_IN_PULL_RETRY_MS;
+  await mailbox.pullForRefusedSignIn(1_000, again + SIGN_IN_PULL_MS - 1);
+  expect(calls).toBe(read);
+  await mailbox.pullForRefusedSignIn(1_000, again + SIGN_IN_PULL_MS);
+  expect(calls).toBeGreaterThan(read);
+});
+
+test("a pull that fails after the sign-in stopped waiting for it gives the minute back too", async () => {
+  const { f, identity } = await accountPc();
+  const answer = deferred<Response>();
+  let calls = 0;
+  const mailbox = new AccountMailbox({ devices: f.app.context.services.devices, identity: () => identity, service: "https://account.test",
+    fetch: () => { calls++; return calls === 1 ? answer.promise : Promise.resolve(new Response("{}", { status: 503 })); } });
+  const start = 1_000_000;
+  await mailbox.pullForRefusedSignIn(1, start);
+  answer.resolve(new Response("{}", { status: 503 }));
+  await mailbox.pull();
+  await mailbox.pullForRefusedSignIn(1, start + SIGN_IN_PULL_RETRY_MS);
+  expect(calls).toBe(2);
 });
 
 function introducedPc(name = "nuc") {
