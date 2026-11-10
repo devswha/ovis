@@ -2,7 +2,7 @@
  * `link`: a PC with no screen of its own joins the relay from its terminal (docs/relay.md, "A PC
  * with no screen"). Both ways are the ones its own Settings page offers, through the same routes:
  *
- * - `link`: sign in to the account with a device code (as a PC's own page does,
+ * - `link` (also `add` and `login`, COMMAND_ALIASES): sign in to the account with a device code (as a PC's own page does,
  *   src/lib/account/deviceSignIn.ts): the Ovis link page's where the service has it, else, or with
  *   `--github` / `--google`, the provider's own device flow. Then list this PC in the account (src/lib/account/addThisPc.ts),
  *   then approve here, after comparing six digits, the device of the account that adds it.
@@ -45,10 +45,20 @@ export interface LinkOptions {
   readonly wait?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
+/** The names `link` also answers to: what a person looks for when a PC is to join their account. */
+export const COMMAND_ALIASES: Readonly<Record<string, "link">> = { add: "link", login: "link" };
+
 /** How often the waiting screen looks for a device that asks to add this PC. */
 const POLL_MS = 2_000;
 /** The approve-here window lasts ten minutes; it is opened again a minute before it ends (AccountSection RELIST_MS). */
 const RELIST_MS = 9 * 60_000;
+/**
+ * The window lives in the server's memory, so a server that restarted has none: it is asked for again this
+ * often, which only moves its end (pairing-approvals.ts openWindow) and writes nothing to the account.
+ */
+const REOPEN_MS = 30_000;
+/** How long one run keeps the approve-here window open before it stops by itself. */
+const WAITING_MS = 30 * 60_000;
 
 function waitFor(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -262,12 +272,18 @@ async function putListing(service: AccountService, listing: Listing): Promise<bo
   try { await service.putPc(listing.serverId, listing.entry); return true; } catch { return false; }
 }
 
-/** `link`: sign in, list this PC in the account, and approve here the account's device that adds it. */
+/** The start of an account's id, enough to tell two accounts apart on a terminal line. */
+const shortId = (account: string): string => plainLabel(account).slice(0, 12);
+
+/**
+ * `link`: sign in, list this PC in the account, and approve here the account's device that adds it. It
+ * ends well only once this PC is in the account that signed in and that account's other devices are in.
+ */
 async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvider | undefined): Promise<number> {
   const { out, signal } = options;
   const now = options.now ?? Date.now;
   const wait = options.wait ?? waitFor;
-  const status = () => api<{ account: string | null }>("GET", "/api/account/status");
+  const status = () => api<{ account: string | null; enrolling?: boolean }>("GET", "/api/account/status");
   let first: { account: string | null };
   try { first = await status(); } catch (error) {
     if (!(error instanceof LocalError && error.status === 404)) throw error;
@@ -275,7 +291,8 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     return 1;
   }
   if (first.account !== null) {
-    out("This PC is already in your account: every device of your account can use it.\n");
+    // whose account it is cannot be told before a sign-in
+    out(`This PC is already in an Ovis account (${shortId(first.account)}).\n`);
     return 0;
   }
   if (options.accountService === null) {
@@ -312,10 +329,13 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     ]).join("\n"));
   await signIn.finish(signal);
   const service = new AccountService({ store, lock, fetch: serviceFetch, now });
+  // the account that signed in: the one this PC must end up in
+  const signedIn = (await service.session())?.account ?? null;
   // a listing a renewal took away and has not put back yet
   const pending: { listing: Listing | null } = { listing: null };
   const unlisted = "This PC could not be listed in your account again just now; it is tried again until it is.\n";
   try {
+    if (signedIn === null) throw new LocalError("The sign-in did not last. Run this again.");
     const first = await listThisPc(api, service, now, pending);
     if (pending.listing !== null) out(unlisted);
     // a renewal's listing not put back yet goes back first: an account that does not list the PC gives it no pass
@@ -326,6 +346,9 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     }
     const name = first.entry.label;
     let listedAt = now();
+    let openedAt = listedAt;
+    const stopAt = listedAt + WAITING_MS;
+    let enrollingSaid = false;
     out([
       `Signed in. This PC is listed in your account as ${name}.`,
       `On a phone already in your account, open the Ovis app and tap Add on ${name}.`,
@@ -355,9 +378,23 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           out(`${label} is no longer waiting.\n`);
         }
       }
-      if ((await status()).account !== null) {
-        out("This PC is in your account: every device of your account can use it.\n");
+      const joined = await status();
+      if (joined.account !== null && joined.account !== signedIn) {
+        out(`This PC joined another Ovis account (${shortId(joined.account)}), not the one you signed in to (${shortId(signedIn)}). If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
+        return 1;
+      }
+      if (joined.account !== null && joined.enrolling !== true) {
+        out(`This PC is in your account (${shortId(joined.account)}): every device of your account can use it.\n`);
         return 0;
+      }
+      // in the account, while the device that added it still brings in the account's other devices
+      if (joined.account !== null && !enrollingSaid) {
+        enrollingSaid = true;
+        out("Added. Bringing in your account's other devices…\n");
+      }
+      if (now() >= stopAt) {
+        out("Stopped waiting after 30 minutes. Run this again to keep waiting.\n");
+        return 1;
       }
       if (pending.listing !== null && await putListing(service, pending.listing)) pending.listing = null;
       if (now() - listedAt >= RELIST_MS) {
@@ -367,6 +404,12 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         }
         if (pending.listing !== null) out(unlisted);
         listedAt = now();
+        openedAt = listedAt;
+      }
+      if (now() - openedAt >= REOPEN_MS) {
+        // the window alone, not the listing: a server that restarted meanwhile takes requests again
+        await api("POST", "/api/relay/link", { headers: { "x-ovis-local-only": "1" } });
+        openedAt = now();
       }
       try { await wait(POLL_MS, signal); } catch (error) {
         if (signal.aborted) { out("Stopped. Run this again to keep waiting.\n"); return 1; }
@@ -381,7 +424,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
   }
 }
 
-/** Runs `link [--code] [--github | --google]`; the exit code. */
+/** Runs `link [--code] [--github | --google]` (also `add` and `login`); the exit code. */
 export async function link(args: readonly string[], options: LinkOptions): Promise<number> {
   let host: string;
   try { host = new URL(options.origin).host; } catch { host = ""; }

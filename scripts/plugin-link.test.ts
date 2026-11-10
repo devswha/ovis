@@ -7,7 +7,7 @@ import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 import { loadRelayIdentity } from "../server/relay/identity.ts";
 import { updateStateDir } from "../server/update-state.ts";
-import { link } from "./plugin-link.ts";
+import { COMMAND_ALIASES, link } from "./plugin-link.ts";
 
 const ORIGIN = "http://127.0.0.1:7317";
 const SERVICE = "https://account.test";
@@ -259,7 +259,82 @@ describe("ovis link, on the PC itself", () => {
     expect(text).toContain("Hako's iPhone wants to join your account");
     expect(text).toContain("123 456");
     expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
-    expect(text).toContain("This PC is in your account");
+    expect(text).toContain("This PC is in your account (acct_1): every device of your account can use it.");
+  });
+
+  /** `link` signed in to acct_1 and waiting; `status` answers each look at the account, by the count of pairing polls so far. */
+  async function waiting(status: (polls: number) => { account: string | null; enrolling?: boolean }) {
+    const pc = identity();
+    const time = clock();
+    const service = new FakeAccountService(time.now);
+    let polls = 0;
+    const writes: string[] = [];
+    const local = localPc((request, path) => {
+      if (path === "/api/account/status") return Response.json({ unlinked: [], removals: [], adds: [], blocked: [], ...status(polls) });
+      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+      if (path === "/api/account/relay-account") return new Response(null, { status: 204 });
+      if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
+      if (path === "/api/relay/pairings") { polls++; return Response.json({ pairings: [] }); }
+      return undefined;
+    });
+    const out: string[] = [];
+    const code = await link([], {
+      origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal, lines: answers(), accountService: SERVICE,
+      serviceFetch: (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === "PUT" || request.method === "DELETE") writes.push(`${request.method} ${new URL(request.url).pathname} at poll ${polls}`);
+        return service.fetch(request);
+      },
+      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
+    });
+    return { code, out, text: out.join(""), calls: local.calls, writes, time, pc, polls: () => polls };
+  }
+
+  it("asks for its approve-here window again after 30 seconds of waiting, without writing to the account's list", async () => {
+    // in the account after 40 polls: 80 seconds of waiting
+    const { code, calls, writes, pc } = await waiting((polls) => ({ account: polls >= 40 ? "acct_1" : null }));
+    expect(code).toBe(0);
+    const order = calls.filter((call) => call.path === "/api/relay/link" || call.path === "/api/relay/pairings").map((call) => call.path === "/api/relay/link" ? "link" : "poll");
+    // the listing's own, then one each time 30 seconds of 2-second waits have passed (the first poll comes before any wait)
+    expect(order.join(" ")).toBe(["link", ...Array(16).fill("poll"), "link", ...Array(15).fill("poll"), "link", ...Array(9).fill("poll")].join(" "));
+    for (const call of calls.filter((entry) => entry.path === "/api/relay/link")) {
+      expect(call.method).toBe("POST");
+      expect(call.headers.get("x-ovis-local-only")).toBe("1");
+      expect(call.body).toBe("{}");
+    }
+    // the directory heard of this PC once, when it was listed: reopening the window writes nothing there
+    expect(writes).toEqual([`PUT /v1/pcs/${pc.server_id} at poll 0`]);
+  });
+
+  it("stops by itself after 30 minutes of waiting", async () => {
+    const { code, out, time, polls } = await waiting(() => ({ account: null }));
+    expect(code).toBe(1);
+    expect(out.at(-1)).toBe("Stopped waiting after 30 minutes. Run this again to keep waiting.\n");
+    expect(time.waits.filter((ms) => ms === 2_000)).toHaveLength(900);
+    expect(polls()).toBe(901);
+  });
+
+  it("keeps waiting while the account's other devices are brought in, saying so once, and ends well when they are", async () => {
+    const { code, out, polls } = await waiting((polls) => ({ account: polls >= 3 ? "acct_1" : null, enrolling: polls >= 3 && polls < 8 }));
+    expect(code).toBe(0);
+    expect(polls()).toBe(8);
+    expect(out.filter((text) => text.includes("Bringing in"))).toEqual(["Added. Bringing in your account's other devices…\n"]);
+    expect(out.at(-1)).toBe("This PC is in your account (acct_1): every device of your account can use it.\n");
+  });
+
+  it("stops after 30 minutes when the account's other devices never come in, without saying it is done", async () => {
+    const { code, text, out } = await waiting((polls) => ({ account: polls >= 1 ? "acct_1" : null, enrolling: true }));
+    expect(code).toBe(1);
+    expect(text).not.toContain("This PC is in your account");
+    expect(out.at(-1)).toBe("Stopped waiting after 30 minutes. Run this again to keep waiting.\n");
+  });
+
+  it("fails, naming both accounts and the way out, when this PC ended in another account than the one that signed in", async () => {
+    const { code, text, out } = await waiting((polls) => ({ account: polls >= 2 ? "acct_someone_else_entirely" : null, enrolling: true }));
+    expect(code).toBe(1);
+    expect(out.at(-1)).toBe("This PC joined another Ovis account (acct_someone), not the one you signed in to (acct_1). If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n");
+    expect(text).not.toContain("This PC is in your account");
+    expect(text).not.toContain("Bringing in");
   });
 
   it("links a PC whose Ovis relay asks for a pass: it signs in and names its account before waiting for the relay", async () => {
@@ -323,7 +398,8 @@ describe("ovis link, on the PC itself", () => {
     const out: string[] = [];
     const base = { origin: ORIGIN, headers: {}, fetch: local.fetch, out: (text: string) => out.push(text), signal: new AbortController().signal, lines: answers() };
     expect(await link([], { ...base, accountService: SERVICE })).toBe(0);
-    expect(out.join("")).toContain("already in your account");
+    // whose account it is cannot be told without a sign-in: the start of its id, not "your account"
+    expect(out.join("")).toBe("This PC is already in an Ovis account (acct_1).\n");
     out.length = 0;
     account = null;
     expect(await link([], { ...base, accountService: null })).toBe(1);
@@ -499,6 +575,10 @@ describe("ovis link, on the PC itself", () => {
       expect(exit, stderr).toBe(0);
       expect(stdout).toContain("active release link --code");
     } finally { server.stop(true); }
+  });
+
+  it("add and login are names of link", () => {
+    expect(COMMAND_ALIASES).toEqual({ add: "link", login: "link" });
   });
 
   for (const signal of ["SIGTERM", "SIGHUP"] as const) {

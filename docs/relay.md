@@ -281,14 +281,15 @@ terminal, with the same two ways its Settings page offers and the same rules. In
 plugin, run the plugin's script as in [In a terminal](guide.md#in-a-terminal); from a checkout:
 
 ```bash
-bun scripts/plugin.ts link            # sign in to your account, then approve the device that adds this PC
-bun scripts/plugin.ts link --google   # the same, at Google's own device page (--github: GitHub's)
+bun scripts/plugin.ts add             # sign in to your account, then approve the device that adds this PC
+bun scripts/plugin.ts add --google    # the same, at Google's own device page (--github: GitHub's)
 bun scripts/plugin.ts link --code     # a code to type and the relay QR code, renewed until Ctrl+C
 ```
 
-Both turn the relay on first when it is off, and wait until it is online.
+`add`, `login` and `link` are one command under three names. Both ways turn the relay on first when
+it is off, and wait until it is online.
 
-- **`link`** signs in the way a PC's own page does: it prints the Ovis sign-in page
+- **`add`** signs in the way a PC's own page does: it prints the Ovis sign-in page
   (`https://account.ovis.sh/link`), a code and a QR code of the page with the code filled in. On any
   device, open it, check the code, choose **Continue with GitHub** or **Continue with Google**, sign
   in, and confirm. An account service without that page, or `--github` / `--google`, uses the
@@ -297,10 +298,18 @@ Both turn the relay on first when it is off, and wait until it is online.
   tap **Add** on this PC; the terminal shows the request with its six digits
   (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
   y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
-  this PC only. Every nine minutes it lists the PC anew so the account's devices keep showing it as
-  new; a renewal the account service does not take is tried again until it is, so the PC never
-  stays off the list. It ends once the PC is in the account, and the sign-in ends with it: nothing
-  of it is kept on the PC. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to `--code` instead.
+  this PC only. It asks for that window again every 30 seconds, so an Ovis server that restarted
+  meanwhile takes the request again, and every nine minutes it lists the PC anew so the account's
+  devices keep showing it as new; a renewal the account service does not take is tried again until
+  it is, so the PC never stays off the list. It ends well only once the PC is in the account that
+  signed in and the adding device has brought in the account's other devices
+  (**Added. Bringing in your account's other devices…** while it does), and names the account by
+  the start of its id. A PC that ended in another account is reported with both ids and what to do
+  (**Revoke all** in Settings → Devices and PCs), and the command fails. After 30 minutes of
+  waiting it stops by itself; run it again to keep waiting. However it ends, the sign-in ends with
+  it: nothing of it is kept on the PC. On a PC already in an account it says so, with the start of
+  that account's id, and signs in to nothing. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to
+  `--code` instead.
 - **`link --code`** prints what **Connect a device** shows: the code to type at app.ovis.sh
   (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
   ID for the other device to compare. Both renew when they run out. When the relay mints no typed
@@ -314,7 +323,8 @@ Both turn the relay on first when it is off, and wait until it is online.
 plugin checkout and does not replace the checkout. `link` follows the release that runs, as
 `phone-setup` does, from the first checkout that has it on. A checkout from before `link` prints
 the usage line without it: reinstall the plugin (`herdr plugin install devswha/ovis`), which
-replaces the checkout, then run it again. A server too old for it (no account routes) is named as
+replaces the checkout, then run it again. A checkout from before `add` and `login` does the same
+for those two names, and its `link` still works. A server too old for it (no account routes) is named as
 such: `link` says to update it rather than failing on the first request.
 
 **Who counts as this PC.** `link` talks only to an Ovis on a loopback address, with the token the
