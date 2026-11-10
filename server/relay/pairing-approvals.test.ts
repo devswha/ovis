@@ -279,3 +279,52 @@ describe("the pairing window across a restart", () => {
     expect(approvals.closes).toBe(2);
   });
 });
+
+// the PC's own prompt words the request by this (src/components/RelayPairingPrompt.tsx): typed on the
+// other device while this PC waits to be added, compared on both screens otherwise
+describe("what the PC's own windows are told of a waiting request", () => {
+  const device = { intent: "account" as const, key: "k", deviceId: "d" };
+
+  it("marks a request asked while the local-only window is open", () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.openWindow(f.clock.at, { localOnly: true });
+    approvals.ask("phone", "123456", f.clock.at + 90_000, device);
+    // as session.ts passes it, fixed when the phone asked
+    approvals.ask("tablet", "654321", f.clock.at + 90_000, { ...device, localOnly: true });
+    expect(approvals.list().map(({ label, local_only }) => [label, local_only])).toEqual([["phone", true], ["tablet", true]]);
+    // account members are not shown it at all
+    expect(approvals.remoteList()).toEqual([]);
+  });
+
+  it("leaves the mark out of a request asked outside it", () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.openWindow(f.clock.at);
+    approvals.ask("phone", "123456", f.clock.at + 90_000, device);
+    approvals.ask("tablet", "654321", f.clock.at + 90_000, { ...device, localOnly: false });
+    const listed = approvals.list();
+    expect(listed).toHaveLength(2);
+    for (const request of listed) expect("local_only" in request).toBe(false);
+    // and once the local-only half has run out, whatever the rest of the window does
+    const later = f.open();
+    later.openWindow(f.clock.at, { localOnly: true });
+    f.clock.at += PAIRING_WINDOW_MS;
+    later.ask("laptop", "111222", f.clock.at + 90_000, device);
+    expect("local_only" in later.list()[0]!).toBe(false);
+  });
+
+  it("leaves it out of a members-only request, which this PC's windows never see", () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.openWindow(f.clock.at, { localOnly: true });
+    const seen: unknown[] = [];
+    approvals.subscribe((pairings) => seen.push(pairings));
+    approvals.ask("phone", "123456", f.clock.at + 90_000, { ...device, membersOnly: true, localOnly: true });
+    expect(approvals.list()).toEqual([]);
+    expect(seen.at(-1)).toEqual([]);
+    // what members are told carries no such field either
+    expect(approvals.remoteList()).toHaveLength(1);
+    expect("local_only" in approvals.remoteList()[0]!).toBe(false);
+  });
+});

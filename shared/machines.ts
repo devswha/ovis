@@ -400,6 +400,11 @@ export interface RelayPairingRequest {
   expires_at: string;
   /** absent from an older server: `pc` */
   intent?: PairingIntent;
+  /**
+   * Asked while this PC waited to be added to an account (docs/account.md, "Adding a PC"): the other
+   * device shows no digits, its person types this PC's there. Absent from an older server, or when false.
+   */
+  local_only?: boolean;
 }
 /**
  * The same request as an account member connected through the relay sees it: three candidates

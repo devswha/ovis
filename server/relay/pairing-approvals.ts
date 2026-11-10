@@ -235,9 +235,11 @@ export class RelayPairingApprovals {
       this.changed();
       decided.resolve(decision);
     };
-    this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent }, key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false,
-      // fixed when the phone asked (session.ts), so a window that closes before its digits are shown changes nothing
-      localOnly: !(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen()), choices: decoys(digits), finish });
+    // fixed when the phone asked (session.ts), so a window that closes before its digits are shown changes nothing
+    const localOnly = !(device.membersOnly ?? false) && (device.localOnly ?? this.localOnlyOpen());
+    // the PC's own windows are told, so their prompt asks for the digits to be typed on the other device
+    this.waiting.set(id, { request: { id, label, digits, expires_at: new Date(expiresAt).toISOString(), intent: device.intent, ...(localOnly ? { local_only: true as const } : {}) },
+      key: device.key, deviceId: device.deviceId, membersOnly: device.membersOnly ?? false, localOnly, choices: decoys(digits), finish });
     this.changed();
     return { decision: decided.promise, withdraw: () => finish({ approved: false }) };
   }
