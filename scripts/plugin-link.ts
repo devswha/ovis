@@ -12,6 +12,7 @@
  * It talks only to a server on this machine (a loopback address): approving a device is an act of
  * the PC itself (docs/account.md, "Who may admit a device"), and the sign-in lives in this process.
  */
+import { dlopen, FFIType } from "bun:ffi";
 import { hostname } from "node:os";
 
 import qrcode from "qrcode-generator";
@@ -42,6 +43,8 @@ export interface LinkOptions {
    * its lines come: nobody compared the digits a line of `yes | ovis add` arrives under. Unset counts as not one.
    */
   readonly terminal?: boolean;
+  /** discards what the terminal holds unread (`AnswerInput.discard`); the command passes `discardTyped` */
+  readonly discard?: () => boolean;
   /** Ctrl+C */
   readonly signal: AbortSignal;
   readonly fetch?: Fetch;
@@ -278,10 +281,42 @@ export interface AnswerInput {
    * its lines come: nobody compared the digits a line of `yes | ovis add` arrives under. Unset counts as not one.
    */
   readonly terminal?: boolean;
+  /**
+   * Discards what the terminal holds and nobody read: the lines sent, and what was typed and not sent. True when it
+   * did. Called as a request's prompt first shows, so what was typed before the prompt is no part of its answer.
+   * Where there is none, or it fails, the first line after the prompt answers nothing instead.
+   */
+  readonly discard?: () => boolean;
   readonly out: (text: string) => void;
   /** Ctrl+C */
   readonly signal: AbortSignal;
   readonly now?: () => number;
+}
+
+let flush: (() => boolean) | null = null;
+
+/**
+ * Discards what the terminal on stdin holds unread, with the system's own tcflush: a line typed and not sent sits in
+ * the terminal, not in this process, so nothing here can see or drop it otherwise. False where that cannot be done
+ * (Windows, a system whose C library is not found, an input that is no terminal).
+ */
+export function discardTyped(): boolean {
+  try {
+    if (flush === null) {
+      // TCIFLUSH, the input queue: 0 on Linux, 1 on macOS
+      const [queue, libraries] = process.platform === "linux" ? [0, ["libc.so.6", `libc.musl-${process.arch === "arm64" ? "aarch64" : "x86_64"}.so.1`]]
+        : process.platform === "darwin" ? [1, ["libSystem.B.dylib"]] : [0, []];
+      flush = () => false;
+      for (const library of libraries) {
+        try {
+          const { symbols } = dlopen(library, { tcflush: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } });
+          flush = () => symbols.tcflush(0, queue) === 0;
+          break;
+        } catch { /* not this system's C library: the next one */ }
+      }
+    }
+    return flush();
+  } catch { return false; }
 }
 
 /**
@@ -289,6 +324,13 @@ export interface AnswerInput {
  * `pair --approve` both ask through it. Only a line typed under the prompt of the request asked about, once that was
  * on the screen long enough to compare its digits (DWELL_MS), answers it. Every other line is dropped and said to
  * be, and none of them is ever kept for a later request.
+ *
+ * The terminal is read a line at a time (canonical mode), so when a line was begun is not seen, only when its Enter
+ * came. What that leaves open is closed from outside: what the terminal holds is discarded as a request's prompt
+ * first shows (`discard`), and the first line handed over after a request left the screen, after an answer was lost,
+ * or after a prompt whose terminal could not be emptied, answers nothing (`held`). What remains: keys pressed in
+ * the moment after a prompt showed, before the person read it, are part of the line sent at it. Such a line
+ * approves only if it is that request's own digits, and declines only if it is empty.
  */
 function asking(input: AnswerInput) {
   const { out } = input;
@@ -306,8 +348,11 @@ function asking(input: AnswerInput) {
   // A request left the screen unanswered. The terminal hands a line over only when Enter is pressed, and it is
   // marked then: what was typed at that request's prompt and not sent comes with the next Enter, under whatever
   // is asked by then. So the next line handed over answers nothing, whenever it comes and whatever it says.
-  // The same after an answer the server did not take (`lost`). Its value: why that line is dropped
+  // The same after an answer the server did not take (`lost`), and after a prompt shown at a terminal whose input
+  // could not be discarded (`show`). Its value: why that line is dropped
   let held: string | null = null;
+  // what the terminal holds was discarded: false where it cannot be, or could not
+  const emptied = (): boolean => { try { return input.discard?.() === true; } catch { return false; } };
   // What is not a terminal is never read: it has ended, as far as answers go
   const keys = typing(terminal ? input.lines : NO_LINES, input.signal, () => open !== null && open.shownAt !== null ? open : null, now);
   // said once: from then on every request is declined as it shows
@@ -400,7 +445,13 @@ function asking(input: AnswerInput) {
       // what came before the prompt goes out: none of it was typed at a prompt not yet shown
       sort();
       if (open !== null && !atPrompt && reply === null) {
-        open.shownAt ??= now();
+        if (open.shownAt === null) {
+          // What was typed before this prompt and not sent would come with the Enter pressed at it: it is discarded
+          // now, once for a request (what is typed under its prompt stays when the prompt is shown again). Where it
+          // cannot be, the first line after the prompt may have been begun before it, and answers nothing
+          if (terminal && !keys.ended && !emptied()) held ??= "this terminal's input could not be emptied as the request showed, so it may have been begun before that.";
+          open.shownAt = now();
+        }
         out(open.prompt);
         atPrompt = true;
       }
@@ -716,7 +767,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     // now, under no request, and answers none. Not sooner: a run in the background is stopped by its first read of
     // the terminal, and by now the PC is listed and the person was told what to do.
     // The request the terminal asks about is one at a time, and the waiting goes on while it is unanswered
-    const desk = asking({ lines: options.lines, ...options.terminal === undefined ? {} : { terminal: options.terminal }, out, signal, now });
+    const desk = asking({ lines: options.lines, ...options.terminal === undefined ? {} : { terminal: options.terminal }, ...options.discard === undefined ? {} : { discard: options.discard }, out, signal, now });
     const { say } = desk;
     // it is not this account's PC: its entry there, whose Add could not work, goes, and nothing puts it back
     const elsewhere = async (account: string): Promise<number> => {

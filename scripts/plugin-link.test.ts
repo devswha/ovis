@@ -71,18 +71,29 @@ const silent = (): AsyncIterator<string> => ({ next: () => new Promise(() => {})
 
 /**
  * Lines a person types when they choose to, as a terminal hands them over: one typed while nothing reads is kept
- * and goes to the next read, whenever that comes.
+ * and goes to the next read, whenever that comes. What is typed and not sent (`begin`) stays in the terminal and
+ * comes at the head of the line the next Enter sends (`type`), unless the terminal's input is discarded first
+ * (`discard`, as tcflush does: what was begun, and the lines nobody read yet).
  */
 function keyboard() {
   let reader: ((line: IteratorResult<string>) => void) | null = null;
   const kept: string[] = [];
+  let begun = "";
+  let discards = 0;
   const lines: AsyncIterator<string> = {
     next: () => {
       const line = kept.shift();
       return line === undefined ? new Promise((resolve) => { reader = resolve; }) : Promise.resolve({ value: line, done: false });
     },
   };
-  return { lines, type: (line: string) => { const resolve = reader; reader = null; if (resolve === null) kept.push(line); else resolve({ value: line, done: false }); } };
+  return {
+    lines,
+    type: (rest: string) => { const line = begun + rest; begun = ""; const resolve = reader; reader = null; if (resolve === null) kept.push(line); else resolve({ value: line, done: false }); },
+    begin: (text: string) => { begun += text; },
+    discard: () => { discards++; begun = ""; kept.length = 0; return true; },
+    /** how often the terminal's input was discarded */
+    discards: () => discards,
+  };
 }
 
 /**
@@ -271,7 +282,7 @@ describe("ovis link, on the PC itself", () => {
     const keys = keyboard();
     const code = await link(options.args ?? [], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
-      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines, terminal: true,
+      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines, terminal: true, discard: keys.discard,
       out: (text) => {
         out.push(text);
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
@@ -592,7 +603,7 @@ describe("ovis link, on the PC itself", () => {
     const keys = keyboard();
     await link([], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
-      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines, terminal: true,
+      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines, terminal: true, discard: keys.discard,
       out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); if (text.includes("Enter to decline")) time.after(() => keys.type("")); },
     });
     const text = out.join("");
@@ -643,11 +654,11 @@ describe("ovis link, on the PC itself", () => {
    * `said` hears every line, to `type` a line at that very moment or to `answer` after the next wait (two seconds: the
    * time a person takes to compare the digits), and `decide` may fail the call that carries an answer.
    */
-  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string } }) {
+  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string }; discard?: (() => boolean) | null; keys?: ReturnType<typeof keyboard> }) {
     const pc = identity();
     const time = clock();
     const service = new FakeAccountService(time.now);
-    const keys = keyboard();
+    const keys = options.keys ?? keyboard();
     let refused = 0;
     let polls = 0;
     let attempts = 0;
@@ -672,6 +683,8 @@ describe("ovis link, on the PC itself", () => {
     const code = await link([], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
       accountService: SERVICE, lines: options.lines ?? keys.lines, terminal: options.terminal ?? true, serviceFetch: (input, init) => service.fetch(new Request(input, init)),
+      // the terminal's input can be discarded, unless a test says it cannot (`null`: no way to; or a way that fails)
+      ...options.discard === null ? {} : { discard: options.discard ?? keys.discard },
       out: (text) => {
         out.push(text);
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
@@ -1169,6 +1182,101 @@ describe("ovis link, on the PC itself", () => {
     }
   });
 
+  // A terminal hands a line over only when Enter is pressed: what was typed before a prompt and not sent would come
+  // with the Enter pressed at it, long after it showed. So the terminal's input is discarded as a request first shows
+  describe("what was typed and not sent before a request's prompt showed", () => {
+    it("is no part of its answer: neither the digits typed ahead of the first request, nor a start the rest is typed to", async () => {
+      for (const [begun, rest] of [["222", ""], ["111222", ""], ["111 222", ""], ["22", "2"], ["1112", "22"]] as const) {
+        const keys = keyboard();
+        let asked = 0;
+        const { code, out, text, decisions } = await prompting({
+          keys,
+          pending: (polls, decisions) => polls <= 2 || decisions.length > 0 ? [] : ["p1"],
+          said: (said, _type, answer) => {
+            // typed while this PC waits for its first request, and not sent
+            if (said.includes("Its request shows here to approve")) keys.begin(begun);
+            // Enter two seconds after the prompt, with the rest typed first; asked again, Enter
+            if (said.includes("Phone p1 wants")) answer(++asked === 1 ? rest : "");
+          },
+          joined: (decisions) => decisions.length > 0,
+        });
+        expect(code).toBe(0);
+        expect(text).not.toContain("Approved");
+        // what the Enter sent is what was typed after the prompt: nothing (a decline), or a rest that is no answer
+        expect([begun, out.filter((said) => said.includes("Enter to decline")).length]).toEqual([begun, rest === "" ? 1 : 2]);
+        expect([begun, decisions]).toEqual([begun, [{ id: "p1", decision: "decline" }]]);
+      }
+    }, 30_000);
+
+    it("is no part of the answer to a later request either: typed after one answer, it does not answer the request that shows next", async () => {
+      const keys = keyboard();
+      const { code, decisions } = await prompting({
+        keys,
+        request: (id) => ({ digits: id === "p1" ? "111222" : "333444" }),
+        pending: (polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 && polls > 6 ? ["p2"] : [],
+        said: (said, _type, answer) => {
+          if (said.includes("Phone p1 wants")) answer("222");
+          // the digits the next phone shows, typed before this PC asks about it
+          if (said === "Approved.\n") keys.begin("444");
+          if (said.includes("Phone p2 wants")) answer("");
+        },
+        joined: (decisions) => decisions.length > 1,
+      });
+      expect(code).toBe(0);
+      expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "decline" }]);
+    });
+
+    it("is discarded once for a request, as its prompt first shows: what is typed under a prompt stays when the prompt is shown again", async () => {
+      const keys = keyboard();
+      let asked = 0;
+      const { code, decisions } = await prompting({
+        keys,
+        pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+        said: (said, _type, answer) => {
+          // a y first; the digits are begun as the line saying it is no answer comes, and finished under the prompt shown again
+          if (said.includes("Phone p1 wants")) answer(++asked === 1 ? "y" : "2");
+          if (said.includes("That line answered nothing")) keys.begin("22");
+        },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect(code).toBe(0);
+      expect(keys.discards()).toBe(1);
+      expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
+    });
+
+    it("is not looked for where the input is no terminal", async () => {
+      const keys = keyboard();
+      await prompting({ keys, terminal: false, pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"], said: () => undefined, joined: (decisions) => decisions.length > 0 });
+      expect(keys.discards()).toBe(0);
+    });
+
+    it("costs the first line after the prompt where the terminal's input cannot be discarded: that line answers nothing, and the question is asked again", async () => {
+      for (const discard of [null, () => false, () => { throw new Error("no tcflush here"); }]) {
+        for (const [begun, rest] of [["222", ""], ["", ""], ["", "222"]] as const) {
+          const keys = keyboard();
+          let asked = 0;
+          const { code, out, decisions } = await prompting({
+            keys, discard,
+            pending: (polls, decisions) => polls <= 2 || decisions.length > 0 ? [] : ["p1"],
+            said: (said, _type, answer) => {
+              if (said.includes("Its request shows here to approve")) keys.begin(begun);
+              // the first Enter sends what was begun, or a first answer that could have been; the digits typed after that count
+              if (said.includes("Phone p1 wants")) answer(++asked === 1 ? rest : "222");
+            },
+            joined: (decisions) => decisions.length > 0,
+          });
+          expect(code).toBe(0);
+          expect(out.filter((said) => said.includes("Enter to decline") || said.includes("That line answered nothing"))).toEqual([
+            PROMPT,
+            "That line answered nothing: this terminal's input could not be emptied as the request showed, so it may have been begun before that. Answer again for the request shown now.\n",
+            PROMPT,
+          ]);
+          expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
+        }
+      }
+    }, 30_000);
+  });
+
   it("takes no line that came between a request's arrival and its prompt: the digits were not on the screen yet", async () => {
     let typedAhead = false;
     const { code, out, text, decisions } = await prompting({
@@ -1569,14 +1677,15 @@ describe("pair --approve, asked as ovis add asks", () => {
    * `pair --approve` over the requests that wait: `said` hears every line, to `type` a line at that very moment or to
    * `answer` two seconds later (the time a person takes to compare the digits), and `decide` answers for the PC's server.
    */
-  async function approving(options: { pairings: WaitingDevice[]; said: (text: string, type: (line: string) => void, answer: (...lines: string[]) => void) => void; terminal?: boolean; lines?: AsyncIterator<string>; decide?: (attempt: number) => "taken" | "gone" | "away" }) {
+  async function approving(options: { pairings: WaitingDevice[]; said: (text: string, type: (line: string) => void, answer: (...lines: string[]) => void) => void; terminal?: boolean; lines?: AsyncIterator<string>; decide?: (attempt: number) => "taken" | "gone" | "away"; discard?: null; keys?: ReturnType<typeof keyboard> }) {
     let at = Date.parse("2026-11-06T12:00:00Z");
-    const keys = keyboard();
+    const keys = options.keys ?? keyboard();
     const out: string[] = [];
     const decisions: { id: string; decision: string }[] = [];
     let attempts = 0;
     const code = await approveWaiting(options.pairings, {
       lines: options.lines ?? keys.lines, terminal: options.terminal ?? true, signal: new AbortController().signal, now: () => at,
+      ...options.discard === null ? {} : { discard: keys.discard },
       out: (text) => {
         out.push(text);
         // a turn later: the lines come once the one who asks waits for them
@@ -1695,6 +1804,42 @@ describe("pair --approve, asked as ovis add asks", () => {
     expect(out.at(-1)).toBe("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n");
     expect(out.filter((said) => said.includes("Enter to decline"))).toHaveLength(1);
     expect(decisions).toEqual([]);
+  });
+
+  it("takes nothing typed and not sent before a request's prompt as part of its answer: neither before the first, nor between two", async () => {
+    const keys = keyboard();
+    // the first phone's digits, typed before the command asked about it
+    keys.begin("222");
+    let declined = 0;
+    const { code, out, decisions } = await approving({
+      keys,
+      pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
+      said: (said, _type, answer) => {
+        if (said.includes("Phone p1 wants")) answer("");
+        // and the second one's, typed before its prompt
+        if (said === "Declined.\n" && ++declined === 1) keys.begin("444");
+        if (said.includes("Phone p2 wants")) answer("");
+      },
+    });
+    expect(code).toBe(0);
+    expect(out).not.toContain("Approved.\n");
+    expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
+    expect(keys.discards()).toBe(2);
+  });
+
+  it("drops the first line after each prompt where the terminal's input cannot be discarded, and asks again", async () => {
+    const keys = keyboard();
+    keys.begin("222");
+    let asked = 0;
+    const { code, out, decisions } = await approving({
+      keys, discard: null,
+      pairings: [waiting("p1", "111222")],
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer(++asked === 1 ? "" : "222"); },
+    });
+    expect(code).toBe(0);
+    expect(out.filter((said) => said.includes("That line answered nothing"))).toEqual(["That line answered nothing: this terminal's input could not be emptied as the request showed, so it may have been begun before that. Answer again for the request shown now.\n"]);
+    expect(out.filter((said) => said.includes("Enter to decline"))).toHaveLength(2);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
   });
 
   it("declines every request when its input is not a terminal, whatever was piped in, without reading it", async () => {

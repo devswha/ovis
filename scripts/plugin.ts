@@ -35,7 +35,7 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
-import { approveWaiting, COMMAND_ALIASES, link as linkPc, type WaitingDevice } from "./plugin-link.ts";
+import { approveWaiting, COMMAND_ALIASES, discardTyped, link as linkPc, type WaitingDevice } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -871,6 +871,7 @@ async function approvePairings(): Promise<number> {
     lines: console[Symbol.asyncIterator](),
     // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever
     terminal: process.stdin.isTTY === true,
+    discard: discardTyped,
     // Ctrl+C ends the process as it is
     signal: new AbortController().signal,
     decide: async (id, decision) => {
@@ -920,6 +921,7 @@ async function linkCommand(): Promise<number> {
     lines: console[Symbol.asyncIterator](),
     // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever (`yes | ovis add`)
     terminal: process.stdin.isTTY === true,
+    discard: discardTyped,
   });
 }
 
