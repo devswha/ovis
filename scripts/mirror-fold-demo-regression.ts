@@ -31,6 +31,7 @@ interface FoldFixture {
   offsets: number[];
   reads: number;
   offset: number;
+  touchProbe?: { moves: number; ends: number; target: EventTarget | null; stop(): void };
 }
 declare global { interface Window { foldFixture: FoldFixture } }
 
@@ -289,6 +290,56 @@ const hostScroll = (page: Page): Promise<{ top: number; left: number }> => page.
   const host = document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!;
   return { top: host.scrollTop, left: host.scrollLeft };
 });
+/** A coloured run is repainted while the same finger keeps panning the folded screen. */
+const swipeAcrossRedraw = async (page: Page): Promise<void> => {
+  await page.locator(".pane-frame.is-current .terminal-fold-row").first().click();
+  await settled(page);
+  await page.locator(".pane-frame.is-current .pane-terminal").evaluate((host) => { host.scrollTop = 0; });
+  await settled(page);
+  const text = await foldedText(page, "RED-SEGMENT");
+  assert.ok(inView(text) && text.rect, "the swipe starts on visible coloured text");
+  const x = (text.rect.left + text.rect.right) / 2;
+  const y = (text.rect.top + text.rect.bottom) / 2;
+  assert.ok(y > 96, "the whole swipe fits on screen");
+  await page.evaluate(() => {
+    const host = document.querySelector(".pane-frame.is-current .pane-terminal")!;
+    const controller = new AbortController();
+    const probe = { moves: 0, ends: 0, target: null as EventTarget | null, stop: () => controller.abort() };
+    window.foldFixture.touchProbe = probe;
+    host.addEventListener("touchstart", (event) => { probe.target = event.target; }, { capture: true, signal: controller.signal });
+    host.addEventListener("touchmove", () => { probe.moves++; }, { capture: true, signal: controller.signal });
+    host.addEventListener("touchend", () => { probe.ends++; }, { capture: true, signal: controller.signal });
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - 16 }] });
+    await settled(page);
+    // createTerminalFold refills a changed row with innerHTML; replace this owned row's run while
+    // a native touch is down, independently of the demo transport's recording.
+    await page.locator(".pane-frame.is-current .terminal-fold-row").filter({ hasText: "RED-SEGMENT" }).evaluate((row) => {
+      row.innerHTML = row.innerHTML.replace("RED-SEGMENT", "NEW-SEGMENT");
+    });
+    await settled(page);
+    for (let step = 2; step <= 6; step++) {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y - step * 16 }] });
+      await settled(page);
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    const seen = await page.evaluate(() => {
+      const probe = window.foldFixture.touchProbe!;
+      return { moves: probe.moves, ends: probe.ends, detached: probe.target instanceof Node && !probe.target.isConnected,
+        top: document.querySelector<HTMLElement>(".pane-frame.is-current .pane-terminal")!.scrollTop };
+    });
+    assert.equal(seen.moves, 6, `a repaint keeps every move of the same swipe: ${JSON.stringify(seen)}`);
+    assert.equal(seen.ends, 1, "a repaint keeps the swipe's release");
+    assert.ok(seen.top >= 80, `the folded view follows the rest of the swipe: ${JSON.stringify(seen)}`);
+    console.log(`PASS folded touch across redraw: ${JSON.stringify(seen)}`);
+  } finally {
+    await page.evaluate(() => { window.foldFixture.touchProbe?.stop(); delete window.foldFixture.touchProbe; });
+    await cdp.detach();
+  }
+};
 /** The labels of the pane's actions on a phone (its header More: the title lists the tabs; Pane and tab… under it, G-143), closed again with Escape. */
 const sheetItems = async (page: Page): Promise<string[]> => {
   await page.locator(".header-more-button").click();
@@ -386,6 +437,12 @@ try {
   try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
+      const redraw = await open(browser, origin, { width: 390, height: 844 }, true);
+      try {
+        await drawnScreen(redraw.page);
+        await swipeAcrossRedraw(redraw.page);
+        assert.deepEqual(redraw.errors, [], "the redraw swipe has no page errors");
+      } finally { await redraw.close(); }
       const phone = await open(browser, origin, { width: 390, height: 844 }, true);
       const { page } = phone;
       try {
