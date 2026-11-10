@@ -299,10 +299,18 @@ it is off, and wait until it is online.
   (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
   y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
   this PC only. The waiting goes on under that question: a request that stops waiting unanswered
-  is dropped with a line saying so, a line typed after it answers nothing, and an answer the server
-  did not take is asked for again rather than sent a second time. It asks for that window again every 30 seconds, and every nine minutes, and once more with its last window, it lists the
-  PC anew so the account's devices keep showing it as new until the run ends; a line typed for a request that went away answers no later request; a renewal the account service does not
-  take is tried again until it is, so the PC never stays off the list. An Ovis server that stops
+  is dropped with a line saying so, and an answer the server did not take is asked for again
+  rather than sent a second time. Only a line typed after a request's question showed, with its
+  digits, answers it: the terminal is read all through the wait, so a line typed ahead (during the
+  sign-in, while nothing is asked, before the question is on the screen, a second line at one
+  question, or one begun for a request that went away) is dropped with a line saying so and never
+  kept for a later request. Input that is not a terminal (a pipe, a closed stdin) declines every
+  request, whatever it carried. It asks for that window again every 30 seconds, and with every
+  look of the last half minute in which a window may still be opened, so the last one ends with
+  the run however long a look takes. Every nine minutes, and once more in that last half minute,
+  it lists the PC anew so the account's devices keep showing it as new until the run is all but
+  over; a renewal the account service does not take is tried again until it is, also once the PC
+  is in the account, so the PC never stays off the list. An Ovis server that stops
   answering meanwhile (a restart, an update) does not end the command: it waits, keeping the
   sign-in, and asks for the window again with the first call the server answers. It ends well only
   once the PC is in the account that signed in and the adding device has brought in the account's

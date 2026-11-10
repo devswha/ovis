@@ -59,6 +59,22 @@ function clock() {
 async function* answers(...lines: string[]): AsyncGenerator<string> { for (const line of lines) yield line; }
 
 /**
+ * Lines a person types when they choose to, as a terminal hands them over: one typed while nothing reads is kept
+ * and goes to the next read, whenever that comes.
+ */
+function keyboard() {
+  let reader: ((line: IteratorResult<string>) => void) | null = null;
+  const kept: string[] = [];
+  const lines: AsyncIterator<string> = {
+    next: () => {
+      const line = kept.shift();
+      return line === undefined ? new Promise((resolve) => { reader = resolve; }) : Promise.resolve({ value: line, done: false });
+    },
+  };
+  return { lines, type: (line: string) => { const resolve = reader; reader = null; if (resolve === null) kept.push(line); else resolve({ value: line, done: false }); } };
+}
+
+/**
  * A QR code drawn in the terminal, whatever it carries: its three finder squares, top left, top right and
  * bottom left. The rest of the code follows its random payload, so no other run of blocks is certain.
  */
@@ -241,13 +257,16 @@ describe("ovis link, on the PC itself", () => {
       return undefined;
     });
     const out: string[] = [];
+    const keys = keyboard();
     const code = await link(options.args ?? [], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
-      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: answers("y"),
+      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines,
       out: (text) => {
         out.push(text);
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
         if (shown) options.approve(service, shown[1]!);
+        // the answer, typed once the digits are on the screen
+        if (text.includes("Approve?")) keys.type("y");
       },
     });
     return { code, text: out.join(""), service, pc, decisions, named };
@@ -268,7 +287,7 @@ describe("ovis link, on the PC itself", () => {
    * `link` signed in to acct_1 and waiting; `status` answers each look at the account, by the count of pairing polls
    * so far and the time since this PC was listed (the waiting began). `down`: when the PC's server refuses every connection.
    */
-  async function waiting(status: (polls: number, elapsed: number) => { account: string | null; enrolling?: boolean }, down: (elapsed: number) => boolean = () => false, latency = 0) {
+  async function waiting(status: (polls: number, elapsed: number) => { account: string | null; enrolling?: boolean }, down: (elapsed: number) => boolean = () => false, latency: number | ((polls: number, elapsed: number) => number) = 0) {
     const pc = identity();
     const time = clock();
     let began: number | null = null;
@@ -278,6 +297,8 @@ describe("ovis link, on the PC itself", () => {
     const writes: string[] = [];
     // when the approve-here window was asked for, and the accounts this PC was told it asks its relay pass under
     const linkAt: number[] = [];
+    // when this PC was put in the account's list
+    const putAt: number[] = [];
     const named: string[] = [];
     const local = localPc(async (request, path) => {
       if (down(elapsed())) throw new TypeError("connection refused");
@@ -287,7 +308,7 @@ describe("ovis link, on the PC itself", () => {
       if (path === "/api/relay/link") { began ??= time.now(); linkAt.push(elapsed()); }
       if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
       // `latency`: how long each look for a request takes to be answered
-      if (path === "/api/relay/pairings") { polls++; time.pass(latency); return Response.json({ pairings: [] }); }
+      if (path === "/api/relay/pairings") { polls++; time.pass(typeof latency === "number" ? latency : latency(polls, elapsed())); return Response.json({ pairings: [] }); }
       return undefined;
     });
     const out: string[] = [];
@@ -296,11 +317,12 @@ describe("ovis link, on the PC itself", () => {
       serviceFetch: (input, init) => {
         const request = new Request(input, init);
         if (request.method === "PUT" || request.method === "DELETE") writes.push(`${request.method} ${new URL(request.url).pathname} at poll ${polls}`);
+        if (request.method === "PUT") putAt.push(elapsed());
         return service.fetch(request);
       },
       out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
     });
-    return { code, out, text: out.join(""), calls: local.calls, writes, time, pc, polls: () => polls, linkAt, named, service };
+    return { code, out, text: out.join(""), calls: local.calls, writes, time, pc, polls: () => polls, linkAt, putAt, named, service };
   }
 
   it("asks for its approve-here window again after 30 seconds of waiting, without writing to the account's list", async () => {
@@ -332,11 +354,12 @@ describe("ovis link, on the PC itself", () => {
     expect(code).toBe(1);
     // the server keeps a window ten minutes from when it was asked for: the last one ends as the run does
     expect(Math.max(...linkAt)).toBe(20 * 60_000);
-    expect(linkAt.filter((at) => at > 19 * 60_000)).toEqual([19 * 60_000 + 30_000, 20 * 60_000]);
-    // listed, then listed anew at 9 and 18 minutes (2-second polls) and with the last window at 20, so the
-    // account's devices offer Add until the run ends. Not after: the card would outlive the window and the run
+    // every look of the last half minute asks, so the last one in time is among them whatever a look takes
+    expect(linkAt.filter((at) => at > 19 * 60_000)).toEqual(Array.from({ length: 16 }, (_, look) => 19 * 60_000 + 30_000 + look * 2_000));
+    // listed, then listed anew at 9 and 18 minutes (2-second polls) and with the first of those last looks, at 19:30,
+    // so the account's devices offer Add until the run is all but over. Not after: the card would outlive the window and the run
     const entry = `/v1/pcs/${pc.server_id}`;
-    expect(writes).toEqual([`PUT ${entry} at poll 0`, ...[271, 541, 601].flatMap((poll) => [`DELETE ${entry} at poll ${poll}`, `PUT ${entry} at poll ${poll}`])]);
+    expect(writes).toEqual([`PUT ${entry} at poll 0`, ...[271, 541, 586].flatMap((poll) => [`DELETE ${entry} at poll ${poll}`, `PUT ${entry} at poll ${poll}`])]);
   });
 
   it("asks for its last window with the last look before the last ten minutes, however long the calls take", async () => {
@@ -350,7 +373,30 @@ describe("ovis link, on the PC itself", () => {
       // and the listing is renewed with it, once
       expect(writes.filter((write) => write.startsWith("PUT")).length).toBe(4);
     }
-  });
+  // seven runs of 30 minutes: more than the default five seconds on a busy host
+  }, 60_000);
+
+  it("asks for its last window and lists this PC anew in time when a look near the end takes longer than every look before it", async () => {
+    const cutoff = 20 * 60_000;
+    const runs: [string, (polls: number, elapsed: number) => number, number][] = [
+      // every look is answered at once until minute 20, where one takes three seconds
+      ["one slow look at the end", (_polls, elapsed) => elapsed >= cutoff ? 3_000 : 0, 3_000],
+      // quick for 19 minutes 50 seconds, then four seconds a look
+      ["slow from just before the end", (_polls, elapsed) => elapsed >= cutoff - 10_000 ? 4_000 : 100, 4_000],
+      // no two looks alike
+      ["uneven all the way", (polls) => [0, 2_700, 400, 5_100, 900, 50, 3_300][polls % 7]!, 5_100],
+      ["slower and slower", (_polls, elapsed) => Math.floor(elapsed / 60_000) * 250, 5_000],
+    ];
+    for (const [name, latency, slowest] of runs) {
+      const { code, linkAt, putAt } = await waiting(() => ({ account: null }), () => false, latency);
+      expect([name, code]).toEqual([name, 1]);
+      // never a window that outlives the run, and the last one is asked for by the last look that came in time
+      expect([name, Math.max(...linkAt) <= cutoff]).toEqual([name, true]);
+      expect([name, Math.max(...linkAt) > cutoff - (2_000 + slowest)]).toEqual([name, true]);
+      // the PC is listed anew in the last half minute before that, and not after it
+      expect([name, Math.max(...putAt) >= cutoff - 30_000 && Math.max(...putAt) <= cutoff]).toEqual([name, true]);
+    }
+  }, 60_000);
 
   it("does not call this PC added when it turns out to be in another account after a late unanswered call", async () => {
     // one call fails at minute 25, and the status read first then names another account
@@ -532,10 +578,11 @@ describe("ovis link, on the PC itself", () => {
       return undefined;
     });
     const out: string[] = [];
+    const keys = keyboard();
     await link([], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
-      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: answers("n"),
-      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
+      accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines,
+      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); if (text.includes("Approve?")) keys.type("n"); },
     });
     const text = out.join("");
     expect(text).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
@@ -580,18 +627,11 @@ describe("ovis link, on the PC itself", () => {
     expect((await service.fetch(new Request(SERVICE + "/v1/pcs", { headers: { authorization: "Bearer " + token } }))).status).toBe(401);
   });
 
-  /** Lines a person types when they choose to, not ahead of time. */
-  function keyboard() {
-    let reader: ((line: IteratorResult<string>) => void) | null = null;
-    const lines: AsyncIterator<string> = { next: () => new Promise((resolve) => { reader = resolve; }) };
-    return { lines, type: (line: string) => { const resolve = reader; reader = null; resolve?.({ value: line, done: false }); } };
-  }
-
   /**
    * `link` signed in to acct_1 and waiting, with requests to approve: `pending` names the ones waiting at each poll,
    * `said` hears every line (to type an answer at), and `decide` may fail the call that carries an answer.
    */
-  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void) => void; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean }) {
+  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void) => void; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string> }) {
     const pc = identity();
     const time = clock();
     const service = new FakeAccountService(time.now);
@@ -603,6 +643,8 @@ describe("ovis link, on the PC itself", () => {
     const local = localPc(async (request, path) => {
       // the PC's server is down: every call is refused
       if (options.refuse?.(time.waits.length)) { if (++refused > 200) throw new Error("the loop spins without waiting"); throw new TypeError("connection refused"); }
+      // typed while this call is on its way
+      options.called?.(path, keys.type, polls);
       if (path === "/api/account/status") return Response.json({ account: options.joined?.(decisions) ? "acct_1" : null, unlinked: [], removals: [], adds: [], blocked: [] });
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
       if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
@@ -617,7 +659,7 @@ describe("ovis link, on the PC itself", () => {
     const out: string[] = [];
     const code = await link([], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
-      accountService: SERVICE, lines: keys.lines, serviceFetch: (input, init) => service.fetch(new Request(input, init)),
+      accountService: SERVICE, lines: options.lines ?? keys.lines, serviceFetch: (input, init) => service.fetch(new Request(input, init)),
       out: (text) => {
         out.push(text);
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
@@ -635,9 +677,10 @@ describe("ovis link, on the PC itself", () => {
     expect(out.filter((text) => text.includes("Approve?"))).toHaveLength(1);
     expect(out.at(-1)).toBe("\nStopped waiting after 30 minutes. Run this again to keep waiting.\n");
     expect(decisions).toEqual([]);
-    // the waiting went on under the prompt: every poll, and the window every 30 seconds until the last ten minutes
+    // the waiting went on under the prompt: every poll, and the window every 30 seconds until the last ten minutes,
+    // with every look of the half minute before them
     expect(polls()).toBe(901);
-    expect(calls.filter((call) => call.path === "/api/relay/link")).toHaveLength(41);
+    expect(calls.filter((call) => call.path === "/api/relay/link")).toHaveLength(41 + 14);
   });
 
   it("drops a request that stopped waiting at its prompt, and never takes a line typed after it as the answer to the next", async () => {
@@ -742,6 +785,158 @@ describe("ovis link, on the PC itself", () => {
     expect(calls.filter((call) => call.path === "/api/relay/pairing").map((call) => JSON.parse(call.body))).toEqual([{ id: "p1", decision: "approve" }, { id: "p1", decision: "decline" }]);
     // what the server took is the answer typed the second time
     expect(decisions).toEqual([{ id: "p1", decision: "decline" }]);
+  });
+
+  it("approves nothing with a line typed twice after its request went away: the second never waits for the next request", async () => {
+    const { code, out, text, decisions } = await prompting({
+      // p1 for three polls, nothing for two, then p2 with other digits to compare
+      pending: (polls, decisions) => polls <= 3 ? ["p1"] : polls <= 5 || decisions.length > 0 ? [] : ["p2"],
+      said: (said, type) => {
+        // too late for p1, and once more when nothing seemed to happen: a terminal keeps the second for the next read
+        if (said.includes("Phone p1 is no longer waiting")) { type("y"); type("y"); }
+      },
+    });
+    // p2 was asked about and never answered
+    expect(code).toBe(1);
+    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    expect(decisions).toEqual([]);
+    // and the lines that went nowhere are said to have
+    expect(text).toContain("That line answered nothing: no request is waiting for an answer.");
+  });
+
+  it("approves nothing with a line typed twice as its request gives way to the next in one look", async () => {
+    const { code, out, decisions } = await prompting({
+      pending: (polls) => polls <= 3 ? ["p1"] : ["p2"],
+      said: (said, type) => { if (said.includes("Phone p1 is no longer waiting")) { type("y"); type("y"); } },
+    });
+    expect(code).toBe(1);
+    // both are dropped above p2's prompt, which shows once
+    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    expect(out.findIndex((said) => said.includes("That line answered nothing"))).toBeLessThan(out.findIndex((said) => said.includes("Phone p2 wants")));
+    expect(decisions).toEqual([]);
+  });
+
+  it("takes no line typed before the first request as its answer: neither during the sign-in nor while waiting for a request", async () => {
+    for (const when of ["Waiting for the sign-in", "Its request shows here to approve"]) {
+      let answered = false;
+      const { code, out, text, decisions } = await prompting({
+        pending: (polls, decisions) => polls <= 2 || decisions.length > 0 ? [] : ["p1"],
+        said: (said, type) => {
+          // typed ahead, twice, and an empty line that would decline
+          if (said.includes(when)) { type("y"); type("y"); type(""); }
+          // the answer at the prompt that follows the notice
+          if (said.includes("Phone p1 wants") && !answered) { answered = true; type("n"); }
+        },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect(code).toBe(0);
+      expect(text).toContain("That line answered nothing");
+      // p1 is shown once, and what answers it is the line typed there
+      expect(out.filter((said) => said.includes("Approve?"))).toHaveLength(1);
+      expect(decisions).toEqual([{ id: "p1", decision: "decline" }]);
+    }
+  });
+
+  it("takes no line that came between a request's arrival and its prompt: the digits were not on the screen yet", async () => {
+    let typedAhead = false;
+    const { code, out, text, decisions } = await prompting({
+      pending: () => ["p1"],
+      // p1 is known from the first poll; its prompt comes after the look at the account that follows
+      called: (path, type, polls) => { if (path === "/api/account/status" && polls === 1 && !typedAhead) { typedAhead = true; type("y"); } },
+      said: () => undefined,
+    });
+    expect(typedAhead).toBe(true);
+    expect(code).toBe(1);
+    expect(decisions).toEqual([]);
+    // said above the prompt, which then shows once
+    expect(text).toContain("That line answered nothing: it was typed before the request shown now was asked about.");
+    expect(out.filter((said) => said.includes("Approve?"))).toHaveLength(1);
+  });
+
+  it("answers one request with one line: a second line at its prompt never answers the next request", async () => {
+    const { code, out, decisions } = await prompting({
+      pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
+      said: (said, type) => {
+        // y for p1, and Enter once more: an empty line would decline p2 unseen
+        if (said.includes("Phone p1 wants")) { type("y"); type(""); }
+        if (said.includes("Phone p2 wants")) type("yes");
+      },
+      joined: (decisions) => decisions.length > 1,
+    });
+    expect(code).toBe(0);
+    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "approve" }]);
+  });
+
+  it("declines every request when its input is not a terminal, whatever was piped in, and still ends", async () => {
+    for (const piped of [[], ["y"], ["y", "y", "y"]]) {
+      const { code, out, decisions } = await prompting({
+        lines: answers(...piped),
+        pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
+        said: () => undefined,
+        joined: (decisions) => decisions.length > 1,
+      });
+      expect(code).toBe(0);
+      // each is shown, and declined at once: no line was typed at its prompt
+      expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+      expect(out.filter((said) => said === "Declined.\n")).toHaveLength(2);
+      expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
+    }
+  });
+
+  it("declines a request when the input ends at its prompt (Ctrl+D), and the ones after it", async () => {
+    let end: (() => void) | null = null;
+    const closing: AsyncIterator<string> = { next: () => new Promise((resolve) => { end = () => resolve({ value: undefined, done: true }); }) };
+    const { code, decisions } = await prompting({
+      lines: closing,
+      pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
+      said: (said) => { if (said.includes("Phone p1 wants")) end?.(); },
+      joined: (decisions) => decisions.length > 1,
+    });
+    expect(code).toBe(0);
+    expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
+  });
+
+  it("puts this PC back in the account's list while the account's other devices are brought in, not only at the end", async () => {
+    const pc = identity();
+    const time = clock();
+    const service = new FakeAccountService(time.now);
+    let account: string | null = null;
+    let enrolling = false;
+    let polls = 0;
+    let failPuts = false;
+    const listed: [number, boolean][] = [];
+    const local = localPc(async (request, path) => {
+      if (path === "/api/account/status") return Response.json({ account, enrolling, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
+      if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
+      if (path === "/api/relay/pairings") {
+        polls++;
+        // the renewal is due after nine minutes of polls (2 s each): its PUT fails, and this PC is added before the next look
+        if (polls === 271) failPuts = true;
+        if (polls === 272) { account = "acct_1"; enrolling = true; }
+        // the account service takes writes again
+        if (polls === 274) failPuts = false;
+        if (polls === 274 || polls === 276) listed.push([polls, service.pcs("acct_1").length === 1]);
+        if (polls === 278) enrolling = false;
+        return Response.json({ pairings: [] });
+      }
+      return undefined;
+    });
+    const out: string[] = [];
+    const code = await link([], {
+      origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal, lines: answers(), accountService: SERVICE,
+      serviceFetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === "PUT" && failPuts) throw new TypeError("offline for a moment");
+        return service.fetch(request);
+      },
+      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
+    });
+    expect(code).toBe(0);
+    // off the list while the service refused the PUT, and back with the first look after it, two looks before the run ended
+    expect(listed).toEqual([[274, false], [276, true]]);
+    expect(out.join("")).toContain("Added. Bringing in your account's other devices");
   });
 
   it("keeps this PC listed when renewing its listing fails after the old one went, and lists it again", async () => {
