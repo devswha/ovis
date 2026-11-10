@@ -328,7 +328,9 @@ export function discardTyped(): boolean {
  * The terminal is read a line at a time (canonical mode), so when a line was begun is not seen, only when its Enter
  * came. What that leaves open is closed from outside: what the terminal holds is discarded as a request's prompt
  * first shows (`discard`), and the first line handed over after a request left the screen, after an answer was lost,
- * or after a prompt whose terminal could not be emptied, answers nothing (`held`). What remains: keys pressed in
+ * or after a prompt whose terminal could not be emptied, answers nothing (`held`). The cost: digits typed before a
+ * prompt are discarded though the screen still shows them, so an Enter pressed at it is an empty line and declines
+ * (docs/relay.md says so). What remains: keys pressed in
  * the moment after a prompt showed, before the person read it, are part of the line sent at it. Such a line
  * approves only if it is that request's own digits, and declines only if it is empty.
  */
@@ -337,12 +339,14 @@ function asking(input: AnswerInput) {
   const now = input.now ?? Date.now;
   const terminal = input.terminal === true;
   // the request asked about: one at a time. `shownAt`: when its prompt, with its digits, first was on the screen
-  // `whole`: only all six of its digits approve it
-  let open: { readonly id: string; readonly label: string; readonly digits: string; readonly whole: boolean; readonly prompt: string; shownAt: number | null } | null = null;
+  // `whole`: only all six of its digits approve it, from the start or since another request showed the same last three (`beside`)
+  let open: { readonly id: string; readonly label: string; readonly digits: string; readonly device: WaitingDevice; whole: boolean; prompt: string; shownAt: number | null } | null = null;
   // the digits of every request asked about in this run, by its id
   const seen = new Map<string, string>();
   // what the request asked about is answered with: by a line that came after its prompt was shown
   let reply: "approve" | "decline" | null = null;
+  // that answer approves with the last three digits alone
+  let three = false;
   // the cursor stands after the prompt: what is said next starts on a line of its own
   let atPrompt = false;
   // A request left the screen unanswered. The terminal hands a line over only when Enter is pressed, and it is
@@ -376,6 +380,7 @@ function asking(input: AnswerInput) {
           // a second line at one prompt: the first is the answer
           if (reply !== null) continue;
           reply = answerOf(line.text, open.digits, open.whole);
+          three = reply === "approve" && answerOf(line.text, open.digits, true) === null;
           // neither the digits nor Enter by itself: it declines nothing, and the question is asked again
           if (reply === null) dropped = `${!SIX_DIGITS.test(open.digits) ? "this request cannot be approved here" : open.whole ? "only all six digits shown approve this request" : "only the digits shown approve a request"}, and only Enter by itself declines it. Answer again.`;
           continue;
@@ -415,8 +420,30 @@ function asking(input: AnswerInput) {
       const others = [...waiting.filter((other) => other.id !== device.id).map((other) => other.digits), ...[...seen].filter(([id]) => id !== device.id).map(([, digits]) => digits)];
       const whole = SIX_DIGITS.test(device.digits) && others.some((digits) => SIX_DIGITS.test(digits) && digits.slice(3) === device.digits.slice(3));
       seen.set(device.id, device.digits);
-      open = { id: device.id, label: plainLabel(device.label), digits: device.digits, whole, prompt: approvalPrompt(device, whole), shownAt: null };
+      open = { id: device.id, label: plainLabel(device.label), digits: device.digits, device, whole, prompt: approvalPrompt(device, whole), shownAt: null };
       reply = null;
+    },
+    /** the request asked about has an approval typed as its last three digits, not yet sent */
+    get byThree(): boolean { return open !== null && !open.whole && reply === "approve" && three; },
+    /**
+     * `waiting`: the requests that wait now. A request asked about with its last three digits is asked about with
+     * all six from the moment another one that ends in the same three waits beside it: a line typed for that one
+     * would carry them. Three digits typed and not yet sent approve nothing then; all six, or a decline, stand.
+     */
+    beside(waiting: readonly WaitingDevice[]): void {
+      if (open === null || open.whole || !SIX_DIGITS.test(open.digits)) return;
+      const shown = open;
+      if (!waiting.some((other) => other.id !== shown.id && SIX_DIGITS.test(other.digits) && other.digits.slice(3) === shown.digits.slice(3))) return;
+      // what came until now came under the question as it stood
+      sort();
+      shown.whole = true;
+      shown.prompt = approvalPrompt(shown.device, true);
+      const taken = reply === "approve" && three;
+      if (taken) reply = null;
+      // an answer that stands is sent: nothing is asked again. Nor said under a prompt not shown yet, which says it itself
+      if (reply !== null || shown.shownAt === null) return;
+      const why = `nother request's digits end in ${shown.digits.slice(3)} too`;
+      say(taken ? `That line answered nothing: a${why}, so only all six digits approve ${shown.label} now.\n` : `A${why}: only all six digits approve ${shown.label} now.\n`);
     },
     /** The request asked about ran out, was answered elsewhere, or the server restarted: its prompt ends, and so does a line typed for it. */
     gone(): void {
@@ -809,6 +836,9 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           away = false;
           say("The Ovis on this PC answers again.\n");
         }
+        // Three digits approve a request only while no other waiting one ends in them: one may have come since the
+        // last look, so the list is read once more before such an approval is sent
+        if (desk.byThree) desk.beside((await api<{ pairings: WaitingDevice[] }>("GET", "/api/relay/pairings")).pairings);
         const answer = desk.answer();
         if (answer !== null) {
           const { id, label, decision } = answer;
@@ -831,6 +861,8 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         const shown = desk.open;
         // it ran out, was answered elsewhere, or the server restarted
         if (shown !== null && !pairings.some((pairing) => pairing.id === shown.id)) desk.gone();
+        // another request that ends in the same three digits waits beside the one asked about: that one asks for all six
+        desk.beside(pairings);
         const next = desk.open === null ? pairings.find((pairing) => !asked.has(pairing.id)) : undefined;
         if (next !== undefined) {
           asked.add(next.id);

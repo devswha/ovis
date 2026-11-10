@@ -1013,6 +1013,55 @@ describe("ovis link, on the PC itself", () => {
       expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "approve" }]);
     });
 
+    it("asks again for all six once another request with the same last three starts waiting beside it: the three digits then approve nothing", async () => {
+      let asked = 0;
+      const { code, out, decisions } = await prompting({
+        request,
+        // p2 waits alone and is asked with its last three; from the third look the person's own request p1 waits beside it
+        pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 2 ? ["p2"] : ["p2", "p1"],
+        // 456, read off p1's device; then p2's own six
+        said: (said, _type, answer) => { if (said === whole("p2", "222456") && ++asked <= 2) answer(asked === 1 ? "456" : "222456"); },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect(code).toBe(0);
+      expect(prompts(out)).toEqual([short("p2", "222456"), whole("p2", "222456"), whole("p2", "222456")]);
+      expect(out).toContain("\nAnother request's digits end in 456 too: only all six digits approve Phone p2 now.\n");
+      expect(out.filter((said) => said === SIX_ONLY)).toHaveLength(1);
+      expect(decisions).toEqual([{ id: "p2", decision: "approve" }]);
+    });
+
+    it("looks once more before it sends an approval typed as three digits: a request that came since the last look and ends in them takes it back", async () => {
+      let asked = 0;
+      const { code, out, decisions } = await prompting({
+        request,
+        // p2 alone at the look that asks about it; p1 comes while the person types
+        pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 1 ? ["p2"] : ["p2", "p1"],
+        said: (said, _type, answer) => {
+          // 456, read off p1's device
+          if (said === short("p2", "222456")) answer("456");
+          if (said === whole("p2", "222456") && ++asked === 1) answer("222 456");
+        },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect(code).toBe(0);
+      expect(prompts(out)).toEqual([short("p2", "222456"), whole("p2", "222456")]);
+      expect(out).toContain("That line answered nothing: another request's digits end in 456 too, so only all six digits approve Phone p2 now.\n");
+      expect(decisions).toEqual([{ id: "p2", decision: "approve" }]);
+    });
+
+    it("sends an answer already given in full, or a decline, when another request with the same last three comes beside it", async () => {
+      for (const [line, decision] of [["222456", "approve"], ["", "decline"]] as const) {
+        const { out, decisions } = await prompting({
+          request,
+          pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 1 ? ["p2"] : ["p2", "p1"],
+          said: (said, _type, answer) => { if (said === short("p2", "222456")) answer(line); },
+          joined: (decisions) => decisions.length > 0,
+        });
+        expect(prompts(out)).toEqual([short("p2", "222456")]);
+        expect(decisions).toEqual([{ id: "p2", decision }]);
+      }
+    });
+
     it("keeps to its last three when no other request shares them, and when it is the same request asked again", async () => {
       let asked = 0;
       const { code, out, decisions } = await prompting({
