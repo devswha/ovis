@@ -909,8 +909,10 @@ echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
     try {
       const passes = [runner.pass(), runner.pass(), runner.pass()];
       expect(passes.map((pass) => pass.status)).toEqual([0, 0, 0]);
-      expect(passes.map((pass) => pass.stderr.split("\n").filter((line) => line.includes("could not move")).length)).toEqual([1, 0, 0]);
+      expect(passes.map((pass) => pass.stderr.split("\n").filter((line) => line.includes("could not")).length)).toEqual([1, 0, 0]);
+      // its name stays, and nothing under it for a job to restore
       expect(runner.filed()).toEqual([left]);
+      expect(readdirSync(join(runner.entries, left))).toEqual([]);
     } finally {
       chmodSync(runner.entries, 0o755);
     }

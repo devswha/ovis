@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -904,9 +904,12 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
    * `container` says what docker answers for the slot: nothing at all, one that never started, one
    * that has stopped, one that started after the build was left in the outbox, or another
    * container by the time GitHub has answered about the jobs. `older` has the system say that the
-   * claim, or the build, was last changed one millisecond before the container started.
+   * claim, or the build, was last changed one millisecond before the container started. `linked`
+   * gives files a second name (a hard link): "marker" the claim and the build, as restore markers,
+   * which the promoter removes, in an outbox whose container started just after they were written;
+   * "claim" or "tar" that file alone, under a name nothing removes.
    */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean; runnerId?: number; jobStarted?: number; registered?: number | null; container?: "none" | "created" | "stopped" | "younger" | "changes"; older?: "claim" | "tar" } = {}, build: "files" | "link" | "sealed" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean; runnerId?: number; jobStarted?: number; registered?: number | null; container?: "none" | "created" | "stopped" | "younger" | "changes"; older?: "claim" | "tar"; linked?: "marker" | "claim" | "tar" } = {}, build: "files" | "link" | "sealed" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -955,15 +958,25 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       const answer = (github: NonNullable<Parameters<typeof promote>[0]>) => {
       if (github.fail) writeFileSync(join(dir, "fail"), ""); else rmSync(join(dir, "fail"), { force: true });
       // what docker names as the slot's container, and whether it is another once GitHub was asked about the jobs
+      // When the slot's container started. The build above was written just now: the fixed day is before
+      // it, an hour from now after it, and with "marker" it started 20 ms after the claim was written.
+      let started = Date.UTC(2026, 10, 10, 12, 0, 0) + 123;
+      if (github.container === "younger") started = Date.now() + 3_600_000;
+      if (github.linked === "marker") for (const [index, file] of [`${key}.claim`, `${key}.tar`].entries()) linkSync(join(outbox, file), join(outbox, `used-${String(index + 1).repeat(64)}`));
+      else if (github.linked) linkSync(join(outbox, `${key}.${github.linked}`), join(outbox, "spare"));
+      if (github.linked === "marker") {
+        started = Math.ceil(statSync(join(outbox, `${key}.claim`)).ctimeMs) + 20;
+        // the pass comes after that start: the system's time for a file is only as fine as its clock's tick
+        while (Date.now() < started + 20);
+      }
       // as `docker container inspect -f '{{.Id}} {{.State.Running}} {{.State.StartedAt}}'` prints it
       if (github.container === "none") rmSync(join(dir, "container"), { force: true });
       else if (github.container === "created") writeFileSync(join(dir, "container"), "c1 false 0001-01-01T00:00:00Z\n");
-      // the build above was written just now: an hour from now is after it, the fixed day before it
-      else writeFileSync(join(dir, "container"), `c1 ${github.container !== "stopped"} ${github.container === "younger" ? new Date(Date.now() + 3_600_000).toISOString() : "2026-11-10T12:00:00.123456789Z"}\n`);
-      if (github.container === "changes") writeFileSync(join(dir, "next-container"), "c2 true 2026-11-10T12:00:30.5Z\n"); else rmSync(join(dir, "next-container"), { force: true });
-      if (github.older) writeFileSync(join(dir, "older"), `${github.older} ${((Date.UTC(2026, 10, 10, 12, 0, 0) + 122) / 1000).toFixed(3)}\n`); else rmSync(join(dir, "older"), { force: true });
+      else writeFileSync(join(dir, "container"), `c1 ${github.container !== "stopped"} ${new Date(started).toISOString()}\n`);
+      if (github.container === "changes") writeFileSync(join(dir, "next-container"), `c2 true ${new Date(started + 30_000).toISOString()}\n`); else rmSync(join(dir, "next-container"), { force: true });
+      if (github.older) writeFileSync(join(dir, "older"), `${github.older} ${((started - 1) / 1000).toFixed(3)}\n`); else rmSync(join(dir, "older"), { force: true });
       const registered = github.registered === undefined ? 31 : github.registered;
-      const jobStarted = new Date(Date.UTC(2026, 10, 10, 12, 0, 0) + (github.jobStarted ?? 10) * 1000).toISOString().replace(/\.\d+Z$/, "Z");
+      const jobStarted = new Date(Math.floor(started / 1000) * 1000 + (github.jobStarted ?? 10) * 1000).toISOString().replace(/\.\d+Z$/, "Z");
       const answers: Record<string, unknown> = {
         jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress", runner_id: github.runnerId ?? 31, started_at: jobStarted }] },
         runners: { runners: [{ name: "herdr-ci-host-9", id: 9 }, ...(registered === null ? [] : [{ name: slot, id: registered }])] },
@@ -1197,6 +1210,22 @@ PATH="\${PATH#*:}" exec stat "$@"
     }
   });
 
+  it("is not told a leftover is new by a second name of it: removing one changes the file's time", () => {
+    // the earlier job gave its claim and its build a second name each, as restore markers, which the promoter removes
+    const marked = promote({ linked: "marker" });
+    expect(marked.status).toBe(0);
+    expect(marked.runs).toEqual([]);
+    expect(marked.ghCalls).toEqual([]);
+    expect(marked.outbox).toEqual([`judged-${key}`]);
+    // and a claim or a build with a second name is not taken at all, whenever it was written
+    for (const linked of ["claim", "tar"] as const) {
+      const spare = promote({ linked });
+      expect(spare.runs).toEqual([]);
+      expect(spare.ghCalls).toEqual([]);
+      expect(spare.outbox.sort()).toEqual([`judged-${key}`, "spare"]);
+    }
+  });
+
   it("refuses a claim naming the run of a killed container's job, which GitHub still lists as running on the runner the next container took over", () => {
     // the container before was killed 13.5 minutes ago with its job running; this one registered over its
     // runner and kept the id (config.sh --replace), so the name, the status and the runner all fit
@@ -1206,10 +1235,11 @@ PATH="\${PATH#*:}" exec stat "$@"
     // the claim is at fault, so its slot is held off: the next claim costs no call
     expect(dead.callsBefore[0]).toBe(1);
     expect(dead.ghCalls).toHaveLength(1);
-    // the clocks may differ by a little: a job five seconds older than its container is its own, one older is not
-    expect(promote({ jobStarted: -4 }).entries).toEqual([`7/${key}`]);
+    // to the second: run.sh waits two before a slot's next container, so a job even one second older than
+    // this container is the one before's, and one that started in the container's own second is its own
+    expect(promote({ jobStarted: -2 }).runs).toEqual([]);
+    expect(promote({ jobStarted: -1 }).runs).toEqual([]);
     expect(promote({ jobStarted: 0 }).entries).toEqual([`7/${key}`]);
-    expect(promote({ jobStarted: -6 }).runs).toEqual([]);
   });
 
   it("refuses a claim naming a run whose job under the slot's name is on another runner than the one registered now", () => {

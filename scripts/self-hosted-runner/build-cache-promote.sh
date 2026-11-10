@@ -31,9 +31,6 @@ ENTRIES="$ROOT/entries"
 USED="$ROOT/used"
 # a run id, as a claim may name one and as a run's directory under entries/ is named
 RUN_ID='^[0-9]{1,20}$'
-# GitHub's clock and this host's may differ by a little, and a job starts seconds after its container
-# has (the runner registers first): a job this many seconds older than the container is still its own.
-START_SKEW=5
 
 log() { echo "[build-cache] $*" >&2; }
 
@@ -54,13 +51,16 @@ ask() {
 # is at fault (no job of that run on this slot's container, or no such run); 5 when the slot's runner
 # is gone (its job ended meanwhile); 2 when GitHub did not answer.
 trusted() {
-  local name="$1" run="$2" attempt="$3" since="$(( $4 - START_SKEW ))" jobs own runners runner info default pulls number pull
+  local name="$1" run="$2" attempt="$3" since="$4" jobs own runners runner info default pulls number pull
   jobs="$(ask "repos/$REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100")" || return $?
   jq -e --arg name "$name" 'any(.jobs[]; .runner_name == $name and .status == "in_progress")' >/dev/null <<<"$jobs" || { log "run $run has no job running on $name"; return 3; }
   # The name has had other containers, and GitHub goes on listing the job of one that was killed as
   # running, for minutes and sometimes for days: only a job that started once this container had is
   # its own. By the time, not by the runner alone: a container that registers over a dead one's
-  # runner (config.sh --replace) keeps that runner's id.
+  # runner (config.sh --replace) keeps that runner's id. Nothing is allowed for the two clocks: run.sh
+  # waits two seconds before a slot's next container, so a job of the one before started at least
+  # that long before this one did, and an allowance would let it in; a container's own job starts
+  # ten seconds or more after it (the runner registers first).
   own="$(jq -c --arg name "$name" --argjson since "$since" '[.jobs[] | select(.runner_name == $name and .status == "in_progress" and ((.started_at // "") | try fromdateiso8601 catch 0) >= $since)]' <<<"$jobs")"
   [ -n "$own" ] && [ "$own" != "[]" ] || { log "run $run's job on $name started before the slot's container did: it is an earlier container's"; return 3; }
   # And on the runner registered under the name now: a runner that ended its job is gone from
@@ -125,11 +125,11 @@ admit() {
 }
 
 # Removes an entry or what is left of one. A build's directories keep the modes its job gave them,
-# so one without the owner's write bit is given it first; and a removal that fails says so and ends
-# no pass: every later slot's build is still judged.
+# so one without the owner's write bit is given it first; and a removal that fails says so (unless
+# $2 is "quietly") and ends no pass: every later slot's build is still judged.
 discard() {
   chmod -R u+rwX "$1" 2>/dev/null || true
-  rm -rf "$1" 2>/dev/null || log "could not remove $1"
+  rm -rf "$1" 2>/dev/null || [ "${2:-}" = quietly ] || log "could not remove $1"
 }
 
 # Every entry's path, one a line: entries/<run id>/<key>.
@@ -207,14 +207,17 @@ refused_before() {
 # It is renamed first, to a name no job reads: that needs only entries/ itself, whoever owns what is
 # inside, so an entry that cannot be removed is out of reach all the same and is not walked again
 # every second (evict tries it again once it is over an hour old). One that cannot even be renamed
-# is said once a day.
+# is emptied where it is, and said once a day while it stays.
 for path in "$ENTRIES"/*; do
   if [[ "${path##*/}" =~ ^[0-9a-f]{64}$ ]] && [ -d "$path" ] && [ ! -L "$path" ]; then
     if gone="$(mktemp -d "$ENTRIES/.new-gone-XXXXXX" 2>/dev/null)" && mv -T "$path" "$gone" 2>/dev/null; then discard "$gone"
     else
       rmdir "$gone" 2>/dev/null || true
-      if [ ! -e "$REFUSED/stuck-${path##*/}" ]; then
-        log "could not move $path away: a job of a commit from before can still restore it"
+      # entries/ itself cannot be written: what the entry holds goes all the same, its manifest with
+      # it, so no job restores it; the empty directory that may stay costs nothing to pass over
+      discard "$path" quietly
+      if [ -e "$path" ] && [ ! -e "$REFUSED/stuck-${path##*/}" ]; then
+        log "could not move $path away or remove it; emptied it as far as it goes"
         touch "$REFUSED/stuck-${path##*/}" 2>/dev/null || true
       fi
     fi
@@ -234,7 +237,9 @@ container() {
 }
 
 # When the file $1 was last changed, in milliseconds since the epoch: the time the system keeps of
-# its own, which whoever wrote the file cannot set. 0 when there is no such file.
+# its own, which whoever wrote the file cannot set back. Removing another name of the file (a hard
+# link) sets it to now, so it is read before anything in the outbox is removed, and a file that has
+# a second name is not taken at all. 0 when there is no such file.
 changed() {
   local at
   at="$(LC_ALL=C stat -c %.3Z "$1" 2>/dev/null)" || at=0
@@ -246,15 +251,6 @@ promoted=0
 for name in "$@"; do
   outbox="$OUTBOXES/$name"
   [ -d "$outbox" ] || continue
-  for used in "$outbox"/used-*; do
-    [ -e "$used" ] || [ -L "$used" ] || continue
-    key="${used##*/used-}"
-    # The marker names a key, not the run whose entry was restored, and GitHub is not asked about
-    # it: the key counts as used in every run that holds it. A stamp only moves eviction, so a job
-    # naming keys it never restored keeps their entries longer, as it always could, and no more.
-    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && held "$key"; then mkdir -p "$USED" && touch "$USED/$key"; fi
-    rm -rf "$used" 2>/dev/null || true
-  done
   # One claim per outbox per pass (a job builds one commit): each costs GitHub calls on this user's
   # token, which also registers the runners, so the rest are deleted unread.
   judged=0
@@ -276,9 +272,11 @@ for name in "$@"; do
     left=0
     if [ -n "$wrote" ] && { [ "$(changed "$claim")" -lt "${wrote#* }" ] || [ "$(changed "$tar")" -lt "${wrote#* }" ]; }; then left=1; fi
     work="$(mktemp -d "$TAKEN/XXXXXX")" || continue
-    # only plain files, and small claims: a link could make this host user read or keep a file of its own
+    # only plain files, and small claims: a link could make this host user read or keep a file of its own.
+    # And files with one name each: a job leaves no second name, and one would let a file's time be moved.
     if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && take "$tar" "$work/build.tar" && take "$claim" "$work/claim" &&
-      [ "$(stat -c %s "$work/claim")" -le 64 ]; then
+      [ "$(stat -c %s "$work/claim")" -le 64 ] &&
+      [ "$(stat -c %h "$work/claim")" = 1 ] && [ "$(stat -c %h "$work/build.tar")" = 1 ]; then
       read -r run attempt < "$work/claim" || true
     fi
     if [[ "$run" =~ $RUN_ID && "$attempt" =~ ^[0-9]{1,5}$ ]] && [ ! -e "$ENTRIES/$run/$key" ] &&
@@ -309,6 +307,17 @@ for name in "$@"; do
     # Only now, the entry in place or the build refused: the job that built it may let the others go.
     # A directory, which mkdir never makes through a link the job could have put at that name.
     if [[ "$key" =~ ^[0-9a-f]{64}$ ]]; then mkdir "$outbox/judged-$key" 2>/dev/null || true; fi
+  done
+  # After the claims, whose times are read above: a marker can be another name of a claim or of a
+  # build (a hard link), and removing it changes that file's time.
+  for used in "$outbox"/used-*; do
+    [ -e "$used" ] || [ -L "$used" ] || continue
+    key="${used##*/used-}"
+    # The marker names a key, not the run whose entry was restored, and GitHub is not asked about
+    # it: the key counts as used in every run that holds it. A stamp only moves eviction, so a job
+    # naming keys it never restored keeps their entries longer, as it always could, and no more.
+    if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && held "$key"; then mkdir -p "$USED" && touch "$USED/$key"; fi
+    rm -rf "$used" 2>/dev/null || true
   done
 done
 if [ "$promoted" = 1 ]; then evict; fi
