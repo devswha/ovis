@@ -212,7 +212,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (agentNow.get(paneId) !== "claude" || !owns(paneId, "claude")) return;
       claudeAgentsChanged(paneId, running, turnRunning, promptAt, false, "claude");
       // the queue's hold came or went with the pane's status unchanged: its queued input is told now.
-      // Not for a pane that settles: the status reported after its poll tells the queue
+      // Not for a pane that settles: what settles it tells the queue once its poll is done (onStatus, reportStatus)
       if (paneId !== settling) tellQueue(paneId);
     },
   });
@@ -607,6 +607,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (tracker !== null) {
       settling = paneId;
       try { void tracker.poll(paneId); } finally { settling = null; }
+      // that poll told the queue nothing, as the pane settled. A /loop wakeup's hold it was the first to read the
+      // beginning or the end of (a fire, or the resumed turn's rest, written since the status event's own read)
+      // is told now: no later poll finds it changed, and the status told above was read before it (#3494)
+      if (tracker === claudeAgents) tellQueue(paneId);
       waits.status(paneId, status);
     } else waits.forget(paneId);
     broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));

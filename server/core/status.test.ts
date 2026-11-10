@@ -526,6 +526,41 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).not.toBeNull();
   });
 
+  it("tells the queue when the read a status report makes of the pane's work is the first to find the resumed turn's rest", async () => {
+    const drained: string[] = [];
+    const h = await rested(drained);
+    const id = h.pane.pane_id;
+    fires(h.path); resumes(h.path); h.poll();
+    queue(h);
+    expect(h.pending.next(id)).toBeNull();
+    // Given herdr's idle word arriving just before Claude writes the resumed turn's rest: the event's own read of
+    // the transcript finds none, and the rest is there for the read its report makes next (written here from
+    // the GJC poll, which runs between the two).
+    const between = spyOn(h.status.gjc, "poll").mockImplementationOnce(() => { turnEnds(h); });
+    const told = drained.length;
+    try { handlers.onStatus(id, "idle", "claude"); } finally { between.mockRestore(); }
+    // Then the queue hears of the hold's end from that report: no later read would find anything changed.
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.current(id)).not.toBe("working");
+    expect(h.pending.next(id)).not.toBeNull();
+    expect(drained.slice(told).at(-1)).toBe(id);
+  });
+
+  it("holds the queue from the read a status report makes of the pane's work, when that is the first to find the fire", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    queue(h);
+    expect(h.pending.next(id)).not.toBeNull();
+    // Given a wakeup that fires between herdr's idle event and the read its report makes: the report told the
+    // queue the pane rests a moment before.
+    const between = spyOn(h.status.gjc, "poll").mockImplementationOnce(() => { fires(h.path); });
+    try { handlers.onStatus(id, "idle", "claude"); } finally { between.mockRestore(); }
+    // Then the queue is told of the hold at once, not by the delivery's own check.
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.current(id)).toBe("working");
+    expect(h.pending.next(id)).toBeNull();
+  });
+
   it("goes by herdr's word once herdr tells the resumed turn", async () => {
     const h = await rested();
     const id = h.pane.pane_id;
