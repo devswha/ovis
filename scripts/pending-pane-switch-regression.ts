@@ -402,13 +402,16 @@ try {
   await page.locator(".conn-live").waitFor({ state: "hidden" });
   await until(() => witnessTold, "the bridge kept the held receipt as the connection closed");
   await witness.close();
-  const ambient = Date.now;
+  // the bridge times its receipts by the time that passed (a clock that only moves forward), not by the PC's clock:
+  // both move here, as when ten minutes really pass
+  const ambient = Date.now, running = performance.now.bind(performance);
   try {
     Date.now = () => ambient() + 10 * 60 * 1000 + 1000;
+    performance.now = () => running() + 10 * 60 * 1000 + 1000;
     admit = true;
     await page.locator(".conn-live").waitFor(); await inputReady(pane);
     await unproven(expired.text, "expired receipt");
-  } finally { Date.now = ambient; }
+  } finally { Date.now = ambient; performance.now = running; }
 
   // (c) an ambiguous send: Send now left the page and the connection dropped before any answer
   const ambiguous = await queue("unproven after an ambiguous send");
