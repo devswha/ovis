@@ -871,8 +871,8 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       await h.snapshot();
       expect(lookup.mock.calls.length).toBe(looked);
       expect(h.status.queueHeld(id, true)).toBe(false);
-      // When that lookup finds the transcript.
-      setSystemTime(from + 5000);
+      // When that lookup finds the transcript: 5 s after the one that found nothing, which was made a moment after the fire.
+      setSystemTime(Date.now() + 5000);
       await h.snapshot();
       expect(lookup.mock.calls.length).toBe(looked + 1);
       // Then the fire it reads there holds the queue for what is left of its time, as one found when the server starts.
