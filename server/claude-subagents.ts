@@ -355,6 +355,8 @@ interface Parent {
   starts: Start[];
   /** whether the latest turn goes on: no rest came after it yet */
   turnOpen: boolean;
+  /** byte boundary of the latest `/loop` wakeup's fire no rest was written after: the turn it resumed may still run (ClaudeSubagentStatus.loopHolds) */
+  loopAt: number | null;
   /** what a slash command's echo found, until the next entry says whether it began a turn (scanParentLine) */
   echo: { command: string | null; restAt: number | null; promptAt: number | null; turnOpen: boolean; starts: Start[] } | null;
 }
@@ -375,7 +377,7 @@ function scanParent(path: string): Parent | null {
   let parent = parents.get(path);
   if (!parent || parent.id !== stat.id || parent.offset > stat.size || !sameHistory(parent.version, stat)) {
     const from = Math.max(0, stat.size - PARENT_WINDOW);
-    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, echo: null };
+    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, echo: null };
   }
   parent.version = stat;
   remember(parents, path, parent, 256);
@@ -482,7 +484,8 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       const entry = row(JSON.parse(line));
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
-        if (parent.restAt !== null) parent.turnOpen = false;
+        // the rest of whatever turn went on, a /loop wakeup's too
+        if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; }
       }
     } catch { /* a line caught half written is read again */ }
   } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
@@ -493,6 +496,8 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
         parent.echo = null;
         parent.restAt = null;
         openTurn(parent, end, stamp(entry["timestamp"]));
+        // Claude resumes by itself here, with no prompt of the person's nor a send of the chat's to tell of it
+        parent.loopAt = end;
       }
     } catch { /* a line caught half written is read again */ }
   } else if (user && line.includes('"isCompactSummary":true')) {
@@ -1440,7 +1445,7 @@ interface Tracked {
   key: string; path: string | null; startedAt: number | null; pid: number | null;
   /** when its transcript, and its process, were last looked for */
   at: number; pidAt: number;
-  live: boolean; running: number; turnRunning: number; promptAt: number | null; resting: boolean; holding?: boolean; sig: string | null;
+  live: boolean; running: number; turnRunning: number; promptAt: number | null; resting: boolean; holding?: boolean; looping?: boolean; sig: string | null;
   /** the session's turn has rested since background work last ran: herdr's working from then is still that work's */
   restedOnWork?: boolean;
   reset?: boolean;
@@ -1488,11 +1493,27 @@ const BUSY_HOLD_MS = 5000;
 interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
 
 /**
+ * How long a `/loop` wakeup's fire holds the pane's queue while herdr has not said the pane works
+ * (#3494). Claude resumes its turn by itself as the wakeup fires, and herdr reads that turn a moment
+ * later: queued input sent in between would land in the turn at work. A turn interrupted before
+ * herdr read it writes no rest, and herdr has no word to say of it, so the hold ends by itself.
+ */
+export const LOOP_HOLD_MS = 60_000;
+
+/**
+ * The latest `/loop` fire the pane took account of (`fire`, its byte boundary), and since when it
+ * holds the queue (`since`). null: it holds nothing, as it was found written at the transcript's
+ * first read (history: nothing says its turn still runs), or herdr told a turn after it (the queue
+ * goes by herdr's status from there), or a rest was written past it.
+ */
+interface Loop { fire: number; since: number | null }
+
+/**
  * A transcript's turns as the busy signals have them (#2072). A rest certifies a pane at rest only
  * when no signal waits for its turn. `retired`: the start of the latest turn a poll saw at rest,
  * which a later signal with nothing to place it is never matched to.
  */
-interface Turns { readonly path: string; readonly id: string; retired: number; herdr: Claim; chat: Claim }
+interface Turns { readonly path: string; readonly id: string; retired: number; herdr: Claim; chat: Claim; loop: Loop }
 
 /**
  * The running subagents and background commands of every Claude pane, for the pane's count. Only a pane whose agent is
@@ -1554,6 +1575,16 @@ export class ClaudeSubagentStatus {
   }
 
   /**
+   * A `/loop` wakeup fired and herdr has not told the turn it resumed: the pane's queue holds, whatever
+   * herdr reads the pane as. Until that turn's rest is written, herdr says the pane works (busy), or
+   * LOOP_HOLD_MS passed; never by herdr reading the pane at rest (quiet), which it does until it reads the turn.
+   */
+  loopHolds(paneId: string): boolean {
+    const since = this.panes.get(paneId)?.turns?.loop.since ?? null;
+    return since !== null && this.now() - since < LOOP_HOLD_MS;
+  }
+
+  /**
    * The session's own turn ended while subagents or commands still run: Claude keeps its busy
    * title up while a background subagent works, and herdr reads that as `working` (#2069). The
    * last of that work ending keeps the rest until a turn begins: herdr's working may be from before.
@@ -1581,7 +1612,11 @@ export class ClaudeSubagentStatus {
     const size = turns ? plain(turns.path) : null;
     // the signal's own read, ahead of the poll that would take a turn it finds at rest for history
     const parent = turns && size?.id === turns.id ? scanParent(turns.path) : null;
-    if (turns && parent?.id === turns.id) match(turns, parent, signal, size!.size);
+    if (turns && parent?.id === turns.id) {
+      match(turns, parent, signal, size!.size);
+      // herdr's working with a /loop fire already written tells the turn it resumed: the queue goes by herdr's status from here
+      if (source === "herdr") turns.loop = { fire: Math.max(turns.loop.fire, parent.loopAt ?? -1), since: null };
+    }
     // a pane whose transcript is not found yet keeps its latest signals, not every one
     else this.deferred.set(paneId, [...(this.deferred.get(paneId) ?? []).slice(-15), signal]);
     if (!tracked) return;
@@ -1592,6 +1627,8 @@ export class ClaudeSubagentStatus {
   /**
    * herdr says the pane does no work: its own signals holding the queue began nothing that still runs.
    * Said in an event (`event`), a turn it tells of next begins in what is written after now.
+   * A /loop fire's hold is not herdr's to let go this way: herdr reads the pane at rest until it reads
+   * the turn the wakeup resumed (loopHolds).
    */
   quiet(paneId: string, event: boolean): void {
     const tracked = this.panes.get(paneId);
@@ -1685,7 +1722,8 @@ export class ClaudeSubagentStatus {
     // another process's transcript: what it holds is that process's, and a rest in it ends no turn of this one
     if (reset && found) this.deferred.set(pane.pane_id, [...this.deferred.get(pane.pane_id) ?? [], { source: "herdr", at: this.now() }]);
     // the count it had goes on from here: another session with none says so at the next poll
-    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, restedOnWork: sameLife && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
+    // so does what was told of a /loop fire's hold: one that ran out meanwhile is told at the next poll, as no status event may be
+    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, looping: current?.looping, restedOnWork: sameLife && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
   private observeSession(pane: HerdrPane): void {
@@ -1750,6 +1788,9 @@ export class ClaudeSubagentStatus {
         else {
           const turns = this.turnsOf(paneId, tracked.path, parent);
           settle(turns, parent, this.now());
+          // a /loop fire written since the read before holds the queue from now; a rest written past it ends that
+          if (parent.loopAt === null) turns.loop.since = null;
+          else if (parent.loopAt > turns.loop.fire) turns.loop = { fire: parent.loopAt, since: this.now() };
           // a turn seen at rest is history: a later signal with nothing to place it is not its own
           const latest = turnAt(parent);
           if (resting && latest !== null) turns.retired = Math.max(turns.retired, latest);
@@ -1761,14 +1802,17 @@ export class ClaudeSubagentStatus {
         const after = subagentsSignature(tracked.path, tracked.watch, this.now());
         // Certify only the versions and dependency set read, never a concurrent append's newer signature.
         // Coarse file clocks require every input to have been quiet before the scan began. A signal
-        // waiting for its turn is read again at each poll, until the turn is written or it gives up
-        tracked.sig = !waiting && state.settled && before.sig === after.sig && scanAt - before.latestMs >= 1000
+        // waiting for its turn is read again at each poll, until the turn is written or it gives up;
+        // so is a /loop fire holding the queue, whose time runs out with nothing written
+        tracked.sig = !waiting && !this.loopHolds(paneId) && state.settled && before.sig === after.sig && scanAt - before.latestMs >= 1000
           ? `${after.sig}:${tracked.startedAt}` : null;
       }
       // a held queue let go of (a rest written past it) is told too, though the pane rested all along
       const holding = this.holdsQueue(paneId);
-      if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false)) continue;
+      const looping = this.loopHolds(paneId);
+      if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false) && looping === (tracked.looping ?? false)) continue;
       tracked.holding = holding;
+      tracked.looping = looping;
       // the last of its work ending keeps the rest: herdr's working may be the busy title it had, said before
       // that work ended, until a turn begins (a busy signal, or one written) and the rest is gone
       // read together with its rest, the last of that work ending keeps it too: the rest and the end came before this read
@@ -1789,7 +1833,8 @@ export class ClaudeSubagentStatus {
   private turnsOf(paneId: string, path: string, parent: Parent): Turns {
     const tracked = this.panes.get(paneId)!;
     if (tracked.turns?.path === path && tracked.turns.id === parent.id) return tracked.turns;
-    const turns: Turns = { path, id: parent.id, retired: -1, herdr: { turn: -1, barriers: [], held: [] }, chat: { turn: -1, barriers: [], held: [] } };
+    // a /loop fire this first read finds written is history too: its turn may have been interrupted long ago
+    const turns: Turns = { path, id: parent.id, retired: -1, herdr: { turn: -1, barriers: [], held: [] }, chat: { turn: -1, barriers: [], held: [] }, loop: { fire: parent.loopAt ?? -1, since: null } };
     if (parent.restAt !== null) turns.retired = turnAt(parent) ?? -1;
     for (const signal of this.deferred.get(paneId) ?? []) match(turns, parent, signal, parent.offset);
     this.deferred.delete(paneId);

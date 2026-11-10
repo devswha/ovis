@@ -245,9 +245,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /**
    * The status the pane's queued input goes by: a Claude pane shown at rest while a busy signal
    * whose turn was never written holds it (ClaudeSubagentStatus.holdsQueue) is not ready for it.
+   * Nor is one a /loop wakeup just resumed, which herdr still reads at rest (loopHolds, #3494):
+   * that hold is the transcript's, so it needs no working word of herdr's.
    */
   function queueStatus(paneId: string, status: AgentStatus): AgentStatus {
-    return heard.get(paneId) === "working" && agentNow.get(paneId) === "claude" && claudeAgents.holdsQueue(paneId) && (status === "idle" || status === "done") ? "working" : status;
+    if (agentNow.get(paneId) !== "claude" || (status !== "idle" && status !== "done")) return status;
+    return (heard.get(paneId) === "working" && claudeAgents.holdsQueue(paneId)) || claudeAgents.loopHolds(paneId) ? "working" : status;
   }
   // a prompt the chat sent may be a turn the transcript does not show yet. Not so a slash command,
   // which can run with no turn (`/model`), nor a message Claude Code may hold: what they start is

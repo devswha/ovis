@@ -463,6 +463,122 @@ describe("Claude rest evidence regressions (#2072)", () => {
   });
 });
 
+describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)", () => {
+  type Fixture = Awaited<ReturnType<typeof workingClaude>>;
+  const queue = (h: Pick<Fixture, "pending" | "pane">) =>
+    h.pending.enqueue("owner", h.pane.pane_id, 1, "queued", null, { agent: "claude", terminalId: "test", session: h.pane.agent_session.value });
+  const fires = (path: string) =>
+    appendFileSync(path, line({ type: "system", subtype: "scheduled_task_fire", taskKind: "loop", taskId: "591b6f5a", timestamp: new Date(at + 4000).toISOString() }));
+  const turnEnds = (h: Fixture) =>
+    appendFileSync(h.path, line({ type: "system", subtype: "turn_duration", timestamp: new Date(at + 6000).toISOString() }));
+  /** A turn that set its wakeup and came to rest, which herdr told: every read of the pane says idle from here. `drained`: each time its queue is told to look again. */
+  const rested = async (drained: string[] = []): Promise<Fixture> => {
+    const h = await workingClaude(undefined, (paneId) => { drained.push(paneId); });
+    h.rest(); h.poll();
+    handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    h.herdrSays(h.pane);
+    return h;
+  };
+
+  it("holds the queue from the fire to the resumed turn's rest, whatever herdr reads meanwhile", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    queue(h);
+    // Given a pane at rest, whose queued message may go.
+    expect(h.pending.next(id)).not.toBeNull();
+    const shown = h.last().status;
+    // When the wakeup fires before herdr says the pane works.
+    fires(h.path); h.poll();
+    // Then the status shown stays herdr's, and the queue waits for the resumed turn.
+    expect(h.last().status).toBe(shown);
+    expect(h.pending.current(id)).toBe("working");
+    expect(h.pending.next(id)).toBeNull();
+    expect(h.status.queueHeld(id)).toBe(true);
+    // A snapshot that still reads the pane idle lets nothing go, nor does herdr's idle word for the turn before.
+    expect((await h.snapshot()).panes[0]?.agent_status).toBe(shown);
+    handlers.onStatus(id, "idle", "claude");
+    expect(h.pending.next(id)).toBeNull();
+    expect(h.status.queueHeld(id)).toBe(true);
+    // The resumed turn's own rest does.
+    turnEnds(h); h.poll();
+    expect(h.pending.current(id)).toBe(shown);
+    expect(h.pending.next(id)).not.toBeNull();
+    expect(h.status.queueHeld(id)).toBe(false);
+  });
+
+  it("goes by herdr's word once herdr tells the resumed turn", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    fires(h.path); h.poll();
+    queue(h);
+    expect(h.pending.next(id)).toBeNull();
+    handlers.onStatus(id, "working", "claude");
+    expect(h.last().status).toBe("working");
+    expect(h.pending.next(id)).toBeNull();
+    // When that turn is interrupted, which writes no rest, and herdr says the pane does no work.
+    handlers.onStatus(id, "idle", "claude");
+    // Then nothing of the fire holds the queue any more.
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
+  it("holds the queue from the snapshot a send reads the pane with, before the timer's poll", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    fires(h.path);
+    // When the read a queued send makes of the pane is the first to find the fire.
+    await h.snapshot();
+    // Then that send finds the queue held, and waits.
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.current(id)).toBe("working");
+  });
+
+  it("lets the queue go when herdr never tells the resumed turn, however long nothing is written", async () => {
+    const drained: string[] = [];
+    const h = await rested(drained);
+    const id = h.pane.pane_id;
+    const shown = h.last().status;
+    fires(h.path); h.poll();
+    queue(h);
+    // Given a turn interrupted before herdr read it: no rest is written, and herdr has no word to say.
+    const from = Date.now();
+    try {
+      // Past the time a busy signal is shown working (BUSY_HOLD_MS), the fire still holds.
+      setSystemTime(from + 6000);
+      h.poll();
+      expect(h.pending.next(id)).toBeNull();
+      expect(h.status.queueHeld(id)).toBe(true);
+      const told = drained.length;
+      // When the hold's own time (LOOP_HOLD_MS, checked to the millisecond in claude-subagents.test.ts) is long up.
+      setSystemTime(from + 10 * 60_000);
+      expect(h.status.queueHeld(id)).toBe(false);
+      h.poll();
+      // Then the queue is told with no status event, and the message goes.
+      expect(drained.slice(told)).toEqual([id]);
+      expect(h.last().status).toBe(shown);
+      expect(h.pending.current(id)).toBe(shown);
+      expect(h.pending.next(id)).not.toBeNull();
+    } finally { setSystemTime(); }
+  });
+
+  it("holds nothing on a fire the server finds written when it starts", async () => {
+    const old = await workingClaude();
+    old.rest();
+    fires(old.path);
+    // Given a server that first reads the pane idle, the fire's turn interrupted before it started.
+    const h = hub(old.path);
+    h.herdrSays(old.pane);
+    handlers.onBaseline([old.pane]);
+    await h.snapshot();
+    h.poll();
+    queue({ pending: h.pending, pane: old.pane });
+    // Then that fire is history: nothing says its turn still runs.
+    expect(h.status.queueHeld(old.pane.pane_id)).toBe(false);
+    expect(h.pending.current(old.pane.pane_id)).toBe("idle");
+    expect(h.pending.next(old.pane.pane_id)).not.toBeNull();
+  });
+});
+
 describe("Claude turn starts the transcript does not show yet (#2072)", () => {
   const queue = (h: Awaited<ReturnType<typeof workingClaude>>) =>
     h.pending.enqueue("owner", h.pane.pane_id, 1, "queued", null, { agent: "claude", terminalId: "test", session: h.pane.agent_session.value });

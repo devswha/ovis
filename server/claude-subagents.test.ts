@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { HerdrPane, OmoTask } from "../shared/protocol.ts";
 import { BackgroundWait, WAIT_LIMIT_MS } from "./background-wait.ts";
-import { ClaudeSubagentStatus, DETAIL_LIMITS, backgroundAgentDetail, backgroundCommand, claudeSubagentState, detailIo, claudeSubagents, forgetSubagents, lineNotifications, plain, readLines, remember, subagentDetails, taskNotification, validDetailId, wholeClaudeSubagents, within } from "./claude-subagents.ts";
+import { ClaudeSubagentStatus, DETAIL_LIMITS, LOOP_HOLD_MS, backgroundAgentDetail, backgroundCommand, claudeSubagentState, detailIo, claudeSubagents, forgetSubagents, lineNotifications, plain, readLines, remember, subagentDetails, taskNotification, validDetailId, wholeClaudeSubagents, within } from "./claude-subagents.ts";
 import { scanClaudeTasks } from "./claude-task-scan.ts";
 import { commandHistory, commandHistorySize, holdCommandHistory, waitCommandHistory, watchCommandHistory } from "./claude-command-history.ts";
 import { runFileTask } from "./file-tasks.ts";
@@ -1134,6 +1134,138 @@ describe("ClaudeSubagentStatus", () => {
     expect([calls, status.countOf("p1")]).toEqual([2, 1]);
     await status.refresh([pane("p1", "claude", "s2")]);
     expect([calls, status.countOf("p1")]).toEqual([3, 1]);
+  });
+
+  describe("a /loop wakeup's fire (#3494)", () => {
+    type Session = ReturnType<typeof session>;
+    const rest = (s: Session, minute: number) => s.parent({ type: "system", subtype: "turn_duration", isSidechain: false, timestamp: at(minute) });
+    const fire = (s: Session, minute: number) => s.parent({ type: "system", subtype: "scheduled_task_fire", timestamp: at(minute), taskKind: "loop", taskId: "591b6f5a" });
+    const answer = (s: Session, minute: number) => s.parent({ type: "assistant", timestamp: at(minute), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "checked" }] } });
+    /** A tracker that has read a session at rest, and each word it gave of the queue's hold as it changed. */
+    const tracked = async (s: Session, clock: () => number = () => NOW) => {
+      const told: boolean[] = [];
+      const status: ClaudeSubagentStatus = new ClaudeSubagentStatus({ resolve: async () => ({ path: s.path, startedAt: null }), onChange: () => { told.push(status.loopHolds("p1")); }, now: clock });
+      await status.refresh([pane("p1", "claude")]);
+      return { status, told };
+    };
+
+    it("holds the queue from a fire written after the first read to the resumed turn's rest, whatever herdr reads the pane as", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status, told } = await tracked(s);
+      try {
+        expect(status.loopHolds("p1")).toBe(false);
+        fire(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // herdr reads the pane at rest until it reads the resumed turn: in every snapshot, and in an event of the turn before
+        status.quiet("p1", false);
+        status.quiet("p1", true);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // what the turn writes is no rest
+        answer(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        rest(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        // the hold was told as it came and as it went
+        expect(told).toEqual([false, true, false]);
+      } finally { status.stop(); }
+    });
+
+    it("takes a fire found written at the first read for history, and holds on the next one", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      fire(s, 3);
+      const { status } = await tracked(s);
+      try {
+        expect(status.loopHolds("p1")).toBe(false);
+        // nothing read later makes that fire hold: its turn may have been interrupted long ago
+        answer(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        rest(s, 5);
+        fire(s, 6);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+      } finally { status.stop(); }
+    });
+
+    it("lets go by itself, and says so, once herdr has not told the turn for LOOP_HOLD_MS", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      let now = NOW;
+      const { status, told } = await tracked(s, () => now);
+      try {
+        fire(s, 3);
+        status.poll();
+        now += LOOP_HOLD_MS - 1;
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        const before = told.length;
+        // a turn interrupted before herdr read it: no rest is written, and no word of herdr's comes
+        now += 1;
+        expect(status.loopHolds("p1")).toBe(false);
+        status.poll();
+        expect(told.slice(before)).toEqual([false]);
+        // and what is written later brings no hold back
+        answer(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+      } finally { status.stop(); }
+    });
+
+    it("says the hold is over though the pane's session was looked up again before any poll found it so", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      let now = NOW;
+      const { status, told } = await tracked(s, () => now);
+      try {
+        fire(s, 3);
+        status.poll();
+        expect(told.at(-1)).toBe(true);
+        now += LOOP_HOLD_MS;
+        // a snapshot's lookup of a session whose process is not known replaces what is kept of the pane
+        const before = status.sessionOf("p1");
+        await status.refresh([pane("p1", "claude")]);
+        expect(status.sessionOf("p1")).toEqual(before);
+        // the queue still hears that nothing holds it: no status event may come to say so
+        expect(told.at(-1)).toBe(false);
+      } finally { status.stop(); }
+    });
+
+    it("hands the queue over to herdr's status once herdr says the pane works, not to a send of the chat's", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status } = await tracked(s);
+      try {
+        fire(s, 3);
+        status.poll();
+        // the chat's own send says nothing of the turn the wakeup resumed
+        status.busy("p1", "chat", Date.parse(at(3)));
+        expect(status.loopHolds("p1")).toBe(true);
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(false);
+        // herdr's rest word after it finds nothing held, though the interrupted turn wrote no rest
+        status.quiet("p1", true);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        // so with a fire no poll has read when herdr's working comes
+        rest(s, 4);
+        status.poll();
+        fire(s, 5);
+        status.busy("p1", "herdr");
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+      } finally { status.stop(); }
+    });
   });
 });
 
