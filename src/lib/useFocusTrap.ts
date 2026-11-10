@@ -39,13 +39,18 @@ export interface FocusTrapOptions {
   startOnSurface?: boolean;
 }
 
+/** The surfaces whose Tab the hook holds now. */
+const heldSurfaces = new Set<HTMLElement>();
+
 /**
- * The surface of a trap that holds Tab now, marked by the hook. What lies over every dialog (a device
+ * Whether `node` is in a surface whose Tab this hook holds now. What lies over every dialog (a device
  * waiting for approval) takes the focus only from inside one: its Tab round leads there and back, while
  * an `aria-modal` surface that keeps Tab by its own key handler would lose Tab to the page beneath.
  */
-const FOCUS_TRAP_MARK = "data-focus-trap";
-export const FOCUS_TRAP = `[${FOCUS_TRAP_MARK}]`;
+export function inFocusTrap(node: Element): boolean {
+  for (const surface of heldSurfaces) if (surface.contains(node)) return true;
+  return false;
+}
 
 /** A stop a user can actually land on: rendered, and not disabled or skipped. */
 function reachable(node: HTMLElement): boolean {
@@ -166,8 +171,9 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
   useLayoutEffect(() => {
     if (!open || options.paused) return;
     const node = surface.current;
-    node?.setAttribute(FOCUS_TRAP_MARK, "");
-    return () => node?.removeAttribute(FOCUS_TRAP_MARK);
+    if (!node) return;
+    heldSurfaces.add(node);
+    return () => { heldSurfaces.delete(node); };
   }, [open, options.paused]);
 
   useEffect(() => {

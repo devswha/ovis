@@ -7,7 +7,7 @@ import "./RelayPairingPrompt.css";
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
 import { decideRelayPairing } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
-import { FOCUS_TRAP } from "../lib/useFocusTrap.ts";
+import { inFocusTrap } from "../lib/useFocusTrap.ts";
 import { failureText } from "./RelayPanel.tsx";
 
 /** Whole seconds from `now` until `at`, never below 0. */
@@ -44,12 +44,6 @@ export function aroundDigits(template: string, name: string): [string, string] {
 }
 
 /**
- * A dialog whose Tab round `useFocusTrap` holds, the prompts in it (`overlayStops`). Not every `aria-modal`
- * surface: one that keeps Tab by a key handler of its own (session history, the worktree dialog, a row's
- * sheet) does not hear a Tab pressed on the prompt, which would go on to the page that dialog covers.
- */
-const MODAL = FOCUS_TRAP;
-/**
  * Where the person may be typing: a field (a terminal's is a textarea), or a frame, whose page has the keys
  * while this document only sees the frame focused (the in-app browser's popup, an HTML or PDF preview).
  * Its keys stay its own.
@@ -61,12 +55,14 @@ const TEXT_ENTRY = 'input, textarea, select, iframe, embed, object, [contentedit
  * frame, where the keys already on their way (a shell's Tab, then Enter) would land on Approve; the layer's
  * live region announces the prompt there, and it is a click or a Tab away: a dialog's Tab round goes on
  * from its last stop to the prompt (Shift+Tab from its first), on the prompt itself before its buttons
- * (`overlayStops` in lib/useFocusTrap.ts).
+ * (`overlayStops` in lib/useFocusTrap.ts). That dialog is one whose Tab round `useFocusTrap` holds, not
+ * every `aria-modal` surface: one that keeps Tab by a key handler of its own (session history, the worktree
+ * dialog, a row's sheet) does not hear a Tab pressed on the prompt, which would go on to the page it covers.
  */
 export function takesFocus(active: Element | null): boolean {
   if (active === null || active === document.body) return true;
   if (!(active instanceof HTMLElement) || active.closest(TEXT_ENTRY) !== null) return false;
-  return active.closest(MODAL) !== null;
+  return inFocusTrap(active);
 }
 
 /**
@@ -183,7 +179,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
         // walked in by Tab from a modal dialog's round: that stop gets the focus back when the last prompt goes.
         // Not from the page (a tap on Approve from a terminal must not raise a phone's keyboard again afterwards)
         const from = event.relatedTarget;
-        if (!held.current && from instanceof HTMLElement && !event.currentTarget.contains(from) && from.closest(MODAL) !== null) opener.current = from;
+        if (!held.current && from instanceof HTMLElement && !event.currentTarget.contains(from) && inFocusTrap(from)) opener.current = from;
         held.current = true;
       }}
       // to nothing (Approve pressed by a key is disabled, then gone: the browser drops the focus) is not the person moving on

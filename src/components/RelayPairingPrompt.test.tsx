@@ -4,6 +4,7 @@ import { create, type ReactTestInstance, type ReactTestRenderer } from "react-te
 
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { APPROVE_KEY_GUARD_MS, APPROVE_POINTER_GUARD_MS, RelayPairingPrompt, aroundDigits, deadlineOf, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
 
 const AT = Date.parse("2026-11-10T00:00:00.000Z");
@@ -15,7 +16,7 @@ function text(node: ReactTestInstance | string): string {
 }
 
 describe("the PC's prompt for a device waiting for approval", () => {
-  const keys = ["window", "document", "navigator", "getComputedStyle", "HTMLElement", "Node", "fetch", "IS_REACT_ACT_ENVIRONMENT"];
+  const keys = ["window", "document", "navigator", "getComputedStyle", "HTMLElement", "Element", "Node", "fetch", "IS_REACT_ACT_ENVIRONMENT"];
   /** what decideRelayPairing posted: the path and the body */
   let decided: [string, unknown][];
   const saved = new Map<string, PropertyDescriptor | undefined>();
@@ -36,7 +37,17 @@ describe("the PC's prompt for a device waiting for approval", () => {
   }
   /** the document: what has the focus now */
   let page: { activeElement: HTMLElement | null; body: HTMLElement };
-  /** what had the focus when the prompt arrived: a button in Settings, a modal dialog that useFocusTrap holds */
+  /** Settings: a modal dialog whose Tab round useFocusTrap holds */
+  let settings: HTMLElement;
+  let trap: ReactTestRenderer | undefined;
+  function Held({ surface }: { surface: HTMLElement }) {
+    const ref = useFocusTrap<never>(true);
+    (ref as { current: unknown }).current = surface;
+    return null;
+  }
+  /** something in Settings */
+  const inSettings = (name: string, within: string[] = []): HTMLElement => { const node = new HTMLElement(name, [], ["aria-modal", ...within]); settings.inside.push(node); return node; };
+  /** what had the focus when the prompt arrived: a button in Settings */
   let opener: HTMLElement;
   /** the layer the prompts are stacked in, and how far it scrolls to bring a prompt into view */
   let stack: HTMLElement;
@@ -47,11 +58,12 @@ describe("the PC's prompt for a device waiting for approval", () => {
   let nodes: Map<string, HTMLElement>;
   let renderer: ReactTestRenderer | undefined;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     decided = [];
     for (const key of keys) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const events = new EventTarget();
-    opener = new HTMLElement("opener", [], ["aria-modal", "data-focus-trap"]);
+    opener = new HTMLElement("opener", [], ["aria-modal"]);
+    settings = new HTMLElement("settings", [opener]);
     inert = false;
     shift = 0;
     page = { activeElement: opener, body: new HTMLElement("body") };
@@ -75,6 +87,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
       expect(init?.method).toBe("POST");
       return new Response(null, { status: 204 });
     } });
+    Object.defineProperty(globalThis, "Element", { configurable: true, value: HTMLElement });
+    await act(async () => { trap = create(createElement(Held, { surface: settings })); });
     jest.useFakeTimers();
     jest.setSystemTime(AT);
   });
@@ -82,6 +96,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
   afterEach(async () => {
     await act(async () => { renderer?.unmount(); });
     renderer = undefined;
+    await act(async () => { trap?.unmount(); });
+    trap = undefined;
     jest.useRealTimers();
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -259,9 +275,9 @@ describe("the PC's prompt for a device waiting for approval", () => {
   it("leaves the focus in a field the person is typing in, a terminal's included", async () => {
     // xterm's helper textarea, the chat composer, a field in Settings: the keys on their way (a shell's
     // Tab, then Enter) must not land on the prompt and walk to Approve
-    for (const field of [new HTMLElement("terminal", [], ["textarea"]), new HTMLElement("composer", [], ["contenteditable"]), new HTMLElement("settings field", [], ["input", "aria-modal", "data-focus-trap"]),
+    for (const field of [new HTMLElement("terminal", [], ["textarea"]), new HTMLElement("composer", [], ["contenteditable"]), inSettings("settings field", ["input"]),
       // a page in the in-app browser's popup, an HTML or PDF preview: the frame has the focus while the person types in it
-      new HTMLElement("web page", [], ["iframe", "aria-modal", "data-focus-trap"]), new HTMLElement("pdf", [], ["embed", "aria-modal", "data-focus-trap"]), new HTMLElement("plugin", [], ["object", "aria-modal", "data-focus-trap"])]) {
+      inSettings("web page", ["iframe"]), inSettings("pdf", ["embed"]), inSettings("plugin", ["object"])]) {
       page.activeElement = field;
       const root = await show([request()]);
       const node = nodeOf(prompts(root)[0]!);
@@ -282,17 +298,17 @@ describe("the PC's prompt for a device waiting for approval", () => {
   it("takes the focus only where the prompt could not be reached otherwise", () => {
     expect(takesFocus(null)).toBe(true);
     expect(takesFocus(page.body as never)).toBe(true);
-    expect(takesFocus(new HTMLElement("settings button", [], ["aria-modal", "data-focus-trap"]) as never)).toBe(true);
+    expect(takesFocus(inSettings("settings button") as never)).toBe(true);
     // a dialog that keeps Tab by its own key handler (session history, the worktree dialog, a row's sheet): the
     // prompt is outside that handler's reach, so Tab from it would go on to the page the dialog covers
     expect(takesFocus(new HTMLElement("history button", [], ["aria-modal"]) as never)).toBe(false);
     expect(takesFocus(new HTMLElement("native dialog button", [], ["dialog[open]"]) as never)).toBe(false);
     // a frame's keys go to the page inside it
-    for (const frame of ["iframe", "embed", "object"]) expect(takesFocus(new HTMLElement(frame, [], [frame, "aria-modal", "data-focus-trap"]) as never)).toBe(false);
+    for (const frame of ["iframe", "embed", "object"]) expect(takesFocus(inSettings(frame, [frame]) as never)).toBe(false);
     // a sidebar row, a header button: Tab reaches the prompt from the page, and their keys stay theirs
     expect(takesFocus(new HTMLElement("sidebar row") as never)).toBe(false);
     expect(takesFocus(new HTMLElement("terminal", [], ["textarea"]) as never)).toBe(false);
-    expect(takesFocus(new HTMLElement("settings field", [], ["select", "aria-modal", "data-focus-trap"]) as never)).toBe(false);
+    expect(takesFocus(inSettings("settings field", ["select"]) as never)).toBe(false);
   });
 
   it("takes nothing, and gives nothing back, when the prompt refuses the focus", async () => {
@@ -328,8 +344,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
 
   it("gives the focus back to the stop Tab brought it from", async () => {
     // a field in Settings kept the focus when the prompt arrived; Tab then walked from Settings' last stop into it
-    const field = new HTMLElement("settings field", [], ["input", "aria-modal", "data-focus-trap"]);
-    const last = new HTMLElement("settings close", [], ["aria-modal", "data-focus-trap"]);
+    const field = inSettings("settings field", ["input"]);
+    const last = inSettings("settings close");
     page.activeElement = field;
     const root = await show([request()]);
     const node = nodeOf(prompts(root)[0]!);
