@@ -8,5 +8,6 @@
   minutes). The command then says which account the PC joined and which of that account's devices
   added it, fails when that is another account than the one that signed in, and asks whether to
   keep any device that got in with the code without being in the account (anything but y removes
-  it). `ovis add --approve` keeps the
-  earlier way: the adding device's request is approved in the terminal after comparing six digits.
+  it; a line that comes within a second and a half of the question, and the first line after the
+  question changed, answer nothing and it is asked again). `ovis add --approve` keeps the
+  earlier way: the adding device's request is approved in the terminal by typing its six digits.

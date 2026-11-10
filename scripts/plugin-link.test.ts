@@ -277,7 +277,7 @@ describe("ovis link, on the PC itself", () => {
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
         if (shown) options.approve(service, shown[1]!);
         // the answer, typed once the digits were on the screen long enough to compare
-        if (text.includes("Approve?")) time.after(() => keys.type("y"));
+        if (text.includes("Enter to decline")) time.after(() => keys.type("456"));
       },
     });
     return { code, text: out.join(""), service, pc, decisions, named, calls: local.calls };
@@ -596,7 +596,7 @@ describe("ovis link, on the PC itself", () => {
     await link(["--approve"], {
       origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: time.wait, signal: new AbortController().signal,
       accountService: SERVICE, serviceFetch: (input, init) => service.fetch(new Request(input, init)), lines: keys.lines, terminal: true,
-      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); if (text.includes("Approve?")) time.after(() => keys.type("n")); },
+      out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); if (text.includes("Enter to decline")) time.after(() => keys.type("n")); },
     });
     const text = out.join("");
     expect(text).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
@@ -631,7 +631,7 @@ describe("ovis link, on the PC itself", () => {
         out.push(text);
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
         if (shown) service.approveDevice(shown[1]!, "acct_1");
-        if (text.includes("Approve?")) stop.abort();
+        if (text.includes("Enter to decline")) stop.abort();
       },
     });
     expect(code).toBe(1);
@@ -641,11 +641,12 @@ describe("ovis link, on the PC itself", () => {
   });
 
   /**
-   * `link` signed in to acct_1 and waiting, with requests to approve: `pending` names the ones waiting at each poll,
+   * `link` signed in to acct_1 and waiting, with requests to approve: `pending` names the ones waiting at each poll
+   * (each shows 111 222 unless `request` gives it other digits, so a line begun for one would approve the next),
    * `said` hears every line, to `type` a line at that very moment or to `answer` after the next wait (two seconds: the
    * time a person takes to compare the digits), and `decide` may fail the call that carries an answer.
    */
-  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string> }) {
+  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string } }) {
     const pc = identity();
     const time = clock();
     const service = new FakeAccountService(time.now);
@@ -662,7 +663,7 @@ describe("ovis link, on the PC itself", () => {
       if (path === "/api/account/status") return Response.json({ account: options.joined?.(decisions) ? "acct_1" : null, unlinked: [], removals: [], adds: [], blocked: [] });
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
       if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
-      if (path === "/api/relay/pairings") return Response.json({ pairings: options.pending(++polls, decisions).map((id) => ({ id, label: `Phone ${id}`, digits: "111222", intent: "account", expires_at: new Date(time.now() + 60_000).toISOString() })) });
+      if (path === "/api/relay/pairings") return Response.json({ pairings: options.pending(++polls, decisions).map((id) => ({ id, label: `Phone ${id}`, digits: "111222", ...options.request?.(id), intent: "account", expires_at: new Date(time.now() + 60_000).toISOString() })) });
       if (path === "/api/relay/pairing") {
         options.decide?.(++attempts);
         decisions.push(await request.json() as { id: string; decision: string });
@@ -688,7 +689,7 @@ describe("ovis link, on the PC itself", () => {
     const { code, out, calls, decisions, polls } = await prompting({ pending: () => ["p1"], said: () => undefined });
     expect(code).toBe(1);
     // asked once, and the prompt's line is ended before the last word
-    expect(out.filter((text) => text.includes("Approve?"))).toHaveLength(1);
+    expect(out.filter((text) => text.includes("Enter to decline"))).toHaveLength(1);
     expect(out.at(-1)).toBe("\nStopped waiting after 30 minutes. Run this again to keep waiting.\n");
     expect(decisions).toEqual([]);
     // the waiting went on under the prompt: every poll, and the window every 30 seconds until the last ten minutes,
@@ -703,15 +704,15 @@ describe("ovis link, on the PC itself", () => {
       pending: (polls, decisions) => polls <= 3 ? ["p1"] : polls <= 5 || decisions.length > 0 ? [] : ["p2"],
       said: (text, type, answer) => {
         // typed too late: nothing is asked about any more
-        if (text.includes("Phone p1 is no longer waiting")) type("y");
+        if (text.includes("Phone p1 is no longer waiting")) type("222");
         if (text.includes("Phone p2 wants")) answer("n");
       },
       joined: (decisions) => decisions.length > 0,
     });
     expect(code).toBe(0);
-    expect(out.filter((text) => text.includes("Approve?")).map((text) => text.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    expect(out.filter((text) => text.includes("Enter to decline")).map((text) => text.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
     expect(out).toContain("\nPhone p1 is no longer waiting.\n");
-    // the late y approved nothing: p2 got the answer typed at its own prompt
+    // the late line approved nothing: p2 got the answer typed at its own prompt
     expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
   });
 
@@ -721,14 +722,14 @@ describe("ovis link, on the PC itself", () => {
       pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
       said: (text, type, answer) => {
         // meant for p1, sent as its prompt ends: p2's digits were never on the screen
-        if (text.includes("Phone p1 is no longer waiting")) type("y");
+        if (text.includes("Phone p1 is no longer waiting")) type("222");
         if (text.includes("Phone p2 wants")) answer("n");
       },
       joined: (decisions) => decisions.length > 0,
     });
     expect(code).toBe(0);
-    expect(out.filter((text) => text.includes("Approve?")).map((text) => text.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
-    // the y approved nothing: p2 got the answer typed at its own prompt
+    expect(out.filter((text) => text.includes("Enter to decline")).map((text) => text.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    // the line approved nothing: p2 got the answer typed at its own prompt
     expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
   });
 
@@ -737,23 +738,170 @@ describe("ovis link, on the PC itself", () => {
     const { code, out, text, decisions } = await prompting({
       pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
       said: (said, type, answer) => {
-        // the y begun at p1's prompt is sent only as p2's prompt comes on the screen; the answer to p2 follows its second showing
-        if (said.includes("Phone p2 wants")) { if (++shown === 1) type("y"); else answer("n"); }
+        // the line begun at p1's prompt is sent only as p2's prompt comes on the screen; the answer to p2 follows its second showing
+        if (said.includes("Phone p2 wants")) { if (++shown === 1) type("222"); else answer("n"); }
       },
       joined: (decisions) => decisions.length > 0,
     });
     expect(code).toBe(0);
-    expect(text).toContain("That line answered nothing: it came as the request showed, too soon to have compared its digits.");
+    expect(text).toContain("That line answered nothing: a request went away while it may have been typed.");
     // p2 is asked again under the notice
-    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
+    expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
     expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
   });
+
+  // In canonical mode the terminal hands a line over when Enter is pressed, and it is stamped then: what was typed at
+  // p1's prompt and not sent comes with the Enter pressed at p2's, however long after p2's prompt showed
+  it("never takes a line begun at a request that went away as the answer to the next one, also when its Enter comes two seconds after the next prompt", async () => {
+    for (const gap of [false, true]) {
+      // what the terminal held: a y, the digits (the two requests show the same ones here), or nothing (a bare Enter)
+      for (const held of ["y", "222", "111 222", ""]) {
+        let shown = 0;
+        const { code, out, text, decisions } = await prompting({
+          // p1 for three polls; p2 in the very look that drops p1, or two looks later
+          pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : gap && polls <= 5 ? [] : ["p2"],
+          said: (said, _type, answer) => {
+            // the Enter two seconds after p2's prompt sends the held line; p2's own answer follows its second showing
+            if (said.includes("Phone p2 wants")) answer(++shown === 1 ? held : "n");
+          },
+          joined: (decisions) => decisions.length > 0,
+        });
+        expect(code).toBe(0);
+        expect(out.filter((said) => said.includes("That line answered nothing: a request went away while it may have been typed. Answer again for the request shown now."))).toHaveLength(1);
+        expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
+        // the held line decided nothing, neither way: p2 got the answer typed at its second showing
+        expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
+        expect(text).not.toContain("Approved");
+      }
+    }
+  }, 30_000);
+
+  it("drops the line held at a request that went away when its Enter comes while nothing is asked, and only that one", async () => {
+    const { code, out, decisions } = await prompting({
+      pending: (polls, decisions) => polls <= 3 ? ["p1"] : polls <= 6 || decisions.length > 0 ? [] : ["p2"],
+      said: (said, _type, answer) => {
+        // Enter after p1 went: the line held at its prompt comes while nothing is asked
+        if (said.includes("Phone p1 is no longer waiting")) answer("222");
+        // p2's answer is then the first line typed at its prompt
+        if (said.includes("Phone p2 wants")) answer("222");
+      },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(code).toBe(0);
+    expect(out.filter((said) => said.includes("That line answered nothing: a request went away while it may have been typed.\n"))).toHaveLength(1);
+    expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    expect(decisions).toEqual([{ id: "p2", decision: "approve" }]);
+  });
+
+  it("drops the line held at a request that went away also when an Enter pressed too soon came at that request first", async () => {
+    let p1 = 0;
+    let p2 = 0;
+    const { code, text, decisions } = await prompting({
+      pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
+      said: (said, type, answer) => {
+        // Enter as p1 shows (dropped, too soon); its digits are then typed and not sent
+        if (said.includes("Phone p1 wants") && ++p1 === 1) type("");
+        if (said.includes("Phone p2 wants")) answer(++p2 === 1 ? "222" : "n");
+      },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(code).toBe(0);
+    expect(text).toContain("too soon to have compared its digits");
+    expect(text).toContain("That line answered nothing: a request went away while it may have been typed.");
+    expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
+  });
+
+  it("drops the line held at a request that went away also when another line came as that request went: that one is not the held one", async () => {
+    let typed = false;
+    let shown = 0;
+    const { code, out, decisions } = await prompting({
+      pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
+      // Enter at p1's prompt while the look that finds p1 gone is on its way; more is then typed, and not sent
+      called: (path, type, polls) => { if (path === "/api/relay/pairings" && polls === 3 && !typed) { typed = true; type("222"); } },
+      said: (said, _type, answer) => { if (said.includes("Phone p2 wants") && ++shown <= 2) answer(shown === 1 ? "222" : "n"); },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(typed).toBe(true);
+    expect(code).toBe(0);
+    expect(out.filter((said) => said.includes("That line answered nothing")).map((said) => said.trim())).toEqual([
+      "That line answered nothing: no request is waiting for an answer.",
+      "That line answered nothing: a request went away while it may have been typed. Answer again for the request shown now.",
+    ]);
+    expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
+  });
+
+  it("approves a request only with its own digits: all six, with or without the space, or the last three", async () => {
+    for (const [line, decision] of [
+      ["111 222", "approve"], ["111222", "approve"], ["222", "approve"], ["  222 ", "approve"], [" 111  222\t", "approve"],
+      ["", "decline"], ["n", "decline"], ["y", "decline"], ["Y", "decline"], ["yes", "decline"], ["111", "decline"], ["223", "decline"],
+      ["22", "decline"], ["2222", "decline"], ["1112222", "decline"], ["111222 222", "decline"], ["y222", "decline"], ["２２２", "decline"],
+    ] as const) {
+      const { code, out, decisions } = await prompting({
+        pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+        said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer(line); },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect(code).toBe(0);
+      expect([line, decisions]).toEqual([line, [{ id: "p1", decision }]]);
+      expect(out.filter((said) => said.includes("Enter to decline"))).toEqual(["Phone p1 wants to join your account. Approve it only if its screen shows 111 222. Type 222 to approve, or press Enter to decline: "]);
+      expect(out.some((said) => said === "Approved.\n")).toBe(decision === "approve");
+      // a person used to y/N is told what approves
+      expect(out.includes("Declined: only a request's digits approve it, not y.\n")).toBe(/^y/i.test(line) && line.length <= 3);
+      expect(out.includes("Declined.\n")).toBe(decision === "decline" && !(/^y/i.test(line) && line.length <= 3));
+    }
+  }, 30_000);
+
+  it("approves nothing with another request's digits: neither the ones answered before, nor the same device's earlier ones", async () => {
+    // the same phone asks twice: the same label, other digits
+    const request = (id: string) => ({ label: "Phone", digits: id === "p1" ? "111222" : "333444" });
+    const first = await prompting({
+      request,
+      // p1 is answered, then p2 shows
+      pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
+      said: (said, _type, answer) => { if (said.includes("111 222") || said.includes("333 444")) answer("222"); },
+      joined: (decisions) => decisions.length > 1,
+    });
+    expect(first.code).toBe(0);
+    expect(first.decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "decline" }]);
+    // p1 goes away with its digits typed and not sent; they come at p2's prompt, and are typed there again
+    let shown = 0;
+    const second = await prompting({
+      request,
+      pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
+      said: (said, _type, answer) => { if (said.includes("333 444") && ++shown <= 2) answer("222"); },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(second.code).toBe(0);
+    expect(second.out.filter((said) => said.includes("Enter to decline"))).toEqual([
+      "Phone wants to join your account. Approve it only if its screen shows 111 222. Type 222 to approve, or press Enter to decline: ",
+      "Phone wants to join your account. Approve it only if its screen shows 333 444. Type 444 to approve, or press Enter to decline: ",
+      "Phone wants to join your account. Approve it only if its screen shows 333 444. Type 444 to approve, or press Enter to decline: ",
+    ]);
+    expect(second.decisions).toEqual([{ id: "p2", decision: "decline" }]);
+  });
+
+  it("approves nothing for a request whose digits are not six digits: a bare Enter never matches what is missing", async () => {
+    for (const digits of ["", "12", "123", "abcdef", "12345", "1234567"]) {
+      for (const line of ["", digits, digits.slice(3)]) {
+        const { code, out, decisions } = await prompting({
+          request: () => ({ digits }),
+          pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+          said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer(line); },
+          joined: (decisions) => decisions.length > 0,
+        });
+        expect(code).toBe(0);
+        expect([digits, line, decisions]).toEqual([digits, line, [{ id: "p1", decision: "decline" }]]);
+        // and the question asks for none
+        expect(out.filter((said) => said.includes("Enter to decline"))).toEqual(["Phone p1 wants to join your account, but its request came without six digits to compare, so it cannot be approved here. Press Enter to decline: "]);
+      }
+    }
+  }, 30_000);
 
   it("approves nothing when the only line sent was begun under the request before the one shown", async () => {
     let typedOnce = false;
     const { code, decisions } = await prompting({
       pending: (polls) => polls <= 3 ? ["p1"] : ["p2"],
-      said: (said, type) => { if (said.includes("Phone p2 wants") && !typedOnce) { typedOnce = true; type("y"); } },
+      said: (said, type) => { if (said.includes("Phone p2 wants") && !typedOnce) { typedOnce = true; type("222"); } },
     });
     expect(code).toBe(1);
     expect(decisions).toEqual([]);
@@ -762,7 +910,7 @@ describe("ovis link, on the PC itself", () => {
   it("leaves a request unanswered when the only line typed was for the one before it", async () => {
     const { code, decisions } = await prompting({
       pending: (polls) => polls <= 3 ? ["p1"] : ["p2"],
-      said: (text, type) => { if (text.includes("Phone p1 is no longer waiting")) type("y"); },
+      said: (text, type) => { if (text.includes("Phone p1 is no longer waiting")) type("222"); },
     });
     expect(code).toBe(1);
     expect(decisions).toEqual([]);
@@ -772,7 +920,7 @@ describe("ovis link, on the PC itself", () => {
     let downAt: number | null = null;
     const { code, text, decisions, refused } = await prompting({
       pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
-      said: (said, type) => { if (said.includes("not answering")) type("y"); },
+      said: (said, type) => { if (said.includes("not answering")) type("222"); },
       // down from the third wait, for ten waits
       refuse: (waits) => { if (waits >= 3) downAt ??= waits; return downAt !== null && waits < downAt + 10; },
       joined: (decisions) => decisions.length > 0,
@@ -788,13 +936,13 @@ describe("ovis link, on the PC itself", () => {
     let prompts = 0;
     const { code, text, out, decisions, calls } = await prompting({
       pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
-      said: (said, _type, answer) => { if (said.includes("Approve?")) answer(++prompts === 1 ? "y" : "n"); },
+      said: (said, _type, answer) => { if (said.includes("Enter to decline")) answer(++prompts === 1 ? "222" : "n"); },
       // the first answer's call is never answered
       decide: (attempt) => { if (attempt === 1) throw new TypeError("timed out"); },
       joined: (decisions) => decisions.length > 0,
     });
     expect(code).toBe(0);
-    expect(out.filter((said) => said.includes("Approve?"))).toHaveLength(2);
+    expect(out.filter((said) => said.includes("Enter to decline"))).toHaveLength(2);
     expect(text).toContain("Your answer may not have reached the Ovis on this PC. Phone p1 is asked about again if it is still waiting.");
     expect(calls.filter((call) => call.path === "/api/relay/pairing").map((call) => JSON.parse(call.body))).toEqual([{ id: "p1", decision: "approve" }, { id: "p1", decision: "decline" }]);
     // what the server took is the answer typed the second time
@@ -807,12 +955,12 @@ describe("ovis link, on the PC itself", () => {
       pending: (polls, decisions) => polls <= 3 ? ["p1"] : polls <= 5 || decisions.length > 0 ? [] : ["p2"],
       said: (said, type) => {
         // too late for p1, and once more when nothing seemed to happen: a terminal keeps the second for the next read
-        if (said.includes("Phone p1 is no longer waiting")) { type("y"); type("y"); }
+        if (said.includes("Phone p1 is no longer waiting")) { type("222"); type("222"); }
       },
     });
     // p2 was asked about and never answered
     expect(code).toBe(1);
-    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
     expect(decisions).toEqual([]);
     // and the lines that went nowhere are said to have
     expect(text).toContain("That line answered nothing: no request is waiting for an answer.");
@@ -821,11 +969,11 @@ describe("ovis link, on the PC itself", () => {
   it("approves nothing with a line typed twice as its request gives way to the next in one look", async () => {
     const { code, out, decisions } = await prompting({
       pending: (polls) => polls <= 3 ? ["p1"] : ["p2"],
-      said: (said, type) => { if (said.includes("Phone p1 is no longer waiting")) { type("y"); type("y"); } },
+      said: (said, type) => { if (said.includes("Phone p1 is no longer waiting")) { type("222"); type("222"); } },
     });
     expect(code).toBe(1);
     // both are dropped above p2's prompt, which shows once
-    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
     expect(out.findIndex((said) => said.includes("That line answered nothing"))).toBeLessThan(out.findIndex((said) => said.includes("Phone p2 wants")));
     expect(decisions).toEqual([]);
   });
@@ -837,7 +985,7 @@ describe("ovis link, on the PC itself", () => {
         pending: (polls, decisions) => polls <= 2 || decisions.length > 0 ? [] : ["p1"],
         said: (said, type, answer) => {
           // typed ahead, twice, and an empty line that would decline
-          if (said.includes(when)) { type("y"); type("y"); type(""); }
+          if (said.includes(when)) { type("222"); type("222"); type(""); }
           // the answer at the prompt that follows the notice
           if (said.includes("Phone p1 wants") && !answered) { answered = true; answer("n"); }
         },
@@ -846,7 +994,7 @@ describe("ovis link, on the PC itself", () => {
       expect(code).toBe(0);
       expect(text).toContain("That line answered nothing");
       // p1 is shown once, and what answers it is the line typed there
-      expect(out.filter((said) => said.includes("Approve?"))).toHaveLength(1);
+      expect(out.filter((said) => said.includes("Enter to decline"))).toHaveLength(1);
       expect(decisions).toEqual([{ id: "p1", decision: "decline" }]);
     }
   });
@@ -856,7 +1004,7 @@ describe("ovis link, on the PC itself", () => {
     const { code, out, text, decisions } = await prompting({
       pending: () => ["p1"],
       // p1 is known from the first poll; its prompt comes after the look at the account that follows
-      called: (path, type, polls) => { if (path === "/api/account/status" && polls === 1 && !typedAhead) { typedAhead = true; type("y"); } },
+      called: (path, type, polls) => { if (path === "/api/account/status" && polls === 1 && !typedAhead) { typedAhead = true; type("222"); } },
       said: () => undefined,
     });
     expect(typedAhead).toBe(true);
@@ -864,35 +1012,43 @@ describe("ovis link, on the PC itself", () => {
     expect(decisions).toEqual([]);
     // said above the prompt, which then shows once
     expect(text).toContain("That line answered nothing: it was typed before the request shown now was asked about.");
-    expect(out.filter((said) => said.includes("Approve?"))).toHaveLength(1);
+    expect(out.filter((said) => said.includes("Enter to decline"))).toHaveLength(1);
   });
 
   it("answers one request with one line: a second line at its prompt never answers the next request", async () => {
     const { code, out, decisions } = await prompting({
       pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
       said: (said, _type, answer) => {
-        // y for p1, and Enter once more: an empty line would decline p2 unseen
-        if (said.includes("Phone p1 wants")) { answer("y"); answer(""); }
-        if (said.includes("Phone p2 wants")) answer("yes");
+        // its digits for p1, and Enter once more: an empty line would decline p2 unseen
+        if (said.includes("Phone p1 wants")) { answer("222"); answer(""); }
+        if (said.includes("Phone p2 wants")) answer("111 222");
       },
       joined: (decisions) => decisions.length > 1,
     });
     expect(code).toBe(0);
-    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+    expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
     expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "approve" }]);
   });
 
-  it("declines every request when its input is not a terminal, whatever was piped in, and still ends", async () => {
-    for (const piped of [[], ["y"], ["y", "y", "y"]]) {
-      const { code, out, decisions } = await prompting({
-        lines: answers(...piped), terminal: false,
+  it("declines every request when its input is not a terminal, whatever was piped in, without reading it, and still ends", async () => {
+    for (const piped of [[], ["222"], ["222", "222", "222"]]) {
+      let reads = 0;
+      const lines = answers(...piped);
+      const { code, out, text, decisions } = await prompting({
+        lines: { next: () => { reads++; return lines.next(); } }, terminal: false,
         pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
         said: () => undefined,
         joined: (decisions) => decisions.length > 1,
       });
       expect(code).toBe(0);
+      // what is not a terminal is never read: none of its lines is taken, dropped or waited for
+      expect(reads).toBe(0);
+      expect(text).not.toContain("That line answered nothing");
+      expect(text).not.toContain("The terminal's input ended");
+      // said once, with the way out for someone who is at a terminal after all
+      expect(out.filter((said) => said.includes("This is not run in a terminal"))).toEqual(["This is not run in a terminal, so no request can be answered here: each is declined as it shows. Run this in a terminal to approve one (over ssh, run ssh -t).\n"]);
       // each is shown, and declined at once: no line was typed at its prompt
-      expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
+      expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2"]);
       expect(out.filter((said) => said === "Declined.\n")).toHaveLength(2);
       expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
     }
@@ -903,7 +1059,7 @@ describe("ovis link, on the PC itself", () => {
     const { code, out, text, decisions } = await prompting({
       terminal: false,
       pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
-      said: (said, _type, answer) => { if (said.includes("wants")) { answer("y"); answer("y"); } },
+      said: (said, _type, answer) => { if (said.includes("wants")) { answer("222"); answer("222"); } },
       joined: (decisions) => decisions.length > 1,
     });
     expect(code).toBe(0);
@@ -919,27 +1075,29 @@ describe("ovis link, on the PC itself", () => {
       // p1 and p2 wait together: p2's prompt shows in the look that sends p1's answer
       pending: (_polls, decisions) => decisions.length === 0 ? ["p1", "p2"] : ["p2"],
       said: (said, type, answer) => {
-        if (said.includes("Phone p1 wants")) answer("y");
-        // y and Enter once more, a moment after the first: p2's digits were not compared
-        if (said.includes("Phone p2 wants") && !again) { again = true; type("y"); }
+        if (said.includes("Phone p1 wants")) answer("222");
+        // the digits and Enter once more, a moment after the first: p2's were not compared
+        if (said.includes("Phone p2 wants") && !again) { again = true; type("222"); }
       },
     });
     // p2 was asked about, again under the notice, and never answered
     expect(code).toBe(1);
     expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
     expect(text).toContain("That line answered nothing: it came as the request showed, too soon to have compared its digits.");
-    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
+    expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
   });
 
-  it("takes the answer typed at a request's prompt long after an earlier request went away with nothing typed", async () => {
-    const { code, text, decisions } = await prompting({
+  it("asks once more for the answer to a request that follows one that went away, however long after: the first line may have been begun at that one", async () => {
+    const { code, out, decisions } = await prompting({
       // p1 runs out after three polls; p2 comes minutes later
       pending: (polls, decisions) => polls <= 3 ? ["p1"] : polls <= 200 || decisions.length > 0 ? [] : ["p2"],
-      said: (said, _type, answer) => { if (said.includes("Phone p2 wants")) answer("y"); },
+      said: (said, _type, answer) => { if (said.includes("Phone p2 wants")) answer("222"); },
       joined: (decisions) => decisions.length > 0,
     });
     expect(code).toBe(0);
-    expect(text).not.toContain("That line answered nothing");
+    // one line is dropped, once: the answer typed under the notice counts
+    expect(out.filter((said) => said.includes("That line answered nothing"))).toHaveLength(1);
+    expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
     expect(decisions).toEqual([{ id: "p2", decision: "approve" }]);
   });
 
@@ -1126,12 +1284,12 @@ describe("ovis link, on the PC itself", () => {
   /**
    * `add` signed in to acct_1 and showing its QR code. `step` plays what happens to the PC before each look at its
    * account (`looks` so far, and the time since the first code); `said` hears every line, to `type` a line at that
-   * very moment or to `answer` after the next wait (two seconds: time to read the question).
+   * very moment or to `answer` after the next wait (two seconds: time to read the question), or after that many waits.
    */
   async function scanning(options: {
     args?: string[]; isTty?: boolean; terminal?: boolean; size?: () => { rows: number; columns: number };
     step?: (pc: { account: string | null; enrolling: boolean; devices: Row[] }, looks: number, elapsed: number, stop: AbortController) => void;
-    said?: (text: string, type: (line: string) => void, answer: (line: string) => void, stop: AbortController) => void;
+    said?: (text: string, type: (line: string) => void, answer: (line: string, waits?: number) => void, stop: AbortController) => void;
     cancel?: () => Response; revoke?: () => Response;
     /** an answer the PC gives instead of its own, by the path and the codes shown so far; one that throws is a PC that does not answer */
     refuse?: (path: string, codes: number) => Response | undefined;
@@ -1198,7 +1356,8 @@ describe("ovis link, on the PC itself", () => {
         // the sign-in's code, not the pairing code shown later
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
         if (shown && !approved) { approved = true; service.approveDevice(shown[1]!, "acct_1"); }
-        options.said?.(text, keys.type, (line) => time.after(() => keys.type(line)), stop);
+        const later = (line: string, waits: number): void => time.after(() => { if (waits <= 1) keys.type(line); else later(line, waits - 1); });
+        options.said?.(text, keys.type, (line, waits = 1) => later(line, waits), stop);
       },
     });
     const paths = local.calls.map((call) => `${call.method} ${call.path}`);
@@ -1364,6 +1523,87 @@ describe("ovis link, on the PC itself", () => {
     expect(revoked).toEqual([PHONE.id]);
   });
 
+  it("takes no line begun at a question that changed as the answer to the next one, however late its Enter comes", async () => {
+    const owner: Row = { ...OLD, account: "acct_1" };
+    const HELD = "That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n";
+    const NEXT = "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ";
+    // y typed at the first question and not sent; this PC joins the account by another device, the question is asked
+    // anew, and the Enter comes two seconds after it showed, or two looks later
+    for (const looksLater of [1, 2]) {
+      let shows = 0;
+      const { code, out, revoked } = await scanning({
+        step: (state, looks) => {
+          if (looks === 2) state.devices = [OLD, PHONE];
+          if (looks === 14) { state.account = "acct_1"; state.devices = [owner, PHONE]; }
+        },
+        said: (text, _type, answer) => {
+          if (text !== NEXT) return;
+          // the held line's Enter, then nothing more: the default
+          if (++shows === 1) answer("y", looksLater);
+          else answer("");
+        },
+      });
+      expect(out.slice(-6)).toEqual(["\n", NEXT, HELD, NEXT, "Removed.\n", "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n"]);
+      expect(out).not.toContain("Kept.\n");
+      expect(revoked).toEqual([PHONE.id]);
+      expect(code).toBe(0);
+    }
+    // the line typed under the question shown again is the one that counts
+    let shows = 0;
+    const kept = await scanning({
+      step: (state, looks) => {
+        if (looks === 2) state.devices = [OLD, PHONE];
+        if (looks === 14) { state.account = "acct_1"; state.devices = [owner, PHONE]; }
+      },
+      said: (text, _type, answer) => { if (text === NEXT) answer(++shows === 1 ? "" : "y"); },
+    });
+    expect(kept.out.slice(-4)).toEqual([HELD, NEXT, "Kept.\n", "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n"]);
+    expect(kept.revoked).toEqual([]);
+  });
+
+  it("takes no line begun at a question that was dropped as the answer to one about another device", async () => {
+    // the phone is asked about, then links itself: its question goes. A device that typed the code at this PC's own
+    // address is asked about next, while the account's other devices are brought in
+    let shows = 0;
+    const { code, out, revoked } = await scanning({
+      step: (state, looks) => {
+        if (looks === 2) state.devices = [OLD, PHONE];
+        if (looks === 14) { state.account = "acct_1"; state.enrolling = true; state.devices = [OLD, MEMBER]; }
+        if (looks === 16) state.devices = [OLD, MEMBER, DIRECT];
+        if (looks === 30) state.enrolling = false;
+      },
+      said: (text, _type, answer) => { if (text.includes("Tailnet laptop paired with this PC with the code shown here")) answer(++shows === 1 ? "y" : ""); },
+    });
+    expect(out.filter((line) => line.includes("answered nothing"))).toEqual(["That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n"]);
+    expect(out).not.toContain("Kept.\n");
+    expect(revoked).toEqual([DIRECT.id]);
+    expect(code).toBe(0);
+  });
+
+  it("says of a line handed over as its question went that it answered nothing, and still drops the next one", async () => {
+    const owner: Row = { ...OLD, account: "acct_1" };
+    const NEXT = "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ";
+    let typeNow: (line: string) => void = () => undefined;
+    let shows = 0;
+    const { out, revoked } = await scanning({
+      step: (state, looks) => {
+        if (looks === 2) state.devices = [OLD, PHONE];
+        // sent at the first question, in the look that finds this PC in the account
+        if (looks === 14) { typeNow("y"); state.account = "acct_1"; state.devices = [owner, PHONE]; }
+      },
+      said: (text, type, answer) => {
+        typeNow = type;
+        if (text === NEXT) answer(++shows === 1 ? "y" : "n");
+      },
+    });
+    expect(out.filter((line) => line.includes("answered nothing"))).toEqual([
+      "That line answered nothing: its question is no longer asked.\n",
+      "That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n",
+    ]);
+    expect(out).not.toContain("Kept.\n");
+    expect(revoked).toEqual([PHONE.id]);
+  });
+
   it("removes that device where no answer can be typed, and says when it could not", async () => {
     const piped = await scanning({ terminal: false, step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; } });
     expect(piped.code).toBe(1);
@@ -1416,9 +1656,12 @@ describe("ovis link, on the PC itself", () => {
       },
       said: (text, _type, answer) => { if (text.includes("is not in your account. Keep that device?")) answer("n"); },
     });
-    expect(waiting.out.slice(-5)).toEqual([
+    // the first line after the question changed answers nothing (it may have been begun at the old one): asked once more
+    expect(waiting.out.slice(-7)).toEqual([
       "Hako's iPhone paired with this PC but is not signed in to an Ovis account, so this PC is in no account yet. Keep that device? [y/N] ",
       "\n",
+      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ",
+      "That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n",
       "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ",
       "Removed.\n",
       "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n",

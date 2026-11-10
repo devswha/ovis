@@ -265,6 +265,7 @@ bun scripts/docked-file-link-demo-regression.ts # File viewer on panel at 1280: 
 bun scripts/files-documents-demo-regression.ts # Files' Documents tab, always there (a stored old off ignored), at 1280 and 390, light and dark: it lists the pane folder's Markdown files newest first, the filter narrows them and Escape clears it, a row opens the file viewer, in the dialog, beside the pane at its narrowest and on a phone's sheet with the four tabs on their own row, and closing the file after a reload under the palette goes back to the pane
 bun scripts/palette-local-page-demo-regression.ts # Web links on In the app, at 1280 and 390, light and dark: the palette opens a page this PC serves by its typed address (`localhost:<port>`) beside the pane, a phone's popup closes with Back, and Close page over two stacked pages closes it, as it does after a reload under the palette, and so does closing a file docked over them; off by default, the palette offers no page
 bun scripts/theme-first-paint-demo-regression.ts # the saved theme in every painted frame before and after the app starts, root and demo builds under the app's CSP
+bun scripts/theme-file-demo-regression.ts # Settings → Appearance → Theme file at 390 and 1440, dark and light: the example of docs/themes.md is imported and drawn in the colors derived from it, the boot script alone draws it on the next launch, a built-in card takes the side back, a Base16 YAML scheme goes to its own side, a file that is no theme changes nothing, and Remove restores the built-in theme
 bun scripts/design-gate-qa.ts --out <dir> # the design gate on demo fixtures: every main surface and Settings page at 1440 and 390, light and dark, measured for contrast, target size, names, focus rings, truncation, reduced motion, overflow and overlap, font size and where PC load shows; report.json and a picture per visit, and with --baseline <report.json> it fails only on failures the baseline lacks
 bun scripts/boot-loading-demo-regression.ts # index.html's loading spinner while the app's script is held, as on a slow link: centred, stepped, still under reduced motion, gone with the app's first frame (#2329)
 bun scripts/old-safari-demo-regression.ts # a chat pane and a terminal pane draw with the built-ins iOS 16 lacks (Promise.withResolvers, AbortSignal.any, and crypto.randomUUID on plain http) taken away before the app's script runs, under the app's CSP (#2513), and again with each lookbehind handed to RegExp as text refused, as Safari before 16.4 refuses it; the build turns every regular expression with one into such a call (#2534)
@@ -803,7 +804,9 @@ after changing the staged session. Files, images, push and remote PCs are not pa
 4. Run **Actions → Release → Run workflow**, select `main`, and enter `X.Y.Z` without `v`.
    The CLI equivalent is `gh workflow run release.yml --ref main -f version=X.Y.Z`.
    Tick **revalidate** (`-f revalidate=true`) to run the whole CI in the Release run even when
-   main's own CI run already passed the commit.
+   main's own CI run already passed the commit. Run it once main's CI run of the release commit is
+   green and validation takes about four minutes (Fast checks alone); run earlier, it waits for that
+   run first.
 
 The workflow validates metadata, then requires the same unit, integration and browser checks
 as PRs to have passed on the exact `main` commit selected when the run starts. Only after that
@@ -821,15 +824,18 @@ job asks `scripts/release-ci-reuse.ts`, which says yes only when all of this hol
 
 A run still going is waited for, at most 40 minutes (main's run takes 15 to 30) and only while
 none of its jobs has ended without passing. Anything else is a no at once: no run for the commit,
-a run that waits behind another run of `main`, a third attempt, an answer from GitHub that cannot
-be read. On a no the Release run runs the whole CI itself, as it did before, and with
-**revalidate** it always does.
+a run that waits behind another run of `main`, a third attempt. An answer from GitHub that cannot
+be read is asked for twice more, five seconds apart, and is a no after the third. On a no the
+Release run runs the whole CI itself, as it did before, and with **revalidate** it always does.
 
-On a yes the Release run still runs Fast checks itself, always on GitHub's runner (**Fast checks
-(GitHub-hosted)**, the steps of `ci.yml`'s Fast checks). Main's run ran them on the self-hosted PC,
-where some unit tests skip themselves: the runner's container has no `pwsh`, no `setfacl` and no
-process of another user. Run again on GitHub's runner, those tests gate every release, and so
-does any other test that container comes to skip.
+A release that takes main's run still runs Fast checks itself, always on GitHub's runner (**Fast
+checks (GitHub-hosted)**, the steps of `ci.yml`'s Fast checks). Main's run ran them on the
+self-hosted PC, where some unit tests skip themselves: the runner's container has no `pwsh`, no
+`setfacl` and no process of another user. Run again on GitHub's runner, those tests gate every
+release, and so does any other test that container comes to skip. The job starts with the question
+about main's run, not after its answer, so its minutes do not come on top of a wait. When the
+answer is no, `ci.yml` runs Fast checks of its own and this job's outcome is not read: it may fail
+without failing the run.
 
 The **Verdict** job then names what validated the commit: `ci` when the whole CI passed in the
 Release run, or `main-run-<id>` when main's run was verified and Fast checks passed in the Release

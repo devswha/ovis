@@ -210,6 +210,29 @@ herdr mapping (`mapTheme`), including repairs the proposal tool already made, is
 `scripts/herdr-theme-overrides.ts` with its dE and reason; every entry passes AA on its
 committed hex.
 
+**Imported themes.** A theme can also come from a file the user imports in Settings → Appearance
+([docs/themes.md](docs/themes.md)): a name and the sixteen Base16 seeds of a dark side, a light
+side or both, and nothing else. No code or CSS is read from a file. The public contract is the
+seeds, not the roles above, so a role can be renamed, split or added without breaking a theme
+file. `src/lib/themeDerive.ts` derives every role, `--notice-tint`, herdr's `--indicator-*` state
+colours and a light row's ANSI colours from the seeds and holds them to
+`src/lib/themeContrast.ts`, the one list of floors `themes.contrast.test.ts` checks the built-in
+themes against: a colour under a floor keeps its hue and moves in lightness by the smallest step
+that clears it, and a surface the text could only be read on by moving far (more than dE 12 past
+reading on the background) moves toward the background instead. `--bg-hover`, the hovered and
+selected row and the terminal's selection, is never under 1.05:1 on `--bg`: one that would end
+there takes a 1.2:1 step off it instead, the built-in themes' median. Which side a block is filed
+under is told by the colours the file wrote (light text on a darker ground is dark), never by what
+the file calls it, and the row's mode by what they are once they read. A scheme that
+already reads is drawn as written.
+`settings.customThemes` holds the imported themes (12 at most) and the one chosen for each side,
+which is drawn in place of that side's `darkTheme` or `lightTheme`; those keep their value under
+it. The row is `data-palette="custom"` over the side's amber base block, with its colours set as
+custom properties on `<html>`, and a built-in row takes them off again. The design follows Warp's
+custom themes, a small file of colours the app draws its interface from; it differs in reading
+Base16, so the schemes that exist work as they are, and in checking contrast when a file is
+imported.
+
 `--bubble-border` is the edge of the chat's user bubble. It is `transparent` where `--bg-elevated`
 alone parts the bubble from `--bg`: dark amber and dark charcoal. It is `var(--border)`
 where the two surfaces sit close: every light theme (the `[data-theme="light"]` block sets it for
@@ -2612,6 +2635,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   below `420px` it leaves the header and the title's list marks the open tab.
 
 ### Chat turn (`.chat-turn`)
+- A complete Codex `visualize` reference on its own line of a chat answer is drawn as a small
+  card: the file's own name, the reference's title under it in `--text-dim`, and one button,
+  **Open preview**. The name is always the path's last part, never the title in its place; bidi
+  controls and other invisible format characters are taken out of both, and a long one is cut in
+  the middle so the file's type stays. The press opens the file in the file viewer, where an HTML
+  file is its Page view: the dialog that already exists, which holds the focus while it is open
+  and runs the page only until it is closed. The card itself looks nothing up and draws no frame.
+  An inline preview was left out on purpose. Measured in Chrome and WebKit, the Page renderer's
+  sandbox keeps a page's script from every other host by a fetch, a form, a popup or a navigation,
+  but not by WebRTC (a STUN or TURN server of its choosing; in WebKit a `preconnect` too), and the
+  script can take the keyboard focus from the app. A frame in the transcript would sit beside the
+  message box for as long as its row is drawn, and would run on a reference's word alone.
+  Every other Markdown (a prompt card, a task result, release notes, the file viewer's Preview of
+  a `.md`) keeps the reference as text. Invalid or streaming references and code examples remain
+  text. Indented under a list item, the card is drawn in that item and the list goes on after it.
+  A path that names a network share is no reference.
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
   scroll owner. The centered lane, exchange spacing and prompt portal stay separate from
   row lifetime. The list anchors prepends by a browser-local slot, never by a timestamp or
@@ -4629,11 +4668,26 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ("Reachable now: {direct} direct · {relay} via relay · {none} no answer"). Then the attention list: PCs that
   need you, most urgent first, at most three rows of state dot, name, reason (or relay / last seen
   when the reason is shared) and action, with **View all N** above when more than three need you.
-  When the rows share one reason it's said once as a caption above them ("Add window closed · an
-  account member must approve") rather than on every row. Then the PC table (below), and last the
+  When the rows share one reason it's said once as a caption above them ("Join · a device of your
+  account connected to it approves") rather than on every row. Then the PC table (below), and last the
   **Connection map**, a 44 px disclosure row that opens `#relay` with "N relays · M PCs" on its right.
-  A first-time account gets one empty state instead of the strip: an icon, one title,
-  one line ("Sign in on a PC, or scan the QR code it shows, to see it here."), **Add a PC** and **Pair with a QR or code**.
+  A first-time account gets one empty state instead of the strip: an icon, one title ("No PCs yet"),
+  then three numbered steps read from the start edge: install Ovis on the PC (the macOS or Linux
+  line and the Windows PowerShell line, each a mono box with its own **Copy**, which wraps under the
+  box where the row has no room for both and is described by the system its line is for), sign in
+  there with the same provider account as on this device, and choose Add this PC to my account. A
+  dim line under them says which sign-in this is and that GitHub and Google are separate Ovis
+  accounts until linked; an Apple account, which a PC's page cannot sign in with, is told to use a
+  linked GitHub or Google sign-in or to pair with a QR or code. Then **Check again**, **Add a PC**
+  (the one primary) and **Pair with a QR or code**. Check again reads the account's PCs at once,
+  and once more after a read that was already out; while it reads (1 s at least) it says
+  "Checking…" and stays a button, `aria-disabled`, so a keyboard's focus is not dropped. Under
+  the banner of a list that could not be read there is only the title and the two pairing
+  buttons, with the banner's **Try again**: an unread list is not known to be empty. Without an
+  account the empty state keeps one line ("Sign in on a PC, or scan the QR code it shows, to see it
+  here.") and the two buttons. None of the apps this design looks at has an account that lists PCs
+  to add, so the steps follow this app's own pieces instead: the command box with Copy of the
+  manual-update screen, and the Agents page's Check again.
 - PCs table (RelayPcTable.tsx), filtered by All / Ready / Needs you / Offline with **Check now**
   beside the filters, `--table-row-h` (44 px) rows under a 36 px head, or a two-line `<ul>` list
   on phones (768 px and under) and narrow containers. Columns: **Name** (state dot and name),
@@ -4642,7 +4696,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Open it to try again." on a `paired` or `unchecked` row where **Open** retries setup, or "Account
   setup is incomplete." otherwise, and a dim subline for a fresh Add countdown "new · {n} min
   left", "Update Ovis on it", or this device's check result after **Check now**; on a phone row a
-  closed Add window also shows "Add window closed · an account member must approve", which is the
+  closed Add window also shows "Join · a device of your account connected to it approves", which is the
   state word's `title` in the table), **Relay** (how this device reaches a paired PC right now and
   the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
   a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
@@ -4680,14 +4734,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   starts pairing at once on `/s/<id>/` (`start` -> `connecting` -> `compare`) without a second
   "Pair with {name}?" step; "Pair with {name}?" with **Pair** remains only for pairing links and QR
   codes opened from outside the dashboard (or when `sessionStorage` is blocked). **Add a
-  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs to add it to
-  your account, or pair with the QR code or pairing code it shows.") and leads to the QR and code
+  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Account, sign
+  in, then choose Add this PC to my account. It then shows here with Add.") and leads to the QR and code
   modal sheet (`PairQrDialog`, over the scrimmed inert dashboard), whose QR and code screens name
   only the current path ("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay
   and scan the QR code." and "On the PC, open Settings → Devices and PCs → Add a connection → Ovis
   relay and type the code it shows."). The sheet drives the
-  shell's existing join, Pair, match and Cancel; failure stays in the sheet in the shell's own
-  words, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
+  shell's existing join, Pair, match and Cancel; failure stays in the sheet, in words of the sheet's
+  own flow where the cause differs from a pairing link's (a new PC that is no longer waiting says
+  to keep its Account screen open; a join nobody approved says to open the PC on a device that
+  already uses it, or to pair with a QR or code), each with **Try again**, and in the shell's own
+  words otherwise, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
   at once when local pairing finishes ("{name} is ready to open on this device." with **Open PC**),
   without waiting on account enrollment. While account enrollment runs (`enrollment: "pending"`),
   `EnrollmentStatus` shows a spinner and "Adding it to your account…"; when enrollment finishes, it
