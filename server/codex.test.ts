@@ -1694,6 +1694,18 @@ describe("a Codex pane whose last answer the screen never shows whole (#3262 cas
     expect(footedTailTranscript(screen, moved, owners)).toBeNull();
   });
 
+  it("counts what another candidate said as Codex draws it: a fence's language is in its read, not on screen", () => {
+    // an answer that ends on a short fenced block: the last 160 letters and digits shown run across the fence line
+    const answer = "Run the fast checks from the repository root before every push, with a temp folder of your own:\n\n```bash\nmkdir -p $HOME/.cache/ovis-tmp/checks && TMPDIR=$HOME/.cache/ovis-tmp/checks bun run check fast\n```";
+    const screen = codexTurnScreen("How do I run the fast checks?", ["• Run the fast checks from the repository root before every push, with a temp folder of your own:", "",
+      "  mkdir -p $HOME/.cache/ovis-tmp/checks && TMPDIR=$HOME/.cache/ovis-tmp/checks bun run check fast"]);
+    const own = [{ path, text: finishedOn(answer) }];
+    expect(footedTailTranscript(screen, own, owners)).toBe(path);
+    // an earlier answer of another conversation, and one another folder's conversation ended on
+    expect(footedTailTranscript(screen, [...own, elsewhere({ type: "agent_message", message: answer })], both)).toBeNull();
+    expect(footedTailTranscript(screen, [...own, { path: other, text: finishedOn(answer) }], owners)).toBeNull();
+  });
+
   it("never takes a conversation that is not this folder's: one only a title or herdr's report offered", () => {
     expect(footedTailTranscript(codexTurnScreen(null, tail), candidates, new Set())).toBeNull();
   });

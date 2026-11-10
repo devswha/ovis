@@ -2687,13 +2687,14 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     expect(await resolve()).toBe(fileB);
   });
 
-  it("binds a fresh pane to its own conversation, never the one its prompt only quotes, and keeps it on a read that proves nothing", async () => {
+  it("binds a fresh pane to its own conversation, never the one its prompt only quotes, and keeps it while its next turn runs", async () => {
     const fileB = quotedInPrompt();
     foreground = fresh(2147483502);
     screen = quoteScreen();
     // its own short answer below the prompt it was asked tells (case 2); the quoted answer above it tells nothing
     const first = await resolve();
-    // a tool run under way
+    // its next turn under way, a tool running: the screen proves nothing, and B records the turn begun
+    appendFileSync(fileB, `${[{ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }, { type: "event_msg", payload: { type: "user_message", message: "Now run the whole suite" } }].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     screen = [...wrapped("› ", "Now run the whole suite"), "", "• Running bun test ./server", "  └ 164 pass", "    0 fail", "", "• Working (41s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj · Write a script", "  ← for agents · ? for shortcuts"].join("\n");
     expect([first, await resolve()]).toEqual([fileB, fileB]);
   });
@@ -2770,13 +2771,93 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
   const scriptPrompt = "Print a Python script of about 60 lines in one fenced code block and nothing else.";
   const scrolled = () => [...script.split("\n").slice(-30).map((line) => `  ${line}`), "", footer, ...idle].join("\n");
 
-  it("binds a conversation whose 60-line code block has scrolled its head off the screen, and keeps it when the screen no longer tells", async () => {
+  it("binds a conversation whose 60-line code block has scrolled its head off the screen, and keeps it while its next turn runs", async () => {
     finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
     foreground = fresh(2147483510);
     screen = scrolled();
     expect(await resolve()).toBe(path);
-    screen = "";
+    // its next turn under way: the footer has a prompt below it now, and the rollout records the turn begun
+    const records = (...payloads: Record<string, unknown>[]) => `${payloads.map((payload) => JSON.stringify({ type: "event_msg", payload })).join("\n")}\n`;
+    appendFileSync(path, records({ type: "task_started", turn_id: "turn-1" }, { type: "user_message", message: "Now rename every variable" }));
+    const working = [...script.split("\n").slice(-10).map((line) => `  ${line}`), "", footer, "", "› Now rename every variable", "", "• Working (12s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
+    screen = working;
     expect(await resolve()).toBe(path);
+    // interrupted: no turn runs, and the screen proves nothing: what the last turn alone tied holds no longer
+    appendFileSync(path, records({ type: "turn_aborted", turn_id: "turn-1" }));
+    screen = working.replace("• Working (12s • esc to interrupt)", "■ Conversation interrupted - tell the model what to do differently.");
+    expect(await resolve()).toBeNull();
+  });
+
+  // an answer that ends on a short fenced block with a language: Codex draws the code, not the fence line (the adversarial review's F1)
+  const fencedPrompt = "How do I run the fast checks?";
+  const fenced = "Run the fast checks from the repository root before every push, with a temp folder of your own:\n\n```bash\nmkdir -p $HOME/.cache/ovis-tmp/checks && TMPDIR=$HOME/.cache/ovis-tmp/checks bun run check fast\n```";
+  const fencedScreen = () => [...header(), `› ${fencedPrompt}`, "", "",
+    "• Run the fast checks from the repository root before every push, with a temp folder of your own:", "",
+    "  mkdir -p $HOME/.cache/ovis-tmp/checks && TMPDIR=$HOME/.cache/ovis-tmp/checks bun run check fast", "", footer, ...idle].join("\n");
+  /** A thread's records for one finished turn, as conversationB writes them, for a thread of another folder. */
+  const finishedRecords = (prompt: string, reply: string) => [
+    { type: "event_msg", payload: { type: "user_message", message: prompt } },
+    { type: "event_msg", payload: { type: "item_completed", turn_id: "turn-0", item: { type: "UserMessage", content: [{ type: "input_text", text: prompt }] } } },
+    { type: "event_msg", payload: { type: "agent_message", message: reply } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: "turn-0", last_agent_message: reply } },
+  ];
+
+  it("binds an answer that ends in a fenced block under its bullet, whose fence line Codex does not draw", async () => {
+    finishedRollout(path, thread, [[fencedPrompt, fenced]]);
+    foreground = fresh(2147483520);
+    screen = fencedScreen();
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("binds no fenced answer a conversation of another folder that Codex has loaded ended on too, whatever the fence's language", async () => {
+    finishedRollout(path, thread, [["Something else entirely, asked long before", "An earlier answer of this folder's conversation."], [fencedPrompt, fenced]]);
+    // the pane resumed X of another folder through the picker: its read holds "…own:```bash mkdir…", the screen "…own: mkdir…"
+    const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f77";
+    elsewhereThread(elsewhere, finishedRecords(fencedPrompt, fenced));
+    foreground = [{ pid: 2147483521, argv: ["codex", "resume", "--all"] }];
+    screen = fencedScreen();
+    await loaded(elsewhere);
+    expect(await resolve()).toBeNull();
+  });
+
+  it("binds no fenced answer the conversation the pane's title names, of another folder, ended on too", async () => {
+    finishedRollout(path, thread, [[fencedPrompt, fenced]]);
+    const fileX = otherFolderThread([]);
+    appendFileSync(fileX, `${finishedRecords(fencedPrompt, fenced).map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    foreground = [{ pid: 2147483522, argv: ["codex", "resume", "--all"] }];
+    title = shortened;
+    screen = fencedScreen();
+    expect(await resolve()).toBeNull();
+  });
+
+  it("answers the thread the command line resumed, of another folder, when this folder's ended on the same answer", async () => {
+    finishedRollout(path, thread, [[fencedPrompt, fenced]]);
+    const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f79";
+    const fileX = elsewhereThread(elsewhere, finishedRecords(fencedPrompt, fenced));
+    foreground = [{ pid: 2147483523, argv: ["codex", "resume", elsewhere] }];
+    screen = fencedScreen();
+    // the screen cannot tell the two apart, and the command line names X
+    expect(await resolve()).toBe(fileX);
+    // nor does a short last turn both ended on
+    finishedRollout(path, thread, [["thanks", "You're welcome!"]]);
+    writeFileSync(fileX, `${[{ type: "session_meta", payload: { id: elsewhere, cwd: join(root, `elsewhere-${elsewhere.slice(-4)}`), source: "cli" } }, ...finishedRecords("thanks", "You're welcome!")].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    foreground = [{ pid: 2147483524, argv: ["codex", "resume", elsewhere] }];
+    screen = [...header(), "› thanks", "", "", "• You're welcome!", "", footer, ...idle].join("\n");
+    expect(await resolve()).toBe(fileX);
+  });
+
+  it("binds no scrolled answer of the parent while the pane's own conversation is a fork whose history was not read (the adversarial review's F2)", async () => {
+    // A (another pane's): the parent; X (this pane's): the fork, nothing of its own yet, its earlier rollout not found
+    conversationB([["Print the script", `\`\`\`python\n${script}\n\`\`\``]]);
+    writeFileSync(path, `${JSON.stringify({ type: "session_meta", payload: { id: thread, cwd: root, history_base: { thread_id: "01a0c7a1-56d9-7e20-9f08-cccccccccccc", end_ordinal_exclusive: 6, end_byte_offset: 4000 } } })}\n`);
+    foreground = fresh(2147483525);
+    // a fork's screen shows what its parent said
+    screen = scrolled();
+    const first = await resolve();
+    // the fork goes on: its own first turn is under way
+    appendFileSync(path, `${[{ type: "event_msg", payload: { type: "task_started", turn_id: "x1" } }, { type: "event_msg", payload: { type: "user_message", message: "Now rename every variable" } }].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    screen = [...script.split("\n").slice(-10).map((line) => `  ${line}`), "", footer, "", "› Now rename every variable", "", "• Working (12s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
+    expect([first, await resolve()]).toEqual([null, null]);
   });
 
   it("binds no scrolled answer two conversations of the folder ended on, nor one another's tool printed", async () => {
@@ -2898,9 +2979,69 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     writeRollout(path, thread, turn("t1", asked, "ok"));
     screen = footed([`› ${asked}`], ["• ok"]);
     expect(await resolve()).toBe(path);
-    // the next turn under way: no footer under it yet, and the binding holds
+    // the next turn under way: no footer under it yet, the rollout records it begun, and the binding holds
+    appendFileSync(path, `${turn("t2", "And now the word done.", "", false).slice(0, 2).map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     screen = `${screen.split("› Ask Codex")[0]}› And now the word done.\n\n• Working (2s • esc to interrupt)\n\n› Ask Codex to do anything\n\n  GPT-6-Luna low · /tmp/proj\n  ← for agents · ? for shortcuts`;
     expect(await resolve()).toBe(path);
+    // and serves no background reader: only the chat's lookup reads the screen that says whether it still holds
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+  });
+
+  it("takes no short answer for a pane whose command line resumed a thread the store does not hold", async () => {
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    // the thread it was started on may be the one shown, and cannot be weighed
+    foreground = [{ pid: 2147483644, argv: ["/usr/bin/codex", "resume", "01a0c7a1-56d9-7e20-9f08-eeeeeeeeeeee"] }];
+    expect(await resolve()).toBeNull();
+    foreground = [{ pid: 2147483643, argv: ["/usr/bin/codex"] }];
+    expect(await resolve()).toBe(path);
+  });
+
+  it("leaves a long answer's binding as it was when a short turn follows: kept when the screen no longer tells", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t0", "Explain which conversation this pane shows", answer));
+    screen = footed(["› Explain which conversation this pane shows"], [`• ${answer}`]);
+    expect(await resolve()).toBe(path);
+    appendFileSync(path, `${turn("t1", asked, "ok").map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBe(path);
+    // no turn runs and the screen proves nothing: the long answer's binding holds as it always did
+    screen = "";
+    expect(await resolve()).toBe(path);
+    expect(await codexOpenRollout(root, root, home)).toBe(path);
+  });
+
+  // a resume in the same TUI opens another conversation without a new thread (the adversarial review's F3)
+  it("drops what a short turn tied once the pane shows another conversation of its TUI that no path reads", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    // B: its last answer is a list with emphasis, longer than the screen: no path reads it
+    const items = Array.from({ length: 50 }, (_, at) => `- **step ${at}** checks region ${at} and reports its checksum`);
+    const fileB = folderThread(otherThread, turn("b1", "List the fifty rollout steps.", items.join("\n")));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    const got = [await resolve()];
+    // /resume opens B: its history is replayed, its last turn footed, the composer idle
+    const replayed = [...items.slice(-30).map((item) => `  ${item.replaceAll("**", "")}`), "", "  Worked for 9s • Nov 9 at 7:05 PM"];
+    screen = [...replayed, "", "", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
+    got.push(await resolve());
+    // then B's next turn is under way
+    appendFileSync(fileB, `${turn("b2", "And which step is the slowest?", "", false).slice(0, 2).map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    screen = [...replayed.slice(-12), "", "› And which step is the slowest?", "", "• Working (3s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
+    got.push(await resolve());
+    expect(got).toEqual([path, null, null]);
+  });
+
+  heldIt("follows the TUI from what a short turn tied to a loaded conversation of another folder (the adversarial review's F3b)", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    const fileX = otherFolderThread();
+    screen = footed([`› ${asked}`], ["• ok"]);
+    const got = [await resolve()];
+    // /resume → the other folder's conversation (#896): Codex has it loaded, and its answer shows
+    await loaded(other);
+    screen = `• ${otherAnswer}`;
+    got.push(await resolve(), await resolve());
+    expect(got).toEqual([path, fileX, fileX]);
   });
 
   it("binds past a Stop hook's message under the answer and a hint row a split pane cuts", async () => {
