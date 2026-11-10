@@ -20,6 +20,12 @@ import type { EditableText } from "../shared/files.ts";
  * long-task deadline (`FILE_LONG_TASK_DEADLINE_MS`, 15 s), so its one scan thread is free by then.
  */
 const CLAUDE_TASKS_READ_MS = 10_000;
+/**
+ * How long a Letta transcript is scanned for one call's output: under the pool's long deadline, so a
+ * scan on a slow disk gives its thread back about when its request is refused, not at the end of
+ * the file. Scans run one at a time, and the next waits for this thread.
+ */
+const LETTA_OUTPUT_READ_MS = 10_000;
 
 /**
  * What a file thread (`file-pool.ts`) does: each synchronous filesystem step of the file routes,
@@ -101,7 +107,7 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "walk": return walkFiles(task.cwd);
     case "documents": return readMarkdownDocuments(task.cwd, task.paths, task.budgetMs);
     case "agy-catalog": return [...agyCatalog(task.path)];
-    case "letta-output": return lettaToolOutputIn(task.path, task.ref, task.file, task.max);
+    case "letta-output": return lettaToolOutputIn(task.path, task.ref, task.file, task.max, LETTA_OUTPUT_READ_MS);
     case "claude-tasks": return wholeClaudeSubagents(task.path, task.live, Date.now(), task.since, Date.now() + CLAUDE_TASKS_READ_MS, Date.now, task.history ?? null);
     case "commands": return paneCommands(task.agent, task.cwd, task.home, task.roots, task.version, task.serverEnv);
     case "render": return render(task.path, task.media, task.within ?? null);

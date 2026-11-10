@@ -122,6 +122,9 @@ describe("Letta transcript", () => {
     expect(tool).toMatchObject({ kind: "tool", output_ref: "Bash-1-1", output_size: long.length });
     expect(lettaToolOutput(path, "Bash-1-1")).toBe(long);
     expect(lettaToolOutput(path, "Bash-9-9")).toBeNull();
+    // past its time limit a scan reads no further and answers as for a call it did not find: its thread is free again
+    expect(lettaToolOutput(path, "Bash-1-1", Date.now() - 1)).toBeNull();
+    expect(lettaToolOutput(path, "Bash-1-1", Date.now() + 60_000)).toBe(long);
     // a link put where the transcript was is not followed
     const link = join(root, "linked.jsonl");
     symlinkSync(path, link);

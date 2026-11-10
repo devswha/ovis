@@ -108,10 +108,12 @@ function resultIn(line: Buffer, id: Buffer, ref: string): string | undefined {
 /**
  * The whole result of one call, by the `source_line_id` of its entry. Synchronous, and one long line
  * is joined, decoded and parsed whole: a request runs it on a file thread (lettaToolOutputOffThread),
- * never on the server's. ponytail: reads the transcript from the start on each request; read backwards
- * from the end if they grow large.
+ * never on the server's. Past `until` it stops between two reads and answers null, as for a call it
+ * did not find: a scan whose request was refused meanwhile must not keep its thread to the end of a
+ * slow file. ponytail: reads the transcript from the start on each request; read backwards from the
+ * end if they grow large.
  */
-export function lettaToolOutput(path: string, ref: string): string | null {
+export function lettaToolOutput(path: string, ref: string, until = Number.POSITIVE_INFINITY): string | null {
   const id = Buffer.from(JSON.stringify(ref));
   let fd: number;
   // never through a link put where the transcript was, never waiting on a FIFO
@@ -124,7 +126,7 @@ export function lettaToolOutput(path: string, ref: string): string | null {
     // when the newline comes, as joining what was read so far at every read copied a long line over and
     // over (a 64 MiB one took about 3 s, #3326)
     let pieces: Buffer[] = [];
-    for (let position = 0, got = 0; position < TOOL_OUTPUT_SCAN_BYTES && (got = readSync(fd, chunk, 0, chunk.length, position)) > 0; position += got) {
+    for (let position = 0, got = 0; position < TOOL_OUTPUT_SCAN_BYTES && Date.now() < until && (got = readSync(fd, chunk, 0, chunk.length, position)) > 0; position += got) {
       const read = chunk.subarray(0, got);
       let start = 0;
       for (let end = read.indexOf(0x0a); end >= 0; end = read.indexOf(0x0a, start)) {
@@ -145,10 +147,11 @@ export function lettaToolOutput(path: string, ref: string): string | null {
  * What a file thread runs for lettaToolOutputOffThread: the result lettaToolOutput finds in the file
  * `file` names at `path`, cut to `max` characters. An open that finds another file there answers
  * nothing (readBound, bound here: each thread has its own bindings), and the cut is made here, so no
- * more than a page of output is copied to the server's thread.
+ * more than a page of output is copied to the server's thread. It reads for `budgetMs` at most.
  */
-export function lettaToolOutputIn(path: string, ref: string, file: FileIdentity, max: number): string | null {
-  const output = readBound([[path, file]], () => lettaToolOutput(path, ref));
+export function lettaToolOutputIn(path: string, ref: string, file: FileIdentity, max: number, budgetMs: number): string | null {
+  const until = Date.now() + budgetMs;
+  const output = readBound([[path, file]], () => lettaToolOutput(path, ref, until));
   return output !== null && output.length > max ? `${output.slice(0, max)}\n… trimmed` : output;
 }
 

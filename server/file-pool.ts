@@ -188,7 +188,10 @@ function mayRun(task: FileTask): boolean {
   // a Markdown listing (GET /api/pane/docs) has one thread of its own: a stuck one never holds a commands scan's
   if (task.op === "documents") return ![...threads].some((thread) => thread.pending?.task.op === "documents");
   // a Letta transcript's scan (GET /api/pane/conversation/tool-output) reads up to 256 MiB, and past its
-  // deadline keeps its thread until it returns: one at a time, so long ones hold a single thread (#3326)
+  // deadline keeps its thread until it returns: one at a time, so long ones hold a single thread (#3326).
+  // With it the capped kinds can hold every thread of a pool of four at once (two scans, a Markdown
+  // listing and this one), where one was always left before: that takes three stalled disks at a time,
+  // and this scan stops reading at its own time limit (file-tasks.ts)
   if (task.op === "letta-output") return ![...threads].some((thread) => thread.pending?.task.op === "letta-output");
   if (task.op !== "commands" && task.op !== "claude-tasks") return true;
   let scanning = 0;
