@@ -689,6 +689,87 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     } finally { setSystemTime(); }
   });
 
+  /** A server that starts with the pane at rest: herdr's idle is read from a snapshot, and none of its rest words was heard in an event. */
+  const restarted = async (drained: string[] = []) => {
+    const old = await workingClaude();
+    old.rest();
+    const h = hub(old.path, undefined, (paneId) => { drained.push(paneId); });
+    h.herdrSays(old.pane);
+    handlers.onBaseline([old.pane]);
+    await h.snapshot();
+    h.poll();
+    return { ...h, path: old.path, pane: old.pane, next: old.next };
+  };
+
+  it.each(["after the fire was read", "before the fire was written"] as const)("keeps the queue held through herdr's late words for the turn before the fire on a server that heard no rest word of herdr's in an event, its working heard %s", async (heard) => {
+    const h = await restarted();
+    const id = h.pane.pane_id;
+    queue(h);
+    expect(h.pending.next(id)).not.toBeNull();
+    // Given a short turn of the person's and its rest, written before herdr tells that turn.
+    h.next();
+    turnEnds(h);
+    if (heard === "after the fire was read") {
+      fires(h.path); h.poll();
+      expect(h.status.queueHeld(id)).toBe(true);
+    }
+    // When herdr's working for the short turn comes late, with the wakeup's fire written before it or right after.
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    handlers.onStatus(id, "working", "claude");
+    if (heard === "before the fire was written") { fires(h.path); h.poll(); }
+    // And herdr's idle word for the short turn follows.
+    h.herdrSays(h.pane);
+    handlers.onStatus(id, "idle", "claude");
+    // Then that working, which no rest word of herdr's placed, told nothing of the wakeup's turn: the message does not go into it.
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+    // And the wakeup turn's rest lets it go.
+    turnEnds(h); h.poll();
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
+  it("leaves the first wakeup after a server start to its turn's rest or its time though herdr tells that turn, and goes by herdr's word again from herdr's next rest word", async () => {
+    const drained: string[] = [];
+    const h = await restarted(drained);
+    const id = h.pane.pane_id;
+    queue(h);
+    fires(h.path); h.poll();
+    expect(h.status.queueHeld(id)).toBe(true);
+    // Given herdr's working for the wakeup's own turn: with no rest word of herdr's heard in an event, it may as well
+    // be a late one for the turn before, so it ends nothing.
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    handlers.onStatus(id, "working", "claude");
+    expect(h.pending.next(id)).toBeNull();
+    // When that turn is interrupted, which writes no rest, and herdr says the pane does no work.
+    h.herdrSays(h.pane);
+    handlers.onStatus(id, "idle", "claude");
+    // Then the message waits out the fire's time.
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+    const from = Date.now();
+    try {
+      const told = drained.length;
+      setSystemTime(from + 60_000);
+      expect(h.status.queueHeld(id)).toBe(false);
+      h.poll();
+      // And the queue is told with no status event, so the message goes.
+      expect(drained.slice(told)).toEqual([id]);
+      expect(h.pending.next(id)).not.toBeNull();
+      // The next wakeup, minutes later: herdr's working for its turn is placed by that idle word, heard in an event.
+      fires(h.path, at + 4000 + 5 * 60_000); h.poll();
+      expect(h.status.queueHeld(id)).toBe(true);
+      h.herdrSays({ ...h.pane, agent_status: "working" });
+      handlers.onStatus(id, "working", "claude");
+      expect(h.pending.next(id)).toBeNull();
+      // So when that turn is interrupted too, herdr's idle word lets the message go at once.
+      h.herdrSays(h.pane);
+      handlers.onStatus(id, "idle", "claude");
+      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.pending.next(id)).not.toBeNull();
+    } finally { setSystemTime(); }
+  });
+
   it("holds the queue on the second of two loops due together, whose prompt follows the first loop turn's rest with no fire", async () => {
     const h = await rested();
     const id = h.pane.pane_id;

@@ -1526,16 +1526,13 @@ export type BusySource = "herdr" | "chat";
 /**
  * A busy signal, and what places its turn in the transcript: for a chat send, when its Enter was
  * sent (`sentAt`; Claude dates the entry it writes for it no earlier); for herdr's, the
- * transcript's size at herdr's last word that the pane did no work (`quiet`).
- * `again`: herdr's working heard with its last word at working already, so with no rest word to
- * place it. The same word a second time (a snapshot read the change, then its event came), or a
- * turn begun under the subagents' spinner: it is matched as any other, but may be of a turn told
- * before, and tells nothing of a self-resumed turn (Claim.from).
+ * transcript's size at herdr's last word that the pane did no work, heard in an event (`quiet`).
+ * herdr's working that has no such word is loose (match).
  */
-interface Signal { source: BusySource; at: number; sentAt?: number; quiet?: { id: string; size: number }; again?: true }
+interface Signal { source: BusySource; at: number; sentAt?: number; quiet?: { id: string; size: number } }
 
-/** A signal whose turn is not written yet: the first one begun past `size` is its own. `again`: as the signal's. */
-interface Barrier { size: number; at: number; again?: true }
+/** A signal whose turn is not written yet: the first one begun past `size` is its own. `loose`: as the signal was (match). */
+interface Barrier { size: number; at: number; loose?: true }
 
 /**
  * How long a signal holds the pane shown working while its turn is not written. Claude writes a
@@ -1552,7 +1549,8 @@ const BUSY_HOLD_MS = 5000;
  * `from`: the transcript's size when the signal `turn` was matched to was heard. One heard before a
  * rest was written may be of the turn that rest ended, though the turn it took began after it
  * (settle): it tells nothing of that turn (ClaudeSubagentStatus.poll, a self-resumed turn's hold).
- * -1 for a signal that may be of a turn told before, whenever it was heard (Signal.again).
+ * -1 for herdr's working that no rest word of herdr's placed, whenever it was heard (`loose`, match).
+ * Only herdr's is read.
  */
 interface Claim { turn: number; from: number; barriers: Barrier[]; held: Barrier[] }
 
@@ -1652,13 +1650,15 @@ export class ClaudeSubagentStatus {
   /**
    * A `/loop` wakeup fired and herdr has not told the turn it resumed: the pane's queue holds, whatever
    * herdr reads the pane as. Until that turn's rest is written, herdr's working tells that turn or one
-   * after it (busy; its working for a turn before the fire, come late, ends nothing, nor does that
-   * word heard a second time, nor one heard before the rest the fire followed), or LOOP_HOLD_MS
-   * passed; never by herdr reading the pane at rest (quiet), which it does until it reads the turn.
+   * after it (busy; its working for a turn before the fire, come late, ends nothing, nor does one
+   * heard before the rest the fire followed), or LOOP_HOLD_MS passed; never by herdr reading the pane
+   * at rest (quiet), which it does until it reads the turn.
    * A late working is told from the wakeup's own only by where herdr's rest word before it, heard in
-   * an event, stood in the transcript. With no such word to place it (after a server start, a rest
-   * read only from a snapshot), or with herdr a whole turn behind, it can be taken for the wakeup's:
-   * herdr's rest word after it then lets the queue go while the resumed turn runs.
+   * an event, stood in the transcript. With no such word to place it (loose: after a server start, a
+   * rest read only from a snapshot, the same word a second time) herdr's working ends nothing: the
+   * turn's rest or the time does. With herdr a whole turn behind, that rest word come late too, a
+   * late working can still be taken for the wakeup's, and herdr's rest word after it then lets the
+   * queue go while the resumed turn runs.
    */
   loopHolds(paneId: string): boolean {
     const since = this.panes.get(paneId)?.turns?.loop.since ?? null;
@@ -1686,7 +1686,7 @@ export class ClaudeSubagentStatus {
     const tracked = this.panes.get(paneId);
     const signal: Signal = { source, at: this.now(), ...(sentAt !== undefined ? { sentAt } : {}) };
     if (source === "herdr" && tracked) {
-      if (tracked.works === true) signal.again = true;
+      // a rest word of herdr's places one working: the same word heard once more has none, and is loose (match)
       if (tracked.quiet && tracked.quiet.path === tracked.path) signal.quiet = { id: tracked.quiet.id, size: tracked.quiet.size };
       delete tracked.quiet;
       tracked.works = true;
@@ -1696,14 +1696,14 @@ export class ClaudeSubagentStatus {
     // the signal's own read, ahead of the poll that would take a turn it finds at rest for history
     const parent = turns && size?.id === turns.id ? scanParent(turns.path) : null;
     if (turns && parent?.id === turns.id) {
-      const told = match(turns, parent, signal, size!.size);
+      const { turn: told, loose } = match(turns, parent, signal, size!.size);
       // herdr's working with a /loop fire already written tells the turn it resumed, or one not written yet
       // (null): the queue goes by herdr's status from here. Not one matched to a turn begun before the
       // fire: herdr's words for the turn before it can come after the fire was written, and its rest
-      // word next would let queued input into the turn the wakeup resumed. Nor that word heard once
-      // more (`again`), which nothing places before the fire: the hold stands until herdr's working
-      // after a rest word of its own, the turn's rest, or its time
-      if (source === "herdr" && !signal.again && (told === null || told >= (parent.loopAt ?? -1))) turns.loop = { fire: Math.max(turns.loop.fire, parent.loopAt ?? -1), since: null };
+      // word next would let queued input into the turn the wakeup resumed. Nor one that no rest word
+      // of herdr's places (`loose`), which is matched to the fire's turn only for want of another: the
+      // hold stands until herdr's working after a rest word of its own, the turn's rest, or its time
+      if (source === "herdr" && !loose && (told === null || told >= (parent.loopAt ?? -1))) turns.loop = { fire: Math.max(turns.loop.fire, parent.loopAt ?? -1), since: null };
     }
     // a pane whose transcript is not found yet keeps its latest signals, not every one
     else this.deferred.set(paneId, [...(this.deferred.get(paneId) ?? []).slice(-15), signal]);
@@ -1813,8 +1813,8 @@ export class ClaudeSubagentStatus {
     // the count it had goes on from here: another session with none says so at the next poll
     // so does what was told of a /loop fire's hold: one that ran out meanwhile is told at the next poll, as no status event may be;
     // and herdr's last word, which is of the pane. Where its rest word stood in the transcript goes on with the turns it
-    // places a working word among (busy): looked up again without it, herdr's late working for a turn before a /loop fire
-    // would be taken for the fire's own. Not into another process's lifetime, whose turns are matched anew
+    // places a working word among (busy): looked up again without it, herdr's working for a /loop wakeup's own turn
+    // would be placed by nothing, and end no hold. Not into another process's lifetime, whose turns are matched anew
     this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, looping: current?.looping, works: current?.works, restedOnWork: sameLife && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, quiet: reset ? undefined : current?.quiet, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
@@ -1887,6 +1887,8 @@ export class ClaudeSubagentStatus {
           // That working was heard with the rest before the fire written. One heard before that rest,
           // which waited and took the fire's turn as the first begun past it, is of the turn that rest
           // ended: herdr's rest word for that one, next, must let nothing into the turn the fire resumed.
+          // Nor did a working that no rest word of herdr's placed tell that turn (Claim.from): it may be
+          // a late one for a turn at rest before the fire.
           // One the transcript's first read finds written holds by its own age (foundFiring)
           if (parent.loopAt === null) turns.loop.since = null;
           else if (parent.loopAt > turns.loop.fire) {
@@ -1954,18 +1956,25 @@ const startsFor = (parent: Parent, source: BusySource): Start[] => source === "c
  * for a chat send, the first begun since its Enter; for herdr's, the first begun past herdr's last
  * word that the pane did no work; with nothing to place it, the turn going on if no signal told
  * it (for a chat send with no time, the latest no signal told and no poll saw at rest). Otherwise
- * its turn is not written yet, and it waits for it. Returns where the turn it was matched to began,
- * null while it waits.
+ * its turn is not written yet, and it waits for it. Returns where the turn it was matched to began
+ * (`turn`, null while it waits), and whether no rest word of herdr's places it in this transcript
+ * (`loose`). For herdr's working that is: none was heard in an event since its working before (the
+ * server just started, its rest was read only from a snapshot, the pane's session was reset), or
+ * its last word was working already (the same word a second time, as a snapshot read the change
+ * and then its event came; a turn begun under the subagents' spinner). It is matched as any other,
+ * but may be a late word for a turn that came to rest before: it tells nothing of a self-resumed
+ * turn (Claim.from, ClaudeSubagentStatus.busy).
  */
-function match(turns: Turns, parent: Parent, signal: Signal, size: number): number | null {
+function match(turns: Turns, parent: Parent, signal: Signal, size: number): { turn: number | null; loose: boolean } {
   settle(turns, parent, null);
   const claim = turns[signal.source];
   const other = turns[signal.source === "herdr" ? "chat" : "herdr"];
   const starts = startsFor(parent, signal.source);
+  const loose = signal.quiet?.id !== parent.id;
   let start: Start | undefined;
   if (claim.barriers.length === 0) {
     if (signal.sentAt !== undefined) start = starts.find((each) => each.end > claim.turn && each.at !== null && each.at >= signal.sentAt!);
-    else if (signal.quiet?.id === parent.id) start = starts.find((each) => each.end > Math.max(claim.turn, signal.quiet!.size));
+    else if (!loose) start = starts.find((each) => each.end > Math.max(claim.turn, signal.quiet!.size));
     else {
       const floor = Math.max(claim.turn, turns.retired, other.turn);
       // herdr's working with nothing to place it may be the next turn's, before its first entry: a
@@ -1975,9 +1984,9 @@ function match(turns: Turns, parent: Parent, signal: Signal, size: number): numb
       else if (parent.turnOpen) start = lastStart(starts, (each) => each.turn && each.end > floor && each.end === turnAt(parent));
     }
   }
-  if (start !== undefined) { claim.turn = start.end; claim.from = signal.again ? -1 : size; }
-  else claim.barriers.push({ size, at: signal.at, ...(signal.again ? { again: true as const } : {}) });
-  return start?.end ?? null;
+  if (start !== undefined) { claim.turn = start.end; claim.from = loose ? -1 : size; }
+  else claim.barriers.push({ size, at: signal.at, ...(loose ? { loose: true as const } : {}) });
+  return { turn: start?.end ?? null, loose };
 }
 
 /** Each waiting signal takes the first turn begun past it; one that waited BUSY_HOLD_MS began none (`now`). */
@@ -1989,7 +1998,7 @@ function settle(turns: Turns, parent: Parent, now: number | null): void {
       const start = startsFor(parent, source).find((each) => each.end > floor);
       if (start === undefined) break;
       claim.turn = start.end;
-      claim.from = barrier.again ? -1 : barrier.size;
+      claim.from = barrier.loose ? -1 : barrier.size;
       claim.barriers.shift();
     }
     if (now !== null) {

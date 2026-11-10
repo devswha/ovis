@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -1245,32 +1245,53 @@ describe("ClaudeSubagentStatus", () => {
         const { status, told } = await tracked(s);
         try {
           expect(status.loopHolds("p1")).toBe(true);
-          if (end === "rest") { rest(s, 3); status.poll(); } else status.busy("p1", "herdr");
+          // herdr's working after a rest word of its own, heard in an event since the server started, which places it past the fire
+          if (end === "rest") { rest(s, 3); status.poll(); } else { status.quiet("p1", true); status.busy("p1", "herdr"); }
           expect(status.loopHolds("p1")).toBe(false);
           expect(told).toEqual([true, false]);
         } finally { status.stop(); }
       }
     });
 
-    it("holds nothing on a fire found at the first read when herdr told its turn before the pane's transcript was found", async () => {
-      const s = session();
-      s.prompt(1);
-      rest(s, 2);
-      firedAt(s, NOW - 1000);
-      let found = false;
-      let now = NOW;
-      const status = new ClaudeSubagentStatus({ resolve: async () => found ? { path: s.path, startedAt: null } : null, onChange: () => undefined, now: () => now });
-      await status.refresh([pane("p1", "claude")]);
-      try {
-        // herdr reads the pane at work while its session is still looked for
-        status.busy("p1", "herdr");
-        found = true;
-        now += 5000;
-        await status.refresh([pane("p1", "claude")]);
-        expect(status.sessionOf("p1")?.path).toBe(s.path);
-        // that word, kept through the lookup and matched at the first read to the turn the fire began, told it: the queue goes by herdr's status
-        expect(status.loopHolds("p1")).toBe(false);
-      } finally { status.stop(); }
+    it("holds on a fire found at the first read though herdr said the pane works since the server started: no rest word of herdr's places that word", async () => {
+      for (const heard of ["before the pane's transcript was found", "after its first read"] as const) {
+        for (const end of ["herdr", "rest", "time"] as const) {
+          const s = session();
+          s.prompt(1);
+          rest(s, 2);
+          firedAt(s, NOW - 1000);
+          let found = heard === "after its first read";
+          let now = NOW;
+          const told: boolean[] = [];
+          const status: ClaudeSubagentStatus = new ClaudeSubagentStatus({ resolve: async () => found ? { path: s.path, startedAt: null } : null, onChange: () => { told.push(status.loopHolds("p1")); }, now: () => now });
+          await status.refresh([pane("p1", "claude")]);
+          try {
+            // herdr's rest read from a snapshot places nothing: only one heard in an event stands at a known place
+            status.quiet("p1", false);
+            // herdr says the pane works: its word for the wakeup's turn, or a late one for the turn before the fire
+            status.busy("p1", "herdr");
+            if (!found) {
+              // heard while the pane's session was still looked for, and kept through the lookup
+              found = true;
+              now += 5000;
+              await status.refresh([pane("p1", "claude")]);
+              expect(status.sessionOf("p1")?.path).toBe(s.path);
+            }
+            // nothing tells which: the fire holds for what is left of its time
+            expect(status.loopHolds("p1")).toBe(true);
+            expect(told.at(-1)).toBe(true);
+            // herdr's rest word next lets nothing go
+            status.quiet("p1", true);
+            status.poll();
+            expect(status.loopHolds("p1")).toBe(true);
+            // herdr's working after that rest word, the turn's rest, or the fire's own time ends the hold, and is told
+            if (end === "herdr") status.busy("p1", "herdr");
+            else { if (end === "rest") rest(s, 3); else now = NOW - 1000 + LOOP_HOLD_MS; status.poll(); }
+            expect(status.loopHolds("p1")).toBe(false);
+            expect(told.at(-1)).toBe(false);
+          } finally { status.stop(); }
+        }
+      }
     });
 
     it("takes a fire found at the first read for history once it is as old as LOOP_HOLD_MS, or tells no time", async () => {
@@ -1378,6 +1399,8 @@ describe("ClaudeSubagentStatus", () => {
       rest(s, 2);
       const { status } = await tracked(s);
       try {
+        // herdr's rest word for the turn read at rest: its working next is of a turn begun past here
+        status.quiet("p1", true);
         fire(s, 3);
         status.poll();
         // the chat's own send says nothing of the turn the wakeup resumed
@@ -1701,36 +1724,79 @@ describe("ClaudeSubagentStatus", () => {
       }
     });
 
-    it("places herdr's late working by its rest word though the pane's session was looked up again since that word", async () => {
-      const s = session();
-      s.prompt(1);
-      rest(s, 2);
-      let now = NOW;
-      const { status, told } = await tracked(s, () => now);
-      try {
-        status.quiet("p1", true);
-        // a snapshot's lookup of a session whose process is not known builds what is kept of the pane anew
-        now += 5000;
-        const before = status.sessionOf("p1");
-        await status.refresh([pane("p1", "claude")]);
-        expect(status.sessionOf("p1")).toEqual(before);
-        s.prompt(3);
-        rest(s, 4);
-        fire(s, 5);
-        status.poll();
-        expect(status.loopHolds("p1")).toBe(true);
-        // herdr's working, late, is still the short turn's: where its rest word stood was kept through the lookup
-        status.busy("p1", "herdr");
-        expect(status.loopHolds("p1")).toBe(true);
-        status.quiet("p1", true);
-        status.poll();
-        expect(status.loopHolds("p1")).toBe(true);
-        expect(told.at(-1)).toBe(true);
-        // and herdr's working for the wakeup's own turn, begun past that last rest word, still ends the hold
-        status.busy("p1", "herdr");
-        expect(status.loopHolds("p1")).toBe(false);
-        expect(told.at(-1)).toBe(false);
-      } finally { status.stop(); }
+    it("keeps the hold through herdr's late working for the turn before the fire when no rest word of herdr's places it", async () => {
+      for (const heard of ["after the fire was read", "with the fire written and read by no poll yet", "before the fire was written"] as const) {
+        for (const end of ["herdr", "rest", "time"] as const) {
+          const s = session();
+          s.prompt(1);
+          rest(s, 2);
+          let now = NOW;
+          const { status, told } = await tracked(s, () => now);
+          try {
+            // the server just started, or herdr's rest was read only from a snapshot: none of its rest words was heard in an event
+            status.quiet("p1", false);
+            // a short turn of the person's and its rest, written before herdr tells that turn
+            s.prompt(3);
+            rest(s, 4);
+            if (heard === "after the fire was read") { fire(s, 5); status.poll(); expect(status.loopHolds("p1")).toBe(true); }
+            if (heard === "with the fire written and read by no poll yet") fire(s, 5);
+            // herdr's working for the short turn, late: nothing says it is not the wakeup's own
+            status.busy("p1", "herdr");
+            if (heard === "before the fire was written") { fire(s, 5); status.poll(); }
+            expect(status.loopHolds("p1")).toBe(true);
+            // herdr's rest word for the short turn, next, ends nothing either
+            status.quiet("p1", true);
+            status.poll();
+            expect(status.loopHolds("p1")).toBe(true);
+            expect(told.at(-1)).toBe(true);
+            // herdr's working for the wakeup's own turn, which that rest word places, its rest, or its time ends the hold, and is told
+            if (end === "herdr") status.busy("p1", "herdr");
+            else { if (end === "rest") rest(s, 6); else now += LOOP_HOLD_MS; status.poll(); }
+            expect(status.loopHolds("p1")).toBe(false);
+            expect(told.at(-1)).toBe(false);
+          } finally { status.stop(); }
+        }
+      }
+    });
+
+    it("places herdr's working by its rest word though the pane's session was looked up again since that word", async () => {
+      for (const word of ["a late one for the turn before the fire", "the wakeup turn's own"] as const) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        let now = NOW;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          status.quiet("p1", true);
+          // a snapshot's lookup of a session whose process is not known builds what is kept of the pane anew
+          now += 5000;
+          const before = status.sessionOf("p1");
+          await status.refresh([pane("p1", "claude")]);
+          expect(status.sessionOf("p1")).toEqual(before);
+          if (word === "a late one for the turn before the fire") { s.prompt(3); rest(s, 4); }
+          fire(s, 5);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          status.busy("p1", "herdr");
+          if (word === "the wakeup turn's own") {
+            // placed past the fire by the rest word kept through the lookup, it ends the hold: with that word
+            // lost nothing would place it, and an interrupted turn would wait out the fire's time
+            expect(status.loopHolds("p1")).toBe(false);
+            expect(told.at(-1)).toBe(false);
+            continue;
+          }
+          // herdr's working, late, is still the short turn's: where its rest word stood was kept through the lookup
+          expect(status.loopHolds("p1")).toBe(true);
+          status.quiet("p1", true);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          expect(told.at(-1)).toBe(true);
+          // and herdr's working for the wakeup's own turn, begun past that last rest word, still ends the hold
+          status.busy("p1", "herdr");
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told.at(-1)).toBe(false);
+        } finally { status.stop(); }
+      }
     });
 
     it("places nothing by a rest word herdr said of the process before: another one's working waits for its own turn", async () => {
@@ -1764,6 +1830,31 @@ describe("ClaudeSubagentStatus", () => {
         // past which only that process's turn is written: the pane is not left at that turn's rest
         status.busy("p1", "herdr");
         expect(rests.at(-1)).toBe(false);
+      } finally { status.stop(); }
+    });
+
+    it("places nothing by a rest word herdr said of the file the transcript was before it was replaced", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status, told } = await tracked(s);
+      try {
+        status.quiet("p1", true);
+        // another file takes the transcript's place, of the size of the one that rest word stood at the end of
+        copyFileSync(s.path, `${s.path}.new`);
+        renameSync(`${s.path}.new`, s.path);
+        status.poll();
+        fire(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // herdr's working: a place in the file before says nothing of where this one's turns began
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(true);
+        // the turn's rest ends the hold, and is told
+        rest(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        expect(told.at(-1)).toBe(false);
       } finally { status.stop(); }
     });
 
