@@ -6,10 +6,10 @@
  */
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
-import { requestRelayLink } from "../api.ts";
+import { closeRelayLink, requestRelayLink } from "../api.ts";
 import { apiFetch } from "../api-request-id.ts";
 import { serverIdOfPath } from "../shellMode.ts";
-import { pcAccountStatus } from "./join.ts";
+import { pcAccountStatus, within } from "./join.ts";
 import { NEW_PC_MS } from "./myPcs.ts";
 import type { AccountService } from "./service.ts";
 
@@ -39,8 +39,36 @@ export async function thisPcInNoAccount(): Promise<boolean> {
  * a wait can tell the PC is the one it waited on.
  */
 export async function reopenAddWindow(): Promise<string | null> {
-  const { url } = await requestRelayLink({ localOnly: true });
+  const { url } = await openAddWindow();
   try { return decodeOffer(url)?.server_id ?? null; } catch { return null; }
+}
+
+/** How long a close of this PC's window may take to answer before a new window is asked for all the same. */
+export const CLOSE_ANSWER_MS = 60_000;
+
+/** The closes of this PC's window this page sent that have not been answered yet, each for `CLOSE_ANSWER_MS` at most. */
+let closing: Promise<unknown> = Promise.resolve();
+
+/**
+ * Closes this PC's pairing window (POST /api/relay/link/close), so nothing more is taken through it. The PC
+ * closes whatever window is open when the request arrives, so one asked for after this call is asked for
+ * only once this close was answered (`openAddWindow`): a close that arrives late never closes the window
+ * of a wait that began after it.
+ */
+export function closeAddWindow(): Promise<{ readonly ok: true }> {
+  const sent = closeRelayLink();
+  closing = Promise.allSettled([closing, within(CLOSE_ANSWER_MS, sent)]);
+  return sent;
+}
+
+/**
+ * Asks this PC for its approve-here pairing window, after every close this page sent before was answered
+ * (or got no answer for `CLOSE_ANSWER_MS`: the window is then asked for all the same, and one such a close
+ * shuts late is back with the wait's next reopen).
+ */
+async function openAddWindow(): Promise<{ url: string }> {
+  for (let seen: Promise<unknown> | null = null; seen !== closing;) { seen = closing; await seen; }
+  return await requestRelayLink({ localOnly: true });
 }
 
 /** Where a waiting Add this PC screen is kept across a reload of its tab. */
@@ -155,7 +183,7 @@ export interface ListedAs {
 export async function listThisPc(service: AccountService, options: { relistMs: number; for?: ListedFor; as?: ListedAs }): Promise<ListedPc> {
   const wait = options.for;
   const as = options.as;
-  const offer = decodeOffer((await requestRelayLink({ localOnly: true })).url);
+  const offer = decodeOffer((await openAddWindow()).url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
   as?.reached?.("opened");
   if (wait !== undefined && offer.server_id !== wait.serverId) throw new AddPcWaitOver("pc");

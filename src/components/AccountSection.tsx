@@ -10,9 +10,9 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
-import { ApiError, closeRelayLink, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
+import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
 import { AccountPcError, within } from "../lib/account/join.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
@@ -151,9 +151,12 @@ function resumable(kept: AddPcWaiting, now: number): boolean {
   return kept.until > now && kept.until <= now + WAITING_MS && (pc === null || pc === kept.serverId);
 }
 
-/** Closes this PC's pairing window, so nothing more is taken through it; an older Ovis has no such route and lets it run out. */
+/**
+ * Closes this PC's pairing window, so nothing more is taken through it; an older Ovis has no such route and lets it run out.
+ * A wait begun right after asks for its window only once this close was answered (`closeAddWindow`).
+ */
 function closeWindow(): void {
-  closeRelayLink().catch((error: unknown) => {
+  closeAddWindow().catch((error: unknown) => {
     if (!(error instanceof ApiError && error.status === 404)) console.warn("Ovis: this PC's pairing window was not closed", error instanceof Error ? error.name : error);
   });
 }
@@ -405,8 +408,6 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
       /** the listing this attempt began, which the other copy on this wait joins rather than listing too */
       let mine: typeof relistOnItsWay = null;
       let over = false;
-      /** this attempt asked the PC for its window */
-      let asked = false;
       within(2 * REOPEN_MS, (async (): Promise<boolean> => {
         const { account, enrolling } = await thisPcMembership();
         if (!live) return true;
@@ -424,8 +425,10 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
         // was stopped (here or in another copy) while the listing was on its way
         const wait = mark === null ? undefined : { serverId: mark.serverId, account: mark.account, running: (): boolean => live && !withdrawn() };
         const flying = shared && relistOnItsWay?.until === until ? relistOnItsWay : null;
-        asked = flying === null;
         const listed = flying?.listed ?? listThisPc(accountService(), { relistMs: RELIST_MS, for: wait });
+        // its request for the window may reach the PC only after this attempt was given up for getting no answer in
+        // time, and after Stop waiting closed the window: closed once more when the listing itself is over
+        if (flying === null) void listed.then(closeLate, closeLate);
         if (shared && flying === null) relistOnItsWay = mine = { until, listed };
         await listed;
         if (!live) return true;
@@ -447,7 +450,6 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
       }).then((ok) => {
         // over with this attempt, also one that got no answer in time: the next attempt lists for itself
         over = true;
-        if (asked) closeLate();
         if (mine !== null && relistOnItsWay === mine) relistOnItsWay = null;
         // a wait that just ended (its effect is about to be left) has no listing due: never at once
         if (live && relisting === null) relisting = setTimeout(relist, ok ? due() || RELIST_MS : REOPEN_MS);
@@ -629,7 +631,8 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
   /**
    * Stops waiting, in every copy of this screen, and closes the window on the PC so nothing more is taken;
    * an older Ovis has no such route and lets it run out. A reopen or a listing still on its way to the PC may
-   * open the window again after that close: the wait's own effect closes it once more when they answer (`closeLate`).
+   * open the window again after that close: the wait's own effect closes it once more when they answer (`closeLate`),
+   * also a listing that was given up for getting no answer in time.
    */
   const stop = (): void => {
     stops.current++;
