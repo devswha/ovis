@@ -211,11 +211,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onChange: (paneId, running, turnRunning, promptAt) => {
       if (agentNow.get(paneId) !== "claude" || !owns(paneId, "claude")) return;
       claudeAgentsChanged(paneId, running, turnRunning, promptAt, false, "claude");
-      // the queue's hold came or went with the pane's status unchanged: its queued input is told now
-      const status = completions.current(paneId);
-      if (status !== undefined && paneId !== settling && pending.current(paneId) !== queueStatus(paneId, status)) { pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId); }
+      // the queue's hold came or went with the pane's status unchanged: its queued input is told now.
+      // Not for a pane that settles: the status reported after its poll tells the queue
+      if (paneId !== settling) tellQueue(paneId);
     },
   });
+  /** Tell a pane's queued input the status it goes by now (queueStatus), when that changed with the status shown unchanged. */
+  function tellQueue(paneId: string): void {
+    const status = completions.current(paneId);
+    if (status !== undefined && pending.current(paneId) !== queueStatus(paneId, status)) { pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId); }
+  }
   /** herdr's last word on each Claude pane, before restingClaude took it for a rest */
   const heard = new Map<string, AgentStatus>();
   /**
@@ -556,7 +561,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // read back from a snapshot around a gap between subscriptions. An OmO pane's status there
     // is OmO's own or herdr's by turns (server/omo-status.ts), and a difference is no change;
     // a GJC pane's may be a provider child's while gjc's own transcript is tracked
-    if (replay && (omo.runs(paneId) || gjc.tracks(paneId) || letta.tracks(paneId) || !completions.replayed(paneId, raw, replay))) return;
+    if (replay && (omo.runs(paneId) || gjc.tracks(paneId) || letta.tracks(paneId) || !completions.replayed(paneId, raw, replay))) {
+      // no status is reported after this replay, and its poll told the queue nothing (the pane was
+      // settling): a hold that poll read the end of, with herdr's word unchanged, is told here (#3494)
+      if (agent === "claude" && owns(paneId, "claude")) tellQueue(paneId);
+      return;
+    }
     // Native OmO discovery owns the pane even when herdr names its provider child.
     if (reconcileProviderStatus(omo, gjc, { pane_id: paneId, agent })) completions.forget(paneId);
     // the frame below names no agent: one herdr names anew is read into the roster now. An OmO

@@ -506,6 +506,22 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.status.queueHeld(id)).toBe(false);
   });
 
+  it("tells the queue when a replay that changes nothing is the first to read the resumed turn's rest", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    queue(h);
+    fires(h.path); h.poll();
+    expect(h.pending.next(id)).toBeNull();
+    // When the resumed turn's rest is written, and what reads it first is a snapshot's replay around
+    // a gap that changes nothing: no status is reported after it.
+    turnEnds(h);
+    handlers.onStatus(id, "idle", "claude", { before: "done", agent: "claude" });
+    // Then the queue is told all the same: nothing else would tell it before the pane's next status.
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.current(id)).not.toBe("working");
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
   it("goes by herdr's word once herdr tells the resumed turn", async () => {
     const h = await rested();
     const id = h.pane.pane_id;
