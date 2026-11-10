@@ -6,11 +6,36 @@ import { parseWorkflow, root, type Workflow } from "./shell-workflow-rules.ts";
 const dir = join(root, ".github/workflows");
 const files = readdirSync(dir).filter((name) => /\.ya?ml$/.test(name)).sort();
 
+/** The parts a condition's top level joins with `&&`; null when it has an `||` there, or brackets or a quote left open. */
+function conjuncts(condition: string): string[] | null {
+  const parts: string[] = [];
+  let depth = 0;
+  let quoted = false;
+  let start = 0;
+  for (let at = 0; at < condition.length; at += 1) {
+    const char = condition[at];
+    if (char === "'") quoted = !quoted;
+    if (quoted) continue;
+    if (char === "(" || char === "[") depth += 1;
+    else if (char === ")" || char === "]") depth -= 1;
+    else if (depth === 0 && condition.startsWith("||", at)) return null;
+    else if (depth === 0 && condition.startsWith("&&", at)) { parts.push(condition.slice(start, at)); start = at + 2; at += 1; }
+  }
+  return depth === 0 && !quoted ? [...parts, condition.slice(start)].map((part) => part.trim()) : null;
+}
+
 /**
- * A job-level `if` that calls always(), cancelled() or failure() replaces GitHub's implied `success()`:
- * the job says for itself when it runs. Naming success() changes nothing: it is the implied rule written out.
+ * A job-level `if` that calls a status function replaces GitHub's implied `success()`: the job says
+ * for itself when it runs, and may run although a job before it was skipped. Not so when success()
+ * is one of the parts the whole condition joins with `&&`: that is the implied rule written out.
+ * A negated success(), or one beside an `||`, does decide. A condition this cannot read counts as
+ * deciding, so the job behind it is named rather than missed.
  */
-const decides = (condition: unknown): boolean => /\b(always|cancelled|failure)\s*\(/i.test(String(condition ?? ""));
+function decides(condition: unknown): boolean {
+  const text = String(condition ?? "").trim().replace(/^\$\{\{([\s\S]*)\}\}$/, "$1").trim();
+  if (!/\b(always|cancelled|failure|success)\s*\(/i.test(text)) return false;
+  return !(conjuncts(text) ?? []).some((part) => /^success\s*\(\s*\)$/i.test(part));
+}
 
 /**
  * The jobs that wait for a job deciding for itself without deciding for themselves. A job whose `if`
@@ -47,8 +72,17 @@ test("a job behind one that decides for itself is found, however far behind, unl
   expect(skippedBehindDecidingJobs(beta(undefined))).toEqual(["publish", "after"]);
   expect(skippedBehindDecidingJobs(beta("needs.build.result == 'success'"))).toEqual(["publish", "after"]);
   expect(skippedBehindDecidingJobs(beta("success() && needs.build.result == 'success'"))).toEqual(["publish", "after"]);
+  expect(skippedBehindDecidingJobs(beta("${{ needs.build.result == 'success' && Success() }}"))).toEqual(["publish", "after"]);
   expect(skippedBehindDecidingJobs(beta("${{ !Cancelled() && needs.build.result == 'success' }}"))).toEqual(["after"]);
   expect(skippedBehindDecidingJobs(beta("${{ !cancelled() && needs.build.result == 'success' }}"))).toEqual(["after"]);
+  // a negated success() decides too: recover runs after the skipped gate, and publish behind it does not
+  const recovering = (recover: string) => workflowOf({ gate: { if: "github.event_name != 'pull_request'" }, recover: { needs: "gate", if: recover }, publish: { needs: "recover" } });
+  expect(skippedBehindDecidingJobs(recovering("!success()"))).toEqual(["publish"]);
+  expect(skippedBehindDecidingJobs(recovering("${{ !success() && inputs.tag != '' }}"))).toEqual(["publish"]);
+  expect(skippedBehindDecidingJobs(recovering("success() || failure()"))).toEqual(["publish"]);
+  expect(skippedBehindDecidingJobs(recovering("(success() || inputs.force) && inputs.tag != ''"))).toEqual(["publish"]);
+  expect(skippedBehindDecidingJobs(recovering("success() && inputs.tag != '||'"))).toEqual([]);
+  expect(skippedBehindDecidingJobs(recovering("contains(needs.gate.result, 'success') && success()"))).toEqual([]);
   // a deciding job with nothing before it hides nothing, and a plain chain is GitHub's own rule
   expect(skippedBehindDecidingJobs(workflowOf({ first: { if: "always()" }, second: { needs: "first" }, third: { needs: ["second"] } }))).toEqual([]);
   expect(skippedBehindDecidingJobs(workflowOf({ first: { if: "inputs.tag != ''" }, second: { needs: "first" } }))).toEqual([]);
