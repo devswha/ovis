@@ -305,8 +305,9 @@ function asking(input: AnswerInput) {
   let atPrompt = false;
   // A request left the screen unanswered. The terminal hands a line over only when Enter is pressed, and it is
   // marked then: what was typed at that request's prompt and not sent comes with the next Enter, under whatever
-  // is asked by then. So the next line handed over answers nothing, whenever it comes and whatever it says
-  let held = false;
+  // is asked by then. So the next line handed over answers nothing, whenever it comes and whatever it says.
+  // The same after an answer the server did not take (`lost`). Its value: why that line is dropped
+  let held: string | null = null;
   // What is not a terminal is never read: it has ended, as far as answers go
   const keys = typing(terminal ? input.lines : NO_LINES, input.signal, () => open !== null && open.shownAt !== null ? open : null, now);
   // said once: from then on every request is declined as it shows
@@ -320,9 +321,9 @@ function asking(input: AnswerInput) {
     for (const line of keys.take()) {
       // the Enter that sent the line ended the prompt's
       atPrompt = false;
-      if (held) {
-        held = false;
-        dropped = `a request went away while it may have been typed.${open === null ? "" : " Answer again for the request shown now."}`;
+      if (held !== null) {
+        dropped = `${held}${open === null ? "" : " Answer again for the request shown now."}`;
+        held = null;
         continue;
       }
       if (open !== null && line.under === open && open.shownAt !== null) {
@@ -382,8 +383,18 @@ function asking(input: AnswerInput) {
       // what was handed over until now came while it was asked about, and answers nothing any more
       sort();
       // what was typed at its prompt and not sent is still in the terminal: the next line handed over is dropped
-      if (shown.shownAt !== null) held = true;
+      if (shown.shownAt !== null) held = "a request went away while it may have been typed.";
     },
+    /**
+     * The answer just taken did not reach the PC's server, or whether it did is not known. Until that was said, the
+     * person may have typed on, for that request or the one they expected next: the next line handed over answers
+     * nothing, whichever request is asked about by then (that one again, or another when the server took the answer).
+     */
+    lost(): void {
+      held = "the answer before it may not have reached the Ovis on this PC, and it may have been typed meanwhile.";
+    },
+    /** nothing more can be typed: the input ended, or is no terminal */
+    get ended(): boolean { return keys.ended; },
     /** The prompt of the request asked about: shown first, or again under what was said since (not under its own answer). */
     show(): void {
       // what came before the prompt goes out: none of it was typed at a prompt not yet shown
@@ -439,9 +450,13 @@ export async function approveWaiting(pairings: readonly WaitingDevice[], options
         if (sent === "taken") out(answer.decision === "approve" ? "Approved.\n" : "Declined.\n");
         else if (sent === "gone") out(`${answer.label} is no longer waiting.\n`);
         else {
-          // whether it was taken is not known: the rest is left to a run made once the server answers
-          out(`Your answer may not have reached the Ovis on this PC. Run this again once it answers to see which requests still wait.\n`);
-          return 1;
+          // whether it was taken is not known. With nobody to answer again, the rest is left to a run made once the server answers
+          if (desk.ended) { out("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n"); return 1; }
+          // asked about again, never answered by itself, and not by a line typed meanwhile
+          out(`Your answer may not have reached the Ovis on this PC. ${answer.label} is asked about again.\n`);
+          desk.lost();
+          desk.ask(pairing, pairings);
+          continue;
         }
         break;
       }
@@ -753,6 +768,8 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
             if (error instanceof AwayError) {
               // whether it was taken is not known: the request is asked about again while it still waits, never answered by itself
               asked.delete(id);
+              // nor by a line typed meanwhile, whichever request is asked about next
+              desk.lost();
               out(`Your answer may not have reached the Ovis on this PC. ${label} is asked about again if it is still waiting.\n`);
             }
             if (!(error instanceof LocalError)) throw error;

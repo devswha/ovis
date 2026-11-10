@@ -1074,22 +1074,50 @@ describe("ovis link, on the PC itself", () => {
     expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
   });
 
+  const LOST = "That line answered nothing: the answer before it may not have reached the Ovis on this PC, and it may have been typed meanwhile. Answer again for the request shown now.\n";
+
   it("asks about a request again when its answer did not reach the server, rather than skipping it or sending the old answer", async () => {
     let prompts = 0;
     const { code, text, out, decisions, calls } = await prompting({
       pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+      // its digits; then, asked again, Enter twice: the first may have been typed while the answer was on its way
       said: (said, _type, answer) => { if (said.includes("Enter to decline")) answer(++prompts === 1 ? "222" : ""); },
       // the first answer's call is never answered
       decide: (attempt) => { if (attempt === 1) throw new TypeError("timed out"); },
       joined: (decisions) => decisions.length > 0,
     });
     expect(code).toBe(0);
-    expect(out.filter((said) => said.includes("Enter to decline"))).toHaveLength(2);
+    expect(out.filter((said) => said.includes("Enter to decline"))).toHaveLength(3);
+    expect(out.filter((said) => said === LOST)).toHaveLength(1);
     expect(text).toContain("Your answer may not have reached the Ovis on this PC. Phone p1 is asked about again if it is still waiting.");
     expect(calls.filter((call) => call.path === "/api/relay/pairing").map((call) => JSON.parse(call.body))).toEqual([{ id: "p1", decision: "approve" }, { id: "p1", decision: "decline" }]);
-    // what the server took is the answer typed the second time
+    // what the server took is the answer typed under the question asked again
     expect(decisions).toEqual([{ id: "p1", decision: "decline" }]);
   });
+
+  it("answers nothing with the first line after an answer that did not reach the server: typed meanwhile, it never answers the request shown next", async () => {
+    for (const typed of ["", "456", "111456", "789"]) {
+      let lost = false;
+      let asked = 0;
+      const { code, out, decisions } = await prompting({
+        request: (id) => ({ digits: id === "p1" ? "111456" : "222789" }),
+        // the server took p1's answer although its call was never answered: p1 waits no more, and p2 shows
+        pending: (_polls, decisions) => !lost ? ["p1"] : decisions.length > 0 ? [] : ["p2"],
+        decide: (attempt) => { if (attempt === 1) { lost = true; throw new TypeError("timed out"); } },
+        said: (said, _type, answer) => {
+          if (said.includes("Phone p1 wants")) answer("456");
+          // typed while the server did not answer, sent two seconds after p2's prompt; p2's own answer follows
+          if (said.includes("Phone p2 wants") && ++asked <= 2) answer(asked === 1 ? typed : "789");
+        },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect(code).toBe(0);
+      expect(out.filter((said) => said === LOST)).toHaveLength(1);
+      expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
+      // the line typed meanwhile decided nothing, neither way: p2 got the answer typed at its second showing
+      expect([typed, decisions]).toEqual([typed, [{ id: "p2", decision: "approve" }]]);
+    }
+  }, 30_000);
 
   it("approves nothing with a line typed twice after its request went away: the second never waits for the next request", async () => {
     const { code, out, text, decisions } = await prompting({
@@ -1633,6 +1661,40 @@ describe("pair --approve, asked as ovis add asks", () => {
     ]);
     expect(out).toContain("That line answered nothing: only all six digits shown approve this request, and only Enter by itself declines it. Answer again.\n");
     expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "approve" }, { id: "p3", decision: "approve" }]);
+  });
+
+  it("asks about a request again when its answer did not reach the PC's server, and takes no line typed meanwhile as that answer", async () => {
+    let asked = 0;
+    const { code, out, decisions } = await approving({
+      pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
+      said: (said, _type, answer) => {
+        // its digits; asked again, an Enter that may have been pressed meanwhile, then the digits
+        if (said.includes("Phone p1 wants")) answer(++asked === 2 ? "" : "222");
+        if (said.includes("Phone p2 wants")) answer("444");
+      },
+      decide: (attempt) => attempt === 1 ? "away" : "taken",
+    });
+    expect(code).toBe(0);
+    expect(out.filter((said) => !said.includes("Enter to decline"))).toEqual([
+      "Your answer may not have reached the Ovis on this PC. Phone p1 is asked about again.\n",
+      "That line answered nothing: the answer before it may not have reached the Ovis on this PC, and it may have been typed meanwhile. Answer again for the request shown now.\n",
+      "Approved.\n",
+      "Approved.\n",
+    ]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "approve" }]);
+  });
+
+  it("stops when the PC's server takes no answer and nothing can be typed: it never asks in a circle", async () => {
+    const { code, out, decisions } = await approving({
+      pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
+      lines: answers(), terminal: false,
+      said: () => undefined,
+      decide: () => "away",
+    });
+    expect(code).toBe(1);
+    expect(out.at(-1)).toBe("Your answer may not have reached the Ovis on this PC. Run this again once it answers.\n");
+    expect(out.filter((said) => said.includes("Enter to decline"))).toHaveLength(1);
+    expect(decisions).toEqual([]);
   });
 
   it("declines every request when its input is not a terminal, whatever was piped in, without reading it", async () => {
