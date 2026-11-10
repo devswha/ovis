@@ -54,14 +54,56 @@ describe("the pairing window across a restart", () => {
     expect(later.localOnlyOpen()).toBe(false);
   });
 
-  it("clamps a stored deadline far in the future to a window opened now", () => {
+  it("reads a deadline further ahead than a window opened now as closed, and writes it back closed", () => {
+    for (const saved of [
+      { v: 1, window_until: 1_700_000_000_000 + 365 * 86_400_000, local_only_until: Number.MAX_SAFE_INTEGER },
+      { v: 1, window_until: 1_700_000_000_000 + PAIRING_WINDOW_MS + 1, local_only_until: 0 },
+      { v: 1, window_until: 1_700_000_000_000 + 60_000, local_only_until: 1_700_000_000_000 + PAIRING_WINDOW_MS + 1 },
+    ]) {
+      const f = fixture();
+      f.write(saved);
+      const restarted = f.open();
+      expect(restarted.windowOpen()).toBe(false);
+      expect(restarted.localOnlyOpen()).toBe(false);
+      expect(f.saved()).toEqual({ v: 1, window_until: 0, local_only_until: 0 });
+      // so no later start gets a window from it either, as a clamp to "now" gave at every restart
+      f.clock.at += 365 * 86_400_000 - 60_000;
+      expect(f.open().windowOpen()).toBe(false);
+    }
+  });
+
+  it("does not reopen a window when the clock went back: before it was opened, or after it ran out", () => {
     const f = fixture();
-    f.write({ v: 1, window_until: f.clock.at + 365 * 86_400_000, local_only_until: Number.MAX_SAFE_INTEGER });
-    const restarted = f.open();
-    expect(restarted.windowOpen(f.clock.at + PAIRING_WINDOW_MS - 1)).toBe(true);
-    expect(restarted.localOnlyOpen(f.clock.at + PAIRING_WINDOW_MS - 1)).toBe(true);
-    expect(restarted.windowOpen(f.clock.at + PAIRING_WINDOW_MS)).toBe(false);
-    expect(restarted.localOnlyOpen(f.clock.at + PAIRING_WINDOW_MS)).toBe(false);
+    f.open().openWindow(f.clock.at, { localOnly: true });
+    const opened = f.clock.at;
+    // a start with a clock earlier than the open sees a deadline more than one window ahead
+    f.clock.at = opened - 60_000;
+    expect(f.open().windowOpen()).toBe(false);
+    f.clock.at = opened + 1;
+    expect(f.open().windowOpen()).toBe(false);
+
+    const g = fixture();
+    g.open().openWindow(g.clock.at, { localOnly: true });
+    g.clock.at += PAIRING_WINDOW_MS;
+    expect(g.open().windowOpen()).toBe(false);
+    expect(g.saved()).toEqual({ v: 1, window_until: 0, local_only_until: 0 });
+    g.clock.at -= 60_000;
+    expect(g.open().windowOpen()).toBe(false);
+  });
+
+  it("a close ends the comparisons this PC was shown, and leaves a members-only join", async () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.openWindow(f.clock.at, { localOnly: true });
+    const shown = approvals.ask("Phone", "123456", f.clock.at + 90_000, { intent: "pc", key: "k", deviceId: "d" })!;
+    const join = approvals.ask("Tablet", "654321", f.clock.at + 90_000, { intent: "account", key: "k2", deviceId: "d2", membersOnly: true })!;
+    const id = approvals.list()[0]!.id;
+    approvals.closeWindow();
+    expect(await shown.decision).toEqual({ approved: false });
+    expect(approvals.decide(id, true)).toBe(false);
+    expect(approvals.list()).toEqual([]);
+    expect(approvals.remoteList().map((one) => one.label)).toEqual(["Tablet"]);
+    join.withdraw();
   });
 
   it("stays not local-only when it was opened without it", () => {

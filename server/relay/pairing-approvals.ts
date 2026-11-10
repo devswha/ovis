@@ -67,7 +67,10 @@ export class RelayPairingApprovals {
   /**
    * The saved window, when the file holds both deadlines: one without the other reads as closed, since
    * a window that came back without its local-only half would show what it takes to account members.
-   * Neither is trusted past a window opened now, whatever the file says.
+   * A deadline further ahead than a window opened now is not a window this clock opened (the clock ran
+   * ahead when it was saved, or went back since): it reads as closed, never as a fresh ten minutes at
+   * every start. Whatever is not open now is written back as closed, so a clock that later goes back
+   * cannot reopen it.
    */
   private load(): void {
     if (!this.path) return;
@@ -78,9 +81,15 @@ export class RelayPairingApprovals {
     if (v !== 1) return;
     if (typeof windowUntil !== "number" || !Number.isFinite(windowUntil)) return;
     if (typeof localOnlyUntil !== "number" || !Number.isFinite(localOnlyUntil)) return;
-    const latest = this.now() + PAIRING_WINDOW_MS;
-    this.windowUntil = Math.min(windowUntil, latest);
-    this.localOnlyUntil = Math.min(localOnlyUntil, latest);
+    const now = this.now();
+    const latest = now + PAIRING_WINDOW_MS;
+    if (windowUntil > now && windowUntil <= latest && localOnlyUntil <= latest) {
+      this.windowUntil = windowUntil;
+      this.localOnlyUntil = localOnlyUntil;
+      return;
+    }
+    if (windowUntil === 0 && localOnlyUntil === 0) return;
+    if (!this.save()) this.forget();
   }
 
   /** Both deadlines in one write, so the file never holds one without the other. False when it could not be written. */
@@ -116,12 +125,15 @@ export class RelayPairingApprovals {
 
   /**
    * Ends the window now: the owner stopped waiting, revoked every device, reset the relay identity or
-   * turned the relay off. Comparisons already waiting are not touched; their own sessions end them.
+   * turned the relay off. A comparison this PC's own windows were shown under that window ends
+   * unapproved with it, so nothing asked before the close can be approved after it; a join shown to
+   * account members only never depended on the window and stays.
    */
   closeWindow(): void {
     const open = this.windowUntil !== 0 || this.localOnlyUntil !== 0;
     this.windowUntil = 0;
     this.localOnlyUntil = 0;
+    for (const entry of [...this.waiting.values()]) if (!entry.membersOnly) entry.finish({ approved: false });
     if (!this.path || (!open && !existsSync(this.path))) return;
     // a file that cannot be rewritten must not bring the window back at the next start: absent reads as closed
     if (!this.save()) this.forget();
