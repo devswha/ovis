@@ -42,18 +42,22 @@ export function aroundDigits(template: string, name: string): [string, string] {
   return at < 0 ? [`${named(template)} `, ""] : [named(template.slice(0, at)), named(template.slice(at + "{digits}".length))];
 }
 
+/** A dialog that holds Tab inside itself. */
+const MODAL = '[aria-modal="true"], dialog[open]';
 /** A field the person may be typing in (a terminal's is a textarea): its keys stay its own. */
 const TEXT_ENTRY = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
 /**
- * Whether a prompt that arrives may take the focus from `active`. Only where it could not be reached
- * otherwise: nothing has the focus, or a modal dialog holds Tab inside itself (Settings). Never from a
- * field, where the keys already on their way (a shell's Tab, then Enter) would land on Approve; the
- * layer's live region announces the prompt there, and it is a click or a Tab away.
+ * Whether a prompt that arrives may take the focus from `active`. Only where it would be far otherwise:
+ * nothing has the focus, or a modal dialog holds Tab inside itself (Settings). Never from a field, where
+ * the keys already on their way (a shell's Tab, then Enter) would land on Approve; the layer's live
+ * region announces the prompt there, and it is a click or a Tab away: a dialog's Tab round goes on from
+ * its last stop to the prompt (Shift+Tab from its first), on the prompt itself before its buttons
+ * (`overlayStops` in lib/useFocusTrap.ts).
  */
 export function takesFocus(active: Element | null): boolean {
   if (active === null || active === document.body) return true;
   if (!(active instanceof HTMLElement) || active.closest(TEXT_ENTRY) !== null) return false;
-  return active.closest('[aria-modal="true"], dialog[open]') !== null;
+  return active.closest(MODAL) !== null;
 }
 
 /** How long after a prompt arrived a key cannot press Approve: keys typed for what was there before it. */
@@ -61,9 +65,9 @@ export const APPROVE_KEY_GUARD_MS = 1000;
 
 /**
  * The devices waiting for this PC's approval (`relay-pairings`), a prompt each. One that arrives over
- * a modal dialog takes the focus on its own surface, never on Approve, and a dialog's focus trap lets
- * Tab stay in it (lib/useFocusTrap.ts). It is a group, not a dialog: it covers nothing, so the page's
- * "a dialog is open" checks (Escape handlers, pane cover) must not count it.
+ * a modal dialog takes the focus on its own surface, never on Approve, and a dialog's focus trap counts
+ * it and its buttons among its own Tab stops (lib/useFocusTrap.ts). It is a group, not a dialog: it
+ * covers nothing, so the page's "a dialog is open" checks (Escape handlers, pane cover) must not count it.
  */
 export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairingRequest[] }) {
   const t = useT();
@@ -97,7 +101,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
   const seen = useRef(new Map<string, number>());
   /** the focus is, or was until its prompt went, inside the layer */
   const held = useRef(false);
-  /** what had the focus before the first prompt took it */
+  /** what had the focus before the first prompt took it, or before Tab brought it into one */
   const opener = useRef<HTMLElement | null>(null);
   /** the focus was given back by a cleanup React ran only to run the effects again (development's replay): it is taken again */
   const replayed = useRef(false);
@@ -144,14 +148,21 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
 
   return (
     <div ref={layer} className="relay-pairing-layer" role="region" aria-live="assertive" aria-label={t("Devices waiting for approval")}
-      onFocus={() => { held.current = true; }}
-      onBlur={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) held.current = false; }}>
+      onFocus={(event) => {
+        // walked in by Tab from a modal dialog's round: that stop gets the focus back when the last prompt goes.
+        // Not from the page (a tap on Approve from a terminal must not raise a phone's keyboard again afterwards)
+        const from = event.relatedTarget;
+        if (!held.current && from instanceof HTMLElement && !event.currentTarget.contains(from) && from.closest(MODAL) !== null) opener.current = from;
+        held.current = true;
+      }}
+      // to nothing (Approve pressed by a key is disabled, then gone: the browser drops the focus) is not the person moving on
+      onBlur={(event) => { if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) held.current = false; }}>
       {pairings.map((pairing, index) => {
         const deciding = busy?.id === pairing.id ? busy.decision : null;
         const digits = <strong className="relay-pairing-digits">{`${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}`}</strong>;
         // the device this PC is added from shows an input, not digits (AddPcSheet): its person types this PC's there
         const [before, after] = pairing.local_only
-          ? aroundDigits(t("{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here. Approve only after {name} accepted the number or shows the same one."), pairing.label)
+          ? aroundDigits(t("{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here."), pairing.label)
           : [`${t("{name} wants to pair through the relay. Approve it only if its screen shows", { name: pairing.label })} `, ""];
         const until = deadlines[index] ?? null;
         // `now` is a tick behind a request that has just arrived: never more than the PC said is left

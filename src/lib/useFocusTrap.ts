@@ -55,6 +55,33 @@ function tabStops(surface: HTMLElement, options: FocusTrapOptions): HTMLElement[
 }
 
 /**
+ * The stops of what lies over every dialog without being one: a device waiting for this PC's approval
+ * (components/RelayPairingPrompt.tsx). They follow the dialog's own in its Tab order, so a prompt that
+ * left the focus in one of the dialog's fields can still be answered by keyboard. Each prompt is a stop
+ * itself, before its buttons: Tab from the dialog lands on the prompt, never straight on Approve.
+ */
+export function overlayStops(): HTMLElement[] {
+  const stops: HTMLElement[] = [];
+  for (const prompt of document.querySelectorAll<HTMLElement>(".relay-pairing-prompt")) {
+    // refused the focus under an inert column, or not drawn: no stop
+    if (prompt.closest("[inert]") !== null || prompt.getClientRects().length === 0) continue;
+    stops.push(prompt, ...[...prompt.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(reachable));
+  }
+  return stops;
+}
+
+/**
+ * Where Tab (or Shift+Tab, `back`) goes from `active` among `stops`, round and round; from anything that is
+ * no stop, to the first (the last going back). Undefined when there is no stop at all.
+ */
+export function tabTarget(stops: readonly HTMLElement[], active: Element | null, back: boolean): HTMLElement | undefined {
+  const at = active === null ? -1 : stops.indexOf(active as HTMLElement);
+  return back
+    ? (at <= 0 ? stops[stops.length - 1] : stops[at - 1])
+    : (at === stops.length - 1 ? stops[0] : stops[at + 1]);
+}
+
+/**
  * The traps open now, oldest first. Dialogs stack (a file preview over Files, Settings over a
  * preview) and every trap listens on the window: only the top one may move the focus, or the one
  * beneath pulls it out of the dialog in front and the one in front sends it back to its start.
@@ -132,22 +159,16 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       if (event.key !== "Tab" || openTraps.at(-1) !== trap || typeAheadFocused()) return;
       const node = surface.current;
       if (!node || nativeModalOver(node)) return;
-      // another dialog or menu that has the focus (a row's action sheet over the drawer) keeps its own Tab;
-      // so does a device waiting for approval, a banner over every dialog that is no dialog itself
+      // another dialog or menu that has the focus (a row's action sheet over the drawer) keeps its own Tab
       const holder = document.activeElement;
-      if (holder instanceof Element && !node.contains(holder) && holder.closest('[role="dialog"], [role="alertdialog"], [role="menu"], .relay-pairing-prompt') !== null) return;
-      const stops = tabStops(node, latest.current);
+      if (holder instanceof Element && !node.contains(holder) && holder.closest('[role="dialog"], [role="alertdialog"], [role="menu"]') !== null) return;
+      // a device waiting for approval is in this dialog's round, after its own stops: reached from a field
+      // the prompt left the focus in, and left again for the dialog, never for the page beneath
+      const stops = [...tabStops(node, latest.current), ...overlayStops()];
+      const next = tabTarget(stops, document.activeElement, event.shiftKey);
       // every control disabled (a deed that cannot be undone): Tab goes nowhere rather than out
-      if (stops.length === 0) { event.preventDefault(); return; }
-      const active = document.activeElement;
-      const at = active instanceof HTMLElement ? stops.indexOf(active) : -1;
-      const next = event.shiftKey
-        ? (at <= 0 ? stops[stops.length - 1] : stops[at - 1])
-        : (at === stops.length - 1 ? stops[0] : stops[at + 1]);
-      // focus already inside, in the middle: let the browser's own order carry on
-      if (!next) return;
       event.preventDefault();
-      next.focus({ preventScroll: true });
+      next?.focus({ preventScroll: true });
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => {
