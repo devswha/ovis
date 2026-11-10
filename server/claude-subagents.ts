@@ -469,10 +469,12 @@ function acknowledgement(entry: Row, block: Row): boolean {
  * The keys of the prompt of a turn Claude resumed by itself: Claude Code 2.1.318 writes it as a meta
  * user entry right after a `/loop` wakeup's fire, with `turnOrigin` `scheduled` and `wakeupSource`
  * `loop_wakeup`; a scheduled task that is no loop has `schedule_wakeup` there (2.1.321 gives every
- * prompt with a `wakeupSource` that `turnOrigin`). Its own keys only: words that quote them are
- * escaped inside a JSON string.
+ * prompt with a `wakeupSource` that `turnOrigin`). And the turn it resumes on a background task's
+ * notice, when a subagent or a background command ends: its prompt is the notice itself as a user
+ * entry, with `turnOrigin` `task_notification` (2.1.296 to 2.1.321). Its own keys only: words that
+ * quote them are escaped inside a JSON string.
  */
-const SELF_RESUMED_RE = /"turnOrigin":"scheduled"|"wakeupSource":"/;
+const SELF_RESUMED_RE = /"turnOrigin":"(?:scheduled|task_notification)"|"wakeupSource":"/;
 
 /**
  * A self-resumed turn's prompt (SELF_RESUMED_RE), which no person typed and no chat sent: it holds
@@ -483,11 +485,18 @@ const SELF_RESUMED_RE = /"turnOrigin":"scheduled"|"wakeupSource":"/;
  * that turn's rest ended the fire's hold, as a rest ends whatever was told before it (scanParentLine),
  * and the task's own turn begins at once. Either turn is told by this line and not by its fire, so it
  * holds nothing from that rest until Claude has written this line, some tens of milliseconds into it.
+ *
+ * A notice's turn has no fire: this line alone tells of it. The notice Claude queues as the task ends
+ * (a `queue-operation`) begins no turn by itself: with a turn at work it waits for that turn's rest,
+ * or is taken into that turn (a `queued_command`), and neither holds. So that turn too holds nothing
+ * until Claude has written this line, which it dates some tens of milliseconds after the task's end,
+ * or after the rest of the turn the notice waited behind.
  */
 function selfResumed(parent: Parent, line: string, end: number): void {
   try {
     const entry = row(JSON.parse(line));
-    if (entry?.["type"] !== "user" || entry["isSidechain"] === true || (entry["turnOrigin"] !== "scheduled" && typeof entry["wakeupSource"] !== "string")) return;
+    const origin = entry?.["turnOrigin"];
+    if (entry?.["type"] !== "user" || entry["isSidechain"] === true || (origin !== "scheduled" && origin !== "task_notification" && typeof entry["wakeupSource"] !== "string")) return;
     parent.loopAt = end;
     parent.loopTime = stamp(entry["timestamp"]);
   } catch { /* a line caught half written is read again */ }
@@ -1534,11 +1543,12 @@ const BUSY_HOLD_MS = 5000;
 interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
 
 /**
- * How long a turn Claude resumed by itself (a `/loop` wakeup's, another scheduled task's) holds the
- * pane's queue while no rest is written after it (#3494). Claude resumes it as the task fires, with no
- * prompt of the person's nor a send of the chat's, and herdr reads that turn a moment later: queued
- * input sent in between would land in the turn at work. A turn that writes no rest (interrupted, on a
- * Claude Code that writes none for it; its process killed) is waited on no longer than this.
+ * How long a turn Claude resumed by itself (a `/loop` wakeup's, another scheduled task's, one on a
+ * background task's notice) holds the pane's queue while no rest is written after it (#3494). Claude
+ * resumes it as the task fires or ends, with no prompt of the person's nor a send of the chat's, and
+ * herdr reads that turn a moment later: queued input sent in between would land in the turn at work.
+ * A turn that writes no rest (interrupted, on a Claude Code that writes none for it; in a session
+ * that writes none; its process killed) is waited on no longer than this.
  */
 export const LOOP_HOLD_MS = 60_000;
 
@@ -1627,12 +1637,12 @@ export class ClaudeSubagentStatus {
   }
 
   /**
-   * Claude resumed a turn by itself (a `/loop` wakeup, a scheduled task) and no rest was written since:
-   * the pane's queue holds. Until that turn's rest is written, or LOOP_HOLD_MS after the last entry that
-   * told of it was read (a later fire or prompt holds anew). No word of herdr's ends it: herdr reads the
-   * pane at rest until it reads the turn, and its working may be a late one for the turn before, or
-   * heard while a delivery is at its last checks. So a resumed turn that is interrupted and writes no
-   * rest holds the queue until that time is up, though herdr reads the pane at rest again.
+   * Claude resumed a turn by itself (a `/loop` wakeup, a scheduled task, a background task's notice) and
+   * no rest was written since: the pane's queue holds. Until that turn's rest is written, or LOOP_HOLD_MS
+   * after the last entry that told of it was read (a later fire or prompt holds anew). No word of herdr's
+   * ends it: herdr reads the pane at rest until it reads the turn, and its working may be a late one for
+   * the turn before, or heard while a delivery is at its last checks. So a resumed turn that is interrupted
+   * and writes no rest holds the queue until that time is up, though herdr reads the pane at rest again.
    */
   loopHolds(paneId: string): boolean {
     const since = this.panes.get(paneId)?.turns?.loop.since ?? null;
