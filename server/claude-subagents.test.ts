@@ -1143,6 +1143,18 @@ describe("ClaudeSubagentStatus", () => {
     /** A fire dated by its own timestamp (`ms`, on the tracker's clock), or carrying none (null). */
     const firedAt = (s: Session, ms: number | null) => s.parent({ type: "system", subtype: "scheduled_task_fire", ...(ms === null ? {} : { timestamp: new Date(ms).toISOString() }), taskKind: "loop", taskId: "591b6f5a" });
     const answer = (s: Session, minute: number) => s.parent({ type: "assistant", timestamp: at(minute), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "checked" }] } });
+    /**
+     * The prompt of a turn Claude resumed by itself, with the keys Claude Code 2.1.318 writes on it right after
+     * a /loop fire (read from a transcript of this PC). `loop` false: a scheduled task's that is no loop, which
+     * Claude Code 2.1.321's own code gives the same keys with `schedule_wakeup` (no transcript of one was at hand).
+     * `keys`: only that one of its two telling keys.
+     */
+    const resumes = (s: Session, minute: number, loop = true, written = at(minute), keys: "both" | "turnOrigin" | "wakeupSource" = "both") => s.parent({
+      type: "user", isMeta: true, isSidechain: false, permissionMode: "auto", promptSource: "system", queuePriority: "later",
+      ...(keys === "wakeupSource" ? {} : { turnOrigin: "scheduled" }), ...(keys === "turnOrigin" ? {} : { wakeupSource: loop ? "loop_wakeup" : "schedule_wakeup" }),
+      scheduledTaskId: "591b6f5a", scheduledFireId: "0b6c1d7e", timestamp: written,
+      message: { role: "user", content: "check the deploy" },
+    });
     /** A tracker that has read a session at rest, and each word it gave of the queue's hold as it changed. */
     const tracked = async (s: Session, clock: () => number = () => NOW) => {
       const told: boolean[] = [];
@@ -1361,6 +1373,155 @@ describe("ClaudeSubagentStatus", () => {
         status.poll();
         fire(s, 5);
         status.busy("p1", "herdr");
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+      } finally { status.stop(); }
+    });
+
+    it("holds on the second of two loops due together: its prompt follows the first loop turn's rest with no fire between", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status, told } = await tracked(s);
+      try {
+        // both fires are written in the scheduler's one tick, then the first loop's prompt and turn
+        fire(s, 3);
+        fire(s, 3);
+        resumes(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        answer(s, 4);
+        rest(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        // the second loop's prompt runs at once: herdr still tells the first loop's turn, or its rest
+        resumes(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        status.quiet("p1", true);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        rest(s, 5);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        expect(told).toEqual([false, true, false, true, false]);
+      } finally { status.stop(); }
+    });
+
+    it("takes the fires of one tick for one wakeup: herdr's working for the turn they resumed ends the hold", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status } = await tracked(s);
+      try {
+        status.quiet("p1", true);
+        fire(s, 3);
+        fire(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // herdr's working is matched to where that turn began, the first fire: the second began no turn of its own
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(false);
+        // and neither the first loop's prompt, written 3 s later (a slow hook), nor what the turn writes holds anew: herdr's word stands
+        resumes(s, 3.05);
+        answer(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+      } finally { status.stop(); }
+    });
+
+    it("holds on the prompt of a scheduled task that is no loop, until its rest, herdr's word for its turn, or its time", async () => {
+      for (const end of ["rest", "herdr", "time"] as const) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        let now = NOW;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          status.quiet("p1", true);
+          // its fire carries no taskKind, and holds nothing by itself
+          s.parent({ type: "system", subtype: "scheduled_task_fire", isSidechain: false, timestamp: at(3), taskId: "7c2e9a10" });
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          resumes(s, 3, false);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          if (end === "rest") { rest(s, 4); status.poll(); }
+          else if (end === "herdr") status.busy("p1", "herdr");
+          else { now += LOOP_HOLD_MS; status.poll(); }
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told).toEqual([false, true, false]);
+        } finally { status.stop(); }
+      }
+    });
+
+    it("tells a self-resumed turn's prompt by either of its keys", async () => {
+      for (const keys of ["turnOrigin", "wakeupSource"] as const) {
+        for (const loop of [true, false]) {
+          const s = session();
+          s.prompt(1);
+          rest(s, 2);
+          const { status } = await tracked(s);
+          try {
+            resumes(s, 3, loop, at(3), keys);
+            status.poll();
+            expect(status.loopHolds("p1")).toBe(true);
+          } finally { status.stop(); }
+        }
+      }
+    });
+
+    it("holds on a self-resumed turn's prompt found at the first read as on a fire: by its own age", async () => {
+      for (const [age, held] of [[20_000, true], [LOOP_HOLD_MS, false]] as const) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        resumes(s, 3, true, new Date(NOW - age).toISOString());
+        const { status } = await tracked(s);
+        try {
+          expect(status.loopHolds("p1")).toBe(held);
+        } finally { status.stop(); }
+      }
+    });
+
+    it("holds anew on a later wakeup though the turn the one before resumed wrote no rest", async () => {
+      for (const before of ["a turn", "nothing"] as const) {
+        for (const next of ["fire", "prompt"] as const) {
+          const s = session();
+          s.prompt(1);
+          rest(s, 2);
+          let now = NOW;
+          const { status, told } = await tracked(s, () => now);
+          try {
+            // a loop turn interrupted, which writes no rest, or one that never wrote its prompt: its hold runs out
+            fire(s, 3);
+            if (before === "a turn") { resumes(s, 3); answer(s, 3); }
+            status.poll();
+            now += LOOP_HOLD_MS;
+            status.poll();
+            expect(status.loopHolds("p1")).toBe(false);
+            // minutes later the next wakeup: another fire, or a scheduled task's prompt, is not one more of that tick
+            if (next === "fire") fire(s, 8); else resumes(s, 8, false);
+            status.poll();
+            expect(status.loopHolds("p1")).toBe(true);
+            expect(told).toEqual([false, true, false, true]);
+          } finally { status.stop(); }
+        }
+      }
+    });
+
+    it("takes the keys of a self-resumed prompt only from the session's own entry, not from words that quote them", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status } = await tracked(s);
+      try {
+        // a prompt of the person's that quotes the keys, and a subagent's entry that carries them
+        s.parent({ type: "user", timestamp: at(3), permissionMode: "default", origin: { kind: "human" }, turnOrigin: "human", message: { role: "user", content: 'why "turnOrigin":"scheduled" and "wakeupSource":"loop_wakeup"?' } });
+        rest(s, 4);
+        s.parent({ type: "user", isSidechain: true, isMeta: true, turnOrigin: "scheduled", wakeupSource: "loop_wakeup", timestamp: at(5), message: { role: "user", content: "check" } });
+        // nor from an entry that is no prompt
+        s.parent({ type: "assistant", turnOrigin: "scheduled", wakeupSource: "loop_wakeup", timestamp: at(5), message: { role: "assistant", content: [{ type: "text", text: "on it" }] } });
         status.poll();
         expect(status.loopHolds("p1")).toBe(false);
       } finally { status.stop(); }

@@ -355,10 +355,17 @@ interface Parent {
   starts: Start[];
   /** whether the latest turn goes on: no rest came after it yet */
   turnOpen: boolean;
-  /** byte boundary of the latest `/loop` wakeup's fire no rest was written after: the turn it resumed may still run (ClaudeSubagentStatus.loopHolds) */
+  /**
+   * Where the latest turn Claude resumed by itself was told, while no rest was written after it: that turn
+   * may still run (ClaudeSubagentStatus.loopHolds). The byte boundary of a `/loop` wakeup's fire, or of the
+   * turn's own prompt (selfResumed) where no fire of it was read before: the second of two loops due in one
+   * tick, a scheduled task that is no loop.
+   */
   loopAt: number | null;
-  /** when that fire was written, by its own timestamp: how old one found at the transcript's first read is */
+  /** when that entry was written, by its own timestamp: how old one found at the transcript's first read is */
   loopTime: number | null;
+  /** a fire was read and nothing a turn writes after it yet: a fire or a self-resumed prompt that comes now may be the same wakeup's (sameWakeup) */
+  loopFired: boolean;
   /** what a slash command's echo found, until the next entry says whether it began a turn (scanParentLine) */
   echo: { command: string | null; restAt: number | null; promptAt: number | null; turnOpen: boolean; starts: Start[] } | null;
 }
@@ -379,7 +386,7 @@ function scanParent(path: string): Parent | null {
   let parent = parents.get(path);
   if (!parent || parent.id !== stat.id || parent.offset > stat.size || !sameHistory(parent.version, stat)) {
     const from = Math.max(0, stat.size - PARENT_WINDOW);
-    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, echo: null };
+    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, loopFired: false, echo: null };
   }
   parent.version = stat;
   remember(parents, path, parent, 256);
@@ -461,6 +468,42 @@ function acknowledgement(entry: Row, block: Row): boolean {
   return words.startsWith("Async agent launched");
 }
 
+/**
+ * The keys of the prompt of a turn Claude resumed by itself: Claude Code 2.1.318 writes it as a meta
+ * user entry right after a `/loop` wakeup's fire, with `turnOrigin` `scheduled` and `wakeupSource`
+ * `loop_wakeup`; a scheduled task that is no loop has `schedule_wakeup` there (2.1.321 gives every
+ * prompt with a `wakeupSource` that `turnOrigin`). Its own keys only: words that quote them are
+ * escaped inside a JSON string.
+ */
+const SELF_RESUMED_RE = /"turnOrigin":"scheduled"|"wakeupSource":"/;
+
+/**
+ * Whether a fire or a self-resumed prompt written at `written` is of the wakeup the fire read before
+ * it told (Parent.loopAt), and so tells nothing new: the fires of one scheduler tick are written
+ * together, ahead of the first one's prompt, and resume one turn. Only with nothing a turn writes
+ * read between them (Parent.loopFired), and inside the time that fire holds for by its own
+ * timestamp: one whose turn wrote nothing at all is not waited on for ever.
+ */
+function sameWakeup(parent: Parent, written: number | null): boolean {
+  return parent.loopAt !== null && parent.loopFired && written !== null && parent.loopTime !== null && Math.abs(written - parent.loopTime) < LOOP_HOLD_MS;
+}
+
+/**
+ * A self-resumed turn's prompt (SELF_RESUMED_RE), which no person typed and no chat sent: it holds
+ * the queue as a `/loop` fire does (Parent.loopAt) where no fire read before it already tells its
+ * turn (sameWakeup). That is the second of two loops due in one tick, whose prompt runs right after
+ * the first loop turn's rest with no fire between; a scheduled task that is no loop, whose fire is
+ * not a loop's; and one that follows a self-resumed turn which wrote no rest (interrupted).
+ */
+function selfResumed(parent: Parent, line: string, end: number): void {
+  try {
+    const entry = row(JSON.parse(line));
+    if (entry?.["type"] !== "user" || entry["isSidechain"] === true || (entry["turnOrigin"] !== "scheduled" && typeof entry["wakeupSource"] !== "string")) return;
+    const written = stamp(entry["timestamp"]);
+    if (!sameWakeup(parent, written)) { parent.loopAt = end; parent.loopTime = written; }
+  } catch { /* a line caught half written is read again */ }
+}
+
 function scanParentLine(parent: Parent, line: string, end: number): void {
   const user = line.includes('"type":"user"');
   // Claude writes a local command's caveat and output with neither `origin` nor a permission mode, as a
@@ -487,7 +530,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
         // the rest of whatever turn went on, a /loop wakeup's too
-        if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; parent.loopTime = null; }
+        if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; parent.loopTime = null; parent.loopFired = false; }
       }
     } catch { /* a line caught half written is read again */ }
   } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
@@ -499,9 +542,11 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
         parent.restAt = null;
         const written = stamp(entry["timestamp"]);
         openTurn(parent, end, written);
-        // Claude resumes by itself here, with no prompt of the person's nor a send of the chat's to tell of it
-        parent.loopAt = end;
-        parent.loopTime = written;
+        // Claude resumes by itself here, with no prompt of the person's nor a send of the chat's to tell of it.
+        // Of the fires of one tick the first tells where their turn began, as herdr's working is matched to it
+        // (ClaudeSubagentStatus.busy): one more of them tells nothing new
+        if (!sameWakeup(parent, written)) { parent.loopAt = end; parent.loopTime = written; }
+        parent.loopFired = true;
       }
     } catch { /* a line caught half written is read again */ }
   } else if (user && line.includes('"isCompactSummary":true')) {
@@ -516,6 +561,9 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       : { command, restAt: parent.restAt, promptAt: parent.promptAt, turnOpen: parent.turnOpen, starts: parent.starts.map((start) => ({ ...start })) };
     parent.restAt = null;
     openTurn(parent, end, stamp(line.match(/"timestamp":"([^"]+)"/)?.[1]));
+    if (user && SELF_RESUMED_RE.test(line)) selfResumed(parent, line, end);
+    // a turn's own entry: a fire read after it is another wakeup's
+    parent.loopFired = false;
   } else if (line.includes('"queued_command"') && !line.includes('"isSidechain":true')) {
     try {
       const entry = row(JSON.parse(line));

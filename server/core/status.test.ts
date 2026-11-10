@@ -472,6 +472,9 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     appendFileSync(path, line({ type: "system", subtype: "scheduled_task_fire", taskKind: "loop", taskId: "591b6f5a", timestamp: new Date(written).toISOString() }));
   const turnEnds = (h: Pick<Fixture, "path">) =>
     appendFileSync(h.path, line({ type: "system", subtype: "turn_duration", timestamp: new Date(at + 6000).toISOString() }));
+  /** The prompt of the turn a wakeup resumed, with the keys Claude Code 2.1.318 writes on it right after the fire. */
+  const resumes = (path: string) =>
+    appendFileSync(path, line({ type: "user", isMeta: true, isSidechain: false, permissionMode: "auto", promptSource: "system", queuePriority: "later", turnOrigin: "scheduled", wakeupSource: "loop_wakeup", scheduledTaskId: "591b6f5a", timestamp: new Date(at + 4100).toISOString(), message: { role: "user", content: "check the deploy" } }));
   /** A turn that set its wakeup and came to rest, which herdr told: every read of the pane says idle from here. `drained`: each time its queue is told to look again. */
   const rested = async (drained: string[] = []): Promise<Fixture> => {
     const h = await workingClaude(undefined, (paneId) => { drained.push(paneId); });
@@ -593,6 +596,28 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       expect(h.pending.next(id)).toBeNull();
       handlers.onStatus(id, "idle", "claude");
     }
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
+  it("holds the queue on the second of two loops due together, whose prompt follows the first loop turn's rest with no fire", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    // Given two loops due in one tick: both fires, then the first loop's prompt and turn, which herdr tells.
+    fires(h.path); fires(h.path); resumes(h.path); h.poll();
+    queue(h);
+    expect(h.status.queueHeld(id)).toBe(true);
+    handlers.onStatus(id, "working", "claude");
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).toBeNull();
+    // When that turn rests and the second loop's prompt runs at once, before herdr's idle word for the first.
+    turnEnds(h); resumes(h.path); h.poll();
+    handlers.onStatus(id, "idle", "claude");
+    // Then that idle word lets nothing into the second loop's turn.
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+    // And the second loop turn's rest lets the message go.
+    turnEnds(h); h.poll();
     expect(h.status.queueHeld(id)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
