@@ -1565,20 +1565,29 @@ describe("ClaudeSubagentStatus", () => {
       s.prompt(1);
       rest(s, 2);
       const { status } = await tracked(s);
+      const scheduled = { turnOrigin: "scheduled", wakeupSource: "loop_wakeup" };
+      /** each is read by itself, and its turn brought to rest before the next */
+      const holdsNothing = (write: () => void) => {
+        write();
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        rest(s, 3);
+        status.poll();
+      };
       try {
-        // a prompt of the person's that quotes the keys, and a subagent's entry that carries them
-        s.parent({ type: "user", timestamp: at(3), permissionMode: "default", origin: { kind: "human" }, turnOrigin: "human", message: { role: "user", content: 'why "turnOrigin":"scheduled" and "wakeupSource":"loop_wakeup"?' } });
-        rest(s, 4);
-        s.parent({ type: "user", isSidechain: true, isMeta: true, turnOrigin: "scheduled", wakeupSource: "loop_wakeup", timestamp: at(5), message: { role: "user", content: "check" } });
-        // nor from an entry that is no prompt
-        s.parent({ type: "assistant", turnOrigin: "scheduled", wakeupSource: "loop_wakeup", timestamp: at(5), message: { role: "assistant", content: [{ type: "text", text: "on it" }] } });
+        // a prompt of the person's that quotes the keys, and one that holds them in an object inside it
+        holdsNothing(() => s.parent({ type: "user", timestamp: at(3), permissionMode: "default", origin: { kind: "human" }, turnOrigin: "human", message: { role: "user", content: 'why "turnOrigin":"scheduled" and "wakeupSource":"loop_wakeup"?' } }));
+        holdsNothing(() => s.parent({ type: "user", timestamp: at(3), permissionMode: "default", origin: { kind: "human" }, turnOrigin: "human", message: { role: "user", content: "and this?" }, attached: scheduled }));
+        // a subagent's entry that carries them, however its line is spaced
+        holdsNothing(() => s.parent({ type: "user", isSidechain: true, isMeta: true, ...scheduled, timestamp: at(3), message: { role: "user", content: "check" } }));
+        holdsNothing(() => appendFileSync(s.path, `{"type":"user","isSidechain": true,"isMeta":true,"turnOrigin":"scheduled","wakeupSource":"loop_wakeup","timestamp":"${at(3)}","message":{"role":"user","content":"check"}}\n`));
+        // an entry that is no prompt, though it holds a user entry inside it
+        holdsNothing(() => s.parent({ type: "assistant", ...scheduled, timestamp: at(3), message: { role: "assistant", content: [{ type: "text", text: "on it" }] } }));
+        holdsNothing(() => s.parent({ type: "api-request", ...scheduled, timestamp: at(3), params: { messages: [{ type: "user" }] } }));
+        // the session's own prompt with those keys is what holds
+        resumes(s, 3);
         status.poll();
-        expect(status.loopHolds("p1")).toBe(false);
-        // a subagent's entry is told by its parsed key, however the line is spaced
-        rest(s, 6);
-        appendFileSync(s.path, `{"type":"user","isSidechain": true,"isMeta":true,"turnOrigin":"scheduled","wakeupSource":"loop_wakeup","timestamp":"${at(7)}","message":{"role":"user","content":"check"}}\n`);
-        status.poll();
-        expect(status.loopHolds("p1")).toBe(false);
+        expect(status.loopHolds("p1")).toBe(true);
       } finally { status.stop(); }
     });
 

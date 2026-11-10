@@ -705,21 +705,21 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     const id = old.pane.pane_id;
     old.rest();
     const from = Date.now();
-    // Given a fire written 50 s before the server's first read, whose turn was interrupted: no rest, and no word of herdr's.
-    fires(old.path, from - 50_000);
+    // Given a fire written 30 s before the server's first read, whose turn was interrupted: no rest, and no word of herdr's.
+    fires(old.path, from - 30_000);
     const h = hub(old.path, undefined, (paneId) => { drained.push(paneId); });
     h.herdrSays(old.pane);
     handlers.onBaseline([old.pane]);
     await h.snapshot();
     queue({ pending: h.pending, pane: old.pane });
     try {
-      // It holds for the 10 s its time (LOOP_HOLD_MS, to the millisecond in claude-subagents.test.ts) has left.
-      setSystemTime(from + 9000);
+      // It holds for the 30 s its time (LOOP_HOLD_MS, to the millisecond in claude-subagents.test.ts) has left.
+      setSystemTime(from + 29_000);
       h.poll();
       expect(h.status.queueHeld(id)).toBe(true);
       expect(h.pending.next(id)).toBeNull();
       const told = drained.length;
-      setSystemTime(from + 11_000);
+      setSystemTime(from + 31_000);
       expect(h.status.queueHeld(id)).toBe(false);
       h.poll();
       // Then the queue is told with no status event, and the message goes.
