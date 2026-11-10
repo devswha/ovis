@@ -1643,6 +1643,72 @@ describe("ClaudeSubagentStatus", () => {
         } finally { status.stop(); }
       }
     });
+
+    it("places herdr's late working by its rest word though the pane's session was looked up again since that word", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      let now = NOW;
+      const { status, told } = await tracked(s, () => now);
+      try {
+        status.quiet("p1", true);
+        // a snapshot's lookup of a session whose process is not known builds what is kept of the pane anew
+        now += 5000;
+        const before = status.sessionOf("p1");
+        await status.refresh([pane("p1", "claude")]);
+        expect(status.sessionOf("p1")).toEqual(before);
+        s.prompt(3);
+        rest(s, 4);
+        fire(s, 5);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // herdr's working, late, is still the short turn's: where its rest word stood was kept through the lookup
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(true);
+        status.quiet("p1", true);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        expect(told.at(-1)).toBe(true);
+        // and herdr's working for the wakeup's own turn, begun past that last rest word, still ends the hold
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(false);
+        expect(told.at(-1)).toBe(false);
+      } finally { status.stop(); }
+    });
+
+    it("places nothing by a rest word herdr said of the process before: another one's working waits for its own turn", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      let now = NOW;
+      let pid = 1;
+      const rests: boolean[] = [];
+      const status = new ClaudeSubagentStatus({
+        resolve: async () => ({ path: s.path, startedAt: null, pid }), pid: async () => pid,
+        onChange: (_paneId, _running, _turnRunning, _promptAt, resting) => { rests.push(resting); }, now: () => now,
+      });
+      await status.refresh([pane("p1", "claude")]);
+      try {
+        status.quiet("p1", true);
+        // a turn herdr never told, written and at rest before that process ended
+        s.prompt(3);
+        rest(s, 4);
+        status.poll();
+        // another process resumes the same transcript: what herdr says next is of that one, and waits for its turn
+        pid = 2;
+        now += 5000;
+        await status.refresh([pane("p1", "claude")]);
+        expect(rests.at(-1)).toBe(false);
+        // it began none in the time a signal is shown working (BUSY_HOLD_MS)
+        now += 5000;
+        status.poll();
+        expect(rests.at(-1)).toBe(true);
+        // herdr's working for its first turn, not written yet, is not placed by the rest word of the process before,
+        // past which only that process's turn is written: the pane is not left at that turn's rest
+        status.busy("p1", "herdr");
+        expect(rests.at(-1)).toBe(false);
+      } finally { status.stop(); }
+    });
   });
 });
 

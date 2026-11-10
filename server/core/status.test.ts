@@ -600,6 +600,34 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).not.toBeNull();
   });
 
+  it("keeps the queue held through herdr's late words though a snapshot looked the pane's session up again since its rest word", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    const from = Date.now();
+    try {
+      // Given a snapshot 5 s after herdr's idle word: the session, whose process is not known, is looked up
+      // again, and what is kept of the pane is built anew.
+      setSystemTime(from + 5000);
+      await h.snapshot();
+      // And a short turn, its rest and the wakeup's fire, all written before herdr tells that turn.
+      h.next();
+      turnEnds(h);
+      fires(h.path); h.poll();
+      queue(h);
+      expect(h.status.queueHeld(id)).toBe(true);
+      // When herdr's working and idle words for the short turn come late.
+      handlers.onStatus(id, "working", "claude");
+      handlers.onStatus(id, "idle", "claude");
+      // Then the message does not go into the wakeup's turn: the working word was still placed before the fire.
+      expect(h.pending.next(id)).toBeNull();
+      expect(h.status.queueHeld(id)).toBe(true);
+      // And the wakeup turn's rest lets it go.
+      turnEnds(h); h.poll();
+      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.pending.next(id)).not.toBeNull();
+    } finally { setSystemTime(); }
+  });
+
   it("holds the queue on the second of two loops due together, whose prompt follows the first loop turn's rest with no fire", async () => {
     const h = await rested();
     const id = h.pane.pane_id;
