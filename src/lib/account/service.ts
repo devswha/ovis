@@ -268,22 +268,24 @@ export class AccountService {
    * its first refresh, which changes the refresh token, would make every copy read before it another sign-in
    * (sameSignIn), and a call bound to such a copy (forSignIn) would then refuse its own sign-in.
    *
-   * The id is worked out from the session itself, so every tab gives the same sign-in the same id without
-   * waiting on another: a copy read here just before another tab named and refreshed it is still that sign-in,
-   * and a sign-out of it ends the refreshed one. A sign-in made meanwhile has an id of its own (sessionOf).
+   * The id is worked out from the session itself, so tabs of this build give one sign-in the same id, and it is
+   * given in the same update of the store that reads the session: a copy from here always carries the id the
+   * store holds, whichever tab named it. A sign-in made meanwhile has an id of its own (sessionOf).
    */
   async session(): Promise<AccountSession | undefined> {
-    const stored = await this.options.store.get("session");
-    if (stored === undefined || stored.sign_in_id !== undefined) return stored;
-    let named: AccountSession = { ...stored, sign_in_id: legacySignInId(stored.refresh_token) };
-    // only over the session that was read: one stored meanwhile (a refresh, another sign-in, none) stays as it is
-    await this.options.store.update("session", (current) => {
-      if (current === undefined || current.refresh_token !== stored.refresh_token) return current;
-      // named meanwhile by a tab of the build before this one, which gave a random id: that id is the stored one
-      if (current.sign_in_id !== undefined) { named = current; return current; }
-      return named;
-    });
-    return named;
+    // read and named in one update of the store, with no read before it: no other tab's write (a refresh, another
+    // sign-in, a sign-out) falls between this tab seeing the session and naming it
+    let seen: AccountSession | undefined;
+    try {
+      await this.options.store.update("session", (current) => {
+        seen = current === undefined || current.sign_in_id !== undefined ? current : { ...current, sign_in_id: legacySignInId(current.refresh_token) };
+        return seen;
+      });
+    } catch {
+      // a store that takes no write (storage full) is still read, as before sign-ins were named
+      return this.options.store.get("session");
+    }
+    return seen;
   }
 
   /**

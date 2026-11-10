@@ -333,11 +333,11 @@ describe("the hosted shell's front page", () => {
     await inner.set("session", sessionOf("acct-a", "github"));
     // another tab stores account B's sign-in right after the page read account A's
     let reads = 0;
-    const accountStore: typeof inner = { ...inner, get: (async (name: Parameters<typeof inner.get>[0]) => {
-      const value = await inner.get(name);
+    // (a session is read through the store's update: service.ts, session)
+    const accountStore: typeof inner = { ...inner, update: (async (name: Parameters<typeof inner.update>[0], change: Parameters<typeof inner.update>[1]) => {
+      await inner.update(name, change);
       if (name === "session" && ++reads === 1) await inner.set("session", sessionOf("acct-b", "google"));
-      return value;
-    }) as typeof inner.get };
+    }) as typeof inner.update };
 
     await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
     await until(() => rendered.length > 0 && account().pcs !== null, "the first list drawn");
@@ -403,7 +403,8 @@ describe("the hosted shell's front page", () => {
     await accountStore.set("session", sessionOf("acct-b", "google"));
     answer();
     await until(() => asked >= 3 && account().provider === "google" && account().error !== null, "account B's failed read drawn");
-    expect((account().pcs ?? []).map((pc) => pc.name)).toEqual([]);
+    // no skeleton under the error: the list is this device's own paired PCs, none here
+    expect(account().pcs).toEqual([]);
   });
 
   it("starts one read when two reasons to read again land in the same moment", async () => {
