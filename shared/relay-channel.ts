@@ -40,10 +40,6 @@ export class RelayUnreachableError extends Error {
 }
 
 /**
- * The PC answered the relay (its handshake began) but did not finish admitting this device within
- * ADMISSION_MS: it is online, and something on it stalled. Neither the relay nor an offline PC.
- */
-/**
  * The relay closed this client RELAY_NEW_SESSIONS_CLOSE: the PC named it as a device new to it while its relay pass
  * allows no new sessions (relay/README.md, "New sessions"). Only a device that was pairing hears it; ones the PC
  * knows still sign in.
@@ -56,6 +52,10 @@ export class RelayNewSessionsRefusedError extends Error {
   }
 }
 
+/**
+ * The PC answered the relay (its handshake began) but did not finish admitting this device within
+ * ADMISSION_MS: it is online, and something on it stalled. Neither the relay nor an offline PC.
+ */
 export class RelayAdmissionTimeoutError extends Error {
   readonly code = "admission_timeout";
   constructor(readonly phase: "handshake" | "welcome" | "auth") {
@@ -362,8 +362,11 @@ export async function openRelayChannel(offer: RelayOffer, options: RelayChannelO
     };
     const failed = (error: unknown): void => stop(error instanceof Error ? error : new Error(String(error)));
     socket.onclose = (event) => {
-      // said first: the secure channel's own close below would report a plain lost socket
-      if (event.code === RELAY_NEW_SESSIONS_CLOSE) stop(new RelayNewSessionsRefusedError());
+      // said first: the secure channel's own close below would report a plain lost socket. Only the relay says it,
+      // and only to a device that is pairing: the same code from a direct carrier's address (another host there, where
+      // 4403 often means "forbidden") or to a sign-in is a lost socket like any other, so the race goes on to the relay
+      const pairing = offer.code !== undefined || device.device_id === null;
+      if (event.code === RELAY_NEW_SESSIONS_CLOSE && direct === undefined && pairing) stop(new RelayNewSessionsRefusedError());
       transport.onclose?.(event.code, event.reason);
       stop(phase === "assigned" ? new RelayUnreachableError(event.code) : new MuxProtocolError("internal_error", "Relay socket closed"));
     };
