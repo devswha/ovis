@@ -55,10 +55,14 @@ export function ThemeFiles({ onImported }: { onImported: (sides: readonly Mode[]
         icon={FileUp}
         label={t("Theme file")}
         keywords={`${t("Import")} Base16`}
-        description={<>{t("Import a theme from a file of colors: a Base16 scheme, or a file with a dark and a light side. Only colors are read from it.")} <a className="settings-link" href={THEME_FILE_HELP} target="_blank" rel="noreferrer">{t("File format")}</a></>}
+        description={t("Import a theme from a file of colors: a Base16 scheme, or a file with a dark and a light side. Only colors are read from it.")}
         condition={status !== null && <span className={status.failed ? "settings-condition" : "settings-hint"} role={status.failed ? "alert" : "status"}>{status.text}</span>}
       >
-        <button type="button" className="btn" onClick={() => picker.current?.click()}>{t("Import")}</button>
+        {/* beside the button, not in the description: a page without sentences still says where the format is written down */}
+        <span className="settings-actions theme-file-actions">
+          <a className="settings-link" href={THEME_FILE_HELP} target="_blank" rel="noreferrer">{t("File format")}</a>
+          <button type="button" className="btn" onClick={() => picker.current?.click()}>{t("Import")}</button>
+        </span>
         {/* no `accept`: a phone's picker greys out a .yaml it has no type for, and what is no theme is refused with a reason anyway */}
         <input ref={picker} type="file" hidden onChange={(event) => {
           const file = event.target.files?.[0];

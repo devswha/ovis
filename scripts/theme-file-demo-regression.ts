@@ -91,6 +91,10 @@ try {
             assert.ok(builtIn && builtIn !== "custom", `${where}: a built-in theme is drawn before anything is imported`);
             assert.equal(await cards.count(), 0);
             assert.equal(await inline(page, "--bg"), "", `${where}: a built-in theme's colours are the stylesheet's`);
+            const format = dialog.getByRole("link", { name: "File format", exact: true });
+            assert.ok(await format.isVisible(), `${where}: the link to the file format is in sight`);
+            assert.match(await format.getAttribute("href") ?? "", /\/docs\/themes\.md$/);
+            if (evidence) await page.screenshot({ path: join(evidence, `theme-file-before-${width}-${scheme}.png`) });
 
             // a file that is no theme: said, and nothing changes
             await picker.setInputFiles(file("notes.txt", "hello, this is not a theme"));
