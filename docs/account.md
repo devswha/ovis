@@ -335,16 +335,22 @@ Tailnet Lock follow the same idea: an existing device approves once, and the ser
 messages):
 
 1. On the new PC, Settings → Devices and PCs → Account (or the first-run welcome): sign in. A PC in
-   no account is added by that sign-in, in the same step (the link page's one button reads
-   **Sign in and add this PC**): the PC lists itself in the account's directory (`PUT /v1/pcs`,
-   its relay key and relay) and opens a pairing window with `POST /api/relay/link` and the header
-   `x-ovis-local-only: 1`. Only the sign-in that just finished on that screen does this, once, and
-   only while it is still the sign-in stored. A sign-in that was already there when the screen
-   opened lists nothing by itself and offers **Add this PC to my account**, which does the same on
-   a press; so does a sign-in again for the same account. The sign-in never turns the relay on:
+   no account is added by that sign-in, in the same step: the PC lists itself in the account's
+   directory (`PUT /v1/pcs`, its relay key and relay) and opens a pairing window with
+   `POST /api/relay/link` and the header `x-ovis-local-only: 1`. Only the sign-in that just
+   finished on that screen does this, once, within a minute of it, and only under its own account:
+   the listing writes nothing when another sign-in, or none, is stored by the time it reads the
+   stored one (another tab signed out and in), and the screen then shows the button. A listing
+   that gets no answer within a minute is given up the same way, and writes nothing late. A
+   sign-in that was already there when the screen opened lists nothing by itself and offers
+   **Add this PC to my account**, which does the same on a press; so does a sign-in again for the
+   same account, and one that ended before the PC answered. The sign-in never turns the relay on:
    with the relay off it lists nothing and offers **Turn on the relay and add this PC**, one press
-   for both (a browser that is in only because the device gate is still open is paired first, as
-   turning the relay on closes that gate).
+   for both, which lists under that sign-in only. The link page's one button reads
+   **Sign in and add this PC** only where the sign-in does add it (a PC in no account, its relay
+   on, a browser that drives it), else **Sign in**. A browser the PC refuses its account
+   (`owner_only`: in only through an open device gate, or a Portal visitor) is offered none of
+   this.
    What the window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
    once the PC has members. The screen keeps the window open while it waits: it asks for the link again

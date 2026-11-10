@@ -6,7 +6,7 @@ import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/
 import { encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { AccountService } from "../lib/account/service.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
+import { indexedAccountStore, type AccountSession } from "../lib/account/store.ts";
 import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
@@ -35,9 +35,22 @@ describe("signing in on a PC's own page", () => {
   let approveWith: "github" | "google";
   /** how far the account service's clock runs ahead of this one */
   let ahead: number;
+  /** this PC's relay, and what this browser may do on the PC */
+  let relay: "online" | "off";
+  let role: "drive" | "watch";
+  /** while true, this PC's account is asked for and never answered */
+  let statusHangs: boolean;
+  /** while true, the account service takes no sign-in for good any more: `ended` is the one stored when it first said so */
+  let refuses: boolean;
+  let ended: AccountSession | undefined;
 
   beforeEach(() => {
     ahead = 0;
+    relay = "online";
+    role = "drive";
+    statusHangs = false;
+    refuses = false;
+    ended = undefined;
     approveWith = "github";
     fake = new FakeAccountService(() => Date.now() + ahead);
     fake.offerLinkPage(["github", "google"]);
@@ -69,10 +82,19 @@ describe("signing in on a PC's own page", () => {
       const url = new URL(String(input instanceof Request ? input.url : input), "https://workstation.example.ts.net");
       if (url.origin !== SERVICE) {
         asked.push({ path: url.pathname, localOnly: new Headers(input instanceof Request ? input.headers : init?.headers).get("x-ovis-local-only") === "1" });
+        if (url.pathname === "/api/account/status" && statusHangs) return new Promise<Response>(() => {});
+        if (url.pathname === "/api/relay") return Response.json({ phase: relay, relay: "wss://relay.ovis.example", app: "https://app.ovis.example", sessions: 0, blocked: null, error: null });
+        if (url.pathname === "/api/relay/start") { relay = "online"; return Response.json({ phase: "connecting", relay: "wss://relay.ovis.example", app: "https://app.ovis.example", sessions: 0, blocked: null, error: null }); }
+        if (url.pathname === "/api/health") return Response.json({ ok: true, bridge_protocol: 1, auth: { required: false, authenticated: true, via: "loopback", role }, security: { pairing_gate: "closed", token_configured: false } });
+        if (url.pathname === "/api/relay/link" && relay === "off") return Response.json({ error: { code: "relay_off", message: "Start the relay before pairing." } }, { status: 409 });
         if (url.pathname === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
         if (url.pathname === "/api/relay/link") return Response.json({ url: OFFER });
         if (url.pathname === "/api/relay/link/close") return Response.json({ ok: true });
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
+      }
+      if (refuses) {
+        ended ??= await indexedAccountStore.get("session");
+        return Response.json({ error: { code: "unauthorized", message: "Sign in again" } }, { status: 401 });
       }
       // the link page's code is approved there as this page's first poll comes in
       // (a provider's own device page, which a sign-in again goes to, likewise)
@@ -110,6 +132,10 @@ describe("signing in on a PC's own page", () => {
   };
   const mount = async (): Promise<void> => {
     await act(async () => { renderer = create(<SettingsProvider><AccountSection /></SettingsProvider>); });
+  };
+  /** asks the section to read the stored sign-in again, as Settings does */
+  const recheck = async (count: number): Promise<void> => {
+    await act(async () => { renderer!.update(<SettingsProvider><AccountSection recheck={count} /></SettingsProvider>); });
   };
   const press = async (label: string): Promise<void> => {
     const found = renderer!.root.findAll((node) => node.type === "button" && text(node) === label);
@@ -189,5 +215,58 @@ describe("signing in on a PC's own page", () => {
     expect(links()).toHaveLength(0);
     expect(buttons()).not.toContain("Stop waiting");
     expect(buttons()).not.toContain("Add this PC to my account");
+  });
+
+  it("says only Sign in while the relay is off: the sign-in then offers the one button that turns it on and adds the PC", async () => {
+    relay = "off";
+    await mount();
+    await until(() => buttons().includes("Sign in"));
+    // fixed wait: proves the button does not come to promise what this sign-in will not do
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(buttons()).not.toContain("Sign in and add this PC");
+    await press("Sign in");
+    await until(() => buttons().includes("Turn on the relay and add this PC"));
+    expect(asked.some((request) => request.path === "/api/relay/start")).toBe(false);
+    expect(await new AccountService({ store: indexedAccountStore }).listPcs()).toEqual([]);
+    await press("Turn on the relay and add this PC");
+    await until(() => buttons().includes("Stop waiting"));
+    expect(asked.filter((request) => request.path === "/api/relay/start")).toHaveLength(1);
+    expect(links().every((request) => request.localOnly)).toBe(true);
+    expect((await new AccountService({ store: indexedAccountStore }).listPcs()).map((pc) => pc.server_id)).toEqual([SERVER]);
+  });
+
+  it("says only Sign in to a device that only watches this PC", async () => {
+    role = "watch";
+    await mount();
+    await until(() => buttons().includes("Sign in"));
+    // fixed wait: proves the button does not come to promise what this sign-in will not do
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(buttons()).not.toContain("Sign in and add this PC");
+  });
+
+  it("a sign-in that ended before the PC was read is none that just finished: the same account stored again later lists nothing by itself", async () => {
+    await mount();
+    await until(() => buttons().includes("Sign in and add this PC"));
+    // the PC does not answer for its account, and the account service ends the sign-in as soon as it is made
+    statusHangs = true;
+    await press("Sign in and add this PC");
+    await until(() => text(renderer!.root).includes("Signed in with GitHub"));
+    refuses = true;
+    await recheck(1);
+    await until(() => text(renderer!.root).includes("Your sign-in ended."));
+    expect(ended?.account).toBe(ACCOUNT);
+    expect(links()).toHaveLength(0);
+
+    // another tab of this browser signs in to the same account, and this screen reads it
+    refuses = false;
+    statusHangs = false;
+    await indexedAccountStore.set("session", ended);
+    await recheck(2);
+    await until(() => buttons().includes("Add this PC to my account"));
+    // fixed wait: proves that nothing is listed or opened by itself
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(buttons()).not.toContain("Stop waiting");
+    expect(links()).toHaveLength(0);
+    expect(await new AccountService({ store: indexedAccountStore }).listPcs()).toEqual([]);
   });
 });
