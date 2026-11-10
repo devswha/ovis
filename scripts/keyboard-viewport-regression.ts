@@ -250,16 +250,22 @@ try {
   }
   // an iPad home-screen app in landscape: the visual viewport stops above the status bar while the shell would be
   // 100dvh tall, so the page could scroll by that band whenever a field takes the focus. The shell fits the visual
-  // viewport, also at Safari's page zoom; a pinch, a keyboard-sized gap, a Safari tab or a phone keep the rules above
-  for (const [name, size, visual, scale, pinched, standalone, fits] of [
-    ["iPad landscape", { width: 1180, height: 820 }, 796, 1, false, true, true],
-    ["iPad landscape at 85% page zoom", { width: 1180, height: 820 }, 796, 0.85, false, true, true],
-    ["iPad landscape pinched", { width: 1180, height: 820 }, 796, 2, true, true, false],
-    ["iPad landscape, keyboard-sized gap", { width: 1180, height: 820 }, 500, 1, false, true, false],
-    ["iPad landscape Safari tab", { width: 1180, height: 820 }, 796, 1, false, false, false],
-    ["phone landscape", { width: 852, height: 393 }, 372, 1, false, true, false],
+  // viewport, also at Safari's page zoom; a pinch, a keyboard-sized gap, a Safari tab or a phone keep the rules above.
+  // Page zoom scales the layout (125% of an 1180x820 screen lays out 944x656) and leaves the screen's own size, so
+  // the iPad is told by its screen. Each case reads the shell right after the load, with no clock: the first sync
+  // of a page never waits for a shrink
+  const ipad = { width: 1180, height: 820 };
+  for (const [name, size, screen, visual, scale, pinched, standalone, fits] of [
+    ["iPad landscape", ipad, ipad, 796, 1, false, true, true],
+    ["iPad landscape at 85% page zoom", { width: 1388, height: 965 }, ipad, 936, 0.85, false, true, true],
+    ["iPad landscape at 125% page zoom", { width: 944, height: 656 }, ipad, 637, 1.25, false, true, true],
+    ["iPad landscape in a 600px window", { width: 600, height: 700 }, ipad, 676, 1, false, true, true],
+    ["iPad landscape pinched", ipad, ipad, 796, 2, true, true, false],
+    ["iPad landscape, keyboard-sized gap", ipad, ipad, 500, 1, false, true, false],
+    ["iPad landscape Safari tab", ipad, ipad, 796, 1, false, false, false],
+    ["phone landscape", { width: 852, height: 393 }, { width: 852, height: 393 }, 372, 1, false, true, false],
   ] as const) {
-    const context = await browser.newContext({ viewport: size, screen: size, isMobile: true, hasTouch: true });
+    const context = await browser.newContext({ viewport: size, screen, isMobile: true, hasTouch: true });
     try {
       await context.addInitScript(({ layout, visual, scale, pinched, standalone }) => {
         const fake = new EventTarget();

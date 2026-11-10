@@ -123,10 +123,12 @@ const applyKeyboard = (): void => {
     // gets the focus: the whole shell slid up and back on every tap into the composer. With no keyboard and
     // no browser chrome, the visual viewport is the whole usable screen, so the shell fits it. Only a small
     // band counts; a larger gap is a keyboard or a split view, which the rules above own. iPads only (the
-    // smallest is 744px on its short side); a phone keeps the rule above. Safari's page zoom reports as a
-    // scale below 1 with the visual viewport as wide as the layout, a pinch zoom narrows it: the width test
-    // keeps this on at a page zoom and off while pinched.
-    else if (standalone && Math.min(window.innerWidth, window.innerHeight) >= 744 && viewport
+    // smallest is 744 points on its short side); a phone keeps the rule above. The screen tells the iPad,
+    // not the layout: an enlarged page zoom (125% lays an 820-point side out at 656px) or a narrow window
+    // shrinks the layout under 744px on the same iPad. Safari's page zoom reports as a scale other than 1
+    // with the visual viewport as wide as the layout, a pinch zoom narrows it: the width test keeps this
+    // on at a page zoom and off while pinched.
+    else if (standalone && Math.min(window.screen.width, window.screen.height) >= 744 && viewport
       && Math.abs(viewport.width - document.documentElement.clientWidth) < 2 && large - height > 0 && large - height < reference * 0.2)
       root.style.setProperty("--app-height", `${Math.round(height)}px`);
     else root.style.removeProperty("--app-height");
