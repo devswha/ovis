@@ -829,7 +829,11 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           if (left === null) {
             // its relay pass is asked under the account that signed in, whatever a member of the other one named
             await joining.name();
-            say(`${said} This PC is in no account again. Run ovis add again, and scan the code with a device signed in to the account you signed in to here.\n`);
+            // more kept pairing than was looked again for: the last of them is paired still, and the next run would
+            // take it for one this PC had before
+            say(open === "more"
+              ? `${said} This PC is in no account again, but more devices paired with it while these were removed, and one may still be paired. Open Settings → Devices and PCs on this PC and revoke any device there that is not yours, then run ovis add again.\n`
+              : `${said} This PC is in no account again. Run ovis add again, and scan the code with a device signed in to the account you signed in to here.\n`);
             return 1;
           }
           // held there by a device paired before this run, or by one that could not be removed. Its relay pass is not

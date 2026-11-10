@@ -1581,6 +1581,20 @@ describe("ovis link, on the PC itself", () => {
     expect(unread.service.pcs("acct_1").length).toBe(1);
   });
 
+  it("says that a device may still be paired when more keep pairing than it looks again for, also once the PC is out of the other account", async () => {
+    // the other account's phone goes at once, and with it the PC is in no account again; but a device pairs for
+    // each one removed (with a code that was passed on, say), and the last of them is still paired
+    let came = 0;
+    const { code, out, revoked, named } = await scanning({
+      step: (state, looks) => { if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; } },
+      revoke: (state) => { came++; state.devices = [...state.devices, { ...DIRECT, id: `00000000000000d${came}`, label: `Stray ${came}` }]; return undefined; },
+    });
+    expect(code).toBe(1);
+    expect(revoked).toEqual([PHONE.id, "00000000000000d1", "00000000000000d2", "00000000000000d3"]);
+    expect(out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone, Stray 1, Stray 2, Stray 3 paired with this PC since the code was shown and were removed. This PC is in no account again, but more devices paired with it while these were removed, and one may still be paired. Open Settings → Devices and PCs on this PC and revoke any device there that is not yours, then run ovis add again.\n");
+    expect(named.filter((account) => account !== "acct_1")).toEqual([]);
+  });
+
   it("goes on when a device of the account that signed in links itself as the other account's devices go", async () => {
     const owner: Row = { ...OLD, account: "acct_1" };
     const { code, out, revoked } = await scanning({

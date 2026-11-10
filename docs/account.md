@@ -133,7 +133,9 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   (`POST /api/devices/pair/start`, through the relay or at the PC's own address) or was handed
   (`POST /api/relay/offer`, `POST /api/relay/code`). Revoking that device, on the PC or by an
   account `remove`, ends the code and the typed code bound to it: whoever the device passed the
-  code to cannot pair after it is gone. A code the PC itself started is held by no device.
+  code to cannot pair after it is gone. A device revoked while its request for a code is on its
+  way starts none and is handed none (`401 unauthorized`). A code the PC itself started is held
+  by no device.
 - **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
   `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
   itself as the PC's first member, so the PC joins that device's account. The code is therefore
@@ -788,6 +790,10 @@ with "continue only if you started this on your own PC".
   about, and the command ends well, naming it as the device that added the PC. What still shows
   it: every admission is announced on every device connected to the PC, and the command prints
   the device's name.
+- **A code a driving device has the PC itself start.** A device that drives (one the QR code of
+  `ovis add` let in, say) can have the PC start a pairing code through its loopback address from
+  a terminal pane, as the PC's own user: that code is held by no device, so it survives the
+  device's removal.
 - **Someone who gets a person to type their device code at GitHub** (device-code phishing, true of
   every RFC 8628 sign-in) gets a sign-in to that person's account: they can list, rename and remove
   its PCs in the directory, fill mailboxes, post admissions and spend the ring budget. They still

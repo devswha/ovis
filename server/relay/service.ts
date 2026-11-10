@@ -572,6 +572,7 @@ export class RelayService {
     if (!this.enabled || !this.identity || !this.services || this.blocked) throw new Error("Start the relay before pairing.");
     const devices = this.services.devices;
     const pairing = devices.activePairing() ?? devices.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by });
+    // before the code leaves this PC: a device revoked by now is handed none (DeviceGoneError)
     if (by !== null) devices.holdPairing(by);
     return {
       url: encodeOffer({ v: 1, server_id: this.identity.server_id, server_public_key: this.identity.public_key,

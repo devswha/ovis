@@ -1,3 +1,4 @@
+import { DeviceGoneError } from "../devices.ts";
 import { errorResponse, jsonResponse, readJsonObject, setRequestRoute } from "../http.ts";
 import type { ServerContext } from "../dispatch.ts";
 import { updateRequestAllowed } from "../update-api.ts";
@@ -112,5 +113,9 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       }
       default: return fail("method_not_allowed", "Unknown relay action.", 405);
     }
-  } catch (error) { return errorResponse(error); }
+  } catch (error) {
+    // the device that asked for an offer or a code was revoked while its request was on its way: it is handed none
+    if (error instanceof DeviceGoneError) return fail(error.code, error.message, 401);
+    return errorResponse(error);
+  }
 }

@@ -349,8 +349,10 @@ it is off, and wait until it is online.
     (`POST /api/account/relay-account`), and the command fails with **Run ovis add again**. When
     a device paired before this run holds this PC in that account, or a device could not be
     removed, the command says so, takes this PC off the list of the account that signed in and
-    names **Revoke all** in Settings → Devices and PCs. It never names the other account for the
-    relay pass.
+    names **Revoke all** in Settings → Devices and PCs. When this PC's devices or its account
+    cannot be read after the removal, or more devices keep pairing than the command looks again
+    for (four times), it says that one **may still be paired** and where to revoke it, also when
+    this PC is out of that account again. It never names the other account for the relay pass.
   - A device whose row names the account that signed in is taken as that account's and is not
     asked about. That is the device's own word, not a proof: an account's first member on a PC
     links itself, and names its account in a record its own key signed

@@ -35,6 +35,18 @@ export class PairingRateLimitedError extends Error {
   }
 }
 
+/**
+ * The paired device a request came from is paired no more: it was revoked while the request was on its way (a relay
+ * round trip, a look-up of who asks). It gets no pairing code: a code held by a device that is already gone is one
+ * no revoke ends.
+ */
+export class DeviceGoneError extends Error {
+  readonly code = "unauthorized";
+  constructor() {
+    super("this device is no longer paired");
+  }
+}
+
 /** Canonical base64url SPKI containing a public P-256 key, never private key material. */
 function isRelayPublicKey(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value)) return false;
@@ -482,24 +494,30 @@ export class DeviceStore {
 
   /**
    * A fresh six-digit code, replacing any code still pending. `by`: the paired device whose request started it
-   * (null for this PC itself), which holds it from then on.
+   * (null for this PC itself), which holds it from then on. One that is paired no more by now starts nothing
+   * (DeviceGoneError), and the code pending stays as it was.
    */
   startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; by?: string | null } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
     this.assertWritable();
+    const { by = null, ...how } = from;
+    for (const id of [by, how.startedBy]) if (id !== null && !this.has(id)) throw new DeviceGoneError();
     this.pruneUnconfirmedFirstPairs(now);
     this.codeIssues = this.codeIssues.filter((at) => now - at < PAIRING_WINDOW_MS);
     if (this.codeIssues.length >= 10) throw new PairingRateLimitedError(Math.ceil(((this.codeIssues[0] ?? now) + PAIRING_WINDOW_MS - now) / 1000));
     this.codeIssues.push(now);
     const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-    const { by = null, ...how } = from;
     this.pending = { code, expires: now + CODE_TTL_MS, attempts: 0, ...how, holders: new Set([by, how.startedBy].filter((id): id is string => id !== null)) };
     const started = { code, expires_at: new Date(this.pending.expires).toISOString() };
     for (const listener of this.codeStarts) listener();
     return started;
   }
 
-  /** The paired device `id` was handed the code pending (a relay offer it asked for carries it): it holds it too. */
+  /**
+   * The paired device `id` is handed the code pending (a relay offer it asked for carries it): it holds it too.
+   * Called before the code leaves this PC: a device that is paired no more by now is handed nothing (DeviceGoneError).
+   */
   holdPairing(id: string): void {
+    if (!this.has(id)) throw new DeviceGoneError();
     this.pending?.holders.add(id);
   }
 
@@ -1124,6 +1142,8 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
       return jsonResponse(store.startPairing(Date.now(), { remote, startedBy, memberRequired: remote && store.account() !== null, by }), 200, { "cache-control": "no-store" });
     } catch (error) {
       if (error instanceof PairingRateLimitedError) return jsonResponse({ error: { code: error.code, message: error.message } }, 429, { "retry-after": String(error.retryAfter), "cache-control": "no-store" });
+      // revoked since this request was let in: answered as its next request will be
+      if (error instanceof DeviceGoneError) return jsonResponse({ error: { code: error.code, message: error.message } }, 401, { "cache-control": "no-store" });
       throw error;
     }
   }

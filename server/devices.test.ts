@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DevicePairedEvent } from "../shared/protocol.ts";
-import { DeviceStore, handleDeviceRequest, newStreamKey, normalizeLabel, PairingRateLimitedError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
+import { DeviceGoneError, DeviceStore, handleDeviceRequest, newStreamKey, normalizeLabel, PairingRateLimitedError, readDeviceRegistry, sameBrowser, streamCookie, streamKeys } from "./devices.ts";
 import { privateStateFs } from "./private-state.ts";
 import { isTaggedNode, parseTailscaleOwner } from "./tailscale.ts";
 
@@ -605,6 +605,27 @@ describe("revoking a device that holds a pairing code", () => {
     const own = await (await call(store, "POST", "/api/devices/pair/start", local)).json() as { code: string };
     expect((await call(store, "DELETE", `/api/devices/${phone.id}`, local)).status).toBe(204);
     expect(store.activePairing()?.code).toBe(own.code);
+  });
+
+  it("starts no code for a device that is gone by then, and hands it none: no later revoke would end it", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "revoke-code-gone-")));
+    const paired = store.pair(store.startPairing().code, "Laptop", "drive")!;
+    store.match(paired.token);
+    const laptop = paired.device;
+    // revoked while its request was on its way (a relay round trip, a look-up of who asks)
+    expect(store.revoke(laptop.id)).toBe(true);
+    expect(() => store.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by: laptop.id })).toThrow(DeviceGoneError);
+    expect(() => store.startPairing(Date.now(), { remote: true, startedBy: laptop.id, memberRequired: false })).toThrow(DeviceGoneError);
+    expect(store.activePairing()).toBeNull();
+    // nor is it handed the code this PC started, which stays this PC's
+    const own = store.startPairing();
+    expect(() => store.holdPairing(laptop.id)).toThrow(DeviceGoneError);
+    const refused = await call(store, "POST", "/api/devices/pair/start", { level: "full", via: "device", role: "drive", device: laptop });
+    expect([refused.status, await refused.json()]).toEqual([401, { error: { code: "unauthorized", message: "this device is no longer paired" } }]);
+    expect(store.activePairing()?.code).toBe(own.code);
+    // a refused start is not one of the ten codes a window allows
+    for (let asked = 0; asked < 12; asked++) expect(() => store.startPairing(Date.now(), { remote: false, startedBy: null, memberRequired: false, by: laptop.id })).toThrow(DeviceGoneError);
+    expect(store.startPairing().code).toMatch(/^\d{6}$/);
   });
 
   it("ends a code a device was handed, not only one it started", () => {

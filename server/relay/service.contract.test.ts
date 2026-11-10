@@ -18,6 +18,7 @@ import type { SessionError } from "../../shared/relay-mux.ts";
 import type { RelayStatus, ServerMessage } from "../../shared/protocol.ts";
 import { createServer } from "../index.ts";
 import { loadRelayIdentity, relayIdentityPath } from "./identity.ts";
+import { handleRelayRequest } from "./routes.ts";
 import { RelayService } from "./service.ts";
 import type { RelayServiceOptions } from "./service.ts";
 import { bounded, deferred, TestClock } from "./test-helpers.ts";
@@ -331,6 +332,11 @@ it("ends the relay offer's code, and a typed code, with the paired device that a
   const kept = await f.offer();
   devices.revoke(other.id);
   expect(devices.activePairing()?.code).toBe(kept.code);
+  // a device revoked while its request was on its way is handed nothing and starts nothing
+  for (const path of ["/api/relay/offer", "/api/relay/code"]) {
+    const late = await handleRelayRequest(new Request(f.base + path, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1" } }), path, f.app.context, other.id);
+    expect([path, late.status, await late.json()]).toEqual([path, 401, { error: { code: "unauthorized", message: "this device is no longer paired" } }]);
+  }
 });
 
 it("names the PC in the relay offer as Ovis lists it", async () => {
