@@ -348,6 +348,34 @@ describe("the hosted shell's front page", () => {
     expect(asked.every((bearer) => bearer.endsWith("acct-b"))).toBe(true);
   });
 
+  it("drops a directory answer that lands after another tab stored another sign-in, and reads as that one", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const sessionOf = (account: string, provider: "github" | "google") => ({ service: SERVICE, account, provider, access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: now + 3_600_000, sign_in_id: `id-${account}` });
+    const row = (label: string) => ({ server_id: desk.server_id, label, added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: null, public_key: null, relay: AP });
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    let asked = 0;
+    const accountFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const forB = (new Headers(init?.headers).get("authorization") ?? "").endsWith("acct-b");
+      asked += 1;
+      if (!forB) await held;
+      return ({ status: 200, ok: true, json: async () => ({ pcs: [row(forB ? "B's PC" : "A's PC")] }) }) as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", sessionOf("acct-a", "github"));
+
+    const mounted = mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => asked === 1, "account A's directory asked");
+    // another tab signs in as B while A's answer is on its way
+    await accountStore.set("session", sessionOf("acct-b", "google"));
+    answer();
+    await mounted;
+    await until(() => rendered.length > 0 && account().pcs !== null, "a list drawn");
+    expect(account().provider).toBe("google");
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["B's PC"]);
+  });
+
   it("starts one read when two reasons to read again land in the same moment", async () => {
     jest.useFakeTimers();
     const desk = keyFor();

@@ -71,6 +71,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const devices = await store.list();
         const key = await accountStore.key();
         if (!live()) return;
+        // the answer was on its way while another tab stored another sign-in, or none: it is not drawn
+        const still = await account.session();
+        if (!live()) return;
+        if (still === undefined) throw new SignedOutError();
+        if (!sameSignIn(still, session)) { replaced = true; return; }
         directory = listed;
         listedFor = { epoch, accountKey: key.public_spki, account: session.account };
         accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(listed, devices, { now: Date.now(), accountKey: key.public_spki, account: session.account, outdated: view.outdated() }) };
