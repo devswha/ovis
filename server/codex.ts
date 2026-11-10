@@ -21,6 +21,7 @@ import { kiroCodexProcess, kiroNested, kiroWrapper } from "./kiro-terminal.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { FOOTER } from "./codex-steering.ts";
 import { codexStartScreenUnused } from "./start-screen.ts";
+import { readRegularText } from "./pi-models.ts";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -1840,6 +1841,159 @@ function titledCandidate(agent: Pick<AgentInfo, "terminal_title" | "terminal_tit
   return rows.length === 1 ? codexRolloutPath(rows[0]!.rollout_path, home) : null;
 }
 
+/** A unique current session-index name in the terminal title; names alone never authorize a read. */
+export function namedCodexThread(title: string, index: string, eligible?: ReadonlySet<string>): string | null {
+  const names = new Map<string, string>();
+  try {
+    for (const line of index.split("\n")) {
+      if (line.trim() === "") continue;
+      const row = record(JSON.parse(line));
+      const id = string(row.id);
+      // a row of another shape names no thread; one without a name clears its thread's
+      if (!UUID.test(id)) continue;
+      if (typeof row.thread_name === "string") names.set(id, asCodexTitle(row.thread_name));
+      else names.delete(id);
+    }
+  } catch { return null; }
+  const shown = asCodexTitle(title).replace(/^[\u2800-\u28ff]\s+/, "");
+  const ids = [...names].filter(([, name]) => name.length >= 4 && (shown === name || shown.startsWith(`${name} | `))).map(([id]) => id);
+  // unique among every saved name, not only this folder's: a namesake elsewhere may be the thread a picker resumed here
+  return ids.length === 1 && (eligible === undefined || eligible.has(ids[0]!)) ? ids[0]! : null;
+}
+
+/** A long fragment of the latest prompt or answer. Only with independent unique name identity. */
+export function namedCodexAnswerShown(screen: string, rollout: string): boolean {
+  const turns = parseCodexTranscript(rollout, Infinity);
+  const last = turns.filter((turn) => turn.role === "assistant").at(-1);
+  const answers = last?.parts.flatMap((part) => part.kind === "text" ? [normalizeDisplay(part.text)] : []) ?? [];
+  const user = turns.filter((turn) => turn.role === "user").at(-1);
+  const asked = user?.parts.flatMap((part) => part.kind === "text" ? [normalizeDisplay(part.text)] : []) ?? [];
+  const footed = footedAnswer(screen);
+  if (footed !== null && user !== undefined && last !== undefined) {
+    const prompt = user.parts.flatMap((part) => part.kind === "text" ? [part.text] : []).join("\n");
+    if (promptKey(prompt) === promptKey(footed.prompt) && prompt.trim().length >= 2
+      && last.parts.some((part) => part.kind === "text" && part.text.trim().length >= 4 && completedAnswerMatches(part.text, footed.text))) return true;
+  }
+  // a prompt still in the composer is a draft, not a sent one: only one Codex answered or ran a tool after counts
+  const lines = screen.split("\n");
+  // and only the latest sent one: an earlier prompt that matches is not what this screen is on now
+  const prompts = lines.filter((line, at) => line.startsWith("›") && lines.slice(at + 1).some((next) => next.startsWith("•"))).slice(-1);
+  const latestPrompt = user?.parts.flatMap((part) => part.kind === "text" ? [part.text] : []).join("\n") ?? "";
+  const exactPrompt = (text: string) => text.normalize("NFKC").replace(/\s+/g, "");
+  for (const prompt of prompts) {
+    // A complete prompt is evidence even while tools are running. A clipped prefix is not.
+    const whole = prompt.replace(/^›[ \t]?/, "").trim();
+    if (exactPrompt(whole).length >= 4 && whole !== "Ask Codex to do anything" && !whole.includes("…")
+      && exactPrompt(whole) === exactPrompt(latestPrompt)) return true;
+    const shown = normalizeDisplay(prompt.replace(/[…].*$/, ""));
+    if (shown.length >= 48 && new Set(shown).size >= 16 && asked.some((text) => text.startsWith(shown))) return true;
+  }
+  if (answers.length === 0) return false;
+  for (const part of codexScreenParts(screen)) {
+    if (part.tool) continue;
+    let body = part.text;
+    if (part.prompt) {
+      // A clipped screen can retain the prompt and only the indented tail of its answer.
+      // Its completed-turn footer, after the first blank line, is required in this case.
+      const lines = body.split("\n");
+      const gap = lines.findIndex((line) => line.trim() === "");
+      const reverse = [...lines].reverse().findIndex((line) => CODEX_TURN_FOOTER.test(line));
+      const footer = reverse < 0 ? -1 : lines.length - 1 - reverse;
+      if (gap < 0 || footer <= gap) continue;
+      body = lines.slice(gap + 1, footer).join("\n");
+    }
+    const shown = normalizeDisplay(body);
+    for (let at = 0; at + 160 <= shown.length; at += 16) {
+      const fragment = shown.slice(at, at + 160);
+      if (new Set(fragment).size >= 24 && answers.some((answer) => answer.includes(fragment))) return true;
+    }
+  }
+  return false;
+}
+
+/** Appending is normal during tool work; replacement or truncation invalidates the read. */
+export function namedCodexAppendCompatible(before: { dev: number; ino: number; size: number }, after: { dev: number; ino: number; size: number }): boolean {
+  return before.dev === after.dev && before.ino === after.ino && after.size >= before.size;
+}
+
+/** More other panes than this, and a saved name recovers no thread: each would cost a process read. */
+export const CODEX_PEER_PANE_LIMIT = 64;
+/** Process reads in flight at once while other panes are asked. */
+const PEER_PROCESS_READS = 4;
+
+/**
+ * Whether another pane has this thread: bound to it here, or started on it (`codex resume <id>`, which binds
+ * nothing). Every other pane is asked, in any folder and with any label, and any of its processes may hold it; one
+ * that cannot be asked, or a process whose command line cannot be read, counts as having it.
+ */
+async function heldByAnotherPane(paneId: string, thread: { id: string; path: string }, panes?: HerdrPane[]): Promise<boolean> {
+  if ([...boundRollouts].some(([pane, bound]) => pane !== paneId && bound.path === thread.path)) return true;
+  try {
+    const others = (panes ?? (await sessionSnapshot()).panes).filter((pane) => pane.pane_id !== paneId);
+    if (others.length > CODEX_PEER_PANE_LIMIT) return true;
+    let held = false, next = 0;
+    // a few reads at a time, and none once one pane holds it
+    await Promise.all(Array.from({ length: Math.min(PEER_PROCESS_READS, others.length) }, async () => {
+      while (!held && next < others.length) {
+        const pane = others[next++]!;
+        try {
+          const { list, unread } = await codexProcessesOf(pane.pane_id);
+          if (unread || resumedThreads(list.map((codex) => codex.argv ?? [])).some((id) => id.toLowerCase() === thread.id.toLowerCase())) held = true;
+        } catch { held = true; }
+      }
+    }));
+    return held;
+  } catch { return true; }
+}
+
+/** Recover an unbound pane using two independent facts, rechecked across the read. Never remembers a guessed binding. */
+async function namedConversation(paneId: string, cwd: string, home: string, title: string, processes: string): Promise<{ id: string; path: string } | null> {
+  let opened: ReturnType<typeof openCodexStore> | undefined;
+  try {
+    const indexPath = join(home, "session_index.jsonl");
+    const titled = asCodexTitle(title).replace(/^[\u2800-\u28ff]\s+/, "");
+    /** the title up to each " | ": a folder's own name may hold the separator Codex puts between items */
+    const leads = titled.split(" | ").map((_, at, items) => items.slice(0, at + 1).join(" | "));
+    const folderTitle = (folder: unknown) => typeof folder === "string"
+      && [false, true].some((screen) => leads.includes(asCodexTitle(nodePath.basename(withoutVerbatimPrefix(folder)), screen)));
+    if (folderTitle(cwd)) return null;
+    const indexStat = statSync(indexPath);
+    // read non-blocking from the descriptor it checks, so a FIFO here cannot hold the server's thread
+    const index = indexStat.isFile() ? readRegularText(indexPath, 8 * 1024 * 1024) : null;
+    if (index === null) return null;
+    const signature = (value: NonNullable<ReturnType<typeof statSync>>) => `${value.dev}:${value.ino}:${value.size}:${value.mtimeMs}:${value.ctimeMs}`;
+    opened = openCodexStore(home);
+    // with no thread name Codex's title shows the project alone, and a picker may have resumed an unnamed thread
+    // of any folder here: a title that may be only some thread's folder is no identity
+    if (opened.db.query<{ cwd: unknown }, []>("SELECT DISTINCT cwd FROM threads").all().some((row) => folderTitle(row.cwd))) return null;
+    const folder = storedCwdCondition(cwd);
+    const eligible = new Set(opened.db.query<{ id: string }, string[]>(`SELECT id FROM threads WHERE ${folder.where} AND archived = 0${interactive(opened.db)}`).all(...folder.params).map((row) => row.id));
+    const id = namedCodexThread(title, index, eligible);
+    if (id === null) return null;
+    const row = opened.db.query<{ rollout_path: string }, [string]>("SELECT rollout_path FROM threads WHERE id = ? AND archived = 0").get(id);
+    opened.settled();
+    const path = row && codexRolloutPath(row.rollout_path, home);
+    if (!path) return null;
+    const meta = rolloutHeader(path);
+    if (meta?.id !== id || typeof meta.cwd !== "string" || !sameDirectory(meta.cwd, cwd)) return null;
+    const before = statSync(path);
+    const screen = await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true });
+    // the same 1 MiB the screen match reads: this runs on every poll while nothing binds the pane
+    if (!namedCodexAnswerShown(screen.text, codexHistoryTail(path, 1024 * 1024, home))) return null;
+    const after = await codexAgentInfo(paneId);
+    if (asCodexTitle(after.terminal_title_stripped ?? after.terminal_title ?? "") !== asCodexTitle(title)) return null;
+    const current = await openRollouts(paneId, home, after.processRead?.info);
+    if (current.codexProcesses.length === 0 || current.processes !== processes || processes === "") return null;
+    const shown = await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true });
+    const reread = codexHistoryTail(path, 1024 * 1024, home);
+    const finalMeta = rolloutHeader(path);
+    return namedCodexAnswerShown(shown.text, reread) && namedCodexAppendCompatible(before, statSync(path))
+      && finalMeta?.id === id && typeof finalMeta.cwd === "string" && sameDirectory(finalMeta.cwd, cwd)
+      && signature(indexStat) === signature(statSync(indexPath)) ? { id, path } : null;
+  } catch { return null; }
+  finally { opened?.db.close(); }
+}
+
 /**
  * The history id of the conversation a Codex started in a terminal has not begun, or null unless
  * every fact says it has begun none (#1191). This server did not start it (launched-agents.ts),
@@ -1904,12 +2058,16 @@ export async function codexFreshSession(paneId: string, cwds: readonly string[],
 
 /** `codex resume <thread>`: the thread a TUI was started on, straight from its command line. */
 export function resumedThread(argvs: readonly (readonly string[])[]): string | null {
-  for (const argv of argvs) {
+  return resumedThreads(argvs)[0] ?? null;
+}
+
+/** Every thread these processes were resumed on (`codex resume <thread>`), in order. */
+export function resumedThreads(argvs: readonly (readonly string[])[]): string[] {
+  return argvs.flatMap((argv) => {
     const at = argv.indexOf("resume");
     const thread = at < 0 ? undefined : argv[at + 1];
-    if (thread !== undefined && UUID.test(thread)) return thread;
-  }
-  return null;
+    return thread !== undefined && UUID.test(thread) ? [thread] : [];
+  });
 }
 
 /** A lock Codex takes for a thread it loads to write: `<thread>.lock` in `thread-writer-locks`. */
@@ -2501,18 +2659,24 @@ export async function paneCodexProcess(paneId: string): Promise<{ pid: number; a
 }
 
 /** `known`: herdr's `pane.process_info` answer the caller's poll already read for this pane (null: no processes). */
-async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<{ list: { pid: number; argv?: string[] }[]; key: string }> {
+/**
+ * `unread`: herdr gave no process list, or a foreground process's command line could not be read, so this list may
+ * miss a Codex.
+ */
+async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<{ list: { pid: number; argv?: string[] }[]; key: string; unread?: true }> {
   const processInfo = known !== undefined ? known ?? undefined : await paneProcessInfo(paneId);
+  let unread = processInfo?.foreground_processes == null;
   // herdr's schema allows `argv: null`; this reader has always read argv as absent or a list
   // (the cast is the inline result type herdrRpc was given before the typed seam)
   const list = ((processInfo?.foreground_processes ?? []) as { pid: number; argv?: string[] }[])
     .map((foreground) => {
-      if (foreground.argv?.length || process.platform !== "linux") return foreground;
+      if (foreground.argv?.length) return foreground;
+      if (process.platform !== "linux") { unread = true; return foreground; }
       // herdr can report only pid/name. Read this process, never infer argv from
       // its name; an exited or inaccessible process provides no binding evidence.
       try {
         return { ...foreground, argv: readFileSync(`/proc/${foreground.pid}/cmdline`, "utf8").split("\0") };
-      } catch { return foreground; }
+      } catch { unread = true; return foreground; }
     })
     .filter(({ argv = [] }) => {
       const executable = argv[0] ?? "";
@@ -2538,9 +2702,9 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
   if (list.length === 0) {
     const nested = await kiroCodexProcess(processInfo);
     // A PID can be reused between reads: the verified births identify the whole nested chain.
-    if (nested !== null) return { list: [nested], key: `kiro:${nested.identity}` };
+    if (nested !== null) return { list: [nested], key: `kiro:${nested.identity}`, ...unread ? { unread: true as const } : {} };
   }
-  return { list, key: list.map((process) => process.pid).sort((left, right) => left - right).join(",") };
+  return { list, key: list.map((process) => process.pid).sort((left, right) => left - right).join(","), ...unread ? { unread: true as const } : {} };
 }
 
 /** A missing label is expected for Kiro's outer PTY, but only its proven live Codex can use this fallback. */
@@ -3218,6 +3382,11 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
   });
   const matched = screen ? matchCodexTranscript(screen.text, candidates, new Set(titledElsewhere === null ? [] : [titledElsewhere]), new Map(), false, folderRollouts) : null;
+  // only for a pane nothing else ties to a thread: never over its binding or resumed thread, nor onto another pane's
+  if (matched === null && boundHere === undefined && resumed === null) {
+    const named = await namedConversation(paneId, cwd, home, agent.terminal_title_stripped ?? agent.terminal_title ?? "", processes);
+    if (named !== null && !await heldByAnotherPane(paneId, named, panes)) return named.path;
+  }
   if (matched !== null) {
     boundRollouts.delete(paneId);
     boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), ...(matched === titledElsewhere ? { titled: true } : {}) });

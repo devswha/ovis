@@ -3,8 +3,8 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
 import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, statSync, symlinkSync, truncateSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { asCodexTitle, codexOpenRollout, codexTranscriptPath, limitCodexHistoryForTests } from "./codex.ts";
+import { basename, join } from "node:path";
+import { asCodexTitle, CODEX_PEER_PANE_LIMIT, codexOpenRollout, codexTranscriptPath, limitCodexHistoryForTests } from "./codex.ts";
 import * as codexModule from "./codex.ts";
 import * as conversationModule from "./conversation.ts";
 import * as processStart from "./process-start.ts";
@@ -24,7 +24,8 @@ let screen: string;
 let peerScreens: Map<string, string | Error>;
 let foreground: { pid: number; name?: string; argv?: string[] }[];
 /** A pane's own foreground, where it is not [foreground]. */
-let foregrounds: Map<string, { pid: number; name?: string; argv?: string[] }[]>;
+/** Each pane's foreground processes (null: herdr gives that pane no process_info). */
+let foregrounds: Map<string, { pid: number; name?: string; argv?: string[] }[] | null>;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
 /** The terminal title herdr reports for the pane (Codex's [tui].terminal_title), null for none. */
@@ -95,7 +96,7 @@ beforeEach(() => {
         const own = request.method === "pane.process_info" && request.params?.pane_id === root && processReads.length > 0 ? processReads.shift() : undefined;
         const result = request.method === "pane.get" ? { pane: { pane_id: root, cwd: root } }
           : request.method === "agent.get" ? { agent: { ...agentFolders, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }), ...(reportedSession === null ? {} : { agent_session: reportedSession }) } }
-          : request.method === "pane.process_info" ? (own === null ? {} : { process_info: { ...(shellPid === undefined || request.params?.pane_id !== root ? {} : { shell_pid: shellPid }), foreground_processes: own ?? foregrounds.get(request.params?.pane_id ?? "") ?? foreground } })
+          : request.method === "pane.process_info" ? (own === null || foregrounds.get(request.params?.pane_id ?? "") === null ? {} : { process_info: { ...(shellPid === undefined || request.params?.pane_id !== root ? {} : { shell_pid: shellPid }), foreground_processes: own ?? foregrounds.get(request.params?.pane_id ?? "") ?? foreground } })
           : request.method === "pane.read" ? { read: { text: peerScreen ?? screen } }
           // the session as a background reader asks for it: this pane alone
           : request.method === "session.snapshot" ? { snapshot: { panes: [{ pane_id: root, workspace_id: root, tab_id: root, terminal_id: root, agent: "codex", agent_status: "working", cwd: root, focused: false, revision: 0 }], workspaces: [], tabs: [], layouts: [], agents: [] } }
@@ -2620,4 +2621,166 @@ describe("another session's conversation is never shown for a plain Codex pane",
     screen = `OpenAI Codex (v0.165.0)\n\n• Working (2s • esc to interrupt)\n  ↳ Explain this quoted answer: ${answer}\n\n› `;
     expect(await resolve()).toBeNull();
   });
+});
+
+describe("a Codex pane recovered by its saved thread name (#3442)", () => {
+  const live = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
+  const named = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc02";
+  const asked = "Check the restored records before changing anything";
+  const toolScreen = `› ${asked}\n\n• Ran ls\n  └ output\n\n› Ask Codex to do anything`;
+  /** A second thread of this folder, saved under the name, whose latest prompt is [asked]. */
+  function namedThread(name: string, folder = root): string {
+    const file = join(home, "sessions", `rollout-${named}.jsonl`);
+    writeFileSync(file, [
+      { type: "session_meta", payload: { id: named, cwd: folder } },
+      { type: "event_msg", payload: { type: "user_message", message: asked } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2, 2, 'cli')").run(named, file, folder);
+    db.close();
+    writeFileSync(join(home, "session_index.jsonl"), `${JSON.stringify({ id: named, thread_name: name })}\n`);
+    foreground = live;
+    return file;
+  }
+
+  it("reads the thread the title names when the screen shows its latest prompt and tool work", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    expect(await resolve()).toBe(file);
+  }, 20_000);
+
+  it("takes no thread named like the folder, which a title without a thread name shows", async () => {
+    namedThread(asCodexTitle(basename(root)));
+    title = basename(root);
+    screen = toolScreen;
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("takes no thread named like the start of a folder name that holds the title's separator", async () => {
+    const folder = join(root, "release | api");
+    mkdirSync(folder);
+    namedThread("release", folder);
+    title = "release | api";
+    screen = toolScreen;
+    expect(await codexTranscriptPath(root, folder, home)).toBeNull();
+  }, 20_000);
+
+  it("takes no name that may be another folder's, whose unnamed thread a picker may have resumed here", async () => {
+    const file = namedThread("release");
+    /** An unnamed thread of [folder]: its title is that folder's name. */
+    const unnamedIn = (id: string, folder: string) => {
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, 1, 'cli')").run(id, join(home, "sessions", `rollout-${id}.jsonl`), join(root, folder));
+      db.close();
+    };
+    screen = toolScreen;
+    unnamedIn("01a0c7a1-56d9-7e20-9f08-f7a2d973bc04", "release | api");
+    title = "release | project";
+    expect(await resolve()).toBe(file);
+    title = "release | api";
+    expect(await resolve()).toBeNull();
+    title = "release";
+    expect(await resolve()).toBe(file);
+    unnamedIn("01a0c7a1-56d9-7e20-9f08-f7a2d973bc05", "release");
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("takes no thread another pane was started on with `codex resume <id>`", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex", "resume", named.toUpperCase()] }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("takes no thread any of another pane's processes was resumed on, not only its first", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    const other = ["/usr/bin/codex", "resume", "01a0c7a1-56d9-7e20-9f08-f7a2d973bc09"];
+    foregrounds.set("peer", [{ pid: 2147483645, argv: other }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    foregrounds.set("peer", [{ pid: 2147483645, argv: other }, { pid: 2147483646, argv: ["/usr/bin/codex", "resume", named] }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("takes no thread while another pane's processes cannot be read: that pane may be resumed on it", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    const panes = [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))];
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(file);
+    // herdr names the process alone and its command line is gone (no such pid)
+    foregrounds.set("peer", [{ pid: 2147483646, name: "codex" }]);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+    foregrounds.set("peer", null);
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("takes no thread when more panes than it asks about could hold it", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    const peers = Array.from({ length: CODEX_PEER_PANE_LIMIT }, (_, at) => fixturePane(`peer-${at}`, join(root, "elsewhere")));
+    expect(await codexTranscriptPath(root, root, home, [fixturePane(root), ...peers])).toBe(file);
+    expect(await codexTranscriptPath(root, root, home, [fixturePane(root), ...peers, fixturePane("one-more", join(root, "elsewhere"))])).toBeNull();
+  }, 20_000);
+
+  it("takes no name a thread of another folder also has, which a picker may have resumed here", async () => {
+    namedThread("Investigate a restored conversation");
+    appendFileSync(join(home, "session_index.jsonl"), `${JSON.stringify({ id: "01a0c7a1-56d9-7e20-9f08-f7a2d973bc03", thread_name: "Investigate a restored conversation" })}\n`);
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("takes no prompt still in the composer", async () => {
+    namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = `› ${asked}\n\n  gpt-5.1-codex default · ${root}`;
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("keeps the thread the pane was bound to by its screen over the one its title names", async () => {
+    namedThread("Investigate a restored conversation");
+    title = "Investigate a restored conversation | project";
+    screen = `• ${answer}`;
+    expect(await resolve()).toBe(path);
+    screen = toolScreen;
+    expect(await resolve()).toBe(path);
+  }, 20_000);
+
+  it("takes no thread another pane is bound to", async () => {
+    const file = namedThread("Investigate a restored conversation");
+    appendFileSync(file, `${JSON.stringify({ type: "event_msg", payload: { type: "agent_message", message: answer } })}\n`);
+    rmSync(path);
+    title = "Investigate a restored conversation | project";
+    screen = `• ${answer}`;
+    const panes = [fixturePane(root), fixturePane("peer")];
+    expect(await codexTranscriptPath("peer", root, home, panes)).toBe(file);
+    screen = toolScreen;
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+  }, 20_000);
+
+  it("does not hold the server on a FIFO in place of the name index", async () => {
+    namedThread("Investigate a restored conversation");
+    const index = join(home, "session_index.jsonl");
+    rmSync(index);
+    expect(Bun.spawnSync(["mkfifo", index]).exitCode).toBe(0);
+    // in a child, so a read that blocks on the pipe fails the test by its timeout instead of hanging the run
+    const script = `import { codexTranscriptPath } from ${JSON.stringify(join(import.meta.dir, "codex.ts"))};
+      console.log(JSON.stringify(await codexTranscriptPath(${JSON.stringify(root)}, ${JSON.stringify(root)}, ${JSON.stringify(home)})));`;
+    title = "Investigate a restored conversation | project";
+    screen = toolScreen;
+    const child = Bun.spawn([process.execPath, "-e", script], { env: { ...process.env, HERDR_SOCKET: join(root, "herdr.sock") }, stdout: "pipe", stderr: "inherit", timeout: 10_000 });
+    children.push(child);
+    expect(await child.exited).toBe(0);
+    expect((await new Response(child.stdout).text()).trim()).toBe("null");
+  }, 20_000);
 });

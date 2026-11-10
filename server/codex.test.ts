@@ -4,7 +4,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, realpat
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, resumedThreads, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -438,6 +438,12 @@ describe("Codex rollout resolution", () => {
     expect(resumedThread([["codex", "resume", "--last"], ["codex"]])).toBeNull();
     expect(resumedThread([["codex", "exec", "resume"]])).toBeNull();
     expect(resumedThread([])).toBeNull();
+  });
+
+  it("reads every thread a pane's processes were resumed on", () => {
+    const first = "01a0a337-19e8-7712-92f5-aa0883392afd", second = "01a0a337-19e8-7712-92f5-aa0883392afe";
+    expect(resumedThreads([["codex", "resume", first], ["codex"], ["node", "/usr/bin/codex", "resume", second]])).toEqual([first, second]);
+    expect(resumedThreads([["codex", "resume", "--last"]])).toEqual([]);
   });
 
   const roots: string[] = [];

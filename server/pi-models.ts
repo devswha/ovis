@@ -121,13 +121,13 @@ const MAX_CATALOG_BYTES = 4 * 1024 * 1024;
  * swapped in after the stat cannot hold the server's thread (a regular file ignores the flag).
  * Exported for the test that hands it that pipe.
  */
-export function readRegularText(path: string): string | null {
+export function readRegularText(path: string, limit = MAX_CATALOG_BYTES): string | null {
   let fd: number | undefined;
   try {
     fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > MAX_CATALOG_BYTES) return null;
-    const buffer = Buffer.alloc(Math.min(stat.size, MAX_CATALOG_BYTES) + 1);
+    if (!stat.isFile() || stat.size > limit) return null;
+    const buffer = Buffer.alloc(Math.min(stat.size, limit) + 1);
     let length = 0;
     for (let count = 1; count > 0 && length < buffer.length; length += count) count = readSync(fd, buffer, length, buffer.length - length, null);
     // a file that grew past its stat since is read again once its signature moves
