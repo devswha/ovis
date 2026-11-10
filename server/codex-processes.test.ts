@@ -2893,6 +2893,52 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     expect(await resolve()).toBe(path);
   });
 
+  // the merge pass's second review of #3582: the pane's own answer holds a local link, which Codex draws its own way,
+  // and another conversation ended on the text as drawn (an orchestrator that read this pane and relayed it)
+  for (const shape of ["under its bullet, below the pane's own prompt", "its start scrolled off"] as const) {
+    it(`binds no conversation that ended on the drawn text of the pane's own linked answer (${shape})`, async () => {
+      const rows = Array.from({ length: shape === "its start scrolled off" ? 38 : 0 }, (_, at) => `Region ${at} is rolled out by its owner with the rollback step listed beside it in the plan.`);
+      const ending = (target: string) => `The rollout notes cover every region in order, each with its owner and its rollback step, and the on-call steps are in ${target} and nowhere else.`;
+      const recorded = [...rows, ending(`[the runbook](${join(root, "docs", "runbook.md")})`)].join("\n");
+      const drawn = [...rows, ending("the runbook (docs/runbook.md)")].join("\n");
+      // B (the pane's own) was asked for the notes; A was asked something else and ended on what B's pane shows
+      const fileB = conversationB([["Write the rollout notes", recorded]]);
+      finishedRollout(path, thread, [["Read the other pane and relay what it says", drawn]]);
+      foreground = fresh(2147483540 + (shape === "its start scrolled off" ? 1 : 0));
+      const body = [...rows.map((row) => `  ${row}`), ...wrapped("  ", ending("the runbook (docs/runbook.md)"))];
+      screen = shape === "its start scrolled off"
+        ? [...body.slice(-30), "", footer, ...idle].join("\n")
+        : [...header(), "› Write the rollout notes", "", `•${body[0]!.slice(1)}`, ...body.slice(1), "", footer, ...idle].join("\n");
+      const found = await resolve();
+      expect(found === path ? "A, which the pane only relayed to" : found === fileB ? "B" : found).toBeNull();
+    });
+  }
+
+  // the merge pass's second review of #3582: a read cut by its budget may begin inside the very record that tells
+  for (const cut of ["its finished answer, longer than the read", "a tool's output, longer than the read", "a turn begun before the read, its finish not written yet"] as const) {
+    it(`binds no scrolled answer beside a conversation whose read was cut inside what tells (${cut})`, async () => {
+      finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
+      const fileB = conversationB([]);
+      const record = (payload: Record<string, unknown>, type = "event_msg") => `${JSON.stringify({ type, payload })}\n`;
+      const filler = "an unrelated line of output that the read has to carry past its budget. ".repeat(16_000);
+      appendFileSync(fileB, record({ type: "task_started", turn_id: "turn-0" }) + record({ type: "user_message", message: "Show the script" }));
+      if (cut === "its finished answer, longer than the read") {
+        const long = `${filler}\n\n\`\`\`python\n${script}\n\`\`\``;
+        appendFileSync(fileB, record({ type: "agent_message", message: long }) + record({ type: "task_complete", turn_id: "turn-0", last_agent_message: long }));
+      } else if (cut === "a tool's output, longer than the read") {
+        appendFileSync(fileB, record({ type: "function_call_output", call_id: "c1", output: JSON.stringify({ output: `${filler}\n${script}`, metadata: { exit_code: 0 } }) }, "response_item")
+          + record({ type: "agent_message", message: "Shown." }) + record({ type: "task_complete", turn_id: "turn-0", last_agent_message: "Shown." }));
+      } else {
+        // 1.2 MiB of tool calls and outputs since the prompt, no message yet: the answer on its screen is not written
+        appendFileSync(fileB, Array.from({ length: 1200 }, (_, at) => record({ type: "function_call_output", call_id: `c${at}`, output: JSON.stringify({ output: `line ${at} ${"x".repeat(1000)}` }) }, "response_item")).join(""));
+      }
+      expect(statSync(fileB).size).toBeGreaterThan(1024 * 1024);
+      foreground = fresh(2147483542 + ["its finished answer, longer than the read", "a tool's output, longer than the read", "a turn begun before the read, its finish not written yet"].indexOf(cut));
+      screen = scrolled();
+      expect(await resolve()).toBeNull();
+    });
+  }
+
   // the merge pass's review of #3582: where the loaded threads cannot be read, the pane's own conversation may be none of the candidates
   it.skipIf(process.platform !== "linux")("binds no scrolled answer while what Codex has loaded cannot be read", async () => {
     finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
@@ -2966,6 +3012,67 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
       } finally { parse.mockRestore(); }
     });
   }
+
+  it("binds no scrolled answer beside a fork with a turn of its own whose earlier rollout was not found", async () => {
+    finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
+    // B continues a rollout the store no longer holds: what it said before its own turn is not in its read
+    const fileB = conversationB([["Something of its own", "An answer of its own, which says nothing of the script."]]);
+    const records = fs.readFileSync(fileB, "utf8").split("\n").slice(1).join("\n");
+    writeFileSync(fileB, `${JSON.stringify({ type: "session_meta", payload: { id: threadB, cwd: root, history_base: { thread_id: "01a0c7a1-56d9-7e20-9f08-cccccccccccc", end_ordinal_exclusive: 6, end_byte_offset: 4000 } } })}\n${records}`);
+    foreground = fresh(2147483551);
+    screen = scrolled();
+    expect(await resolve()).toBeNull();
+  });
+
+  it("reads no rollout a second time for the same question, and reads again the one that grew", async () => {
+    finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
+    // B: longer than the read, so the lookup that ties the scrolled answer reads it again with the record its tail cut
+    const fileB = conversationB(Array.from({ length: 2600 }, (_, at) => [`Unrelated prompt number ${at}, as long as it takes to fill the read past its budget of one mebibyte`, `unrelated reply number ${at}, as long again, so that this conversation is longer than what a lookup reads of it`] as const));
+    expect(statSync(fileB).size).toBeGreaterThan(1024 * 1024);
+    screen = scrolled();
+    foreground = fresh(2147483552);
+    const read = spyOn(fs, "readSync");
+    try {
+      const reads = async () => { const from = read.mock.calls.length; const found = await resolve(); return [found, read.mock.calls.length - from] as const; };
+      const [first, weighed] = await reads();
+      const [second, unchanged] = await reads();
+      appendFileSync(fileB, `${JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: "one more" } })}\n`);
+      const [third, changed] = await reads();
+      expect([first, second, third]).toEqual([path, path, path]);
+      expect([weighed > unchanged, changed > unchanged]).toEqual([true, true]);
+    } finally { read.mockRestore(); }
+  });
+
+  // the merge pass's second review of #3582: beside a thread at work, every read was scanned again on every lookup
+  it("scans again only the read that grew, for a pane tied by its short last turn", async () => {
+    finishedRollout(path, thread, [["thanks", "You're welcome!"]]);
+    const rows = 400;
+    const files = Array.from({ length: 3 }, (_, at) => {
+      const id = `01a0c7a1-56d9-7e20-9f08-${String(900 + at).padStart(12, "0")}`;
+      const file = join(home, "sessions", `rollout-${id}.jsonl`);
+      finishedRollout(file, id, Array.from({ length: rows / 4 }, (_, turn) => [`Unrelated prompt number ${turn} of ${at}`, `unrelated reply number ${turn} of ${at}`] as const));
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, ?, 'cli')").run(id, file, root, 2 + at);
+      db.close();
+      return file;
+    });
+    const grow = (file: string) => appendFileSync(file, `${JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: `${Math.random()}` } })}\n`);
+    screen = [...header(), "› thanks", "", "", "• You're welcome!", "", footer, ...idle].join("\n");
+    foreground = fresh(2147483550);
+    const parse = spyOn(JSON, "parse");
+    try {
+      const parsed = async () => { const from = parse.mock.calls.length; const found = await resolve(); return [found, parse.mock.calls.length - from] as const; };
+      const [first] = await parsed();
+      const [, unchanged] = await parsed();
+      grow(files[2]!);
+      const [second, oneGrew] = await parsed();
+      for (const file of files) grow(file);
+      const [third, allGrew] = await parsed();
+      expect([first, second, third]).toEqual([path, path, path]);
+      // what one read costs to scan again is a third of what three cost, not all of it
+      expect((oneGrew - unchanged) * 2).toBeLessThan(allGrew - unchanged);
+    } finally { parse.mockRestore(); }
+  });
 
   it("binds no scrolled answer while another conversation of the folder has a turn under way, or the folder holds more than are read", async () => {
     finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);

@@ -1624,19 +1624,27 @@ describe("a Codex pane whose last answer the screen never shows whole (#3262 cas
     const short = script.split("\n").slice(0, 8);
     const answer = `Here is the script:\n\n\`\`\`python\n${short.join("\n")}\n\`\`\``;
     const screen = codexTurnScreen(asked, ["• Here is the script:", "", ...short.map((line) => `  ${line}`)]);
-    expect(matchCodexTranscript(screen, [{ path, text: finishedOn(answer) }])).toBeNull();
-    expect(footedTailTranscript(screen, [{ path, text: finishedOn(answer) }], owners)).toBe(path);
+    const own = (reply: string, prompt = asked) => [{ path, text: shortTurn("t1", prompt, reply) }];
+    expect(matchCodexTranscript(screen, own(answer))).toBeNull();
+    expect(footedTailTranscript(screen, own(answer), owners)).toBe(path);
     // with more at its start than the conversation said, or less, it is another answer
-    expect(footedTailTranscript(screen.replace("• Here is the script:", "• Note. Here is the script:"), [{ path, text: finishedOn(answer) }], owners)).toBeNull();
-    expect(footedTailTranscript(screen, [{ path, text: finishedOn(`Note.\n\n${answer}`) }], owners)).toBeNull();
-    expect(footedTailTranscript(screen, [{ path, text: finishedOn(answer.replace("Here is the script:\n\n", "")) }], owners)).toBeNull();
+    expect(footedTailTranscript(screen.replace("• Here is the script:", "• Note. Here is the script:"), own(answer), owners)).toBeNull();
+    expect(footedTailTranscript(screen, own(`Note.\n\n${answer}`), owners)).toBeNull();
+    expect(footedTailTranscript(screen, own(answer.replace("Here is the script:\n\n", "")), owners)).toBeNull();
+    // and under another prompt than the one it was asked, another turn: its prompt is on screen, and tells
+    expect(footedTailTranscript(screen, own(answer, "Print the script once more."), owners)).toBeNull();
+    expect(footedTailTranscript(screen, [{ path, text: finishedOn(answer) }], owners)).toBeNull();
+    // nor while another candidate's latest turn was asked the prompt shown: it may be the one that drew this answer its own way
+    expect(footedTailTranscript(screen, [...own(answer), { path: other, text: shortTurn("t9", asked, "Here is [the script](/tmp/proj/script.py).") }], both)).toBeNull();
   });
 
   it("takes no answer that starts like a tool's call, as matchCodexTranscript takes none", () => {
     const said = "Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports.";
     const screen = codexTurnScreen(asked, [`• ${said}`]);
     expect(matchCodexTranscript(screen, [{ path, text: finishedOn(said) }])).toBeNull();
-    expect(footedTailTranscript(screen, [{ path, text: finishedOn(said) }], owners)).toBeNull();
+    // (asked the prompt shown, so that only the row's shape decides)
+    expect(footedTailTranscript(screen, [{ path, text: shortTurn("t1", asked, said) }], owners)).toBeNull();
+    expect(footedTailTranscript(screen.replace("• Ran the full", "• We ran the full"), [{ path, text: shortTurn("t1", asked, `We r${said.slice(1)}`) }], owners)).toBe(path);
   });
 
   it("leaves the terminal standing when the screen shows another answer", () => {
@@ -1699,7 +1707,7 @@ describe("a Codex pane whose last answer the screen never shows whole (#3262 cas
     const answer = "Run the fast checks from the repository root before every push, with a temp folder of your own:\n\n```bash\nmkdir -p $HOME/.cache/ovis-tmp/checks && TMPDIR=$HOME/.cache/ovis-tmp/checks bun run check fast\n```";
     const screen = codexTurnScreen("How do I run the fast checks?", ["• Run the fast checks from the repository root before every push, with a temp folder of your own:", "",
       "  mkdir -p $HOME/.cache/ovis-tmp/checks && TMPDIR=$HOME/.cache/ovis-tmp/checks bun run check fast"]);
-    const own = [{ path, text: finishedOn(answer) }];
+    const own = [{ path, text: shortTurn("t1", "How do I run the fast checks?", answer) }];
     expect(footedTailTranscript(screen, own, owners)).toBe(path);
     // an earlier answer of another conversation, and one another folder's conversation ended on
     expect(footedTailTranscript(screen, [...own, elsewhere({ type: "agent_message", message: answer })], both)).toBeNull();
