@@ -7,6 +7,7 @@ import "./RelayPairingPrompt.css";
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
 import { decideRelayPairing } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
+import { FOCUS_TRAP } from "../lib/useFocusTrap.ts";
 import { failureText } from "./RelayPanel.tsx";
 
 /** Whole seconds from `now` until `at`, never below 0. */
@@ -42,16 +43,24 @@ export function aroundDigits(template: string, name: string): [string, string] {
   return at < 0 ? [`${named(template)} `, ""] : [named(template.slice(0, at)), named(template.slice(at + "{digits}".length))];
 }
 
-/** A dialog that holds Tab inside itself. */
-const MODAL = '[aria-modal="true"], dialog[open]';
-/** A field the person may be typing in (a terminal's is a textarea): its keys stay its own. */
-const TEXT_ENTRY = 'input, textarea, select, [contenteditable]:not([contenteditable="false"])';
+/**
+ * A dialog whose Tab round `useFocusTrap` holds, the prompts in it (`overlayStops`). Not every `aria-modal`
+ * surface: one that keeps Tab by a key handler of its own (session history, the worktree dialog, a row's
+ * sheet) does not hear a Tab pressed on the prompt, which would go on to the page that dialog covers.
+ */
+const MODAL = FOCUS_TRAP;
+/**
+ * Where the person may be typing: a field (a terminal's is a textarea), or a frame, whose page has the keys
+ * while this document only sees the frame focused (the in-app browser's popup, an HTML or PDF preview).
+ * Its keys stay its own.
+ */
+const TEXT_ENTRY = 'input, textarea, select, iframe, embed, object, [contenteditable]:not([contenteditable="false"])';
 /**
  * Whether a prompt that arrives may take the focus from `active`. Only where it would be far otherwise:
- * nothing has the focus, or a modal dialog holds Tab inside itself (Settings). Never from a field, where
- * the keys already on their way (a shell's Tab, then Enter) would land on Approve; the layer's live
- * region announces the prompt there, and it is a click or a Tab away: a dialog's Tab round goes on from
- * its last stop to the prompt (Shift+Tab from its first), on the prompt itself before its buttons
+ * nothing has the focus, or a modal dialog holds Tab inside itself (Settings). Never from a field or a
+ * frame, where the keys already on their way (a shell's Tab, then Enter) would land on Approve; the layer's
+ * live region announces the prompt there, and it is a click or a Tab away: a dialog's Tab round goes on
+ * from its last stop to the prompt (Shift+Tab from its first), on the prompt itself before its buttons
  * (`overlayStops` in lib/useFocusTrap.ts).
  */
 export function takesFocus(active: Element | null): boolean {
@@ -60,13 +69,21 @@ export function takesFocus(active: Element | null): boolean {
   return active.closest(MODAL) !== null;
 }
 
-/** How long after a prompt arrived a key cannot press Approve: keys typed for what was there before it. */
+/**
+ * Approving lets a device into this PC, so it must be meant for the prompt it lands on, by someone who had
+ * the time to read it. How long a key cannot press Approve after the prompt arrived, moved to another place
+ * in the stack or was handed the focus: keys typed for what was there before it (a Tab and an Enter by
+ * habit, right after the prompt above was approved).
+ */
 export const APPROVE_KEY_GUARD_MS = 1000;
+/** The same for a pointer, which is aimed by sight: a click on its way to what the prompt now covers, or to the prompt that was in its place. */
+export const APPROVE_POINTER_GUARD_MS = 500;
 
 /**
  * The devices waiting for this PC's approval (`relay-pairings`), a prompt each. One that arrives over
  * a modal dialog takes the focus on its own surface, never on Approve, and a dialog's focus trap counts
- * it and its buttons among its own Tab stops (lib/useFocusTrap.ts). It is a group, not a dialog: it
+ * it and its buttons among its own Tab stops (lib/useFocusTrap.ts). Approve waits for a moment after its
+ * prompt arrived, moved or was handed the focus (`approve`). It is a group, not a dialog: it
  * covers nothing, so the page's "a dialog is open" checks (Escape handlers, pane cover) must not count it.
  */
 export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairingRequest[] }) {
@@ -97,8 +114,10 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
 
   const layer = useRef<HTMLDivElement>(null);
   const prompts = useRef(new Map<string, HTMLDivElement>());
-  /** when each prompt arrived */
-  const seen = useRef(new Map<string, number>());
+  /** when each prompt arrived, last moved to another place in the stack or was last handed the focus: Approve's guards count from it */
+  const since = useRef(new Map<string, number>());
+  /** each prompt's place in the stack, as last drawn */
+  const places = useRef(new Map<string, number>());
   /** the focus is, or was until its prompt went, inside the layer */
   const held = useRef(false);
   /** what had the focus before the first prompt took it, or before Tab brought it into one */
@@ -106,9 +125,12 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
   /** the focus was given back by a cleanup React ran only to run the effects again (development's replay): it is taken again */
   const replayed = useRef(false);
   useLayoutEffect(() => {
-    const arrived = pairings.filter((pairing) => !seen.current.has(pairing.id));
+    const arrived = pairings.filter((pairing) => !since.current.has(pairing.id));
     const at = Date.now();
-    seen.current = new Map(pairings.map((pairing) => [pairing.id, seen.current.get(pairing.id) ?? at]));
+    // one that moved up when the prompt above it went is new where it is now: a click or a key on its way
+    // to the prompt that was there must not press it
+    since.current = new Map(pairings.map((pairing, index) => [pairing.id, places.current.get(pairing.id) === index ? since.current.get(pairing.id) ?? at : at]));
+    places.current = new Map(pairings.map((pairing, index) => [pairing.id, index]));
     const active = document.activeElement;
     if (replayed.current) { replayed.current = false; held.current = true; }
     // a prompt being read keeps the focus when another arrives
@@ -125,6 +147,13 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
     if (document.activeElement !== node) return;
     opener.current = before;
     held.current = true;
+    // handed the focus, not walked to: the next keys may be habit (Tab, Enter), so its guard starts again
+    since.current.set(next.id, at);
+    // several devices in a short window scroll: the one with the focus is in view. A stack that moved
+    // for it put other prompts under the pointer, so theirs start again too
+    const scrolled = layer.current?.scrollTop;
+    node.scrollIntoView({ block: "nearest" });
+    if (layer.current?.scrollTop !== scrolled) for (const moved of since.current.keys()) since.current.set(moved, at);
   }, [ids]);
   useLayoutEffect(() => {
     const node = layer.current;
@@ -139,10 +168,12 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
       replayed.current = true;
     };
   }, []);
-  /** `byKey`: Enter or Space on the button (a click that no pointer made), which may have been typed before the prompt was there */
-  const approve = (id: string, byKey: boolean): void => {
-    const arrived = seen.current.get(id);
-    if (byKey && (arrived === undefined || Date.now() - arrived < APPROVE_KEY_GUARD_MS)) return;
+  /** `clicks`: the click's `detail`. 0 is Enter or Space on the button (a click that no pointer made), 2 the second click of a double-click */
+  const approve = (id: string, clicks: number): void => {
+    // aimed at whatever the first click pressed, which may be gone with this prompt in its place
+    if (clicks > 1) return;
+    const from = since.current.get(id);
+    if (from === undefined || Date.now() - from < (clicks === 0 ? APPROVE_KEY_GUARD_MS : APPROVE_POINTER_GUARD_MS)) return;
     void decide(id, "approve");
   };
 
@@ -179,7 +210,7 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly RelayPairi
               {failure?.id === pairing.id && <span className="relay-error" role="alert"> {failure.text}</span>}
             </span>
             <div className="device-paired-actions">
-              <button type="button" className="btn btn-primary" disabled={deciding !== null} aria-busy={deciding === "approve" ? true : undefined} onClick={(event) => approve(pairing.id, event.detail === 0)}>{t("Approve")}</button>
+              <button type="button" className="btn btn-primary" disabled={deciding !== null} aria-busy={deciding === "approve" ? true : undefined} onClick={(event) => approve(pairing.id, event.detail)}>{t("Approve")}</button>
               <button type="button" className="btn" disabled={deciding !== null} aria-busy={deciding === "decline" ? true : undefined} onClick={() => void decide(pairing.id, "decline")}>{t("Decline")}</button>
             </div>
           </div>

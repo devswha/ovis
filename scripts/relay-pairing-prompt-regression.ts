@@ -62,11 +62,41 @@ const focus = (page: Page): Promise<string> => page.evaluate(() => {
   return "elsewhere";
 });
 
+/** which waiting prompt has the focus, on itself or on a button (0 is the top one); -1 when none has */
+const focusedPrompt = (page: Page): Promise<number> => page.evaluate(() => [...document.querySelectorAll(".relay-pairing-prompt")].findIndex((prompt) => prompt.contains(document.activeElement)));
+/** whether what has the focus can be read: it, and the whole prompt it is in when that fits, lie inside the stack's own box, which is inside the window */
+const focusShown = (page: Page): Promise<boolean> => page.evaluate(() => {
+  const active = document.activeElement;
+  const prompt = active?.closest(".relay-pairing-prompt");
+  const layer = document.querySelector(".relay-pairing-layer");
+  if (!active || !prompt || !layer) return false;
+  const frame = layer.getBoundingClientRect();
+  if (frame.top < 0 || frame.bottom > innerHeight + 1) return false;
+  const inside = (box: DOMRect) => box.top >= frame.top - 1 && box.bottom <= frame.bottom + 1;
+  const whole = prompt.getBoundingClientRect();
+  return inside(active.getBoundingClientRect()) && (whole.height > frame.height || inside(whole));
+});
+/**
+ * The page's clock, stopped and moved by hand: Approve's guards count in this window's milliseconds, and
+ * the presses below are real ones that take as long as the machine is busy.
+ */
+const clock = {
+  stop: (page: Page) => page.evaluate(() => { const qa = (globalThis as unknown as { qaClock: { at: number | null } }).qaClock; qa.at = Date.now(); }),
+  pass: (page: Page, ms: number) => page.evaluate((by) => { const qa = (globalThis as unknown as { qaClock: { at: number | null } }).qaClock; qa.at = (qa.at ?? Date.now()) + by; }, ms),
+  run: (page: Page) => page.evaluate(() => { (globalThis as unknown as { qaClock: { at: number | null } }).qaClock.at = null; }),
+};
+
 const browser = await chromium.launch({ headless: true, executablePath: chromePath(), args: ["--no-sandbox"] }).catch((error: unknown) => { server.stop(true); throw error; });
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const errors: string[] = []; page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+  await page.addInitScript(() => {
+    const real = Date.now.bind(Date);
+    const qa = { at: null as number | null };
+    (globalThis as unknown as { qaClock: typeof qa }).qaClock = qa;
+    Date.now = () => qa.at ?? real();
+  });
   await page.goto(server.url.href);
   await page.locator(".app-header").first().waitFor({ timeout: 10_000 });
   const prompt = page.locator('[data-testid="relay-pairing-prompt"]');
@@ -229,6 +259,117 @@ try {
   withdraw();
   await prompt.waitFor({ state: "detached" });
 
+  // 6. two devices wait over Settings, long enough for both. The first is approved by a key; it goes, and the
+  //    second is handed the focus. A Tab and an Enter typed by habit right then approve nothing: the second's
+  //    guard starts again when it is handed the focus, though its own arrival is long past
+  await page.evaluate(() => document.querySelector(".qa-field")?.remove());
+  decided.length = 0;
+  const count = (n: number) => page.waitForFunction((want) => document.querySelectorAll(".relay-pairing-prompt").length === want, n);
+  const openSettings = async () => {
+    await page.keyboard.press("ControlOrMeta+Shift+Comma");
+    await settings.waitFor();
+    await page.waitForFunction(() => document.querySelector(".settings-dialog")?.getAnimations().length === 0);
+    await settings.locator("button:visible").first().focus();
+    assert.equal(await focus(page), "settings");
+  };
+  await openSettings();
+  const handedA = ask({ local_only: true });
+  await count(1);
+  const handedB = ask({ local_only: true });
+  await count(2);
+  assert.deepEqual([await focus(page), await focusedPrompt(page)], ["prompt", 0], "the first device's prompt has the focus");
+  await clock.stop(page);
+  await clock.pass(page, 5000);
+  await page.keyboard.press("Tab");
+  assert.deepEqual([await focus(page), await focusedPrompt(page)], ["prompt Approve", 0]);
+  await page.keyboard.press("Enter");
+  await count(1);
+  assert.deepEqual(decided, [{ id: handedA.id, decision: "approve" }]);
+  assert.deepEqual([await focus(page), await focusedPrompt(page)], ["prompt", 0], "the prompt still waiting is handed the focus, on itself");
+  await page.keyboard.press("Tab");
+  assert.equal(await focus(page), "prompt Approve");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Space");
+  await settled();
+  assert.deepEqual(decided, [{ id: handedA.id, decision: "approve" }], "a Tab and an Enter typed right after the first approval do not approve the second device");
+  await clock.pass(page, 999);
+  await page.keyboard.press("Enter");
+  await settled();
+  assert.deepEqual(decided.length, 1, "nor within a second of the hand-off");
+  await clock.pass(page, 1);
+  await page.keyboard.press("Enter");
+  await count(0);
+  assert.deepEqual(decided.splice(0), [{ id: handedA.id, decision: "approve" }, { id: handedB.id, decision: "approve" }], "after that second, Enter on Approve approves");
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "detached" });
+
+  // 7. a double-click on the top prompt's Approve: its first click approves that device, the prompt below
+  //    moves up under the pointer, and the second click lands on that one's Approve. It approves nothing,
+  //    and neither does a single click there until the moved prompt has been in its place for half a second
+  const clickedA = ask({ local_only: true });
+  await count(1);
+  const clickedB = ask({ local_only: true });
+  await count(2);
+  await clock.pass(page, 5000);
+  const box = await prompt.first().getByRole("button", { name: "Approve", exact: true }).boundingBox();
+  assert.ok(box, "the top prompt's Approve is drawn");
+  const [x, y] = [box.x + box.width / 2, box.y + box.height / 2];
+  const under = () => page.evaluate(([px, py]) => {
+    const hit = document.elementFromPoint(px!, py!);
+    return hit?.matches(".relay-pairing-prompt .btn-primary") ? [...document.querySelectorAll(".relay-pairing-prompt")].indexOf(hit.closest(".relay-pairing-prompt")!) : -1;
+  }, [x, y]);
+  await page.mouse.click(x, y);
+  await count(1);
+  assert.deepEqual(decided, [{ id: clickedA.id, decision: "approve" }]);
+  assert.equal(await under(), 0, "the prompt below moved up: its Approve is where the first one's was");
+  // the second click of the double-click, as the browser counts it
+  await page.mouse.down({ clickCount: 2 });
+  await page.mouse.up({ clickCount: 2 });
+  await settled();
+  assert.deepEqual(decided, [{ id: clickedA.id, decision: "approve" }], "the second click of a double-click does not approve the device that moved up");
+  await page.mouse.click(x, y);
+  await clock.pass(page, 499);
+  await page.mouse.click(x, y);
+  await settled();
+  assert.equal(decided.length, 1, "a click in the moved prompt's first half second approves nothing");
+  await clock.pass(page, 1);
+  // a double-click's second click never approves, however long the prompt has been there
+  await page.mouse.down({ clickCount: 2 });
+  await page.mouse.up({ clickCount: 2 });
+  await settled();
+  assert.equal(decided.length, 1, "a second click approves nothing even on a prompt that has waited");
+  await page.mouse.click(x, y);
+  await count(0);
+  assert.deepEqual(decided.splice(0), [{ id: clickedA.id, decision: "approve" }, { id: clickedB.id, decision: "approve" }], "a single click after that half second approves");
+
+  // 8. four devices in a window too short for them: the stack scrolls. Whatever Tab lands on is in view, the
+  //    whole prompt with it, and so is the prompt handed the focus when the one that had it is approved
+  await page.setViewportSize({ width: 1280, height: 220 });
+  await openSettings();
+  const short = [1, 2, 3, 4].map((n) => ask({ local_only: true, label: `Device ${n}` }));
+  await count(4);
+  assert.ok(await page.evaluate(() => { const layer = document.querySelector(".relay-pairing-layer")!; return layer.scrollHeight > layer.clientHeight + 1; }), "four prompts do not fit: the stack scrolls");
+  assert.deepEqual([await focus(page), await focusedPrompt(page), await focusShown(page)], ["prompt", 0, true]);
+  const walked: string[] = [];
+  for (let step = 0; step < 11; step += 1) {
+    await page.keyboard.press("Tab");
+    walked.push(`${await focusedPrompt(page)} ${await focus(page)}${await focusShown(page) ? "" : " (out of view)"}`);
+  }
+  assert.deepEqual(walked, [0, 1, 2, 3].flatMap((at) => [`${at} prompt`, `${at} prompt Approve`, `${at} prompt Decline`]).slice(1), "Tab walks every prompt and button of the stack, each in view when it has the focus");
+  await clock.pass(page, 5000);
+  await page.keyboard.press("Shift+Tab");
+  assert.deepEqual([await focus(page), await focusedPrompt(page), await focusShown(page)], ["prompt Approve", 3, true]);
+  await page.keyboard.press("Enter");
+  await count(3);
+  assert.deepEqual(decided.splice(0), [{ id: short[3]!.id, decision: "approve" }]);
+  assert.deepEqual([await focus(page), await focusedPrompt(page), await focusShown(page)], ["prompt", 0, true], "the top prompt is handed the focus and scrolled back into view");
+  withdraw();
+  await count(0);
+  await page.keyboard.press("Escape");
+  await settings.waitFor({ state: "detached" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await clock.run(page);
+
   assert.deepEqual(errors, []);
-  console.log("PASS: the PC's approval prompt takes the focus over Settings on its own surface, Tab reaches Approve and Decline and returns to Settings, a field in Settings keeps the focus and Tab still reaches the prompt from it, Escape leaves it waiting, keys typed as it arrives or in a field approve nothing, it is no dialog to the page, its seconds follow the PC, and a hostile label keeps the sentence whole");
+  console.log("PASS: the PC's approval prompt takes the focus over Settings on its own surface, Tab reaches Approve and Decline and returns to Settings, a field in Settings keeps the focus and Tab still reaches the prompt from it, Escape leaves it waiting, keys typed as it arrives or in a field approve nothing, it is no dialog to the page, its seconds follow the PC, a hostile label keeps the sentence whole, a prompt handed the focus or moved under the pointer is not approved by the keys or the second click that follow, and in a stack that scrolls the prompt with the focus is in view");
 } finally { await browser.close(); server.stop(true); }

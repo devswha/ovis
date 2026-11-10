@@ -39,6 +39,14 @@ export interface FocusTrapOptions {
   startOnSurface?: boolean;
 }
 
+/**
+ * The surface of a trap that holds Tab now, marked by the hook. What lies over every dialog (a device
+ * waiting for approval) takes the focus only from inside one: its Tab round leads there and back, while
+ * an `aria-modal` surface that keeps Tab by its own key handler would lose Tab to the page beneath.
+ */
+const FOCUS_TRAP_MARK = "data-focus-trap";
+export const FOCUS_TRAP = `[${FOCUS_TRAP_MARK}]`;
+
 /** A stop a user can actually land on: rendered, and not disabled or skipped. */
 function reachable(node: HTMLElement): boolean {
   if (node.hasAttribute("disabled") || node.getAttribute("aria-hidden") === "true") return false;
@@ -68,6 +76,11 @@ export function overlayStops(): HTMLElement[] {
     stops.push(prompt, ...[...prompt.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(reachable));
   }
   return stops;
+}
+
+/** The waiting prompt `stop` is, or is in. */
+function overlayOf(stop: HTMLElement): HTMLElement | undefined {
+  return [...document.querySelectorAll<HTMLElement>(".relay-pairing-prompt")].find((prompt) => prompt.contains(stop));
 }
 
 /**
@@ -150,6 +163,13 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
     }
   }, [open, options.paused]);
 
+  useLayoutEffect(() => {
+    if (!open || options.paused) return;
+    const node = surface.current;
+    node?.setAttribute(FOCUS_TRAP_MARK, "");
+    return () => node?.removeAttribute(FOCUS_TRAP_MARK);
+  }, [open, options.paused]);
+
   useEffect(() => {
     if (!open || options.paused) return;
     const trap = {};
@@ -169,6 +189,12 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       // every control disabled (a deed that cannot be undone): Tab goes nowhere rather than out
       event.preventDefault();
       next?.focus({ preventScroll: true });
+      // several waiting prompts in a short window scroll: the one Tab lands in is brought into view, its
+      // words and number first and then the button on it, so nothing is approved unread
+      const overlay = next && overlayOf(next);
+      if (!overlay) return;
+      overlay.scrollIntoView({ block: "nearest" });
+      if (next !== overlay) next.scrollIntoView({ block: "nearest" });
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => {

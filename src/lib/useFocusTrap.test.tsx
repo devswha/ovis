@@ -19,7 +19,14 @@ describe("a dialog's Tab round and a device waiting for approval over it", () =>
     role: string | null = null;
     constructor(readonly name: string, readonly inside: HTMLElement[] = []) {}
     focus(): void { if (!this.inert && !this.disabled) page.activeElement = this; }
-    hasAttribute(attribute: string): boolean { return attribute === "disabled" && this.disabled; }
+    /** the marks set on it */
+    readonly marks = new Set<string>();
+    setAttribute(attribute: string): void { this.marks.add(attribute); }
+    removeAttribute(attribute: string): void { this.marks.delete(attribute); }
+    hasAttribute(attribute: string): boolean { return attribute === "disabled" ? this.disabled : this.marks.has(attribute); }
+    /** how often it was brought into view */
+    scrolled = 0;
+    scrollIntoView(): void { this.scrolled += 1; }
     getAttribute(): string | null { return null; }
     getClientRects(): unknown[] { return this.hidden ? [] : [{}]; }
     closest(selector: string): HTMLElement | null {
@@ -157,6 +164,36 @@ describe("a dialog's Tab round and a device waiting for approval over it", () =>
     expect(focused()).toBe("p1");
     expect(tab()).toBe(true);
     expect(focused()).toBe("p1 Approve");
+  });
+
+  it("marks the surface it holds Tab in, for as long as it does", async () => {
+    // what a prompt over the page may take the focus from (RelayPairingPrompt's takesFocus): Tab leads back here
+    const settings = dialog();
+    await open(settings);
+    expect(settings.hasAttribute("data-focus-trap")).toBe(true);
+    await act(async () => { renderer!.update(createElement(Trap, { surface: settings, paused: true })); });
+    expect(settings.hasAttribute("data-focus-trap")).toBe(false);
+    await act(async () => { renderer!.update(createElement(Trap, { surface: settings })); });
+    expect(settings.hasAttribute("data-focus-trap")).toBe(true);
+    await act(async () => { renderer!.unmount(); });
+    renderer = undefined;
+    expect(settings.hasAttribute("data-focus-trap")).toBe(false);
+  });
+
+  it("brings a prompt into view when Tab lands on it or on one of its buttons", async () => {
+    // several devices in a short window: the stack scrolls, and what is about to be approved must be read
+    const settings = dialog();
+    await open(settings);
+    settings.inside[2]!.focus();
+    const [first, second] = [prompt("p1"), prompt("p2")];
+    page.prompts = [first, second];
+    const seen: string[] = [];
+    for (let step = 0; step < 7; step += 1) {
+      tab();
+      seen.push(`${focused()}: ${first.scrolled} ${second.scrolled} ${page.activeElement === first || page.activeElement === second ? "-" : page.activeElement!.scrolled}`);
+    }
+    // the prompt first (its number and words), then the button on it; nothing of the dialog's is scrolled
+    expect(seen).toEqual(["p1: 1 0 -", "p1 Approve: 2 0 1", "p1 Decline: 3 0 1", "p2: 3 1 -", "p2 Approve: 3 2 1", "p2 Decline: 3 3 1", "back: 3 3 0"]);
   });
 
   it("leaves Tab to a menu or another dialog that has the focus, and to nothing while paused", async () => {

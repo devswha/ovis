@@ -4,7 +4,7 @@ import { create, type ReactTestInstance, type ReactTestRenderer } from "react-te
 
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { APPROVE_KEY_GUARD_MS, RelayPairingPrompt, aroundDigits, deadlineOf, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
+import { APPROVE_KEY_GUARD_MS, APPROVE_POINTER_GUARD_MS, RelayPairingPrompt, aroundDigits, deadlineOf, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
 
 const AT = Date.parse("2026-11-10T00:00:00.000Z");
 const request = (over: Partial<RelayPairingRequest> = {}): RelayPairingRequest => ({ id: "p1", label: "Hako's iPhone", digits: "725403", expires_at: new Date(AT + 90_000).toISOString(), ...over });
@@ -27,13 +27,20 @@ describe("the PC's prompt for a device waiting for approval", () => {
     /** `within`: what `closest` finds around it, as words of the selectors asked ("textarea", "aria-modal") */
     constructor(readonly name: string, readonly inside: HTMLElement[] = [], readonly within: string[] = []) {}
     focus(): void { this.focused += 1; if (!this.inert) page.activeElement = this; }
+    /** how often it was brought into view, which moves the stack around it by `shift` */
+    scrolled = 0;
+    scrollTop = 0;
+    scrollIntoView(): void { this.scrolled += 1; stack.scrollTop += shift; }
     closest(selector: string): HTMLElement | null { return this.within.some((word) => selector.includes(word)) ? this : null; }
     contains(other: unknown): boolean { return other === this || this.inside.some((node) => node.contains(other)); }
   }
   /** the document: what has the focus now */
   let page: { activeElement: HTMLElement | null; body: HTMLElement };
-  /** what had the focus when the prompt arrived: a button in Settings, a modal dialog */
+  /** what had the focus when the prompt arrived: a button in Settings, a modal dialog that useFocusTrap holds */
   let opener: HTMLElement;
+  /** the layer the prompts are stacked in, and how far it scrolls to bring a prompt into view */
+  let stack: HTMLElement;
+  let shift: number;
   /** set before show(): the prompts drawn refuse the focus */
   let inert: boolean;
   /** the node behind each drawn element, by test id or tag */
@@ -44,8 +51,9 @@ describe("the PC's prompt for a device waiting for approval", () => {
     decided = [];
     for (const key of keys) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const events = new EventTarget();
-    opener = new HTMLElement("opener", [], ["aria-modal"]);
+    opener = new HTMLElement("opener", [], ["aria-modal", "data-focus-trap"]);
     inert = false;
+    shift = 0;
     page = { activeElement: opener, body: new HTMLElement("body") };
     nodes = new Map();
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
@@ -83,7 +91,7 @@ describe("the PC's prompt for a device waiting for approval", () => {
 
   const element = (pairings: RelayPairingRequest[]) => createElement(SettingsProvider, null, createElement(RelayPairingPrompt, { pairings }));
   async function show(pairings: RelayPairingRequest[], wrap: (drawn: ReturnType<typeof element>) => Parameters<typeof create>[0] = (drawn) => drawn): Promise<ReactTestInstance> {
-    const layer = new HTMLElement("layer");
+    const layer = stack = new HTMLElement("layer");
     await act(async () => {
       renderer = create(wrap(element(pairings)), { createNodeMock: (drawn) => {
         const props = drawn.props as { className?: string; id?: string };
@@ -104,9 +112,12 @@ describe("the PC's prompt for a device waiting for approval", () => {
   const left = (prompt: ReactTestInstance) => text(prompt.find((node) => node.props["data-testid"] === "relay-pairing-left")).trim();
 
   const SENTENCE = "{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here.";
-  /** a click a pointer made; one a key made has detail 0 */
+  /** a click a pointer made; one a key made has detail 0, the second of a double-click 2 */
   const POINTER = { detail: 1 };
   const KEY = { detail: 0 };
+  const SECOND_CLICK = { detail: 2 };
+  const approveOf = (prompt: ReactTestInstance) => prompt.findAllByType("button")[0]!;
+  const approved = () => decided.map(([, body]) => (body as { id: string }).id);
 
   it("tells the owner to type the number on the other device when this PC waits to be added", async () => {
     const [prompt] = prompts(await show([request({ local_only: true })]));
@@ -248,7 +259,9 @@ describe("the PC's prompt for a device waiting for approval", () => {
   it("leaves the focus in a field the person is typing in, a terminal's included", async () => {
     // xterm's helper textarea, the chat composer, a field in Settings: the keys on their way (a shell's
     // Tab, then Enter) must not land on the prompt and walk to Approve
-    for (const field of [new HTMLElement("terminal", [], ["textarea"]), new HTMLElement("composer", [], ["contenteditable"]), new HTMLElement("settings field", [], ["input", "aria-modal"])]) {
+    for (const field of [new HTMLElement("terminal", [], ["textarea"]), new HTMLElement("composer", [], ["contenteditable"]), new HTMLElement("settings field", [], ["input", "aria-modal", "data-focus-trap"]),
+      // a page in the in-app browser's popup, an HTML or PDF preview: the frame has the focus while the person types in it
+      new HTMLElement("web page", [], ["iframe", "aria-modal", "data-focus-trap"]), new HTMLElement("pdf", [], ["embed", "aria-modal", "data-focus-trap"]), new HTMLElement("plugin", [], ["object", "aria-modal", "data-focus-trap"])]) {
       page.activeElement = field;
       const root = await show([request()]);
       const node = nodeOf(prompts(root)[0]!);
@@ -269,11 +282,17 @@ describe("the PC's prompt for a device waiting for approval", () => {
   it("takes the focus only where the prompt could not be reached otherwise", () => {
     expect(takesFocus(null)).toBe(true);
     expect(takesFocus(page.body as never)).toBe(true);
-    expect(takesFocus(new HTMLElement("settings button", [], ["aria-modal"]) as never)).toBe(true);
+    expect(takesFocus(new HTMLElement("settings button", [], ["aria-modal", "data-focus-trap"]) as never)).toBe(true);
+    // a dialog that keeps Tab by its own key handler (session history, the worktree dialog, a row's sheet): the
+    // prompt is outside that handler's reach, so Tab from it would go on to the page the dialog covers
+    expect(takesFocus(new HTMLElement("history button", [], ["aria-modal"]) as never)).toBe(false);
+    expect(takesFocus(new HTMLElement("native dialog button", [], ["dialog[open]"]) as never)).toBe(false);
+    // a frame's keys go to the page inside it
+    for (const frame of ["iframe", "embed", "object"]) expect(takesFocus(new HTMLElement(frame, [], [frame, "aria-modal", "data-focus-trap"]) as never)).toBe(false);
     // a sidebar row, a header button: Tab reaches the prompt from the page, and their keys stay theirs
     expect(takesFocus(new HTMLElement("sidebar row") as never)).toBe(false);
     expect(takesFocus(new HTMLElement("terminal", [], ["textarea"]) as never)).toBe(false);
-    expect(takesFocus(new HTMLElement("settings field", [], ["select", "aria-modal"]) as never)).toBe(false);
+    expect(takesFocus(new HTMLElement("settings field", [], ["select", "aria-modal", "data-focus-trap"]) as never)).toBe(false);
   });
 
   it("takes nothing, and gives nothing back, when the prompt refuses the focus", async () => {
@@ -309,8 +328,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
 
   it("gives the focus back to the stop Tab brought it from", async () => {
     // a field in Settings kept the focus when the prompt arrived; Tab then walked from Settings' last stop into it
-    const field = new HTMLElement("settings field", [], ["input", "aria-modal"]);
-    const last = new HTMLElement("settings close", [], ["aria-modal"]);
+    const field = new HTMLElement("settings field", [], ["input", "aria-modal", "data-focus-trap"]);
+    const last = new HTMLElement("settings close", [], ["aria-modal", "data-focus-trap"]);
     page.activeElement = field;
     const root = await show([request()]);
     const node = nodeOf(prompts(root)[0]!);
@@ -354,17 +373,129 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(decided).toEqual([]);
     await act(async () => { approve().props.onClick(KEY); });
     expect(decided).toEqual([["/api/relay/pairing", { id: "p1", decision: "approve" }]]);
-    // a pointer's click was aimed at the prompt: at once
+    // a pointer's click waits too, but not as long: it is aimed by sight
+    await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS); });
     await act(async () => { prompts(root)[1]!.findAllByType("button")[0]!.props.onClick(POINTER); });
     expect(decided[1]).toEqual(["/api/relay/pairing", { id: "p2", decision: "approve" }]);
+  });
+
+  it("does not approve by a key in the first second after the focus was handed to the prompt", async () => {
+    // two devices wait; the second has waited long enough, and has the focus (Tab took it there)
+    const root = await show([request(), request({ id: "p2", label: "desk2" })]);
+    page.activeElement = nodeOf(prompts(root)[1]!);
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    await act(async () => { approveOf(prompts(root)[1]!).props.onClick(KEY); });
+    expect(approved()).toEqual(["p2"]);
+    // it goes, the browser drops the focus, and the first prompt, which did not move, is handed it: a Tab and
+    // an Enter typed by habit then would press its Approve, whose own first second passed long ago
+    page.activeElement = page.body;
+    await act(async () => { renderer!.update(element([request()])); });
+    expect(page.activeElement).toBe(nodeOf(prompts(root)[0]!));
+    await act(async () => { jest.advanceTimersByTime(50); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
+    await act(async () => { jest.advanceTimersByTime(APPROVE_KEY_GUARD_MS - 51); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
+    expect(approved()).toEqual(["p2"]);
+    await act(async () => { jest.advanceTimersByTime(1); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
+    expect(approved()).toEqual(["p2", "p1"]);
+  });
+
+  it("does not approve the prompt that moved up into the place of the one just approved", async () => {
+    const root = await show([request(), request({ id: "p2", label: "desk2" }), request({ id: "p3", label: "desk3" })]);
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(POINTER); });
+    expect(approved()).toEqual(["p1"]);
+    page.activeElement = page.body;
+    await act(async () => { renderer!.update(element([request({ id: "p2", label: "desk2" }), request({ id: "p3", label: "desk3" })])); });
+    // the second click of a double-click, a key typed by habit and a click aimed at what was there: none
+    // approves the prompt now under them, nor the one that moved up behind it
+    for (const prompt of prompts(root)) for (const click of [SECOND_CLICK, KEY, POINTER]) await act(async () => { approveOf(prompt).props.onClick(click); });
+    await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS - 1); });
+    for (const prompt of prompts(root)) await act(async () => { approveOf(prompt).props.onClick(POINTER); });
+    expect(approved()).toEqual(["p1"]);
+    await act(async () => { jest.advanceTimersByTime(1); });
+    await act(async () => { approveOf(prompts(root)[1]!).props.onClick(POINTER); });
+    expect(approved()).toEqual(["p1", "p3"]);
+  });
+
+  it("never approves by the second click of a double-click, and by no click in a prompt's first half second", async () => {
+    const root = await show([request()]);
+    const approve = approveOf(prompts(root)[0]!);
+    // a click aimed at what was there before the prompt
+    await act(async () => { approve.props.onClick(POINTER); });
+    await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS - 1); });
+    await act(async () => { approve.props.onClick(POINTER); });
+    expect(decided).toEqual([]);
+    await act(async () => { jest.advanceTimersByTime(60_000); });
+    for (const detail of [2, 3]) await act(async () => { approve.props.onClick({ detail }); });
+    expect(decided).toEqual([]);
+    await act(async () => { approve.props.onClick(POINTER); });
+    expect(approved()).toEqual(["p1"]);
+  });
+
+  it("starts a prompt's guards again where it moved to, and leaves the ones that stayed", async () => {
+    // the person types in a field, so no prompt is handed the focus: only the places change
+    const field = new HTMLElement("terminal", [], ["textarea"]);
+    page.activeElement = field;
+    const [first, second, third] = [request(), request({ id: "p2", label: "desk2" }), request({ id: "p3", label: "desk3" })];
+    const root = await show([first, second, third]);
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    // the last one runs out: the two above it stay where they are
+    await act(async () => { renderer!.update(element([first, second])); });
+    await act(async () => { approveOf(prompts(root)[1]!).props.onClick(POINTER); });
+    expect(approved()).toEqual(["p2"]);
+    // the first one runs out: the one below moves up
+    await act(async () => { renderer!.update(element([first, third])); });
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    await act(async () => { renderer!.update(element([third])); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(POINTER); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
+    expect(approved()).toEqual(["p2"]);
+    expect(page.activeElement).toBe(field);
+    await act(async () => { jest.advanceTimersByTime(APPROVE_KEY_GUARD_MS); });
+    await act(async () => { approveOf(prompts(root)[0]!).props.onClick(KEY); });
+    expect(approved()).toEqual(["p2", "p3"]);
+  });
+
+  it("brings the prompt it gives the focus to into view, and starts every guard again when that moved the stack", async () => {
+    // more devices than a short window shows at once: the stack scrolls
+    const [first, second, third] = [request(), request({ id: "p2", label: "desk2" }), request({ id: "p3", label: "desk3" })];
+    const root = await show([first, second, third]);
+    expect(page.activeElement).toBe(nodeOf(prompts(root)[0]!));
+    // in view already: nothing moved, and the other prompts were not touched
+    expect(prompts(root).map((prompt) => nodeOf(prompt).scrolled)).toEqual([1, 0, 0]);
+    // Tab took the focus to the last one, which the dialog's trap scrolled to; it is approved there
+    page.activeElement = nodeOf(prompts(root)[2]!);
+    await act(async () => { jest.advanceTimersByTime(5000); });
+    await act(async () => { approveOf(prompts(root)[2]!).props.onClick(KEY); });
+    expect(approved()).toEqual(["p3"]);
+    // the first is handed the focus and scrolled back to: the second moved under the pointer with it
+    shift = -40;
+    page.activeElement = page.body;
+    await act(async () => { renderer!.update(element([first, second])); });
+    expect(page.activeElement).toBe(nodeOf(prompts(root)[0]!));
+    expect(prompts(root).map((prompt) => nodeOf(prompt).scrolled)).toEqual([1, 0]);
+    await act(async () => { approveOf(prompts(root)[1]!).props.onClick(POINTER); });
+    expect(approved()).toEqual(["p3"]);
+    await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS); });
+    await act(async () => { approveOf(prompts(root)[1]!).props.onClick(POINTER); });
+    expect(approved()).toEqual(["p3", "p2"]);
+  });
+
+  it("does not scroll to a prompt that refused the focus", async () => {
+    inert = true;
+    const root = await show([request()]);
+    expect(nodeOf(prompts(root)[0]!).scrolled).toBe(0);
   });
 
   it("still approves and declines through decideRelayPairing", async () => {
     const root = await show([request(), request({ id: "p2", label: "desk2", local_only: true })]);
     const [first, second] = prompts(root);
-    await act(async () => { first!.findAllByType("button")[0]!.props.onClick(POINTER); });
     // declining is never held back
     await act(async () => { second!.findAllByType("button")[1]!.props.onClick(KEY); });
-    expect(decided).toEqual([["/api/relay/pairing", { id: "p1", decision: "approve" }], ["/api/relay/pairing", { id: "p2", decision: "decline" }]]);
+    await act(async () => { jest.advanceTimersByTime(APPROVE_POINTER_GUARD_MS); });
+    await act(async () => { first!.findAllByType("button")[0]!.props.onClick(POINTER); });
+    expect(decided).toEqual([["/api/relay/pairing", { id: "p2", decision: "decline" }], ["/api/relay/pairing", { id: "p1", decision: "approve" }]]);
   });
 });
