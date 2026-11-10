@@ -162,6 +162,9 @@ it("counts a prompt only while the cursor is on its line", () => {
   expect(promptHasCursor(padded(40, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 40)).toBe(true);
   expect(promptHasCursor(padded(41, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 41)).toBe(true);
   expect(promptHasCursor(padded(42, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 42)).toBe(false);
+  // a line that xterm wrapped over two rows itself holds its space: the row below it is past the answer's line feed
+  expect(promptHasCursor(["$ git push", "Password for 'https://alice@github.com': ", ""], [0, 1, 3], 3, 11, 30)).toBe(false);
+  expect(promptHasCursor(["$ git push", "Password for 'https://alice@github.com': ", ""], [0, 1, 3], 2, 11, 30)).toBe(true);
   // two full rows of it in 20 columns, and a row of text below is no blank row
   expect(promptHasCursor(["Password for 'https:", "//alice@github.com':", ""], [0, 1, 2], 2, 1, 20)).toBe(true);
   expect(promptHasCursor(["Password for 'https://alice@github.com':", "x"], [0, 1], 1, 1, 40)).toBe(true);
