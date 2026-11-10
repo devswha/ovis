@@ -61,11 +61,16 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
   const at = pass.enforce_at === null ? null : Date.parse(pass.enforce_at);
   // a date that does not parse names no time at all: nothing counts as enforced on it
   const early = at !== null && (Number.isNaN(at) || now < at);
+  // The flag beside the global link in error: how a refusal is read where no date is still to come
+  // (components/RelayPanel.tsx statusText reads one so too)
+  const refused = pass.refused && relay.phase === "error";
   // The relay closed this PC for its pass, so it enforces already: this browser's clock may run behind
-  // the date, or the relay may name a date and enforce before it. The flag alone does not say so: a
-  // regional relay's refusal sets it while the global relay, whose status this is, still lets the PC in
-  // (components/RelayPanel.tsx statusText reads a refusal the same way)
-  const closed = pass.refused && relay.phase === "error";
+  // the date, or the relay may name a date and enforce before it. The flag does not say so, with the link
+  // in error or not: a regional relay's refusal sets it too, while the status is the global link's, which
+  // may let the PC in or be down for another reason (`relay_unreachable` while it reconnects). Before the
+  // date a refusal is therefore that link's own: an error whose code names the pass. A server from before
+  // the codes names none, and its error beside the flag is read as one
+  const closed = refused && (relay.error_code === undefined || relay.error_code?.startsWith("pass_") === true);
   if (early && !closed) {
     return remind ? { kind: "sign-in-grace", enforceAt: Number.isNaN(at) ? null : pass.enforce_at } : null;
   }
@@ -82,7 +87,8 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
     return { kind: "not-listed", enforceAt: null };
   }
   if (pass.state === "no_account") {
-    if (closed) {
+    // before the date only a PC the relay closed gets here, and that one is refused by this reading too
+    if (refused) {
       return { kind: "sign-in-required", enforceAt: null };
     }
     if (remind) {

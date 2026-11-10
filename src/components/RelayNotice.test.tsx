@@ -104,6 +104,42 @@ describe("relayNoticeFromStatus before the announced date", () => {
     expect(relayNoticeFromStatus({ ...baseRelay, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeNull();
   });
 
+  it("does not read the refused flag as a refusal before the date while the global link is down for another reason", () => {
+    // a regional relay's refusal set the flag; the global link, whose status this is, dropped for the network
+    const down = { ...baseRelay, phase: "error", error: "Relay connection lost; reconnecting.", error_code: "relay_unreachable" } as const;
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "no_account", relay: "missing", enforce_at: future, refused: true } }, false, now))
+      .toEqual({ kind: "sign-in-grace", enforceAt: future });
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true } }, true, now)).toBeNull();
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeNull();
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "limit", relay: null, enforce_at: "soon", refused: true } }, true, now)).toBeNull();
+    // nor beside a key the relay refused for good, or a relay that did not start
+    for (const error_code of ["server_key_refused", "start_failed"] as const) {
+      expect(relayNoticeFromStatus({ ...down, error_code, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now)).toBeNull();
+    }
+  });
+
+  it("reads a refusal before the date from the global link's own word of the pass", () => {
+    for (const error_code of ["pass_required", "pass_not_listed", "pass_limit", "pass_unavailable", "pass_refused", "pass_unsupported"] as const) {
+      const refused = { ...baseRelay, phase: "error", error: "The Ovis relay needs a signed-in account (relay pass required).", error_code } as const;
+      expect(relayNoticeFromStatus({ ...refused, pass: { state: "no_account", relay: null, enforce_at: future, refused: true } }, false, now))
+        .toEqual({ kind: "sign-in-required", enforceAt: null });
+      expect(relayNoticeFromStatus({ ...refused, pass: { state: "not_listed", relay: "missing", enforce_at: future, refused: true } }, true, now))
+        .toEqual({ kind: "not-listed", enforceAt: null });
+      expect(relayNoticeFromStatus({ ...refused, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, now))
+        .toEqual({ kind: "pc-limit", enforceAt: null });
+    }
+    // an older server names no code: its error beside the flag is read as a refusal, as the cases above without one are
+  });
+
+  it("reads the flag beside any error as a refusal once the date has passed, as before", () => {
+    const after = Date.parse("2030-03-01T00:00:00.000Z");
+    const down = { ...baseRelay, phase: "error", error: "Relay connection lost; reconnecting.", error_code: "relay_unreachable" } as const;
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "no_account", relay: null, enforce_at: future, refused: true } }, false, after))
+      .toEqual({ kind: "sign-in-required", enforceAt: null });
+    expect(relayNoticeFromStatus({ ...down, pass: { state: "limit", relay: null, enforce_at: future, refused: true } }, true, after))
+      .toEqual({ kind: "pc-limit", enforceAt: null });
+  });
+
   it("keeps the data limit for the date even when the relay refused this PC", () => {
     expect(relayNoticeFromStatus({ ...baseRelay, phase: "error", pass: { state: "ok", relay: "ok", enforce_at: future, refused: true, new_sessions: false } }, true, now)).toBeNull();
   });
