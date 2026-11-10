@@ -171,7 +171,7 @@ describe("signing in on a PC's own page", () => {
     await mount();
     await until(() => buttons().includes("Add this PC to my account"));
     expect(text(renderer!.root)).not.toContain("Signed in. Adding this PC to your account…");
-    expect(asked.slice(before).map((request) => request.path).filter((path) => path !== "/api/account/status")).toEqual([]);
+    expect(asked.slice(before).map((request) => request.path).filter((path) => path !== "/api/account/status" && path !== "/api/health")).toEqual([]);
   });
 
   it("a sign-in again for the same account, to change its sign-in methods, lists nothing by itself", async () => {
@@ -200,7 +200,7 @@ describe("signing in on a PC's own page", () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(buttons()).not.toContain("Stop waiting");
     expect(text(renderer!.root)).not.toContain("Signed in. Adding this PC to your account…");
-    expect(asked.slice(before).map((request) => request.path).filter((path) => path !== "/api/account/status")).toEqual([]);
+    expect(asked.slice(before).map((request) => request.path).filter((path) => path !== "/api/account/status" && path !== "/api/health")).toEqual([]);
   });
 
   it("says only Sign in on a PC already in an account, and adds nothing after it", async () => {
@@ -242,6 +242,70 @@ describe("signing in on a PC's own page", () => {
     // fixed wait: proves the button does not come to promise what this sign-in will not do
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(buttons()).not.toContain("Sign in and add this PC");
+  });
+
+  it("a watching device's sign-in lists nothing and is offered no button to add the PC", async () => {
+    role = "watch";
+    await mount();
+    await until(() => buttons().includes("Sign in"));
+    await press("Sign in");
+    await until(() => text(renderer!.root).includes("Signed in with GitHub"));
+    // fixed wait: proves that nothing is listed, opened or offered after the sign-in
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(links()).toHaveLength(0);
+    expect(text(renderer!.root)).not.toContain("Adding this PC");
+    expect(text(renderer!.root)).not.toContain("could not be listed");
+    expect(buttons()).not.toContain("Add this PC to my account");
+    expect(buttons()).not.toContain("Turn on the relay and add this PC");
+  });
+
+  it("a press of a button that read only Sign in adds nothing, though the relay was turned on since the button was drawn", async () => {
+    relay = "off";
+    await mount();
+    await until(() => buttons().includes("Sign in"));
+    // the person turns the relay on (its switch in the same fold, or another tab) and presses at once
+    relay = "online";
+    expect(buttons()).not.toContain("Sign in and add this PC");
+    await press("Sign in");
+    await until(() => buttons().includes("Add this PC to my account"));
+    // fixed wait: proves that nothing is listed or opened by itself
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(text(renderer!.root)).not.toContain("Signed in. Adding this PC to your account…");
+    expect(buttons()).not.toContain("Stop waiting");
+    expect(links()).toHaveLength(0);
+    expect(await new AccountService({ store: indexedAccountStore }).listPcs()).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  it("the button's words follow the relay: read again when Settings asks, and by itself", async () => {
+    relay = "off";
+    await mount();
+    await until(() => buttons().includes("Sign in"));
+    relay = "online";
+    await recheck(1);
+    await until(() => buttons().includes("Sign in and add this PC"));
+    // and without being asked, within a few seconds
+    relay = "off";
+    const deadline = Date.now() + 8_000;
+    while (!buttons().includes("Sign in") && Date.now() < deadline) await act(async () => { await Bun.sleep(25); });
+    expect(buttons()).toContain("Sign in");
+    expect(links()).toHaveLength(0);
+  });
+
+  it("a provider's own button says nothing of adding the PC, so its sign-in adds nothing: the offer stays", async () => {
+    // an account service without the link page: Continue with GitHub, by GitHub's device page
+    fake = new FakeAccountService(() => Date.now() + ahead);
+    await mount();
+    await until(() => buttons().includes("Continue with GitHub"));
+    expect(buttons()).not.toContain("Sign in and add this PC");
+    await press("Continue with GitHub");
+    await until(() => buttons().includes("Add this PC to my account"));
+    // fixed wait: proves that nothing is listed or opened by itself
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    expect(text(renderer!.root)).not.toContain("Signed in. Adding this PC to your account…");
+    expect(buttons()).not.toContain("Stop waiting");
+    expect(links()).toHaveLength(0);
+    expect(await new AccountService({ store: indexedAccountStore }).listPcs()).toEqual([]);
   });
 
   it("a sign-in that ended before the PC was read is none that just finished: the same account stored again later lists nothing by itself", async () => {

@@ -487,6 +487,7 @@ const BASE: Record<string, string> = {
   "This PC is in your account. Your other devices can open it now.": "이 PC가 계정에 추가되었습니다. 이제 다른 기기에서 열 수 있습니다.",
   "This PC is in your account. The device that added it is still letting your other devices in.": "이 PC가 계정에 추가되었습니다. 추가한 기기가 계정의 다른 기기를 아직 등록하는 중입니다.",
   "This PC could not be listed in your account. Try again.": "이 PC를 계정에 올리지 못했습니다. 다시 시도하세요.",
+  "This PC may not have been listed in your account. Try again.": "이 PC가 계정에 올라가지 않았을 수 있습니다. 다시 시도하세요.",
   "Turn on remote access through the Ovis relay above first.": "먼저 위에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "먼저 설정 → 기기와 PC에서 Ovis 릴레이를 통한 원격 접속을 켜세요.",
   "New terminal": "새 터미널",

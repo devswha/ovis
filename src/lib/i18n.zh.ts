@@ -491,6 +491,7 @@ const BASE: Record<string, string> = {
   "This PC is in your account. Your other devices can open it now.": "此电脑已加入你的账号。现在其他设备可以打开它了。",
   "This PC is in your account. The device that added it is still letting your other devices in.": "此电脑已加入你的账号。添加它的设备仍在登记你的其他设备。",
   "This PC could not be listed in your account. Try again.": "无法将此电脑列入你的账号。请重试。",
+  "This PC may not have been listed in your account. Try again.": "此电脑可能尚未列入你的账号。请重试。",
   "Turn on remote access through the Ovis relay above first.": "请先在上方开启通过 Ovis 中继的远程访问。",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "请先在 设置 → 设备和电脑 中开启通过 Ovis 中继的远程访问。",
   "New terminal": "新建终端",

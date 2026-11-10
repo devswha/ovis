@@ -38,6 +38,8 @@ describe("AddThisPc", () => {
     account: string | null; enrolling: boolean; linkError: { status: number; code: string } | null; statusDown: boolean; offer: string; hang: string | null;
     relay: "on" | "off"; blocked: "serve_only" | null; start: "ok" | "off" | "broken"; closeMissing: boolean;
     gate: "open" | "closed"; via: "open" | "loopback" | "device"; paired: boolean; cookieSticks: boolean; healthDown: boolean;
+    /** what this browser may do on the PC */
+    role: "drive" | "watch";
   };
   /** the account this tab is signed in to; null when signed out */
   let signedIn: string | null;
@@ -50,21 +52,21 @@ describe("AddThisPc", () => {
   let restore: (() => void)[];
   /** every PC put in a directory, as `<account>/<server id>` */
   let puts: string[];
-  /** what the next reads of the directory and of the stored sign-in, the next link and the next relay start wait for (null: nothing) */
-  let held: { listPcs: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null };
+  /** what the next reads of the directory and of the stored sign-in, the next write of the PC (after it was sent), the next link and the next relay start wait for (null: nothing) */
+  let held: { listPcs: Promise<void> | null; putPc: Promise<void> | null; session: Promise<void> | null; link: Promise<void> | null; start: Promise<void> | null };
   /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
   const service = (bound?: string): AccountService => {
     const mine = (): void => { if (bound !== undefined && signedIn !== bound) throw new SignedOutError(); };
     return {
       listPcs: async () => { mine(); await held.listPcs; return []; },
-      putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); },
+      putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); await held.putPc; },
       deletePc: async () => { mine(); directory.push("deletePc"); },
       session: async () => { await held.session; return signedIn === null ? undefined : { account: signedIn }; },
       forSignIn: (session: { account: string }) => service(session.account),
     } as unknown as AccountService;
   };
   /** holds what is read through `held` until the function returned is called */
-  const hold = (what: "listPcs" | "session" | "link" | "start"): (() => void) => {
+  const hold = (what: "listPcs" | "putPc" | "session" | "link" | "start"): (() => void) => {
     let release!: () => void;
     held[what] = new Promise<void>((done) => { release = done; });
     return () => { held[what] = null; release(); };
@@ -72,12 +74,12 @@ describe("AddThisPc", () => {
 
   beforeEach(() => {
     renderers = [];
-    pc = { account: null, enrolling: false, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk"), hang: null, relay: "on", blocked: null, start: "ok", closeMissing: false, gate: "closed", via: "loopback", paired: false, cookieSticks: true, healthDown: false };
+    pc = { account: null, enrolling: false, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk"), hang: null, relay: "on", blocked: null, start: "ok", closeMissing: false, gate: "closed", via: "loopback", paired: false, cookieSticks: true, healthDown: false, role: "drive" };
     signedIn = ACCOUNT;
     asked = [];
     directory = [];
     puts = [];
-    held = { listPcs: null, session: null, link: null, start: null };
+    held = { listPcs: null, putPc: null, session: null, link: null, start: null };
     tab = new Map();
     page = { hidden: false, events: new EventTarget() };
     for (const name of globals) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -114,7 +116,8 @@ describe("AddThisPc", () => {
       }
       if (path === "/api/relay/link/close" && !pc.closeMissing) return Response.json({ ok: true });
       if (path === "/api/health" && pc.healthDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
-      if (path === "/api/health") return Response.json({ security: { pairing_gate: pc.gate, token_configured: false }, auth: { required: false, authenticated: true, via: pc.via, role: "drive" } });
+      if (path === "/api/health") return Response.json({ security: { pairing_gate: pc.gate, token_configured: false }, auth: { required: false, authenticated: true, via: pc.via, role: pc.role } });
+      if (path === "/api/relay") return Response.json({ phase: pc.relay === "on" ? "online" : "off", relay: "wss://relay.ovis.sh", app: "https://app.ovis.sh", sessions: 0, blocked: null, error: null });
       if (path === "/api/devices") return Response.json({ devices: pc.paired ? [{ id: "dev_1", label: "this browser", current: true }] : [] });
       if (path === "/api/devices/pair/start") return Response.json({ code: "123456", expires_at: at + 60_000 });
       if (path === "/api/devices/pair") { pc.paired = pc.cookieSticks; if (pc.paired) pc.via = "device"; return Response.json({ ok: true }); }
@@ -145,11 +148,14 @@ describe("AddThisPc", () => {
   /** lets the answers on their way arrive and the screen draw them */
   const settle = async (): Promise<void> => { await act(async () => { for (let turn = 0; turn < 200; turn++) await Promise.resolve(); }); };
   const advance = async (ms: number): Promise<void> => { act(() => { jest.advanceTimersByTime(ms); }); await settle(); };
-  /** `signedInAs`: the account of a sign-in that just finished on the screen, as AccountSection hands it over once */
-  const mount = async (signedInAs: string | null = null): Promise<ReactTestRenderer> => {
+  /**
+   * `signedInAs`: the account of a sign-in that just finished on the screen, as AccountSection hands it over once;
+   * `adds`: whether the button that began it said it adds this PC
+   */
+  const mount = async (signedInAs: string | null = null, adds = true): Promise<ReactTestRenderer> => {
     let renderer!: ReactTestRenderer;
-    let fresh = signedInAs;
-    const signedInHere = (): string | null => { const account = fresh; fresh = null; return account; };
+    let fresh = signedInAs === null ? null : { account: signedInAs, adds };
+    const signedInHere = (): { account: string; adds: boolean } | null => { const taken = fresh; fresh = null; return taken; };
     act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere }) })); });
     renderers.push(renderer);
     await settle();
@@ -196,7 +202,9 @@ describe("AddThisPc", () => {
     // the press listed the PC once; no reopening wrote to the directory or asked any other route
     expect(directory).toEqual(["putPc"]);
     // (the press also told the PC which account it asks its relay pass under, once)
-    expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/relay/link", "/api/account/relay-account"]));
+    // (and the screen read once, before its offer, what this browser may do on the PC)
+    expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/health", "/api/relay/link", "/api/account/relay-account"]));
+    expect(asked.filter((request) => request.path === "/api/health").length).toBe(1);
     expect(asked.filter((request) => request.path === "/api/account/relay-account").length).toBe(1);
   });
 
@@ -520,8 +528,8 @@ describe("AddThisPc", () => {
   });
 
   test("a sign-in that just finished is taken once: a later mount of the screen offers the button", async () => {
-    let fresh: string | null = ACCOUNT;
-    const signedInHere = (): string | null => { const account = fresh; fresh = null; return account; };
+    let fresh: { account: string; adds: boolean } | null = { account: ACCOUNT, adds: true };
+    const signedInHere = (): { account: string; adds: boolean } | null => { const taken = fresh; fresh = null; return taken; };
     for (const expected of [["Stop waiting"], ["Add this PC to my account"]]) {
       tab.clear();
       let renderer!: ReactTestRenderer;
@@ -815,8 +823,8 @@ describe("AddThisPc", () => {
 
   test("a sign-in that just finished while the PC's account cannot be read is taken by that mount alone", async () => {
     pc.statusDown = true;
-    let fresh: string | null = ACCOUNT;
-    const signedInHere = (): string | null => { const account = fresh; fresh = null; return account; };
+    let fresh: { account: string; adds: boolean } | null = { account: ACCOUNT, adds: true };
+    const signedInHere = (): { account: string; adds: boolean } | null => { const taken = fresh; fresh = null; return taken; };
     const tree = () => createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound, signedInHere }) });
     let renderer!: ReactTestRenderer;
     act(() => { renderer = create(tree()); });
@@ -847,16 +855,16 @@ describe("AddThisPc", () => {
     expect(directory).toEqual(["putPc"]);
   });
 
-  test("past a minute without an answer the sign-in lists nothing any more, and nothing is asked again", async () => {
+  test("past a minute without an answer the sign-in lists nothing any more: the PC is still asked, and the button comes once it answers", async () => {
     pc.statusDown = true;
     const renderer = await mount(ACCOUNT);
     await advance(SIGNED_IN_RETRY_MS);
-    expect(jest.getTimerCount()).toBe(0);
-    pc.statusDown = false;
-    const asks = asked.length;
-    await advance(SIGNED_IN_RETRY_MS);
-    expect(asked.length).toBe(asks);
     expect(renderer.toJSON()).toBeNull();
+    pc.statusDown = false;
+    await advance(REOPEN_MS);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(words(renderer)).not.toContain("Signed in. Adding this PC to your account…");
+    await advance(SIGNED_IN_RETRY_MS);
     expect(links()).toBe(0);
     expect(directory).toEqual([]);
   });
@@ -1205,6 +1213,178 @@ describe("AddThisPc", () => {
     renderers = renderers.filter((renderer) => renderer !== settings);
     await advance(RELIST_MS);
     expect(directory).toEqual(["putPc", "putPc", "putPc", "putPc"]);
+  });
+
+  const closes = (): number => asked.filter((request) => request.path === "/api/relay/link/close").length;
+  const passes = (): number => asked.filter((request) => request.path === "/api/account/relay-account").length;
+
+  test("a sign-in whose button did not say it adds the PC lists and opens nothing, though the relay is on: the offer", async () => {
+    const renderer = await mount(ACCOUNT, false);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(words(renderer)).not.toContain("Signed in. Adding this PC to your account…");
+    await advance(ADDING_MS);
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+    // the button lists as any press does
+    await press(renderer, "Add this PC to my account");
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+  });
+
+  test("a sign-in whose button did not say it adds the PC, with the relay off, is offered the one button for both", async () => {
+    pc.relay = "off";
+    const renderer = await mount(ACCOUNT, false);
+    expect(buttons(renderer)).toEqual(["Turn on the relay and add this PC"]);
+    expect(links()).toBe(0);
+    expect(asked.some((request) => request.path === "/api/relay/start")).toBe(false);
+    await press(renderer, "Turn on the relay and add this PC");
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+  });
+
+  test("a device that only watches this PC is shown nothing: no listing after its sign-in, and no offer", async () => {
+    pc.role = "watch";
+    for (const adds of [true, false]) {
+      const renderer = await mount(ACCOUNT, adds);
+      expect(renderer.toJSON()).toBeNull();
+    }
+    const later = await mount();
+    expect(later.toJSON()).toBeNull();
+    await advance(ADDING_MS);
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
+  });
+
+  test("a sign-in is not listed by itself while what this browser may do on the PC cannot be read: the offer", async () => {
+    pc.healthDown = true;
+    const renderer = await mount(ACCOUNT);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
+  });
+
+  test("given up with the PC's entry already on its way: the window is closed, the PC is not told the account, and the screen says it may be listed", async () => {
+    const release = hold("putPc");
+    const renderer = await mount(ACCOUNT);
+    expect(words(renderer)).toBe("Signed in. Adding this PC to your account…");
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    await advance(ADDING_MS);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(words(renderer)).toContain("This PC may not have been listed in your account. Try again.");
+    expect(words(renderer)).not.toContain("could not be listed");
+    // the window the attempt opened waits for nobody: closed, once
+    expect(closes()).toBe(1);
+    release();
+    await settle();
+    expect(passes()).toBe(0);
+    expect(closes()).toBe(1);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+  });
+
+  test("given up while the PC's window was still being opened: the window is closed once it does open", async () => {
+    const release = hold("link");
+    const renderer = await mount(ACCOUNT);
+    await advance(ADDING_MS);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(words(renderer)).toContain("This PC could not be listed in your account. Try again.");
+    expect(closes()).toBe(0);
+    release();
+    await settle();
+    expect(closes()).toBe(1);
+    expect(asked.at(-1)!.path).toBe("/api/relay/link/close");
+    expect(directory).toEqual([]);
+  });
+
+  test("a late window of an attempt given up is left open once the person pressed the button since", async () => {
+    const release = hold("link");
+    const renderer = await mount(ACCOUNT);
+    await advance(ADDING_MS);
+    await press(renderer, "Add this PC to my account");
+    release();
+    await settle();
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    expect(closes()).toBe(0);
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+  });
+
+  test("a listing refused for another sign-in after the window opened closes that window", async () => {
+    const release = hold("link");
+    const renderer = await mount(ACCOUNT);
+    signedIn = "acct_someone_else";
+    release();
+    await settle();
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(closes()).toBe(1);
+    expect(puts).toEqual([]);
+  });
+
+  test("a screen closed while the sign-in lists the PC drops the listing: nothing written or kept, the window closed, and the next screen offers the button", async () => {
+    const release = hold("link");
+    const renderer = await mount(ACCOUNT);
+    expect(words(renderer)).toBe("Signed in. Adding this PC to your account…");
+    act(() => { renderer.unmount(); });
+    release();
+    await settle();
+    expect(puts).toEqual([]);
+    expect(directory).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(closes()).toBe(1);
+    const next = await mount();
+    expect(buttons(next)).toEqual(["Add this PC to my account"]);
+  });
+
+  test("a screen closed while the relay button starts the relay lists nothing when the relay answers", async () => {
+    pc.relay = "off";
+    const renderer = await mount(ACCOUNT);
+    const release = hold("start");
+    await press(renderer, "Turn on the relay and add this PC");
+    act(() => { renderer.unmount(); });
+    const opened = links();
+    release();
+    await settle();
+    expect(links()).toBe(opened);
+    expect(puts).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("a pressed listing goes on when its screen closes, as before: the wait is kept for the next screen", async () => {
+    const release = hold("link");
+    const renderer = await mount();
+    await press(renderer, "Add this PC to my account");
+    act(() => { renderer.unmount(); });
+    release();
+    await settle();
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    expect(tab.has(MARKER)).toBe(true);
+    expect(closes()).toBe(0);
+  });
+
+  test("Stop waiting while a reopen is on its way closes the window that reopen opens late", async () => {
+    const renderer = await waitingFrom();
+    const release = hold("link");
+    await advance(REOPEN_MS);
+    expect(links()).toBe(2);
+    await press(renderer, "Stop waiting");
+    expect(closes()).toBe(1);
+    // the reopen reaches the PC after the close, and opens a window nobody waits on: closed again
+    release();
+    await settle();
+    expect(closes()).toBe(2);
+    expect(asked.at(-1)!.path).toBe("/api/relay/link/close");
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+  });
+
+  test("a late reopen after Stop waiting is left open once the person pressed the button again", async () => {
+    const renderer = await waitingFrom();
+    const release = hold("link");
+    await advance(REOPEN_MS);
+    await press(renderer, "Stop waiting");
+    release();
+    await press(renderer, "Add this PC to my account");
+    await settle();
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    expect(closes()).toBe(1);
   });
 
   test("works without a tab storage, only not resumed", async () => {
