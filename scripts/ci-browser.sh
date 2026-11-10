@@ -111,6 +111,7 @@ run_script scripts/files-panel-demo-regression.ts
 run_script scripts/docked-file-link-demo-regression.ts
 run_script scripts/files-documents-demo-regression.ts
 run_script scripts/theme-first-paint-demo-regression.ts
+run_script scripts/theme-file-demo-regression.ts
 run_script scripts/boot-loading-demo-regression.ts
 run_script scripts/old-safari-demo-regression.ts
 run_script scripts/security-summary-demo-regression.ts
@@ -157,6 +158,7 @@ run_script scripts/gjc-status-browser-regression.ts
 run_script scripts/math-browser-qa.ts
 run_script scripts/claude-image-browser-qa.ts
 run_script scripts/chat-markdown-images-browser-qa.ts
+run_script scripts/chat-visualization-browser-qa.ts
 run_script scripts/pi-image-browser-qa.ts
 run_script scripts/omp-codex-image-browser-qa.ts
 run_script scripts/grok-image-browser-qa.ts
