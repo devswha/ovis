@@ -1483,7 +1483,7 @@ describe("ovis link, on the PC itself", () => {
     expect(out.slice(-5)).toEqual([
       OFF,
       "Hako's iPhone paired with this PC. Waiting for it to add this PC to your account…\n",
-      "Hako's iPhone paired with this PC but is not signed in to an Ovis account, so this PC is in no account yet. Keep that device? [y/N] ",
+      "Hako's iPhone paired with this PC but is not signed in to an Ovis account, so this PC is in no account yet. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "Removed.\n",
       "Sign in on that device, then run ovis add again.\n",
     ]);
@@ -1495,15 +1495,38 @@ describe("ovis link, on the PC itself", () => {
     expect(asked).toBeLessThan(3 + 12);
   });
 
-  it("keeps that device on y, and still fails: the PC is in no account", async () => {
+  it("keeps that device on the word keep, and still fails: the PC is in no account", async () => {
     const { code, out, revoked, offers } = await scanning({
       step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
-      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer("yes"); },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer("keep"); },
     });
     expect(code).toBe(1);
     expect(out.slice(-2)).toEqual(["Kept.\n", "Sign in on that device, then run ovis add again.\n"]);
     expect(revoked).toEqual([]);
     expect(offers).toEqual(["100001"]);
+  });
+
+  it("removes the device on a y begun before the first question showed, however late its Enter comes: only the word keep keeps it", async () => {
+    // the terminal gives no sign of a line begun and not sent: its Enter comes well past the dwell, as if for this question
+    for (const typed of ["y", "Y", "yes", "kee", "keep it", "k"]) {
+      const { code, out, revoked } = await scanning({
+        step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+        said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer(typed, 2); },
+      });
+      expect(code).toBe(1);
+      expect(out).not.toContain("Kept.\n");
+      expect(revoked).toEqual([PHONE.id]);
+      expect(out.includes("Only the word keep keeps it, not y.\n")).toBe(/^y(es)?$/i.test(typed));
+    }
+    // the word, in any case and with spaces around it, keeps
+    for (const typed of ["keep", " KEEP "]) {
+      const { out, revoked } = await scanning({
+        step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+        said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer(typed); },
+      });
+      expect(out).toContain("Kept.\n");
+      expect(revoked).toEqual([]);
+    }
   });
 
   it("takes no line typed before the question could be read as its answer", async () => {
@@ -1526,7 +1549,7 @@ describe("ovis link, on the PC itself", () => {
   it("takes no line begun at a question that changed as the answer to the next one, however late its Enter comes", async () => {
     const owner: Row = { ...OLD, account: "acct_1" };
     const HELD = "That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n";
-    const NEXT = "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ";
+    const NEXT = "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ";
     // y typed at the first question and not sent; this PC joins the account by another device, the question is asked
     // anew, and the Enter comes two seconds after it showed, or two looks later
     for (const looksLater of [1, 2]) {
@@ -1539,7 +1562,7 @@ describe("ovis link, on the PC itself", () => {
         said: (text, _type, answer) => {
           if (text !== NEXT) return;
           // the held line's Enter, then nothing more: the default
-          if (++shows === 1) answer("y", looksLater);
+          if (++shows === 1) answer("keep", looksLater);
           else answer("");
         },
       });
@@ -1555,7 +1578,7 @@ describe("ovis link, on the PC itself", () => {
         if (looks === 2) state.devices = [OLD, PHONE];
         if (looks === 14) { state.account = "acct_1"; state.devices = [owner, PHONE]; }
       },
-      said: (text, _type, answer) => { if (text === NEXT) answer(++shows === 1 ? "" : "y"); },
+      said: (text, _type, answer) => { if (text === NEXT) answer(++shows === 1 ? "" : "keep"); },
     });
     expect(kept.out.slice(-4)).toEqual([HELD, NEXT, "Kept.\n", "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n"]);
     expect(kept.revoked).toEqual([]);
@@ -1572,7 +1595,7 @@ describe("ovis link, on the PC itself", () => {
         if (looks === 16) state.devices = [OLD, MEMBER, DIRECT];
         if (looks === 30) state.enrolling = false;
       },
-      said: (text, _type, answer) => { if (text.includes("Tailnet laptop paired with this PC with the code shown here")) answer(++shows === 1 ? "y" : ""); },
+      said: (text, _type, answer) => { if (text.includes("Tailnet laptop paired with this PC with the code shown here")) answer(++shows === 1 ? "keep" : ""); },
     });
     expect(out.filter((line) => line.includes("answered nothing"))).toEqual(["That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n"]);
     expect(out).not.toContain("Kept.\n");
@@ -1582,7 +1605,7 @@ describe("ovis link, on the PC itself", () => {
 
   it("says of a line handed over as its question went that it answered nothing, and still drops the next one", async () => {
     const owner: Row = { ...OLD, account: "acct_1" };
-    const NEXT = "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ";
+    const NEXT = "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ";
     let typeNow: (line: string) => void = () => undefined;
     let shows = 0;
     const { out, revoked } = await scanning({
@@ -1593,7 +1616,7 @@ describe("ovis link, on the PC itself", () => {
       },
       said: (text, type, answer) => {
         typeNow = type;
-        if (text === NEXT) answer(++shows === 1 ? "y" : "n");
+        if (text === NEXT) answer(++shows === 1 ? "keep" : "n");
       },
     });
     expect(out.filter((line) => line.includes("answered nothing"))).toEqual([
@@ -1641,7 +1664,7 @@ describe("ovis link, on the PC itself", () => {
     expect(soon.out.slice(-5)).toEqual([
       OFF,
       "Hako's iPhone paired with this PC. Waiting for it to add this PC to your account…\n",
-      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ",
+      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "Removed.\n",
       "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n",
     ]);
@@ -1658,11 +1681,11 @@ describe("ovis link, on the PC itself", () => {
     });
     // the first line after the question changed answers nothing (it may have been begun at the old one): asked once more
     expect(waiting.out.slice(-7)).toEqual([
-      "Hako's iPhone paired with this PC but is not signed in to an Ovis account, so this PC is in no account yet. Keep that device? [y/N] ",
+      "Hako's iPhone paired with this PC but is not signed in to an Ovis account, so this PC is in no account yet. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "\n",
-      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ",
+      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n",
-      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ",
+      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "Removed.\n",
       "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n",
     ]);
@@ -1679,7 +1702,7 @@ describe("ovis link, on the PC itself", () => {
     // and a server that tells no account of any row vouches for none: the newcomer is not named as the adder
     const untold = await scanning({
       step: (state, looks) => { if (looks === 2) { state.account = "acct_1"; state.devices = [OLD, PHONE]; } },
-      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer("y"); },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer("keep"); },
     });
     expect(untold.out.slice(-2)).toEqual(["Kept.\n", "This PC is in your account (acct_1): every device of your account can use it.\n"]);
   });
@@ -1693,7 +1716,7 @@ describe("ovis link, on the PC itself", () => {
     expect(out.slice(-5)).toEqual([
       OFF,
       "Tailnet laptop paired with this PC at its own address, not through the relay.\n",
-      "Tailnet laptop paired with this PC with the code shown here and is not in your account. Keep that device? [y/N] ",
+      "Tailnet laptop paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "Removed.\n",
       "This PC is in no account yet. Run ovis add again.\n",
     ]);

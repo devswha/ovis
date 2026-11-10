@@ -326,9 +326,9 @@ it is off, and wait until it is online.
     and the command fails.
   - Every device that came since the first code and is not a member of this PC's account got in
     by the code alone, and nobody vouched for it: the command names it and asks **Keep that
-    device? [y/N]**, whether this PC is in no account or joined one by another device meanwhile.
+    device? Type keep to keep it, or press Enter to remove it:**, whether this PC is in no account or joined one by another device meanwhile.
     One paired through the relay gets 15 seconds first, in which a signed-in device links itself;
-    one paired at this PC's own address is asked about at once. Anything but y, no answer in the
+    one paired at this PC's own address is asked about at once. Anything but the word keep (a y included), no answer in the
     time left, and an input that is not a terminal remove it (`DELETE /api/devices/{id}`). With
     this PC in no account the command then fails with **Sign in on that device, then run ovis add
     again**; with this PC in the account it ends as above, and fails only when the device could

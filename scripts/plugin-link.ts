@@ -678,8 +678,8 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           asking = {
             key, devices: strays, alone, shownAt: null,
             prompt: alone
-              ? `${labels(strays)} paired with this PC but ${one ? "is" : "are"} not signed in to an Ovis account, so this PC is in no account yet. Keep ${one ? "that device" : "those devices"}? [y/N] `
-              : `${labels(strays)} paired with this PC with the code shown here and ${one ? "is" : "are"} not in your account. Keep ${one ? "that device" : "those devices"}? [y/N] `,
+              ? `${labels(strays)} paired with this PC but ${one ? "is" : "are"} not signed in to an Ovis account, so this PC is in no account yet. Keep ${one ? "that device" : "those devices"}? Type keep to keep ${one ? "it" : "them"}, or press Enter to remove ${one ? "it" : "them"}: `
+              : `${labels(strays)} paired with this PC with the code shown here and ${one ? "is" : "are"} not in your account. Keep ${one ? "that device" : "those devices"}? Type keep to keep ${one ? "it" : "them"}, or press Enter to remove ${one ? "it" : "them"}: `,
           };
           // read from here on, not sooner: a run in the background is stopped by its first read of the terminal.
           // What is not a terminal is never read: it answers nothing
@@ -687,7 +687,9 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
         } else if (asking !== null && keys !== null && asking.shownAt !== null && (reply !== null || keys.ended || now() >= stopAt)) {
           const asked = asking;
           // no answer (not a terminal, Ctrl+D, or none in time) keeps nothing: nobody vouched for those devices
-          const keep = reply !== null && /^y(es)?$/i.test(reply.trim());
+          // the word itself, typed in full: a y, begun for anything else or by habit, vouches for nobody
+          const keep = reply !== null && reply.trim().toLowerCase() === "keep";
+          if (reply !== null && !keep && /^y(es)?$/i.test(reply.trim())) say(`Only the word keep keeps ${asked.devices.length === 1 ? "it" : "them"}, not y.\n`);
           if (reply === null) say(keys.ended ? `No answer can be typed here, so ${asked.devices.length === 1 ? "it is" : "they are"} not kept.\n` : `No answer came in time, so ${asked.devices.length === 1 ? "it is" : "they are"} not kept.\n`);
           atPrompt = false;
           asking = null;
