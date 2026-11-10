@@ -157,12 +157,14 @@ export class AgentTaskStatus {
   /** bumped each time a pane is let go, so a lookup that was under way then is dropped */
   private readonly lifetimes = new Map<string, number>();
   /**
-   * the panes whose last lookup failed, for which agent and session (sessionOf) and when: kept until one
-   * finds the session or the pane leaves. A miss of one session neither holds off the lookup of another
-   * herdr reports there nor counts as its first. Not a status's lookup of a pane with no session: that
-   * one holds no snapshot off
+   * the lookups that failed, by pane: for which agent, and by session (sessionOf) when. Kept until a lookup
+   * finds a session there, the pane runs another agent or it leaves. A miss of one session neither holds
+   * off the lookup of another herdr reports there nor counts as its first, and it stays beside that one's:
+   * where herdr names a session, then none or another, then the first again, each is asked for only every
+   * RETRY_MS (so one entry per session herdr named for the pane since a lookup last found one). Not a
+   * status's lookup of a pane with no session: that one holds no snapshot off
    */
-  private readonly failed = new Map<string, { agent: TaskAgent; session: string | null; at: number }>();
+  private readonly failed = new Map<string, { agent: TaskAgent; at: Map<string | null, number> }>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly now: () => number;
 
@@ -239,14 +241,14 @@ export class AgentTaskStatus {
       // failure does not tell that (herdr was busy, a process read timed out), so what the pane holds is
       // dropped on the second in a row, and at once when it is another agent's or another session's:
       // what the pane holds was never that one's
-      const again = this.missOf(pane.pane_id, agent, session) !== undefined;
+      const again = this.missAt(pane.pane_id, agent, session) !== undefined;
       if (current !== undefined && (again || current.agent !== agent || sessionOf(current.pane) !== session)) this.letGo(pane.pane_id);
       // kept, the pane is asked for again by the poll, as herdr reports it now (by the session known for
       // it, where herdr names none)
       else if (current !== undefined) current.pane = { ...pane, agent };
       // a status's lookup of a pane with no session is not remembered: the snapshot after a turn's end
       // asks too, as its finish alert may be due before RETRY_MS is over
-      if (spaced || current !== undefined) this.failed.set(pane.pane_id, { agent, session, at: this.now() });
+      if (spaced || current !== undefined) this.miss(pane.pane_id, agent, session);
       // the same gates stand for it: a pane kept through this failure is not asked for twice in one moment
       if (asked !== undefined) await this.track(asked);
       return;
@@ -287,16 +289,23 @@ export class AgentTaskStatus {
     else this.lifetimes.delete(paneId);
   }
 
-  /** The pane's last lookup, when it failed and was for this agent and session. */
-  private missOf(paneId: string, agent: TaskAgent, session: string | null): { at: number } | undefined {
-    const miss = this.failed.get(paneId);
-    return miss !== undefined && miss.agent === agent && miss.session === session ? miss : undefined;
+  /** When the pane's lookup for this agent and session last failed, if none has found a session there since. */
+  private missAt(paneId: string, agent: TaskAgent, session: string | null): number | undefined {
+    const misses = this.failed.get(paneId);
+    return misses?.agent === agent ? misses.at.get(session) : undefined;
   }
 
   /** Whether that lookup failed less than RETRY_MS ago. */
   private failedLately(paneId: string, agent: TaskAgent, session: string | null): boolean {
-    const miss = this.missOf(paneId, agent, session);
-    return miss !== undefined && this.now() - miss.at < RETRY_MS;
+    const at = this.missAt(paneId, agent, session);
+    return at !== undefined && this.now() - at < RETRY_MS;
+  }
+
+  /** Remember a lookup that failed, beside the pane's misses of other sessions: another agent's are dropped for it. */
+  private miss(paneId: string, agent: TaskAgent, session: string | null): void {
+    const misses = this.failed.get(paneId);
+    if (misses?.agent === agent) misses.at.set(session, this.now());
+    else this.failed.set(paneId, { agent, at: new Map([[session, this.now()]]) });
   }
 
   private letGo(paneId: string): void {

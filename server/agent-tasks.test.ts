@@ -495,6 +495,41 @@ describe("AgentTaskStatus", () => {
     expect(asked).toEqual(["grok:none", "grok:one", "grok:two", "agy:a", "agy:b"]);
   });
 
+  it("keeps each session's miss beside the others': herdr naming one, then none or another, in turn asks for each only every ten seconds", async () => {
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    const asked: string[] = [];
+    let now = T0;
+    const status = new AgentTaskStatus({ resolve: async (looked) => { asked.push(looked.agent_session?.value ?? "none"); return null; }, onChange: () => undefined, onReset: () => undefined, now: () => now });
+    // a session that cannot be found, named in one snapshot and not in the next, ten snapshots in ten
+    // seconds: each lookup of the id is a herdr call and process reads, and a miss of the pane with no
+    // session does not take the place of the id's
+    for (let snapshot = 0; snapshot < 10; snapshot += 1) {
+      await status.refresh([snapshot % 2 === 0 ? session("one") : pane("grok")]);
+      now += 1000;
+    }
+    expect(asked).toEqual(["one", "none"]);
+    // each is asked for again ten seconds after its own miss
+    await status.refresh([session("one")]);
+    await status.refresh([pane("grok")]);
+    expect(asked).toEqual(["one", "none", "one"]);
+    now += 1000;
+    await status.refresh([pane("grok")]);
+    expect(asked).toEqual(["one", "none", "one", "none"]);
+    // so with two ids in turn: the second is looked up at once, as any session herdr names next, and
+    // then neither until ten seconds after its own miss, whichever was missed last
+    for (let snapshot = 0; snapshot < 9; snapshot += 1) {
+      await status.refresh([session(snapshot % 2 === 0 ? "two" : "one")]);
+      now += 1000;
+    }
+    expect(asked).toEqual(["one", "none", "one", "none", "two"]);
+    await status.refresh([session("one")]);
+    await status.refresh([session("two")]);
+    expect(asked).toEqual(["one", "none", "one", "none", "two", "one"]);
+    now += 1000;
+    await status.refresh([session("two")]);
+    expect(asked).toEqual(["one", "none", "one", "none", "two", "one", "two"]);
+  });
+
   it("lets a pane go at once when the lookup that failed is another agent's there", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
     roots.push(root);
