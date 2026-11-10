@@ -3684,8 +3684,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - For Codex the bridge holds that line itself, whatever the page saw. herdr reports Codex at rest
   while one of its own screens has the input: a list (`/model` and its levels, `/permissions`,
   `/review`, `/theme`, `/resume`, `/experimental`), a field (`/rename`, the transcript's Find, the
-  search through earlier prompts), an editor (`/statusline`, `/keymap`), the agents view, a pager
-  (`/diff`, the transcript's where Codex draws one). The folder question reads blocked on a wide
+  search through earlier prompts), an editor (`/statusline`, `/keymap` and its view that waits for
+  a new key), the agents view, a pager (`/diff`, the transcript's where Codex draws one). The folder question reads blocked on a wide
   pane, but at rest at 40 columns and unknown in its first seconds. `agent.prompt` would paste a
   message into it: a list drops the paste, and the Enter that follows takes the row under the
   cursor. On Codex 0.167 that Enter changed the permission mode, answered the folder question
@@ -3697,8 +3697,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it does (or `Type to …`), holds the item naming the key that leaves, whole (`esc back`,
   `esc cancel`, `esc exit`, `esc save/close`, `q close`), by itself or with the rows a narrow pane
   wrapped it onto, and has nothing but rows of keys under it; the search through earlier prompts
-  has no footer and is known by its `reverse-i-search:` row. The message stays in the box, **Send
-  anyway** included, and a queued or held one stays held. The composer never ends that way: its
+  has no footer and is known by its `reverse-i-search:` row, and `/keymap`'s view that waits for a
+  key by the sentence it ends with (`Press the new key now. Esc cancels.`). A key the user
+  remapped is drawn as Codex draws it (`^q back`, `alt+x back`) and is read written with a hyphen
+  too (`ctrl-g`). The message stays in the box, **Send anyway** included. A queued one is held
+  with that reason (**Send now** / **Discard**), and so are the ones queued behind it as each is
+  tried: herdr says nothing when the screen closes, so queued again the message would wait with
+  no reason shown while Codex sits idle, and go out by itself at the next status event, which may
+  be the end of a turn started since. A prompt Codex asks (an approval, a question, the folder
+  question: a card the chat reads) still queues the message again, as any menu herdr reports
+  does, since its end brings a status event; `/model`'s levels are a card too, but of a list the
+  user opened, and hold. A held one stays held. The composer never ends that way: its
   last rows are its status line, which begins with the model, and `← for agents · ? for
   shortcuts`; with its shortcuts shown the last row is `? / esc close`, where no item starts at
   `esc`, and the composer still takes what is typed. A screen whose footer names no such key is
