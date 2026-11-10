@@ -138,8 +138,8 @@ describe("the hosted shell's front page", () => {
     expect(rendered).toHaveLength(count);
   });
 
-  it("keeps an admitted pairing Ready until Open PC", async () => {
-    const offer = { v: 1 as const, ...keyFor(), relay: AP };
+  it("enters the PC as soon as a fresh code pairing is admitted, with no Ready screen", async () => {
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, code: "123456" };
     class Admitted extends RelayTransport {
       override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
     }
@@ -151,14 +151,69 @@ describe("the hosted shell's front page", () => {
       renderApp: () => { apps++; return { render() {}, unmount() {} }; },
       pendingPush: { get: async () => undefined, clear: async () => {} },
     }));
+    expect(last().state.kind).toBe("confirm");
     last().onPair();
+    await until(() => apps === 1, "the app");
     await drain();
-    expect(apps).toBe(0);
-    expect(last().state.kind).toBe("ready");
-    last().onOpenPc?.();
-    last().onOpenPc?.();
     expect(apps).toBe(1);
+    expect(rendered.map((element) => shellProps(element).state.kind)).not.toContain("ready");
     opened.close();
+  });
+
+  // REGRESSION GUARD: only a consent stored one navigation earlier (the typed code's ID match, the Add-a-PC sheet)
+  // skips the confirm. A link someone sends, with a code or without, never pairs by itself.
+  it.each([["a code", "123456", false], ["no code", undefined, false], ["a code, signed in", "123456", true], ["no code, signed in", undefined, true]] as const)(
+    "stops a link opened by navigation with %s at the confirm, and pairs only after the button", async (_what, code, signedIn) => {
+      browser.setVisibility("hidden");
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", ...(code === undefined ? {} : { code }) };
+      const accountStore = memoryAccountStore();
+      if (signedIn) await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+      let attempts = 0;
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+        ...(signedIn ? { accountStore, accountService: SERVICE, accountProviders: ["github"] as const, accountFetch: async () => Response.json({ pcs: [] }) } : {}),
+        open: async () => { attempts++; throw new MuxProtocolError("auth_failed", "fixture declined"); },
+      }));
+      await drain();
+      expect(attempts).toBe(0);
+      expect(last().state).toEqual({ kind: "confirm", offer, ...(signedIn ? { account: "unlisted" } : {}) });
+      last().onPair();
+      await until(() => attempts === 1, "the pairing");
+    });
+
+  it("says on the confirm whether the pairing adds the PC to the account: nothing confirmable until the sign-in is read, then by the directory", async () => {
+    browser.setVisibility("hidden");
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };
+    const confirm = () => { const { state } = last(); if (state.kind !== "confirm") throw new Error(`not the confirm: ${state.kind}`); return state; };
+    const signedInMount = async (pcs: unknown[], signedIn = true) => {
+      const accountStore = memoryAccountStore();
+      if (signedIn) await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+      const directory = Promise.withResolvers<Response>();
+      rendered = [];
+      await mountRelayShell(mountFor({ entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: () => directory.promise }));
+      return () => directory.resolve(Response.json({ pcs }));
+    };
+    // the directory not read yet: the PC counts as one the pairing adds
+    const answer = await signedInMount([{ server_id: offer.server_id, label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP }]);
+    expect(shellProps(rendered[0]!).state).toMatchObject({ kind: "confirm", account: "checking" });
+    await until(() => confirm().account === "unlisted", "the sign-in");
+    answer();
+    await until(() => confirm().account === "listed", "the directory");
+    // a directory that could not be read lists nothing
+    const failing = Promise.withResolvers<Response>();
+    rendered = [];
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+    await mountRelayShell(mountFor({ entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: () => failing.promise }));
+    await until(() => confirm().account === "unlisted", "the sign-in");
+    const count = rendered.length;
+    failing.reject(new TypeError("offline"));
+    await until(() => rendered.length > count, "the failed read");
+    expect(confirm().account).toBe("unlisted");
+    // accounts on, nobody signed in: the device's own key, as before
+    await signedInMount([], false);
+    expect(shellProps(rendered[0]!).state).toMatchObject({ kind: "confirm", account: "checking" });
+    await until(() => confirm().account === undefined, "the missing sign-in");
   });
 
   it("returns admitted version observations to the dashboard and clears outdated on newer admission", async () => {

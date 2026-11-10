@@ -87,7 +87,12 @@ export type RelayShellState =
   | { kind: "list"; devices: RelayDevice[]; account?: AccountView | null }
   | { kind: "outdated"; name: string | null; serverVersion: string; minVersion: string; update: PcUpdate }
   | { kind: "empty"; account?: AccountView | null }
-  | { kind: "confirm"; offer: RelayOffer }
+  /**
+   * Asks before pairing with the PC a link names. `account` is absent on a device that is signed out: the pairing
+   * makes a key of its own. Signed in, the pairing uses the account's key and lists the PC in the account, unless
+   * its directory lists it already; "checking" until the sign-in is read, when nothing can be confirmed yet.
+   */
+  | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed" }
   | { kind: "connecting"; name: string | null }
   | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
   /** Pair with a code: the field to type it in, with why the last code gave no PC */
@@ -234,6 +239,8 @@ export interface Attempt {
   refreshed?: boolean;
   /** this attempt paired just now: the PC has not seen the key prove itself on this session yet */
   fresh?: boolean;
+  /** this attempt paired just now without a code: a member may have approved it, and only then does an introduction follow */
+  introducible?: boolean;
   accountEnrollment?: boolean;
   retryEnrollment?: boolean;
   /** this attempt already tried the key of a link whose answer was lost */

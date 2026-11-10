@@ -208,13 +208,17 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     signal.throwIfAborted();
     return key ? { accountKey: key, intent } : {};
   };
-  const enroll = (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | EnrollmentCompletion> => {
-    const done = enrollOwned(opened, serverId, fresh);
+  /**
+   * `introducible`: the pairing was just made without a code, so a member of the account may have approved it and
+   * hands an introduction over a moment later. A QR or code pairing gets none, and is not kept waiting for one.
+   */
+  const enroll = (opened: RelayTransport, serverId: string, fresh: boolean, introducible = false): Promise<"local" | EnrollmentCompletion> => {
+    const done = enrollOwned(opened, serverId, fresh, introducible);
     running.set(done, serverId);
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
   };
-  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean): Promise<"local" | EnrollmentCompletion> => {
+  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean): Promise<"local" | EnrollmentCompletion> => {
     const epoch = forgotten.get(serverId);
     if (leaving || accountService === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
     const session = await account.session();
@@ -347,7 +351,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         }
       }
       // the approver hands the introduction over once this device's row exists, which may be a moment after it
-      const deadline = Date.now() + (fresh ? INTRODUCTION_WAIT_MS : 0);
+      const deadline = Date.now() + (introducible ? INTRODUCTION_WAIT_MS : 0);
       for (;;) {
         if ((await takeIntroduction({ fetch, key, label, store: enrollmentStore, relay: device.relay })).length > 0 || Date.now() >= deadline) break;
         await wait(INTRODUCTION_POLL_MS);

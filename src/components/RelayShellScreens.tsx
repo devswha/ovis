@@ -187,11 +187,22 @@ export function RelayShellCardContent({ props, view, signInFirst, saved, addingP
           <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onCodeMatch}>{t("It matches")}</button><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
         </>
       )}
-      {state.kind === "confirm" && (
+      {state.kind === "confirm" && state.account === "unlisted" && (
+        <>
+          <h1 className="relay-shell-title">{t("Add {name} to your account?", { name: pc })}</h1>
+          <p className="relay-shell-copy">{t("Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.")}</p>
+          <p className="relay-shell-code-id"><KeyId id={state.offer.server_id} label={t("ID of the PC this link names")} /></p>
+          <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onPair}>{t("Add and pair")}</button><button type="button" className="btn" onClick={onCancel}>{t("Not now")}</button></div>
+        </>
+      )}
+      {state.kind === "confirm" && state.account !== "unlisted" && (
         <>
           <h1 className="relay-shell-title">{t("Pair with {name}?", { name: pc })}</h1>
-          <p className="relay-shell-copy">{t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>
-          <div className="relay-shell-actions"><button type="button" className="btn btn-primary" onClick={onPair}>{t("Pair")}</button><button type="button" className="btn" onClick={onCancel}>{t("Not now")}</button></div>
+          {/* until the sign-in is read, neither sentence is known to be true, and nothing can be confirmed */}
+          {state.account !== "checking" && <p className="relay-shell-copy">{state.account === "listed"
+            ? t("This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })
+            : t("This device gets a key of its own for {name}. The PC lists it under Settings → Devices and PCs, where it can be removed.", { name: pc })}</p>}
+          <div className="relay-shell-actions"><button type="button" className="btn btn-primary" disabled={state.account === "checking"} onClick={onPair}>{t("Pair")}</button><button type="button" className="btn" onClick={onCancel}>{t("Not now")}</button></div>
         </>
       )}
       {state.kind === "connecting" && (

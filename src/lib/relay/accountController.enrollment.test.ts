@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
@@ -31,6 +31,7 @@ describe("account enrollment ownership", () => {
   const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
   afterEach(() => {
+    jest.useRealTimers();
     for (const transport of transports.splice(0)) transport.close();
     browser.dispose();
     if (savedNavigator) Object.defineProperty(globalThis, "navigator", savedNavigator);
@@ -71,12 +72,13 @@ describe("account enrollment ownership", () => {
     const viewChanged = Promise.withResolvers<void>();
     let accountHeld = false;
     let linked = !options.linking;
+    let introductions = 0;
     const answer = (path: string): Response => {
       switch (path) {
         case "/api/account/status": return Response.json({ account: linked ? "account" : null, unlinked: [], removals: [], enrolling: true });
         case "/api/account/link": linked = true; return Response.json({});
         case "/api/account/enroll": return Response.json({ results: records.map((record, index) => ({ id: record.id, outcome: index < (options.admitted ?? 2) ? "applied" : "refused", code: "key_held" })) });
-        case "/api/account/introduction": return Response.json({ pcs: [] });
+        case "/api/account/introduction": introductions++; return Response.json({ pcs: [] });
         default: throw new TypeError("Unexpected PC request: " + path);
       }
     };
@@ -110,7 +112,7 @@ describe("account enrollment ownership", () => {
     }, { active: () => false, changed: async () => { viewChanged.resolve(); }, outdated: () => new Set() });
     return {
       controller: controller(), otherController: controller(), store, original, requested, response, answer, open, records, putPcs, renewalRequested, renewalResponse, accountStore, key, service, linked: () => linked,
-      accountRequested, accountRelease, signOutAsked, viewChanged: viewChanged.promise,
+      accountRequested, accountRelease, signOutAsked, viewChanged: viewChanged.promise, introductions: () => introductions,
     };
   }
   type Run = Awaited<ReturnType<typeof fixture>>;
@@ -377,6 +379,32 @@ describe("account enrollment ownership", () => {
     const run = await fixture("unused", { admitted });
     const outcome = await run.controller.enroll(await run.open(), run.original.server_id, false);
     expect(outcome).toEqual({ state: "complete", admitted });
+  });
+
+  it("finishes a code pairing after one look for an introduction, with no wait", async () => {
+    jest.useFakeTimers();
+    const run = await fixture("unused");
+    // no clock moves here: an enrollment that waited would never settle
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true)).toEqual({ state: "complete", admitted: 2 });
+    expect(run.introductions()).toBe(1);
+    expect(enrollmentOf((await run.store.get(run.original.server_id))!)).toBe("complete");
+  });
+
+  it("waits a minute for an introduction after a pairing made without a code, which a member may have approved", async () => {
+    jest.useFakeTimers();
+    const run = await fixture("unused");
+    const began = Date.now();
+    let outcome: unknown;
+    const pending = run.controller.enroll(await run.open(), run.original.server_id, true, true).then((value) => { outcome = value; });
+    // the enrollment signs and reads between its waits, which no faked clock runs: each turn lets that work land
+    for (let turn = 0; outcome === undefined && turn < 5_000; turn++) {
+      if (jest.getTimerCount() > 0) jest.advanceTimersByTime(3_000);
+      await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+    }
+    await pending;
+    expect(outcome).toEqual({ state: "complete", admitted: 2 });
+    expect(Date.now() - began).toBe(60_000);
+    expect(run.introductions()).toBe(21);
   });
 
   it("reports no admitted devices when directory peers cannot be read", async () => {

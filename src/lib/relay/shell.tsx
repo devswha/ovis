@@ -63,7 +63,21 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
 
   onLazyChunkFailure(() => { if (entry.serverId !== null) void freshShellNext(entry.serverId); });
   const frontUp = (): boolean => app === null && (sheetJoin !== null || shown === null || shown.kind === "list" || shown.kind === "empty");
-  const account = createAccountController(mount, { active: frontUp, changed: async () => { if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); } }, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
+  // the confirm says what the pairing does to the account, so it waits for the sign-in to be read once
+  let accountRead = false;
+  const accountChanged = async (): Promise<void> => {
+    accountRead = true;
+    if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
+    else if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); }
+  };
+  const account = createAccountController(mount, { active: frontUp, changed: accountChanged, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
+  accountRead = !account.enabled;
+  // a directory not read yet lists nothing: the PC then counts as one this pairing adds to the account
+  const confirmOf = (offer: RelayOffer): RelayShellState => ({
+    kind: "confirm", offer,
+    ...(!accountRead ? { account: "checking" as const } : account.state?.kind !== "signed-in" ? {}
+      : { account: account.directory.some((pc) => pc.server_id === offer.server_id) ? "listed" as const : "unlisted" as const }),
+  });
   const sweep = createPcSweep(store, { active: frontUp, redraw: () => { if (shown) show(shown); } }, { ...(mount.checkPc ? { probe: mount.checkPc } : {}), ...(directSocket ? { directSocket } : {}) });
   const toFront = (): void => {
     if (shown?.kind === "ready") {
@@ -178,7 +192,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the PC admitted this phone: a pairing code is spent, and every later attempt (Try again on
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
-    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(!attempt.paired || attempt.fresh ? { fresh: true } : {}) };
+    const fresh = !attempt.paired || attempt.fresh === true;
+    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
@@ -196,7 +211,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const openPc = (): void => { if (app === null && shown?.kind === "ready" && transport && last) enterApp(transport, last); };
   const enroll = (opened: RelayTransport, attempt: Attempt): void => {
     enrolling.add(opened);
-    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true).then((enrollment) => {
+    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true).then((enrollment) => {
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
       console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
@@ -207,8 +222,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     show, failed, reload: mount.reload ?? (() => reloadPage(entry.serverId)),
     accepted: (opened, attempt) => {
       if (transport !== opened) return;
-      const checkpoint = attempt.fresh || sheetJoin || attempt.retryEnrollment;
-      if (checkpoint) { last = attempt; show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id, enrollment: attempt.accountEnrollment ? "pending" : "local" }); }
+      // adding this PC to the account failed on an earlier open: it stops here, where Try again is, before the app
+      if (attempt.retryEnrollment) { last = attempt; show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id, enrollment: attempt.accountEnrollment ? "pending" : "local" }); }
       else enterApp(opened, attempt);
       enroll(opened, attempt);
     },
@@ -271,8 +286,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (entry.offer !== null) {
       sheetJoin = sheetContext(entry.offer.server_id);
       if (sheetJoin?.returnHash) window.history.replaceState(null, "", new URL(mount.entryUrl).pathname + sheetJoin.returnHash);
-      if (sheetJoin) void account.load(null);
-      show({ kind: "confirm", offer: entry.offer });
+      if (sheetJoin || !accountRead) void account.load(null).finally(() => { if (!accountRead) void accountChanged(); });
+      show(confirmOf(entry.offer));
       if (confirmedPc === entry.offer.server_id && (sheetJoin !== null || entry.offer.code !== undefined)) pair();
       return true;
     }
@@ -298,7 +313,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     if (saved === undefined) show({ kind: "empty" });
     // a key saved from a forged link (an earlier build saved before admission): Forget removes it
     else if (forgedOffer(offerOf(saved))) show({ kind: "failed", failure: "identity-changed", name: saved.name ?? null, detail: null, mismatch: keyMismatch(saved.server_id, [{ key: saved.server_public_key, from: "saved" }]) });
-    else await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null, retryEnrollment: enrollmentOf(saved) === "failed" || enrollmentOf(saved) === "pending" });
+    else await connect({ offer: offerOf(saved), code: false, paired: saved.device_id !== null, retryEnrollment: enrollmentOf(saved) === "failed" });
     return;
   }
 

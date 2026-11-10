@@ -6,7 +6,7 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayPcTable } from "../../components/RelayPcTable.tsx";
-import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
+import { ReadyCheckpoint, RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
 import { myPcs } from "../account/myPcs.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { SettingsProvider } from "../settings.ts";
@@ -60,9 +60,10 @@ describe("account pairing completion", () => {
     }
     const other = generateKeyPair();
     let props: RelayShellProps | undefined;
+    const kinds: string[] = [];
     const render = (node: ReactNode): void => {
       if (!isValidElement<{ readonly children?: ReactNode }>(node)) throw new TypeError("Missing shell element");
-      if (node.type === RelayShell && isValidElement<RelayShellProps>(node)) { props = node.props; return; }
+      if (node.type === RelayShell && isValidElement<RelayShellProps>(node)) { props = node.props; kinds.push(node.props.state.kind); return; }
       render(node.props.children);
     };
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
@@ -79,25 +80,27 @@ describe("account pairing completion", () => {
     await until(() => enrolls > 0);
     const rows = async () => myPcs([], await store.list(), { now: Date.now(), accountKey: key.public_spki, account: "acct-test" });
     const dashboard = async () => dashboardPcs(await rows(), await store.list());
-    return { current, enrollment, rows, dashboard, mountAt, enrolls: () => enrolls, apps: () => apps, retrySuccess: () => { response = Promise.resolve(Response.json({ results: [] })); } };
+    const pcPage = `https://app.ovis.sh/s/${offer.server_id}/`;
+    return { current, enrollment, rows, dashboard, mountAt, pcPage, kinds, enrolls: () => enrolls, apps: () => apps, retrySuccess: () => { response = Promise.resolve(Response.json({ results: [] })); } };
   }
 
-  it("shows Ready and opens the PC while account enrollment is pending", async () => {
+  it("enters the PC as soon as a sheet join is admitted, with no Ready screen, and finishes the account's part behind it", async () => {
     const run = await pairing();
-    const pending = run.current().state;
-    run.current().onOpenPc?.();
-    run.enrollment.resolve(Response.json({ results: [] }));
-    expect(pending).toMatchObject({ kind: "ready", enrollment: "pending" });
     expect(run.apps()).toBe(1);
+    expect(run.kinds).not.toContain("ready");
+    expect((await run.rows())[0]?.enrollment).toBe("pending");
+    run.enrollment.resolve(Response.json({ results: [] }));
     await until(async () => (await run.rows())[0]?.enrollment === "complete");
+    expect(run.apps()).toBe(1);
+    expect(run.kinds).not.toContain("ready");
   });
 
-  it("reports account completion only after enrollment resolves", async () => {
+  it("opens a saved PC that is still joining the account without stopping at Ready", async () => {
     const run = await pairing();
-    run.enrollment.resolve(Response.json({ results: [] }));
-    await until(() => { const state = run.current().state; return state.kind === "ready" && typeof state.enrollment === "object" && state.enrollment.state === "complete"; });
-    expect(run.current().state).toMatchObject({ kind: "ready", enrollment: { state: "complete", admitted: 0 } });
-    expect(run.apps()).toBe(0);
+    expect((await run.rows())[0]?.enrollment).toBe("pending");
+    await run.mountAt(run.pcPage);
+    await until(() => run.apps() === 2);
+    expect(run.kinds).not.toContain("ready");
   });
 
   it("completes a successful enrollment when there are no peer PCs to introduce", async () => {
@@ -109,37 +112,36 @@ describe("account pairing completion", () => {
       });
       run.enrollment.resolve(Response.json({ results: [] }));
       await until(async () => (await run.rows())[0]?.enrollment !== "pending");
-      expect(run.current().state).toMatchObject({ kind: "ready", enrollment: { state: "complete", admitted: 0 } });
+      expect((await run.rows())[0]?.enrollment).toBe("complete");
+      expect(run.kinds).not.toContain("ready");
     } finally { clock.mockRestore(); }
   });
 
-  it.each(["rejection", "timeout"] as const)("keeps the local pairing Ready on %s and retries enrollment", async (failure) => {
+  it.each(["rejection", "timeout"] as const)("records a %s on the row behind the open PC, then stops the next open at Ready with Try again", async (failure) => {
     const run = await pairing();
     if (failure === "timeout") run.enrollment.reject(new DOMException("private enrollment diagnostic", "TimeoutError"));
     else run.enrollment.resolve(Response.json({ error: { code: "account_unavailable", message: "private enrollment diagnostic" } }, { status: 503 }));
-    await until(() => { const state = run.current().state; return state.kind === "failed" || state.kind === "ready" && state.enrollment === "failed"; });
+    await until(async () => (await run.rows())[0]?.enrollment === "failed");
+    expect((await run.rows())[0]).toMatchObject({ paired: true, linked: false, enrollment: "failed" });
+    expect(run.apps()).toBe(1);
+    expect(run.kinds).not.toContain("ready");
+    // the next open of the PC's own page: the enrollment is tried again, and its failure stays on screen before the app
+    await run.mountAt(run.pcPage);
+    await until(() => { const state = run.current().state; return state.kind === "ready" && state.enrollment === "failed"; });
     const state = run.current().state;
-    expect(state).toMatchObject({ kind: "ready", enrollment: "failed" });
     expect(JSON.stringify(state)).not.toContain("private enrollment diagnostic");
+    expect(renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(ReadyCheckpoint, { open() {}, cancel() {}, retry() {}, ...(state.kind === "ready" ? { state } : {}) }) }))).toContain("Try again");
+    expect(run.apps()).toBe(1);
     run.retrySuccess();
     run.current().onRetry();
     await until(() => { const current = run.current().state; return current.kind === "ready" && typeof current.enrollment === "object" && current.enrollment.state === "complete"; });
-    expect(run.apps()).toBe(0);
-  });
-
-  it.each(["open", "close"] as const)("reports a late failure on the dashboard row after %s", async (leave) => {
-    const run = await pairing();
-    if (leave === "open") run.current().onOpenPc?.(); else run.current().onCancel();
-    run.enrollment.resolve(Response.json({ error: { code: "account_unavailable" } }, { status: 503 }));
-    await until(async () => (await run.rows())[0]?.enrollment === "failed");
-    expect((await run.rows())[0]).toMatchObject({ paired: true, linked: false, enrollment: "failed" });
-    expect(run.apps()).toBe(leave === "open" ? 1 : 0);
-    if (leave === "close") await until(() => run.current().state.kind === "list");
+    expect(run.apps()).toBe(1);
+    run.current().onOpenPc?.();
+    expect(run.apps()).toBe(2);
   });
 
   it("tells a failed dashboard row to Open it to try again, and that Open retries the enrollment", async () => {
     const run = await pairing();
-    run.current().onCancel();
     run.enrollment.resolve(Response.json({ error: { code: "account_unavailable" } }, { status: 503 }));
     await until(async () => (await run.rows())[0]?.enrollment === "failed");
     const model = dashboardModel(await run.dashboard(), { label: "Phone", now: Date.now() }, "wss://relay.ovis.sh");
@@ -154,14 +156,5 @@ describe("account pairing completion", () => {
     await run.mountAt(new URL(action?.[1] ?? "/", "https://app.ovis.sh").href);
     await until(() => run.enrolls() > before);
     await until(async () => (await run.rows())[0]?.enrollment === "complete");
-  });
-
-  it("finishes enrollment after closing without reopening the checkpoint", async () => {
-    const run = await pairing();
-    run.current().onCancel();
-    run.enrollment.resolve(Response.json({ results: [] }));
-    await until(async () => (await run.rows())[0]?.enrollment === "complete");
-    await until(() => run.current().state.kind === "list");
-    expect(run.apps()).toBe(0);
   });
 });
