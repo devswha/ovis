@@ -8,7 +8,7 @@ import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import type { AccountService } from "../lib/account/service.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
-import { ADDED_POLL_MS, AddThisPc, REOPEN_MS, WAITING_MS } from "./AccountSection.tsx";
+import { ADDED_POLL_MS, AddThisPc, ANSWER_MS, REOPEN_MS, WAITING_MS } from "./AccountSection.tsx";
 
 const at = Date.parse("2026-11-10T03:00:00Z");
 const MARKER = "ovis-add-pc-waiting";
@@ -27,8 +27,11 @@ describe("AddThisPc", () => {
   const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator", "location"];
   const saved = new Map<string, PropertyDescriptor | undefined>();
   let renderers: ReactTestRenderer[];
-  /** what the PC answers: its account, and how the link route fails (null: it gives a link) */
-  let pc: { account: string | null; linkError: { status: number; code: string } | null; statusDown: boolean; offer: string };
+  /**
+   * what the PC answers: its account, whether it still waits for its first member's enrollment, how the link route
+   * fails (null: it gives a link), and the route whose next request never gets an answer (null: every one is answered)
+   */
+  let pc: { account: string | null; enrolling: boolean; linkError: { status: number; code: string } | null; statusDown: boolean; offer: string; hang: string | null };
   /** the account this tab is signed in to; null when signed out */
   let signedIn: string | null;
   /** every request to the PC: its path, and whether it asked for an approve-here window */
@@ -47,7 +50,7 @@ describe("AddThisPc", () => {
 
   beforeEach(() => {
     renderers = [];
-    pc = { account: null, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk") };
+    pc = { account: null, enrolling: false, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk"), hang: null };
     signedIn = ACCOUNT;
     asked = [];
     directory = [];
@@ -73,8 +76,9 @@ describe("AddThisPc", () => {
     const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const path = new URL(String(input instanceof Request ? input.url : input), "http://localhost").pathname;
       asked.push({ path, localOnly: new Headers(init?.headers).get("x-ovis-local-only") === "1" });
+      if (pc.hang === path) { pc.hang = null; return new Promise<Response>(() => {}); }
       if (path === "/api/account/status" && pc.statusDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
-      if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [], enrolling: pc.enrolling });
       if (path === "/api/relay/link") return pc.linkError === null ? Response.json({ url: pc.offer }) : Response.json({ error: { code: pc.linkError.code, message: "refused" } }, { status: pc.linkError.status });
       return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
     };
@@ -396,16 +400,204 @@ describe("AddThisPc", () => {
     expect(asked.length).toBe(stopped);
   });
 
-  test("words a relay that is off or still connecting, and keeps the offer", async () => {
+  test("words a relay that is off, and keeps the offer", async () => {
     const renderer = await mount();
-    pc.linkError = { status: 409, code: "relay_offline" };
-    await press(renderer, "Add this PC to my account");
-    expect(words(renderer)).toContain("The relay is still connecting. Try again in a moment.");
     pc.linkError = { status: 409, code: "relay_off" };
     await press(renderer, "Add this PC to my account");
     expect(words(renderer)).toContain("Turn on remote access through the Ovis relay above first.");
     expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
     expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("Stop waiting in one copy of the screen stops the other copy too: nothing reopened, listed or kept again", async () => {
+    // the welcome's copy stays mounted under Settings, whose copy takes up the same wait
+    const welcome = await waitingFrom();
+    const settings = await mount();
+    expect(buttons(settings)).toEqual(["Stop waiting"]);
+    // the second copy taking the wait up does not end it for the first
+    await advance(ADDED_POLL_MS);
+    expect(buttons(welcome)).toEqual(["Stop waiting"]);
+    expect(tab.has(MARKER)).toBe(true);
+
+    await press(settings, "Stop waiting");
+    await advance(ADDED_POLL_MS);
+    expect(buttons(welcome)).toEqual(["Add this PC to my account"]);
+    expect(jest.getTimerCount()).toBe(0);
+    const opened = links();
+    await advance(RELIST_MS + REOPEN_MS);
+    expect(links()).toBe(opened);
+    expect(directory).toEqual(["putPc"]);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("a copy whose wait another copy stopped lists nothing under a hidden page either, and keeps nothing again", async () => {
+    tab.set(MARKER, kept(8 * 60_000));
+    const welcome = await mount();
+    const settings = await mount();
+    await press(settings, "Stop waiting");
+    show(true);
+    await advance(RELIST_MS);
+    expect(directory).toEqual([]);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(buttons(welcome)).toEqual(["Add this PC to my account"]);
+  });
+
+  test("a copy that waits says the PC was added, not the offer, when the other copy found it first", async () => {
+    const welcome = await waitingFrom();
+    const settings = await mount();
+    // the other copy forgot the wait because the PC joined: this one's reopen comes before its own poll
+    pc.account = ACCOUNT;
+    tab.delete(MARKER);
+    await advance(ADDED_POLL_MS);
+    for (const copy of [welcome, settings]) expect(words(copy)).toContain("This PC is in your account. Your other devices can open it now.");
+  });
+
+  test("a sign-out or another sign-in in another tab ends the wait with the next reopen, not nine minutes later", async () => {
+    for (const now of [null, "acct_someone_else"]) {
+      signedIn = ACCOUNT;
+      const renderer = await waitingFrom();
+      const opened = links();
+      signedIn = now;
+      await advance(REOPEN_MS);
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(links()).toBe(opened);
+      expect(tab.has(MARKER)).toBe(false);
+      await advance(RELIST_MS);
+      expect(links()).toBe(opened);
+      act(() => { renderer.unmount(); });
+    }
+    expect(directory).toEqual(["putPc", "putPc"]);
+  });
+
+  test("a reopen that never gets an answer does not hold the next ones", async () => {
+    await waitingFrom();
+    pc.hang = "/api/relay/link";
+    await advance(REOPEN_MS);
+    expect(links()).toBe(2);
+    await advance(ANSWER_MS);
+    await advance(2 * REOPEN_MS);
+    expect(links()).toBeGreaterThanOrEqual(3);
+  });
+
+  test("a question about the account that never gets an answer does not hold the next ones", async () => {
+    const renderer = await waitingFrom();
+    pc.hang = "/api/account/status";
+    await advance(ADDED_POLL_MS);
+    pc.account = ACCOUNT;
+    await advance(ANSWER_MS);
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    await advance(ADDED_POLL_MS);
+    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+  });
+
+  test("a listing that never gets an answer is tried again", async () => {
+    await waitingFrom();
+    await advance(RELIST_MS - ADDED_POLL_MS);
+    // the listing's own question about the account is the one left unanswered
+    pc.hang = "/api/account/status";
+    await advance(ADDED_POLL_MS - 1);
+    expect(pc.hang).toBe("/api/account/status");
+    await advance(1);
+    expect(pc.hang).toBeNull();
+    expect(directory).toEqual(["putPc"]);
+    await advance(2 * REOPEN_MS);
+    await advance(REOPEN_MS);
+    expect(directory).toEqual(["putPc", "putPc"]);
+  });
+
+  test("says the other devices can open the PC only once the device that added it has enrolled it", async () => {
+    const renderer = await waitingFrom();
+    pc.account = ACCOUNT;
+    pc.enrolling = true;
+    await advance(ADDED_POLL_MS);
+    expect(words(renderer)).toContain("This PC is in your account. The device that added it is still letting your other devices in.");
+    expect(words(renderer)).not.toContain("Your other devices can open it now.");
+    // the wait itself is over: nothing is reopened or listed while the enrollment runs
+    const opened = links();
+    await advance(RELIST_MS);
+    expect(links()).toBe(opened);
+    expect(directory).toEqual(["putPc"]);
+    expect(words(renderer)).not.toContain("Your other devices can open it now.");
+    pc.enrolling = false;
+    await advance(ADDED_POLL_MS);
+    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("a reloaded tab finds the PC added but not enrolled yet, and says so until it is", async () => {
+    tab.set(MARKER, kept(60_000));
+    pc.account = ACCOUNT;
+    pc.enrolling = true;
+    const renderer = await mount();
+    expect(words(renderer)).toContain("The device that added it is still letting your other devices in.");
+    pc.enrolling = false;
+    await advance(ADDED_POLL_MS);
+    expect(words(renderer)).toContain("Your other devices can open it now.");
+  });
+
+  test("a PC whose first member left before enrolling it offers the button again", async () => {
+    const renderer = await waitingFrom();
+    pc.account = ACCOUNT;
+    pc.enrolling = true;
+    await advance(ADDED_POLL_MS);
+    pc.account = null;
+    await advance(ADDED_POLL_MS);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+  });
+
+  test("a PC added under the account that waited is not called yours once the tab is signed in to another", async () => {
+    // after a reload
+    tab.set(MARKER, kept(60_000));
+    pc.account = ACCOUNT;
+    signedIn = "acct_someone_else";
+    expect((await mount()).toJSON()).toBeNull();
+    expect(tab.has(MARKER)).toBe(false);
+    signedIn = null;
+    tab.set(MARKER, kept(60_000));
+    expect((await mount()).toJSON()).toBeNull();
+
+    // and on a screen that waits
+    pc.account = null;
+    signedIn = ACCOUNT;
+    const renderer = await waitingFrom();
+    signedIn = "acct_someone_else";
+    pc.account = ACCOUNT;
+    await advance(ADDED_POLL_MS);
+    expect(renderer.toJSON()).toBeNull();
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("a reloaded tab whose PC answers only after the 30 minutes says the wait stopped", async () => {
+    tab.set(MARKER, kept(WAITING_MS - 2 * ADDED_POLL_MS));
+    pc.statusDown = true;
+    const renderer = await mount();
+    expect(renderer.toJSON()).toBeNull();
+    await advance(2 * ADDED_POLL_MS);
+    expect(words(renderer)).toBe("This PC stopped waiting after 30 minutes.");
+    expect(buttons(renderer)).toEqual(["Keep waiting"]);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("a press after a device added the PC through the window that outlived the wait lists nothing and says it is added", async () => {
+    const renderer = await waitingFrom();
+    await advance(WAITING_MS);
+    expect(buttons(renderer)).toEqual(["Keep waiting"]);
+    pc.account = ACCOUNT;
+    const before = directory.length;
+    await press(renderer, "Keep waiting");
+    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(directory.length).toBe(before);
+
+    // the same after Stop waiting, and under another sign-in it is not called yours
+    pc.account = null;
+    const other = await waitingFrom();
+    await press(other, "Stop waiting");
+    pc.account = "acct_someone_else";
+    const listed = directory.length;
+    await press(other, "Add this PC to my account");
+    expect(other.toJSON()).toBeNull();
+    expect(directory.length).toBe(listed);
   });
 
   test("works without a tab storage, only not resumed", async () => {

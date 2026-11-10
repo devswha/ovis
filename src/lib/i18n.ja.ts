@@ -481,7 +481,7 @@ const BASE: Record<string, string> = {
   "This PC stopped waiting after 30 minutes.": "30分が過ぎたため、このPCは待機を終了しました。",
   "Keep waiting": "待機を続ける",
   "This PC is in your account. Your other devices can open it now.": "このPCがアカウントに追加されました。ほかのデバイスから開けるようになりました。",
-  "The relay is still connecting. Try again in a moment.": "リレーにまだ接続中です。しばらくしてからもう一度お試しください。",
+  "This PC is in your account. The device that added it is still letting your other devices in.": "このPCがアカウントに追加されました。追加したデバイスが、ほかのデバイスをまだ登録しています。",
   "This PC could not be listed in your account. Try again.": "このPCをアカウントに登録できませんでした。もう一度お試しください。",
   "Turn on remote access through the Ovis relay above first.": "まず上でOvisリレー経由のリモートアクセスをオンにしてください。",
   "Turn on remote access through the Ovis relay in Settings → Devices and PCs first.": "まず設定 → デバイスと PC で Ovis リレー経由のリモートアクセスをオンにしてください。",

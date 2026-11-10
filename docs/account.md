@@ -338,7 +338,12 @@ messages):
    The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens
    a pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. What that window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
-   once the PC has members. The screen keeps the window open while it waits.
+   once the PC has members. The screen keeps the window open while it waits: it asks for the link again
+   every 30 seconds while its page shows (that call writes nothing to the directory) and lists the PC anew
+   every nine minutes, for 30 minutes a press, then offers **Keep waiting**; **Stop waiting** ends it
+   sooner. Either way the window already open closes by itself, up to ten minutes later. A reloaded tab
+   goes on waiting only for the same PC under the same sign-in. Once a device added the PC the screen says
+   so, and that the account's other devices can open it only when the PC's status no longer says `enrolling`.
 2. On any device already in the account, the dashboard lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the
