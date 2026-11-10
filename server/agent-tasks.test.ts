@@ -579,6 +579,37 @@ describe("AgentTaskStatus", () => {
     expect(asked).toEqual(["one", "none", "one", "none", "two", "one", "two"]);
   });
 
+  it("starts the spacing over once a lookup finds a session: one that is found and one that is not, named in turn, are asked for at every snapshot", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "one.jsonl");
+    writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, [["watch", "running", 1]]))}\n`);
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    const asked: string[] = [];
+    const told: number[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async (looked) => { asked.push(looked.agent_session?.value ?? "none"); return looked.agent_session?.value === "one" ? { path, started: null, owner: null } : null; }, onChange: (_, c) => told.push(c.running), onReset: () => undefined, now: () => now });
+    // the limit of the spacing, as the comment on `failed` has it: a lookup that finds a session drops the
+    // pane's misses, the other session's too, and that one's miss lets go what the pane held of the first.
+    // So herdr naming the two in turn, which nothing shows it doing, is a lookup and a changed count at
+    // each snapshot
+    for (let snapshot = 0; snapshot < 10; snapshot += 1) {
+      await status.refresh([session(snapshot % 2 === 0 ? "one" : "two")]);
+      now += 1000;
+    }
+    expect(asked).toEqual(["one", "two", "one", "two", "one", "two", "one", "two", "one", "two"]);
+    expect(told).toEqual([1, 0, 1, 0, 1, 0, 1, 0, 1, 0]);
+    // herdr settling on the one that is not found, it is spaced as any
+    for (let snapshot = 0; snapshot < 9; snapshot += 1) {
+      await status.refresh([session("two")]);
+      now += 1000;
+    }
+    expect(asked).toHaveLength(10);
+    await status.refresh([session("two")]);
+    expect(asked).toHaveLength(11);
+    expect(told).toHaveLength(10);
+  });
+
   it("lets a pane go at once when the lookup that failed is another agent's there", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
     roots.push(root);

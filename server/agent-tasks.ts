@@ -160,9 +160,12 @@ export class AgentTaskStatus {
    * the lookups that failed, by pane: for which agent, and by session (sessionOf) when. Kept until a lookup
    * finds a session there, the pane runs another agent or it leaves. A miss of one session neither holds
    * off the lookup of another herdr reports there nor counts as its first, and it stays beside that one's:
-   * where herdr names a session, then none or another, then the first again, each is asked for only every
-   * RETRY_MS (so one entry per session herdr named for the pane since a lookup last found one). Not a
-   * status's lookup of a pane with no session: that one holds no snapshot off
+   * where herdr names a session, then none or another, then the first again, and none of them is found,
+   * each is asked for only every RETRY_MS (so one entry per session herdr named for the pane since a
+   * lookup last found one). A known limit: a lookup that finds a session drops them all, so where herdr
+   * names in turn a session that is found and one that is not, the spacing starts over each time and
+   * every snapshot asks, the count told and let go in turn (nothing shows herdr naming two ids in turn
+   * for one pane). Not a status's lookup of a pane with no session: that one holds no snapshot off
    */
   private readonly failed = new Map<string, { agent: TaskAgent; at: Map<string | null, number> }>();
   private timer: ReturnType<typeof setInterval> | null = null;
