@@ -385,18 +385,38 @@ it("retries and reallocates when RmGetList returns ERROR_MORE_DATA (234) with gr
   expect(callIndex).toBe(3);
 });
 
-/** Answers `pane.process_info` for one lookup, in the order asked; `names` lists pids as Agy. */
+/**
+ * Answers `pane.process_info` for one lookup, in the order asked; `names` lists pids as Agy.
+ * `asked` counts the asks of that lookup: both lookups answer null on any error, one asked too
+ * often included, so only the count tells how often herdr was asked.
+ */
 function processInfoAnswers() {
   type Answer = () => herdr.ProcessInfo | Promise<herdr.ProcessInfo>;
   let queue: Answer[] = [];
+  let asked = 0;
   const names = (pids: number[], argv = ["agy"]): Answer => () => ({ pane_id: "agy-pane", foreground_processes: pids.map((pid) => ({ pid, name: "agy", argv })) });
   const spy = spyOn(herdr, "paneProcessInfo").mockImplementation(async () => {
+    asked += 1;
     const answer = queue.shift();
     if (!answer) throw new Error("fixture: herdr was asked more often than it answers");
     return await answer();
   });
-  return { names, answers: (...next: Answer[]) => { queue = next; }, restore: () => spy.mockRestore() };
+  return { names, answers: (...next: Answer[]) => { queue = next; asked = 0; }, asked: () => asked, restore: () => spy.mockRestore() };
 }
+
+/** An Agy start screen nothing was typed into yet. */
+const UNUSED_START_SCREEN = [
+  "       ▄▀▀▄         Antigravity CLI 1.4.4",
+  "      ▀▀▀▀▀▀        user@example.test (Demo plan    )",
+  "     ▀▀▀▀▀▀▀▀       Gemini 3.8 Flash (High)",
+  "    ▄▀▀     ▀▀▄      /tmp/project",
+  "   ▄▀▀       ▀▀▄",
+  "",
+  " ────────────────────────────────────────",
+  " >",
+  " ────────────────────────────────────────",
+  " ? for shortcuts   Gemini 3.8 Flash · high",
+].join("\n");
 
 it.skipIf(process.platform === "win32")("answers a store only while the pane still names the process whose locks it read", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-agy-recheck-")));
@@ -410,19 +430,29 @@ it.skipIf(process.platform === "win32")("answers a store only while the pane sti
     stdin: "pipe", stdout: "pipe", stderr: "ignore", env: { ...process.env, AGY_LOCK: lock },
   });
   const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
-  const { names, answers, restore } = processInfoAnswers();
+  const { names, answers, asked, restore } = processInfoAnswers();
   try {
     expect(new TextDecoder().decode((await agy.stdout.getReader().read()).value)).toBe("held\n");
     answers(names([agy.pid]), names([agy.pid]));
     expect(await resolveAgyStore(pane)).toMatchObject({
       root, session, pid: agy.pid, path: join(root, "brain", session, ".system_generated", "logs", "transcript_full.jsonl"),
     });
+    expect(asked()).toBe(2);
     // The pid herdr named first was another process's by the time its locks were read (an exited
     // Agy's pid, reused): asked again, the pane names a different process, or not this one alone.
     for (const now of [[process.pid], [agy.pid, process.pid], []]) {
       answers(names([agy.pid]), names(now));
       expect(await resolveAgyStore(pane)).toBeNull();
+      expect(asked()).toBe(2);
     }
+    // A lookup the first answer settles asks herdr once: a process with no store (this test's own),
+    // and for the greeting, one that holds a lock.
+    answers(names([process.pid]));
+    expect(await resolveAgyStore(pane)).toBeNull();
+    expect(asked()).toBe(1);
+    answers(names([agy.pid]));
+    expect(await agyFreshSession(pane, UNUSED_START_SCREEN)).toBeNull();
+    expect(asked()).toBe(1);
     // The process is gone by the time herdr answers again with its pid: the start identity is
     // compared after that answer, not before it.
     answers(names([agy.pid]), async () => {
@@ -431,6 +461,7 @@ it.skipIf(process.platform === "win32")("answers a store only while the pane sti
       return names([agy.pid])();
     });
     expect(await resolveAgyStore(pane)).toBeNull();
+    expect(asked()).toBe(2);
     expect(agy.killed).toBe(true);
   } finally {
     restore();
@@ -441,28 +472,36 @@ it.skipIf(process.platform === "win32")("answers a store only while the pane sti
 });
 
 it.skipIf(process.platform === "win32")("greets a fresh Agy only while the pane still names the process that held no lock", async () => {
-  const screen = [
-    "       ▄▀▀▄         Antigravity CLI 1.4.4",
-    "      ▀▀▀▀▀▀        user@example.test (Demo plan    )",
-    "     ▀▀▀▀▀▀▀▀       Gemini 3.8 Flash (High)",
-    "    ▄▀▀     ▀▀▄      /tmp/project",
-    "   ▄▀▀       ▀▀▄",
-    "",
-    " ────────────────────────────────────────",
-    " >",
-    " ────────────────────────────────────────",
-    " ? for shortcuts   Gemini 3.8 Flash · high",
-  ].join("\n");
+  const screen = UNUSED_START_SCREEN;
   const pane = { pane_id: "agy-pane", agent: "agy" } as HerdrPane;
-  const { names, answers, restore } = processInfoAnswers();
+  // a stand-in Agy that holds no lock and can exit: it says once it runs its own code
+  const idle = Bun.spawn([process.execPath, "-e", "process.stdout.write('up\\n'); process.stdin.resume()"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+  const { names, answers, asked, restore } = processInfoAnswers();
   try {
+    expect(new TextDecoder().decode((await idle.stdout.getReader().read()).value)).toBe("up\n");
     // this test process holds no presence lock, as an Agy that has begun no conversation
     answers(names([process.pid]), names([process.pid]));
     expect(await agyFreshSession(pane, screen)).toStartWith(`unwritten:agy:agy-pane:${process.pid}:`);
+    expect(asked()).toBe(2);
     // asked again, the pane names another process, or the same pid started on a conversation
     for (const now of [names([process.pid + 1]), names([process.pid], ["agy", "--continue"])]) {
       answers(names([process.pid]), now);
       expect(await agyFreshSession(pane, screen)).toBeNull();
+      expect(asked()).toBe(2);
     }
-  } finally { restore(); }
+    // The process is gone by the time herdr answers again with its pid: here too the start
+    // identity is compared after that answer, not before it.
+    answers(names([idle.pid]), async () => {
+      idle.kill();
+      await idle.exited;
+      return names([idle.pid])();
+    });
+    expect(await agyFreshSession(pane, screen)).toBeNull();
+    expect(asked()).toBe(2);
+    expect(idle.killed).toBe(true);
+  } finally {
+    restore();
+    idle.kill();
+    await idle.exited;
+  }
 });
