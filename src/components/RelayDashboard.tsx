@@ -229,11 +229,11 @@ export function RelayDashboard({
       );
     }
     return (
-      <RelayOverview pcs={pcs} mode={mode} defaultRelay={defaultRelay} meLabel={meLabel} error={error}
+      <RelayOverview pcs={pcs} mode={mode} defaultRelay={defaultRelay} meLabel={meLabel} error={error} {...(account ? { provider: account.provider } : {})}
         {...(pcStatus ? { pcStatus } : {})} {...(observedVersions ? { observedVersions } : {})} activeFilter={activeFilter}
         onSelectFilter={(f) => navigateTo(formatDashboardHash({ view: "pcs", filter: f }))}
         onOpenRelay={(origin) => navigateTo(origin ? formatDashboardHash({ view: "pcs", relay: relayHost(origin) }) : "#relay")}
-        {...(onRefreshAccount ? { onRetryError: onRefreshAccount } : {})} onAddPc={onAddPc} {...(onPairByQr ? { onPairByQr } : {})}
+        {...(onRefreshAccount ? { onRetryError: onRefreshAccount, onRefreshAccount } : {})} onAddPc={onAddPc} {...(onPairByQr ? { onPairByQr } : {})}
         onOpenSheet={onOpenSheet} onSelectPc={selectPc}>
         {pcs !== null && pcs.length > 0 && renderTableSection(null)}
       </RelayOverview>

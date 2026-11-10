@@ -7,7 +7,8 @@ import { NEW_PC_MS } from "../lib/account/myPcs.ts";
 import { dashboardModel, dashboardPcs, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { relayLatencyMs, RelayOverview, type RelayOverviewProps } from "./RelayOverview.tsx";
+import { CHECK_AGAIN_BUSY_MS, relayLatencyMs, RelayOverview, type RelayOverviewProps } from "./RelayOverview.tsx";
+import { INSTALLER_COMMAND } from "./RelayShellScreens.tsx";
 
 const NOW = Date.parse("2026-11-08T12:00:00Z");
 const GLOBAL = "wss://relay.ovis.sh";
@@ -483,6 +484,66 @@ describe("RelayOverview", () => {
     expect(root.findAll((node) => node.props["data-loading-slot"] === "strip-numeral")).toHaveLength(0);
     expect(root.findAll((node) => node.props.className === "boot-spinner")).toHaveLength(0);
     expect(root.findAll((node) => node.type === "button" && typeof node.props["data-strip-cell"] === "string")).toHaveLength(3);
+  });
+
+  it("tells a signed-in account with no PC the three steps, which sign-in it is, and re-reads the list on Check again", async () => {
+    let refreshed = 0;
+    const copiedText: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { copiedText.push(text); } } });
+    const root = await mount({ pcs: [], mode: "account", provider: "google", defaultRelay: GLOBAL, now: NOW, onRefreshAccount: () => { refreshed += 1; }, onAddPc: () => {}, onPairByQr: () => {} });
+    const empty = root.find((node) => node.props["data-dashboard-empty"] === "");
+    expect(textOf(empty.find((node) => node.type === "h2"))).toBe("No PCs yet");
+    expect(empty.findAll((node) => node.type === "ol")).toHaveLength(1);
+    expect(empty.findAll((node) => node.type === "li").map(textOf)).toEqual([
+      `Install Ovis on the PC:${INSTALLER_COMMAND}Copy`,
+      "On that PC, open Settings → Devices and PCs → Account and sign in with Google.",
+      "Choose Add this PC to my account there. It then shows here with Add.",
+    ]);
+    expect(textOf(empty.find((node) => node.type === "code"))).toBe(INSTALLER_COMMAND);
+    expect(textOf(empty.find((node) => node.props["data-empty-provider"] === ""))).toBe("Signed in with Google. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.");
+    expect(textOf(empty)).not.toContain("QR code it shows");
+    expect(empty.findAll((node) => node.type === "button").map(textOf)).toEqual(["Copy", "Check again", "Add a PC", "Pair with a QR or code"]);
+    expect(empty.findAll((node) => node.type === "button" && String(node.props.className ?? "").includes("btn-primary")).map(textOf)).toEqual(["Add a PC"]);
+
+    const check = () => empty.find((node) => node.type === "button" && node.props["data-action"] === "check-again");
+    expect([check().props.disabled, check().props["aria-busy"]]).toEqual([false, undefined]);
+    await act(async () => { check().props.onClick(); });
+    expect(refreshed).toBe(1);
+    expect([check().props.disabled, check().props["aria-busy"]]).toEqual([true, true]);
+    // a click that still lands while it is busy asks nothing
+    await act(async () => { check().props.onClick(); });
+    expect(refreshed).toBe(1);
+    const busy = [...scheduledTimers.values()].filter((timer) => timer.ms === CHECK_AGAIN_BUSY_MS);
+    expect(busy).toHaveLength(1);
+    await act(async () => { busy[0]?.fn(); });
+    expect([check().props.disabled, check().props["aria-busy"]]).toEqual([false, undefined]);
+    await act(async () => { check().props.onClick(); });
+    expect(refreshed).toBe(2);
+
+    const copy = empty.find((node) => node.type === "button" && node.props["data-action"] === "copy-install");
+    await act(async () => { copy.props.onClick(); });
+    expect(copiedText).toEqual([INSTALLER_COMMAND]);
+    expect(textOf(copy)).toBe("Copied");
+  });
+
+  it("keeps the one-sentence empty state without an account, and offers no Check again without a refresh to call", async () => {
+    const local = await mount({ pcs: [], mode: "local", defaultRelay: GLOBAL, now: NOW, onRefreshAccount: () => {}, onAddPc: () => {}, onPairByQr: () => {} });
+    const empty = local.find((node) => node.props["data-dashboard-empty"] === "");
+    expect(textOf(empty.find((node) => node.props.className === "relay-overview-empty-copy"))).toBe("Sign in on a PC, or scan the QR code it shows, to see it here.");
+    expect(empty.findAll((node) => node.type === "ol" || node.props["data-empty-provider"] === "")).toHaveLength(0);
+    expect(empty.findAll((node) => node.type === "button").map(textOf)).toEqual(["Add a PC", "Pair with a QR or code"]);
+    await act(async () => { renderer?.unmount(); });
+
+    const account = await mount({ pcs: [], mode: "account", provider: "github", defaultRelay: GLOBAL, now: NOW, onAddPc: () => {} });
+    const guided = account.find((node) => node.props["data-dashboard-empty"] === "");
+    expect(textOf(guided.find((node) => node.props["data-empty-provider"] === ""))).toStartWith("Signed in with GitHub. ");
+    expect(guided.findAll((node) => node.type === "button").map(textOf)).toEqual(["Copy", "Add a PC"]);
+    for (const language of ["ko", "ja", "zh"] as const) {
+      const html = renderMarkup({ pcs: [], mode: "account", provider: "github", defaultRelay: GLOBAL, now: NOW }, language);
+      expect(html).toContain("GitHub");
+      expect(html).not.toContain("Install Ovis on the PC:");
+      expect(html).not.toContain("{provider}");
+    }
   });
 
   it("renders the centred empty state with one primary Add a PC and ghost Pair with a QR or code, plus the 44px map disclosure when populated", async () => {

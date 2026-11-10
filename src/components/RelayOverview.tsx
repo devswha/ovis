@@ -1,10 +1,12 @@
 import "./RelayOverview.css";
 
 import { AlertCircle, ChevronRight, Monitor } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { MIN_SERVER_VERSION } from "../../shared/relay-mux.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
+import type { AccountProvider } from "../lib/account/store.ts";
+import { copyText } from "../lib/clipboard.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
 import { dashboardModel, relayHost, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
@@ -13,12 +15,16 @@ import type { ObservedVersion } from "../lib/relay/updateFlow.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 import { skeletonRows } from "../lib/skeleton.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
+import { PROVIDER_NAMES } from "./AccountPcs.tsx";
+import { INSTALLER_COMMAND } from "./RelayShellScreens.tsx";
 import { Skeleton } from "./Skeleton.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
 export const ATTENTION_LIMIT = 3;
 export const SKELETON_ROWS = 4;
 export const LOADING_SPINNER_MS = 1_000;
+/** How long Check again stays busy after a click: the account's list is asked for at once, and a second click waits this long. */
+export const CHECK_AGAIN_BUSY_MS = 1_000;
 
 /** Ready and Needs you omit unchecked pairings. Needs you includes Offline as a note. */
 type StripCell = { readonly key: string; readonly glyph: StatusDotState; readonly label: string; readonly count: number; readonly onClick: () => void; readonly pressed: boolean; readonly offline?: number };
@@ -28,6 +34,8 @@ export interface RelayOverviewProps {
   readonly mode?: "account" | "local";
   readonly defaultRelay: string;
   readonly meLabel?: string;
+  /** The sign-in of the account on show. With it, an account without a PC says how to add one. */
+  readonly provider?: AccountProvider;
   readonly now?: number;
   readonly error?: string | null;
   readonly pcStatus?: ReadonlyMap<string, PcStatus>;
@@ -105,8 +113,28 @@ function rowAction(pc: DashboardPc, fresh: boolean, t: ReturnType<typeof useT>, 
   }
 }
 
+/** The installer line with its Copy button: the first step of an account that has no PC yet. */
+function InstallCommand() {
+  const t = useT();
+  const preRef = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  const copy = (): void => {
+    void copyText(INSTALLER_COMMAND, preRef.current).then((ok) => {
+      if (!ok) return;
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    });
+  };
+  return (
+    <div className="relay-overview-empty-command-row">
+      <pre ref={preRef} className="relay-overview-empty-command"><code>{INSTALLER_COMMAND}</code></pre>
+      <button type="button" className="btn" data-action="copy-install" onClick={copy}>{t(copied ? "Copied" : "Copy")}</button>
+    </div>
+  );
+}
+
 export function RelayOverview(props: RelayOverviewProps) {
-  const { pcs, mode = "account", defaultRelay, meLabel, error = null, pcStatus, targetVersion = MIN_SERVER_VERSION, onOpenRelay, onAddPc, onPairByQr, children } = props;
+  const { pcs, mode = "account", defaultRelay, meLabel, provider, error = null, pcStatus, targetVersion = MIN_SERVER_VERSION, onOpenRelay, onAddPc, onPairByQr, children } = props;
   const currentFilter = props.activeFilter ?? props.filter;
   const selectFilter = props.onSelectFilter ?? props.onFilter;
   const retryError = props.onRetryError ?? props.onRefreshAccount;
@@ -114,6 +142,8 @@ export function RelayOverview(props: RelayOverviewProps) {
   const now = props.now ?? Date.now();
   const loading = pcs === null;
   const [showSpinner, setShowSpinner] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const checkTimer = useRef<number | null>(null);
   const announcedWait = useAnnouncedText(loading ? t("Loading your PCs…") : null);
 
   useEffect(() => {
@@ -121,6 +151,18 @@ export function RelayOverview(props: RelayOverviewProps) {
     const timer = window.setTimeout(() => setShowSpinner(true), LOADING_SPINNER_MS);
     return () => window.clearTimeout(timer);
   }, [loading]);
+
+  useEffect(() => () => { if (checkTimer.current !== null) window.clearTimeout(checkTimer.current); }, []);
+
+  const refreshAccount = props.onRefreshAccount;
+  const checkAgain = (): void => {
+    if (checking || !refreshAccount) return;
+    setChecking(true);
+    checkTimer.current = window.setTimeout(() => { checkTimer.current = null; setChecking(false); }, CHECK_AGAIN_BUSY_MS);
+    refreshAccount();
+  };
+  // only a signed-in dashboard says how to add a PC: without an account there is no list a PC could join
+  const providerName = mode === "account" && provider !== undefined ? PROVIDER_NAMES[provider] : null;
 
   const model = pcs === null ? null : dashboardModel(pcs, { label: meLabel ?? t("This device"), now, ...(pcStatus ? { status: pcStatus } : {}) }, defaultRelay);
   const byId = new Map((model?.rows ?? []).map((row) => [row.server_id, row]));
@@ -175,8 +217,20 @@ export function RelayOverview(props: RelayOverviewProps) {
         <section className="relay-overview-empty" data-dashboard-empty="">
           <Monitor className="relay-overview-empty-icon" aria-hidden="true" />
           <h2 className="relay-overview-empty-title">{t("No PCs yet")}</h2>
-          <p className="relay-overview-empty-copy">{t("Sign in on a PC, or scan the QR code it shows, to see it here.")}</p>
+          {providerName === null ? (
+            <p className="relay-overview-empty-copy">{t("Sign in on a PC, or scan the QR code it shows, to see it here.")}</p>
+          ) : (
+            <>
+              <ol className="relay-overview-empty-steps" data-empty-steps="">
+                <li><span>{t("Install Ovis on the PC:")}</span><InstallCommand /></li>
+                <li>{t("On that PC, open Settings → Devices and PCs → Account and sign in with {provider}.", { provider: providerName })}</li>
+                <li>{t("Choose Add this PC to my account there. It then shows here with Add.")}</li>
+              </ol>
+              <p className="relay-overview-empty-copy" data-empty-provider="">{t("Signed in with {provider}. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.", { provider: providerName })}</p>
+            </>
+          )}
           <div className="relay-overview-empty-actions">
+            {providerName !== null && refreshAccount && <button type="button" className="btn" data-action="check-again" disabled={checking} aria-busy={checking ? true : undefined} onClick={checkAgain}>{t("Check again")}</button>}
             {onAddPc && <button type="button" className="btn btn-primary" data-action="add-pc" onClick={onAddPc}>{t("Add a PC")}</button>}
             {onPairByQr && <button type="button" className="btn btn-ghost" data-action="pair-qr" onClick={onPairByQr}>{t("Pair with a QR or code")}</button>}
           </div>
