@@ -31,6 +31,8 @@ declare const __APP_VERSION__: string;
 const INTRODUCED_GRACE_MS = 15 * 60_000;
 /** How long a confirm waits for the account service before it stops saying "checking": a service that never answers must not hold the Pair button. */
 export const ACCOUNT_READ_WAIT_MS = 8_000;
+/** How long a fresh account pairing waits for its link and sign-in before the PC opens anyway: a PC slow to answer must not hold the app. */
+export const ACCOUNT_STEPS_WAIT_MS = 15_000;
 
 
 export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
@@ -71,18 +73,21 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   let accountRead = false;
   // a Pair press reads the sign-in and its directory again before it pairs: nothing more can be confirmed meanwhile
   let confirming = false;
+  // what the confirm said when it was pressed: its wording stays up while the press is checked
+  let pressed: "unlisted" | "listed" | "own" | undefined;
   // bumped by every press and by everything that ends one (Not now, Back, another link): a press whose read lands later does nothing
   let press = 0;
-  // the account service did not answer in time: the directory then says nothing, as after a read that failed
+  // the sign-in, or its directory, was not read in time: what was not read says nothing, as after a read that failed
   let unanswered = false;
   let readWait: ReturnType<typeof setTimeout> | undefined;
   // the sign-in each confirm that names an account was drawn for (kept off the rendered state: it holds the tokens)
   const drawnFor = new WeakMap<RelayShellState, AccountSession>();
   const accountChanged = async (): Promise<void> => {
     // a sign-in still finishing has not been read: its answer decides what the confirm says
-    if (account.state?.kind !== "signing-in") accountRead = true;
+    const read = account.state?.kind !== "signing-in";
+    if (read) accountRead = true;
     // an answer came, or there is no directory to wait for
-    if (account.state?.kind !== "signed-in" || account.state.pcs !== null) unanswered = false;
+    if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     else if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); }
   };
@@ -91,24 +96,26 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   /**
    * What the confirm says now. Signed in, nothing can be confirmed until the directory is read: before that, whether
    * the pairing adds the PC to the account is not known. A directory whose read failed, or was not answered in time,
-   * says nothing about now, and the PC then counts as one this pairing adds.
+   * says nothing about now, and the PC then counts as one this pairing adds. A sign-in that was not read in time
+   * (the store did not answer, or a sign-in's return did not finish) counts as none: the pairing then uses a key of
+   * the device's own, which only ever keeps a PC out of an account.
    */
   const confirmOf = (offer: RelayOffer): Extract<RelayShellState, { kind: "confirm" }> => {
     const view = account.state, signIn = account.signedInAs;
-    const said = !accountRead || confirming || view?.kind === "signing-in" ? "checking" as const
+    const said = confirming || ((!accountRead || view?.kind === "signing-in") && !unanswered) ? "checking" as const
       : view?.kind !== "signed-in" ? undefined
       : signIn === undefined || (view.pcs === null && !unanswered) ? "checking" as const
       : !unanswered && view.error === null && account.directory.some((pc) => pc.server_id === offer.server_id) ? "listed" as const : "unlisted" as const;
-    const state: Extract<RelayShellState, { kind: "confirm" }> = { kind: "confirm", offer, ...(said === undefined ? {} : { account: said }) };
+    const state: Extract<RelayShellState, { kind: "confirm" }> = { kind: "confirm", offer, ...(said === undefined ? {} : { account: said }), ...(confirming && pressed !== undefined ? { pressed } : {}) };
     if (signIn !== undefined && (said === "listed" || said === "unlisted")) drawnFor.set(state, signIn);
     return state;
   };
-  /** A confirm still "checking" when the wait runs out is drawn without the directory, so its button works. */
+  /** A confirm still "checking" when the wait runs out is drawn without what was not read (the sign-in, or its directory), so its button works. */
   const waitForRead = (): void => {
     clearTimeout(readWait);
-    // fixed wait: an account service that takes longer than this counts as one that did not answer
+    // fixed wait: a sign-in or an account service that takes longer than this counts as one that did not answer
     readWait = setTimeout(() => {
-      if (app !== null || confirming || shown?.kind !== "confirm" || account.state?.kind !== "signed-in" || account.state.pcs !== null) return;
+      if (app !== null || confirming || shown?.kind !== "confirm" || shown.account !== "checking") return;
       unanswered = true;
       show(confirmOf(shown.offer));
     }, ACCOUNT_READ_WAIT_MS);
@@ -118,9 +125,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * hands it to `after`. Nothing happens once the press was ended (`press` moved), and a service that does not answer
    * in time is not waited for.
    */
-  const readAgain = (offer: RelayOffer, after: (now: Extract<RelayShellState, { kind: "confirm" }>) => void): void => {
+  const readAgain = (offer: RelayOffer, after: (now: Extract<RelayShellState, { kind: "confirm" }>) => void, asked?: Extract<RelayShellState, { kind: "confirm" }>): void => {
     const mine = ++press;
     confirming = true;
+    pressed = asked === undefined || asked.account === "checking" ? undefined : asked.account ?? "own";
     show(confirmOf(offer));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const read = account.reread().then(() => true, (error: unknown) => { console.warn("Ovis: the sign-in could not be read again", error instanceof Error ? error.name : error); return true; });
@@ -280,12 +288,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     last = { ...attempt, fresh: false };
   };
   const openPc = (): void => { if (app === null && shown?.kind === "ready" && transport && last) enterApp(transport, last); };
-  /** `proven`: the session signed in again with the key it paired with before the app took it, so the enrollment need not renew it. */
-  const enroll = (opened: RelayTransport, attempt: Attempt, proven = false): void => {
+  /** `settled`: told once nothing more of the enrollment ends or renews the session (accountController.ts, EnrollOptions). */
+  const enroll = (opened: RelayTransport, attempt: Attempt, settled?: () => void): void => {
     // the confirm said this device gets a key of its own: a sign-in stored since then adds nothing to its account here
     if (attempt.accountless) return;
     enrolling.add(opened);
-    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), proven }).then((enrollment) => {
+    void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true, { consent: consentOf(attempt), ...(settled ? { settled } : {}) }).then((enrollment) => {
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
     }, (error: unknown) => {
       console.warn("Ovis: this PC did not join the account yet", error instanceof Error ? error.name : error);
@@ -298,10 +306,18 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       if (transport !== opened) return;
       // adding this PC to the account failed on an earlier open: it stops here, where Try again is, before the app
       if (attempt.retryEnrollment) { last = attempt; show({ kind: "ready", name: attempt.offer.name ?? null, server_id: attempt.offer.server_id, enrollment: attempt.accountEnrollment ? "pending" : "local" }); enroll(opened, attempt); return; }
-      // paired with the account's key just now: the PC takes account actions only from a session that signed in with
-      // that key, which a pairing is not. It signs in again here, before the app has a terminal for that to end
+      // paired with the account's key just now: the PC's row for this device joins the account by a link, which ends
+      // the row's other sessions (this one too), and the session then signs in again. Both happen here, behind the
+      // connecting screen, before the app has a terminal for them to end; the rest of the enrollment goes on behind the app
       if (attempt.fresh && attempt.accountEnrollment && !attempt.accountless) {
-        void opened.renew().then(() => { if (transport !== opened || last !== attempt || app !== null) return; enterApp(opened, attempt); enroll(opened, attempt, true); });
+        // an admission after an update hands a copy of the attempt: this one is the latest
+        last = attempt;
+        show({ kind: "connecting", name: attempt.offer.name ?? null });
+        let waited: ReturnType<typeof setTimeout> | undefined;
+        const enter = (): void => { clearTimeout(waited); if (transport !== opened || last !== attempt || app !== null) return; enterApp(opened, attempt); };
+        // fixed wait: a PC that takes longer than this over the account's steps is opened without them
+        waited = setTimeout(enter, ACCOUNT_STEPS_WAIT_MS);
+        enroll(opened, attempt, enter);
         return;
       }
       enterApp(opened, attempt);
@@ -333,7 +349,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       const holds = drawnFor.get(now);
       if (named === undefined ? holds !== undefined : holds === undefined || !sameSignIn(named, holds)) return;
       pair(named ?? null);
-    });
+    }, asked);
   };
   const consentOf = (attempt: Attempt): AccountSession | null | undefined => attempt.accountless ? null : attempt.signIn;
   const cancelAttempt = (): void => { press++; confirming = false; comparison = null; last = null; opening?.abort(); opening = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };

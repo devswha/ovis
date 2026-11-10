@@ -25,8 +25,11 @@ import { openRelayTransport, type RelayTransport } from "./transport.ts";
 const INTRODUCTION_WAIT_MS = 60_000;
 const INTRODUCTION_POLL_MS = 3_000;
 const DIRECTORY_REFRESH_MS = 60_000;
-/** `consent`: whose account the pairing was confirmed for. `proven`: the app's session already signed in with the key the pairing holds. */
-interface EnrollOptions { readonly consent?: PairingConsent; readonly proven?: boolean }
+/**
+ * `consent`: whose account the pairing was confirmed for. `settled`: told once, when nothing more of this enrollment
+ * ends or renews the session it was given (its link and renewal are done, or it stopped before them).
+ */
+interface EnrollOptions { readonly consent?: PairingConsent; readonly settled?: () => void }
 const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
 /**
  * The sign-in a pairing's confirm was drawn for is no longer the one stored (another tab signed out, or in as someone
@@ -245,12 +248,16 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * hands an introduction over a moment later. A QR or code pairing gets none, and is not kept waiting for one.
    */
   const enroll = (opened: RelayTransport, serverId: string, fresh: boolean, introducible = false, options: EnrollOptions = {}): Promise<"local" | EnrollmentCompletion> => {
-    const done = enrollOwned(opened, serverId, fresh, introducible, options);
+    // told once: after the session's last renewal, or when the enrollment ends without reaching it
+    let told = false;
+    const settled = (): void => { if (told) return; told = true; options.settled?.(); };
+    const done = enrollOwned(opened, serverId, fresh, introducible, { ...options, settled });
+    void done.then(settled, settled);
     running.set(done, serverId);
     void done.then(() => running.delete(done), () => running.delete(done));
     return done;
   };
-  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, proven = false }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
+  const enrollOwned = async (opened: RelayTransport, serverId: string, fresh: boolean, introducible: boolean, { consent, settled }: EnrollOptions): Promise<"local" | EnrollmentCompletion> => {
     const epoch = forgotten.get(serverId);
     if (leaving || accountService === null || consent === null || !opened.server?.features?.includes(ACCOUNT_FEATURE)) return "local";
     const session = await account.session();
@@ -322,14 +329,15 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
           });
         }
       }
-      // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve.
-      // One that already signed in with the key it holds, and keeps it, is left alone: a renewal ends its terminals
-      if (linking || (fresh && !proven)) {
+      // the app's session proved the old key, or none: it signs in again with the account key, so this device can approve
+      if (linking || fresh) {
         await opened.renew();
         assertPairing(await store.get(serverId));
         // a Devices panel open since before the link reads the list again, over the session that proved the new key
         if (linking) window.dispatchEvent(new Event(DEVICES_CHANGED_EVENT));
       }
+      // the link ended the PC's other sessions of this row, and the renewal reconnected this one: nothing below does either
+      settled?.();
       // a PC of another account is not this account's to list or introduce from
       if (device.public_spki !== key.public_spki || (!linking && status.account !== session.account)) throw new AccountPcError(409, "enrolling");
       // the account's removals this PC holds, checked and kept as signed, for a PC this client enrolls later (#2956)

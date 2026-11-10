@@ -13,6 +13,7 @@ export const RELAY_JA: Record<string, string> = {
   "Pairing adds this PC to your Ovis account, so every device of your account can open it. Pair only with a PC you are setting up yourself.": "ペアリングするとこの PC が Ovis アカウントに追加され、アカウントのすべてのデバイスから開けるようになります。自分でセットアップしている PC とだけペアリングしてください。",
   "ID of the PC this link names": "このリンクが示す PC の ID",
   "Add and pair": "追加してペアリング",
+  "Checking your account…": "アカウントを確認しています…",
   "This device joins {name} with your account's key. The PC lists it under Settings → Devices and PCs, where it can be removed.": "このデバイスはアカウントのキーで {name} に参加します。PC の「設定 → デバイスと PC」に表示され、そこから削除できます。",
   "Its Ovis is not connected to the relay right now. Start Ovis on the PC, or check its connection, then try again.": "そのPCのOvisは今リレーに接続していません。PCでOvisを起動するか接続を確認してから、もう一度お試しください。",
   "The PC answered through the relay but did not complete the connection. Try again; if it keeps happening, restart Ovis on the PC.": "PCはリレー経由で応答しましたが、接続を完了できませんでした。もう一度お試しください。繰り返す場合はPCでOvisを再起動してください。",

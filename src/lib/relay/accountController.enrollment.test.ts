@@ -427,11 +427,29 @@ describe("account enrollment ownership", () => {
     expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: later })).toEqual({ state: "complete", admitted: 2 });
   });
 
-  it("does not renew a fresh pairing's session that already signed in with the key it keeps", async () => {
-    const run = await fixture("unused", { holdRenewal: true });
-    // a renewal here is never answered: an enrollment that asked for one would not settle
-    const outcome = await Promise.race([run.controller.enroll(await run.open(), run.original.server_id, true, false, { proven: true }), run.renewalRequested.promise.then(() => "renewed" as const)]);
-    expect(outcome).toEqual({ state: "complete", admitted: 2 });
+  it("says its session is settled only once the link and the renewal are done, and before the rest of the enrollment", async () => {
+    const run = await fixture("/api/account/enroll", { linking: true, holdRenewal: true });
+    let settled = 0;
+    const enrolling = run.controller.enroll(await run.open(), run.original.server_id, true, false, { settled: () => { settled++; } });
+    // linked, and the renewal that follows is out: the session is still to reconnect
+    await run.renewalRequested.promise;
+    expect(run.linked()).toBe(true);
+    expect(settled).toBe(0);
+    run.renewalResponse.resolve();
+    // the PC's enrollment is still unanswered: nothing after the renewal touches the session
+    await run.requested.promise;
+    expect(settled).toBe(1);
+    run.response.resolve(run.answer("/api/account/enroll"));
+    expect(await enrolling).toEqual({ state: "complete", admitted: 2 });
+    expect(settled).toBe(1);
+  });
+
+  it("says its session is settled when the enrollment ends before any link, as one that joins no account does", async () => {
+    const run = await fixture("unused");
+    let settled = 0;
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: null, settled: () => { settled++; } })).toBe("local");
+    await Promise.resolve();
+    expect(settled).toBe(1);
   });
 
   it("reports no admitted devices when directory peers cannot be read", async () => {

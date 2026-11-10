@@ -8,7 +8,7 @@ import { RelayShell, type RelayShellProps } from "../../components/RelayShell.ts
 import { memoryAccountStore } from "../account/store.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
-import { ACCOUNT_READ_WAIT_MS, mountRelayShell, type RelayShellMount } from "./shell.tsx";
+import { ACCOUNT_READ_WAIT_MS, ACCOUNT_STEPS_WAIT_MS, mountRelayShell, type RelayShellMount } from "./shell.tsx";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
 import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 
@@ -21,6 +21,11 @@ const keyFor = () => { const pair = generateKeyPair(); return { server_id: deriv
 /** Spins the microtask queue until `holds`, or fails naming `what`: the shell's reads are promises alone, so no clock takes part. */
 async function until(holds: () => boolean, what: string): Promise<void> {
   for (let turn = 0; turn < 10_000; turn++) { if (holds()) return; await Promise.resolve(); }
+  throw new Error(`gave up waiting for ${what}`);
+}
+/** As `until`, for work that signs: a signature settles off the microtask queue, which each turn here waits out, and no faked clock holds it. */
+async function untilSigned(holds: () => boolean, what: string): Promise<void> {
+  for (let turn = 0; turn < 2_000; turn++) { if (holds()) return; await crypto.subtle.digest("SHA-256", new Uint8Array(1)); }
   throw new Error(`gave up waiting for ${what}`);
 }
 /** Enough turns for any read the shell wrongly started to reach the fetch (a read takes a few dozen). */
@@ -199,7 +204,7 @@ describe("the hosted shell's front page", () => {
     expect(last().state).toEqual({ kind: "confirm", offer });
     last().onPair();
     // nothing more can be confirmed while the sign-in is read again, and a second press starts nothing
-    expect(last().state).toEqual({ kind: "confirm", offer, account: "checking" });
+    expect(last().state).toEqual({ kind: "confirm", offer, account: "checking", pressed: "own" });
     last().onPair();
     await until(() => last().state.kind === "confirm" && (last().state as { account?: string }).account === "unlisted", "the confirm asked again");
     await drain();
@@ -534,7 +539,66 @@ describe("the hosted shell's front page", () => {
       expect(prepared[0]?.accountKey).toBeDefined();
     });
 
-    it("signs a fresh account pairing in again before the app opens, so the enrollment behind it ends no terminal", async () => {
+    /**
+     * A PC of the account as it answers a device it just paired with over the relay. The new row has no account
+     * (server/devices.ts, enrollRelay), so the status lists it as unlinked until its `link` (accountRows), and the
+     * link ends the row's other sessions, the app's among them (linkAccountKey, onLinked: `auth_changed`).
+     */
+    const accountPc = (account: string, deviceId: string, linked: () => void) => {
+      let member = false;
+      return (path: string): Response | undefined => {
+        if (path === "/api/account/status") return Response.json({ account, unlinked: member ? [] : [deviceId], removals: [], adds: [], blocked: [], enrolling: false });
+        if (path === "/api/account/link") { member = true; linked(); return Response.json({}); }
+        if (path === "/api/account/introduction") return Response.json({ pcs: [] }, { status: 404 });
+        return undefined;
+      };
+    };
+    const pathOf = (input: RequestInfo | URL): string => typeof input === "string" ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
+
+    it("links and signs a fresh account pairing in again before the app opens, so nothing ends a terminal after it", async () => {
+      browser.setVisibility("hidden");
+      const { code: _code, ...pc } = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const offer = { ...pc, code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const key = await accountStore.key();
+      const deviceId = "12".repeat(8);
+      const devices: RelayDevice[] = [{ ...pc, device_id: null, private_key: key.private_key, public_spki: "own-key", label: "Test phone" }];
+      const renewedAt: number[] = [], linkedAt: number[] = [];
+      const transports: RelayTransport[] = [];
+      let apps = 0;
+      const answer = accountPc("acct-a", deviceId, () => { linkedAt.push(apps); });
+      class Admitted extends RelayTransport {
+        override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: ["account"] }; }
+        override async renew() { renewedAt.push(apps); }
+        override async fetch(input: RequestInfo | URL): Promise<Response> {
+          const response = answer(pathOf(input));
+          if (response === undefined) throw new TypeError(`Unexpected PC request: ${pathOf(input)}`);
+          return response;
+        }
+      }
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore(devices), navigate() {}, shellVersion: "1.0.0",
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs: [] }),
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+        open: async () => {
+          devices[0] = { ...devices[0]!, device_id: deviceId, public_spki: key.public_spki };
+          const opened = new Admitted(pc); transports.push(opened); return opened;
+        },
+      }));
+      await until(() => variant() === "unlisted", "the confirm");
+      last().onPair();
+      await untilSigned(() => (devices[0] as { account_enrollment?: { state: string } }).account_enrollment?.state === "complete", "the enrollment");
+      expect(apps).toBe(1);
+      // the link ends the row's other sessions and the renewal reconnects: both land while no app has a terminal open
+      expect(linkedAt).toEqual([0]);
+      expect(renewedAt).toEqual([0]);
+      expect(rendered.map((element) => shellProps(element).state.kind)).not.toContain("ready");
+      for (const transport of transports) transport.close();
+    });
+
+    it.each([["opens the PC anyway when the account's steps before it do not finish in time", false], ["opens nothing once Cancel is pressed while the account's steps run", true]] as const)("%s", async (_what, cancelled) => {
+      jest.useFakeTimers();
       browser.setVisibility("hidden");
       const { code: _code, ...pc } = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
       const offer = { ...pc, code: "123456" };
@@ -542,17 +606,13 @@ describe("the hosted shell's front page", () => {
       await accountStore.set("session", sessionOf("a"));
       const key = await accountStore.key();
       const devices: RelayDevice[] = [{ ...pc, device_id: null, private_key: key.private_key, public_spki: "own-key", label: "Test phone" }];
-      const renewedAt: number[] = [];
       const transports: RelayTransport[] = [];
-      let apps = 0;
+      let apps = 0, asked = 0;
       class Admitted extends RelayTransport {
         override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: ["account"] }; }
-        override async renew() { renewedAt.push(apps); }
-        override async fetch(path: string): Promise<Response> {
-          if (path === "/api/account/status") return Response.json({ account: "acct-a", unlinked: [], removals: [], enrolling: false });
-          if (path === "/api/account/introduction") return Response.json({ pcs: [] });
-          throw new TypeError(`Unexpected PC request: ${path}`);
-        }
+        override async renew() {}
+        // the PC never answers the account's status
+        override fetch(): Promise<Response> { asked++; return new Promise<Response>(() => {}); }
       }
       await mountRelayShell(mountFor({
         entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore(devices), navigate() {}, shellVersion: "1.0.0",
@@ -565,10 +625,116 @@ describe("the hosted shell's front page", () => {
       }));
       await until(() => variant() === "unlisted", "the confirm");
       last().onPair();
-      await until(() => (devices[0] as { account_enrollment?: { state: string } }).account_enrollment?.state === "complete", "the enrollment");
-      expect(apps).toBe(1);
-      expect(renewedAt).toEqual([0]);
+      await until(() => asked === 1, "the account's status, asked of the PC");
+      await drain();
+      expect(apps).toBe(0);
+      expect(last().state.kind).toBe("connecting");
+      if (cancelled) last().onCancel();
+      jest.advanceTimersByTime(ACCOUNT_STEPS_WAIT_MS);
+      await drain();
+      expect(apps).toBe(cancelled ? 0 : 1);
       for (const transport of transports) transport.close();
+    });
+
+    it("opens a signed-in fresh pairing's PC once the update it needed is installed", async () => {
+      jest.useFakeTimers();
+      browser.setVisibility("hidden");
+      const { code: _code, ...pc } = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const offer = { ...pc, code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const key = await accountStore.key();
+      const deviceId = "12".repeat(8);
+      const devices: RelayDevice[] = [{ ...pc, device_id: null, private_key: key.private_key, public_spki: "own-key", label: "Test phone" }];
+      const transports: RelayTransport[] = [];
+      let apps = 0, version = "0.1.0", installs = 0;
+      const answer = accountPc("acct-a", deviceId, () => undefined);
+      class Admitted extends RelayTransport {
+        override get server() { return { version, relayProtocol: RELAY_PROTOCOL, features: ["account"] }; }
+        override async renew() {}
+        override async fetch(input: RequestInfo | URL): Promise<Response> {
+          const path = pathOf(input);
+          if (path === "/api/updates") return Response.json({ managed: true, available: true, latest_revision: "rev-2", phase: "idle" });
+          if (path === "/api/updates/install") { installs++; return Response.json({}); }
+          const response = answer(path);
+          if (response === undefined) throw new TypeError(`Unexpected PC request: ${path}`);
+          return response;
+        }
+      }
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore(devices), navigate() {}, shellVersion: "1.0.0",
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs: [] }),
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+        open: async () => {
+          devices[0] = { ...devices[0]!, device_id: deviceId, public_spki: key.public_spki };
+          const opened = new Admitted(pc); transports.push(opened); return opened;
+        },
+      }));
+      await until(() => variant() === "unlisted", "the confirm");
+      last().onPair();
+      const update = () => { const { state } = last(); return state.kind === "outdated" ? state.update.phase : state.kind; };
+      await until(() => update() === "offer", "the Update button");
+      last().onUpdate();
+      await until(() => installs === 1, "the install");
+      await drain();
+      // the PC came back with the release
+      version = "1.0.0";
+      jest.advanceTimersByTime(1_000);
+      await untilSigned(() => apps === 1, "the PC, opened after its update");
+      await untilSigned(() => (devices[0] as { account_enrollment?: { state: string } }).account_enrollment?.state === "complete", "the enrollment");
+      expect(apps).toBe(1);
+      for (const transport of transports) transport.close();
+    });
+
+    it("stops saying checking, and pairs with a key of the device's own, when the sign-in on this device cannot be read", async () => {
+      jest.useFakeTimers();
+      browser.setVisibility("hidden");
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const memory = memoryAccountStore();
+      // the store never answers a read of the sign-in
+      const accountStore = { ...memory, update: () => new Promise<void>(() => {}) };
+      const prepared: RelayTransportOptions[] = [];
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs: [] }),
+        open: async (_offer, options = {}) => { prepared.push(options); throw new MuxProtocolError("auth_failed", "fixture declined"); },
+      }));
+      await drain();
+      expect(variant()).toBe("checking");
+      jest.advanceTimersByTime(ACCOUNT_READ_WAIT_MS);
+      // nothing says this device is signed in: the confirm speaks of no account
+      await until(() => last().state.kind === "confirm" && variant() === undefined, "the confirm without a sign-in");
+      last().onPair();
+      await drain();
+      expect(variant()).toBe("checking");
+      expect(prepared).toHaveLength(0);
+      jest.advanceTimersByTime(ACCOUNT_READ_WAIT_MS);
+      await until(() => prepared.length === 1, "the pairing");
+      expect(prepared[0]?.accountKey).toBeUndefined();
+    });
+
+    it("keeps the wording a press was made on while the press is checked", async () => {
+      browser.setVisibility("hidden");
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const held = Promise.withResolvers<Response>();
+      let reads = 0;
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => ++reads === 1 ? Response.json({ pcs: [] }) : held.promise,
+        open: async () => { throw new MuxProtocolError("auth_failed", "fixture declined"); },
+      }));
+      // before any press, a confirm still being read names no wording
+      expect(rendered.map((element) => shellProps(element).state).filter((state) => state.kind === "confirm" && state.account === "checking")).not.toHaveLength(0);
+      expect(rendered.map((element) => shellProps(element).state).some((state) => state.kind === "confirm" && state.pressed !== undefined)).toBe(false);
+      await until(() => variant() === "unlisted", "the confirm");
+      last().onPair();
+      await until(() => reads === 2, "the press's read");
+      expect(last().state).toEqual({ kind: "confirm", offer, account: "checking", pressed: "unlisted" });
+      last().onCancel();
+      held.resolve(Response.json({ pcs: [] }));
+      await drain();
     });
   });
 

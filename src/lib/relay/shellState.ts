@@ -93,8 +93,10 @@ export type RelayShellState =
    * Asks before pairing with the PC a link names. `account` is absent on a device that is signed out: the pairing
    * makes a key of its own. Signed in, the pairing uses the account's key and lists the PC in the account, unless
    * its directory lists it already; "checking" until the sign-in is read, when nothing can be confirmed yet.
+   * `pressed`: the button was pressed and the press is being checked; what the confirm said then ("own": a key of
+   * the device's own) stays on screen meanwhile.
    */
-  | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed" }
+  | { kind: "confirm"; offer: RelayOffer; account?: "checking" | "unlisted" | "listed"; pressed?: "unlisted" | "listed" | "own" }
   | { kind: "connecting"; name: string | null }
   | { kind: "ready"; name: string | null; server_id: string; enrollment?: EnrollmentState | "local" | EnrollmentCompletion }
   /** Pair with a code: the field to type it in, with why the last code gave no PC */
