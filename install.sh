@@ -16,6 +16,13 @@
 #    starred the repository, it asks at the terminal, for 20 seconds, and stars only on "y"; it
 #    never stars by itself.
 #
+# It also puts an `ovis` command into ~/.local/bin, which runs the installed Ovis's own command line
+# (scripts/plugin.ts): `ovis add` adds this PC to your Ovis account from its terminal, `ovis pair` shows
+# a pairing code, `ovis status` says whether the app runs. To end the install with `ovis add`:
+#
+#   curl -fsSL https://ovis.sh/install.sh | sh -s -- --add
+#
+# That step needs a terminal to sign in and answer at; without one the installer says what to run.
 #
 # On a PC with herdr-core (hc, the core the Herdr app runs on) and no herdr, steps 1 and 2 are instead:
 # Bun only, and Ovis in its own checkout (~/.local/share/ovis/app), built as herdr builds the plugin and
@@ -26,6 +33,7 @@
 #   OVIS_REF=<branch or tag>   install that ref instead of the latest release
 #   OVIS_RUNTIME=herdr|herdr-core   pick the runtime instead of going by what is installed
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
+#   OVIS_ADD=1   the same as --add, for where the installer's arguments cannot be given
 set -eu
 
 REPO="devswha/ovis"
@@ -42,6 +50,9 @@ SERVICE="ovis"
 AGENT_LABEL="sh.ovis.server"
 # Official digests from nodejs.org/dist/v22.23.2/SHASUMS256.txt, as scripts/build-remote-bundle.ts pins them
 NODE_VERSION="v22.23.2"
+# the second line of the `ovis` launcher this installer writes: a file of that name without it is not ours
+LAUNCHER_MARK="# ovis launcher, written by install.sh"
+USAGE="usage: curl -fsSL https://ovis.sh/install.sh | sh -s -- [--add]"
 
 say() { printf '%s\n' "Ovis: $*"; }
 
@@ -194,6 +205,132 @@ open_app() {
   else
     say "open $origin in your browser"
   fi
+}
+
+# The `ovis` launcher, as written into BIN_DIR. It holds no path of this install: where Ovis is, it
+# looks up each time it runs, so an update, a reinstall or a move to herdr-core needs no new launcher.
+# First Ovis on herdr-core (its checkout, with the settings and state dirs its service gives it), then
+# the herdr plugin, under its id or the one before the rename. scripts/plugin.ts itself hands `add` on
+# to the release that runs, so the launcher picks no version; a checkout from before `add` and `login`
+# gets the name it knows, `link`.
+launcher_text() {
+  printf '%s\n' '#!/bin/sh' "$LAUNCHER_MARK"
+  cat <<'EOF'
+# Runs the installed Ovis's command line (scripts/plugin.ts): ovis add, ovis pair, ovis status.
+set -eu
+# where the installer puts herdr and Bun, for a shell whose PATH has neither
+PATH="$PATH:$HOME/.local/bin:$HOME/.bun/bin"
+export PATH
+command -v bun >/dev/null 2>&1 || { echo "ovis: needs Bun, which is not on the PATH. Run the installer again: curl -fsSL https://ovis.sh/install.sh | sh" >&2; exit 1; }
+root=""
+app="$HOME/.local/share/ovis/app"
+if [ -f "$app/scripts/plugin.ts" ]; then
+  root=$app
+  if [ -z "${HERDR_PLUGIN_CONFIG_DIR:-}" ]; then
+    HERDR_PLUGIN_CONFIG_DIR="$HOME/.config/ovis"
+    [ -d "$HERDR_PLUGIN_CONFIG_DIR" ] || [ ! -d "$HOME/.config/herdr-web-ui" ] || HERDR_PLUGIN_CONFIG_DIR="$HOME/.config/herdr-web-ui"
+    export HERDR_PLUGIN_CONFIG_DIR
+  fi
+  if [ -z "${HERDR_PLUGIN_STATE_DIR:-}" ]; then
+    HERDR_PLUGIN_STATE_DIR="$HOME/.local/state/ovis"
+    [ -d "$HERDR_PLUGIN_STATE_DIR" ] || [ ! -d "$HOME/.local/state/herdr-web-ui" ] || HERDR_PLUGIN_STATE_DIR="$HOME/.local/state/herdr-web-ui"
+    export HERDR_PLUGIN_STATE_DIR
+  fi
+elif command -v herdr >/dev/null 2>&1; then
+  plugins=$(herdr plugin list --json 2>/dev/null </dev/null) || plugins=""
+  for id in devswha.ovis devswha.herdr-web-ui; do
+    root=$(printf '%s' "$plugins" | bun -e 'try { const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === process.argv[1])?.plugin_root ?? "") } catch { console.log("") }' "$id" 2>/dev/null) || root=""
+    [ -z "$root" ] || break
+  done
+fi
+if [ -z "$root" ] || [ ! -f "$root/scripts/plugin.ts" ]; then
+  echo "ovis: Ovis is not installed on this PC. Install it with: curl -fsSL https://ovis.sh/install.sh | sh" >&2
+  exit 1
+fi
+case "${1:-}" in
+  add | login)
+    if ! grep -qs COMMAND_ALIASES "$root/scripts/plugin.ts"; then
+      shift
+      set -- link "$@"
+    fi
+    ;;
+esac
+exec bun "$root/scripts/plugin.ts" "$@"
+EOF
+}
+
+# Writes the launcher, and says in $launcher_ours whether BIN_DIR/ovis is it. A file of that name the
+# installer did not write (no mark on its second line, or a link) is someone's own: it stays, and the
+# installer says so. Nothing here can fail the install.
+write_launcher() {
+  launcher="$BIN_DIR/ovis"
+  launcher_ours=0
+  if [ -e "$launcher" ] || [ -L "$launcher" ]; then
+    if [ -L "$launcher" ] || [ ! -f "$launcher" ] || [ "$(sed -n 2p "$launcher" 2>/dev/null || true)" != "$LAUNCHER_MARK" ]; then
+      say "$launcher is there already and is not this installer's, so it is left as it is and no ovis command was installed"
+      return 0
+    fi
+  fi
+  # written beside it and moved over it: an interrupted run leaves no half-written command
+  if mkdir -p "$BIN_DIR" && launcher_text >"$launcher.new" && chmod 755 "$launcher.new" && mv -f "$launcher.new" "$launcher"; then
+    launcher_ours=1
+  else
+    rm -f "$launcher.new"
+    say "could not write $launcher, so no ovis command was installed"
+  fi
+}
+
+# How to call the launcher, in what the installer prints: by its name where the user's own PATH finds
+# it, by its path where it does not (or finds another ovis first), and without a launcher of ours, the
+# script it would run.
+ovis_command() {
+  if [ "$launcher_ours" != 1 ]; then
+    printf '%s' "bun $root/scripts/plugin.ts"
+  elif [ "$(PATH="${original_path:-}"; command -v ovis 2>/dev/null || true)" = "$BIN_DIR/ovis" ]; then
+    printf '%s' "ovis"
+  else
+    printf '%s' "$BIN_DIR/ovis"
+  fi
+}
+
+# --add (or OVIS_ADD=1): ends the install by adding this PC to the account, as `ovis add` does, and
+# says in $add_result how that went (none: it did not run; done; failed). It signs in and asks y/N, so it runs only with someone to answer: at a
+# terminal that shows what it prints and can be read from (under `curl | sh` stdin is the script, so
+# the answers come from /dev/tty itself), and never under OVIS_NO_OPEN, which an install run for
+# someone else sets (the app's own SSH installer). A release from before `add` knows it as `link`; one
+# from before that has neither. Wherever it does not run, the closing lines say what to run instead.
+# Ctrl+C ends the add, not the install: what follows it is still printed.
+add_pc() {
+  add_result=none
+  [ "$add" = 1 ] || return 0
+  [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
+  if grep -qs 'COMMAND_ALIASES' "$code/scripts/plugin.ts"; then
+    add_name=add
+  elif grep -qs '"link"' "$code/scripts/plugin.ts"; then
+    add_name=link
+  else
+    return 0
+  fi
+  (exec 3<>/dev/tty) 2>/dev/null || return 0
+  echo
+  trap ':' INT
+  add_result=done
+  bun "$code/scripts/plugin.ts" "$add_name" </dev/tty || add_result=failed
+  trap - INT
+}
+
+# The installer's last words before the star: how this PC gets into the account (unless --add just put
+# it there), and who counts as this PC while it has no token.
+closing_lines() {
+  echo
+  if [ "$add_result" = done ]; then
+    :
+  elif [ "$add" = 1 ] && [ "$add_result" = none ]; then
+    say "to add this PC to your Ovis account, run in a terminal on this PC: $(ovis_command) add"
+  else
+    say "to add this PC to your Ovis account: $(ovis_command) add"
+  fi
+  say "on a PC other people log in to, set OVIS_TOKEN first: without it any local user counts as this PC ($(link "https://github.com/$REPO/blob/main/docs/relay.md#a-pc-with-no-screen"))"
 }
 
 # kills a process and everything it started (ps -A -o pid= -o ppid= reads the same on Linux and macOS)
@@ -713,6 +850,15 @@ install_plugin() {
 }
 
 main() {
+  # before anything is installed: a misspelt option must not install without what it asked for
+  add=0
+  [ "${OVIS_ADD:-}" != 1 ] || add=1
+  for option in "$@"; do
+    case "$option" in
+      --add) add=1 ;;
+      *) fail "does not know the option '$option'. $USAGE" ;;
+    esac
+  done
   case "$(uname -s)" in
     Linux) os=linux ;;
     Darwin) os=darwin ;;
@@ -775,6 +921,7 @@ main() {
   server_arch
 
   if [ "$runtime" = herdr-core ]; then install_core; else install_plugin; fi
+  write_launcher
 
   echo
   if grep -q '"phone"' "$code/scripts/plugin.ts" 2>/dev/null; then
@@ -798,6 +945,7 @@ main() {
   fi
 
   open_app
+  add_pc
 
   case ":$original_path:" in
     *":$BIN_DIR:"*) ;;
@@ -817,6 +965,8 @@ main() {
       fi
       ;;
   esac
+
+  closing_lines
 
   # once, on the first install, and not to someone who already starred it; a rerun for the phone
   # address stays quiet. Last, so that leaving the question unanswered loses nothing above it.
