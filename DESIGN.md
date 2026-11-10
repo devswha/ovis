@@ -214,12 +214,16 @@ committed hex.
 ([docs/themes.md](docs/themes.md)): a name and the sixteen Base16 seeds of a dark side, a light
 side or both, and nothing else. No code or CSS is read from a file. The public contract is the
 seeds, not the roles above, so a role can be renamed, split or added without breaking a theme
-file. `src/lib/themeDerive.ts` derives every role, `--notice-tint` and a light row's ANSI colours
-from the seeds and holds them to `src/lib/themeContrast.ts`, the one list of floors
-`themes.contrast.test.ts` checks the built-in themes against: a colour under a floor keeps its hue
-and moves in lightness by the smallest step that clears it, and a surface the text could only be
-read on by moving far (more than dE 12) moves toward the background instead. A scheme that already
-reads is drawn as written.
+file. `src/lib/themeDerive.ts` derives every role, `--notice-tint`, herdr's `--indicator-*` state
+colours and a light row's ANSI colours from the seeds and holds them to
+`src/lib/themeContrast.ts`, the one list of floors `themes.contrast.test.ts` checks the built-in
+themes against: a colour under a floor keeps its hue and moves in lightness by the smallest step
+that clears it, and a surface the text could only be read on by moving far (more than dE 12 past
+reading on the background) moves toward the background instead. `--bg-hover`, the hovered and
+selected row and the terminal's selection, is never under 1.05:1 on `--bg`: one that would end
+there takes a 1.2:1 step off it instead, the built-in themes' median. The row's mode is what its
+colours are (light text on a darker ground is dark), never what the file calls it. A scheme that
+already reads is drawn as written.
 `settings.customThemes` holds the imported themes (12 at most) and the one chosen for each side,
 which is drawn in place of that side's `darkTheme` or `lightTheme`; those keep their value under
 it. The row is `data-palette="custom"` over the side's amber base block, with its colours set as

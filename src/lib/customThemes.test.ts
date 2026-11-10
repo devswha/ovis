@@ -68,15 +68,55 @@ describe("readThemeFile", () => {
     // a ground lighter than the text is a light theme
     expect(flat.light).toMatchObject({ base00: "#f8f8f8", base05: "#383838", base0D: "#7cafc2" });
     expect(flat.dark).toBeUndefined();
+    // the side is what the colours are, whatever the scheme calls itself
     const json = theme(JSON.stringify({ name: "J", variant: "light", palette: { base00: "#101010", base05: "#e0e0e0" } }));
-    // the scheme's own word wins over the look of its colours
-    expect(json.light?.base00).toBe("#101010");
+    expect(json.dark?.base00).toBe("#101010");
+    expect(json.light).toBeUndefined();
+    expect(theme(`name: "Day"\nvariant: "dark"\npalette:\n  base00: "#ffffff"\n  base05: "#202020"\n`)).toMatchObject({ name: "Day", light: { base00: "#ffffff" } });
     expect(theme(JSON.stringify({ BASE00: "#101010", Base05: "E0E0E0" }), "from-file").dark).toMatchObject({ base00: "#101010", base05: "#e0e0e0" });
     expect(theme(JSON.stringify({ base00: "#101010", base05: "#e0e0e0" }), "from-file").name).toBe("from-file");
   });
 
+  test("a block filed under the other side goes to its own, and two of one kind keep the one filed there", () => {
+    const night = { base00: "#101010", base05: "#e0e0e0" }, day = { base00: "#ffffff", base05: "#202020" };
+    // a light block called dark is the light side
+    const mislabelled = theme(JSON.stringify({ name: "M", dark: day }));
+    expect(mislabelled.light?.base00).toBe("#ffffff");
+    expect(mislabelled.dark).toBeUndefined();
+    // both sides swapped come out the right way round
+    expect(theme(JSON.stringify({ name: "S", dark: day, light: night }))).toMatchObject({ dark: { base00: "#101010" }, light: { base00: "#ffffff" } });
+    // two dark blocks: the one filed as dark stays, and there is no light side
+    const twice = theme(JSON.stringify({ name: "T", dark: night, light: { base00: "#000020", base05: "#f0f0ff" } }));
+    expect(twice.dark?.base00).toBe("#101010");
+    expect(twice.light).toBeUndefined();
+    // what it draws is told the same way
+    expect(customRow(mislabelled, "dark").mode).toBe("light");
+    expect(Object.keys(customRow(mislabelled, "dark").terminal)).toHaveLength(20);
+  });
+
+  test("reads YAML as scheme files write it: quotes either way, a comment after a value, CRLF, tabs and a byte order mark", () => {
+    const read = theme(`\ufeffsystem: "base16"\r\nname: "A" # the "best"\r\npalette:\r\n\tbase00: '101010' # ground\r\n\tbase05:   "#E0E0E0"\r\n\tbase0D: 6699cc   # blue\r\n`);
+    expect(read).toMatchObject({ name: "A", dark: { base00: "#101010", base05: "#e0e0e0", base0D: "#6699cc" } });
+    expect(theme(`name: 'It''s dusk'\nbase00: "101010"\nbase05: "e0e0e0"\n`).name).toBe("It's dusk");
+    expect(theme(`name: "Ros\\u00e9 \\"Pine\\""\nbase00: "101010"\nbase05: "e0e0e0"\n`).name).toBe('Rosé "Pine"');
+    expect(theme(`name: Bare name # note\nbase00: "101010"\nbase05: "e0e0e0"\n`).name).toBe("Bare name");
+    // a name nested in something else is not the scheme's
+    expect(theme(`author:\n  name: "Someone"\nbase00: "101010"\nbase05: "e0e0e0"\n`, "file").name).toBe("file");
+    // a BOM before JSON too
+    expect(theme(`\ufeff${JSON.stringify({ name: "B", base00: "#101010", base05: "#e0e0e0" })}`).name).toBe("B");
+  });
+
+  test("a line no scheme would write takes no time: a long one is skipped", () => {
+    const long = `name: a${" ".repeat(63_000)}x\nbase00: "101010"\nbase05: "e0e0e0"\n`;
+    const started = performance.now();
+    expect(theme(long, "fallback").name).toBe("fallback");
+    expect(readThemeFile(`${"base00: ".repeat(7_000)}\n`)).toEqual({ error: "not-a-theme" });
+    expect(readThemeFile(`base00:${" ".repeat(150)}#\n`.repeat(400))).toEqual({ error: "bad-color", key: "base00" });
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   test("fills what a file leaves out: greys step from the ground to the text, a missing hue is the text", () => {
-    const read = theme(JSON.stringify({ name: "Two", dark: { base00: "#000000", base05: "#ffffff", extra: "#123456", base0B: "not a colour" } }));
+    const read = theme(JSON.stringify({ name: "Two", dark: { base00: "#000000", base05: "#ffffff", extra: "#123456", base10: "nothing the app reads" } }));
     expect(read.dark).toMatchObject({ base00: "#000000", base05: "#ffffff", base06: "#ffffff", base08: "#ffffff", base0B: "#ffffff", base0D: "#ffffff" });
     const grey = (key: "base01" | "base02" | "base03" | "base04"): number => parseInt(read.dark![key].slice(1, 3), 16);
     expect(grey("base01")).toBeGreaterThan(0);
@@ -93,12 +133,22 @@ describe("readThemeFile", () => {
     expect(readThemeFile('{"base08":"#ff0000"}')).toEqual({ error: "no-colors" });
     expect(readThemeFile('{"dark":{"base00":"#000000"}}')).toEqual({ error: "no-colors" });
     expect(readThemeFile('{"dark":{},"light":"x"}')).toEqual({ error: "no-colors" });
+    // a side that is there but cannot be drawn refuses the file: the other side is not imported alone
+    expect(readThemeFile(JSON.stringify({ dark: { base00: "#101010", base05: "#e0e0e0" }, light: { base00: "#ffffff" } }))).toEqual({ error: "no-colors" });
+    expect(readThemeFile(JSON.stringify({ dark: { base00: "#101010", base05: "#e0e0e0" }, light: null })) ).toHaveProperty("theme");
+    // a colour written wrongly is named, not drawn as another colour
+    expect(readThemeFile(JSON.stringify({ dark: { base00: "#101010", base05: "#e0e0e0", base08: "#ff000" } }))).toEqual({ error: "bad-color", key: "base08" });
+    expect(readThemeFile(JSON.stringify({ base00: "#101010", base05: "#e0e0e0", base0B: 7 }))).toEqual({ error: "bad-color", key: "base0B" });
+    expect(readThemeFile(`base00: "101010"\nbase05: "e0e0e0"\nbase0a: "red"\n`)).toEqual({ error: "bad-color", key: "base0A" });
+    for (const value of ["url(https://example.com/x)", "red; background: url(x)", "#12345", "#1234567", "var(--bg)", ""]) {
+      expect(readThemeFile(JSON.stringify({ base00: "#101010", base05: "#e0e0e0", base09: value })), value).toEqual({ error: "bad-color", key: "base09" });
+    }
   });
 
   test("keeps only colours and a short one-line name, whatever else the file carries", () => {
     const read = theme(JSON.stringify({
       name: `  Evil\n\u0007name\u2028 ${"x".repeat(80)}`, script: "alert(1)", css: "body{display:none}",
-      dark: { base00: "#000000", base05: "#ffffff", base08: "url(https://example.com/x)", base09: "red; background: url(x)", base0A: "#12345", base0B: "#1234567" },
+      dark: { base00: "#000000", base05: "#ffffff", style: "url(https://example.com/x)", "--bg": "red", background: "url(x)" },
     }));
     expect(read.name.length).toBeLessThanOrEqual(MAX_THEME_NAME);
     expect(read.name).not.toMatch(/[\n\u0007\u2028]/);
@@ -106,6 +156,9 @@ describe("readThemeFile", () => {
     // a mark that would draw the rest of the line backwards is dropped, in a file and in a stored list
     expect(theme(JSON.stringify({ name: "ab\u202ecd\u2066ef\u200f", base00: "#000000", base05: "#ffffff" })).name).toBe("abcdef");
     expect(sanitizeCustomThemes({ themes: [{ ...read, name: "x\u202ey" }], dark: null, light: null }).themes[0]!.name).toBe("xy");
+    // a name that would draw nothing is no name: the file's own name stands in, and a stored one is dropped
+    expect(theme(JSON.stringify({ name: "\u200b\u200d \u2060", base00: "#000000", base05: "#ffffff" }), "from-file").name).toBe("from-file");
+    expect(sanitizeCustomThemes({ themes: [{ ...read, name: "\u200b" }], dark: null, light: null })).toBe(NO_CUSTOM_THEMES);
     expect(Object.keys(read)).toEqual(["id", "name", "dark"]);
     expect(Object.values(read.dark!).every((color) => /^#[0-9a-f]{6}$/.test(color))).toBe(true);
   });
@@ -132,6 +185,18 @@ describe("the kept list", () => {
     expect(withoutTheme(two, first.id)).toEqual({ themes: [second], dark: null, light: second.id });
     expect(withoutTheme(withoutTheme(two, first.id), second.id)).toBe(NO_CUSTOM_THEMES);
     expect(NO_CUSTOM_THEMES).toEqual({ themes: [], dark: null, light: null });
+  });
+
+  test("another theme filed under a held id takes its place, and draws its own colours", () => {
+    const one = withTheme(NO_CUSTOM_THEMES, first, "dark")!;
+    const other: CustomTheme = { ...second, id: first.id };
+    const replaced = withTheme(one, other, "dark")!;
+    expect(replaced.themes).toEqual([other]);
+    expect(replaced.dark).toBe(first.id);
+    // the row is the block's, not the id's: a list from elsewhere that reuses an id is not drawn in the old colours
+    expect(customRow(first, "dark").bg).toBe("#181613");
+    expect(customRow(other, "dark").bg).toBe("#1b2b34");
+    expect(customRow(other, "dark").id).toBe(customRow(first, "dark").id);
   });
 
   test("holds at most MAX_CUSTOM_THEMES", () => {

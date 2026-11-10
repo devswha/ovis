@@ -1113,7 +1113,8 @@ export function applyToDocument(settings: Settings, entry: DrawnTheme, language:
   applyThemeEntry(root, entry);
   // the boot script's background (src/theme-bootstrap.ts) holds the row's surface until the stylesheet's theme
   // blocks own it; a stylesheet that never loaded leaves the page to it, kept on the row drawn now
-  if (getComputedStyle(root).getPropertyValue("--bg").trim() !== "") root.style.removeProperty("background-color");
+  // (an imported row sets --bg itself, so there the stylesheet is told by a token only it sets)
+  if (getComputedStyle(root).getPropertyValue(entry.vars === undefined ? "--bg" : "--pdf-page").trim() !== "") root.style.removeProperty("background-color");
   else root.style.backgroundColor = entry.bg;
   root.dataset["density"] = settings.density;
   root.dataset["chatWidth"] = settings.chatWidth;
@@ -1194,8 +1195,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const resolvedTheme: ResolvedTheme = settings.theme === "system" ? (systemDark ? "dark" : "light") : settings.theme;
 
   const resolvedEntry = drawnTheme(settings, resolvedTheme);
-  // the rows the page's boot script draws an imported theme from, as this build derives them
-  useEffect(() => saveBootRows(settings.customThemes), [settings.customThemes]);
+  // the rows the page's boot script draws an imported theme from, as this build derives them: written when the
+  // themes or the choice change, not at every other setting's change (the list is a new object after each)
+  const customKey = JSON.stringify(settings.customThemes);
+  useEffect(() => saveBootRows(sanitizeCustomThemes(JSON.parse(customKey))), [customKey]);
 
   const [browserLanguages, setBrowserLanguages] = useState<readonly string[]>(() => (typeof navigator !== "undefined" ? navigator.languages : []));
   useEffect(() => {

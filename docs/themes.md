@@ -40,12 +40,21 @@ derived from these.
 floors as its own themes: 4.5:1 for text and code on the surfaces they sit on, 3:1 for status
 colors. A color under its floor keeps its hue and is made lighter or darker by the smallest step
 that clears the floor. The text takes such a step to stay readable on the theme's own surfaces; a
-surface it could only be read on by moving far moves toward the background instead. A theme whose
-colors already read is drawn exactly as written.
+surface it could only be read on by moving far moves toward the background instead. A hovered or
+selected row always stays a visible step off the background, also where a file gives it the
+background's own color. A theme whose colors already read is drawn exactly as written.
 
 **Only `base00` and `base05` are required.** A surface or grey that is left out is a step between
 the background and the text, and a hue that is left out is the text color, so a file with two
-colors is a plain two-tone theme. Keys the app does not know are ignored.
+colors is a plain two-tone theme. Keys the app does not know are ignored. A color that is there
+but is not written `#rrggbb` refuses the file, and the message names it.
+
+**Dark or light is told by the colors.** Light text on a darker background is a dark theme,
+whatever the file calls it: a block filed under the wrong side goes to its own, and a scheme's
+`variant` line is not read.
+
+The status glyphs of the sidebar and the tabs keep herdr's own colors, made lighter or darker only
+where the theme's surfaces need it.
 
 On a dark theme the terminal keeps xterm's own sixteen ANSI colors, as with the built-in dark
 themes; on a light theme they come from the theme's hues.
@@ -73,7 +82,8 @@ One JSON file with a `name` and a `dark` block, a `light` block or both:
 ```
 
 A theme with one side can still be picked for the other: it is drawn as it is, the way a built-in
-dark theme picked for light mode stays dark.
+dark theme picked for light mode stays dark. A side that is in the file has to have its `base00`
+and `base05`, or the file is refused.
 
 ## A Base16 scheme as published
 
@@ -91,8 +101,7 @@ palette:
 ```
 
 The older flat form (`scheme: "Name"` with `base00: "181613"` lines beside it) is read too. A
-scheme is one side: `variant` says which, and without it a background darker than the text is a
-dark theme.
+scheme is one side: a background darker than the text is a dark theme.
 
 ## Limits
 

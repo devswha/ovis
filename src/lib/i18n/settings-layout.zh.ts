@@ -20,6 +20,7 @@ export const SETTINGS_LAYOUT_ZH: Record<string, string> = {
   "That file is too large to be a theme.": "这个文件太大，不像主题文件。",
   "No theme was found in that file. It needs Base16 colors, base00 to base0F.": "文件里没有找到主题。需要 Base16 颜色（base00 到 base0F）。",
   "That theme has no background (base00) and text (base05) color.": "这个主题没有背景色（base00）和文字色（base05）。",
+  "{key} in that file is not a color. Colors are written #rrggbb.": "文件中的 {key} 不是颜色。颜色写作 #rrggbb。",
   "{count} themes are imported already. Remove one first.": "已导入 {count} 个主题。请先删除一个。",
   "Imported {name}.": "已导入 {name}。",
   "Imported themes": "已导入的主题",

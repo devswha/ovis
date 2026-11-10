@@ -433,8 +433,9 @@ function ThemePicker() {
     observer.observe(el);
     return () => observer.disconnect();
   }, [measure]);
-  const pick = (id: ThemeId): void => update({ ...pickTheme(settings, side, id), customThemes: { ...custom, [side]: null } });
-  const pickImported = (id: string): void => update({ customThemes: { ...custom, [side]: id } });
+  // onto the settings as they are now: another tab may have imported or removed a theme since this was drawn
+  const pick = (id: ThemeId): void => update((latest) => ({ ...pickTheme(latest, side, id), customThemes: { ...latest.customThemes, [side]: null } }));
+  const pickImported = (id: string): void => update((latest) => latest.customThemes.themes.some((entry) => entry.id === id) ? { customThemes: { ...latest.customThemes, [side]: id } } : {});
   const card = (id: ThemeId) => <ThemeCard key={id} card={id} name={t(THEME_NAMES[id])} row={rowFor(id, side)} side={side} checked={current === id} onPick={() => pick(id)} />;
   const importedCard = (theme: CustomTheme) => <ThemeCard key={theme.id} card={customRowId(theme.id)} name={theme.name} row={customRow(theme, side)} side={side} checked={current === customRowId(theme.id)} onPick={() => pickImported(theme.id)} />;
   const step = (event: ReactKeyboardEvent<HTMLDivElement>): void => {

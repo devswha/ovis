@@ -6,9 +6,10 @@
  *
  * Two shapes are read: the app's own JSON (`{ "name", "dark": { base00 … base0F }, "light": { … } }`)
  * and a Base16 scheme as its projects publish it (YAML or JSON, one side), so the schemes that
- * exist can be imported as they are. docs/themes.md describes both.
+ * exist can be imported as they are. docs/themes.md describes both. Which side a block is, is told
+ * by its colours and never by what the file calls it.
  */
-import { luminance, rgb } from "./colorMath.ts";
+import { rgb } from "./colorMath.ts";
 import { LIGHT_ANSI_ROLES } from "./themeRoles.ts";
 import { BASE16_KEYS, deriveTheme, type Base16, type Base16Key } from "./themeDerive.ts";
 import { themeFor } from "./themeFor.ts";
@@ -45,11 +46,13 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 /**
  * A name as it is kept: one line, at most MAX_THEME_NAME characters, without control characters or
  * the marks that reorder the text around it (a name from someone else's file is drawn in Settings).
+ * A name that would draw nothing is no name.
  */
 function cleanName(value: unknown): string {
   if (typeof value !== "string") return "";
   const plain = value.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
-  return [...plain.replace(/\s+/g, " ").trim()].slice(0, MAX_THEME_NAME).join("").trim();
+  const name = [...plain.replace(/\s+/g, " ").trim()].slice(0, MAX_THEME_NAME).join("").trim();
+  return /[^\p{Cf}\p{Z}]/u.test(name) ? name : "";
 }
 
 const color = (value: unknown): string | null => {
@@ -57,16 +60,22 @@ const color = (value: unknown): string | null => {
   return match?.[1] ? `#${match[1].toLowerCase()}` : null;
 };
 
-/** `base00` … `base0F` of an object, whatever the case of its keys; the colours that are not `rrggbb` are left out. */
-function seedsOf(block: unknown): Partial<Record<Base16Key, string>> {
+/**
+ * `base00` … `base0F` of an object, whatever the case of its keys. `bad` names the first of them
+ * whose value is no `rrggbb` colour: a typing slip in a file is said, not drawn as another colour.
+ */
+function seedsOf(block: unknown): { found: Partial<Record<Base16Key, string>>; bad: Base16Key | null } {
   const found: Partial<Record<Base16Key, string>> = {};
-  if (!isObject(block)) return found;
+  let bad: Base16Key | null = null;
+  if (!isObject(block)) return { found, bad };
   for (const [key, value] of Object.entries(block)) {
     const name = BASE16_KEYS.find((known) => known.toLowerCase() === key.toLowerCase());
+    if (!name) continue;
     const hex = color(value);
-    if (name && hex) found[name] = hex;
+    if (hex) found[name] = hex;
+    else bad ??= name;
   }
-  return found;
+  return { found, bad };
 }
 
 /** `from` a share of the way to `to`, channel by channel. */
@@ -87,8 +96,6 @@ function completeSeeds(found: Partial<Record<Base16Key, string>>): Base16 | null
   return Object.fromEntries(BASE16_KEYS.map((key) => [key, found[key] ?? (key in greys ? step(base00, base05, greys[key]!) : base05)])) as unknown as Base16;
 }
 
-const kindOf = (seeds: Base16): Mode => luminance(rgb(seeds.base00)) <= luminance(rgb(seeds.base05)) ? "dark" : "light";
-
 /** FNV-1a over the text, as eight hex digits. */
 function hash(text: string): string {
   let value = 0x811c9dc5;
@@ -102,56 +109,120 @@ function themeOf(name: string, dark: Base16 | undefined, light: Base16 | undefin
   return { id: hash(`${name}\n${canonical(dark)}\n${canonical(light)}`), name, ...(dark ? { dark } : {}), ...(light ? { light } : {}) };
 }
 
+const derivations = new Map<string, ReturnType<typeof deriveTheme>>();
+
+/** What the seeds draw (themeDerive.ts), worked out once: a derivation takes a few milliseconds and its seeds do not change. */
+function derived(seeds: Base16): ReturnType<typeof deriveTheme> {
+  const key = canonical(seeds);
+  let held = derivations.get(key);
+  if (!held) {
+    // a theme list is short: the oldest leave only past a few lists' worth
+    if (derivations.size >= MAX_CUSTOM_THEMES * 8) derivations.delete(derivations.keys().next().value!);
+    derivations.set(key, held = deriveTheme(seeds));
+  }
+  return held;
+}
+
+/**
+ * The theme of the blocks a file gave, each under the side its colours are: light text on a darker
+ * ground is the dark side, whatever the file called it. Two blocks of one kind keep the one the
+ * file filed under that side.
+ */
+function themeFrom(name: string, given: Partial<Record<Mode, Base16>>): CustomTheme {
+  const blocks = SIDES.flatMap((side) => given[side] ? [{ side, seeds: given[side], mode: derived(given[side]).mode }] : []);
+  const placed: Partial<Record<Mode, Base16>> = {};
+  for (const block of [...blocks.filter((entry) => entry.side === entry.mode), ...blocks.filter((entry) => entry.side !== entry.mode)]) placed[block.mode] ??= block.seeds;
+  return themeOf(name, placed.dark, placed.light);
+}
+
+/** A line longer than this is no line of a scheme file. */
+const MAX_SCHEME_LINE = 200;
+
+/** A YAML value as a scheme file writes one: quoted either way, or bare up to a comment. */
+function scalar(text: string): string {
+  const quote = text[0];
+  if (quote !== '"' && quote !== "'") {
+    const comment = text.search(/\s#/);
+    return comment === -1 ? text : text.slice(0, comment);
+  }
+  let value = "";
+  for (let at = 1; at < text.length; at++) {
+    const char = text[at]!;
+    if (quote === "'" && char === "'" && text[at + 1] === "'") { value += "'"; at++; continue; }
+    if (char === quote) break;
+    if (quote === '"' && char === "\\" && at + 1 < text.length) {
+      const code = text[at + 1] === "u" ? /^[0-9a-f]{4}$/i.exec(text.slice(at + 2, at + 6))?.[0] : undefined;
+      value += code ? String.fromCharCode(parseInt(code, 16)) : text[at + 1];
+      at += code ? 5 : 1;
+      continue;
+    }
+    value += char;
+  }
+  return value;
+}
+
 /**
  * A Base16 scheme's YAML, read line by line: its sixteen `baseXX: "rrggbb"` lines wherever they
- * are indented, its `name:` (or the older `scheme:`) and its `variant:`. No YAML beyond that is
- * understood, and none is needed for a scheme file.
+ * are indented, and its `name:` (or the older `scheme:`). No YAML beyond that is understood, and
+ * none is needed for a scheme file. Every step is linear in the line, and a long line is skipped.
  */
 function readSchemeLines(text: string): Record<string, unknown> {
   const palette: Record<string, string> = {};
   const scheme: Record<string, unknown> = { palette };
-  for (const line of text.split(/\r?\n/)) {
-    const seed = /^\s*(base0[0-9a-f])\s*:\s*["']?#?([0-9a-f]{6})["']?\s*(?:#.*)?$/i.exec(line);
-    if (seed?.[1] && seed[2]) { palette[seed[1]] = seed[2]; continue; }
-    const field = /^(name|scheme|variant)\s*:\s*(.*?)\s*$/.exec(line);
-    if (!field?.[1] || field[2] === undefined || field[1] in scheme) continue;
-    const quoted = /^(["'])(.*)\1/.exec(field[2]);
-    scheme[field[1]] = quoted ? quoted[2] : field[2].replace(/\s+#.*$/, "");
+  for (const raw of text.split("\n")) {
+    if (raw.length > MAX_SCHEME_LINE) continue;
+    const line = raw.trim();
+    const colon = line.indexOf(":");
+    if (colon <= 0) continue;
+    const key = line.slice(0, colon).trimEnd();
+    const value = scalar(line.slice(colon + 1).trimStart());
+    if (/^base0[0-9a-f]$/i.test(key)) palette[key] = value;
+    // a field of the scheme itself, not of something nested in it
+    else if ((key === "name" || key === "scheme") && raw.startsWith(key) && !(key in scheme)) scheme[key] = value;
   }
   return scheme;
 }
 
-export type ThemeFileError = "too-large" | "not-a-theme" | "no-colors";
-export type ThemeFileResult = { theme: CustomTheme } | { error: ThemeFileError };
+export type ThemeFileError = "too-large" | "not-a-theme" | "no-colors" | "bad-color";
+/** `key`: the colour a "bad-color" file wrote wrongly. */
+export type ThemeFileResult = { theme: CustomTheme } | { error: ThemeFileError; key?: Base16Key };
 
 /**
  * The theme a file holds. `fallbackName` names a theme whose file gives none (the file's own
- * name, without its ending).
+ * name, without its ending). A file is taken whole or refused: a colour it wrote wrongly, or a
+ * side without a ground and a text colour, is said rather than left out.
  */
-export function readThemeFile(text: string, fallbackName = ""): ThemeFileResult {
-  if (text.length > MAX_THEME_FILE_BYTES) return { error: "too-large" };
+export function readThemeFile(file: string, fallbackName = ""): ThemeFileResult {
+  if (file.length > MAX_THEME_FILE_BYTES) return { error: "too-large" };
+  const text = file.startsWith("\ufeff") ? file.slice(1) : file;
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { parsed = readSchemeLines(text); }
   if (!isObject(parsed)) return { error: "not-a-theme" };
   const name = cleanName(parsed["name"]) || cleanName(parsed["scheme"]) || cleanName(fallbackName) || "Theme";
   // the app's own shape: a block for either side
   if (isObject(parsed["dark"]) || isObject(parsed["light"])) {
-    const dark = completeSeeds(seedsOf(parsed["dark"])) ?? undefined;
-    const light = completeSeeds(seedsOf(parsed["light"])) ?? undefined;
-    return dark || light ? { theme: themeOf(name, dark, light) } : { error: "no-colors" };
+    const given: Partial<Record<Mode, Base16>> = {};
+    for (const side of SIDES) {
+      if (parsed[side] === undefined || parsed[side] === null) continue;
+      const { found, bad } = seedsOf(parsed[side]);
+      if (bad) return { error: "bad-color", key: bad };
+      const seeds = completeSeeds(found);
+      if (!seeds) return { error: "no-colors" };
+      given[side] = seeds;
+    }
+    return { theme: themeFrom(name, given) };
   }
   // a Base16 scheme: one side, its colours under `palette` or beside its name
-  const found = seedsOf(isObject(parsed["palette"]) ? parsed["palette"] : parsed);
+  const { found, bad } = seedsOf(isObject(parsed["palette"]) ? parsed["palette"] : parsed);
+  if (bad) return { error: "bad-color", key: bad };
   if (Object.keys(found).length === 0) return { error: "not-a-theme" };
   const seeds = completeSeeds(found);
-  if (!seeds) return { error: "no-colors" };
-  const variant = parsed["variant"] === "dark" || parsed["variant"] === "light" ? parsed["variant"] : kindOf(seeds);
-  return { theme: variant === "dark" ? themeOf(name, seeds, undefined) : themeOf(name, undefined, seeds) };
+  return seeds ? { theme: themeFrom(name, { dark: seeds }) } : { error: "no-colors" };
 }
 
 /** A stored block: all sixteen, in their own order whatever order it was stored in. */
 function storedSeeds(block: unknown): Base16 | undefined {
-  const found = seedsOf(block);
+  const { found } = seedsOf(block);
   return BASE16_KEYS.every((key) => found[key] !== undefined) ? Object.fromEntries(BASE16_KEYS.map((key) => [key, found[key]])) as unknown as Base16 : undefined;
 }
 
@@ -172,11 +243,17 @@ export function sanitizeCustomThemes(raw: unknown): CustomThemes {
   return themes.length === 0 ? NO_CUSTOM_THEMES : { themes, dark: chosen("dark"), light: chosen("light") };
 }
 
-/** The list with `theme` in it (in place when it is already there), chosen for `side`; null when the list is full. */
+const sameTheme = (a: CustomTheme, b: CustomTheme): boolean => a.name === b.name && canonical(a.dark) === canonical(b.dark) && canonical(a.light) === canonical(b.light);
+
+/**
+ * The list with `theme` in it, chosen for `side`; null when the list is full. A theme already
+ * there stays where it is, and another one filed under the same id gives its place to this one.
+ */
 export function withTheme(current: CustomThemes, theme: CustomTheme, side: Mode): CustomThemes | null {
-  const held = current.themes.some((entry) => entry.id === theme.id);
-  if (!held && current.themes.length >= MAX_CUSTOM_THEMES) return null;
-  return { ...current, themes: held ? current.themes : [...current.themes, theme], [side]: theme.id };
+  const at = current.themes.findIndex((entry) => entry.id === theme.id);
+  if (at === -1 && current.themes.length >= MAX_CUSTOM_THEMES) return null;
+  const themes = at === -1 ? [...current.themes, theme] : sameTheme(current.themes[at]!, theme) ? current.themes : current.themes.map((entry, index) => index === at ? theme : entry);
+  return { ...current, themes, [side]: theme.id };
 }
 
 /** The list without the theme, and no side left drawing it. */
@@ -192,14 +269,15 @@ const rows = new Map<string, DrawnTheme>();
 
 /**
  * The row an imported theme draws on `side`: that side's block, or its only block as it is (a dark
- * theme chosen for light mode draws dark, as a built-in one does). Derived once per theme and side.
+ * theme chosen for light mode draws dark, as a built-in one does). The row's mode is what its
+ * colours are. One row per theme and block, so what draws it keeps its identity between renders.
  */
 export function customRow(theme: CustomTheme, side: Mode): DrawnTheme {
-  const mode: Mode = theme[side] ? side : side === "dark" ? "light" : "dark";
-  const key = `${theme.id}/${mode}`;
+  const seeds = (theme[side] ?? theme[side === "dark" ? "light" : "dark"])!;
+  const key = `${theme.id}/${canonical(seeds)}`;
   const held = rows.get(key);
   if (held) return held;
-  const vars = deriveTheme(theme[mode]!, mode);
+  const { mode, vars } = derived(seeds);
   const terminal: TerminalColors = {
     background: vars["term-bg"], foreground: vars["term-fg"], cursor: vars["term-cursor"], selectionBackground: vars["term-selection"],
     ...(mode === "light" ? Object.fromEntries(Object.entries(LIGHT_ANSI_ROLES).map(([name, role]) => [name, vars[role]])) : {}),
@@ -208,8 +286,7 @@ export function customRow(theme: CustomTheme, side: Mode): DrawnTheme {
     id: customRowId(theme.id), mode, vars, terminal, bgPanel: vars["bg-panel"], bg: vars.bg,
     preview: { elevated: vars["bg-elevated"], border: vars.border, text: vars.text, textDim: vars["text-dim"], accent: vars.accent, primary: vars.primary },
   };
-  // a theme list is short and a removed theme's rows are small: the oldest leave only past a few lists' worth
-  if (rows.size >= MAX_CUSTOM_THEMES * 4) rows.delete(rows.keys().next().value!);
+  if (rows.size >= MAX_CUSTOM_THEMES * 8) rows.delete(rows.keys().next().value!);
   rows.set(key, row);
   return row;
 }

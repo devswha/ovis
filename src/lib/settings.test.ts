@@ -379,6 +379,30 @@ describe("saved theme migration", () => {
     expect(terminalTheme(entry.mode, entry.id)).toEqual(entry.terminal);
   });
 
+  it("holds the page's surface under an imported row until the stylesheet is there, though the row sets --bg itself", () => {
+    const props = new Map<string, string>();
+    const root = { lang: "", dataset: {}, style: { colorScheme: "", backgroundColor: "", setProperty: (name: string, value: string) => { props.set(name, value); }, removeProperty: (name: string) => { if (name === "background-color") root.style.backgroundColor = ""; else props.delete(name); } } };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: root, querySelector: () => null } });
+    const read = readThemeFile(JSON.stringify({ name: "Night", dark: { base00: "#101418", base05: "#d0d8e0" } }));
+    if (!("theme" in read)) throw new Error("the fixture is no theme");
+    const row = customRow(read.theme, "dark");
+    const settings = sanitizeSettings({ theme: "dark" });
+    // what the document answers: the row's own inline colours, and the stylesheet's tokens only once it has loaded
+    const withSheet = (loaded: boolean, run: () => void): void => {
+      const saved = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+      Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: (name: string) => props.get(name) ?? (loaded && name === "--pdf-page" ? "#ffffff" : "") }) });
+      try { run(); } finally {
+        if (saved) Object.defineProperty(globalThis, "getComputedStyle", saved);
+        else Reflect.deleteProperty(globalThis, "getComputedStyle");
+      }
+    };
+    withSheet(false, () => applyToDocument(settings, row, "en"));
+    expect(props.get("--bg")).toBe("#101418");
+    expect(root.style.backgroundColor).toBe("#101418");
+    withSheet(true, () => applyToDocument(settings, row, "en"));
+    expect(root.style.backgroundColor).toBe("");
+  });
+
   it("scales a file's text by the chat's size until it has its own, its source only once chosen", () => {
     const props = new Map<string, string>();
     const root = { lang: "", dataset: {}, style: { colorScheme: "", setProperty: (name: string, value: string) => { props.set(name, value); }, removeProperty: (name: string) => { props.delete(name); } } };

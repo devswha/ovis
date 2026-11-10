@@ -106,7 +106,7 @@ try {
             await picker.setInputFiles(file("lamplight.json", EXAMPLE));
             await page.waitForFunction(() => document.documentElement.dataset["palette"] === "custom");
             await dialog.getByRole("status").filter({ hasText: "Imported Lamplight." }).waitFor();
-            const want = deriveTheme(example.theme[scheme]!, scheme);
+            const want = deriveTheme(example.theme[scheme]!).vars;
             for (const role of ["bg", "bg-elevated", "text", "text-dim", "accent", "notice", "notice-tint", "term-bg", "syntax-keyword"] as const) {
               assert.equal(await token(page, `--${role}`), want[role], `${where}: --${role} is the colour derived from the file`);
             }

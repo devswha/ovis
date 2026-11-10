@@ -6,13 +6,13 @@
  * The scheme's own colours are kept wherever they read: a colour moves only when it is under a
  * floor of themeContrast.ts, and then only its lightness, by the smallest step that clears the
  * floor on every surface it is drawn on (its chroma gives way only when no lightness does). A
- * surface the text could only be read on by moving far gives way to the text instead. So any
- * sixteen colours, however they were chosen, come out as a theme the contrast test of the
- * built-in themes would pass.
+ * surface the text could only be read on by moving far gives way to the text instead, and a
+ * hovered or selected row always tells from the ground. So any sixteen colours, however they were
+ * chosen, come out as a theme the contrast test of the built-in themes would pass.
  */
 import { contrast, deltaE, fromLab, hex, lab, luminance, mix, over, rgb, rgba, type Vector } from "./colorMath.ts";
 import { INDICATOR_FLOOR, TEXT_FLOOR } from "./themeContrast.ts";
-import { LIGHT_ANSI_ROLES, ROLES, SHADOW_GEOMETRY } from "./themeRoles.ts";
+import { INDICATOR_ROLES, LIGHT_ANSI_ROLES, ROLES, SHADOW_GEOMETRY } from "./themeRoles.ts";
 import type { Mode } from "./themes.ts";
 
 export const BASE16_KEYS = [
@@ -23,7 +23,7 @@ export type Base16Key = (typeof BASE16_KEYS)[number];
 /** Sixteen `#rrggbb` colours, lowercase. */
 export type Base16 = Readonly<Record<Base16Key, string>>;
 
-export type RoleName = keyof typeof ROLES | "notice-tint" | (typeof LIGHT_ANSI_ROLES)[keyof typeof LIGHT_ANSI_ROLES];
+export type RoleName = keyof typeof ROLES | "notice-tint" | (typeof INDICATOR_ROLES)[number] | (typeof LIGHT_ANSI_ROLES)[keyof typeof LIGHT_ANSI_ROLES];
 
 /** What a colour is read on: a fixed colour, or one that follows the candidate (a tint of itself). */
 type Under = string | ((candidate: Vector) => Vector);
@@ -87,15 +87,17 @@ export function fit(color: string, grounds: readonly Ground[]): string {
 
 const blend = (color: string, under: string, alpha: number): string => hex(over(rgb(color), rgb(under), alpha));
 
+/** Whether `text` reads on a surface from the same side as on `bg` (lighter than both, or darker than both). */
+function reading(bg: string, text: string): (surface: string) => boolean {
+  const light = luminance(rgb(text)) > luminance(rgb(bg));
+  return (surface) => contrast(text, surface) >= TEXT_FLOOR && (luminance(rgb(text)) > luminance(rgb(surface))) === light;
+}
+
 /**
- * `surface` as it is when `text` reads on it from the same side as on `bg` (lighter than both, or
- * darker than both), else moved toward `bg` until it does: with every surface on one side of the
- * text, a colour pushed far enough to that side reads on all of them.
+ * `surface` as it is when the text reads on it, else moved toward `bg` until it does: with every
+ * surface on one side of the text, a colour pushed far enough to that side reads on all of them.
  */
-function yielding(surface: string, bg: string, text: string): string {
-  const need = Math.min(TEXT_FLOOR + MARGIN, contrast(text, bg));
-  const lightText = luminance(rgb(text)) > luminance(rgb(bg));
-  const reads = (candidate: string): boolean => contrast(text, candidate) >= need && (luminance(rgb(text)) > luminance(rgb(candidate))) === lightText;
+function yielding(surface: string, bg: string, reads: (surface: string) => boolean): string {
   if (reads(surface)) return surface;
   let failing = 0, passing = 1;
   for (let i = 0; i < 16; i++) {
@@ -106,28 +108,89 @@ function yielding(surface: string, bg: string, text: string): string {
   return blend(bg, surface, passing);
 }
 
-/** How far the text may move (dE, 100 * OKLab distance) to go on reading on a surface of the scheme, before that surface moves instead. */
+/** `bg` made lighter (`way` 1) or darker (-1) until it is `ratio` off itself; null where that way runs out first. */
+function stepped(bg: string, way: number, ratio: number): string | null {
+  const [L, a, b] = lab(rgb(bg));
+  for (let l = L + way * 0.005; l >= 0 && l <= 1; l += way * 0.005) {
+    const candidate = hex(fromLab([l, a, b]));
+    if (contrast(candidate, bg) >= ratio) return candidate;
+  }
+  return null;
+}
+
+/** How far past reading on the ground the text may move (dE, 100 * OKLab distance) to read on a surface of the scheme too, before that surface moves instead. */
 const TEXT_STEP = 12;
+/** How far off the ground a surface lies that the theme has to make itself, as contrast with the ground: the built-in themes' medians. */
+const RAISED = 1.1;
+const ROW = 1.2;
+/** Under this a surface cannot be told from the ground it lies on (the built-in themes' least is 1.09). */
+const TELLS = 1.05;
+
+/**
+ * The raised surface and the hovered or selected row for `text`. The scheme's own are kept where
+ * the text reads on them; one it cannot be read on gives way toward the ground, and one that would
+ * end on the ground itself takes a step off it instead: on the side away from the text, where the
+ * text reads better still, else on the text's side when the text reads there. A row is always told
+ * from the ground, also when the scheme gave it the ground's own colour. `crowded` names the steps
+ * that found no room: the ground is as dark (or light) as colours go and the text sits at its floor.
+ */
+function place(seeds: Base16, text: string): { elevated: string; hover: string; crowded: string[] } {
+  const bg = seeds.base00;
+  const reads = reading(bg, text);
+  const away = luminance(rgb(text)) > luminance(rgb(bg)) ? -1 : 1;
+  const crowded: string[] = [];
+  const settle = (surface: string, ratio: number, always: boolean): string => {
+    const moved = yielding(surface, bg, reads);
+    if (contrast(moved, bg) >= TELLS || (!always && moved === surface)) return moved;
+    const far = stepped(bg, away, ratio);
+    if (far !== null && reads(far)) return far;
+    const near = stepped(bg, -away, ratio);
+    if (near !== null && reads(near)) return near;
+    if (near !== null) crowded.push(near);
+    return moved;
+  };
+  return { elevated: settle(seeds.base01, RAISED, false), hover: settle(seeds.base02, ROW, true), crowded };
+}
 
 /** The share of `--notice` in `--notice-tint`, over the panel (DESIGN.md, Notice tint). */
 const NOTICE_TINT = { dark: 0.12, light: 0.06 } as const;
 
-/** Every role of themeRoles.ts, `notice-tint`, and on a light theme the sixteen ANSI colours, by role name. */
-export function deriveTheme(seeds: Base16, mode: Mode): Record<RoleName, string> {
-  const dark = mode === "dark";
+/**
+ * herdr's TUI state colours as the base blocks of src/styles.css carry them (Catppuccin Mocha, and
+ * Latte in light). An imported theme keeps them, moved only as far as its own surfaces need;
+ * themeDerive.test.ts holds this copy to the stylesheet.
+ */
+export const INDICATORS: Readonly<Record<Mode, Readonly<Record<(typeof INDICATOR_ROLES)[number], string>>>> = {
+  dark: { "indicator-working": "#f9e2af", "indicator-blocked": "#f38ba8", "indicator-done": "#94e2d5", "indicator-idle": "#a6e3a1", "indicator-unknown": "#6c7086" },
+  light: { "indicator-working": "#df8e1d", "indicator-blocked": "#d20f39", "indicator-done": "#179299", "indicator-idle": "#40a02b", "indicator-unknown": "#9ca0b0" },
+};
+
+/**
+ * Every role of themeRoles.ts, `notice-tint`, the state colours and, on a light theme, the sixteen
+ * ANSI colours, by role name. `mode` is what the colours are, whatever the file called them: light
+ * text on a darker ground is a dark theme.
+ */
+export function deriveTheme(seeds: Base16): { mode: Mode; vars: Record<RoleName, string> } {
   const bg = seeds.base00;
-  // The text keeps the scheme's surfaces where a small step of its own lets it read on them (as the
-  // built-in themes were repaired): on all three, else on the ground and the raised surface, else
-  // on the ground alone. A surface it still cannot be read on gives way to it.
+  // The text first reads on the ground, which some lightness of it always does. From there it
+  // keeps the scheme's surfaces where a small further step lets it read on them (as the built-in
+  // themes were repaired): on all three, else on the ground and the raised surface.
   const onGround = [ground(bg, TEXT_FLOOR)];
-  const text = [[seeds.base01, seeds.base02], [seeds.base01]]
+  const plain = fit(seeds.base05, onGround);
+  let text = [[seeds.base01, seeds.base02], [seeds.base01]]
     .map((kept) => [...onGround, ...kept.map((surface) => ground(surface, TEXT_FLOOR))])
     .map((grounds) => ({ grounds, candidate: fit(seeds.base05, grounds) }))
-    .find(({ grounds, candidate }) => clears(candidate, grounds) && deltaE(seeds.base05, candidate) <= TEXT_STEP)?.candidate ?? fit(seeds.base05, onGround);
-  const elevated = yielding(seeds.base01, bg, text);
-  const hover = yielding(seeds.base02, bg, text);
-  const surfaces = [bg, elevated, hover];
-  const onSurfaces = (floor: number): Ground[] => surfaces.map((surface) => ground(surface, floor));
+    .find(({ grounds, candidate }) => clears(candidate, grounds) && deltaE(plain, candidate) <= TEXT_STEP)?.candidate ?? plain;
+  let surfaces = place(seeds, text);
+  if (surfaces.crowded.length > 0) {
+    // no room for a row on either side of a text at its floor: the text moves off the ground, and the row lies between them
+    text = fit(text, [...onGround, ...surfaces.crowded.map((surface) => ground(surface, TEXT_FLOOR))]);
+    surfaces = place(seeds, text);
+  }
+  const { elevated, hover } = surfaces;
+  const dark = luminance(rgb(text)) > luminance(rgb(bg));
+  const mode: Mode = dark ? "dark" : "light";
+  const onSurfaces = (floor: number): Ground[] => [bg, elevated, hover].map((surface) => ground(surface, floor));
   const panels = [ground(bg, TEXT_FLOOR), ground(elevated, TEXT_FLOOR)];
 
   // the tint under a notice is the notice itself over the panel: it reads on its own tint where a
@@ -179,16 +242,17 @@ export function deriveTheme(seeds: Base16, mode: Mode): Record<RoleName, string>
     "shadow-pop": `${SHADOW_GEOMETRY[mode]["shadow-pop"][0]} ${rgba(shadow, dark ? 0.55 : 0.16)}, ${SHADOW_GEOMETRY[mode]["shadow-pop"][1]} var(--border)`,
     "shadow-card": `${SHADOW_GEOMETRY[mode]["shadow-card"][0]} ${rgba(shadow, dark ? 0.35 : 0.07)}`,
   };
-  if (dark) return roles as Record<RoleName, string>;
-
-  // xterm's own ANSI colours are made for a dark ground: a light theme names all sixteen, from the scheme's hues
-  const onTerminal = [ground(bg, TEXT_FLOOR)];
-  const hues = { red: seeds.base08, green: seeds.base0B, yellow: seeds.base0A, blue: seeds.base0D, magenta: seeds.base0E, cyan: seeds.base0C };
-  const ansi: Record<string, string> = { [LIGHT_ANSI_ROLES.black]: text, [LIGHT_ANSI_ROLES.white]: textDim, [LIGHT_ANSI_ROLES.brightBlack]: textDim, [LIGHT_ANSI_ROLES.brightWhite]: text };
-  for (const [name, color] of Object.entries(hues)) {
-    const fitted = fit(color, onTerminal);
-    ansi[LIGHT_ANSI_ROLES[name as keyof typeof hues]] = fitted;
-    ansi[LIGHT_ANSI_ROLES[`bright${name[0]!.toUpperCase()}${name.slice(1)}` as keyof typeof LIGHT_ANSI_ROLES]] = fitted;
+  const vars: Record<string, string> = { ...roles };
+  for (const role of INDICATOR_ROLES) vars[role] = fit(INDICATORS[mode][role], indicator);
+  if (!dark) {
+    // xterm's own ANSI colours are made for a dark ground: a light theme names all sixteen, from the scheme's hues
+    const hues = { red: seeds.base08, green: seeds.base0B, yellow: seeds.base0A, blue: seeds.base0D, magenta: seeds.base0E, cyan: seeds.base0C };
+    Object.assign(vars, { [LIGHT_ANSI_ROLES.black]: text, [LIGHT_ANSI_ROLES.white]: textDim, [LIGHT_ANSI_ROLES.brightBlack]: textDim, [LIGHT_ANSI_ROLES.brightWhite]: text });
+    for (const [name, color] of Object.entries(hues)) {
+      const fitted = fit(color, onGround);
+      vars[LIGHT_ANSI_ROLES[name as keyof typeof hues]] = fitted;
+      vars[LIGHT_ANSI_ROLES[`bright${name[0]!.toUpperCase()}${name.slice(1)}` as keyof typeof LIGHT_ANSI_ROLES]] = fitted;
+    }
   }
-  return { ...roles, ...ansi } as Record<RoleName, string>;
+  return { mode, vars: vars as Record<RoleName, string> };
 }

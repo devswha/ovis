@@ -4,7 +4,7 @@
  * the theme the page is first drawn in is the one the app goes on drawing.
  */
 import { shellMode } from "./shellMode.ts";
-import { LIGHT_ANSI_ROLES, ROLES } from "./themeRoles.ts";
+import { INDICATOR_ROLES, LIGHT_ANSI_ROLES, ROLES } from "./themeRoles.ts";
 import { DEFAULT_THEME, isThemeId, type DrawnTheme, type Mode, type ThemeId } from "./themes.ts";
 import { themeFor } from "./themeFor.ts";
 
@@ -101,8 +101,8 @@ export const CUSTOM_THEMES_STORAGE_KEY = "ovis:custom-themes";
  */
 export const CUSTOM_ROWS_STORAGE_KEY = "ovis:custom-theme-rows";
 
-/** The custom properties a row may set on the document: every role, the notice tint and a light row's ANSI colours. */
-export const THEME_VARS: readonly string[] = [...Object.keys(ROLES), "notice-tint", ...Object.values(LIGHT_ANSI_ROLES)];
+/** The custom properties a row may set on the document: every role, the notice tint, the state colours and a light row's ANSI colours. */
+export const THEME_VARS: readonly string[] = [...Object.keys(ROLES), "notice-tint", ...INDICATOR_ROLES, ...Object.values(LIGHT_ANSI_ROLES)];
 
 /** A stored colour or shadow as the derivation writes them: hex, rgba(), lengths and var(--border), and nothing that fetches. */
 const SAFE_VALUE = /^[#a-z0-9(),.\s-]{1,120}$/i;

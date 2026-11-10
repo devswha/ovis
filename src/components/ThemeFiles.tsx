@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileUp, Trash2 } from "lucide-react";
-import { MAX_CUSTOM_THEMES, MAX_THEME_FILE_BYTES, readThemeFile, withoutTheme, withTheme, type CustomTheme, type ThemeFileError } from "../lib/customThemes.ts";
+import { MAX_CUSTOM_THEMES, MAX_THEME_FILE_BYTES, readThemeFile, withoutTheme, withTheme, type CustomTheme, type CustomThemes, type ThemeFileError } from "../lib/customThemes.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useSettings } from "../lib/settings.ts";
 import type { Mode } from "../lib/themes.ts";
@@ -10,8 +10,9 @@ import "./ThemeFiles.css";
 /** What a theme file holds and how the app reads it, for whoever writes one. */
 const THEME_FILE_HELP = "https://github.com/devswha/ovis/blob/main/docs/themes.md";
 
-function refusal(t: Translate, error: ThemeFileError | "full"): string {
+function refusal(t: Translate, error: ThemeFileError | "full", key = ""): string {
   switch (error) {
+    case "bad-color": return t("{key} in that file is not a color. Colors are written #rrggbb.", { key });
     case "too-large": return t("That file is too large to be a theme.");
     case "not-a-theme": return t("No theme was found in that file. It needs Base16 colors, base00 to base0F.");
     case "no-colors": return t("That theme has no background (base00) and text (base05) color.");
@@ -31,21 +32,33 @@ export function ThemeFiles({ onImported }: { onImported: (sides: readonly Mode[]
   const [status, setStatus] = useState<{ text: string; failed: boolean } | null>(null);
   const custom = settings.customThemes;
 
+  // an import on its way into the settings: what it came to is read off the list it made
+  const [pending, setPending] = useState<{ theme: CustomTheme; sides: readonly Mode[] } | null>(null);
+  useEffect(() => {
+    if (pending === null) return;
+    setPending(null);
+    // the list filled meanwhile, in another tab of this browser
+    if (!custom.themes.some((entry) => entry.id === pending.theme.id)) return setStatus({ text: refusal(t, "full"), failed: true });
+    onImported(pending.sides);
+    setStatus({ text: t("Imported {name}.", { name: pending.theme.name }), failed: false });
+  }, [pending, custom, onImported, t]);
+
   const add = async (file: File): Promise<void> => {
-    const fail = (error: ThemeFileError | "full"): void => setStatus({ text: refusal(t, error), failed: true });
+    const fail = (error: ThemeFileError | "full", key?: string): void => setStatus({ text: refusal(t, error, key), failed: true });
     if (file.size > MAX_THEME_FILE_BYTES) return fail("too-large");
     let text: string;
     try { text = await file.text(); } catch { return fail("not-a-theme"); }
     const result = readThemeFile(text, file.name.replace(/\.[^.]+$/, ""));
-    if ("error" in result) return fail(result.error);
+    if ("error" in result) return fail(result.error, result.key);
     const { theme } = result;
     const sides: Mode[] = theme.dark && theme.light ? ["dark", "light"] : [theme.dark ? "dark" : "light"];
-    let next: typeof custom | null = custom;
-    for (const side of sides) next = next === null ? null : withTheme(next, theme, side);
-    if (next === null) return fail("full");
-    update({ customThemes: next });
-    onImported(sides);
-    setStatus({ text: t("Imported {name}.", { name: theme.name }), failed: false });
+    // onto the list as it is now, not as it was when this was drawn: another tab may have imported since
+    update((current) => {
+      let next: CustomThemes | null = current.customThemes;
+      for (const side of sides) next = next === null ? null : withTheme(next, theme, side);
+      return next === null ? {} : { customThemes: next };
+    });
+    setPending({ theme, sides });
   };
 
   const kinds = (theme: CustomTheme): string => [theme.dark && t("Dark"), theme.light && t("Light")].filter(Boolean).join(" · ");
