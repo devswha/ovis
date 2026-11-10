@@ -4,7 +4,8 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import { usePageFocusGuard } from "./usePageFocusGuard.ts";
 
-const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "HTMLElement"];
+const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "HTMLElement", "setTimeout"];
+const timers: Array<() => void> = [];
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
 let renderer: ReactTestRenderer | undefined;
 
@@ -36,7 +37,7 @@ beforeEach(async () => {
   win = Object.assign(target(), { focus() {} });
   doc = Object.assign(target(), { activeElement: null as Element | null, hasFocus: () => true });
   grabs = 0;
-  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: win, document: doc, HTMLElement: Element });
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true, window: win, document: doc, HTMLElement: Element, setTimeout: (run: () => void) => { timers.push(run); return 0; } });
   await act(async () => { renderer = create(createElement(Guard)); });
   // the person is back in the app: the page has to be given the focus anew
   await act(async () => doc.fire("focusin", true, { target: field }));
@@ -45,6 +46,8 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = undefined;
+  // the guard asks for the focus once more after the blur event: that runs while the page is still there
+  for (const late of timers.splice(0)) late();
   for (const [name, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else Reflect.deleteProperty(globalThis, name);
