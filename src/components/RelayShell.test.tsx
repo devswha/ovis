@@ -310,9 +310,9 @@ describe("the dashboard", () => {
     const empty = render(signedIn([], { onRefreshAccount: none }));
     expect(empty).toContain('<h2 class="relay-overview-empty-title">No PCs yet</h2><ol class="relay-overview-empty-steps"');
     expect(text(empty)).toContain("sign in with GitHub.");
-    expect(actionsOf(empty)).toEqual(["Add a PC", "Copy", "Check again", "Add a PC", "Pair with a QR or code"]);
+    expect(actionsOf(empty)).toEqual(["Add a PC", "Copy", "Copy", "Check again", "Add a PC", "Pair with a QR or code"]);
     // Check again needs the account's refresh: without one the dashboard offers none
-    expect(actionsOf(render(signedIn([])))).toEqual(["Add a PC", "Copy", "Add a PC", "Pair with a QR or code"]);
+    expect(actionsOf(render(signedIn([])))).toEqual(["Add a PC", "Copy", "Copy", "Add a PC", "Pair with a QR or code"]);
     expect(empty).not.toContain("<table");
     expect(empty).not.toContain('data-slot="relay-map"');
     expect(empty).not.toContain("relay-dash-nav-count");

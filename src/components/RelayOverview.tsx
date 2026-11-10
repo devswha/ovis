@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { MIN_SERVER_VERSION } from "../../shared/relay-mux.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
+import { DEVICE_PROVIDERS } from "../lib/account/service.ts";
 import type { AccountProvider } from "../lib/account/store.ts";
 import { copyText } from "../lib/clipboard.ts";
 import { currentLocale, useT } from "../lib/i18n.ts";
@@ -113,22 +114,31 @@ function rowAction(pc: DashboardPc, fresh: boolean, t: ReturnType<typeof useT>, 
   }
 }
 
-/** The installer line with its Copy button: the first step of an account that has no PC yet. */
-function InstallCommand() {
+/** The installer for a PC on Windows, as README.md gives it: the `sh` line of `INSTALLER_COMMAND` does not run there. */
+export const WINDOWS_INSTALLER_COMMAND = "irm https://ovis.sh/install.ps1 | iex";
+/** How long Copy reads Copied after a copy that worked. */
+export const COPIED_MS = 1_600;
+
+/** One installer line with its Copy button: the first step of an account that has no PC yet. */
+function InstallCommand({ command, action }: { readonly command: string; readonly action: string }) {
   const t = useT();
   const preRef = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | null>(null);
+  useEffect(() => () => { if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current); }, []);
   const copy = (): void => {
-    void copyText(INSTALLER_COMMAND, preRef.current).then((ok) => {
+    void copyText(command, preRef.current).then((ok) => {
       if (!ok) return;
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      // one timer at a time: an earlier copy's must not turn the label back early
+      if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => { copiedTimer.current = null; setCopied(false); }, COPIED_MS);
     });
   };
   return (
     <div className="relay-overview-empty-command-row">
-      <pre ref={preRef} className="relay-overview-empty-command"><code>{INSTALLER_COMMAND}</code></pre>
-      <button type="button" className="btn" data-action="copy-install" onClick={copy}>{t(copied ? "Copied" : "Copy")}</button>
+      <pre ref={preRef} className="relay-overview-empty-command"><code>{command}</code></pre>
+      <button type="button" className="btn" data-action={action} onClick={copy}>{t(copied ? "Copied" : "Copy")}</button>
     </div>
   );
 }
@@ -163,6 +173,8 @@ export function RelayOverview(props: RelayOverviewProps) {
   };
   // only a signed-in dashboard says how to add a PC: without an account there is no list a PC could join
   const providerName = mode === "account" && provider !== undefined ? PROVIDER_NAMES[provider] : null;
+  // a PC's own page signs in through a device flow, which Apple has none of: such an account is not told to sign in there with Apple
+  const pcCanSignIn = provider !== undefined && (DEVICE_PROVIDERS as readonly string[]).includes(provider);
 
   const model = pcs === null ? null : dashboardModel(pcs, { label: meLabel ?? t("This device"), now, ...(pcStatus ? { status: pcStatus } : {}) }, defaultRelay);
   const byId = new Map((model?.rows ?? []).map((row) => [row.server_id, row]));
@@ -222,11 +234,21 @@ export function RelayOverview(props: RelayOverviewProps) {
           ) : (
             <>
               <ol className="relay-overview-empty-steps" data-empty-steps="">
-                <li><span>{t("Install Ovis on the PC:")}</span><InstallCommand /></li>
-                <li>{t("On that PC, open Settings → Devices and PCs → Account and sign in with {provider}.", { provider: providerName })}</li>
+                <li>
+                  <span>{t("Install Ovis on the PC.")}</span>
+                  <span className="relay-overview-empty-os">{t("On macOS or Linux:")}</span>
+                  <InstallCommand command={INSTALLER_COMMAND} action="copy-install" />
+                  <span className="relay-overview-empty-os">{t("On Windows, in PowerShell:")}</span>
+                  <InstallCommand command={WINDOWS_INSTALLER_COMMAND} action="copy-install-windows" />
+                </li>
+                <li>{pcCanSignIn
+                  ? t("On that PC, open Settings → Devices and PCs → Account and sign in with {provider}.", { provider: providerName })
+                  : t("On that PC, open Settings → Devices and PCs → Account and sign in with a GitHub or Google sign-in that is linked to this account.")}</li>
                 <li>{t("Choose Add this PC to my account there. It then shows here with Add.")}</li>
               </ol>
-              <p className="relay-overview-empty-copy" data-empty-provider="">{t("Signed in with {provider}. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.", { provider: providerName })}</p>
+              <p className="relay-overview-empty-copy" data-empty-provider="">{pcCanSignIn
+                ? t("Signed in with {provider}. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.", { provider: providerName })
+                : t("Signed in with {provider}. A PC signs in with GitHub or Google only, and each is a separate Ovis account until you link it to this one. Without a linked sign-in, pair with a QR or code instead.", { provider: providerName })}</p>
             </>
           )}
           <div className="relay-overview-empty-actions">

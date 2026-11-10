@@ -7,7 +7,7 @@ import { NEW_PC_MS } from "../lib/account/myPcs.ts";
 import { dashboardModel, dashboardPcs, type DashboardFilter, type DashboardPc } from "../lib/relay/dashboard.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { CHECK_AGAIN_BUSY_MS, relayLatencyMs, RelayOverview, type RelayOverviewProps } from "./RelayOverview.tsx";
+import { CHECK_AGAIN_BUSY_MS, COPIED_MS, relayLatencyMs, RelayOverview, WINDOWS_INSTALLER_COMMAND, type RelayOverviewProps } from "./RelayOverview.tsx";
 import { INSTALLER_COMMAND } from "./RelayShellScreens.tsx";
 
 const NOW = Date.parse("2026-11-08T12:00:00Z");
@@ -495,14 +495,14 @@ describe("RelayOverview", () => {
     expect(textOf(empty.find((node) => node.type === "h2"))).toBe("No PCs yet");
     expect(empty.findAll((node) => node.type === "ol")).toHaveLength(1);
     expect(empty.findAll((node) => node.type === "li").map(textOf)).toEqual([
-      `Install Ovis on the PC:${INSTALLER_COMMAND}Copy`,
+      `Install Ovis on the PC.On macOS or Linux:${INSTALLER_COMMAND}CopyOn Windows, in PowerShell:${WINDOWS_INSTALLER_COMMAND}Copy`,
       "On that PC, open Settings → Devices and PCs → Account and sign in with Google.",
       "Choose Add this PC to my account there. It then shows here with Add.",
     ]);
-    expect(textOf(empty.find((node) => node.type === "code"))).toBe(INSTALLER_COMMAND);
+    expect(empty.findAll((node) => node.type === "code").map(textOf)).toEqual([INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND]);
     expect(textOf(empty.find((node) => node.props["data-empty-provider"] === ""))).toBe("Signed in with Google. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.");
     expect(textOf(empty)).not.toContain("QR code it shows");
-    expect(empty.findAll((node) => node.type === "button").map(textOf)).toEqual(["Copy", "Check again", "Add a PC", "Pair with a QR or code"]);
+    expect(empty.findAll((node) => node.type === "button").map(textOf)).toEqual(["Copy", "Copy", "Check again", "Add a PC", "Pair with a QR or code"]);
     expect(empty.findAll((node) => node.type === "button" && String(node.props.className ?? "").includes("btn-primary")).map(textOf)).toEqual(["Add a PC"]);
 
     const check = () => empty.find((node) => node.type === "button" && node.props["data-action"] === "check-again");
@@ -524,6 +524,42 @@ describe("RelayOverview", () => {
     await act(async () => { copy.props.onClick(); });
     expect(copiedText).toEqual([INSTALLER_COMMAND]);
     expect(textOf(copy)).toBe("Copied");
+    // a second copy starts the wait over: the first copy's timer is gone, so it cannot turn the label back early
+    const copiedTimers = () => [...scheduledTimers.values()].filter((timer) => timer.ms === COPIED_MS);
+    const first = copiedTimers();
+    expect(first).toHaveLength(1);
+    await act(async () => { copy.props.onClick(); });
+    expect(copiedTimers()).toHaveLength(1);
+    expect(copiedTimers()[0]).not.toBe(first[0]);
+    expect(textOf(copy)).toBe("Copied");
+
+    const windows = empty.find((node) => node.type === "button" && node.props["data-action"] === "copy-install-windows");
+    await act(async () => { windows.props.onClick(); });
+    expect(copiedText).toEqual([INSTALLER_COMMAND, INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND]);
+    expect(copiedTimers()).toHaveLength(2);
+    // leaving the screen takes the waiting timers with it
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    expect(copiedTimers()).toHaveLength(0);
+  });
+
+  it("does not tell an account signed in with Apple to sign in on the PC with Apple, which a PC's page cannot do", async () => {
+    const root = await mount({ pcs: [], mode: "account", provider: "apple", defaultRelay: GLOBAL, now: NOW, onRefreshAccount: () => {}, onAddPc: () => {}, onPairByQr: () => {} });
+    const empty = root.find((node) => node.props["data-dashboard-empty"] === "");
+    const steps = empty.findAll((node) => node.type === "li").map(textOf);
+    expect(steps).toHaveLength(3);
+    expect(steps[1]).toBe("On that PC, open Settings → Devices and PCs → Account and sign in with a GitHub or Google sign-in that is linked to this account.");
+    expect(textOf(empty)).not.toContain("sign in with Apple");
+    expect(textOf(empty)).not.toContain("the other way");
+    expect(textOf(empty.find((node) => node.props["data-empty-provider"] === ""))).toBe("Signed in with Apple. A PC signs in with GitHub or Google only, and each is a separate Ovis account until you link it to this one. Without a linked sign-in, pair with a QR or code instead.");
+    expect(empty.findAll((node) => node.type === "button").map(textOf)).toEqual(["Copy", "Copy", "Check again", "Add a PC", "Pair with a QR or code"]);
+    for (const language of ["ko", "ja", "zh"] as const) {
+      const html = renderMarkup({ pcs: [], mode: "account", provider: "apple", defaultRelay: GLOBAL, now: NOW }, language);
+      expect(html).toContain("Apple");
+      expect(html).not.toContain("Signed in with");
+      expect(html).not.toContain("sign in with a GitHub or Google");
+      expect(html).not.toContain("{provider}");
+    }
   });
 
   it("keeps the one-sentence empty state without an account, and offers no Check again without a refresh to call", async () => {
@@ -537,11 +573,12 @@ describe("RelayOverview", () => {
     const account = await mount({ pcs: [], mode: "account", provider: "github", defaultRelay: GLOBAL, now: NOW, onAddPc: () => {} });
     const guided = account.find((node) => node.props["data-dashboard-empty"] === "");
     expect(textOf(guided.find((node) => node.props["data-empty-provider"] === ""))).toStartWith("Signed in with GitHub. ");
-    expect(guided.findAll((node) => node.type === "button").map(textOf)).toEqual(["Copy", "Add a PC"]);
+    expect(guided.findAll((node) => node.type === "button").map(textOf)).toEqual(["Copy", "Copy", "Add a PC"]);
     for (const language of ["ko", "ja", "zh"] as const) {
       const html = renderMarkup({ pcs: [], mode: "account", provider: "github", defaultRelay: GLOBAL, now: NOW }, language);
       expect(html).toContain("GitHub");
-      expect(html).not.toContain("Install Ovis on the PC:");
+      expect(html).not.toContain("Install Ovis on the PC.");
+      expect(html).not.toContain("On Windows, in PowerShell:");
       expect(html).not.toContain("{provider}");
     }
   });
