@@ -1252,6 +1252,27 @@ describe("ClaudeSubagentStatus", () => {
       }
     });
 
+    it("holds nothing on a fire found at the first read when herdr told its turn before the pane's transcript was found", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      firedAt(s, NOW - 1000);
+      let found = false;
+      let now = NOW;
+      const status = new ClaudeSubagentStatus({ resolve: async () => found ? { path: s.path, startedAt: null } : null, onChange: () => undefined, now: () => now });
+      await status.refresh([pane("p1", "claude")]);
+      try {
+        // herdr reads the pane at work while its session is still looked for
+        status.busy("p1", "herdr");
+        found = true;
+        now += 5000;
+        await status.refresh([pane("p1", "claude")]);
+        expect(status.sessionOf("p1")?.path).toBe(s.path);
+        // that word, kept through the lookup and matched at the first read to the turn the fire began, told it: the queue goes by herdr's status
+        expect(status.loopHolds("p1")).toBe(false);
+      } finally { status.stop(); }
+    });
+
     it("takes a fire found at the first read for history once it is as old as LOOP_HOLD_MS, or tells no time", async () => {
       for (const written of [NOW - LOOP_HOLD_MS, null]) {
         const s = session();
@@ -1708,6 +1729,48 @@ describe("ClaudeSubagentStatus", () => {
         status.busy("p1", "herdr");
         expect(rests.at(-1)).toBe(false);
       } finally { status.stop(); }
+    });
+
+    it("holds on the next self-resumed turn though herdr's working for the one before it, heard before that one's rest, still waited for a turn", async () => {
+      for (const next of ["the second loop's prompt", "another loop's fire and prompt"] as const) {
+        for (const end of ["herdr", "rest", "time"] as const) {
+          const s = session();
+          s.prompt(1);
+          let now = NOW;
+          const { status, told } = await tracked(s, () => now);
+          try {
+            // herdr tells the person's turn, which rests; two loops are due: both fires, then the first loop's prompt
+            status.busy("p1", "herdr");
+            rest(s, 2);
+            fire(s, 3);
+            fire(s, 3);
+            resumes(s, 3);
+            // herdr's rest word for the person's turn comes after them: the wakeup holds the queue
+            status.quiet("p1", true);
+            status.poll();
+            expect(status.loopHolds("p1")).toBe(true);
+            // herdr's working for the first loop's turn finds no turn written past that rest word, and waits for one
+            status.busy("p1", "herdr");
+            expect(status.loopHolds("p1")).toBe(false);
+            // that turn is short: its rest and what resumes next are read before herdr's rest word for it
+            answer(s, 3);
+            rest(s, 3);
+            if (next === "the second loop's prompt") resumes(s, 3.1); else { fire(s, 8); resumes(s, 8); }
+            status.poll();
+            // the waiting word takes the turn begun past it, but it was heard before that rest: it tells nothing of this turn
+            expect(status.loopHolds("p1")).toBe(true);
+            status.quiet("p1", true);
+            status.poll();
+            expect(status.loopHolds("p1")).toBe(true);
+            expect(told.at(-1)).toBe(true);
+            // herdr's working for this turn, its rest, or its time ends the hold, and is told
+            if (end === "herdr") status.busy("p1", "herdr");
+            else { if (end === "rest") rest(s, 9); else now += LOOP_HOLD_MS; status.poll(); }
+            expect(status.loopHolds("p1")).toBe(false);
+            expect(told.at(-1)).toBe(false);
+          } finally { status.stop(); }
+        }
+      }
     });
   });
 });

@@ -344,6 +344,8 @@ interface Parent {
   promptAt: number | null;
   /** byte boundary of the session's last trustworthy turn_duration, cleared by later activity or skipped records */
   restAt: number | null;
+  /** that boundary, kept through what is written after it: where the latest rest read was written, 0 while none was */
+  rested: number;
   /** every byte written was read and parsed: no half-written line or skipped record is left, which may be a next turn's */
   whole: boolean;
   /**
@@ -386,7 +388,7 @@ function scanParent(path: string): Parent | null {
   let parent = parents.get(path);
   if (!parent || parent.id !== stat.id || parent.offset > stat.size || !sameHistory(parent.version, stat)) {
     const from = Math.max(0, stat.size - PARENT_WINDOW);
-    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, loopFired: false, echo: null };
+    parent = { version: stat, historyLimit: from > 0 ? stat.size : 0, id: stat.id, offset: from, skipping: from > 0, windowed: from > 0, firstAt: null, behind: false, notes: new Map(), calls: new Set(), results: new Map(), commands: noCommands(), stopCalls: new Map(), stops: new Map(), promptAt: null, restAt: null, rested: 0, whole: false, starts: [], turnOpen: false, loopAt: null, loopTime: null, loopFired: false, echo: null };
   }
   parent.version = stat;
   remember(parents, path, parent, 256);
@@ -530,7 +532,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
         // the rest of whatever turn went on, a /loop wakeup's too
-        if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; parent.loopFired = false; }
+        if (parent.restAt !== null) { parent.rested = end; parent.turnOpen = false; parent.loopAt = null; parent.loopFired = false; }
       }
     } catch { /* a line caught half written is read again */ }
   } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
@@ -1543,8 +1545,11 @@ const BUSY_HOLD_MS = 5000;
 /**
  * The start of the latest turn a source's signals were matched to, its signals still waiting for
  * theirs, and those that waited BUSY_HOLD_MS in vain (`held`): they hold the queue, not the display.
+ * `from`: the transcript's size when the signal `turn` was matched to was heard. One heard before a
+ * rest was written may be of the turn that rest ended, though the turn it took began after it
+ * (settle): it tells nothing of that turn (ClaudeSubagentStatus.poll, a self-resumed turn's hold).
  */
-interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
+interface Claim { turn: number; from: number; barriers: Barrier[]; held: Barrier[] }
 
 /**
  * How long a `/loop` wakeup's fire holds the pane's queue while herdr has not said the pane works
@@ -1866,10 +1871,13 @@ export class ClaudeSubagentStatus {
           // a /loop fire written since the read before holds the queue from now; a rest written past it ends that.
           // Not one whose turn herdr told a moment before Claude wrote it (its working, matched above to
           // the turn the fire began, and not taken back since): the queue goes by herdr's status already.
+          // That working was heard with the rest before the fire written. One heard before that rest,
+          // which waited and took the fire's turn as the first begun past it, is of the turn that rest
+          // ended: herdr's rest word for that one, next, must let nothing into the turn the fire resumed.
           // One the transcript's first read finds written holds by its own age (foundFiring)
           if (parent.loopAt === null) turns.loop.since = null;
           else if (parent.loopAt > turns.loop.fire) {
-            const told = tracked.works === true && turns.herdr.turn >= parent.loopAt;
+            const told = tracked.works === true && turns.herdr.turn >= parent.loopAt && turns.herdr.from >= parent.rested;
             turns.loop = { fire: parent.loopAt, since: told ? null : turns === known ? this.now() : foundFiring(parent.loopTime, this.now()) };
           }
           // a turn seen at rest is history: a later signal with nothing to place it is not its own
@@ -1915,7 +1923,7 @@ export class ClaudeSubagentStatus {
     const tracked = this.panes.get(paneId)!;
     if (tracked.turns?.path === path && tracked.turns.id === parent.id) return tracked.turns;
     // a /loop fire this first read finds written is the poll's to weigh, once the signals heard before it are matched (foundFiring)
-    const turns: Turns = { path, id: parent.id, retired: -1, herdr: { turn: -1, barriers: [], held: [] }, chat: { turn: -1, barriers: [], held: [] }, loop: { fire: -1, since: null } };
+    const turns: Turns = { path, id: parent.id, retired: -1, herdr: { turn: -1, from: -1, barriers: [], held: [] }, chat: { turn: -1, from: -1, barriers: [], held: [] }, loop: { fire: -1, since: null } };
     if (parent.restAt !== null) turns.retired = turnAt(parent) ?? -1;
     for (const signal of this.deferred.get(paneId) ?? []) match(turns, parent, signal, parent.offset);
     this.deferred.delete(paneId);
@@ -1954,7 +1962,7 @@ function match(turns: Turns, parent: Parent, signal: Signal, size: number): numb
       else if (parent.turnOpen) start = lastStart(starts, (each) => each.turn && each.end > floor && each.end === turnAt(parent));
     }
   }
-  if (start !== undefined) claim.turn = start.end;
+  if (start !== undefined) { claim.turn = start.end; claim.from = size; }
   else claim.barriers.push({ size, at: signal.at });
   return start?.end ?? null;
 }
@@ -1968,6 +1976,7 @@ function settle(turns: Turns, parent: Parent, now: number | null): void {
       const start = startsFor(parent, source).find((each) => each.end > floor);
       if (start === undefined) break;
       claim.turn = start.end;
+      claim.from = barrier.size;
       claim.barriers.shift();
     }
     if (now !== null) {

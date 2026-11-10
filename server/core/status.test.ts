@@ -685,6 +685,34 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).not.toBeNull();
   });
 
+  it("holds the queue on the second loop's turn when herdr's working for the first, heard before that one's rest, still waited for a turn", async () => {
+    // Given a turn of the person's at work, which herdr told, and a message queued behind it.
+    const h = await workingClaude();
+    const id = h.pane.pane_id;
+    queue(h);
+    // That turn rests with two loops due: both fires and the first loop's prompt are written before herdr's idle word for it.
+    h.rest(); fires(h.path); fires(h.path); resumes(h.path);
+    h.herdrSays(h.pane);
+    handlers.onStatus(id, "idle", "claude");
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+    // herdr's working for the first loop's turn finds no turn written past that idle word, and waits for one.
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    handlers.onStatus(id, "working", "claude");
+    expect(h.pending.next(id)).toBeNull();
+    // When that turn is short: its rest and the second loop's prompt are read by the timer's poll before herdr's idle word for it.
+    turnEnds(h); resumes(h.path); h.poll();
+    h.herdrSays(h.pane);
+    handlers.onStatus(id, "idle", "claude");
+    // Then that idle word lets nothing into the second loop's turn: herdr's working was heard before the first one's rest.
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+    // And the second loop turn's rest lets the message go.
+    turnEnds(h); h.poll();
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
   it("holds the queue from the snapshot a send reads the pane with, before the timer's poll", async () => {
     const h = await rested();
     const id = h.pane.pane_id;
@@ -970,6 +998,40 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       turnEnds(h); h.poll();
       await flush();
       expect(writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
+    });
+
+    it("types nothing into the second of two loops' turns when the first was short, and sends the message at its rest", async () => {
+      const d = await delivering();
+      const { h, writes, submit, flush, waiting } = d;
+      const id = h.pane.pane_id;
+      // Given a message queued while a turn of the person's works.
+      h.next();
+      h.herdrSays({ ...h.pane, agent_status: "working" });
+      handlers.onStatus(id, "working", "claude");
+      await submit(19, "after both");
+      expect(waiting()).toEqual(["queued"]);
+      // That turn rests with two loops due: both fires and the first loop's prompt are written before herdr's idle word for it.
+      turnEnds(h); fires(h.path); fires(h.path); resumes(h.path);
+      h.herdrSays(h.pane);
+      handlers.onStatus(id, "idle", "claude");
+      await flush();
+      expect(writes).toEqual([]);
+      // herdr tells the first loop's turn, which is short: its rest and the second loop's prompt are read before herdr's idle word for it.
+      h.herdrSays({ ...h.pane, agent_status: "working" });
+      handlers.onStatus(id, "working", "claude");
+      turnEnds(h); resumes(h.path); h.poll();
+      // When that idle word comes, with the second loop's turn at work.
+      h.herdrSays(h.pane);
+      handlers.onStatus(id, "idle", "claude");
+      await flush();
+      // Then nothing is typed into it, and the message waits on.
+      expect(writes).toEqual([]);
+      expect(waiting()).toEqual(["queued"]);
+      // And that turn's rest sends it.
+      turnEnds(h); h.poll();
+      await flush();
+      expect(writes).toEqual(["paste \u001b[200~after both\u001b[201~", "keys Enter"]);
+      expect(waiting()).toEqual([]);
     });
   });
 });
