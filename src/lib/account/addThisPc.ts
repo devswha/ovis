@@ -6,7 +6,7 @@
  */
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { decodeOffer } from "../../../shared/relay-offer.ts";
-import { closeRelayLink, requestRelayLink } from "../api.ts";
+import { closeRelayLink, fetchHealth, requestRelayLink } from "../api.ts";
 import { apiFetch } from "../api-request-id.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { pcAccountStatus, within } from "./join.ts";
@@ -101,6 +101,19 @@ export function pagePc(): string | null {
 }
 
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 128;
+
+/**
+ * Whether the PC that answers this page is `serverId`, read from its health (GET /api/health, `web_ui.server_id`),
+ * which opens and changes nothing: a wait asks before it has a window opened or believes "added", so a PC's
+ * address that now answers for another PC gets neither. Where the health does not say (an older Ovis), the
+ * hosted app's page names the PC it reaches; with neither, nothing says which PC this is and it throws.
+ */
+export async function pcAnswers(serverId: string): Promise<boolean> {
+  const told = (await fetchHealth()).web_ui?.server_id;
+  const id = text(told) ? told : pagePc();
+  if (id === null) throw new Error("This PC did not say which PC it is");
+  return id === serverId;
+}
 const time = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 
 /** The waiting screen this tab kept, expired or not; null when it kept none, one of another shape, or its storage cannot be read. */
@@ -175,7 +188,8 @@ export interface ListedAs {
  *
  * Every directory call is made as the sign-in stored when the listing began (`forSignIn`): one made meanwhile
  * (another tab signed out and in) is never written to. Listing again `for` a wait writes nothing, and throws
- * `AddPcWaitOver`, when the PC that answers or the stored account is not the wait's, or the wait no longer runs.
+ * `AddPcWaitOver`, when the PC that answers or the stored account is not the wait's, or the wait no longer runs;
+ * which PC answers is read first from its health (`pcAnswers`), so no window is opened on another PC either.
  * Listing `as` a sign-in that just finished (no press was made) writes nothing either, and throws the same,
  * when the account stored at that read is another one or none, or the attempt was given up. A listing whose
  * wait or attempt ended while its entry was being written does not tell the PC the account either.
@@ -183,6 +197,8 @@ export interface ListedAs {
 export async function listThisPc(service: AccountService, options: { relistMs: number; for?: ListedFor; as?: ListedAs }): Promise<ListedPc> {
   const wait = options.for;
   const as = options.as;
+  // asked before the window: one is never opened on another PC than the wait's
+  if (wait !== undefined && !await pcAnswers(wait.serverId)) throw new AddPcWaitOver("pc");
   const offer = decodeOffer((await openAddWindow()).url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
   as?.reached?.("opened");

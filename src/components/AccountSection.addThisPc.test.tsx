@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
-import { encodeOffer } from "../../shared/relay-offer.ts";
+import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { CLOSE_ANSWER_MS } from "../lib/account/addThisPc.ts";
 import { SignedOutError, type AccountService } from "../lib/account/service.ts";
@@ -41,6 +41,8 @@ describe("AddThisPc", () => {
     gate: "open" | "closed"; via: "open" | "loopback" | "device"; paired: boolean; cookieSticks: boolean; healthDown: boolean;
     /** what this browser may do on the PC */
     role: "drive" | "watch";
+    /** the relay ID its health tells: its own (the one of its offer), one given here, or none (null: an Ovis that does not tell it) */
+    healthId?: string | null;
   };
   /** the account this tab is signed in to; null when signed out */
   let signedIn: string | null;
@@ -118,7 +120,10 @@ describe("AddThisPc", () => {
       }
       if (path === "/api/relay/link/close" && !pc.closeMissing) return Response.json({ ok: true });
       if (path === "/api/health" && pc.healthDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
-      if (path === "/api/health") return Response.json({ security: { pairing_gate: pc.gate, token_configured: false }, auth: { required: false, authenticated: true, via: pc.via, role: pc.role } });
+      if (path === "/api/health") {
+        const id = pc.healthId === undefined ? decodeOffer(pc.offer)!.server_id : pc.healthId;
+        return Response.json({ security: { pairing_gate: pc.gate, token_configured: false }, auth: { required: false, authenticated: true, via: pc.via, role: pc.role }, web_ui: { boot_id: "boot", revision: null, ...(id === null ? {} : { server_id: id }) } });
+      }
       if (path === "/api/relay") return Response.json({ phase: pc.relay === "on" ? "online" : "off", relay: "wss://relay.ovis.sh", app: "https://app.ovis.sh", sessions: 0, blocked: null, error: null });
       if (path === "/api/devices") return Response.json({ devices: pc.paired ? [{ id: "dev_1", label: "this browser", current: true }] : [] });
       if (path === "/api/devices/pair/start") return Response.json({ code: "123456", expires_at: at + 60_000 });
@@ -204,9 +209,9 @@ describe("AddThisPc", () => {
     // the press listed the PC once; no reopening wrote to the directory or asked any other route
     expect(directory).toEqual(["putPc"]);
     // (the press also told the PC which account it asks its relay pass under, once)
-    // (and the screen read once, before its offer, what this browser may do on the PC)
+    // (and the screen read once, before its offer, what this browser may do on the PC, then before every reopen which PC answers)
     expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/health", "/api/relay/link", "/api/account/relay-account"]));
-    expect(asked.filter((request) => request.path === "/api/health").length).toBe(1);
+    expect(asked.filter((request) => request.path === "/api/health").length).toBe(5);
     expect(asked.filter((request) => request.path === "/api/account/relay-account").length).toBe(1);
   });
 
@@ -316,16 +321,73 @@ describe("AddThisPc", () => {
     expect(links()).toBe(1);
   });
 
-  test("an address that now answers for another PC ends the wait kept for the first, with nothing listed", async () => {
+  test("an address that now answers for another PC ends the wait kept for the first, with no window opened on that PC and nothing listed", async () => {
     tab.set(MARKER, kept(60_000));
     pc.offer = offerOf(otherKey, "laptop");
     const renderer = await mount();
     expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
     expect(tab.has(MARKER)).toBe(false);
-    expect(links()).toBe(1);
+    // which PC answers was read from its health, which opens nothing
+    expect(links()).toBe(0);
     await advance(RELIST_MS + REOPEN_MS);
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
+  });
+
+  test("an address that changes PC between that read and the window ends the wait as before, once the window says so", async () => {
+    tab.set(MARKER, kept(60_000));
+    pc.offer = offerOf(otherKey, "laptop");
+    pc.healthId = SERVER;
+    const renderer = await mount();
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(tab.has(MARKER)).toBe(false);
     expect(links()).toBe(1);
     expect(directory).toEqual([]);
+  });
+
+  test("a reloaded tab whose address now answers for another PC, already in the account, does not say the PC that waited was added", async () => {
+    tab.set(MARKER, kept(20 * 60_000));
+    pc.offer = offerOf(otherKey, "laptop");
+    pc.account = ACCOUNT;
+    const renderer = await mount();
+    expect(renderer.toJSON()).toBeNull();
+    expect(tab.has(MARKER)).toBe(false);
+    expect(links()).toBe(0);
+  });
+
+  test("an address that starts answering for another PC of the account under a waiting screen does not say the PC that waited was added", async () => {
+    const renderer = await waitingFrom();
+    pc.offer = offerOf(otherKey, "laptop");
+    pc.account = ACCOUNT;
+    await advance(ADDED_POLL_MS);
+    expect(renderer.toJSON()).toBeNull();
+    expect(tab.has(MARKER)).toBe(false);
+    expect(links()).toBe(1);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("a PC that does not say which PC it is gets no window from a wait taken up again, and is not said to be added", async () => {
+    tab.set(MARKER, kept(60_000));
+    pc.healthId = null;
+    const renderer = await mount();
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    await advance(REOPEN_MS);
+    expect(links()).toBe(0);
+    pc.account = ACCOUNT;
+    await advance(ADDED_POLL_MS);
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    // it says so again: the wait goes on where it was
+    pc.healthId = undefined;
+    await advance(ADDED_POLL_MS);
+    expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
+  });
+
+  test("on the hosted app's page for the PC, which names it, a PC that does not say which PC it is still gets its window", async () => {
+    Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: `/s/${SERVER}/`, origin: "http://localhost" } });
+    tab.set(MARKER, kept(60_000));
+    pc.healthId = null;
+    expect(buttons(await mount())).toEqual(["Stop waiting"]);
+    expect(links()).toBe(1);
   });
 
   test("a PC that joined another account than the one waited under does not say it is in yours", async () => {

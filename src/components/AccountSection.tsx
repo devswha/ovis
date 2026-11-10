@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
 import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
@@ -177,7 +177,8 @@ let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc>
  * This PC, signed in and in no account yet: listed in the account with one tap, then it waits for a
  * device already in the account to add it, which the owner approves here (docs/account.md, "Adding a PC").
  * While it waits it keeps its pairing window open, for thirty minutes a press, and says when a device added it.
- * A reloaded tab takes the wait up again only on the same PC under the same account. A sign-in that just
+ * A reloaded tab takes the wait up again only on the same PC under the same account: which PC answers is read
+ * (`pcAnswers`) before a wait has a window opened or says the PC was added. A sign-in that just
  * finished on this screen through a button that said it adds this PC lists the PC and waits by itself
  * (`signedInHere`), under its own account alone, with a window only this PC approves, and gives the button back
  * when that gets no answer; a listing no press began is dropped when its screen goes, and the window it opened for
@@ -258,9 +259,12 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
         const session = await accountService().session().catch(() => undefined);
         if (!live) return;
         if (account !== null) {
+          // a device added this PC while the tab that waited for it was reloading: said only under the sign-in that waited, still
+          // stored, and only of the PC that waited (this address may answer for another PC of the account now)
+          const added = kept.account === account && session?.account === account && await within(ANSWER_MS, pcAnswers(kept.serverId));
+          if (!live) return;
           keepAddPcWaiting(null);
-          // a device added this PC while the tab that waited for it was reloading: said only under the sign-in that waited, still stored
-          if (kept.account === account && session?.account === account) setState({ kind: "done", account, enrolling });
+          if (added) setState({ kind: "done", account, enrolling });
           return;
         }
         // read again: while the sign-in was read, another copy of this screen may have stopped the wait, or begun one in its place
@@ -362,7 +366,9 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
     const stillSignedIn = async (): Promise<boolean> => mark === null || (await accountService().session())?.account === mark.account;
     /** The PC has an account: the screen says so, or shows nothing when it is not the one signed in to. */
     const joined = async (account: string, enrolling: boolean): Promise<void> => {
-      const next = await joinedAs(account, enrolling);
+      // believed only of the PC that waited: this address may answer for another PC now, one that has an account
+      // already, and of that one the screen says nothing, as on a page that kept no wait
+      const next: AddThisPcState = mark === null || await pcAnswers(mark.serverId) ? await joinedAs(account, enrolling) : { kind: "hidden" };
       if (!live) return;
       keepAddPcWaiting(null);
       setState(next);
@@ -376,9 +382,13 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
       within(ANSWER_MS, (async (): Promise<void> => {
         if (!await stillSignedIn()) { if (live) stopped(); return; }
         if (!live || withdrawn()) return;
+        // asked before the window, of a request that opens nothing: the address may answer for another PC than the
+        // one that waited, and no window is opened on that one
+        if (mark !== null && !await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
+        if (!live || withdrawn()) return;
         const pc = await reopenAddWindow();
         closeLate();
-        // the address now answers for another PC than the one that waited: its wait is not this one's
+        // it changed PC between that question and the window: the wait is not this one's
         if (live && pc !== null && mark !== null && pc !== mark.serverId) stopped();
       })()).catch(warned("Ovis: this PC's pairing window was not reopened")).finally(() => { reopening = false; });
     };
