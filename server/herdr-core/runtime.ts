@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { coreSocket, findHc, type FoundHc } from "./discovery.ts";
 import { adapterAddress } from "./pipe.ts";
 import { opencodeDatabasePath, opencodeSessionsTitled } from "../opencode.ts";
+import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
 
 /**
  * Which runtime this PC's terminals run on. `OVIS_RUNTIME=herdr-core` serves the terminals of
@@ -108,12 +109,6 @@ let herdrSocketBefore: { HERDR_SOCKET: string | undefined } | null = null;
 let adapterSocket: string | null = null;
 
 let connection: HcConnection | null = null;
-/** whether this process serves herdr-core (startRuntime ran): a remote bridge inheriting OVIS_RUNTIME does not */
-let serving = false;
-
-export function servingCore(): boolean {
-  return serving;
-}
 
 let marker: SeenMarker | null = null;
 
@@ -137,16 +132,19 @@ export function coreConnection(): HcConnection {
  * HERDR_SOCKET pointed at it before anything reads it; on herdr, nothing. Another Ovis still serving the same state folder is an error, and so is a PC
  * where no hc answers as herdr-core's: nothing is started, and nothing else is run as hc.
  */
-export async function startRuntime(stateDir: string, find: () => Promise<FoundHc | null> = () => findHc()): Promise<HerdrCoreAdapter | null> {
+export async function startRuntime(stateDir: string, find: (onRefused?: (bin: string, reason: string) => void) => Promise<FoundHc | null> = (onRefused) => findHc(onRefused ? { onRefused } : {})): Promise<HerdrCoreAdapter | null> {
   if (runtime() !== "herdr-core") return null;
   const platform = process.platform;
   if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
     throw new Error(`OVIS_RUNTIME=herdr-core is served on Linux, macOS and Windows, not ${platform}`);
   }
   // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one
-  const core = await find();
+  const refused: string[] = [];
+  const core = await find((bin, reason) => { refused.push(`${bin}: ${reason}`); });
   if (core === null) {
-    throw new NoHerdrCoreError("no herdr-core found: no OVIS_HC_BIN, nor herdr-core or hc on the PATH, the login shell's PATH, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, mise, Nix or cargo, answered `--version` with `hc …`. Install herdr-core (https://herdr.dev/core) or set OVIS_HC_BIN to its full path");
+    // the message is what the server logs as it gives up: each refused hc is named there, once
+    const passedOver = refused.length === 0 ? "" : ` Passed over as another account could change them: ${refused.join("; ")}. Make the folder yours alone (\`chmod g-w <folder>\`) or set OVIS_HC_BIN to the hc you trust.`;
+    throw new NoHerdrCoreError(`no herdr-core found: no OVIS_HC_BIN, nor herdr-core or hc in ~/.local/bin, /opt/homebrew/bin, /usr/local/bin, mise, Nix, cargo, the PATH or the login shell's PATH, answered \`--version\` with \`hc …\` (one in a folder another account can change is not run). Install herdr-core (https://herdr.dev/core) or set OVIS_HC_BIN to its full path.${passedOver}`);
   }
   found = core.bin;
   search = find;
@@ -165,7 +163,8 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
   if (herdrSocketBefore === null || process.env["HERDR_SOCKET"] !== adapterSocket) herdrSocketBefore = { HERDR_SOCKET: process.env["HERDR_SOCKET"] };
   adapterSocket = adapter.socketPath;
   process.env["HERDR_SOCKET"] = adapter.socketPath;
-  serving = true;
+  // only now: a remote bridge inheriting OVIS_RUNTIME starts no runtime, and serves herdr
+  serveRuntime(HERDR_CORE);
   return {
     socketPath: adapter.socketPath,
     stop: () => {
@@ -173,7 +172,7 @@ export async function startRuntime(stateDir: string, find: () => Promise<FoundHc
       hc.close();
       connection = null;
       marker = null;
-      serving = false;
+      serveRuntime(null);
       found = null;
       search = null;
       lost = false;

@@ -6,6 +6,62 @@
   color: var(--text-strong);
 }
 
+/* a narrow phone at a large interface text size has no room for the button's label beside Close (a 320px screen in
+   Japanese at 20px, #3498): the sentence gives up its width first, then the label wraps inside its button, so Close
+   stays on the screen at the line's right end. Wherever the label fits, nothing shrinks and the line is as before */
+.update-notice.is-alerts:not(.is-failure) > span {
+  flex-basis: 0;
+}
+
+.update-notice.is-alerts:not(.is-failure) > .btn {
+  flex-shrink: 1;
+  height: auto;
+  min-height: var(--control-h);
+  white-space: normal;
+  text-wrap: balance;
+  word-break: auto-phrase;
+}
+
+@media (pointer: coarse) {
+  .update-notice.is-alerts:not(.is-failure) > .btn {
+    min-height: var(--touch-target);
+  }
+}
+
+/* why a repair failed is read in full (G-103): its sentence wraps; the repair button and Close keep the line's row */
+.update-notice.is-alerts.is-failure > span {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+
+/* on a phone that row leaves the sentence too little width: it takes the line beside the glyph with Close at the top
+   right, the repair button goes under it, and the notice keeps to half the screen, scrolling inside itself past that */
+@media (max-width: 640px) {
+  .update-notice.is-alerts.is-failure {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "icon text close"
+      ". action action";
+    align-items: start;
+    max-height: calc(var(--app-height, 100dvh) / 2);
+    overflow-y: auto;
+  }
+
+  .update-notice.is-alerts.is-failure > svg { grid-area: icon; }
+  .update-notice.is-alerts.is-failure > .update-notice-dismiss { grid-area: close; }
+  .update-notice.is-alerts.is-failure > span { grid-area: text; }
+
+  .update-notice.is-alerts.is-failure > .btn {
+    grid-area: action;
+    justify-self: start;
+    max-width: 100%;
+    white-space: normal;
+  }
+}
+
 .update-notice.is-alerts > svg {
   flex: 0 0 auto;
   width: var(--icon-size);

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
+import { SLEEP } from "./fixtures/sleep.ts";
 
 if (process.platform !== "linux") { console.log("SKIP Grok browser QA stand-in uses Linux /proc"); process.exit(0); }
 const root = mkdtempSync(join(tmpdir(), "herdr-grok-browser-"));
@@ -21,7 +22,7 @@ const user = (text: string) => event({ sessionUpdate: "user_message_chunk", cont
 const output = (text: string) => event({ sessionUpdate: "tool_call_update", toolCallId: "fictional-call", content: [{ type: "content", content: { type: "text", text } }], status: "completed" });
 writeFileSync(path, user("Show a fictional Grok conversation.") + event({ sessionUpdate: "tool_call", toolCallId: "fictional-call", _meta: { "x.ai/tool": { name: "read_file" } }, title: "Read fictional file", rawInput: { path: "fiction.txt" } }) + output("FIRST ".repeat(900) + "FIRST_END") + event({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Fictional Grok answer." } }));
 const executable = join(root, "grok");
-copyFileSync("/bin/sleep", join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
+copyFileSync(SLEEP, join(root, "grok-1.0.50-linux-x86_64")); symlinkSync("grok-1.0.50-linux-x86_64", executable); chmodSync(executable, 0o755);
 let workspace: string | undefined;
 let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -50,11 +51,15 @@ try {
   if (await head.getAttribute("aria-expanded") !== "true") await head.click();
   await log.locator(".work-row-head").click();
   await log.locator(".chat-tool-more").click();
+  // a long whole output opens folded to its head: its own Show all unfolds it
+  await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/FIRST_END/).waitFor();
   appendFileSync(path, output("UPDATED ".repeat(900) + "UPDATED_END"));
   await log.locator(".chat-tool-more").waitFor();
   assert.equal(await log.getByText(/FIRST_END/).count(), 0, "a changed ref must clear React's retained whole output");
   await log.locator(".chat-tool-more").click();
+  // the new output opens folded too, whatever the one before it was
+  await log.locator(".chat-tool-io.is-whole + .chat-tool-result-more[aria-expanded=false]").click();
   await log.getByText(/UPDATED_END/).waitFor();
   appendFileSync(path, output("short replacement"));
   await log.getByText("short replacement", { exact: true }).waitFor();
