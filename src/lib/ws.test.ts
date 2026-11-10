@@ -566,6 +566,49 @@ it("sends a secret entered before the reconnect's snapshot arrived, once the sna
   client.close();
 });
 
+it("types a secret for a prompt only a newer bridge takes as direct input to a bridge that does not say it takes it", async () => {
+  const git = "Password for 'https://alice@github.com':";
+  const typed = (socket: FakeSocket) => socket.sent.filter((frame) => frame.type === "input");
+  // a bridge with masked input but not the wider prompts, and one with neither: both would refuse the `secret`
+  for (const features of [["submit", "secret-input"], ["submit"]]) {
+    const { client, socket } = liveClient(features);
+    expect(await client.sendSecret("w1:p1", git, "hunter2")).toEqual({ ok: true });
+    expect(secrets(socket)).toEqual([]);
+    // the value and Enter, with no id: it is neither awaited nor kept to be held for review
+    expect(typed(socket)).toEqual([{ type: "input", pane_id: "w1:p1", text: "hunter2\r" }]);
+    expect(client.takeUnconfirmedInput("w1:p1")).toEqual([]);
+    // a prompt every bridge takes still goes as a `secret` where masked input is known
+    const earlier = client.sendSecret("w1:p1", "Password:", "hunter2");
+    if (features.includes("secret-input")) {
+      for (let turn = 0; turn < 10 && secrets(socket).length === 0; turn++) await Promise.resolve();
+      expect(secrets(socket)).toMatchObject([{ type: "secret", pane_id: "w1:p1", prompt: "Password:", secret: "hunter2" }]);
+    } else expect(await earlier).toMatchObject({ ok: false, code: "unsupported" });
+    expect(typed(socket)).toHaveLength(1);
+    client.close();
+  }
+  // a pane that takes no typing: nothing goes out, and the field says to check the terminal
+  const idle = new HerdrSocket("ws://test/ws");
+  idle.connect();
+  const idleSocket = FakeSocket.last;
+  idleSocket.open();
+  idleSocket.receive(snapshot(["submit", "secret-input"]));
+  expect(await idle.sendSecret("w1:p1", git, "hunter2")).toMatchObject({ ok: false, code: "input_unavailable" });
+  expect([...secrets(idleSocket), ...typed(idleSocket)]).toEqual([]);
+  idle.close();
+});
+
+it("sends a secret for a prompt of the wider set as a secret to a bridge that takes it", async () => {
+  const git = "Password for 'https://alice@github.com':";
+  const { client, socket } = liveClient(["submit", "secret-input", "secret-prompts-2"]);
+  const result = client.sendSecret("w1:p1", git, "hunter2");
+  for (let turn = 0; turn < 10 && secrets(socket).length === 0; turn++) await Promise.resolve();
+  expect(secrets(socket)).toMatchObject([{ type: "secret", pane_id: "w1:p1", prompt: git, secret: "hunter2" }]);
+  expect(socket.sent.filter((frame) => frame.type === "input")).toEqual([]);
+  socket.receive({ type: "secret-result", id: secrets(socket)[0]!["id"], pane_id: "w1:p1", ok: true });
+  expect(await result).toEqual({ ok: true });
+  client.close();
+});
+
 it("answers unsupported, sending nothing, when the snapshot lists no masked input", async () => {
   const client = new HerdrSocket("ws://test/ws");
   client.connect();

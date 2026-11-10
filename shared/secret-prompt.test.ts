@@ -30,6 +30,10 @@ const NEWER = [
   "Bad passphrase, try again for /home/alice/.ssh/id_ed25519:",
   "Enter passphrase for C:\\Users\\alice/.ssh/id_ed25519:",
   "Enter passphrase for PKCS#11:",
+  // a key's file name or comment may hold colons: the prompt ends at the last one
+  "Enter passphrase for /home/alice/.ssh/id:work:",
+  "Enter passphrase for alice@laptop: work key:",
+  "Bad passphrase, try again for /home/alice/keys/my:key:",
   'Enter passphrase for "/home/alice/.ssh/id_ed25519":',
   'Enter passphrase for "C:\\Users\\alice\\.ssh\\id_ed25519":',
   // the letters around a path's slash are no yes/no choice, nor are two of its folders
@@ -48,7 +52,7 @@ it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen
     "Username for 'https://github.com':",
     "Password for 'https://alice@github.com': ok",
     "Password for 'https://alice@github.com' and 'b':",
-    "Enter passphrase for a: b:",
+    "Enter passphrase for /home/alice/.ssh/id:work: ok",
     "Bad passphrase, try again:",
     "see alice@fe80::1's password:",
     // a yes/no choice, however it is written
@@ -63,7 +67,7 @@ it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen
 });
 
 it("reads only the prompts an earlier server takes when asked to, and each of those either way", () => {
-  // what a page shows a masked input for: a server older than the page refuses one for any newer prompt
+  // what a page sends as a `secret` to a server without secret-prompts-2, which refuses one for any newer prompt
   for (const prompt of NEWER) expect(secretPrompt(`$ git push\n${prompt} `, Infinity, true)).toBeNull();
   for (const prompt of ["[sudo] password for alice:", "alice@server's password:", "Password:", "Password for alice:", "Enter passphrase:", "Enter passphrase for key '/tmp/key':", "Enter PIN:", "Enter PIN for token:", "Repeat password:", "Verify password:", "Confirm password:"]) {
     expect(secretPrompt(prompt, Infinity, true)).toBe(prompt);

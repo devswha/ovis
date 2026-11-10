@@ -116,7 +116,7 @@ process.stdin.on("data", chunk => {
 }
 
 /** One secret entered on a pane whose terminal is mirrored (a herdr that cannot attach), herdr behind the proxy. */
-async function mirroredSecret(refuse: boolean, screens?: { visible: string; detection: string }) {
+async function mirroredSecret(refuse: boolean, screens?: { visible: string; detection: string }, prompt = "Password:") {
   const root = mkdtempSync(join(tmpdir(), "ovis-secret-mirror-"));
   const { script, resultFile } = standIn(root);
   const herdr = herdrSocketPath();
@@ -154,7 +154,7 @@ async function mirroredSecret(refuse: boolean, screens?: { visible: string; dete
     proxy.control.refuse = refuse;
     proxy.control.screens = screens ?? null;
     const dispatchFrom = proxy.log.length;
-    socket.send(JSON.stringify({ type: "secret", id: 1, pane_id: pane, prompt: "Password:", secret: "fixture-value" }));
+    socket.send(JSON.stringify({ type: "secret", id: 1, pane_id: pane, prompt, secret: "fixture-value" }));
     await until(() => seen.some((frame) => frame.type === "secret-result"));
     const result = seen.find((frame) => frame.type === "secret-result");
     // an unawaited send would still be on its way: let the pane have it before the log is read
@@ -196,6 +196,17 @@ it("a secret herdr refused on a mirrored pane is answered as failed, with no Ent
   expect(received).toBeNull();
   expect(frames).not.toContain("fixture-value");
 }, 15_000);
+
+it("a secret is taken at a prompt of the wider set, which the snapshot says the server takes", async () => {
+  for (const prompt of ["Password for 'https://alice@github.com':", "Enter passphrase for /home/alice/.ssh/id:work:"]) {
+    const { result, received, sends, frames } = await mirroredSecret(false, { visible: prompt, detection: prompt }, prompt);
+    expect(result.ok).toBe(true);
+    expect(sends.map((entry) => entry.method)).toEqual(["pane.send_text", "pane.send_keys"]);
+    const expected = "fixture-value\r";
+    expect(received).toEqual({ hash: createHash("sha256").update(expected).digest("hex"), length: expected.length });
+    expect((JSON.parse(frames) as { type: string; features?: string[] }[]).find((frame) => frame.type === "snapshot")?.features).toContain("secret-prompts-2");
+  }
+}, 30_000);
 
 it("a secret shown in scrollback is refused when the live screen is no longer asking for it", async () => {
   const { result, received, sends, reads } = await mirroredSecret(false, { visible: "Password:", detection: "Accepted\nReady>" });

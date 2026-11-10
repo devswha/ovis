@@ -1298,9 +1298,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
           else lines.push(text);
         }
-        // the prompts every server takes a masked input for: one the PC would refuse (an older PC behind a newer
-        // page) must not replace the input line
-        return secretPrompt(lines.join("\n"), term.cols, true);
+        return secretPrompt(lines.join("\n"), term.cols);
       };
       // the idle release's clock: when the terminal was last typed, clicked or pasted in, and the check that follows it
       // (idleCheck, with the release machinery below)

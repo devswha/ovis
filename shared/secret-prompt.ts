@@ -14,10 +14,6 @@ export function displayWidth(text: string): number {
   return width;
 }
 
-// what a passphrase is asked for when it is not ssh's quoted key: a path or a key's comment as it
-// is (ssh-add), or in double quotes (ssh-keygen). It holds no colon but a Windows drive's
-const NAMED = /["'’]?(?:[a-z]:(?=[\\/]))?[^:]+/.source;
-
 /** The line a program prints before it reads a secret, up to its colon, as each of these writes it. */
 const SECRET_PROMPT = new RegExp(`^(?:${[
   // sudo
@@ -26,9 +22,10 @@ const SECRET_PROMPT = new RegExp(`^(?:${[
   /[^\s@]+@\S+['’]s password/,
   // su and login; git over HTTPS names the remote in quotes, its scheme's and port's colons and all
   /password(?: for (?:['’][^'’\r\n]+['’]|[^:]+))?/,
-  // ssh names its key in quotes; ssh-add and ssh-keygen name theirs as NAMED, and ssh-add asks again
-  /enter passphrase(?: for key ['’][^\r\n]+['’])?/,
-  new RegExp(`(?:enter passphrase|bad passphrase, try again) for ${NAMED}`),
+  // ssh names its key in quotes, ssh-keygen in double quotes, ssh-add as it is: a path or the key's comment, which
+  // may hold colons (`/keys/id:work`, `C:\Users\…`), so the prompt ends at the line's last one. ssh-add asks again
+  /enter passphrase(?: for .+)?/,
+  /bad passphrase, try again for .+/,
   /enter pin(?: for [^:]+)?/,
   /(?:repeat|verify|confirm) password/,
 ].map((prompt) => prompt.source).join("|")}):$`, "i");
@@ -37,15 +34,14 @@ const SECRET_PROMPT = new RegExp(`^(?:${[
 // (`/home/andy/notes/key`) nor two folders of a path (`/home/y/n/key`)
 const ASKS_CHOICE = /\?|(?:^|[^a-z0-9/])y\s*\/\s*n(?![a-z0-9/])/i;
 
-// Both as every server before this one has them. Such a server refuses a masked input for any
-// other prompt (`invalid_secret`), and a page can be newer than its PC (app.ovis.sh), where
-// nothing yet says which prompts the PC takes: the page reads the screen with these.
+// Both as a server without the `secret-prompts-2` feature has them: it answers `invalid_secret` to a
+// masked input for any other prompt, so a page sends such a server one only for these (ws.ts sendSecret).
 const EARLIER_PROMPT = /^(?:\[sudo\] password for [^:]+|[^\s@]+@[^\s:]+['’]s password|password(?: for [^:]+)?|enter passphrase(?: for key ['’][^\r\n]+['’])?|enter pin(?: for [^:]+)?|(?:repeat|verify|confirm) password):$/i;
 const EARLIER_CHOICE = /\?|y\s*\/\s*n/i;
 
 /**
  * Deliberately narrow: prose mentioning passwords must not become an input prompt. `earlier`: only
- * the prompts every earlier server takes too (EARLIER_PROMPT), each of them a prompt without it as well.
+ * the prompts a server without `secret-prompts-2` takes too, each of them a prompt without it as well.
  */
 export function secretPrompt(screen: string, columns = Infinity, earlier = false): string | null {
   const lines = screen.split(/\r?\n/);

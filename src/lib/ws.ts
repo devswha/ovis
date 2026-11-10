@@ -1,6 +1,7 @@
 import type { ClientMessage, ClientRole, PendingMessage, ServerFeature, ServerMessage } from "../../shared/protocol.ts";
 import { receiptResumeId } from "./receiptResume.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
+import { secretPrompt } from "../../shared/secret-prompt.ts";
 import { ConnectionTrace } from "./connectionTrace.ts";
 import { abandonNativeReads, getTransport, type WebSocketLike } from "./transport.ts";
 
@@ -1219,7 +1220,12 @@ export class HerdrSocket {
     return result;
   }
 
-  /** Send once on this connection. Only a result callback is retained, never the value. */
+  /**
+   * Send once on this connection. Only a result callback is retained, never the value. A prompt that only a bridge
+   * with `secret-prompts-2` takes (shared/secret-prompt.ts) goes to any other bridge as typing at a masked prompt does:
+   * the value and Enter as `input`, never kept. That bridge would answer `invalid_secret`, and the masked field has
+   * taken the input line's place, so nothing else could answer the prompt.
+   */
   sendSecret(paneId: string, prompt: string, secret: string): Promise<SubmitResult> | null {
     const socket = this.socket;
     if (!this.connected || socket === null || this.mode === "observe") return null;
@@ -1228,6 +1234,11 @@ export class HerdrSocket {
       // whether the server takes masked input: wait for it, as a submit does
       await Promise.race([this.featuresSeen, new Promise((resolve) => window.setTimeout(resolve, FEATURES_WAIT_MS))]);
       if (!(await this.probeSettled(socket))) { secret = ""; return DISCONNECTED; }
+      if (!this.features.has("secret-prompts-2") && secretPrompt(prompt, Infinity, true) !== prompt) {
+        const typed = this.sendInput(paneId, `${secret}\r`, false, false, true);
+        secret = "";
+        return typed ? { ok: true } : { ok: false, code: "input_unavailable", message: "Check the terminal before trying again." };
+      }
       if (!this.features.has("secret-input")) { secret = ""; return { ok: false, code: "unsupported", message: "Update this PC to use masked input." }; }
       const id = this.nextSubmit++;
       this.requests.set(id, { type: "secret", paneId });
