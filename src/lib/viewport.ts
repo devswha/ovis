@@ -62,22 +62,37 @@ const typing = keyboardTypingField;
 // collapsed the shell to a keyboard-sized height and the page flashed on each key. A shrink is read again
 // a moment later and applied only where it lasted; a viewport growing back is applied at once, so a
 // keyboard going away never waits.
+// Shrinking is measured against the height applied last. A viewport that only stays short of the large
+// one is not shrinking (a Safari tab with its toolbars showing, an iPad home-screen app under its status
+// bar), so nothing waits there, the first sync of a page included. Without a keyboard it must also be
+// short of the large viewport: where the keyboard resizes the layout itself (Chrome), all three shrink
+// together and that is applied at once, as before.
+// The wait starts at the first shrinking event and the ones after it leave it running: a keyboard that
+// opens under a stream of viewport events is applied 40 ms after its first event, then every 40 ms while
+// it still opens, not 40 ms after its last event.
 const SHRINK_SETTLE_MS = 40;
 let shrinkTimer: number | undefined;
+let appliedHeight: number | undefined;
 const syncKeyboard = (): void => {
   if (document.querySelector(".app") !== null) window.scrollTo(0, 0);
   const height = viewport?.height ?? window.innerHeight;
-  const published = parseFloat(root.style.getPropertyValue("--app-height"));
-  const shrinking = root.hasAttribute("data-keyboard")
-    ? Number.isFinite(published) && height < published - 1
-    : viewport !== null && height < largeViewport.getBoundingClientRect().height - 1;
-  window.clearTimeout(shrinkTimer);
-  if (!shrinking) { applyKeyboard(); return; }
-  shrinkTimer = window.setTimeout(applyKeyboard, SHRINK_SETTLE_MS);
+  const shrinking = !!viewport && appliedHeight !== undefined && height < appliedHeight - 1
+    && (root.hasAttribute("data-keyboard") || height < largeViewport.getBoundingClientRect().height - 1);
+  if (!shrinking) {
+    window.clearTimeout(shrinkTimer);
+    shrinkTimer = undefined;
+    applyKeyboard();
+    return;
+  }
+  shrinkTimer ??= window.setTimeout(() => {
+    shrinkTimer = undefined;
+    applyKeyboard();
+  }, SHRINK_SETTLE_MS);
 };
 const applyKeyboard = (): void => {
   const width = window.innerWidth;
   const height = viewport?.height ?? window.innerHeight;
+  appliedHeight = height;
   const large = largeViewport.getBoundingClientRect().height;
   const remembered = unobstructedHeights.get(width);
   const focused = touch.matches && typing(document.activeElement);

@@ -102,6 +102,9 @@ try {
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${server.port}/?inset=${mobile ? 34 : 0}${scenario === "standalone" || scenario === "browser-short" ? "&short" : ""}`);
+      // an installed clock still runs in real time: paused, only runFor moves it, so a slow runner cannot let the
+      // shrink wait run out between two steps
+      await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
       await checkState(page, false, mobile ? scenario === "standalone" ? 852 : scenario === "browser-short" ? 793 : 852 : 800, mobile ? 34 : 0, scenario === "standalone");
       if (scenario === "standalone") {
         const bounds = await page.evaluate(() => {
@@ -121,6 +124,22 @@ try {
         await geometry(page, 472, 852, 852);
         assert.equal(await page.evaluate(() => document.documentElement.hasAttribute("data-keyboard")), false, "a shrink waits before it counts");
         await geometry(page, 793, 852, 852);
+        await checkState(page, false, 852, 34);
+        // a keyboard opening under a stream of viewport events (one a frame) is followed while it opens: the wait
+        // starts at the first shrinking event, and the ones after it do not start it again
+        for (let frame = 1; frame <= 12; frame += 1) {
+          await geometry(page, 793 - frame * 20, 852, 852);
+          await page.clock.runFor(16);
+        }
+        const opening = await page.evaluate(() => ({
+          keyboard: document.documentElement.hasAttribute("data-keyboard"),
+          published: Number.parseFloat(document.documentElement.style.getPropertyValue("--app-height")),
+        }));
+        assert.equal(opening.keyboard, true, "a keyboard opening under a stream of viewport events counts while it opens");
+        assert.ok(opening.published >= 553 && opening.published <= 633, `the shell follows the opening keyboard (${opening.published}px over a 553px viewport)`);
+        await geometry(page, 472, 852, 852);
+        await checkState(page, true, 472, 34);
+        await geometry(page, 793, 852, 852, "scroll");
         await checkState(page, false, 852, 34);
       }
       if (scenario === "split-view") {
