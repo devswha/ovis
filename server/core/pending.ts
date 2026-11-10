@@ -190,7 +190,17 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const prunePi = (): void => {
     const cutoff = Date.now() - PI_RESUME_MS;
     while (piCompleted.length && (piCompleted[0]!.at < cutoff || piCompleted.length > PI_RESUME_LIMIT)) piCompleted.shift();
-    while (completed.length && (completed[0]!.at < cutoff || completed.length > PI_RESUME_LIMIT)) completed.shift();
+    // A receipt past its window goes, whatever it is. Past the limit, the oldest that is not `sent` goes: a held
+    // copy that is no longer told, or a discarded one that stays unconfirmed, loses nothing that was typed. A sent
+    // receipt stays its whole window, limit or not. It is what answers a resend of that ID once its resend record
+    // (a minute) is gone, and every held receipt issued for the ID came before the send, so it ends before this
+    // does: a tab that still holds its copy on one never types what another tab already sent.
+    while (completed.length && completed[0]!.at < cutoff) completed.shift();
+    for (let over = completed.length - PI_RESUME_LIMIT; over > 0; over--) {
+      const oldest = completed.findIndex((entry) => entry.outcome !== "sent");
+      if (oldest < 0) break;
+      completed.splice(oldest, 1);
+    }
     let count = 0;
     for (const [paneId, items] of piTyped) {
       const kept = items.filter((item) => {

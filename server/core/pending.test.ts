@@ -175,6 +175,64 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     } finally { clock.mockRestore(); }
   });
 
+it("keeps a held copy's sent receipt through a thousand other receipts, so a second tab's still-proven copy is not typed again", async () => {
+  let now = Date.now();
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
+    const client = (): Client => {
+      const output: ServerMessage[] = [];
+      const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
+        send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+      owner.data.attached.set("p", { keepSize: false, receiptResumeId: token });
+      clients.add(owner); frames.set(owner, output); return owner;
+    };
+    let turns: Promise<void> = Promise.resolve();
+    let typed = 0;
+    const delivery = createPendingDelivery({
+      options: {}, clients, attachments: new Map(), serialize: (_pane, task) => { const run = turns.then(task); turns = run.then(() => {}, () => {}); return run; }, lastTyped: new Map(),
+      sight: () => { throw new Error("a receipt replay takes no input lease"); },
+      submitText: async () => { typed++; },
+      authorizeSocket: () => {},
+      clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: "idle" }] }) as SessionSnapshot,
+      omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    const heldIds = (to: Client): string[] => frames.get(to)!.flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []);
+    const resend = (to: Client, id: number, pending: string) => delivery.pendingFrames.submit(to, { type: "submit", id, pane_id: "p", text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: pending });
+    // a queued follow-up, held as its connection closes; two tabs of that browser are told it is held, for ten minutes
+    const first = client();
+    const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, identity);
+    clients.delete(first); delivery.closeConnection(first);
+    const one = client(), other = client();
+    delivery.attached(one, "p"); delivery.attached(other, "p");
+    expect([heldIds(one), heldIds(other)]).toEqual([[item.message.id], [item.message.id]]);
+    // the old owner's record is gone after a minute; one tab sends the copy
+    now += 60_001; delivery.pending.expire();
+    await resend(one, 2, item.message.id);
+    expect(typed).toBe(1);
+    // more than a thousand other follow-ups come and are discarded meanwhile, each leaving its receipt
+    const busy = client();
+    for (let n = 0; n < 1100; n++) {
+      // the bridge keeps a withdrawal a minute: its own limit is passed a few hundred at a time
+      if (n > 0 && n % 400 === 0) { now += 60_001; delivery.pending.expire(); }
+      expect(delivery.pending.discard(delivery.pending.enqueue(busy, "p", 10 + n, `other ${n}`, null, identity))).toBe(true);
+    }
+    // the resend record of that send is long gone too
+    now += 60_001; delivery.pending.expire();
+    expect(now - Date.parse(item.message.created_at)).toBeLessThan(10 * 60 * 1000);
+    // the other tab still holds its copy inside its ten minutes and sends it: nothing is typed again
+    await resend(other, 3, item.message.id);
+    expect(typed).toBe(1);
+    expect(frames.get(other)!.filter((frame) => frame.type === "submit-result" && frame.id === 3)).toMatchObject([{ ok: true }]);
+    // and a connection that attaches now is still told it was sent
+    const late = client();
+    delivery.attached(late, "p");
+    expect(frames.get(late)!.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []).filter((entry) => entry.id === item.message.id))
+      .toEqual([{ id: item.message.id, outcome: "sent", resumed: true }]);
+  } finally { clock.mockRestore(); }
+});
+
 it.each(["read-only", "revoked"] as const)(
   "a connection that may not resume when it closes leaves no held receipt, and still the sent receipt of a send that ends after the close: %s", (why) => {
     const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>(), revoked = new Set<Client>();

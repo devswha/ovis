@@ -3381,11 +3381,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   closed, or one the bridge held for a reason of its own) offers **Send now** only on live proof: its own
   live connection, or the bridge's held receipt for this browser within the receipt's window (below).
   Saved (after a reload, in another tab, after the connection that held it ended), such a copy shows as
-  uncertain until a receipt proves it again, so it is never sent on the word of storage alone. This is a
-  deliberate change: such a copy on a remote PC (whose relay strips the resume ID), after a server restart
-  or update, or past the ten minutes keeps only Copy and **Discard**.
-  Any other follow-up's exact `sent`, `discarded` or `held` receipt is kept the same way (ten minutes, 1024,
-  same browser resume ID and device, local machine only) and replayed with `resumed: true` on its
+  uncertain until a receipt proves it again, so it is never sent on the word of storage alone. Inside the
+  receipt's window a reload, another tab of the same browser and a remote PC on this version (its relay
+  scopes the browser's resume ID for a controlling attach) all get the receipt and show the copy held.
+  This is a deliberate change for the rest: past the ten minutes, after a restart or update of this
+  server or of the PC's own, on a remote PC that runs an older version, or through a watch-only attach
+  (which carries no resume ID), such a copy keeps only Copy and **Discard**.
+  Any other follow-up's exact `sent`, `discarded` or `held` receipt is kept the same way (ten minutes;
+  at most 1024 held and discarded ones, while a `sent` one is never dropped before its ten minutes, so a
+  copy another tab still holds on a held receipt is not typed again; same browser resume ID and device)
+  and replayed with `resumed: true` on its
   browser's reattach, or to that browser's already attached successor when the Enter's reply or the
   hold comes after the reload. `sent` and `discarded` settle only that exact ID's saved copy, while
   `held` recovers an untyped queued copy as **Held message — review and send** (**Send now** /
@@ -3396,7 +3401,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   comes: a later send of that copy, from any tab, is never offered again. Each held ID carries how long
   the bridge still keeps its receipt (`held_ms`, 0 < ms <= ten minutes, else it proves nothing) and when
   that ends on the PC's clock (`held_until`); the connection's `features` frame carries the PC's clock
-  (`server_time`). The page holds the copy until the sooner of its arrival plus `held_ms` and `held_until`
+  (`server_time`). The ten minutes run from when the bridge held the copy as its connection closed, not
+  from the reconnect: a browser that returns after nine has one left. The page holds the copy until the
+  sooner of its arrival plus `held_ms` and `held_until`
   on its own clock, on this page only (saved, the copy stays uncertain), then shows it uncertain again;
   every read checks that time too, so a tab that slept or a Send now press past it sends nothing. The
   proof also ends with the connection that brought it, and only with that one: a page that shows several
