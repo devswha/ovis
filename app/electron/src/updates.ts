@@ -10,8 +10,8 @@
  * `update-channel` file of the server's state dir) takes the beta builds CI publishes from green
  * main (.github/workflows/beta.yml) from BETA_FEED instead. It is read when the app starts.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { AppUpdater } from "electron-updater";
 import { readUpdateChannel, type UpdateChannel } from "../../../shared/update.ts";
 
@@ -84,15 +84,95 @@ export function updatePlan(options: { packaged: boolean; env: Env; platform: str
 }
 
 /**
- * One check of the feed, as the app runs it after it starts and every 6 hours. A failed check is
- * logged. A newer version found starts its download, whose failure the updater's error event already
- * reports (a cancelled one is no error): the promise of that download is only caught, where left alone
- * it was logged a second time as an unhandled rejection (#2831).
+ * How often the app asks its feed, after the check it makes as it starts: no release is pushed to
+ * the app, so this is how long one can go unheard of.
  */
-export async function checkForUpdates(updater: Pick<AppUpdater, "checkForUpdates">, log: (line: string) => void): Promise<void> {
+export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
+
+/** The update the app holds, downloaded and waiting for Restart to Update: its version and electron-updater's file. */
+export interface HeldUpdate {
+  version: string;
+  file: string;
+}
+
+/**
+ * The update the app still holds: none once its file is gone. A later download that fails empties
+ * electron-updater's folder, the held file with it, and Restart to Update would then stop the
+ * server and find nothing to install.
+ */
+export function stillHeld<Held extends HeldUpdate>(held: Held | null, exists: (file: string) => boolean): Held | null {
+  return held !== null && exists(held.file) ? held : null;
+}
+
+/**
+ * Whether a check downloads the version the feed names (`found`). Not the one the app already
+ * holds: electron-updater answers that download with the file it has and says "update-downloaded"
+ * again, every check (on a Mac it copies the zip and hands it to Squirrel again first). A held
+ * file that is gone is downloaded again, and so is anything once the updater reported an error
+ * (`failed`): whatever failed, a Mac's staging of the download too, gets the try it always got.
+ */
+export function downloadsUpdate(check: { found: string; held: HeldUpdate | null; failed: boolean; exists: (file: string) => boolean }): boolean {
+  return check.failed || stillHeld(check.held, check.exists)?.version !== check.found;
+}
+
+/**
+ * One check of the feed, as the app runs it after it starts and every hour
+ * (UPDATE_CHECK_INTERVAL_MS), for an updater whose `autoDownload` is off: the version found is
+ * downloaded here, unless `wanted` says no (the app holds it already). A failed check is logged.
+ * The updater's error event already reports a failed download (a cancelled one is no error): the
+ * promise of that download is only caught, where left alone it was logged a second time as an
+ * unhandled rejection (#2831). A download that fails before it begins (a feed that names a version
+ * with no file for this app) throws instead, with no event, and is logged here.
+ */
+export async function checkForUpdates(updater: Pick<AppUpdater, "checkForUpdates" | "downloadUpdate">, log: (line: string) => void, wanted: (version: string) => boolean = () => true): Promise<void> {
+  const told = (error: unknown) => error instanceof Error ? error.message : String(error);
   const result = await updater.checkForUpdates().catch((error: unknown) => {
-    log(`Update check failed: ${error instanceof Error ? error.message : String(error)}`);
+    log(`Update check failed: ${told(error)}`);
     return null;
   });
-  result?.downloadPromise?.catch(() => {});
+  if (!result?.isUpdateAvailable || !wanted(result.updateInfo.version)) return;
+  let download: Promise<unknown>;
+  try {
+    download = updater.downloadUpdate(result.cancellationToken);
+  } catch (error) {
+    log(`Update download failed: ${told(error)}`);
+    return;
+  }
+  await download.catch(() => {});
+}
+
+/**
+ * What the app has said about a downloaded update, kept in `<user data>/update-notice.json` so a
+ * version is announced once, also across starts (a .deb installs only from Restart to Update, so
+ * the same download is found again by every start until then).
+ */
+export interface UpdateNotices {
+  /** the version whose system notification was shown */
+  notified: string | null;
+  /** the version whose line in the window was closed */
+  closed: string | null;
+}
+
+export function readUpdateNotices(path: string): UpdateNotices {
+  const saved = ((): Partial<Record<keyof UpdateNotices, unknown>> | null => {
+    try { return JSON.parse(readFileSync(path, "utf8")) as Partial<Record<keyof UpdateNotices, unknown>> | null; } catch { return null; }
+  })();
+  const version = (value: unknown) => typeof value === "string" && value !== "" ? value : null;
+  return { notified: version(saved?.notified), closed: version(saved?.closed) };
+}
+
+export function writeUpdateNotices(path: string, notices: UpdateNotices): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.tmp`;
+  writeFileSync(temporary, JSON.stringify(notices));
+  renameSync(temporary, path);
+}
+
+/**
+ * What a downloaded update still has to say: one system notification per version, and its line
+ * in the window until that line is closed for the version. The tray's Restart to Update stays
+ * either way, and a later version is announced afresh.
+ */
+export function updateNotice(version: string, said: UpdateNotices): { notify: boolean; line: boolean } {
+  return { notify: said.notified !== version, line: said.closed !== version };
 }

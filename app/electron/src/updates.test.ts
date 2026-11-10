@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // not the package itself: it sets up an updater for this platform as its exports are read, which needs Electron
 import { DebUpdater } from "electron-updater/out/DebUpdater";
-import { BETA_FEED, checkForUpdates, debInstallCommand, updateChannel, updatePlan } from "./updates.ts";
+import { BETA_FEED, checkForUpdates, debInstallCommand, downloadsUpdate, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices } from "./updates.ts";
 
 const packaged = { packaged: true, platform: "darwin", builtWithFeed: true, env: {} };
 
@@ -95,7 +95,8 @@ describe("checkForUpdates", () => {
         request: async () => "version: 99.0.0\nfiles:\n  - url: Ovis-linux-x64.deb\n    sha512: c2hhNTEy\n    size: 12\n",
         download: async () => { throw new Error("connection reset"); },
       };
-      const updater = Object.assign(new DebUpdater(null, app), { httpExecutor, logger: null, autoInstallOnAppQuit: false });
+      // as the app sets it up: the check downloads what it found itself
+      const updater = Object.assign(new DebUpdater(null, app), { httpExecutor, logger: null, autoInstallOnAppQuit: false, autoDownload: false });
       const failed = new Promise<string>((resolve) => updater.on("error", (error: Error) => resolve(error.message)));
       const unhandled: unknown[] = [];
       const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
@@ -116,10 +117,135 @@ describe("checkForUpdates", () => {
     }
   });
 
-  it("logs a check that fails", async () => {
+  /** a stand-in updater whose feed names `version` (null: nothing newer), counting the downloads asked of it */
+  const feed = (version: string | null) => {
+    const asked = { checks: 0, downloads: 0 };
+    const updater: Parameters<typeof checkForUpdates>[0] = {
+      checkForUpdates: async () => {
+        asked.checks += 1;
+        const updateInfo = { version: version ?? "0.4.22", files: [], path: "", sha512: "", releaseDate: "" };
+        return { isUpdateAvailable: version !== null, updateInfo, versionInfo: updateInfo };
+      },
+      downloadUpdate: async () => { asked.downloads += 1; return []; },
+    };
+    return { updater, asked };
+  };
+
+  it("logs a check that fails, and downloads nothing", async () => {
     const lines: string[] = [];
-    await checkForUpdates({ checkForUpdates: () => Promise.reject(new Error("feed is down")) }, (line) => lines.push(line));
+    let downloads = 0;
+    await checkForUpdates({ checkForUpdates: () => Promise.reject(new Error("feed is down")), downloadUpdate: async () => { downloads += 1; return []; } }, (line) => lines.push(line));
     expect(lines).toEqual(["Update check failed: feed is down"]);
+    expect(downloads).toBe(0);
+  });
+
+  it("downloads the version a check found, and nothing when the feed has no newer one", async () => {
+    const newer = feed("0.5.3");
+    await checkForUpdates(newer.updater, () => {});
+    expect(newer.asked).toEqual({ checks: 1, downloads: 1 });
+    const same = feed(null);
+    await checkForUpdates(same.updater, () => {});
+    expect(same.asked).toEqual({ checks: 1, downloads: 0 });
+  });
+
+  it("checks every hour without downloading the version the app already holds", async () => {
+    expect(UPDATE_CHECK_INTERVAL_MS).toBe(60 * 60 * 1000);
+    const { updater, asked } = feed("0.5.3");
+    const held = { version: "0.5.3", file: "/cache/pending/Ovis-linux-x64.AppImage" };
+    const versions: string[] = [];
+    for (let hour = 0; hour < 3; hour += 1) {
+      await checkForUpdates(updater, () => {}, (version) => { versions.push(version); return downloadsUpdate({ found: version, held, failed: false, exists: () => true }); });
+    }
+    expect(asked).toEqual({ checks: 3, downloads: 0 });
+    expect(versions).toEqual(["0.5.3", "0.5.3", "0.5.3"]);
+  });
+
+  it("logs a download that fails before it begins, which the updater reports with no event", async () => {
+    // electron-updater's downloadUpdate is not async: a feed that names a version with no file for this app throws out of it
+    const { updater } = feed("0.5.3");
+    const broken = { ...updater, downloadUpdate: (): Promise<string[]> => { throw new Error("No files provided: latest-linux.yml"); } };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const lines: string[] = [];
+      await checkForUpdates(broken, (line) => lines.push(line));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(lines).toEqual(["Update download failed: No files provided: latest-linux.yml"]);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+});
+
+describe("downloadsUpdate", () => {
+  const held = { version: "0.5.3", file: "/cache/pending/Ovis-linux-x64.deb" };
+  const there = () => true;
+  const quiet = { failed: false, exists: there };
+
+  it("downloads a version while the app holds none, or another one", () => {
+    expect(downloadsUpdate({ ...quiet, found: "0.5.3", held: null })).toBe(true);
+    expect(downloadsUpdate({ ...quiet, found: "0.5.4", held })).toBe(true);
+  });
+
+  it("leaves the version it holds alone, so a check does not announce it again", () => {
+    const asked: string[] = [];
+    expect(downloadsUpdate({ found: "0.5.3", held, failed: false, exists: (file) => { asked.push(file); return true; } })).toBe(false);
+    expect(asked).toEqual([held.file]);
+  });
+
+  it("downloads the held version again once its file is gone", () => {
+    expect(downloadsUpdate({ found: "0.5.3", held, failed: false, exists: () => false })).toBe(true);
+  });
+
+  it("downloads the held version again after the updater reported an error, as electron-updater alone would", () => {
+    expect(downloadsUpdate({ found: "0.5.3", held, failed: true, exists: there })).toBe(true);
+  });
+});
+
+describe("stillHeld", () => {
+  const held = { version: "0.5.3", file: "/cache/pending/Ovis-linux-x64.AppImage", install: () => undefined };
+
+  it("keeps the update while its file is there, with what installs it", () => {
+    expect(stillHeld(held, () => true)).toBe(held);
+  });
+
+  it("holds nothing once the file is gone: a later download that failed emptied the updater's folder", () => {
+    expect(stillHeld(held, () => false)).toBeNull();
+    expect(stillHeld(null, () => true)).toBeNull();
+  });
+});
+
+describe("updateNotice", () => {
+  const nothing = { notified: null, closed: null };
+
+  it("notifies of a version once, and keeps its line until that is closed", () => {
+    expect(updateNotice("0.5.3", nothing)).toEqual({ notify: true, line: true });
+    expect(updateNotice("0.5.3", { notified: "0.5.3", closed: null })).toEqual({ notify: false, line: true });
+    expect(updateNotice("0.5.3", { notified: "0.5.3", closed: "0.5.3" })).toEqual({ notify: false, line: false });
+  });
+
+  it("announces the next version afresh", () => {
+    expect(updateNotice("0.5.4", { notified: "0.5.3", closed: "0.5.3" })).toEqual({ notify: true, line: true });
+    // a beta build is a version of its own
+    expect(updateNotice("0.5.4-beta.2", { notified: "0.5.4-beta.1", closed: "0.5.4-beta.1" })).toEqual({ notify: true, line: true });
+  });
+
+  it("remembers what it said across starts, and starts from nothing with no file or a damaged one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-desktop-notice-"));
+    try {
+      const path = join(dir, "user-data", "update-notice.json");
+      expect(readUpdateNotices(path)).toEqual(nothing);
+      writeUpdateNotices(path, { notified: "0.5.3", closed: null });
+      expect(readUpdateNotices(path)).toEqual({ notified: "0.5.3", closed: null });
+      // the same download found again by the next start (a .deb installs only from Restart to Update)
+      expect(updateNotice("0.5.3", readUpdateNotices(path)).notify).toBe(false);
+      for (const damaged of ["", "null", "[]", "{\"notified\": 3, \"closed\": \"\"}", "{not json"]) {
+        writeFileSync(path, damaged);
+        expect(readUpdateNotices(path)).toEqual(nothing);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
