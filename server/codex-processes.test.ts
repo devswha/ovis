@@ -2687,16 +2687,17 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     expect(await resolve()).toBe(fileB);
   });
 
-  it("binds a fresh pane to its own conversation, never the one its prompt only quotes, and keeps it while its next turn runs", async () => {
+  it("binds a fresh pane to its own conversation, never the one its prompt only quotes, while that screen stands", async () => {
     const fileB = quotedInPrompt();
     foreground = fresh(2147483502);
     screen = quoteScreen();
     // its own short answer below the prompt it was asked tells (case 2); the quoted answer above it tells nothing
-    const first = await resolve();
-    // its next turn under way, a tool running: the screen proves nothing, and B records the turn begun
+    const got = [await resolve(), await resolve()];
+    // its next turn under way, a tool running: no match reads that screen, and what the last turn alone tied holds no longer
     appendFileSync(fileB, `${[{ type: "event_msg", payload: { type: "task_started", turn_id: "turn-1" } }, { type: "event_msg", payload: { type: "user_message", message: "Now run the whole suite" } }].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
     screen = [...wrapped("› ", "Now run the whole suite"), "", "• Running bun test ./server", "  └ 164 pass", "    0 fail", "", "• Working (41s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj · Write a script", "  ← for agents · ? for shortcuts"].join("\n");
-    expect([first, await resolve()]).toEqual([fileB, fileB]);
+    got.push(await resolve());
+    expect(got).toEqual([fileB, fileB, null]);
   });
 
   it("binds no conversation a prompt quotes while the pane's own is not among this folder's", async () => {
@@ -2771,21 +2772,16 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
   const scriptPrompt = "Print a Python script of about 60 lines in one fenced code block and nothing else.";
   const scrolled = () => [...script.split("\n").slice(-30).map((line) => `  ${line}`), "", footer, ...idle].join("\n");
 
-  it("binds a conversation whose 60-line code block has scrolled its head off the screen, and keeps it while its next turn runs", async () => {
+  it("binds a conversation whose 60-line code block has scrolled its head off the screen, while that screen stands", async () => {
     finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
     foreground = fresh(2147483510);
     screen = scrolled();
-    expect(await resolve()).toBe(path);
-    // its next turn under way: the footer has a prompt below it now, and the rollout records the turn begun
-    const records = (...payloads: Record<string, unknown>[]) => `${payloads.map((payload) => JSON.stringify({ type: "event_msg", payload })).join("\n")}\n`;
-    appendFileSync(path, records({ type: "task_started", turn_id: "turn-1" }, { type: "user_message", message: "Now rename every variable" }));
-    const working = [...script.split("\n").slice(-10).map((line) => `  ${line}`), "", footer, "", "› Now rename every variable", "", "• Working (12s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
-    screen = working;
-    expect(await resolve()).toBe(path);
-    // interrupted: no turn runs, and the screen proves nothing: what the last turn alone tied holds no longer
-    appendFileSync(path, records({ type: "turn_aborted", turn_id: "turn-1" }));
-    screen = working.replace("• Working (12s • esc to interrupt)", "■ Conversation interrupted - tell the model what to do differently.");
-    expect(await resolve()).toBeNull();
+    const got = [await resolve(), await resolve()];
+    // its next turn under way: the footer has a prompt below it now. The terminal stands in until a turn ends on what a match reads
+    appendFileSync(path, `${[{ type: "task_started", turn_id: "turn-1" }, { type: "user_message", message: "Now rename every variable" }].map((payload) => JSON.stringify({ type: "event_msg", payload })).join("\n")}\n`);
+    screen = [...script.split("\n").slice(-10).map((line) => `  ${line}`), "", footer, "", "› Now rename every variable", "", "• Working (12s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
+    got.push(await resolve());
+    expect(got).toEqual([path, path, null]);
   });
 
   // an answer that ends on a short fenced block with a language: Codex draws the code, not the fence line (the adversarial review's F1)
@@ -2974,17 +2970,22 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     "  ← for agents · ? for shortcuts",
   ].join("\n");
 
-  it("binds the one conversation that finished the short turn shown, and keeps it while the next turn runs", async () => {
+  it("binds the one conversation that finished the short turn shown, while that screen stands", async () => {
     foreground = live;
     writeRollout(path, thread, turn("t1", asked, "ok"));
     screen = footed([`› ${asked}`], ["• ok"]);
-    expect(await resolve()).toBe(path);
-    // the next turn under way: no footer under it yet, the rollout records it begun, and the binding holds
-    appendFileSync(path, `${turn("t2", "And now the word done.", "", false).slice(0, 2).map((entry) => JSON.stringify(entry)).join("\n")}\n`);
-    screen = `${screen.split("› Ask Codex")[0]}› And now the word done.\n\n• Working (2s • esc to interrupt)\n\n› Ask Codex to do anything\n\n  GPT-6-Luna low · /tmp/proj\n  ← for agents · ? for shortcuts`;
-    expect(await resolve()).toBe(path);
+    expect([await resolve(), await resolve()]).toEqual([path, path]);
     // and serves no background reader: only the chat's lookup reads the screen that says whether it still holds
     expect(await codexOpenRollout(root, root, home)).toBeNull();
+    // the next turn under way: no match reads that screen, and the terminal stands in until a turn ends on what one reads
+    appendFileSync(path, `${turn("t2", "And now the word done.", "", false).slice(0, 2).map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    const idleRows = screen.split("› Ask Codex")[0]!;
+    screen = `${idleRows}› And now the word done.\n\n• Working (2s • esc to interrupt)\n\n› Ask Codex to do anything\n\n  GPT-6-Luna low · /tmp/proj\n  ← for agents · ? for shortcuts`;
+    expect(await resolve()).toBeNull();
+    // that turn ends on the word asked for: the pane's last turn tells again
+    appendFileSync(path, `${turn("t2", "And now the word done.", "done").slice(2).map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    screen = `${idleRows}› And now the word done.\n\n\n• done\n\n  Worked for 2s • 7:06 PM\n\n\n\n› Ask Codex to do anything\n\n  GPT-6-Luna low · /tmp/proj\n  ← for agents · ? for shortcuts`;
+    expect(await resolve()).toBe(path);
   });
 
   it("takes no short answer for a pane whose command line resumed a thread the store does not hold", async () => {
@@ -3038,8 +3039,9 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
   const idleComposer = ["", "", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"];
 
-  // that conversation's turn runs while the pane shows another one (the adversarial review's second pass, HR1)
-  for (const mode of ["after its own next turn began", "in another TUI of the thread"] as const) {
+  // The adversarial review's second and third passes: keeping what a last turn tied through that conversation's
+  // next turn answered the conversation the pane had left, each way it was tried. It is not kept: these stay null
+  for (const mode of ["after its own next turn began", "in another TUI of the thread", "under the same prompt, sent to both"] as const) {
     it(`leaves what a short turn tied once the pane shows another conversation, though the first one's turn runs (${mode})`, async () => {
       foreground = live;
       writeRollout(path, thread, turn("t1", asked, "ok"));
@@ -3047,61 +3049,26 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
       const fileB = folderThread(otherThread, turn("b1", "List the fifty rollout steps.", items.join("\n")));
       screen = footed([`› ${asked}`], ["• ok"]);
       const got = [await resolve()];
-      // A's next turn begins
-      appendFileSync(path, begun("t2", "Now run the whole suite"));
+      const sent = mode === "under the same prompt, sent to both" ? "continue" : "Now run the whole suite";
+      // A's next turn begins: in this pane, or in another TUI of the thread
+      appendFileSync(path, begun("t2", sent));
       if (mode === "after its own next turn began") {
-        screen = working([`› ${asked}`, "", "", "• ok", "", "  Worked for 1s • 7:05 PM"], "Now run the whole suite");
+        screen = working([`› ${asked}`, "", "", "• ok", "", "  Worked for 1s • 7:05 PM"], sent);
         got.push(await resolve());
       }
       // the pane now shows B (no thread is made, same process): replayed, its last turn footed, the composer idle
       const replayed = [...items.slice(-30).map((item) => `  ${item.replaceAll("**", "")}`), "", "  Worked for 9s • Nov 9 at 7:05 PM"];
       screen = [...replayed, ...idleComposer].join("\n");
       got.push(await resolve());
-      // then B at work, under B's own prompt
-      appendFileSync(fileB, begun("b2", "And which step is the slowest?"));
-      screen = working(replayed.slice(-12), "And which step is the slowest?");
+      // then B at work, and its tools push the prompt off the screen
+      appendFileSync(fileB, begun("b2", mode === "under the same prompt, sent to both" ? sent : "And which step is the slowest?"));
+      screen = working(replayed.slice(-12), mode === "under the same prompt, sent to both" ? sent : "And which step is the slowest?");
       got.push(await resolve());
-      expect(got).toEqual(mode === "after its own next turn began" ? [path, path, null, null] : [path, null, null]);
+      screen = working(["• Ran bun test ./server", "  └ 164 pass", "    0 fail"], null);
+      got.push(await resolve());
+      expect(got).toEqual([path, ...got.slice(1).map(() => null)]);
     });
   }
-
-  it("keeps what a short turn tied through its next turn once the prompt has scrolled off, only for a turn it was seen at work on", async () => {
-    foreground = live;
-    writeRollout(path, thread, turn("t1", asked, "ok"));
-    screen = footed([`› ${asked}`], ["• ok"]);
-    const got = [await resolve()];
-    // the turn begins, its prompt on screen
-    appendFileSync(path, begun("t2", "Now run the whole suite"));
-    screen = working(["  Worked for 1s • 7:05 PM"], "Now run the whole suite");
-    got.push(await resolve());
-    // a tool's output pushes the prompt off the screen
-    const output = working(["• Ran bun test ./server", ...Array.from({ length: 30 }, (_, at) => `  ${at === 0 ? "└" : " "} server/file-${at}.test.ts: 12 pass`)], null);
-    screen = output;
-    got.push(await resolve());
-    // the turn ends on an answer no path reads; the next one is first seen with its prompt already off the screen
-    const unread = "- **every** file passes\n- **nothing** was skipped";
-    appendFileSync(path, `${[{ type: "event_msg", payload: { type: "agent_message", message: unread } }, { type: "event_msg", payload: { type: "task_complete", turn_id: "t2", last_agent_message: unread } }].map((entry) => JSON.stringify(entry)).join("\n")}\n${begun("t3", "And once more")}`);
-    got.push(await resolve());
-    expect(got).toEqual([path, path, path, null]);
-  });
-
-  it("answers nothing for a lookup that sees the next prompt before the rollout records the turn, and holds once it does", async () => {
-    foreground = live;
-    writeRollout(path, thread, turn("t1", asked, "ok"));
-    screen = footed([`› ${asked}`], ["• ok"]);
-    const got = [await resolve()];
-    screen = working(["  Worked for 1s • 7:05 PM"], "Now run the whole suite");
-    got.push(await resolve());
-    appendFileSync(path, begun("t2", "Now run the whole suite"));
-    got.push(await resolve());
-    // a prompt at work that this conversation's open turn does not record is another conversation's
-    screen = working(["  Worked for 1s • 7:05 PM"], "Now run the whole suite, twice");
-    got.push(await resolve());
-    // and a screen with no turn at work proves nothing, whatever the rollout says
-    screen = [`› Now run the whole suite`, "", "■ Conversation interrupted - tell the model what to do differently.", ...idleComposer].join("\n");
-    got.push(await resolve());
-    expect(got).toEqual([path, null, path, null, null]);
-  });
 
   heldIt("follows the TUI from what a short turn tied to a loaded conversation of another folder (the adversarial review's F3b)", async () => {
     foreground = live;
