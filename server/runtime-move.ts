@@ -6,6 +6,8 @@ import type { SessionHistoryAgent } from "../shared/session-history.ts";
 import { isSessionHistoryAgent, listSessions, type SessionHistoryOptions } from "./session-history.ts";
 
 export const RUNTIME_MOVE_PATH = "/api/runtime/move";
+/** the move's four routes: the plan and its start or cancel, a pane's stop, stop all, and the herdr-core install */
+export const RUNTIME_MOVE_ROUTE = /^\/api\/runtime\/move(?:\/(?:stop|stop-all|install))?$/;
 
 /**
  * The command each agent ends itself with, as its own built-in command list names it
@@ -146,9 +148,11 @@ export async function planMove(snapshot: SessionSnapshot, facts: MoveFacts): Pro
 }
 
 /** Why this server offers no move to herdr-core, or null when it does. */
-export function moveUnavailable(serving: "herdr" | "herdr-core", facts: HerdrRuntimeFacts | undefined): MoveUnavailable | null {
+export function moveUnavailable(serving: "herdr" | "herdr-core", facts: HerdrRuntimeFacts | undefined, platform: NodeJS.Platform = process.platform): MoveUnavailable | null {
   if (serving !== "herdr") return "not_herdr";
-  if (!facts || facts.locked !== null) return "runtime_locked";
+  // Windows switches to herdr-core in Settings, but the move ends panes through Unix process groups
+  // and its lock refuses Windows (runtime-move-lock.ts): as locked there as before Settings switched
+  if (!facts || facts.locked !== null || platform === "win32") return "runtime_locked";
   if (facts.switch_to !== "herdr-core") return "no_herdr_core";
   // the Herdr app arranges a core it runs in a document of its own, which Ovis never writes
   if (facts.app_installed) return "herdr_app";

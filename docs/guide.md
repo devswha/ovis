@@ -148,7 +148,18 @@ bun "$root/scripts/plugin.ts" pair   # plugin install
 bun scripts/plugin.ts pair           # from a checkout
 ```
 
-`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on. To link the PC through the relay from its terminal, `link` signs it in to your account and approves the device that adds it, and `link --code` shows a code to type and the relay QR code, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout. The actions start, stop and report on the server:
+`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on.
+
+**Adding the PC to your account, from its terminal:**
+
+```bash
+bun "$root/scripts/plugin.ts" add    # plugin install
+bun scripts/plugin.ts add            # from a checkout
+```
+
+`add` (also `login` and `link`: one command) signs the PC in to your Ovis account with a code you enter on any device, lists it there, and asks y/N in the terminal for the device of your account that adds it. It ends once the PC is in the account you signed in to, and stops by itself after 30 minutes of waiting. `link --code` shows a code to type and the relay QR code instead, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout; one from before `add` and `login` still has `link`.
+
+The actions start, stop and report on the server:
 
 ```bash
 herdr plugin action invoke devswha.ovis.start    # leaves a running server alone
@@ -291,7 +302,9 @@ model's window, which is the file pi reads its own providers from; a model it st
 for shows no ring rather than a guessed one, because pi answers those from a catalogue or a
 running llama.cpp server that this app cannot ask. The model and reasoning effort come from what the session recorded, never from answer text. A todo list shows where the agent recorded it, in the turn's work block: Claude Code's `TodoWrite`, Codex's `update_plan`, or omp, omo and gjc todo calls. Plain-text plans are not reconstructed, and Claude Code `TaskCreate` / `TaskUpdate` calls are not drawn in the work block: the task list they build is the pane's plan, below. Details and verification are in the [chat-mode audit](chat-mode-audit.md).
 
-Background tasks have a button by the message box, with a count while some run: an OmO pane's `task` children, a Claude Code pane's subagents (the `Agent` tool), read from the session's own files, and an OpenCode 2 pane's subagents, the child sessions OpenCode keeps of the session in its store (one whose OpenCode service went away mid-run, without ending it, reads as lost once another service starts or the pane leaves that session; on Windows, where a service's start cannot be read, only once the pane leaves that session). A Claude Code pane's background commands (`run_in_background`, Ctrl+B, or one moved there by its timeout) are listed with them. It lists what runs and the newest ten that ended in the last day, and the sidebar badge shows the running count. A Claude Code or OpenCode turn that ends while work it started still runs reads **BG**, not DONE: that work's notice starts the next turn by itself, and the finish is alerted once, when that turn ends (a turn is held at most 30 minutes). A subagent that ends leaves a card in the chat with its answer (for OpenCode, one run in the background; a foreground one's answer is its call's output), and a Claude Code or OpenCode subagent whose pane no longer runs that session reads as lost.
+Background tasks have a button by the message box, with a count while some run: an OmO pane's `task` children, a Claude Code pane's subagents (the `Agent` tool), read from the session's own files, and an OpenCode 2 pane's subagents, the child sessions OpenCode keeps of the session in its store (one whose OpenCode service went away mid-run, without ending it, reads as lost once another service starts or the pane leaves that session; on Windows, where a service's start cannot be read, only once the pane leaves that session). A Claude Code pane's background commands (`run_in_background`, Ctrl+B, or one moved there by its timeout), its `Monitor`s and background `Workflow`s, and a `/loop` wakeup it set are listed with them. It lists what runs and the newest ten that ended in the last day, and the sidebar badge shows the running count. A Claude Code or OpenCode turn that ends while work it started still runs reads **BG**, not DONE: that work's notice starts the next turn by itself, and the finish is alerted once, when that turn ends (each rest is held at most 30 minutes). A subagent that ends leaves a card in the chat with its answer (for OpenCode, one run in the background; a foreground one's answer is its call's output), and a Claude Code or OpenCode subagent whose pane no longer runs that session reads as lost.
+
+An agy pane's background tasks (a command past its `WaitMsBeforeAsync`) and `schedule` timers, and a grok pane's background tasks, are read from their session files (agy's `transcript_full.jsonl`, grok's `updates.jsonl`) and counted and held the same way: a turn that ends on one reads **BG**, and an agy timer due within a day is held until it is due rather than 30 minutes, while its agy process lasts.
 
 A pane's plan is the task list a Claude Code agent keeps (`TaskCreate` / `TaskUpdate`) or the checklist Codex keeps (`update_plan`), read back from the session's transcript. While there is one, the background-task button by the message box starts with **Plan** and how many of its steps are done (`2/5`); the same button opens one list with the plan's steps first and the background tasks below. Steps are listed so a step comes after the steps it waits on (Claude Code's `blockedBy`; a Codex step waits on the one before it). The running step says what it does now, and each step shows how long it took. The sidebar row carries the same count. Claude Code empties its task list once every task is done, and so does this: the first task after that starts a new plan. A teammate of an agent team that changes a task writes that in its own transcript, which is not read.
 
@@ -637,7 +650,7 @@ A workspace row's **⋯** menu offers **New worktree** and **Open worktree…**,
 
 Open Settings → Remote PCs and choose **Add PC** (the command palette has it too), then enter an SSH alias or `user@host` for a Linux or macOS computer. The setup dialog walks you through the host fingerprint, the password or key passphrase, and an explicit install approval. The PC's workspaces then join the sidebar, and chat, files, terminal input and alerts all follow the PC you pick.
 
-**Settings → Devices and PCs → Add a connection** opens on its **SSH** tab, which lists the PCs saved in herdr, the hosts of this PC's ssh config and the other PCs of your own Tailscale login; **Add** opens the same setup dialog with the address filled in ([Remote PCs over SSH](remote-pcs.md)). A Tailscale PC is reached over SSH, never through the relay. The **Phones and devices** tab holds what a phone or browser opens this PC with (its Tailscale address, a pairing code, Portal), and the **Ovis relay** tab signs in to the Ovis account, through which the relay is used. PCs added through the relay before keep working ([Through the relay](remote-pcs.md#through-the-relay)).
+**Settings → Devices and PCs → Add a connection** opens on its **SSH** tab, which lists the PCs saved in herdr, the hosts of this PC's ssh config and the other PCs of your own Tailscale login; **Add** opens the same setup dialog with the address filled in ([Remote PCs over SSH](remote-pcs.md)). A Tailscale PC is reached over SSH, never through the relay. The **Phones and devices** tab holds what a phone or browser opens this PC with (its Tailscale address, a pairing code, Portal), and the **Ovis relay** tab signs in to the Ovis account, through which the relay is used: its **Sign in to Ovis** opens the Ovis sign-in page (`account.ovis.sh/link`) in a new tab with the code filled in (the desktop app opens it in your browser), and the tab shows you signed in once you confirm there. When the browser blocks the new tab, the page's link and code show in the tab instead. PCs added through the relay before keep working ([Through the relay](remote-pcs.md#through-the-relay)).
 
 - **SSH runs on the server**, as the web server's account, with its OpenSSH configuration and agent. The browser never opens SSH itself.
 - **The remote side gets a private runtime bundle** and a loopback-only bridge, reached through an SSH forward.
@@ -870,7 +883,7 @@ Each invitation stores its name and `watch` role in `portal/state.json`, never i
 
 Portal checks its sign-in on every request, and the app closes such a browser's open terminal connection and live updates every 5 minutes so they too come back through Portal: a link that expires, a name taken off the list or a sign-out ends a page left open within 5 minutes. Link names, wallet addresses and OIDC entries are checked as Portal checks them (names and ids in ASCII only, since a name reaches the app in an HTTP header). The sign-in choice is saved with the rest of Portal's state and changed only while Portal is stopped: an app restart brings the address back with the same sign-in, and a relaunch after Portal ended on its own goes ahead only while the saved settings are the ones it served with. **Settings → Devices** says who signed in through Portal.
 
-A sign-in needs a Portal that can prove who signed in. The panel decides by the flags the installed `portal` lists in `portal expose --help`: it offers a sign-in only when `--auth`, `--auth-allow`, `--auth-identity-headers` and `--auth-identity-proof` are all there (OIDC adds its own), and says "This Portal does not support it yet" when they are not. A Portal that signs visitors in but cannot send the proof would leave the app to believe a header anyone can type, so it gets no sign-in at all. Portal v2.7.0 is the first release that lists `--auth-identity-proof`, and it lists the OIDC flags too, so a sign-in needs v2.7.0 or later.
+A sign-in needs a Portal that can prove who signed in. The panel decides by the flags the installed `portal` lists in `portal expose --help`: it offers a sign-in only when `--auth`, `--auth-allow`, `--auth-identity-headers` and `--auth-identity-proof` are all there (OIDC adds its own), and says "This Portal does not support it yet" when they are not. A Portal that signs visitors in but cannot send the proof would leave the app to believe a header anyone can type, so it gets no sign-in at all. Portal v2.7.0 is the first release that lists `--auth-identity-proof`, and it lists the OIDC flags too. A sign-in also needs **Portal v2.7.3 or later on this PC**: older ones let a session cookie from the short address pass for whoever takes the same name once Portal registers again, so the panel offers no sign-in on an older Portal ("This Portal does not support it yet"), and **Start** with a sign-in refuses one, says which version this PC has, and asks you to update Portal or start without a sign-in. A version that is not a whole semver version (such as `v2.07.3` or `v2.7.3.4`) counts as older, and when `portal version` gives no version at all, Start says it could not read the Portal version (so does the restart after an app update, and the relaunch after Portal ended on its own). Without a sign-in, v2.6.1 is still enough. With v2.7.3, visitors on the short address sign in again after Portal restarts or registers again (Portal's own behaviour); the address that holds the identity, and invite links, keep working.
 
 Portal tells the app who signed in with `X-Portal-User` and `X-Portal-Auth` (`--auth-identity-headers`) and, beside them, `X-Portal-Proof`: a secret the app makes at each launch of that Portal, hands over in its environment (`AUTH_IDENTITY_PROOF`, never an argument, since `ps` shows those) and keeps in memory. Portal drops a visitor's own copy of all three. The app believes the identity only on a request whose proof matches (compared in constant time) and whose values are shaped as Portal makes them. Without the proof, or with a wrong one, the headers are ignored and the request meets the token rules like any other, so another proxy on this PC (`tailscale serve`, nginx, Caddy), a local process or any other way to the app's port gets nothing by typing them. The proof is not saved, logged or sent in any answer, and it goes with the Portal that had it: when that Portal stops, ends or is launched again, the old proof counts for nothing. It is as private as `OVIS_TOKEN`: whoever can read the server's or Portal's environment can read both. Without a sign-in no proof is made, and the command drops a visitor's copies (`--strip-request-header X-Portal-User --strip-request-header X-Portal-Auth`). A `portal expose` you run by hand with `--auth` is just a proxy to the app, which still asks for its token.
 
@@ -888,10 +901,20 @@ PC's panes are then the app's. One server serves one runtime, chosen as it start
    Herdr app is installed or its core runs.
 
 Ovis needs an `hc` speaking
-protocol generation 1 (checked with 0.1.14 and 0.1.17), and finds it the way the Herdr app does:
-`OVIS_HC_BIN`, then the `PATH`, then your login shell's `PATH`, then the usual install places
-(`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, mise, Nix and cargo), taking `herdr-core`
-before `hc` in each. A candidate counts only when `--version` says `hc …`, since some window
+protocol generation 1 (checked with 0.1.14 and 0.1.17), and looks for it in `OVIS_HC_BIN`, then
+the usual install places (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, mise, Nix and
+cargo), then the `PATH`, then your login shell's `PATH`, taking `herdr-core` before `hc` in each.
+On Linux and macOS a candidate found there is run only when it and every folder on the way to it
+belong to you or root and nobody else can write them; a path you set in `OVIS_HC_BIN` is run as
+you named it. Two exceptions: a folder further up may be writable by anyone when it is sticky
+(like `/tmp`), since nobody can then rename or replace what is yours in it; and on macOS, folders
+under Homebrew's `/opt/homebrew` and `/usr/local` may be writable by the `admin` group, as
+Homebrew leaves them, so another administrator of that Mac could change an `hc` found there.
+Group write by your own private group counts as yours only when `/etc/nsswitch.conf` takes
+accounts from local files alone. On a PC whose accounts also come from a directory service (sss, as on
+Fedora and RHEL by default), an installer-made `~/.local/bin` with umask 002 is group-writable and
+so is passed over: run `chmod g-w ~/.local/bin`, or set `OVIS_HC_BIN` to the `hc` you trust. When
+nothing is found, the error names each `hc` passed over and the rule it failed. A candidate counts only when `--version` says `hc …`, since some window
 managers ship an unrelated `hc`. Looking runs nothing but `--version`: every other hc command
 starts a core when none runs. When no candidate answers, Ovis does not start and says where it
 looked, rather than run an `hc` that may not be herdr-core's.
@@ -917,8 +940,9 @@ Whether the core runs is read from its socket file (`HC_SOCKET`, `socket` in hc'
 `config.toml`, else `<session>.sock` under `$XDG_RUNTIME_DIR/herdr-core/`; `HC_SESSION` names the
 session, `default` otherwise); nothing connects to it.
 
-On Windows Ovis serves herdr-core only when `OVIS_RUNTIME=herdr-core` is set, as the desktop app
-sets it: the automatic choice stays on herdr there, and Settings offers no switch.
+On Windows the automatic choice stays on herdr: Ovis serves herdr-core when it is chosen in
+Settings, or when `OVIS_RUNTIME=herdr-core` is set, as the desktop app sets it. Settings and
+`/api/health` find herdr there in `%LOCALAPPDATA%\Programs\Herdr\bin` and `%APPDATA%\herdr`.
 
 **Moving everything to herdr-core.** On a Linux or macOS PC where Ovis serves herdr's TUI through
 its own launcher and no Herdr app is installed, **Settings → About → Terminals** offers **Move
