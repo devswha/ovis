@@ -469,7 +469,7 @@ if (process.env.EDIT_DURING_BUILD) fs.writeFileSync("main.ts", process.env.EDIT_
     const runner = (slot: string): number => 100 + slots.indexOf(slot);
     writeFileSync(join(github, "runners.json"), JSON.stringify({ runners: slots.map((slot) => ({ name: slot, id: runner(slot) })) }));
     for (const [id, run] of Object.entries(runs)) {
-      writeFileSync(join(github, `jobs-${id}.json`), JSON.stringify({ jobs: run.slots.map((slot) => ({ runner_name: slot, status: "in_progress", runner_id: runner(slot) })) }));
+      writeFileSync(join(github, `jobs-${id}.json`), JSON.stringify({ jobs: run.slots.map((slot) => ({ runner_name: slot, status: "in_progress", runner_id: runner(slot), started_at: "2026-11-10T12:00:10Z" })) }));
       writeFileSync(join(github, `run-${id}.json`), JSON.stringify(run.pull
         ? { event: "pull_request", head_branch: "feature", head_sha: sha, head_repository: { full_name: "owner/repo" }, triggering_actor: { login: "w" }, pull_requests: [{ number: 5 }] }
         : { event: "push", head_branch: "main", head_repository: { full_name: "owner/repo" } }));
@@ -494,11 +494,12 @@ file="$github/$kind-$id.json"
 cat "$file"
 `);
     chmodSync(join(bin, "gh"), 0o755);
-    // docker container inspect -f '{{.Id}}' <slot>: every slot has its container, the same one throughout
+    // docker container inspect <slot>: every slot has its container, the same one throughout, started
+    // ten seconds before its job
     writeFileSync(join(bin, "docker"), `#!/bin/sh
 [ "$1 $2" = "container inspect" ] || exit 1
 for slot; do :; done
-echo "container-of-$slot"
+echo "container-of-$slot true 2026-11-10T12:00:00.5Z"
 `);
     chmodSync(join(bin, "docker"), 0o755);
     return {

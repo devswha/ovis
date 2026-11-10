@@ -8,9 +8,9 @@
 #
 # A slot runs one job per container, under the same runner name each time, and GitHub answers for
 # the job the slot runs when it answers. So a claim is its container's: it is taken in only while the
-# container that was the slot's when the claim was taken still is, and when the job GitHub lists is on
-# the runner that container registered. A claim naming the run of the slot's next job, or of an
-# earlier job GitHub still lists as running, is refused.
+# container that was the slot's when the claim was taken still is, and only for a job that started
+# once that container had, on the runner registered under the slot's name now. A claim naming the run
+# of the slot's next job, or of an earlier job GitHub still lists as running, is refused.
 #
 # A build is filed under the run GitHub confirmed for its slot, entries/<run id>/<key>, and a job
 # reads only its own run's directory (scripts/build-cache.ts). The key is the job's word for what it
@@ -29,6 +29,9 @@ ENTRIES="$ROOT/entries"
 USED="$ROOT/used"
 # a run id, as a claim may name one and as a run's directory under entries/ is named
 RUN_ID='^[0-9]{1,20}$'
+# GitHub's clock and this host's may differ by a little, and a job starts seconds after its container
+# has (the runner registers first): a job this many seconds older than the container is still its own.
+START_SKEW=5
 
 log() { echo "[build-cache] $*" >&2; }
 
@@ -43,21 +46,27 @@ ask() {
   return 2
 }
 
-# Whether the runner named $1 is running a job of run $2 (attempt $3), and that run is trusted: 0 when
-# it is; 1 when GitHub says the run is not trusted; 4 when it is a stale run of the writer's pull
-# request (its head moved on); 3 when the claim is at fault (no job of that run on this slot, or no
-# such run); 5 when the slot's runner is gone (its job ended meanwhile); 2 when GitHub did not answer.
+# Whether the runner named $1, whose container started at $4 (seconds since the epoch), is running a
+# job of run $2 (attempt $3), and that run is trusted: 0 when it is; 1 when GitHub says the run is not
+# trusted; 4 when it is a stale run of the writer's pull request (its head moved on); 3 when the claim
+# is at fault (no job of that run on this slot's container, or no such run); 5 when the slot's runner
+# is gone (its job ended meanwhile); 2 when GitHub did not answer.
 trusted() {
-  local name="$1" run="$2" attempt="$3" jobs runners runner info default pulls number pull
+  local name="$1" run="$2" attempt="$3" since="$(( $4 - START_SKEW ))" jobs own runners runner info default pulls number pull
   jobs="$(ask "repos/$REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100")" || return $?
   jq -e --arg name "$name" 'any(.jobs[]; .runner_name == $name and .status == "in_progress")' >/dev/null <<<"$jobs" || { log "run $run has no job running on $name"; return 3; }
-  # Each container of a slot registers a runner of its own under the slot's name, and GitHub goes on
-  # listing the job of a container that was killed as running for minutes: only a job on the runner
-  # registered under the name now is the slot's.
+  # The name has had other containers, and GitHub goes on listing the job of one that was killed as
+  # running, for minutes and sometimes for days: only a job that started once this container had is
+  # its own. By the time, not by the runner alone: a container that registers over a dead one's
+  # runner (config.sh --replace) keeps that runner's id.
+  own="$(jq -c --arg name "$name" --argjson since "$since" '[.jobs[] | select(.runner_name == $name and .status == "in_progress" and ((.started_at // "") | try fromdateiso8601 catch 0) >= $since)]' <<<"$jobs")"
+  [ -n "$own" ] && [ "$own" != "[]" ] || { log "run $run's job on $name started before the slot's container did: it is an earlier container's"; return 3; }
+  # And on the runner registered under the name now: a runner that ended its job is gone from
+  # GitHub, so a job of an earlier registration is on another id.
   runners="$(ask "repos/$REPO/actions/runners" -X GET -f "name=$name" -f per_page=100)" || return 2
   runner="$(jq -r --arg name "$name" '[.runners[]? | select(.name == $name) | .id] | if length == 1 then .[0] else "" end' <<<"$runners")"
   [[ "$runner" =~ ^[0-9]+$ ]] || { log "no runner is registered as $name any more"; return 5; }
-  jq -e --arg name "$name" --argjson runner "$runner" 'any(.jobs[]; .runner_name == $name and .status == "in_progress" and .runner_id == $runner)' >/dev/null <<<"$jobs" || { log "run $run's job on $name is an earlier container's, not the one registered under that name now"; return 3; }
+  jq -e --argjson runner "$runner" 'any(.[]; .runner_id == $runner)' >/dev/null <<<"$own" || { log "run $run's job on $name is on another runner than the one registered under that name now"; return 3; }
   info="$(ask "repos/$REPO/actions/runs/$run")" || return $?
   [ "$(jq -r '.head_repository.full_name // ""' <<<"$info")" = "$REPO" ] || { log "run $run is not from $REPO"; return 1; }
   case "$(jq -r '.event // ""' <<<"$info")" in
@@ -195,7 +204,8 @@ refused_before() {
 # restore another run's build. From this launcher's first pass on, no run restores across runs.
 # It is renamed first, to a name no job reads: that needs only entries/ itself, whoever owns what is
 # inside, so an entry that cannot be removed is out of reach all the same and is not walked again
-# every second (evict tries it again). One that cannot even be renamed is said once a day.
+# every second (evict tries it again once it is over an hour old). One that cannot even be renamed
+# is said once a day.
 for path in "$ENTRIES"/*; do
   if [[ "${path##*/}" =~ ^[0-9a-f]{64}$ ]] && [ -d "$path" ] && [ ! -L "$path" ]; then
     if gone="$(mktemp -d "$ENTRIES/.new-gone-XXXXXX" 2>/dev/null)" && mv -T "$path" "$gone" 2>/dev/null; then discard "$gone"
@@ -209,9 +219,17 @@ for path in "$ENTRIES"/*; do
   fi
 done
 
-# The container that is the slot $1's now, as docker names it: nothing when it has none, or when
-# docker does not answer. run.sh empties a slot's outbox before it starts the slot's next container.
-container() { timeout 10 docker container inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
+# The container that is the slot $1's now, as docker names it: its id and when it started, in
+# seconds since the epoch. Nothing when the slot has none running, or when docker does not answer.
+# run.sh empties a slot's outbox before it starts the slot's next container.
+container() {
+  local id running at started
+  read -r id running at < <(timeout 10 docker container inspect -f '{{.Id}} {{.State.Running}} {{.State.StartedAt}}' "$1" 2>/dev/null) || return 0
+  [ "$running" = true ] || return 0
+  started="$(jq -rn --arg at "$at" '$at | sub("\\.[0-9]+"; "") | fromdateiso8601' 2>/dev/null)" || return 0
+  if [[ "$started" =~ ^[0-9]+$ ]]; then echo "$id $started"; fi
+  return 0
+}
 
 promoted=0
 for name in "$@"; do
@@ -255,7 +273,7 @@ for name in "$@"; do
         log "refused $key from $name: run $run or this slot was refused before"
       else
         verdict=0
-        trusted "$name" "$run" "$attempt" || verdict=$?
+        trusted "$name" "$run" "$attempt" "${wrote#* }" || verdict=$?
         # GitHub answered for the job the slot runs now: that is the claim's only while the container is the same
         if [ "$verdict" = 0 ] && [ "$(container "$name")" != "$wrote" ]; then verdict=5; fi
         case "$verdict" in

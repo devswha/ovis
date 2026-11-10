@@ -149,10 +149,12 @@ repository that `--build-cache-writer` opened and started. Without the flag only
 slot runs one job per container under the same runner name, and GitHub answers for the job the
 slot runs when it answers, so a claim is also tied to the container whose job wrote it. The build
 is taken in only while the container docker names for the slot is the one it named when the claim
-was taken, and only when the job GitHub lists is on the runner registered under the slot's name now
-(GitHub goes on listing the job of a container that was killed as running for minutes). `run.sh`
-empties a slot's outbox before it starts the slot's next container, so a claim naming the run of the
-slot's next job, or of an earlier one, is refused. The
+was taken, and only for a job that started once that container had (five seconds are allowed for
+the two clocks), on the runner registered under the slot's name now. GitHub goes on listing the job
+of a container that was killed as running, for minutes and sometimes for days, and the container
+after it registers over the dead one's runner and keeps its id, so the start time is what tells
+that job from the container's own. `run.sh` empties a slot's outbox before it starts the slot's next
+container, so a claim naming the run of the slot's next job, or of an earlier one, is refused. The
 launcher unpacks only files and directories and writes the sha256 of each into the entry's
 `.manifest`; a restore refuses an entry with a link, a missing, changed or extra file. Every other
 outbox file is deleted. One claim per outbox is judged per pass, and a refusal is remembered (the
@@ -199,8 +201,8 @@ was not taken in). So copy this directory again when a change here moves where e
 change restore again from then on. What the earlier launcher left as `entries/<key>` the new one
 moves out of the names a job reads and removes in its first pass: a job of a commit from before
 would still read it there, whichever run had filed it. One it cannot remove stays under a
-`.new-gone-` name, which no job reads, and is tried again at each eviction; one it cannot even move
-is logged once a day.
+`.new-gone-` name, which no job reads, and is tried again by an eviction once it is over an hour
+old; one it cannot even move is logged once a day.
 
 ## Routing jobs to it
 

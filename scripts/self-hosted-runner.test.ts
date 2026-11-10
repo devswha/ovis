@@ -884,12 +884,14 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
 
   /**
    * A job's outbox holding one build, promoted against a GitHub that answers as `github` says. The
-   * slot's container registered runner 31, which the run's job is on; `runnerId` puts the job on
-   * another runner (an earlier container's), `registered` names the runner registered under the
-   * slot's name now (null: none), and `container` says what docker answers for the slot: nothing
-   * at all, or another container by the time GitHub has answered about the jobs.
+   * slot's container registered runner 31, and the run's job started on it ten seconds after the
+   * container did. `jobStarted` starts the job that many seconds after the container instead (a
+   * negative number: before it, as an earlier container's job), `runnerId` puts it on another
+   * runner, `registered` names the runner registered under the slot's name now (null: none), and
+   * `container` says what docker answers for the slot: nothing at all, one that never started, one
+   * that has stopped, or another container by the time GitHub has answered about the jobs.
    */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean; runnerId?: number; registered?: number | null; container?: "none" | "changes" } = {}, build: "files" | "link" | "sealed" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean; runnerId?: number; jobStarted?: number; registered?: number | null; container?: "none" | "created" | "stopped" | "changes" } = {}, build: "files" | "link" | "sealed" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -938,11 +940,14 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       const answer = (github: NonNullable<Parameters<typeof promote>[0]>) => {
       if (github.fail) writeFileSync(join(dir, "fail"), ""); else rmSync(join(dir, "fail"), { force: true });
       // what docker names as the slot's container, and whether it is another once GitHub was asked about the jobs
-      if (github.container === "none") rmSync(join(dir, "container"), { force: true }); else writeFileSync(join(dir, "container"), "c1\n");
-      if (github.container === "changes") writeFileSync(join(dir, "next-container"), "c2\n"); else rmSync(join(dir, "next-container"), { force: true });
+      // as `docker container inspect -f '{{.Id}} {{.State.Running}} {{.State.StartedAt}}'` prints it
+      if (github.container === "none") rmSync(join(dir, "container"), { force: true });
+      else writeFileSync(join(dir, "container"), github.container === "created" ? "c1 false 0001-01-01T00:00:00Z\n" : `c1 ${github.container !== "stopped"} 2026-11-10T12:00:00.123456789Z\n`);
+      if (github.container === "changes") writeFileSync(join(dir, "next-container"), "c2 true 2026-11-10T12:00:30.5Z\n"); else rmSync(join(dir, "next-container"), { force: true });
       const registered = github.registered === undefined ? 31 : github.registered;
+      const jobStarted = new Date(Date.UTC(2026, 10, 10, 12, 0, 0) + (github.jobStarted ?? 10) * 1000).toISOString().replace(/\.\d+Z$/, "Z");
       const answers: Record<string, unknown> = {
-        jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress", runner_id: github.runnerId ?? 31 }] },
+        jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress", runner_id: github.runnerId ?? 31, started_at: jobStarted }] },
         runners: { runners: [{ name: "herdr-ci-host-9", id: 9 }, ...(registered === null ? [] : [{ name: slot, id: registered }])] },
         run: { event: github.event ?? "pull_request", head_branch: github.branch ?? "feature", head_sha: sha, head_repository: { full_name: github.headRepo ?? "owner/repo" }, triggering_actor: { login: github.actor ?? "devswha" }, pull_requests: [{ number: 5 }] },
         pull: { user: { login: github.author ?? "devswha" }, head: { sha: github.prSha ?? sha } },
@@ -968,7 +973,7 @@ case "$2" in
 esac
 `);
       chmodSync(join(bin, "gh"), 0o755);
-      // docker container inspect -f '{{.Id}}' <slot>: the id of the slot's container, when it has one
+      // docker container inspect <slot>: the slot's container, when it has one
       writeFileSync(join(bin, "docker"), `#!/bin/sh
 [ "$1 $2" = "container inspect" ] && [ -f "\${0%/bin/docker}/container" ] || { echo "Error: No such container" >&2; exit 1; }
 cat "\${0%/bin/docker}/container"
@@ -1138,16 +1143,33 @@ cat "\${0%/bin/docker}/container"
     expect(moved.callsBefore[0]).toBeGreaterThan(0);
     // the next container's own claim is taken in: the slot was not held off
     expect(moved.entries).toEqual([`7/${"0".padStart(64, "f")}`]);
-    // a slot without a container: nothing GitHub says could be about the claim's job, so it is not asked
-    const none = promote({ container: "none" });
-    expect(none.status).toBe(0);
-    expect(none.runs).toEqual([]);
-    expect(none.ghCalls).toEqual([]);
-    expect(none.outbox).toEqual([`judged-${key}`]);
+    // a slot without a running container: nothing GitHub says could be about the claim's job, so it is not asked
+    for (const container of ["none", "created", "stopped"] as const) {
+      const none = promote({ container });
+      expect(none.status).toBe(0);
+      expect(none.runs).toEqual([]);
+      expect(none.ghCalls).toEqual([]);
+      expect(none.outbox).toEqual([`judged-${key}`]);
+    }
   });
 
-  it("refuses a claim naming a run whose job under the slot's name is an earlier container's", () => {
-    // that container was killed and GitHub still lists its job as running; the runner registered under the name now is another
+  it("refuses a claim naming the run of a killed container's job, which GitHub still lists as running on the runner the next container took over", () => {
+    // the container before was killed 13.5 minutes ago with its job running; this one registered over its
+    // runner and kept the id (config.sh --replace), so the name, the status and the runner all fit
+    const dead = promote({ jobStarted: -810 }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"]);
+    expect(dead.stderr).toContain("started before the slot's container did");
+    expect(dead.runs).toEqual([]);
+    // the claim is at fault, so its slot is held off: the next claim costs no call
+    expect(dead.callsBefore[0]).toBe(1);
+    expect(dead.ghCalls).toHaveLength(1);
+    // the clocks may differ by a little: a job five seconds older than its container is its own, one older is not
+    expect(promote({ jobStarted: -4 }).entries).toEqual([`7/${key}`]);
+    expect(promote({ jobStarted: 0 }).entries).toEqual([`7/${key}`]);
+    expect(promote({ jobStarted: -6 }).runs).toEqual([]);
+  });
+
+  it("refuses a claim naming a run whose job under the slot's name is on another runner than the one registered now", () => {
+    // a job of an earlier registration, which GitHub still lists as running
     const stale = promote({ runnerId: 30 }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"]);
     expect(stale.runs).toEqual([]);
     // the claim is at fault, so its slot is held off: the next claim costs no call

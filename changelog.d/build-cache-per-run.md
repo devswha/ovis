@@ -6,7 +6,7 @@
   on every runner host that uses the cache must be updated (copy `scripts/self-hosted-runner`
   again with `rsync -a`; no restart, which would cancel the jobs in flight); until then no build
   is restored there and every job builds.
-- The runner's build cache takes a build in only from the container whose job handed it in: a
-  claim naming the run of the slot's next job, or of an earlier job GitHub still lists as running,
-  is refused. An old entry that cannot be removed is moved out of the names jobs read instead of
-  being tried and logged every second.
+- The runner's build cache takes a build in only from the container whose job handed it in, for a
+  job that started once that container had: a claim naming the run of the slot's next job, or of a
+  killed container's job that GitHub still lists as running, is refused. An old entry that cannot
+  be removed is moved out of the names jobs read instead of being tried and logged every second.
