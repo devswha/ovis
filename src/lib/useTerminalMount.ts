@@ -1060,7 +1060,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // the masked prompt the screen shows now, if any (lib/secretScreen.ts). An attached pane's cursor is the
       // program's; a mirrored pane's repaints carry none, and a pane not known to be attached is read the same way
       const secretScreen = createSecretScreen(term, () => mirroredRef.current === false);
-      const screenSecret = secretScreen.read;
       // What the field shows: the prompt, and whether its answer is typed unchecked (HerdrSocket.typesSecret). That
       // changes when the bridge says what it takes, which can come after the prompt was drawn
       const showSecret = (pane: string, prompt: string | null): void => {
@@ -1070,8 +1069,6 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       const retireOutput = (): void => {
         outputOwner++;
-        // the screen starts over: what was seen of its prompt was that screen's, not the next pane's
-        secretScreen.forget();
         outputFrames.length = 0;
         cancelCopy();
         // A renderer that left its pane (herdr could not restore it) ends that pane's recovery wait: a
@@ -1448,7 +1445,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // that opened a synchronized update and never closed it (a TUI killed mid-draw, `cat` of a raw log)
             // would leave every later chunk inside one, and a later prompt unread
             if (stamp.boundary || socket.hasTerminalHistory()) {
-              const prompt = screenSecret();
+              const prompt = secretScreen.read(owner);
               secretRef.current = prompt;
               showSecret(owner, prompt);
             }
@@ -1475,7 +1472,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           const owner = message.pane_id;
           // a masked prompt drawn while the tab only watches: what is typed to take the pane back is not kept for it
           writeOutput(message.data, false, () => {
-            if (!disposed && paneRef.current === owner && releasedRef.current) secretRef.current = screenSecret();
+            if (!disposed && paneRef.current === owner && releasedRef.current) secretRef.current = secretScreen.read(owner);
           });
         } else if (message.type === "watch-end") {
           // the view ended: the last screen stays, and the banner says the tab is paused

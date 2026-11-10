@@ -164,20 +164,6 @@ export function promptHasCursor(lines: readonly string[], starts: readonly numbe
   return cursorRow === below && below - starts[last]! === 1 && cursorX > 0 && displayWidth(lines[last]!.trimEnd()) >= columns - 1;
 }
 
-/**
- * Whether a prompt on the screen still asks, for a pane whose cursor is known. `onLine`: promptHasCursor. `seen` is
- * the prompt last seen with the cursor on it, which the caller keeps and passes back. `prompt` is whatever tells
- * this asking from another: the page passes the line above with the prompt's words (src/lib/secretScreen.ts). A prompt whose cursor was on
- * its line and has left was answered: the program printed its line break. One whose cursor was never seen on it asks
- * for as long as it is the last text: a script that prints the prompt and a line break and reads below it
- * (`echo "Password:"; read -s`), or a screen first seen after the answer, which reads as it always did.
- */
-export function promptAsks(prompt: string | null, onLine: boolean, seen: string | null): { asks: boolean; seen: string | null } {
-  if (prompt === null) return { asks: false, seen: null };
-  if (onLine) return { asks: true, seen: prompt };
-  return { asks: seen !== prompt, seen };
-}
-
 // where no passphrase is an answer: ssh-keygen says so when it asks for a new one, and asks for the same again
 const TAKES_NONE = /\(empty for no passphrase\):$|^enter same passphrase again:$/i;
 
