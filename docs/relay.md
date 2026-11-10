@@ -156,8 +156,10 @@ two screens instead, as in Bluetooth's numeric comparison:
    waiting phone with its digits and asks for them: typing the six digits, or their last three,
    approves, Enter by itself declines, and anything else answers nothing and is asked again. It
    asks as `add` does, by the same rules for which line answers which request
-   ([A PC with no screen](#a-pc-with-no-screen)): piped input approves nothing. The PC's terminal
-   is the PC itself.
+   ([A PC with no screen](#a-pc-with-no-screen)), and reads the waiting requests once more before
+   it sends an approval typed as three digits. Input that is not a terminal (a pipe, `ssh` without
+   `-t`) answers nothing: the command says so and fails, and no request is declined, so each keeps
+   waiting for a run at a terminal. The PC's terminal is the PC itself.
 
 The approval may also come from a phone already linked to the owner's account, connected through
 the relay: it is shown three sets of digits and must pick the new device's
@@ -374,7 +376,9 @@ it is off, and wait until it is online.
     left the screen unanswered (other devices to ask about, this PC joined an account meanwhile,
     or the device became a member) answers nothing, whenever it comes and whatever it says: what
     was typed at that question and not sent would otherwise arrive under the next one. Either is
-    dropped with a line saying so, and the question is asked again. When that device becomes a
+    dropped with a line saying so, and the question is asked again. What was typed and not sent
+    before the question showed is discarded as it first shows, where the terminal's input can be
+    emptied (`tcflush`), and the word typed full-width with an input method is the same word. When that device becomes a
     member after all while the question waits, the question is dropped and the command ends well.
 
   The approve-here window that listing the PC opens is closed at once
@@ -402,7 +406,11 @@ it is off, and wait until it is online.
   typed for the other request approve nothing then. Only Enter by itself declines. Any other line (a
   `y` out of habit, a mistyped digit) answers nothing: a decline ends the request for good, so
   it is not read into a line that was not one. One line says what approves and what declines,
-  and the question is asked again. That approval is this PC's own, as on its screen:
+  and the question is asked again. Three or six digits that are not the request's are the sign
+  that it may be another device's request, so that line says so in words (**444 are not this
+  request's digits: … shows 111 222. If the device you are adding shows other digits than those,
+  this request is not that device's: press Enter by itself to decline it, and do not type the
+  digits below**) before the question is shown again. That approval is this PC's own, as on its screen:
   the window it opens takes approvals from this PC only.
   The waiting goes on under that question: a request that stops waiting unanswered
   is dropped with a line saying so, and an answer the server did not take is asked for again

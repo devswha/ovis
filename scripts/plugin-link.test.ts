@@ -845,6 +845,8 @@ describe("ovis link, on the PC itself", () => {
 
   const PROMPT = "Phone p1 wants to join your account. Approve it only if its screen shows 111 222. Type 222 to approve, or press Enter to decline: ";
   const NOT_AN_ANSWER = "That line answered nothing: only the digits shown approve a request, and only Enter by itself declines it. Answer again.\n";
+  /** What is said of three or six digits that are not the request's: whose they are not, and that Enter declines. */
+  const otherDigits = (typed: string, label: string, digits: string): string => `That line answered nothing: ${typed} are not this request's digits: ${label} shows ${digits.slice(0, 3)} ${digits.slice(3)}. If the device you are adding shows other digits than those, this request is not that device's: press Enter by itself to decline it, and do not type the digits below.\n`;
 
   it("approves a request only with its own digits (all six, with or without the space, or the last three), and declines it only with Enter by itself", async () => {
     for (const [line, decision] of [
@@ -890,7 +892,7 @@ describe("ovis link, on the PC itself", () => {
 
   it("answers nothing with a line that is neither the digits nor empty: a habitual y or a typo declines nothing, and the question is asked again", async () => {
     for (const then of ["222", ""]) {
-      for (const line of ["n", "no", "y", "Y", "yes", "111", "223", "22", "2222", "1112222", "111222 222", "y222", "222y", "٢٢٢"]) {
+      for (const line of ["n", "no", "y", "Y", "yes", "111", "223", "333444", "22", "2222", "1112222", "111222 222", "y222", "222y", "٢٢٢"]) {
         let asked = 0;
         const { code, out, decisions } = await prompting({
           pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
@@ -899,8 +901,9 @@ describe("ovis link, on the PC itself", () => {
           joined: (decisions) => decisions.length > 0,
         });
         expect(code).toBe(0);
-        // said in one line, and asked again under it
-        expect([line, out.filter((said) => said === NOT_AN_ANSWER || said.includes("Enter to decline"))]).toEqual([line, [PROMPT, NOT_AN_ANSWER, PROMPT]]);
+        // said in one line, and asked again under it. Digits of another value are said to be just that
+        const told = /^(\d{3}|\d{6})$/.test(line) ? otherDigits(line, "Phone p1", "111222") : NOT_AN_ANSWER;
+        expect([line, out.filter((said) => said.startsWith("That line answered nothing") || said.includes("Enter to decline"))]).toEqual([line, [PROMPT, told, PROMPT]]);
         // the line itself decided nothing: the request still waited for the answer typed after it
         expect([line, decisions]).toEqual([line, [{ id: "p1", decision: then === "" ? "decline" : "approve" }]]);
       }
@@ -931,7 +934,7 @@ describe("ovis link, on the PC itself", () => {
       joined: (decisions) => decisions.length > 1,
     });
     expect(first.code).toBe(0);
-    expect(first.out.filter((said) => said === NOT_AN_ANSWER)).toHaveLength(1);
+    expect(first.out.filter((said) => said.startsWith("That line answered nothing"))).toEqual([otherDigits("222", "Phone", "333444")]);
     expect(first.decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "decline" }]);
     // p1 goes away with its digits typed and not sent; they come at p2's prompt, and are typed there again
     let shown = 0;
@@ -949,7 +952,7 @@ describe("ovis link, on the PC itself", () => {
     // the first was dropped as begun at p1, the second is no answer to p2
     expect(again.out.filter((said) => said.startsWith("\nThat line answered nothing") || said.startsWith("That line answered nothing")).map((said) => said.trim().slice(0, 60))).toEqual([
       "That line answered nothing: a request went away while it may",
-      "That line answered nothing: only the digits shown approve a ",
+      "That line answered nothing: 222 are not this request's digit",
     ]);
     expect(again.decisions).toEqual([{ id: "p2", decision: "decline" }]);
   });
@@ -977,7 +980,8 @@ describe("ovis link, on the PC itself", () => {
           joined: (decisions) => decisions.length > 1,
         });
         expect(prompts(out).slice(0, 3)).toEqual([short("p1", "111456"), whole("p2", "222456"), whole("p2", "222456")]);
-        expect(out.filter((said) => said === SIX_ONLY)).toHaveLength(decision === null ? 2 : 1);
+        // its own last three name neither request; p1's six are another request's digits, and said to be
+        expect(out.filter((said) => said.startsWith("That line answered nothing")).slice(0, 2)).toEqual([SIX_ONLY, ...decision === null ? [otherDigits("111456", "Phone p2", "222456")] : []]);
         expect([then, decisions]).toEqual([then, [{ id: "p1", decision: "approve" }, ...decision === null ? [] : [{ id: "p2", decision }]]]);
       }
     }, 30_000);
@@ -1620,7 +1624,9 @@ describe("ovis link, on the PC itself", () => {
   async function scanning(options: {
     args?: string[]; isTty?: boolean; terminal?: boolean; size?: () => { rows: number; columns: number };
     step?: (pc: { account: string | null; enrolling: boolean; devices: Row[] }, looks: number, elapsed: number, stop: AbortController) => void;
-    said?: (text: string, type: (line: string) => void, answer: (line: string, waits?: number) => void, stop: AbortController) => void;
+    said?: (text: string, type: (line: string) => void, answer: (line: string, waits?: number) => void, stop: AbortController, begin: (text: string) => void) => void;
+    /** the terminal's input can be discarded (tcflush), as on Linux and macOS */
+    discard?: boolean;
     cancel?: () => Response;
     /** an answer to a removal instead of the PC's own; with none, what happens to the PC as the removal is on its way */
     revoke?: (pc: { account: string | null; enrolling: boolean; devices: Row[] }, id: string) => Response | undefined;
@@ -1697,17 +1703,18 @@ describe("ovis link, on the PC itself", () => {
         return options.service ? options.service(request, () => service.fetch(request), { pc, stop, now: time.now }) : service.fetch(request);
       },
       terminal: options.terminal ?? true, isTty: options.isTty ?? true, ...options.size ? { size: options.size } : {},
+      ...options.discard === true ? { discard: keys.discard } : {},
       out: (text) => {
         out.push(text);
         // the sign-in's code, not the pairing code shown later
         const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text);
         if (shown && !approved) { approved = true; service.approveDevice(shown[1]!, "acct_1"); }
         const later = (line: string, waits: number): void => time.after(() => { if (waits <= 1) keys.type(line); else later(line, waits - 1); });
-        options.said?.(text, keys.type, (line, waits = 1) => later(line, waits), stop);
+        options.said?.(text, keys.type, (line, waits = 1) => later(line, waits), stop, keys.begin);
       },
     });
     const paths = local.calls.map((call) => `${call.method} ${call.path}`);
-    return { code, out, text: out.join(""), offers, renewedAt, cancels, revoked, named, service, pc, time, paths, looks: () => looks };
+    return { code, out, text: out.join(""), offers, renewedAt, cancels, revoked, named, service, pc, time, paths, looks: () => looks, discards: keys.discards };
   }
 
   const ON = "\x1b[?1049h";
@@ -1970,6 +1977,46 @@ describe("ovis link, on the PC itself", () => {
       expect(out).toContain("Kept.\n");
       expect(revoked).toEqual([]);
     }
+  });
+
+  it("discards what the terminal holds as the question shows: the word keep begun before it keeps nothing, and is typed under it to keep", async () => {
+    // keep typed and not sent before anything was asked (as at an earlier run's question): its Enter, pressed at this
+    // question well past the dwell, sends an empty line
+    const ahead = await scanning({
+      discard: true,
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, answer, _stop, begin) => {
+        if (text.includes("Signed in.")) begin("keep");
+        if (text.includes("Keep that device?")) answer("", 2);
+      },
+    });
+    expect(ahead.out).not.toContain("Kept.\n");
+    expect(ahead.revoked).toEqual([PHONE.id]);
+    // once for the question, as it first shows
+    expect(ahead.discards()).toBe(1);
+    // typed under the question, it keeps: what is typed there is never discarded
+    const under = await scanning({
+      discard: true,
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer("keep", 2); },
+    });
+    expect(under.out).toContain("Kept.\n");
+    expect(under.revoked).toEqual([]);
+  });
+
+  it("reads the word keep typed full-width, as an input method left in its wide mode types it, and still nothing else", async () => {
+    const wide = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer("ｋｅｅｐ\u3000"); },
+    });
+    expect(wide.out).toContain("Kept.\n");
+    expect(wide.revoked).toEqual([]);
+    const yes = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer("ｙ"); },
+    });
+    expect(yes.out).toContain("Only the word keep keeps it, not y.\n");
+    expect(yes.revoked).toEqual([PHONE.id]);
   });
 
   it("takes no line typed before the question could be read as its answer", async () => {
@@ -2630,13 +2677,16 @@ describe("pair --approve, asked as ovis add asks", () => {
    * `pair --approve` over the requests that wait: `said` hears every line, to `type` a line at that very moment or to
    * `answer` two seconds later (the time a person takes to compare the digits), and `decide` answers for the PC's server.
    */
-  async function approving(options: { pairings: WaitingDevice[]; said: (text: string, type: (line: string) => void, answer: (...lines: string[]) => void) => void; terminal?: boolean; lines?: AsyncIterator<string>; decide?: (attempt: number) => "taken" | "gone" | "away"; discard?: null; keys?: ReturnType<typeof keyboard> }) {
+  async function approving(options: { pairings: WaitingDevice[]; said: (text: string, type: (line: string) => void, answer: (...lines: string[]) => void) => void; terminal?: boolean; lines?: AsyncIterator<string>; decide?: (attempt: number) => "taken" | "gone" | "away"; list?: (count: number) => WaitingDevice[]; discard?: null; keys?: ReturnType<typeof keyboard> }) {
     let at = Date.parse("2026-11-06T12:00:00Z");
     const keys = options.keys ?? keyboard();
     const out: string[] = [];
     const decisions: { id: string; decision: string }[] = [];
     let attempts = 0;
+    let listed = 0;
+    const list = options.list;
     const code = await approveWaiting(options.pairings, {
+      ...list === undefined ? {} : { list: async () => list(++listed) },
       lines: options.lines ?? keys.lines, terminal: options.terminal ?? true, signal: new AbortController().signal, now: () => at,
       ...options.discard === null ? {} : { discard: keys.discard },
       out: (text) => {
@@ -2749,7 +2799,8 @@ describe("pair --approve, asked as ovis add asks", () => {
   it("stops when the PC's server takes no answer and nothing can be typed: it never asks in a circle", async () => {
     const { code, out, decisions } = await approving({
       pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
-      lines: answers(), terminal: false,
+      // a terminal whose input ended (Ctrl+D): each request is declined as it shows
+      lines: answers(),
       said: () => undefined,
       decide: () => "away",
     });
@@ -2795,19 +2846,97 @@ describe("pair --approve, asked as ovis add asks", () => {
     expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
   });
 
-  it("declines every request when its input is not a terminal, whatever was piped in, without reading it", async () => {
+  it("answers no request when its input is not a terminal, whatever was piped in: it says so, fails, and declines none, the person's own phone included", async () => {
     let reads = 0;
+    let listed = 0;
+    const sent: string[] = [];
     const lines = answers("222", "444");
+    const out: string[] = [];
+    const code = await approveWaiting([waiting("p1", "111222"), waiting("p2", "333444")], {
+      lines: { next: () => { reads++; return lines.next(); } }, terminal: false, signal: new AbortController().signal,
+      out: (text) => { out.push(text); },
+      list: async () => { listed++; return []; },
+      decide: async (id, decision) => { sent.push(`${id} ${decision}`); return "taken"; },
+    });
+    // an ssh without -t costs a refusal, not the request: it still waits for a run at a terminal
+    expect(code).toBe(1);
+    expect(out).toEqual(["This is not run in a terminal, so no request can be answered here. Nothing was declined: the requests keep waiting. Run this in a terminal to answer them (over ssh, run ssh -t).\n"]);
+    expect(sent).toEqual([]);
+    expect([reads, listed]).toEqual([0, 0]);
+  });
+
+  it("says in so many words that digits of another value are not this request's, and that Enter declines it", async () => {
+    // someone else's request is asked about first; the person types what their own phone shows
+    let asked = 0;
     const { code, out, decisions } = await approving({
       pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
-      lines: { next: () => { reads++; return lines.next(); } }, terminal: false,
-      said: () => undefined,
+      said: (said, _type, answer) => {
+        // p2's last three at p1's prompt; then, having read what was said, Enter
+        if (said.includes("Phone p1 wants")) answer(++asked === 1 ? "444" : "");
+        if (said.includes("Phone p2 wants")) answer("444");
+      },
     });
     expect(code).toBe(0);
-    expect(reads).toBe(0);
-    expect(out[0]).toBe("This is not run in a terminal, so no request can be answered here: each is declined as it shows. Run this in a terminal to approve one (over ssh, run ssh -t).\n");
-    expect(out.filter((said) => said === "Declined.\n")).toHaveLength(2);
-    expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
+    const P1 = "Phone p1 wants to pair with this PC. Approve it only if its screen shows 111 222. Type 222 to approve, or press Enter to decline: ";
+    expect(out.slice(0, 4)).toEqual([
+      P1,
+      "That line answered nothing: 444 are not this request's digits: Phone p1 shows 111 222. If the device you are adding shows other digits than those, this request is not that device's: press Enter by itself to decline it, and do not type the digits below.\n",
+      P1,
+      "Declined.\n",
+    ]);
+    expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "approve" }]);
+    // all six of another request, full-width and spaced as an input method types them, are told the same way
+    let again = 0;
+    const six = await approving({
+      pairings: [waiting("p1", "111222")],
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer(++again === 1 ? "３３３ ４４４" : ""); },
+    });
+    expect(six.out[1]).toStartWith("That line answered nothing: 333444 are not this request's digits: Phone p1 shows 111 222.");
+    expect(six.decisions).toEqual([{ id: "p1", decision: "decline" }]);
+    // a line that is no digits keeps the plain words
+    let third = 0;
+    const habit = await approving({
+      pairings: [waiting("p1", "111222")],
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer(++third === 1 ? "y" : ""); },
+    });
+    expect(habit.out[1]).toBe("That line answered nothing: only the digits shown approve a request, and only Enter by itself declines it. Answer again.\n");
+  });
+
+  it("reads the waiting requests again before three digits approve: one that came since and ends in the same three makes all six needed", async () => {
+    // p1 was listed when the command started; p9 asked after that, and its screen ends in 222 too
+    let asked = 0;
+    const lists: number[] = [];
+    const { code, out, decisions } = await approving({
+      pairings: [waiting("p1", "111222")],
+      list: (count) => { lists.push(count); return [waiting("p1", "111222"), waiting("p9", "999222")]; },
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer(++asked === 1 ? "222" : "111222"); },
+    });
+    expect(code).toBe(0);
+    expect(out).toEqual([
+      "Phone p1 wants to pair with this PC. Approve it only if its screen shows 111 222. Type 222 to approve, or press Enter to decline: ",
+      "That line answered nothing: another request's digits end in 222 too, so only all six digits approve Phone p1 now.\n",
+      "Phone p1 wants to pair with this PC. Approve it only if its screen shows 111 222. Another request's digits end in 222 too, so type all six (111222) to approve, or press Enter to decline: ",
+      "Approved.\n",
+    ]);
+    // read once, for the three digits: all six name the request by themselves
+    expect(lists).toEqual([1]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
+    // with nobody beside it, three digits approve, after that one look
+    const alone = await approving({
+      pairings: [waiting("p1", "111222")],
+      list: () => [waiting("p1", "111222"), waiting("p9", "999333")],
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer("222"); },
+    });
+    expect(alone.decisions).toEqual([{ id: "p1", decision: "approve" }]);
+    // a list that cannot be read: the three digits approve nothing, and all six still do
+    let third = 0;
+    const away = await approving({
+      pairings: [waiting("p1", "111222")],
+      list: () => { throw new Error("no answer"); },
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer(++third === 1 ? "222" : "111 222"); },
+    });
+    expect(away.out[1]).toBe("The waiting requests could not be read again just now, so the last three digits approved nothing. Phone p1 is asked about again.\n");
+    expect(away.decisions).toEqual([{ id: "p1", decision: "approve" }]);
   });
 
   it("says so when a request no longer waits, and goes on to the next", async () => {

@@ -867,19 +867,15 @@ describe("pair --approve", () => {
     return { server, decisions };
   }
 
-  it("approves nothing with lines piped in, whatever they carry: it is not a terminal, so each request is declined as it shows", async () => {
+  it("answers nothing with lines piped in, whatever they carry: it is not a terminal, so it says so and fails, and no request is declined", async () => {
     const { server, decisions } = waitingPc();
     try {
-      // both requests' digits, as `printf '222\n444\n' | ovis pair --approve` hands them over
+      // both requests' digits, as `printf '222\n444\n' | ovis pair --approve` hands them over (or an ssh without -t)
       const result = await run("pair", { PORT: String(server.port) }, { args: ["--approve"], stdin: "222\n444\n" });
-      expect(result.exitCode, result.err).toBe(0);
-      expect(result.out).toBe([
-        "This is not run in a terminal, so no request can be answered here: each is declined as it shows. Run this in a terminal to approve one (over ssh, run ssh -t).",
-        "Phone one wants to pair with this PC. Approve it only if its screen shows 111 222. Type 222 to approve, or press Enter to decline: Declined.",
-        "Phone two wants to pair with this PC. Approve it only if its screen shows 333 444. Type 444 to approve, or press Enter to decline: Declined.",
-        "",
-      ].join("\n"));
-      expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
+      expect(result.exitCode, result.err).toBe(1);
+      expect(result.out).toBe("This is not run in a terminal, so no request can be answered here. Nothing was declined: the requests keep waiting. Run this in a terminal to answer them (over ssh, run ssh -t).\n");
+      // the requests still wait, the person's own phone among them
+      expect(decisions).toEqual([]);
     } finally { await server.stop(true); }
   });
 

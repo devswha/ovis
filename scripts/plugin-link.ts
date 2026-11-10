@@ -246,6 +246,9 @@ export function approvalPrompt(device: AskingDevice, whole = false): string {
  * (null), a `y` typed out of habit and a mistyped digit among them: a decline ends the request for good, so it is not
  * read into a line that was not one, and the question is asked again. A request whose digits are not six digits is
  * approved by nothing (a bare Enter must never match digits that are missing).
+ *
+ * install.sh looks for this function by its name (`add_reads_answers`): its `--add` runs the add step only on a
+ * release that has it. Keep the words `export function answerOf`.
  */
 export function answerOf(line: string, digits: string, whole = false): "approve" | "decline" | null {
   // NFKC first: an input method left in its wide mode types the digits full-width (２２２), and they are the same digits
@@ -423,7 +426,15 @@ function asking(input: AnswerInput) {
           reply = answerOf(line.text, open.digits, open.whole);
           three = reply === "approve" && answerOf(line.text, open.digits, true) === null;
           // neither the digits nor Enter by itself: it declines nothing, and the question is asked again
-          if (reply === null) dropped = `${!SIX_DIGITS.test(open.digits) ? "this request cannot be approved here" : open.whole ? "only all six digits shown approve this request" : "only the digits shown approve a request"}, and only Enter by itself declines it. Answer again.`;
+          if (reply === null) {
+            const typed = line.text.normalize("NFKC").replace(/\s/g, "");
+            // Digits of another value, well formed: the strongest sign that this request is not the device the person
+            // holds. It is said in so many words, with what declines, since the prompt shown again names this
+            // request's digits and typing those approves it. (With `whole`, its own last three are not such a line.)
+            dropped = SIX_DIGITS.test(open.digits) && /^(?:[0-9]{3}|[0-9]{6})$/.test(typed) && typed !== open.digits.slice(3)
+              ? `${typed} are not this request's digits: ${open.label} shows ${open.digits.slice(0, 3)} ${open.digits.slice(3)}. If the device you are adding shows other digits than those, this request is not that device's: press Enter by itself to decline it, and do not type the digits below.`
+              : `${!SIX_DIGITS.test(open.digits) ? "this request cannot be approved here" : open.whole ? "only all six digits shown approve this request" : "only the digits shown approve a request"}, and only Enter by itself declines it. Answer again.`;
+          }
           continue;
         }
         // one that came too soon does not stand in the way of the answer typed after it
@@ -549,6 +560,12 @@ function asking(input: AnswerInput) {
 export interface ApproveOptions extends AnswerInput {
   /** Sends an answer to the PC's server: `taken`, `gone` when the request no longer waits, `away` when the server gave no answer. */
   readonly decide: (id: string, decision: "approve" | "decline") => Promise<"taken" | "gone" | "away">;
+  /**
+   * The requests that wait now (`GET /api/relay/pairings`), read again before an approval typed as the last three
+   * digits is sent: one that came since the command started may end in the same three. It throws when the PC's
+   * server gives no answer. Without it, only the requests the command started with are compared.
+   */
+  readonly list?: () => Promise<readonly WaitingDevice[]>;
 }
 
 /**
@@ -558,11 +575,31 @@ export interface ApproveOptions extends AnswerInput {
  */
 export async function approveWaiting(pairings: readonly WaitingDevice[], options: ApproveOptions): Promise<number> {
   const { out, signal } = options;
+  // What is not a terminal answers nothing, so nothing is sent for it either: the requests keep waiting, the person's
+  // own phone among them, for a run at a terminal or the app. (A decline ends a request for good; `ovis add --approve`,
+  // whose run opened the window those requests came through, declines them as they show.)
+  if (options.terminal !== true) {
+    out("This is not run in a terminal, so no request can be answered here. Nothing was declined: the requests keep waiting. Run this in a terminal to answer them (over ssh, run ssh -t).\n");
+    return 1;
+  }
   const desk = asking(options);
   for (const pairing of pairings) {
     desk.ask(pairing, pairings);
     for (;;) {
       desk.look();
+      // Three digits approve a request only while no other waiting one ends in them: one may have come since the
+      // command read the list, so it is read once more before such an approval is sent (as `ovis add --approve` does)
+      if (desk.byThree && options.list !== undefined) {
+        let waiting: readonly WaitingDevice[] | null = null;
+        try { waiting = await options.list(); } catch { /* said below */ }
+        if (waiting === null) {
+          // not known whether another request shares them: the three digits approve nothing, and it is asked again
+          out(`The waiting requests could not be read again just now, so the last three digits approved nothing. ${plainLabel(pairing.label)} is asked about again.\n`);
+          desk.ask(pairing, pairings);
+          continue;
+        }
+        desk.beside(waiting);
+      }
       const answer = desk.answer();
       if (answer !== null) {
         const sent = await options.decide(answer.id, answer.decision);
@@ -1119,8 +1156,10 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
           const asked = asking;
           // no answer (not a terminal, Ctrl+D, or none in time) keeps nothing: nobody vouched for those devices
           // the word itself, typed in full: a y, begun for anything else or by habit, vouches for nobody
-          const keep = reply !== null && reply.trim().toLowerCase() === "keep";
-          if (reply !== null && !keep && /^y(es)?$/i.test(reply.trim())) say(`Only the word keep keeps ${asked.devices.length === 1 ? "it" : "them"}, not y.\n`);
+          // NFKC first: an input method left in its wide mode types it full-width (ｋｅｅｐ), and it is the same word
+          const word = reply === null ? null : reply.normalize("NFKC").trim().toLowerCase();
+          const keep = word === "keep";
+          if (word !== null && !keep && /^y(es)?$/.test(word)) say(`Only the word keep keeps ${asked.devices.length === 1 ? "it" : "them"}, not y.\n`);
           if (reply === null) say(keys.ended ? `No answer can be typed here, so ${asked.devices.length === 1 ? "it is" : "they are"} not kept.\n` : `No answer came in time, so ${asked.devices.length === 1 ? "it is" : "they are"} not kept.\n`);
           atPrompt = false;
           asking = null;
@@ -1190,7 +1229,13 @@ async function addByQr(options: LinkOptions, api: Api, joining: Joining): Promis
       if (screen && (size === null ? "" : `${size.columns}x${size.rows}`) !== drawnFor) draw();
       sort();
       if (asking !== null && !atPrompt && reply === null) {
-        asking.shownAt ??= now();
+        if (asking.shownAt === null) {
+          // What was typed before this question and not sent would come with the Enter pressed at it: it is discarded
+          // now, once for a question (as `asking` does for a request). Where it cannot be, such a line still keeps
+          // nothing unless it is the word keep
+          if (options.terminal === true && keys !== null && !keys.ended) { try { options.discard?.(); } catch { /* the line is read as it comes */ } }
+          asking.shownAt = now();
+        }
         out(asking.prompt);
         atPrompt = true;
       }

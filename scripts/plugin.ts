@@ -874,6 +874,12 @@ async function approvePairings(): Promise<number> {
     discard: discardTyped,
     // Ctrl+C ends the process as it is
     signal: new AbortController().signal,
+    // read again before three digits approve: a request that came since may end in the same three
+    list: async () => {
+      const again = await fetch(`${origin}/api/relay/pairings`, { headers, signal: AbortSignal.timeout(15_000) });
+      if (!again.ok) throw new Error(`could not read the waiting pairings (${again.status})`);
+      return ((await again.json()) as { pairings: WaitingDevice[] }).pairings;
+    },
     decide: async (id, decision) => {
       try {
         const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
