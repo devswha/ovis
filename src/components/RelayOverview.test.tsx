@@ -339,7 +339,7 @@ describe("RelayOverview", () => {
   it("says a reason shared by every shown attention row once, as the list caption, keeps those rows to name and relay or last seen, and draws them on the plain surface", () => {
     const html = renderMarkup({ pcs: f4Pcs(), mode: "account", defaultRelay: GLOBAL, now: NOW });
     const section = /<section class="relay-overview-attention-section"[\s\S]*?<\/section>/.exec(html)?.[0] ?? "";
-    const reason = "Add window closed · an account member must approve";
+    const reason = "Ask to join · a device of your account connected to it approves";
     expect(section.match(new RegExp(reason, "g"))).toHaveLength(1);
     expect(section).toContain(`<p class="relay-overview-attention-caption">${reason}</p>`);
     // PF-1: the shared reason and View all share one head row above the list, so the head costs the table no second line
@@ -393,7 +393,7 @@ describe("RelayOverview", () => {
       targetVersion: "1.9",
     });
     expect(html).toContain("new · 8 min left");
-    expect(html).toContain("Add window closed · an account member must approve");
+    expect(html).toContain("Ask to join · a device of your account connected to it approves");
     expect(html).toContain("update to 1.9");
 
     const offlineReasons = (lang: "en" | "ko" | "ja" | "zh"): string[] => [

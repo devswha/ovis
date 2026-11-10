@@ -7,12 +7,24 @@ export function relayFailureDetail(detail: string | null | undefined): string | 
   return detail;
 }
 
+export type RelayFailureFlow = "new" | "join";
+
 /**
  * What a failed connection says (shellState.ts failureOf), on the shell's own screen and in the
  * Add-a-PC sheet alike: its title, the sentence under it, filtered detail, and whether Try again can help.
+ * The sheet names its flow, since a refusal there has another cause and another fix than a pairing link's:
+ * "new" adds a PC by the digits typed from its screen and approved on it, "join" asks a device of the
+ * account that is connected to the PC. Without a flow the texts are the link's.
  */
-export function relayFailureText(t: Translate, failure: RelayFailure, name: string, detail?: string | null): { title: string; copy: string; detail: string | null; retry: boolean } {
+export function relayFailureText(t: Translate, failure: RelayFailure, name: string, detail?: string | null, flow?: RelayFailureFlow): { title: string; copy: string; detail: string | null; retry: boolean } {
   const filtered = relayFailureDetail(detail);
+  if (flow === "new") {
+    if (failure === "pair-unavailable") return { title: t("{name} stopped waiting to be added", { name }), copy: t("Its add window closed, or Ovis restarted there. On {name}, open Settings → Devices and PCs → Account and choose Add this PC to my account again, then try again here.", { name }), detail: filtered, retry: true };
+    if (failure === "pair-declined") return { title: t("{name} did not approve this device", { name }), copy: t("It was declined on {name}, or not approved there within 90 seconds. Try again, then press Approve on {name}.", { name }), detail: filtered, retry: true };
+  } else if (flow === "join") {
+    if (failure === "pair-unavailable") return { title: t("{name} cannot take this device yet", { name }), copy: t("No device of your account is connected to {name} to approve it. Open {name} in Ovis on a device that already uses it and keep it open, then try again. If no device of your account uses {name} yet, choose Add this PC to my account on {name} again.", { name }), detail: filtered, retry: true };
+    if (failure === "pair-declined") return { title: t("No device of your account approved this one"), copy: t("Nobody picked the number within 90 seconds, or it was denied. Open {name} in Ovis on a device that already uses it, keep it open, then try again.", { name }), detail: filtered, retry: true };
+  }
   switch (failure) {
     case "pair-declined": return { title: t("{name} did not approve this device", { name }), copy: t("It was declined on the PC, or not approved within 90 seconds. Open the link again to compare new numbers."), detail: filtered, retry: false };
     case "pair-unavailable": return { title: t("{name} is not taking new devices right now", { name }), copy: t("Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other devices. Copy a new link on the PC, or wait a few minutes."), detail: filtered, retry: false };

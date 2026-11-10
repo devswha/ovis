@@ -9,7 +9,7 @@ import { serverScopePath } from "../lib/shellMode.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { CheckPcsButton } from "./AccountPcs.tsx";
-import { formatAbsoluteTime, formatProbeLine, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
+import { askToJoinReason, formatAbsoluteTime, formatProbeLine, localStateWord, pcDotState, routeNode, type DashboardRow } from "./relayPcState.tsx";
 import { StatusDot } from "./StatusDot.tsx";
 
 export type DashboardAttention = ReturnType<typeof dashboardModel>["attention"][number];
@@ -78,7 +78,7 @@ export function RelayPcTable({
     if (row.state === "needs-update") return t("Update Ovis on it");
     if (listedRow(row) && row.state === "needs-approval") {
       if (freshIds.has(row.server_id) && row.added_at !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((Date.parse(row.added_at) + 10 * 60_000 - now) / 60_000)) });
-      if (phone && row.added_at !== null && row.join !== undefined) return t("Add window closed · an account member must approve");
+      if (phone && row.added_at !== null && row.join !== undefined) return askToJoinReason(t);
     }
     return null;
   };
@@ -95,7 +95,7 @@ export function RelayPcTable({
   const stateWord = (row: DashboardRow, updating: boolean): ReactNode => {
     const word = stateHeadline(row, updating);
     const title = !updating && row.state === "needs-approval" && !freshIds.has(row.server_id) && row.added_at !== null && row.join !== undefined
-      ? `${word} · ${t("Add window closed · an account member must approve")}` : word;
+      ? `${word} · ${askToJoinReason(t)}` : word;
     return <span className="relay-pc-state-word" title={title}>{word}</span>;
   };
 

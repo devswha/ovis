@@ -49,6 +49,11 @@ export function localStateWord(check: PcStatus | null, t: Translate): string {
   return check.kind === "answered" ? t("Answers") : t("No answer");
 }
 
+/** What a listed PC past its 10-minute Add window asks of this device, in the same words wherever it is drawn. */
+export function askToJoinReason(t: Translate): string {
+  return t("Ask to join · a device of your account connected to it approves");
+}
+
 export function formatAbsoluteTime(iso: string): string {
   try { return new Date(iso).toLocaleString(currentLocale()); } catch { return iso; }
 }
