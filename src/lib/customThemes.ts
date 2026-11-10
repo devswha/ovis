@@ -42,10 +42,14 @@ const SIDES = ["dark", "light"] as const;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A name as it is kept: one line, no control characters, at most MAX_THEME_NAME characters. */
+/**
+ * A name as it is kept: one line, at most MAX_THEME_NAME characters, without control characters or
+ * the marks that reorder the text around it (a name from someone else's file is drawn in Settings).
+ */
 function cleanName(value: unknown): string {
   if (typeof value !== "string") return "";
-  return [...value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim()].slice(0, MAX_THEME_NAME).join("").trim();
+  const plain = value.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+  return [...plain.replace(/\s+/g, " ").trim()].slice(0, MAX_THEME_NAME).join("").trim();
 }
 
 const color = (value: unknown): string | null => {

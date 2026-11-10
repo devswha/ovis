@@ -103,6 +103,9 @@ describe("readThemeFile", () => {
     expect(read.name.length).toBeLessThanOrEqual(MAX_THEME_NAME);
     expect(read.name).not.toMatch(/[\n\u0007\u2028]/);
     expect(read.name.startsWith("Evil name")).toBe(true);
+    // a mark that would draw the rest of the line backwards is dropped, in a file and in a stored list
+    expect(theme(JSON.stringify({ name: "ab\u202ecd\u2066ef\u200f", base00: "#000000", base05: "#ffffff" })).name).toBe("abcdef");
+    expect(sanitizeCustomThemes({ themes: [{ ...read, name: "x\u202ey" }], dark: null, light: null }).themes[0]!.name).toBe("xy");
     expect(Object.keys(read)).toEqual(["id", "name", "dark"]);
     expect(Object.values(read.dark!).every((color) => /^#[0-9a-f]{6}$/.test(color))).toBe(true);
   });
