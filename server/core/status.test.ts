@@ -536,7 +536,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     // Given herdr's idle word arriving just before Claude writes the resumed turn's rest: the event's own read of
     // the transcript finds none, and the rest is there for the read its report makes next (written here from
     // the GJC poll, which runs between the two).
-    const between = spyOn(h.status.gjc, "poll").mockImplementationOnce(() => { turnEnds(h); });
+    const between = spyOn(h.status.gjc, "poll").mockImplementationOnce(async () => { turnEnds(h); });
     const told = drained.length;
     try { handlers.onStatus(id, "idle", "claude"); } finally { between.mockRestore(); }
     // Then the queue hears of the hold's end from that report: no later read would find anything changed.
@@ -553,7 +553,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).not.toBeNull();
     // Given a wakeup that fires between herdr's idle event and the read its report makes: the report told the
     // queue the pane rests a moment before.
-    const between = spyOn(h.status.gjc, "poll").mockImplementationOnce(() => { fires(h.path); });
+    const between = spyOn(h.status.gjc, "poll").mockImplementationOnce(async () => { fires(h.path); });
     try { handlers.onStatus(id, "idle", "claude"); } finally { between.mockRestore(); }
     // Then the queue is told of the hold at once, not by the delivery's own check.
     expect(h.status.queueHeld(id)).toBe(true);
@@ -631,6 +631,31 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       expect(h.pending.next(id)).toBeNull();
       handlers.onStatus(id, "idle", "claude");
     }
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
+  it("keeps the queue held when herdr's late working for the turn before the fire is heard twice: in a snapshot, then in its event", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    h.next();
+    turnEnds(h);
+    fires(h.path); h.poll();
+    queue(h);
+    expect(h.status.queueHeld(id)).toBe(true);
+    // When a snapshot is answered between herdr's change to working for the short turn and that change's event.
+    h.herdrSays({ ...h.pane, agent_status: "working" });
+    await h.snapshot();
+    handlers.onStatus(id, "working", "claude");
+    expect(h.status.queueHeld(id)).toBe(true);
+    // And herdr's idle word for that turn follows.
+    h.herdrSays(h.pane);
+    handlers.onStatus(id, "idle", "claude");
+    // Then the word heard a second time ended nothing of the fire's hold: the message does not go into the wakeup's turn.
+    expect(h.pending.next(id)).toBeNull();
+    expect(h.status.queueHeld(id)).toBe(true);
+    // And the wakeup turn's rest lets it go.
+    turnEnds(h); h.poll();
     expect(h.status.queueHeld(id)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });

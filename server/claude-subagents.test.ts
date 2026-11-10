@@ -1665,6 +1665,41 @@ describe("ClaudeSubagentStatus", () => {
       }
     });
 
+    it("keeps the hold when herdr's late working for the turn before the fire is heard twice", async () => {
+      for (const heard of ["after the fire was read", "before the fire was written", "with the fire written between the two"] as const) {
+        for (const end of ["herdr", "rest", "time"] as const) {
+          const s = session();
+          s.prompt(1);
+          rest(s, 2);
+          let now = NOW;
+          const { status, told } = await tracked(s, () => now);
+          try {
+            status.quiet("p1", true);
+            s.prompt(3);
+            rest(s, 4);
+            if (heard === "after the fire was read") { fire(s, 5); status.poll(); }
+            // herdr's working for the short turn, late, and the same word once more: a snapshot read the
+            // change, then its event came. The second has no rest word of herdr's before it to place it
+            status.busy("p1", "herdr");
+            if (heard === "with the fire written between the two") fire(s, 5);
+            status.busy("p1", "herdr");
+            if (heard === "before the fire was written") { fire(s, 5); status.poll(); }
+            expect(status.loopHolds("p1")).toBe(true);
+            // nor does herdr's rest word for the short turn end the hold
+            status.quiet("p1", true);
+            status.poll();
+            expect(status.loopHolds("p1")).toBe(true);
+            expect(told.at(-1)).toBe(true);
+            // herdr's working for the wakeup's own turn, its rest, or its time does, and is told
+            if (end === "herdr") status.busy("p1", "herdr");
+            else { if (end === "rest") rest(s, 6); else now += LOOP_HOLD_MS; status.poll(); }
+            expect(status.loopHolds("p1")).toBe(false);
+            expect(told.at(-1)).toBe(false);
+          } finally { status.stop(); }
+        }
+      }
+    });
+
     it("places herdr's late working by its rest word though the pane's session was looked up again since that word", async () => {
       const s = session();
       s.prompt(1);

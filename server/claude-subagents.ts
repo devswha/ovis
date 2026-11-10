@@ -1527,11 +1527,15 @@ export type BusySource = "herdr" | "chat";
  * A busy signal, and what places its turn in the transcript: for a chat send, when its Enter was
  * sent (`sentAt`; Claude dates the entry it writes for it no earlier); for herdr's, the
  * transcript's size at herdr's last word that the pane did no work (`quiet`).
+ * `again`: herdr's working heard with its last word at working already, so with no rest word to
+ * place it. The same word a second time (a snapshot read the change, then its event came), or a
+ * turn begun under the subagents' spinner: it is matched as any other, but may be of a turn told
+ * before, and tells nothing of a self-resumed turn (Claim.from).
  */
-interface Signal { source: BusySource; at: number; sentAt?: number; quiet?: { id: string; size: number } }
+interface Signal { source: BusySource; at: number; sentAt?: number; quiet?: { id: string; size: number }; again?: true }
 
-/** A signal whose turn is not written yet: the first one begun past `size` is its own. */
-interface Barrier { size: number; at: number }
+/** A signal whose turn is not written yet: the first one begun past `size` is its own. `again`: as the signal's. */
+interface Barrier { size: number; at: number; again?: true }
 
 /**
  * How long a signal holds the pane shown working while its turn is not written. Claude writes a
@@ -1548,6 +1552,7 @@ const BUSY_HOLD_MS = 5000;
  * `from`: the transcript's size when the signal `turn` was matched to was heard. One heard before a
  * rest was written may be of the turn that rest ended, though the turn it took began after it
  * (settle): it tells nothing of that turn (ClaudeSubagentStatus.poll, a self-resumed turn's hold).
+ * -1 for a signal that may be of a turn told before, whenever it was heard (Signal.again).
  */
 interface Claim { turn: number; from: number; barriers: Barrier[]; held: Barrier[] }
 
@@ -1647,7 +1652,8 @@ export class ClaudeSubagentStatus {
   /**
    * A `/loop` wakeup fired and herdr has not told the turn it resumed: the pane's queue holds, whatever
    * herdr reads the pane as. Until that turn's rest is written, herdr's working tells that turn or one
-   * after it (busy; its working for a turn before the fire, come late, ends nothing), or LOOP_HOLD_MS
+   * after it (busy; its working for a turn before the fire, come late, ends nothing, nor does that
+   * word heard a second time, nor one heard before the rest the fire followed), or LOOP_HOLD_MS
    * passed; never by herdr reading the pane at rest (quiet), which it does until it reads the turn.
    */
   loopHolds(paneId: string): boolean {
@@ -1676,6 +1682,7 @@ export class ClaudeSubagentStatus {
     const tracked = this.panes.get(paneId);
     const signal: Signal = { source, at: this.now(), ...(sentAt !== undefined ? { sentAt } : {}) };
     if (source === "herdr" && tracked) {
+      if (tracked.works === true) signal.again = true;
       if (tracked.quiet && tracked.quiet.path === tracked.path) signal.quiet = { id: tracked.quiet.id, size: tracked.quiet.size };
       delete tracked.quiet;
       tracked.works = true;
@@ -1689,8 +1696,10 @@ export class ClaudeSubagentStatus {
       // herdr's working with a /loop fire already written tells the turn it resumed, or one not written yet
       // (null): the queue goes by herdr's status from here. Not one matched to a turn begun before the
       // fire: herdr's words for the turn before it can come after the fire was written, and its rest
-      // word next would let queued input into the turn the wakeup resumed
-      if (source === "herdr" && (told === null || told >= (parent.loopAt ?? -1))) turns.loop = { fire: Math.max(turns.loop.fire, parent.loopAt ?? -1), since: null };
+      // word next would let queued input into the turn the wakeup resumed. Nor that word heard once
+      // more (`again`), which nothing places before the fire: the hold stands until herdr's working
+      // after a rest word of its own, the turn's rest, or its time
+      if (source === "herdr" && !signal.again && (told === null || told >= (parent.loopAt ?? -1))) turns.loop = { fire: Math.max(turns.loop.fire, parent.loopAt ?? -1), since: null };
     }
     // a pane whose transcript is not found yet keeps its latest signals, not every one
     else this.deferred.set(paneId, [...(this.deferred.get(paneId) ?? []).slice(-15), signal]);
@@ -1962,8 +1971,8 @@ function match(turns: Turns, parent: Parent, signal: Signal, size: number): numb
       else if (parent.turnOpen) start = lastStart(starts, (each) => each.turn && each.end > floor && each.end === turnAt(parent));
     }
   }
-  if (start !== undefined) { claim.turn = start.end; claim.from = size; }
-  else claim.barriers.push({ size, at: signal.at });
+  if (start !== undefined) { claim.turn = start.end; claim.from = signal.again ? -1 : size; }
+  else claim.barriers.push({ size, at: signal.at, ...(signal.again ? { again: true as const } : {}) });
   return start?.end ?? null;
 }
 
@@ -1976,7 +1985,7 @@ function settle(turns: Turns, parent: Parent, now: number | null): void {
       const start = startsFor(parent, source).find((each) => each.end > floor);
       if (start === undefined) break;
       claim.turn = start.end;
-      claim.from = barrier.size;
+      claim.from = barrier.again ? -1 : barrier.size;
       claim.barriers.shift();
     }
     if (now !== null) {
