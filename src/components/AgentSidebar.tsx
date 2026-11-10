@@ -13,7 +13,8 @@ import { agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, type Agen
 import { assignAgentGroup, liveGroupKeys, loadFoldedAgentGroups, rowAgentGroup, saveFoldedAgentGroups, splitNamedGroups } from "../lib/namedAgentGroups.ts";
 import { currentPaneMutes, paneMuteKey, prunePaneMutes, setPaneMutes, subscribePaneMutes, togglePaneMute } from "../lib/paneMutes.ts";
 import { lockedPinKeys, locksAfterPinToggle, toggleAgentLock } from "../lib/paneLocks.ts";
-import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
+import { agentContext, agentTabName, paneMark, titleOnlyNamesAgent } from "../lib/sidebarAgents.ts";
+import { agentName } from "../lib/runtimeMove.ts";
 import { customTabLabel } from "../lib/tabName.ts";
 import { useSettings } from "../lib/settings.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
@@ -453,15 +454,24 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const describe = ({ machine, entry }: AgentRow) => {
     const { pane, workspace, tab, agent, agentLabel } = entry;
     const online = machine.state === "connected";
-    const title = rowTitle(entry);
     const name = agent?.name?.trim() || null;
     // the name has its own place on the line: the label beside it says the kind instead
     const kindLabel = name !== null && agentLabel === name ? entry.canonicalAgent ?? agent?.title?.trim() ?? null : agentLabel;
     const tabs = machine.snapshot?.tabs.filter((candidate) => candidate.workspace_id === workspace.workspace_id) ?? [];
     const mark = paneMark(entry);
     const markAgent = mark && hasAgentMark(mark) ? mark : null;
-    const parts = { agentLabel: kindLabel, title, markAgent, machineName: machineName(machine), workspaceLabel: workspace.label, tabName: agentTabName(tab, tabs, t) };
-    const contextParts = agentContext(parts);
+    const said = rowTitle(entry);
+    // the mark says which agent it is: a title that says only that ("Claude Code") gives way to the workspace the
+    // agent runs in, so rows of agents with nothing of their own to say are told apart (a row with no mark keeps it)
+    // the agent's kind and its product name ("claude", "Claude Code"): a plugin's own line for it says more, and stays
+    const kindNames = markAgent === null ? [] : [entry.canonicalAgent, entry.canonicalAgent ? agentName(entry.canonicalAgent) : null];
+    const title = titleOnlyNamesAgent(said, kindNames)
+      ? workspace.worktree?.is_linked_worktree ? compactWorktreeName(workspace.label) : workspace.label
+      : said;
+    // nor does the line spend words on the agent's kind beside its mark (a screen reader still hears it, as markKind)
+    const parts = { agentLabel: kindLabel !== null && titleOnlyNamesAgent(kindLabel, kindNames) ? null : kindLabel, title, markAgent, machineName: machineName(machine), workspaceLabel: workspace.label, tabName: agentTabName(tab, tabs, t) };
+    // the workspace a title already names is not said again after it
+    const contextParts = agentContext(parts).filter((part) => part !== title);
     const context = contextParts.join(" · ");
     const kind = kindLabel?.trim() || null;
     const markKind = kind && kind !== title.trim() && !contextParts.includes(kind) ? kind : null;

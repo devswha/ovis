@@ -142,6 +142,20 @@ describe("AgentSidebar one-line row titles", () => {
     expect(places[1]).toStartWith("Guard the export button");
   });
 
+  test("a title that only names the agent gives way to the workspace: the mark already says which agent it is", () => {
+    const html = render([machine([
+      pane("w1:p1", { agent_status: "working", title: "Claude Code" }),
+      pane("w1:p2", { agent_status: "working", title: "✳ Claude Code" }),
+      pane("w1:p3", { agent_status: "working", title: "Idempotent payments" }),
+    ])]);
+    expect(texts(html, "agent-title")).toEqual(["checkout-api", "checkout-api", "Idempotent payments"]);
+    // nothing on the line spells the agent's name, and the workspace a title took is not said twice
+    expect(texts(html, "agent-title").concat(texts(html, "agent-context")).join(" ")).not.toContain("Claude");
+    expect(texts(html, "agent-context")).toEqual(["checkout-api"]);
+    // a screen reader, which sees no mark, still hears it
+    expect(html.match(/<span class="visually-hidden">claude: <\/span>/g)?.length).toBe(3);
+  });
+
   test("Agents order: Waiting first, the default, lifts a waiting agent; a saved Workspaces order keeps herdr's order", () => {
     // both agents busy: the order alone decides, with no resting fold in the way
     const rows = [pane("w1:p1", { agent_status: "working" }), pane("w1:p2", { agent_status: "blocked" })];
