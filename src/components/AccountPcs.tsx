@@ -177,7 +177,8 @@ export async function removePcFromAccount(service: Pick<AccountService, "session
  * The account's PCs this app has not added, as rows of a PC's own Settings list (`.devices-list`):
  * each opens in the hosted app, and can be taken out of the account (a PC that was reinstalled or
  * given away stays listed on every device otherwise). A watching device gets neither.
- * `remove` takes the PC out of the account's directory; `onRemoved` then reads the list again.
+ * `remove` takes the PC out of the account's directory; `onRemoved` then reads the list again, also
+ * when the removal was refused because the sign-in ended (the page then shows who is signed in now).
  */
 export function AccountPcRows({ pcs, watching, remove, onRemoved }: {
   readonly pcs: readonly MyPc[]; readonly watching: boolean;
@@ -208,6 +209,9 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved }: {
           onConfirm={async () => {
             try { await remove(removing.server_id); } catch (error) {
               console.warn("Ovis: the PC was not removed from the account", error instanceof Error ? error.name : error);
+              // the sign-in ended or another took its place (revoked elsewhere, another tab): no retry can succeed, and
+              // these rows are no longer this browser's account. The page reads the stored sign-in again and says so.
+              if (error instanceof SignedOutError) { setRemoving(null); onRemoved(); return; }
               // the dialog shows what it is thrown: the service's own words say nothing a person can act on
               throw new Error(t("{name} could not be removed. Try again.", { name: removing.name }));
             }

@@ -107,7 +107,9 @@ const RELIST_MS = 9 * 60_000;
  * This PC, signed in and in no account yet: listed in the account with one tap, then it waits for a
  * device already in the account to add it, which the owner approves here (docs/account.md, "Adding a PC").
  */
-function AddThisPc({ relayAbove = true }: { /** Settings has the relay's switch above; the welcome does not */ relayAbove?: boolean } = {}) {
+function AddThisPc({ relayAbove = true, onListed }: { /** Settings has the relay's switch above; the welcome does not */ relayAbove?: boolean;
+  /** this PC was just listed in the account: its list is no longer the one read before */
+  onListed?: () => void } = {}) {
   const t = useT();
   const [state, setState] = useState<{ kind: "hidden" } | { kind: "offer" } | { kind: "waiting"; name: string } | { kind: "error"; message: string }>({ kind: "hidden" });
   /** Reopens the window while this PC still waits; once a device added it, the screen is done and stops. */
@@ -121,6 +123,8 @@ function AddThisPc({ relayAbove = true }: { /** Settings has the relay's switch 
     return () => { live = false; };
   }, []);
   const waiting = state.kind === "waiting";
+  const listed = useEffectEvent(() => onListed?.());
+  useEffect(() => { if (waiting) listed(); }, [waiting]);
   useEffect(() => {
     if (!waiting) return;
     // the window this screen opened closes after ten minutes: kept open while the screen waits
@@ -564,7 +568,8 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
               )}
             </div>
           )}
-          <AddThisPc />
+          {/* the page's "No PC in this account yet" would outlive the listing otherwise */}
+          <AddThisPc onListed={() => { void load(); }} />
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
           {view.error !== null && <p className="settings-condition" role="alert">{view.error}</p>}
         </>

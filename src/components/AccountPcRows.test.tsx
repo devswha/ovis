@@ -133,6 +133,21 @@ describe("the account's PCs in a PC's own Settings", () => {
     expect(rechecks).toBe(0);
   });
 
+  it("closes the confirm and asks for the account again when the sign-in ended, with no retry line", async () => {
+    let rechecks = 0;
+    let attempts = 0;
+    const root = await mount(createElement(AccountPcRows, {
+      pcs: [pc(DESK, "Desk")], watching: false,
+      remove: async () => { attempts += 1; throw new SignedOutError(); }, onRemoved: () => { rechecks += 1; },
+    }));
+    await act(async () => { root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Desk from your account").props.onClick(); });
+    await act(async () => { await dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Remove from account").props.onClick(); });
+    // no dialog left to retry in: the page reads the stored sign-in again and shows signed out, or the other account
+    expect(dialogs(root)).toHaveLength(0);
+    expect(textOf(root)).not.toContain("Try again");
+    expect([attempts, rechecks]).toEqual([1, 1]);
+  });
+
   it("offers a watching device neither action", async () => {
     const root = await mount(createElement(AccountPcRows, { pcs: [pc(DESK, "Desk")], watching: true, remove: async () => {}, onRemoved: () => {} }));
     expect(root.findAll((node) => node.type === "a")).toHaveLength(0);

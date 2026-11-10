@@ -889,6 +889,21 @@ async function accountPcList(browser: import("playwright-core").Browser, url: st
       });
       assert.deepEqual(style, { listStyle: "none", display: "flex", border: "solid" }, `the account's PCs are styled rows in My devices (${width}px, ${theme})`);
       assert.equal(await page.locator("[data-section='account'] .relay-shell-pcs").count(), 0, "the Account group does not list the PCs a second time");
+      // each account PC opens in the hosted app and can be taken out of the account, inside its row at this width
+      assert.deepEqual(await accountRows.getByRole("link", { name: "Open in browser", exact: true }).evaluateAll((links) => links.map((link) => [link.getAttribute("href"), link.getAttribute("target")])),
+        [[`https://app.ovis.sh/s/${"a".repeat(32)}/`, "_blank"], [`https://app.ovis.sh/s/${"b".repeat(32)}/`, "_blank"]], `each account PC links to its page in the hosted app (${width}px, ${theme})`);
+      assert.equal(await accountRows.getByRole("button", { name: /^Remove (home-server|office-mac) from your account$/ }).count(), 2, `each account PC can be removed from the account (${width}px, ${theme})`);
+      const fit = await accountRows.evaluateAll((rows) => rows.map((row) => {
+        const box = row.getBoundingClientRect();
+        const inside = [...row.querySelectorAll(".devices-name, .devices-actions > *")].every((part) => {
+          const one = part.getBoundingClientRect();
+          return one.width > 0 && one.left >= box.left - 0.5 && one.right <= box.right + 0.5;
+        });
+        return { inside, overflow: row.scrollWidth - row.clientWidth, inView: box.right <= document.documentElement.clientWidth + 0.5 };
+      }));
+      assert.deepEqual(fit, [{ inside: true, overflow: 0, inView: true }, { inside: true, overflow: 0, inView: true }], `an account PC's name and actions fit its row (${width}px, ${theme})`);
+      const accountTop = (await page.locator("[data-section='account']").boundingBox())!.y;
+      assert.ok(accountTop < (await page.locator("[data-section='devices']").boundingBox())!.y, `the Account group sits above the device list (${width}px, ${theme})`);
       if (process.env.UI_EVIDENCE_DIR) {
         await list.scrollIntoViewIfNeeded();
         await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `account-pcs-${width}-${theme}.png`), animations: "disabled" });
