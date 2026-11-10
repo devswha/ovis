@@ -10,8 +10,9 @@
  *   bun scripts/relay-dashboard-browser-qa.ts                     # builds the shell itself
  *   ONLY='^(table|overview)' UI_EVIDENCE_DIR=<dir> bun scripts/relay-dashboard-browser-qa.ts
  *
- * relay-shell-browser-qa.ts calls `relayDashboardQa` with its own browser and shell host. Each check prints PASS or
- * FAIL with what it measured; any FAIL fails the run after every selected check ran.
+ * The browser lane (scripts/ci-browser.sh) runs it as an entry of its own, on a shell build, a shell host and a
+ * browser it makes itself. Each check prints PASS or FAIL with what it measured; any FAIL fails the run after every
+ * selected check ran, and a run with none ends by saying how many checks passed.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1272,7 +1273,10 @@ export async function relayDashboardQa({ browser, origin, evidence }: DashboardQ
   // a custom relay's host wider than the phone wraps inside the route list instead of running off the dashboard
   await check("map-long-host-390", async () => {
     const host = "relay-eu-west-dedicated-instance-for-the-studio-team.customer-internal.example.com";
-    const { page, fleet } = await open({ fleet: "F4", width: 390, directory: async (route) => {
+    // the fleet by name, not the one `open` returns: the directory is asked while `open` is still awaited, and its
+    // answer read that binding before it was set (a ReferenceError on a runner slow enough to ask that early)
+    const fleet = fleetOf("F4");
+    const { page } = await open({ fleet: "F4", width: 390, directory: async (route) => {
       const pcs = directoryOf(fleet, Date.now()).map((pc) => ({ ...pc, relay: `wss://${host}` }));
       await route.fulfill({ status: 200, headers: { "access-control-allow-origin": APP }, contentType: "application/json", body: JSON.stringify({ pcs }) });
     } });
@@ -1311,7 +1315,9 @@ if (import.meta.main) {
   const site = servePagesSite(shellDir, 0, "127.0.0.1");
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   try {
-    await relayDashboardQa({ browser, origin: `http://127.0.0.1:${site.port}`, evidence: process.env["UI_EVIDENCE_DIR"] || null });
+    if (!browser) throw new Error("no browser");
+    const matrix = await relayDashboardQa({ browser, origin: `http://127.0.0.1:${site.port}`, evidence: process.env["UI_EVIDENCE_DIR"] || null });
+    console.log(`dashboard matrix: ${matrix.length} checks passed`);
   } finally {
     await closeMarked(browser);
     await site.stop(true);
