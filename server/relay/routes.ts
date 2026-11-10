@@ -80,7 +80,7 @@ export async function handleRelayRequest(request: Request, pathname: string, con
       case "/api/relay/link/close":
         setRequestRoute("/api/relay/link/close");
         // the owner stopped waiting: nothing more is taken, whatever the relay's state
-        service.approvals.closeWindow();
+        if (!service.approvals.closeWindow()) return fail("internal_error", "The pairing window is closed, but its saved state could not be cleared.", 500);
         return reply({ ok: true });
       case "/api/relay/pairing": {
         setRequestRoute("/api/relay/pairing");

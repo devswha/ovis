@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { privateStateFs } from "../private-state.ts";
-import { PAIRING_WINDOW_MS, RelayPairingApprovals } from "./pairing-approvals.ts";
+import { PAIRING_WINDOW_MS, RelayPairingApprovals, pairingWindowFs } from "./pairing-approvals.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -217,5 +217,65 @@ describe("the pairing window across a restart", () => {
     expect(approvals.windowOpen()).toBe(true);
     approvals.closeWindow();
     expect(approvals.windowOpen()).toBe(false);
+  });
+
+  it("writes the window closed when it runs out while the server runs, so an earlier clock cannot reopen it", () => {
+    const f = fixture();
+    const timers: { run: () => void; ms: number }[] = [];
+    const approvals = new RelayPairingApprovals({ path: f.path, now: () => f.clock.at, setTimer: (run, ms) => { timers.push({ run, ms }); return () => {}; } });
+    approvals.openWindow(f.clock.at, { localOnly: true });
+    expect(timers.at(-1)!.ms).toBe(PAIRING_WINDOW_MS);
+    // fired early (a timer is not a clock): it waits for the rest
+    f.clock.at += PAIRING_WINDOW_MS - 1_000;
+    timers.at(-1)!.run();
+    expect(timers.at(-1)!.ms).toBe(1_000);
+    expect(approvals.windowOpen()).toBe(true);
+    f.clock.at += 1_000;
+    timers.at(-1)!.run();
+    expect(f.saved()).toEqual({ v: 1, window_until: 0, local_only_until: 0 });
+    f.clock.at -= 5 * 60_000;
+    expect(f.open().windowOpen()).toBe(false);
+  });
+
+  it("a restarted server also writes the window it read closed when it runs out", () => {
+    const f = fixture();
+    f.open().openWindow(f.clock.at);
+    const timers: { run: () => void; ms: number }[] = [];
+    f.clock.at += 60_000;
+    new RelayPairingApprovals({ path: f.path, now: () => f.clock.at, setTimer: (run, ms) => { timers.push({ run, ms }); return () => {}; } });
+    expect(timers.at(-1)!.ms).toBe(PAIRING_WINDOW_MS - 60_000);
+    f.clock.at += PAIRING_WINDOW_MS;
+    timers.at(-1)!.run();
+    expect(f.saved()).toEqual({ v: 1, window_until: 0, local_only_until: 0 });
+  });
+
+  it("a close that can neither rewrite nor remove the file empties it, and reports one it cannot clear at all", () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.openWindow(f.clock.at, { localOnly: true });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const open = spyOn(privateStateFs, "openSync").mockImplementation(() => { throw new Error("disk full"); });
+    const rm = spyOn(pairingWindowFs, "rmSync").mockImplementation(() => { throw new Error("busy"); });
+    cleanup.push(() => { warn.mockRestore(); open.mockRestore(); rm.mockRestore(); });
+    expect(approvals.closeWindow()).toBe(true);
+    expect(readFileSync(f.path, "utf8")).toBe("");
+    expect(f.open().windowOpen()).toBe(false);
+
+    const g = fixture();
+    const other = g.open();
+    other.openWindow(g.clock.at);
+    const truncate = spyOn(pairingWindowFs, "truncateSync").mockImplementation(() => { throw new Error("read-only"); });
+    cleanup.push(() => truncate.mockRestore());
+    expect(other.closeWindow()).toBe(false);
+    expect(other.windowOpen()).toBe(false);
+  });
+
+  it("counts each close, for a comparison taken before it", () => {
+    const approvals = fixture().open();
+    expect(approvals.closes).toBe(0);
+    approvals.closeWindow();
+    approvals.openWindow();
+    approvals.closeWindow();
+    expect(approvals.closes).toBe(2);
   });
 });

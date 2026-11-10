@@ -1,5 +1,5 @@
 import { randomBytes, randomInt } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, truncateSync } from "node:fs";
 import type { PairingIntent, RelayPairingRequest, RemotePairingRequest } from "../../shared/machines.ts";
 import type { DeviceMatch } from "../devices.ts";
 import { writePrivateState } from "../private-state.ts";
@@ -8,6 +8,9 @@ import { writePrivateState } from "../private-state.ts";
 export const MAX_PENDING_APPROVALS = 3;
 /** How long after the owner copies a link without a code this PC takes comparisons, as a Bluetooth device in pairing mode. */
 export const PAIRING_WINDOW_MS = 10 * 60_000;
+
+/** The file calls that take the saved window away, swappable in tests. */
+export const pairingWindowFs = { rmSync, truncateSync };
 
 /** How a waiting comparison ended: approved (by this PC when `by` is absent, else by that account member) or not. */
 export type PairingDecision = { approved: true; by?: DeviceMatch } | { approved: false };
@@ -57,11 +60,41 @@ export class RelayPairingApprovals {
   private localOnlyUntil = 0;
   private readonly path: string | undefined;
   private readonly now: () => number;
+  private readonly setTimer: (run: () => void, ms: number) => () => void;
+  private cancelExpiry: (() => void) | undefined;
+  private closeCount = 0;
 
-  constructor(options: { path?: string; now?: () => number } = {}) {
+  constructor(options: { path?: string; now?: () => number; setTimer?: (run: () => void, ms: number) => () => void } = {}) {
     this.path = options.path;
     this.now = options.now ?? Date.now;
+    this.setTimer = options.setTimer ?? ((run, ms) => {
+      const timer = setTimeout(run, ms);
+      timer.unref();
+      return () => clearTimeout(timer);
+    });
     this.load();
+  }
+
+  /** How many times the window was closed on purpose: a comparison taken before a close is not shown after it (session.ts). */
+  get closes(): number { return this.closeCount; }
+
+  /**
+   * Writes the window closed once it has run out, so the file never holds a deadline a later start
+   * could land inside (a clock that went back). Nothing waits on it: the timer does not keep the server up.
+   */
+  private watchExpiry(): void {
+    this.cancelExpiry?.();
+    this.cancelExpiry = undefined;
+    if (!this.path) return;
+    const until = Math.max(this.windowUntil, this.localOnlyUntil);
+    if (until === 0) return;
+    this.cancelExpiry = this.setTimer(() => {
+      this.cancelExpiry = undefined;
+      if (this.now() < Math.max(this.windowUntil, this.localOnlyUntil)) { this.watchExpiry(); return; }
+      this.windowUntil = 0;
+      this.localOnlyUntil = 0;
+      if (!this.save()) this.forget();
+    }, Math.max(0, until - this.now()));
   }
 
   /**
@@ -86,6 +119,7 @@ export class RelayPairingApprovals {
     if (windowUntil > now && windowUntil <= latest && localOnlyUntil <= latest) {
       this.windowUntil = windowUntil;
       this.localOnlyUntil = localOnlyUntil;
+      this.watchExpiry();
       return;
     }
     if (windowUntil === 0 && localOnlyUntil === 0) return;
@@ -115,28 +149,41 @@ export class RelayPairingApprovals {
     // a window that could not be saved still works until this process ends, but the file it could not
     // replace must not stand in for it at the next start (an older window without its local-only half)
     if (!this.save()) this.forget();
+    this.watchExpiry();
   }
 
-  /** Removes the saved window, best effort: absent reads as closed. */
-  private forget(): void {
-    if (!this.path) return;
-    try { rmSync(this.path, { force: true }); } catch { /* reported by save() */ }
+  /**
+   * Takes the saved window away when it could not be rewritten: absent reads as closed, and so does
+   * an empty file, which is what is left when the file cannot be removed either. False when neither worked.
+   */
+  private forget(): boolean {
+    if (!this.path) return true;
+    try { pairingWindowFs.rmSync(this.path, { force: true }); return true; } catch { /* truncated below */ }
+    try { pairingWindowFs.truncateSync(this.path, 0); return true; }
+    catch (error) {
+      console.warn(JSON.stringify({ event: "relay.pairing_window.forget_failed", error: error instanceof Error ? error.message : String(error) }));
+      return false;
+    }
   }
 
   /**
    * Ends the window now: the owner stopped waiting, revoked every device, reset the relay identity or
    * turned the relay off. A comparison this PC's own windows were shown under that window ends
    * unapproved with it, so nothing asked before the close can be approved after it; a join shown to
-   * account members only never depended on the window and stays.
+   * account members only never depended on the window and stays. False when the saved window could
+   * neither be rewritten nor taken away: it is closed for this process, but a restart could bring it back.
    */
-  closeWindow(): void {
+  closeWindow(): boolean {
     const open = this.windowUntil !== 0 || this.localOnlyUntil !== 0;
     this.windowUntil = 0;
     this.localOnlyUntil = 0;
+    this.closeCount += 1;
+    this.cancelExpiry?.();
+    this.cancelExpiry = undefined;
     for (const entry of [...this.waiting.values()]) if (!entry.membersOnly) entry.finish({ approved: false });
-    if (!this.path || (!open && !existsSync(this.path))) return;
+    if (!this.path || (!open && !existsSync(this.path))) return true;
     // a file that cannot be rewritten must not bring the window back at the next start: absent reads as closed
-    if (!this.save()) this.forget();
+    return this.save() || this.forget();
   }
 
   /** Whether a comparison taken now is this PC's own to decide: asked while its add-me screen waited. */
