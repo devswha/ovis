@@ -204,6 +204,10 @@ export function probeUntilReachable(probe: (live: () => boolean) => Promise<bool
 /** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
 export interface AccountState {
   signedIn: boolean; account: string | null; pcs: MyPc[] | null;
+  /** what the account signed in with; null signed out */
+  provider: AccountProvider | null;
+  /** the account's list was read and holds no PC (a list that could not be read is empty too, beside its error: not this) */
+  noPcs: boolean;
   /** false once the account service did not answer: the relay tab then offers the relay's own pairing (ConnectPhoneDialog) */
   reachable: boolean;
 }
@@ -300,7 +304,9 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   });
   useEffect(() => { recheckAccount(); }, [offered, load, recheck]);
   useEffect(() => {
-    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null, reachable: !unreachable });
+    const signedIn = view.kind === "signed-in" ? view : null;
+    onAccount?.({ signedIn: signedIn !== null, account: signedIn?.account ?? null, pcs: signedIn?.pcs ?? null, provider: signedIn?.provider ?? null,
+      noPcs: signedIn !== null && signedIn.pcs !== null && signedIn.pcs.length === 0 && signedIn.error === null, reachable: !unreachable });
   }, [onAccount, view, unreachable]);
   // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);

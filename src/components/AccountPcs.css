@@ -263,3 +263,8 @@
   min-width: calc(var(--space-8) * 3);
   font-variant-numeric: tabular-nums;
 }
+
+/* Settings → Devices and PCs: the line under the device list of an account that lists no PC yet */
+.account-no-pc {
+  padding-top: var(--space-2);
+}

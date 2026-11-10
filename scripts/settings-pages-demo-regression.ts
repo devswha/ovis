@@ -953,9 +953,10 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
           }
           await openSettings(page);
           await openSettingsPage(page, "Devices and PCs");
-          // the account waits in More settings
-          await openSettingsFolds(page);
+          // the account is at the top of the page, outside More settings
           const account = page.locator("[data-section='account']");
+          assert.equal(await account.evaluate((group) => group.closest("details") === null), true, "the Account group is not folded away");
+          await openSettingsFolds(page);
           const shot = async (name: string) => {
             if (!process.env.UI_EVIDENCE_DIR) return;
             await account.scrollIntoViewIfNeeded();
