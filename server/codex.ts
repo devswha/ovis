@@ -1289,11 +1289,13 @@ function withoutParens(text: string): string {
 }
 
 /**
- * The letters and digits of a text, without what a screen may draw another way than a rollout records it: a
- * parenthesized stretch (a link's target, which Codex draws after its label, relative to the folder: "the runbook
- * (docs/runbook.md)" for `[the runbook](/repo/docs/runbook.md)`) and a named entity.
+ * The letters of a text, without what a screen may draw another way than a rollout records it: a parenthesized
+ * stretch (a link's target, which Codex draws after its label, relative to the folder: "the runbook
+ * (docs/runbook.md)" for `[the runbook](/repo/docs/runbook.md)`), a named entity, a task mark, a tag, and every
+ * digit (a list Codex numbers itself, a location it writes its own way). Only for what a conversation may have
+ * said (saidAnywhere), where leaving more out only adds a doubt.
  */
-const bareLetters = (text: string): string => normalizeDisplay(withoutParens(text).replace(/&[A-Za-z][A-Za-z0-9]{1,31};/g, ""));
+const bareLetters = (text: string): string => withoutParens(text).replace(/&[A-Za-z][A-Za-z0-9]{1,31};|\[[ xX]\]|<[^<>\n]{1,40}>/g, "").normalize("NFKC").replace(/[^\p{L}]/gu, "");
 
 /** A stretch of JSON text with its string escapes read: what a record that could not be parsed holds as written. */
 const unescaped = (json: string): string => json.replace(/\\(?:u([0-9a-fA-F]{4})|([\s\S]))/g, (_escape, hex: string | undefined, char: string) =>

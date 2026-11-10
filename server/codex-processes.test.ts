@@ -2914,6 +2914,19 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     });
   }
 
+  it("binds no conversation that ended on the drawn text of the pane's own answer where Codex numbers a list or draws a task mark its own way", async () => {
+    // B (the pane's own) wrote every item as "1." and its tasks as "[x]"; Codex counts the items and draws a mark
+    const items = Array.from({ length: 36 }, (_, at) => `Region ${String.fromCharCode(97 + at % 26)}${String.fromCharCode(97 + (at * 7) % 26)} is rolled out by its owner with the rollback step listed beside it in the plan`);
+    const recorded = [...items.map((item) => `1. ${item}`), "- [x] every region above has an owner"].join("\n");
+    const drawn = [...items.map((item, at) => `${at + 1}. ${item}`), "- ✔ every region above has an owner"].join("\n");
+    const fileB = conversationB([["Write the rollout order", recorded]]);
+    finishedRollout(path, thread, [["Read the other pane and relay what it says", drawn]]);
+    foreground = fresh(2147483546);
+    screen = [...drawn.split("\n").slice(-30).map((row) => `  ${row}`), "", footer, ...idle].join("\n");
+    const found = await resolve();
+    expect(found === path ? "A, which the pane only relayed to" : found === fileB ? "B" : found).toBeNull();
+  });
+
   // the merge pass's second review of #3582: a read cut by its budget may begin inside the very record that tells
   for (const cut of ["its finished answer, longer than the read", "a tool's output, longer than the read", "a turn begun before the read, its finish not written yet"] as const) {
     it(`binds no scrolled answer beside a conversation whose read was cut inside what tells (${cut})`, async () => {
