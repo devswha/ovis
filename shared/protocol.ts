@@ -176,6 +176,9 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
  *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
  *         digits (docs/relay.md); 409 relay_off while off
+ *  POST   /api/relay/link/close          -> { ok: true }; ends that link's pairing window and declines the
+ *         comparisons this PC was shown under it; from this PC only (403 local_required through the relay)
+ *         500 internal_error when the saved window could not be cleared (closed until a restart)
  *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
  *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
  *         404 relay_pairing_gone once it left, was decided or ran out of time
@@ -604,7 +607,14 @@ export interface RelayStatus {
     readonly enforce_at: string | null;
     /** the relay refused this PC for its pass (4402) and it has not been let in since */
     readonly refused: boolean;
-    /** false while the pass in use says new client sessions to this PC are not allowed and the relay says it holds; absent otherwise */
+    /**
+     * Whether the relay enforces passes now, as the PC knows it: its last `sync` said `enforce`, or an `enforce_at`
+     * that has passed by the PC's clock, or it refused this PC for its pass. While it does, and the PC is on the relay
+     * with `new_sessions: false`, the PC refuses a device new to it. Absent from a server that does not say (one that
+     * refuses no device either).
+     */
+    readonly enforced?: boolean;
+    /** false while the pass the relay holds this PC to says new client sessions to it are not allowed and the relay says it holds; absent otherwise */
     readonly new_sessions?: false;
   };
 }
@@ -1304,8 +1314,11 @@ export interface ClientConnectionTrace {
  * `conversation-search`: GET /api/pane/conversation/search answers; without it the browser offers no conversation search.
  * `conversation-watch-detached` and `prompt-watch`: a client may follow a pane's conversation and prompt without
  * attaching it (the `conversation-watch` and `prompt-watch` frames).
+ * `secret-prompts-2`: a `secret` is taken at every prompt shared/secret-prompt.ts reads (git over HTTPS, ssh-add,
+ * ssh-keygen, an IPv6 host's password too). A bridge without it answers `invalid_secret` at those, so the browser
+ * types that secret as direct input instead (`input`, never kept), while its own screen still shows the prompt.
  */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch";
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt" | "conversation-search" | "conversation-watch-detached" | "prompt-watch" | "secret-prompts-2";
 
 export type ServerMessage =
   | { type: "machine-event"; event: MachineEvent }
@@ -1317,7 +1330,7 @@ export type ServerMessage =
    * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot.
    * `paste_dir`: the absolute folder `OVIS_PASTE_DIR` sends this PC's uploads to, so the page reads an upload's
    * path whole through it (src/lib/pasteFolders.ts, #2771); absent when uploads go to each pane's `<cwd>/.ovis` */
-  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string; paste_dir?: string }
+  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string; paste_dir?: string; /** this PC's clock (ms) as it sent the frame: a page reckons the PC's times on its own clock from it */ server_time?: number }
   /** `connection`: this socket's id on the PC, for a create request's `first_message_connection`; older bridges send none */
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[]; connection?: string }
   /** raw PTY bytes: append to the terminal, never repaint over it. A mirrored pane (HerdrIdentity.terminal_mirror) sends whole screens the same way. */
@@ -1365,7 +1378,12 @@ export type ServerMessage =
   /** Owner-only receipt and state; only an explicit removed outcome permits deleting a retained client message.
    * `dismissed` removes an uncertain copy, never proves withdrawal or delivery. Existing clients
    * remove owned IDs for any explicit outcome; Edit restores only `discarded`. */
-  | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: PendingRemoval[] }
+  | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: PendingRemoval[]; /** exact IDs a closed connection's
+   * follow-ups the bridge holds untyped, replayed like a `resumed` receipt: a saved copy is held again for an explicit send.
+   * Its own field, as clients that predate it remove a copy for any `resumed` removal. */ held?: string[];
+  /** by held ID, how many ms the bridge still keeps that receipt: past it, the proof is gone and the copy is uncertain again */ held_ms?: Record<string, number>;
+  /** by held ID, when (this PC's clock, ms) the bridge's receipt ends: a page never holds the copy past it */ held_until?: Record<string, number>;
+  /** this PC's clock (ms) as it sent a frame with held IDs: their ends are reckoned on the page's clock from it */ server_time?: number }
   | { type: "secret-result"; id: number; pane_id: string; ok: boolean; code?: string }
   /** agent-status push for ANY pane, attached or not (server-side status collector) */
   | { type: "pane-status"; pane_id: string; agent_status: AgentStatus; finish_id?: number; finish_epoch?: string; /** a pane's running background tasks (OmO's, or a Claude Code pane's subagents and commands), when the frame is about them: it changes no status */ background_tasks?: number; /** every frame says it: absent, the pane does not wait on its turn's background work */ background_wait?: true; /** a pane's plan, when the frame is about it (null: it keeps none now); it changes no status */ plan?: PlanSummary | null; /** a pane's context, when the frame is about it (null: none reported now); it changes no status */ context?: PaneContext | null }

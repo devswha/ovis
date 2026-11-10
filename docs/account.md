@@ -119,7 +119,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 
 - **Approval on the PC itself:** a driving window opened directly on the PC (not a Portal visitor,
   not an open LAN window), or `bun scripts/plugin.ts pair --approve` in the PC's terminal, which
-  shows the digits and asks y/n.
+  shows the digits and asks for them: typing them (or their last three) approves, anything else
+  declines.
 - **Remote approval:** a client connected through the relay with drive access whose row is an
   account member. It must **pick the new device's digits out of three** (two decoys the PC chose at
   random) before it can approve. A tap without looking picks right one time in three, and a wrong
@@ -334,16 +335,68 @@ How a person adds a PC to the account in the apps (WhatsApp's linked devices and
 Tailnet Lock follow the same idea: an existing device approves once, and the server only carries
 messages):
 
-1. On the new PC, Settings → Devices and PCs → Account: sign in, then **Add this PC to my account**.
-   The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens
-   a pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. What that window takes is decided on
+1. On the new PC, Settings → Devices and PCs → Account (or the first-run welcome): press
+   **Sign in and add this PC**. A PC in no account is added by that sign-in, in the same step: the
+   PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens a
+   pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. The PC is
+   added only by a press of a button that says so. The link page's one button reads
+   **Sign in and add this PC** only where the sign-in does add it (a PC in no account, its relay
+   on, a browser that drives it), else **Sign in**; its words follow the relay (read again every
+   few seconds while the page shows), and what the button said at the press decides: a
+   press of **Sign in** adds nothing, also when the relay was turned on since. A provider's own
+   button (**Continue with GitHub**, on a service without the link page) and the desktop app's
+   sign-in say nothing of adding, so they add nothing either. Such a sign-in gets the offer,
+   **Add this PC to my account**, which lists and opens the window on a press. Only the sign-in
+   that just finished on that screen adds the PC, once, within a minute of it, and only under its
+   own account: the listing writes nothing when another sign-in, or none, is stored by the time it
+   reads the stored one (another tab signed out and in), and the screen then shows the button. A
+   listing that gets no answer within a minute is given up the same way, and so is one whose
+   screen is closed meanwhile: nothing more is written for it, the PC is not told the account, and
+   the window it opened is closed (`POST /api/relay/link/close`) unless a wait is kept or the
+   person pressed the button since. An entry already sent to the directory when the screen gave
+   up cannot be taken back: the screen then says the PC may not have been listed, and the button
+   lists it again. A sign-in that was already there when the screen opened lists nothing by itself
+   and gets the offer; so does a sign-in again for the same account, one that ended before the PC
+   answered, and one whose PC answered only after the minute. The sign-in never turns the relay
+   on: with the relay off it lists nothing and offers **Turn on the relay and add this PC**, one
+   press for both, which lists under that sign-in only. A device that only watches this PC
+   (`role: watch`) can list nothing: its sign-in adds nothing and it is shown no button; while
+   what this browser may do cannot be read, nothing is listed without a press. A browser the PC
+   refuses its account (`owner_only`: in only through an open device gate, or a Portal visitor) is
+   offered none of this.
+   What the window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
-   once the PC has members. The screen keeps the window open while it waits.
+   once the PC has members. The screen keeps the window open while it waits: it asks for the link again
+   every 30 seconds while its page shows (that call writes nothing to the directory) and lists the PC anew
+   every nine minutes, for 30 minutes a press or sign-in, then offers **Keep waiting**; **Stop waiting**
+   ends it sooner and closes the window on the PC at once (`POST /api/relay/link/close`; an Ovis from
+   before that route lets it run out), and once more when a reopen or listing that was on its way
+   opens it again after that. A wait that ran out by itself does not close the window
+   already open: it closes by itself, up to ten minutes later. A reloaded tab
+   goes on waiting only for the same PC under the same sign-in. Once a device added the PC the screen says
+   so, and that the account's other devices can open it only when the PC's status no longer says `enrolling`.
+   The window is kept
+   across a restart of the PC's server (an update) for the rest of its ten minutes, local-only as it
+   was opened, and is closed by `POST /api/relay/link/close`, **Revoke all**,
+   **Reset relay identity** or turning the relay off.
+   A close declines the comparisons the PC was showing and one whose digits arrive after it, and is
+   written to disk (as is a window that ran out). A close does not reach an Add-this-PC screen that
+   is still waiting on the PC: that screen asks for its window again at its next reopen, which is an
+   act of the PC's own page, so **Stop waiting** on it (or leaving that screen) is what ends the wait.
+   A comparison approved before a close makes no device when the other side confirms after it.
+   The PC has one pairing window: **Stop waiting**, and the close of a window a given-up listing
+   opened, also end a code-less phone link opened meanwhile from **Add a connection**, and turn
+   down a phone that was comparing digits through it: that link is asked for again before a phone
+   can use it.
 2. On any device already in the account, the dashboard lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the
    person then **types the six digits the new PC shows** (not a tap: the directory's name is
-   anyone's), and approves on the PC.
+   anyone's), and approves on the PC. The PC's prompt says so (**… wants to add this PC to your
+   account. Type 123 456 on …, or check that … shows the same number, then press Approve here**)
+   instead of only asking to compare digits, since that device shows none: the request carries
+   `local_only: true` in `relay-pairings`. The mark follows the PC's add-me window, not the asking
+   device, so a phone that opens an ordinary link meanwhile gets the same words and compares.
 3. The device is then the PC's first member: it links, and enrolls the PC
    ([Enrolling a PC](#enrolling-a-pc)), so the account's other devices are let in and introduced.
 
@@ -624,7 +677,14 @@ directory, so mailboxes are kept per PC **and account**: the PC asks only for it
 only in that account's directory. `ack` is the highest `seq` the PC processed, whatever the
 outcome, refused included (or `null`); the service deletes those records before answering, and
 deletes any record after 30 days. The PC pulls when it starts and every five minutes while it
-belongs to an account.
+belongs to an account. It also pulls when a sign-in fails, since a member may have added that
+device on another PC a moment ago, and then checks the sign-in once more. Such sign-ins start at
+most one pull a minute (a pull that could not read the mailbox lets the next start 10 seconds after
+it began), and each waits at most five seconds for it. A sign-in that still fails is refused with
+the same `auth_failed`, so a device whose add reached the mailbox after that pull, or after another
+failed sign-in spent it, is let in up to a minute later. An unknown id and a signature that does
+not hold take the same way, so the delay does not tell which ids have a row; it does tell a PC in
+an account (the refusal may wait for the pull) from one in none (it never does).
 
 The `account` role keeps the two proofs apart: the relay verifies `control` and `data` only, so an
 answer the PC gave the account service is no use to the relay, and a relay's challenge passed on by

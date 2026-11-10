@@ -27,6 +27,8 @@ import * as devinSession from "./devin-session.ts";
 import * as omo from "./omo.ts";
 import * as gjcRuntime from "./gjc-runtime.ts";
 import * as runtime from "./herdr-core/runtime.ts";
+import * as served from "./runtime/capabilities.ts";
+import { HERDR_CORE } from "./runtime/capabilities.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
@@ -3553,6 +3555,36 @@ describe("a page read that settles its transcript's revision off the event loop"
     expect(await output).toBeNull();
   });
 
+  it("answers no tool output for an OmO pane another read saw bound to another session while it was resolved for the last time", async () => {
+    const omoPane = { pane_id: "omo-last", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old session" }] } }) + "\n");
+    writeFileSync(other, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "new session" }] } }) + "\n");
+    const session = spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null });
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      session,
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+    // the lookup's last resolution, begun before OmO started another session in the pane, is held: it
+    // will name the session the output was read from
+    const last = Promise.withResolvers<{ path: string; pending: null }>();
+    let resolving!: () => void;
+    const began = new Promise<void>((resolve) => { resolving = resolve; });
+    session.mockResolvedValueOnce({ path, pending: null }).mockImplementationOnce(() => { resolving(); return last.promise; });
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await began;
+    // meanwhile another read finds the pane on the new session
+    session.mockResolvedValue({ path: other, pending: null });
+    expect((await paneTranscript(omoPane.pane_id)).path).toBe(other);
+    last.resolve({ path, pending: null });
+    expect(await output).toBeNull();
+    // and with nothing seen in between, the same resolution answers
+    session.mockResolvedValue({ path, pending: null });
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+  });
+
   it("answers no tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {
     const omoPane = { pane_id: "omo-replaced", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
     writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old file" }] } }) + "\n");
@@ -3750,10 +3782,15 @@ describe("Agy native ledger through shared paging", () => {
     add(8, "GENERIC", "late result");
     add(9, "EPHEMERAL_MESSAGE", "late context");
     expect((await page()).activity).toBe("idle");
-    add(10, "USER_INPUT", "next turn");
+    add(10, "SYSTEM_MESSAGE", "<SYSTEM_MESSAGE>background task finished</SYSTEM_MESSAGE>");
+    // the notice alone starts nothing: the finished reply is not drawn as running, also when no planner step follows it
+    expect((await page()).activity).toBe("idle");
+    add(11, "PLANNER_RESPONSE", "Woke up and finished", { tool_calls: [] });
+    expect((await page()).activity).toBe("idle");
+    add(12, "USER_INPUT", "next turn");
     expect((await page()).activity).toBe("working");
     // Rewind the new prompt; completion of the retained turn still clears activity.
-    db.exec("DELETE FROM steps WHERE idx >= 10");
+    db.exec("DELETE FROM steps WHERE idx >= 12");
     expect((await page()).activity).toBe("idle");
     forgetTranscriptState();
     expect((await page()).activity).toBe("idle");
@@ -4538,7 +4575,7 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
     const job = await claudeStandIns(1);
     const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : launcher(job.leader)) as unknown as typeof herdr.herdrRpc);
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     try {
       const found = await claudePaneSession({ pane_id: "t1", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);
       expect([found?.path, found?.pid]).toEqual([store.transcript, job.pids[0]]);
@@ -4549,7 +4586,7 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
     const job = await claudeStandIns(2);
     const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async (method: string) => method === "agent.get" ? { agent: {} } : launcher(job.leader)) as unknown as typeof herdr.herdrRpc);
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     try {
       expect(await claudePaneSession({ pane_id: "t1", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane)).toBeNull();
     } finally { serving.mockRestore(); rpc.mockRestore(); job.stop(); store.restore(); }
@@ -4560,10 +4597,13 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
 
   /**
    * A tab running `hc attach <word>` (t3), its hc client a real process with `clientEnv`; herdr-core's
-   * answers for it and for the terminal hc resolves the word to.
+   * answers for it and for the terminal hc resolves the word to. The client has printed a line before
+   * this answers: /proc shows a process just spawned with its parent's environment until its exec, and
+   * with none for a moment after it (#3514).
    */
-  function viewer(word: string, resolved: string, claudePid: number, clientEnv: Record<string, string> = OWN) {
-    const client = Bun.spawn(["sleep", "30"], { env: { PATH: process.env["PATH"] ?? "", ...clientEnv } });
+  async function viewer(word: string, resolved: string, claudePid: number, clientEnv: Record<string, string> = OWN) {
+    const client = Bun.spawn(["bash", "-c", "echo; read -r line"], { env: { PATH: process.env["PATH"] ?? "", ...clientEnv }, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    if ((await client.stdout.getReader().read()).done) throw new Error("the hc client stand-in ended early");
     const rpc = (async (method: string, params: { pane_id?: string }) => {
       if (method === "agent.get") return { agent: {} };
       if (params.pane_id === "t3") return { process_info: { pane_id: "t3", shell_pid: 1, foreground_processes: [{ pid: client.pid, name: "hc", argv: ["/usr/local/bin/hc", "attach", word] }] } };
@@ -4576,9 +4616,9 @@ describe.skipIf(process.platform !== "linux")("a Claude herdr-core does not name
   async function viewed(word: string, resolved: string, clientEnv?: Record<string, string>) {
     const job = await claudeStandIns(1);
     const store = claudeHome(job.pids[0]!, job.start(job.pids[0]!));
-    const tab = viewer(word, resolved, job.pids[0]!, clientEnv);
+    const tab = await viewer(word, resolved, job.pids[0]!, clientEnv).catch((error: unknown) => { job.stop(); store.restore(); throw error; });
     const rpc = spyOn(herdr, "herdrRpc").mockImplementation(tab.rpc);
-    const serving = spyOn(runtime, "servingCore").mockReturnValue(true);
+    const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     const core = spyOn(runtime, "coreSocketPath").mockReturnValue("/run/user/1000/herdr-core/default.sock");
     try {
       const found = await claudePaneSession({ pane_id: "t3", cwd: store.cwd, foreground_cwd: store.cwd } as HerdrPane);

@@ -47,13 +47,13 @@ import terminalFixture from "./fixtures/terminal.json";
 /**
  * The fictional access facts the Phone & devices page shows, picked by `?demo_security=` when the
  * demo loads, or by `ovis:demo-security` in this tab's sessionStorage, which a check changes to see
- * the next answer replace the last (scripts/security-summary-demo-regression.ts); none of them is
+ * the next answer replace the last (scripts/security-summary-demo-run.ts); none of them is
  * any real server's. `older` answers without facts, `error` fails the bridge health and `loading`
  * never answers it.
  */
 /**
  * `?demo_runtime=both`: the PC has herdr's TUI and the Herdr app's core (hc) both installed, serving
- * herdr, so Settings > About offers the switch between them (scripts/settings-pages-demo-regression.ts).
+ * herdr, so Settings > About offers the switch between them (scripts/settings-rows-demo-regression.ts).
  */
 const DEMO_RUNTIME_FACTS = new URLSearchParams(location.search).get("demo_runtime") === "both" ? {
   herdr_runtime: { serving: "herdr" as const, source: "detected" as const, tui: { installed: true, running: true }, app_installed: true, switch_to: "herdr-core" as const, locked: null },
@@ -77,6 +77,12 @@ const DEMO_SECURITY_FACTS: Record<string, SecuritySummary> = {
 const histories = new Map<string, DemoHistory>();
 const terminalGrids = new Map<string, { cols: number; rows: number }>();
 const heldCopyResends = new Map<string, { text: string; reply: Extract<ServerMessage, { type: "submit-result" }>; at: number }>();
+/** a closed socket's held messages, as the bridge keeps their receipts (server/core/pending.ts): told, by ID, with when each
+ * ends, to the next socket that attaches the pane within ten minutes; one sent again or discarded is no longer held */
+const HELD_RECEIPT_MS = 10 * 60 * 1000;
+const heldReceipts = new Map<string, { paneId: string; at: number }>();
+/** a pane that closes takes its held receipts with it: a later pane given its ID is another pane */
+const forgetHeldReceipts = (paneId: string): void => { for (const [id, receipt] of heldReceipts) if (receipt.paneId === paneId) heldReceipts.delete(id); };
 const demoGrid = (paneId: string) => terminalGrids.get(paneId) ?? { cols: 80, rows: 24 };
 function redrawHistory(paneId: string): void {
   for (const socket of sockets) socket.renderHistory(paneId);
@@ -334,7 +340,7 @@ function createDemoWorkspace(cwd: string, label: string, agent: string | null, w
 function closeDemoWorkspaces(ids: Set<string>): void {
   const snap = snapshot();
   for (const removed of snap.panes.filter((pane) => ids.has(pane.workspace_id))) {
-    for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+    { forgetHeldReceipts(removed.pane_id); for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
     replying.delete(removed.pane_id);
   }
   snap.panes = snap.panes.filter((pane) => !ids.has(pane.workspace_id));
@@ -1148,7 +1154,7 @@ function usageReport(): UsageReport {
  * and start a pairing that a fictional phone completes a moment later, which is what sends the
  * `device-paired` event every open window shows as a line (src/components/DevicePairedNotice.tsx).
  * All of it answers only with `?demo_devices=`: without it the demo has no device list (its
- * /api/devices is a 404, which scripts/security-summary-demo-regression.ts relies on). `list` is the
+ * /api/devices is a 404, which scripts/security-summary-demo-run.ts relies on). `list` is the
  * fictional devices below; another value picks a state for the browser lane's captures: `empty` (nothing paired),
  * `watch` (this browser is a device that only watches), `slow` (the list is held until the page calls
  * `herdrDemoReleaseDevices()`, so a capture of the loading state never races the answer) or `error`
@@ -1393,7 +1399,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/portal") return json(demoPortal(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay") return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity"
-    || path === "/api/relay/link" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel" || path === "/api/relay/direct") {
+    || path === "/api/relay/link" || path === "/api/relay/link/close" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel" || path === "/api/relay/direct") {
     if (method !== "POST") return error("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
     if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
     if (path === "/api/relay/offer") return demoRelayOffer();
@@ -1408,6 +1414,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
       return json({ code: "7K3QD-M2XHA", expires_at: pairing.expires_at, server_id: demoRelayServerId() }, 200, { "cache-control": "no-store" });
     }
     if (path === "/api/relay/code/cancel") return json({ ok: true }, 200, { "cache-control": "no-store" });
+    if (path === "/api/relay/link/close") return json({ ok: true }, 200, { "cache-control": "no-store" });
     // no phone ever compares digits with the demo, so none is waiting to be approved
     if (path === "/api/relay/pairing") return error("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
     if (path === "/api/relay/direct") {
@@ -1804,7 +1811,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const snap = snapshot();
     const closedLayout = snap.layouts.find((layout) => layout.tab_id === pane.tab_id);
     if (closedLayout) closeLayoutPane(closedLayout, pane.pane_id);
-    for (const socket of sockets) socket.holdPending(pane.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+    { forgetHeldReceipts(pane.pane_id); for (const socket of sockets) socket.holdPending(pane.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
     replying.delete(pane.pane_id);
     snap.panes = snap.panes.filter((candidate) => candidate.pane_id !== pane.pane_id);
     const survivingPanes = snap.panes.filter((candidate) => candidate.workspace_id === pane.workspace_id);
@@ -2063,7 +2070,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     const tab = snap.tabs.find((t) => t.tab_id === body["tab_id"]);
     if (!tab) return error("tab_not_found", "no such tab", 404);
     for (const removed of snap.panes.filter((p) => p.tab_id === tab.tab_id)) {
-      for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it.");
+      { forgetHeldReceipts(removed.pane_id); for (const socket of sockets) socket.holdPending(removed.pane_id, "pane_not_found", "This demo pane closed. Copy the message before discarding it."); }
       replying.delete(removed.pane_id);
     }
     snap.panes = snap.panes.filter((p) => p.tab_id !== tab.tab_id);
@@ -2614,6 +2621,8 @@ class DemoSocket extends EventTarget {
           const badFraming = !queued && (text.length > framingLimit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)
             || (message.payload !== body && message.payload !== `\u001b[200~${body}\u001b[201~`));
           const resendKey = message.resend_id === undefined ? null : JSON.stringify([message.pane_id, message.resend_id, message.resend_generation ?? 0]);
+          // sent again, it is no longer held
+          if (typeof message.resend_id === "string") heldReceipts.delete(message.resend_id);
           const previous = resendKey === null || badFraming ? undefined : heldCopyResends.get(resendKey);
           if (previous && this.mode !== "observe" && message.clear_draft === undefined) {
             // the bridge keys a resend on its normalized text, so a CRLF copy of the same message replays
@@ -2750,6 +2759,22 @@ class DemoSocket extends EventTarget {
     }
   }
 
+  /** this socket's held messages as receipts the next connection is told of (only once this one closed) */
+  private keepHeldReceipts(): void {
+    for (const [pane, pending] of this.pending) for (const item of pending) if (item.state === "held") heldReceipts.set(item.id, { paneId: pane, at: Date.now() });
+  }
+
+  /** the held receipts kept for a pane, told as the bridge tells them */
+  private tellHeldReceipts(paneId: string): void {
+    const now = Date.now();
+    for (const [id, receipt] of heldReceipts) if (now - receipt.at >= HELD_RECEIPT_MS) heldReceipts.delete(id);
+    const held = [...heldReceipts].filter(([, receipt]) => receipt.paneId === paneId);
+    if (held.length === 0) return;
+    this.push({ type: "pending-messages", pane_id: paneId, messages: [], held: held.map(([id]) => id),
+      held_ms: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS - now])),
+      held_until: Object.fromEntries(held.map(([id, receipt]) => [id, receipt.at + HELD_RECEIPT_MS])), server_time: now });
+  }
+
   private pendingTargetError(paneId: string): string | null {
     if (this.readyState !== 1) return "disconnected";
     if (this.mode === "observe") return "read_only";
@@ -2855,6 +2880,8 @@ class DemoSocket extends EventTarget {
       return;
     }
     this.attached.add(paneId);
+    // held receipts go on their own tick, after this socket's snapshot, as a real bridge's resumed receipts come
+    if ([...heldReceipts.values()].some((receipt) => receipt.paneId === paneId)) this.later(() => { if (this.attached.has(paneId)) this.tellHeldReceipts(paneId); }, 0);
     this.publishPending(paneId);
     this.push({ type: "input-ready", pane_id: paneId });
     // the bridge's first message for the pane, told to this attaching socket; a pane already at rest gets it typed now.
@@ -2936,6 +2963,7 @@ class DemoSocket extends EventTarget {
     if (this.readyState >= 2) return;
     this.readyState = 3;
     this.holdPending();
+    this.keepHeldReceipts();
     this.holdAsked();
     for (const timer of this.timers) clearTimeout(timer);
     sockets.delete(this);
