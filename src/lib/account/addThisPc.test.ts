@@ -4,7 +4,7 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
-import { listThisPc } from "./addThisPc.ts";
+import { listThisPc, reopenAddWindow } from "./addThisPc.ts";
 import type { AccountService } from "./service.ts";
 
 afterEach(() => setTransport(nativeTransport));
@@ -49,5 +49,19 @@ test("a pass setup that never answers does not hold Add this PC either", async (
   try {
     expect(await listThisPc(service, { relistMs: 540_000 })).toBe("desk");
     expect(asked).toContain("/api/account/relay-account");
+  } finally { fetchSpy.mockRestore(); }
+});
+
+test("reopening the add window asks the link route alone, for an approve-here window", async () => {
+  const asked: { path: string; localOnly: string | null }[] = [];
+  const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    asked.push({ path: new URL(String(input), "http://localhost").pathname, localOnly: new Headers(init?.headers).get("x-ovis-local-only") });
+    return Response.json({ url: "https://app.ovis.sh/#not-read" });
+  };
+  setTransport({ ...nativeTransport, fetch: answer });
+  const fetchSpy = spyOn(globalThis, "fetch").mockImplementation(answer as typeof fetch);
+  try {
+    await reopenAddWindow();
+    expect(asked).toEqual([{ path: "/api/relay/link", localOnly: "1" }]);
   } finally { fetchSpy.mockRestore(); }
 });

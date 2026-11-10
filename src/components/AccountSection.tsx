@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { listThisPc, thisPcInNoAccount } from "../lib/account/addThisPc.ts";
+import { keepAddPcWaiting, listThisPc, readAddPcWaiting, reopenAddWindow, thisPcAccount } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
 import { ApiError } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
@@ -100,48 +100,139 @@ const isDeviceProvider = (provider: AccountProvider): provider is DeviceProvider
 /** The link page as a person reads it off the screen: account.ovis.sh/link. */
 export const linkAddress = (uri: string): string => { const url = new URL(uri); return url.host + url.pathname; };
 
-/** The pairing window this screen keeps open is reopened a minute before its ten minutes end. */
+/** The directory entry this screen keeps is listed anew a minute before the account's devices stop showing it. */
 const RELIST_MS = 9 * 60_000;
+/** The pairing window is opened again this often while the screen waits: a restart of Ovis closes it for no longer. */
+export const REOPEN_MS = 30_000;
+/** How often the waiting screen asks whether a device added this PC. */
+export const ADDED_POLL_MS = 3_000;
+/** How long one press keeps this PC waiting: after it nothing is reopened until the person asks again. */
+export const WAITING_MS = 30 * 60_000;
+
+type AddThisPcState =
+  | { kind: "hidden" }
+  | { kind: "offer" }
+  | { kind: "waiting"; name: string; until: number }
+  | { kind: "expired" }
+  | { kind: "done"; account: string }
+  | { kind: "error"; message: string };
+
+const pageHidden = (): boolean => typeof document !== "undefined" && document.hidden === true;
 
 /**
  * This PC, signed in and in no account yet: listed in the account with one tap, then it waits for a
  * device already in the account to add it, which the owner approves here (docs/account.md, "Adding a PC").
+ * While it waits it keeps its pairing window open, for thirty minutes a press, and says when a device added it.
  */
-function AddThisPc({ relayAbove = true }: { /** Settings has the relay's switch above; the welcome does not */ relayAbove?: boolean } = {}) {
+export function AddThisPc({ relayAbove = true, service }: {
+  /** Settings has the relay's switch above; the welcome does not */
+  relayAbove?: boolean;
+  /** the account service the PC is listed with; the stored sign-in's when left out */
+  service?: () => AccountService;
+}) {
   const t = useT();
-  const [state, setState] = useState<{ kind: "hidden" } | { kind: "offer" } | { kind: "waiting"; name: string } | { kind: "error"; message: string }>({ kind: "hidden" });
-  /** Reopens the window while this PC still waits; once a device added it, the screen is done and stops. */
-  const relist = useCallback(async () => {
-    if (!await thisPcInNoAccount()) { setState({ kind: "hidden" }); return; }
-    await listThisPc(new AccountService({ store: indexedAccountStore }), { relistMs: RELIST_MS });
-  }, []);
+  const [state, setState] = useState<AddThisPcState>({ kind: "hidden" });
+  const accountService = useCallback((): AccountService => service?.() ?? new AccountService({ store: indexedAccountStore }), [service]);
+  const done = useCallback((account: string): void => { keepAddPcWaiting(null); setState({ kind: "done", account }); }, []);
   useEffect(() => {
     let live = true;
-    thisPcInNoAccount().then((none) => { if (live && none) setState({ kind: "offer" }); }, (error: unknown) => console.warn("Ovis: this PC's account could not be read", error instanceof Error ? error.name : error));
+    thisPcAccount().then((account) => {
+      if (!live) return;
+      const kept = readAddPcWaiting();
+      keepAddPcWaiting(null);
+      if (account !== null) {
+        // a device added this PC while the tab that waited for it was reloading
+        if (kept !== null) setState({ kind: "done", account });
+        return;
+      }
+      if (kept === null || kept.until <= Date.now() || kept.until > Date.now() + WAITING_MS) { setState({ kind: "offer" }); return; }
+      // the screen was waiting when its tab reloaded: it goes on, within the thirty minutes of its press
+      keepAddPcWaiting(kept);
+      setState({ kind: "waiting", name: kept.name, until: kept.until });
+      reopenAddWindow().catch((error: unknown) => console.warn("Ovis: this PC's pairing window was not reopened", error instanceof Error ? error.name : error));
+    }, (error: unknown) => console.warn("Ovis: this PC's account could not be read", error instanceof Error ? error.name : error));
     return () => { live = false; };
   }, []);
-  const waiting = state.kind === "waiting";
+  const until = state.kind === "waiting" ? state.until : null;
   useEffect(() => {
-    if (!waiting) return;
-    // the window this screen opened closes after ten minutes: kept open while the screen waits
-    const timer = setInterval(() => { relist().catch((error: unknown) => console.warn("Ovis: this PC's pairing window was not reopened", error instanceof Error ? error.name : error)); }, RELIST_MS);
-    return () => clearInterval(timer);
-  }, [waiting, relist]);
+    if (until === null) return;
+    let live = true;
+    const expired = (): boolean => {
+      if (Date.now() < until) return false;
+      keepAddPcWaiting(null);
+      setState({ kind: "expired" });
+      return true;
+    };
+    let reopening = false;
+    /** Opens the window again; never under a hidden page, nor past the thirty minutes of the press. */
+    const reopen = (): void => {
+      if (expired() || pageHidden() || reopening) return;
+      reopening = true;
+      reopenAddWindow().catch((error: unknown) => console.warn("Ovis: this PC's pairing window was not reopened", error instanceof Error ? error.name : error)).finally(() => { reopening = false; });
+    };
+    let asking = false;
+    /** Asks whether a device added this PC: then the screen is done and everything here stops. */
+    const ask = (): void => {
+      if (pageHidden() || asking) return;
+      asking = true;
+      thisPcAccount().then((account) => { if (live && account !== null) done(account); }, (error: unknown) => console.warn("Ovis: this PC's account could not be read", error instanceof Error ? error.name : error)).finally(() => { asking = false; });
+    };
+    /** Lists the PC anew when its entry is about to leave the account's devices (which also opens the window). */
+    const relist = (): void => {
+      if (expired()) return;
+      thisPcAccount().then(async (account) => {
+        if (!live) return;
+        if (account !== null) { done(account); return; }
+        await listThisPc(accountService(), { relistMs: RELIST_MS });
+      }).catch((error: unknown) => console.warn("Ovis: this PC's pairing window was not reopened", error instanceof Error ? error.name : error));
+    };
+    const shown = (): void => { if (!pageHidden()) { reopen(); ask(); } };
+    const timers = [setInterval(reopen, REOPEN_MS), setInterval(ask, ADDED_POLL_MS), setInterval(relist, RELIST_MS)];
+    // a hidden page's timers run late or not at all: the end of the thirty minutes has a timer of its own
+    const end = setTimeout(expired, Math.max(0, until - Date.now()));
+    document.addEventListener("visibilitychange", shown);
+    return () => {
+      live = false;
+      for (const timer of timers) clearInterval(timer);
+      clearTimeout(end);
+      document.removeEventListener("visibilitychange", shown);
+    };
+  }, [until, done, accountService]);
+  /** Lists this PC and waits, thirty minutes from this press. */
   const add = (): void => {
-    listThisPc(new AccountService({ store: indexedAccountStore }), { relistMs: RELIST_MS }).then((name) => setState({ kind: "waiting", name }), (error: unknown) => {
+    listThisPc(accountService(), { relistMs: RELIST_MS }).then((name) => {
+      const waiting = { name, until: Date.now() + WAITING_MS };
+      keepAddPcWaiting(waiting);
+      setState({ kind: "waiting", ...waiting });
+    }, (error: unknown) => {
       console.warn("Ovis: this PC was not listed in the account", error instanceof Error ? error.name : error);
-      setState({ kind: "error", message: error instanceof ApiError && error.code === "relay_off"
+      const code = error instanceof ApiError ? error.code : null;
+      setState({ kind: "error", message: code === "relay_off"
         ? relayAbove ? t("Turn on remote access through the Ovis relay above first.") : t("Turn on remote access through the Ovis relay in Settings → Devices and PCs first.")
+        : code === "relay_offline" ? t("The relay is still connecting. Try again in a moment.")
         : t("This PC could not be listed in your account. Try again.") });
     });
   };
+  const stop = (): void => { keepAddPcWaiting(null); setState({ kind: "offer" }); };
   if (state.kind === "hidden") return null;
   return (
     <div className="settings-item account-add-pc">
       {state.kind === "waiting" ? (
         <>
-          <p className="settings-description" role="status">{t("On a phone already in your account, open the Ovis app and tap Add on {name}. Then approve it here.", { name: state.name })}</p>
+          <p className="settings-description">{t("On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.", { name: state.name })}</p>
           <p className="settings-description">{t("Every device of your account can use this PC after that.")}</p>
+          <p className="settings-description" role="status">{t("Waiting. The window reopens by itself if Ovis restarts.")}</p>
+          <button type="button" className="btn" onClick={stop}>{t("Stop waiting")}</button>
+        </>
+      ) : state.kind === "done" ? (
+        <>
+          <p className="settings-description" role="status">{t("This PC is in your account. Your other devices can open it now.")}</p>
+          <p className="settings-description" title={state.account}>{t("Account")} <code className="account-id">{state.account.length > 12 ? `${state.account.slice(0, 12)}…` : state.account}</code></p>
+        </>
+      ) : state.kind === "expired" ? (
+        <>
+          <p className="settings-description" role="status">{t("This PC stopped waiting after 30 minutes.")}</p>
+          <button type="button" className="btn btn-primary" onClick={add}>{t("Keep waiting")}</button>
         </>
       ) : (
         <>

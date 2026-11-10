@@ -12,9 +12,48 @@ import { pcAccountStatus } from "./join.ts";
 import { NEW_PC_MS } from "./myPcs.ts";
 import type { AccountService } from "./service.ts";
 
+/** The account this PC belongs to; null while it is in none. */
+export async function thisPcAccount(): Promise<string | null> {
+  return (await pcAccountStatus(apiFetch)).account;
+}
+
 /** Whether this PC belongs to no account yet: only such a PC offers to be added. */
 export async function thisPcInNoAccount(): Promise<boolean> {
-  return (await pcAccountStatus(apiFetch)).account === null;
+  return await thisPcAccount() === null;
+}
+
+/**
+ * Opens this PC's approve-here pairing window again and nothing else: no directory call, so nothing is listed
+ * and no device of the account is rung. A window lost to a restart of Ovis is back with the next call.
+ */
+export async function reopenAddWindow(): Promise<void> {
+  await requestRelayLink({ localOnly: true });
+}
+
+/** Where a waiting Add this PC screen is kept across a reload of its tab. */
+const WAITING_KEY = "ovis-add-pc-waiting";
+
+/** A waiting Add this PC screen: the name this PC is listed under, and when the screen stops waiting (ms since the epoch). */
+export interface AddPcWaiting { readonly name: string; readonly until: number }
+
+function tabStorage(): Storage | null {
+  try { return typeof window === "undefined" ? null : window.sessionStorage ?? null; } catch { return null; }
+}
+
+/** The waiting screen this tab kept, expired or not; null when it kept none or its storage cannot be read. */
+export function readAddPcWaiting(): AddPcWaiting | null {
+  try {
+    const kept = JSON.parse(tabStorage()?.getItem(WAITING_KEY) ?? "null") as { name?: unknown; until?: unknown } | null;
+    return kept !== null && typeof kept === "object" && typeof kept.name === "string" && typeof kept.until === "number" && Number.isFinite(kept.until) ? { name: kept.name.slice(0, 48), until: kept.until } : null;
+  } catch { return null; }
+}
+
+/** Keeps the waiting screen for a reload of this tab, or forgets it (null). Without storage the screen works as before, not resumed. */
+export function keepAddPcWaiting(waiting: AddPcWaiting | null): void {
+  try {
+    if (waiting === null) tabStorage()?.removeItem(WAITING_KEY);
+    else tabStorage()?.setItem(WAITING_KEY, JSON.stringify(waiting));
+  } catch { /* a full or blocked storage: the screen only loses its resume */ }
 }
 
 /**
