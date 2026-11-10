@@ -148,6 +148,27 @@ describe("the pairing window across a restart", () => {
     expect(f.open().windowOpen()).toBe(false);
   });
 
+  it("removes an older window it cannot replace on open, so it never comes back without its local-only half", () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.openWindow(f.clock.at);
+    expect(f.open().windowOpen()).toBe(true);
+    expect(f.open().localOnlyOpen()).toBe(false);
+    f.clock.at += 60_000;
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const open = spyOn(privateStateFs, "openSync").mockImplementation(() => { throw new Error("disk full"); });
+    cleanup.push(() => { warn.mockRestore(); open.mockRestore(); });
+    approvals.openWindow(f.clock.at, { localOnly: true });
+    open.mockRestore();
+    // this process still has the window it opened
+    expect(approvals.windowOpen()).toBe(true);
+    expect(approvals.localOnlyOpen()).toBe(true);
+    expect(existsSync(f.path)).toBe(false);
+    const restarted = f.open();
+    expect(restarted.windowOpen()).toBe(false);
+    expect(restarted.localOnlyOpen()).toBe(false);
+  });
+
   it("keeps nothing on disk without a path", () => {
     const approvals = new RelayPairingApprovals();
     approvals.openWindow();

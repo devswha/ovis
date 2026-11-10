@@ -103,8 +103,15 @@ export class RelayPairingApprovals {
   openWindow(now = this.now(), options: { localOnly?: boolean } = {}): void {
     this.windowUntil = now + PAIRING_WINDOW_MS;
     if (options.localOnly) this.localOnlyUntil = now + PAIRING_WINDOW_MS;
-    // a window that could not be saved still works until this process ends
-    this.save();
+    // a window that could not be saved still works until this process ends, but the file it could not
+    // replace must not stand in for it at the next start (an older window without its local-only half)
+    if (!this.save()) this.forget();
+  }
+
+  /** Removes the saved window, best effort: absent reads as closed. */
+  private forget(): void {
+    if (!this.path) return;
+    try { rmSync(this.path, { force: true }); } catch { /* reported by save() */ }
   }
 
   /**
@@ -117,7 +124,7 @@ export class RelayPairingApprovals {
     this.localOnlyUntil = 0;
     if (!this.path || (!open && !existsSync(this.path))) return;
     // a file that cannot be rewritten must not bring the window back at the next start: absent reads as closed
-    if (!this.save()) try { rmSync(this.path, { force: true }); } catch { /* reported by save() */ }
+    if (!this.save()) this.forget();
   }
 
   /** Whether a comparison taken now is this PC's own to decide: asked while its add-me screen waited. */

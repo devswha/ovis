@@ -340,7 +340,7 @@ messages):
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
    once the PC has members. The screen keeps the window open while it waits. The window is kept
    across a restart of the PC's server (an update) for the rest of its ten minutes, local-only as it
-   was opened, and is closed by **Stop waiting** (`POST /api/relay/link/close`), **Revoke all**,
+   was opened, and is closed by `POST /api/relay/link/close`, **Revoke all**,
    **Reset relay identity** or turning the relay off.
 2. On any device already in the account, the dashboard lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
