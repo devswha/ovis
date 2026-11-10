@@ -343,6 +343,12 @@ describe("AddThisPc", () => {
     expect(tab.has(MARKER)).toBe(false);
     expect(links()).toBe(1);
     expect(directory).toEqual([]);
+    // that request opened a window on the other PC, where no screen waits: closed again, after it was opened
+    const windows = asked.filter((request) => request.path === "/api/relay/link" || request.path === "/api/relay/link/close").map((request) => request.path);
+    expect(windows).toEqual(["/api/relay/link", "/api/relay/link/close"]);
+    // and never again: nothing of that wait is left
+    await advance(RELIST_MS + REOPEN_MS);
+    expect(asked.filter((request) => request.path === "/api/relay/link" || request.path === "/api/relay/link/close")).toHaveLength(2);
   });
 
   test("a reloaded tab whose address now answers for another PC, already in the account, does not say the PC that waited was added", async () => {

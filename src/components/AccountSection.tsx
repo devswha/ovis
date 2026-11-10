@@ -391,9 +391,13 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
         if (mark !== null && !await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
         if (!live || withdrawn()) return;
         const pc = await reopenAddWindow();
-        closeLate();
+        const closed = closeLate();
         // it changed PC between that question and the window: the wait is not this one's
-        if (live && pc !== null && mark !== null && pc !== mark.serverId) stopped();
+        if (pc === null || mark === null || pc === mark.serverId) return;
+        if (live) stopped();
+        // and that request opened a window on the other PC, where no screen waits for anyone: closed again, unless
+        // it was just now, or the person began another wait meanwhile (whose window a close would take)
+        if (!closed && starts.current === startsThen && !waitKept()) closeWindow();
       })()).catch(warned("Ovis: this PC's pairing window was not reopened")).finally(() => { reopening = false; });
     };
     let asking = false;

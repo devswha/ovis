@@ -704,6 +704,67 @@ describe("the hosted shell's front page", () => {
       });
     }
 
+    for (const confirm of ["a sign-in", "a key of the device's own"] as const) {
+      it(`adds the PC to no account when the reloaded page is itself interrupted while it connects, and another sign-in is stored by the load after it (the confirm named ${confirm})`, async () => {
+        browser.setVisibility("hidden");
+        (window as unknown as { sessionStorage: Storage }).sessionStorage = sessionStorage;
+        const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };
+        const accountStore = memoryAccountStore();
+        if (confirm === "a sign-in") await accountStore.set("session", sessionOf("a"));
+        const devices: RelayDevice[] = [];
+        const store = deviceStore(devices);
+        const prepared: RelayTransportOptions[] = [];
+        const transports: RelayTransport[] = [];
+        const written: string[] = [];
+        let asked = 0, apps = 0, reloads = 0, hangs = 0;
+        class Newer extends RelayTransport {
+          override get server() { return { version: "1.1.0", relayProtocol: RELAY_PROTOCOL, features: ["account"] }; }
+          override async renew() {}
+          override async fetch(): Promise<Response> { asked++; return Response.json({}); }
+        }
+        const page = (entryUrl: string, hang = false) => mountRelayShell(mountFor({
+          entryUrl, store, navigate() {}, shellVersion: "1.0.0", reload: async () => { reloads++; },
+          accountStore, accountService: SERVICE, accountProviders: ["github"],
+          accountFetch: async (input, init) => {
+            const method = input instanceof Request ? input.method : init?.method ?? "GET";
+            if (method !== "GET") written.push(`${bearerOf(input, init)} ${method} ${new URL(String(input instanceof Request ? input.url : input)).pathname}`);
+            return Response.json({ pcs: [] });
+          },
+          renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+          open: async (_offer, options = {}) => {
+            // a page that is reloaded, or closed and opened again, while it connects: its opening never ends
+            if (hang) { hangs++; return new Promise<RelayTransport>(() => {}); }
+            prepared.push(options);
+            if (devices.length === 0) devices.push({ ...offer, device_id: "12".repeat(8), private_key: {} as CryptoKey, public_spki: "device-key", label: "Test phone" });
+            const opened = new Newer(offer); transports.push(opened); return opened;
+          },
+        }));
+        await page(encodeOffer(offer, "https://app.ovis.sh"));
+        await until(() => confirm === "a sign-in" ? variant() === "unlisted" : last().state.kind === "confirm" && !("account" in last().state), "the confirm");
+        last().onPair();
+        await until(() => reloads === 1, "the reload for the newer shell");
+        expect(prepared[0]?.accountKey !== undefined).toBe(confirm === "a sign-in");
+        const before = { written: written.length, asked };
+        // the reloaded page starts from the saved pairing, and is gone before it is through connecting
+        void page(`https://app.ovis.sh/s/${offer.server_id}/`, true);
+        await until(() => hangs === 1, "the connecting that never ends");
+        // another tab signs in as someone else meanwhile
+        await accountStore.set("session", sessionOf("b"));
+        // the load after it: still the pairing that was confirmed, and not for this sign-in
+        await page(`https://app.ovis.sh/s/${offer.server_id}/`);
+        await until(() => apps === 1, "the app");
+        await untilSigned(() => false, "the enrollment, were one begun").catch(() => undefined);
+        expect(prepared).toHaveLength(2);
+        expect(prepared[1]?.accountKey).toBeUndefined();
+        expect(asked).toBe(before.asked);
+        expect(written.slice(before.written)).toEqual([]);
+        // the pairing's own page opened the PC: nothing is kept for a later load
+        expect(browser.sessionStore.has("ovis-confirmed-sign-in")).toBe(false);
+        expect(browser.sessionStore.has("ovis-device-only-pc")).toBe(false);
+        for (const transport of transports) transport.close();
+      });
+    }
+
     it("opens a signed-in fresh pairing's PC once the update it needed is installed", async () => {
       jest.useFakeTimers();
       browser.setVisibility("hidden");
