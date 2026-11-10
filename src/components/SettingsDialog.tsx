@@ -59,6 +59,7 @@ import { pcAccountStatus } from "../lib/account/join.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { ConnectPhoneDialog, relayOffered } from "./ConnectPhoneDialog.tsx";
+import { ACCOUNT_QR_WATCH_EVENT, accountQrNoticeWaiting } from "../lib/accountQrWatch.ts";
 import { PushTestControls } from "./PushTestControls.tsx";
 import { AlertWebhookGroup } from "./AlertWebhookGroup.tsx";
 import { previewAlertSound, unlockAlertSound } from "../lib/alertSound.ts";
@@ -1313,10 +1314,21 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const pairingHeld = useRef(false);
   const holdPairing = useCallback((held: boolean) => { pairingHeld.current = held; }, []);
   const closeConnectOnPair = useCallback(() => { if (!pairingHeld.current) setConnecting(false); }, []);
+  const accountService = accountServiceHere();
   // a reset relay identity is a new ID for this PC: My devices reads it again
   const [identityResets, setIdentityResets] = useState(0);
   // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
   const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null, reachable: true });
+  // the relay tab's QR code let a device in after it came down (lib/accountQrWatch.ts): Add a connection opens again
+  // to say so, where its relay tab can
+  const tellsQrNotice = accountService !== null && account.reachable && relayOffered(relay) && !relayReadOnly;
+  useEffect(() => {
+    if (!tellsQrNotice) return;
+    const open = () => { if (accountQrNoticeWaiting()) setConnecting(true); };
+    open();
+    window.addEventListener(ACCOUNT_QR_WATCH_EVENT, open);
+    return () => window.removeEventListener(ACCOUNT_QR_WATCH_EVENT, open);
+  }, [tellsQrNotice]);
   // a new device joins by signing in only to a PC in the account this browser is signed in to (docs/account.md
   // "Joining through the account"): read again each time the dialog opens, since this PC may have joined meanwhile
   const [pcAccount, setPcAccount] = useState<string | null>(null);
@@ -1337,7 +1349,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
     group?.scrollIntoView({ block: "start" });
     group?.querySelector<HTMLElement>("button")?.focus();
   }, []);
-  const accountService = accountServiceHere();
   const readAccountAgain = useCallback(() => setAccountChecks((count) => count + 1), []);
   // a touch phone on this PC's own address pairs itself through the relay in one tap: beside its own row
   const touchPhone = useMediaQuery("(pointer: coarse)");

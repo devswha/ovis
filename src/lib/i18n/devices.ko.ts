@@ -214,7 +214,7 @@ export const DEVICES_KO: Record<string, string> = {
   "This PC joined an Ovis account ({id}).": "이 PC가 Ovis 계정({id})에 들어갔습니다.",
   "Added by {device}.": "추가한 기기: {device}.",
   "Not me: revoke every device": "내가 아님: 모든 기기 폐기",
-  "{device} is paired with this PC alone: it is not signed in. Sign in on it to add this PC to your account.": "{device}은(는) 이 PC와만 페어링되었습니다. 로그인되어 있지 않습니다. 이 PC를 계정에 추가하려면 그 기기에서 로그인하세요.",
+  "{device} is paired with this PC alone so far: it has not added this PC to an account. Sign in on it to add this PC to your account.": "{device}은(는) 아직 이 PC와만 페어링되어 있습니다. 이 PC를 계정에 추가하지 않았습니다. 이 PC를 계정에 추가하려면 그 기기에서 로그인하세요.",
   "Every paired device loses its access to this PC, and this PC leaves that account. The access token, this PC and its Tailscale login still get in.": "모든 페어링 기기가 이 PC에 대한 접근을 잃고, 이 PC는 그 계정에서 나옵니다. 접속 토큰, 이 PC, 이 PC의 Tailscale 로그인으로는 계속 들어옵니다.",
   "Or type an SSH address": "또는 SSH 주소를 직접 입력",
   "Phones and devices": "폰·기기",

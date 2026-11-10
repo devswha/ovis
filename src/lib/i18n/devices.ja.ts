@@ -214,7 +214,7 @@ export const DEVICES_JA: Record<string, string> = {
   "This PC joined an Ovis account ({id}).": "この PC は Ovis アカウント ({id}) に入りました。",
   "Added by {device}.": "追加したデバイス: {device}。",
   "Not me: revoke every device": "自分ではない: すべてのデバイスを取り消す",
-  "{device} is paired with this PC alone: it is not signed in. Sign in on it to add this PC to your account.": "{device} はこの PC とだけペアリングされました。サインインしていません。この PC をアカウントに追加するには、そのデバイスでサインインしてください。",
+  "{device} is paired with this PC alone so far: it has not added this PC to an account. Sign in on it to add this PC to your account.": "{device} は今のところこの PC とだけペアリングされています。この PC をアカウントに追加していません。この PC をアカウントに追加するには、そのデバイスでサインインしてください。",
   "Every paired device loses its access to this PC, and this PC leaves that account. The access token, this PC and its Tailscale login still get in.": "すべてのペアリング済みデバイスがこの PC へのアクセスを失い、この PC はそのアカウントから外れます。アクセストークン、この PC、この PC の Tailscale ログインでは引き続きアクセスできます。",
   "Or type an SSH address": "または SSH アドレスを入力",
   "Phones and devices": "スマホ・デバイス",

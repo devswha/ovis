@@ -346,17 +346,28 @@ directory and enrolls it ([Enrolling a PC](#enrolling-a-pc)). Nothing is typed a
 approved on the PC, and the PC itself needs no sign-in. Because the code admits whoever holds it
 ([Who may admit a device](#who-may-admit-a-device)), the page guards it:
 
-- Nothing is asked of the PC before the press. The QR code comes down, and its six-digit code and
-  typed code are ended on the PC (`POST /api/devices/pair/cancel`, `POST /api/relay/code/cancel`),
-  when the dialog closes or another tab opens, once the page was hidden for a minute, and 30
-  minutes after the press. **Show a new code** starts again.
+- Nothing is asked of the PC before the press. The QR code comes down, and its six-digit code is
+  ended on the PC with the typed code bound to it (`POST /api/devices/pair/cancel` with that code),
+  when the dialog closes or another tab opens, when the page goes (a reload, a closed tab or
+  window: the request is sent to outlive the page), once the page was hidden for a minute, and 30
+  minutes after the press, by the clock, so a PC that slept does not keep it longer. **Show a new
+  code** starts again. A browser that is killed, or loses the PC, sends nothing: the code then
+  runs out by itself within its 10 minutes.
 - While the QR code is up the page reads `GET /api/account/status` and the device list every 3
   seconds. When the PC goes from no account to one, the QR code gives way to "This PC joined an
   Ovis account (the id's first 12 characters). Added by (the newest device paired through the
   relay since the press)", with **Not me: revoke every device**: after a confirmation that is
   `POST /api/devices/revoke-all`, which leaves the PC with no member and so in no account.
 - A device that paired and left the PC in no account for 10 seconds is named as paired with this
-  PC alone: it is not signed in, and signing in on it adds the PC.
+  PC alone so far: it has not added the PC to an account (it is not signed in, or its link is
+  still on its way), and signing in on it adds the PC.
+- A device that took the code just before it was ended links only seconds later. So the page goes
+  on reading the PC after the QR code came down, also with the dialog or Settings closed
+  (`src/lib/accountQrWatch.ts`): until the first read after the PC confirmed the code's end shows
+  no new relay device, and for the code's 10 minutes when it did not confirm or a device did get
+  in. What it finds is told the same way: Add a connection opens again on its relay tab when
+  Devices and PCs is open, or the next time it is. A page that was reloaded or closed watches
+  nothing.
 - On a PC already in an account the same QR code only pairs the scanning device with this PC; the
   account's other PCs still ask for their one approval.
 

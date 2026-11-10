@@ -345,9 +345,9 @@ export function requestRelayCode(): Promise<RelayCode> {
   return getJson<RelayCode>("/api/relay/code", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
-/** POST /api/relay/code/cancel: takes the code showing off the relay. */
-export function cancelRelayCode(): Promise<{ readonly ok: true }> {
-  return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" } });
+/** POST /api/relay/code/cancel: takes the code showing off the relay. `keepalive`: the request outlives a page that is going. */
+export function cancelRelayCode(keepalive = false): Promise<{ readonly ok: true }> {
+  return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" }, ...(keepalive ? { keepalive } : {}) });
 }
 
 /**
@@ -951,9 +951,10 @@ export async function startPairing(): Promise<PairingCode> {
 /**
  * POST /api/devices/pair/cancel { code }: takes that six-digit code back, and the typed relay code bound to it, when it
  * is the one pending; `cancelled` is false when it was not (used up, expired, or replaced by a newer code).
+ * `keepalive`: the request outlives a page that is going (a reload, a closed tab).
  */
-export async function endPairing(code: string): Promise<{ readonly ok: true; readonly cancelled: boolean }> {
-  return (await sendJson("/api/devices/pair/cancel", "POST", { code })).json();
+export async function endPairing(code: string, keepalive = false): Promise<{ readonly ok: true; readonly cancelled: boolean }> {
+  return (await sendJson("/api/devices/pair/cancel", "POST", { code }, keepalive)).json();
 }
 
 export async function renameDevice(id: string, label: string): Promise<PairedDevice> {
@@ -1035,11 +1036,12 @@ export async function uploadPaneImage(paneId: string, image: Blob, machineId = "
   return ((await response.json()) as { path: string }).path;
 }
 
-async function sendJson(url: string, method: "POST" | "PATCH" | "PUT" | "DELETE", body: unknown): Promise<Response> {
+async function sendJson(url: string, method: "POST" | "PATCH" | "PUT" | "DELETE", body: unknown, keepalive = false): Promise<Response> {
   const response = await apiFetch(url, {
     method,
     headers: { "content-type": "application/json", "x-herdr-machine": "1" },
     body: JSON.stringify(body),
+    ...(keepalive ? { keepalive } : {}),
   });
   if (!response.ok) throw await errorFrom(url, response);
   return response;

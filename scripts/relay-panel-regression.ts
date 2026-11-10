@@ -28,6 +28,7 @@ import { RelayService } from "../server/relay/service.ts";
 import { UsageService } from "../server/usage.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import type { PairedDevice, PairingCode, RelayStatus, RemoteAccess } from "../shared/protocol.ts";
+import { decodeOffer } from "../shared/relay-offer.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
 export interface RelayFixture {
@@ -299,6 +300,17 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal((await offered).status(), 200, "the press asks for the offer");
     await relayQr.waitFor();
     assert.equal(await sheet.isVisible(), true, "the sheet stays open under its QR code");
+    // a device that pairs while the QR code may still put this PC in an account does not close the sheet: it stays
+    // to say which account, and by which device
+    const qrCode = decodeOffer(((await (await offered).json()) as { url: string }).url)?.code;
+    const scanned = await fetch(`${fixture.origin}/api/devices/pair`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-herdr-machine": "1", origin: fixture.origin },
+      body: JSON.stringify({ code: qrCode, label: "Scanner" }),
+    });
+    assert.equal(scanned.status, 204, "a device paired with the QR code's code");
+    await dialog.locator('[data-section="devices"]').getByText("Paired: Scanner.", { exact: true }).waitFor();
+    assert.equal(await sheet.isVisible(), true, "the sheet stays open across a pairing while its QR code is up");
     const codeEnded = answered(page, "/api/devices/pair/cancel");
     await ui.openTab("ssh");
     assert.equal((await codeEnded).status(), 200, "another tab ends the QR code's pairing code");

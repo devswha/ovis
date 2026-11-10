@@ -214,7 +214,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "This PC joined an Ovis account ({id}).": "这台电脑已加入 Ovis 账户（{id}）。",
   "Added by {device}.": "添加它的设备：{device}。",
   "Not me: revoke every device": "不是我：撤销所有设备",
-  "{device} is paired with this PC alone: it is not signed in. Sign in on it to add this PC to your account.": "{device} 只与这台电脑配对：它没有登录。要把这台电脑添加到你的账户，请在该设备上登录。",
+  "{device} is paired with this PC alone so far: it has not added this PC to an account. Sign in on it to add this PC to your account.": "{device} 目前只与这台电脑配对：它还没有把这台电脑添加到账户。要把这台电脑添加到你的账户，请在该设备上登录。",
   "Every paired device loses its access to this PC, and this PC leaves that account. The access token, this PC and its Tailscale login still get in.": "所有已配对设备都将失去对这台电脑的访问权限，这台电脑也会离开该账户。访问 Token、这台电脑及其 Tailscale 登录仍可照常进入。",
   "Or type an SSH address": "或输入 SSH 地址",
   "Phones and devices": "手机和设备",

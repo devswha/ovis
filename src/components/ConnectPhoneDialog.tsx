@@ -9,6 +9,7 @@ import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { pcAccountStatus } from "../lib/account/join.ts";
+import { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_POLL_MS, ACCOUNT_QR_WATCH_EVENT, accountQrNoticeWaiting, accountQrPending, joinedBy, newestRelayDevice, resetAccountQrWatch, stopAccountQrWatch, takeAccountQrNotice, watchEndedAccountQr, type AccountQrBaseline } from "../lib/accountQrWatch.ts";
 import { ApiError, cancelRelayCode, endPairing, fetchDevices, findSshCandidates, findTailnetPcs, requestRelayOffer, revokeAllDevices, startPairing, type SshCandidate } from "../lib/api.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import { copyText } from "../lib/clipboard.ts";
@@ -141,7 +142,13 @@ export function ConnectPhoneDialog({ plan, pairUrl, relay, readOnly, closesGate,
   const phone = useMediaQuery(PHONE_QUERY);
   const tabs = connectTabs({ sshOffered: onAddPc !== null && !readOnly && !inRelayShell(), relay, readOnly });
   // a phone mostly connects itself; a PC's window opens on the PCs
-  const [chosen, setChosen] = useState<ConnectTab>(() => (phone && tabs.includes("devices") ? "devices" : tabs[0]!));
+  // except with something to say about the QR code its relay tab showed (lib/accountQrWatch.ts): that tab, then
+  const [chosen, setChosen] = useState<ConnectTab>(() => (accountQrNoticeWaiting() && tabs.includes("relay") ? "relay" : phone && tabs.includes("devices") ? "devices" : tabs[0]!));
+  useEffect(() => {
+    const onWatch = (event: Event) => { if ((event as CustomEvent<{ notice: boolean }>).detail.notice) setChosen("relay"); };
+    window.addEventListener(ACCOUNT_QR_WATCH_EVENT, onWatch);
+    return () => window.removeEventListener(ACCOUNT_QR_WATCH_EVENT, onWatch);
+  }, []);
   const tab = tabs.includes(chosen) ? chosen : tabs[0]!;
   // a tab once opened stays mounted while the dialog is: going back to Phones and devices keeps its code, not a new one
   const opened = useRef(new Set<ConnectTab>());
@@ -403,28 +410,26 @@ export function RelayTab({ relay, closesGate, signedIn, joinBySignIn, account, p
 export const ACCOUNT_QR_MAX_MS = 30 * 60_000;
 /** a page hidden this long takes its QR code down: nobody is there to scan it */
 export const ACCOUNT_QR_HIDDEN_MS = 60_000;
-/** how often the PC is asked, while the QR code is up, which account it is in and which devices it has */
-export const ACCOUNT_QR_POLL_MS = 3000;
-/** how long a device that just paired gets to put the PC in its account before it is named as not signed in */
-export const ACCOUNT_QR_ALONE_MS = 10_000;
-
-/** The newest device paired through the relay that is not in `known`: the one a QR code shown after `known` was read let in. */
-export function newestRelayDevice(devices: readonly PairedDevice[], known: ReadonlySet<string>): PairedDevice | null {
-  return devices.filter((device) => device.via_relay === true && !known.has(device.id))
-    .reduce<PairedDevice | null>((newest, device) => newest === null || device.created_at > newest.created_at ? device : newest, null);
-}
 
 /**
- * Takes a QR code that is no longer shown out of use: the typed code leaves the relay, and the six-digit code the QR
- * code carried (`code`, when its offer came) is ended on the PC, only if it is still the one pending. The page's other
- * places that show that code (Phones and devices) are then told it ran out, so none keeps a dead code up.
+ * Takes a QR code that is no longer shown out of use: the six-digit code it carried (`code`, when its offer came) is
+ * ended on the PC, only if it is still the one pending, and the typed code bound to it goes with it (server/devices.ts
+ * `endPairing`). A code that was not pending any more (used up, or replaced by another window's) ends nothing: the
+ * typed code showing on the PC then is not this QR code's. The page's other places that show the ended code (Phones
+ * and devices) are told it ran out, so none keeps a dead code up.
+ * Before the offer came there is only a typed code to take back. True when the PC answered: from then on nothing this
+ * QR code showed pairs.
  */
-async function endShownCode(code: string | null): Promise<void> {
-  await cancelRelayCode().catch(() => undefined);
-  if (code === null) return;
+async function endShownCode(code: string | null): Promise<boolean> {
+  if (code === null) return cancelRelayCode().then(() => true, () => false);
   try {
     if ((await endPairing(code)).cancelled) announcePairingCode({ code, expires_at: new Date(0).toISOString() });
-  } catch { /* an older PC has no way to end it: it runs out by itself within ten minutes */ }
+    return true;
+  } catch {
+    // a PC that cannot end the six-digit code (it runs out by itself within ten minutes) still drops the typed one
+    await cancelRelayCode().catch(() => undefined);
+    return false;
+  }
 }
 
 type AccountQrView =
@@ -433,7 +438,7 @@ type AccountQrView =
   | { kind: "starting" }
   | { kind: "shown" }
   /** a device paired and the PC is still in no account */
-  | { kind: "alone"; device: string }
+  | { kind: "alone"; device: string; id: string }
   | { kind: "joined"; account: string; device: string | null };
 
 /**
@@ -442,10 +447,13 @@ type AccountQrView =
  * joins the scanning device's account with nothing typed and no approval here (docs/account.md, "Adding a PC").
  * A code admits whoever holds it, so:
  * - nothing is asked of the PC until Show the QR code is pressed, and the code is ended when the QR code comes down:
- *   as the dialog closes or another tab opens, once the page was hidden for a minute, and 30 minutes after the press;
+ *   as the dialog closes or another tab opens, as the page goes (a reload, a closed tab), once the page was hidden
+ *   for a minute, and 30 minutes after the press;
  * - when the PC goes from no account to one, the QR code gives way to which account and which device, with
  *   "Not me: revoke every device";
- * - a device that paired while the PC stays in no account is named as not signed in.
+ * - a device that paired while the PC stays in no account is named as paired with this PC alone;
+ * - a device that took the code just before it was ended links only afterwards: the PC is watched on after the QR
+ *   code came down, outside this component (lib/accountQrWatch.ts), and what that finds is shown here.
  */
 export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccountHint, relayControls, onPairingHeld, onRevokedAll }: {
   relay: RelayState; phone: boolean; active: boolean; signedIn: boolean;
@@ -459,6 +467,9 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
   const t = useT();
   const id = useId();
   const [view, setView] = useState<AccountQrView>({ kind: "idle" });
+  /** the view as last drawn, for what an effect's cleanup leaves behind: at an unmount, the one that was up */
+  const drawn = useRef(view);
+  drawn.current = view;
   /** a QR code was shown before: the button offers a new one */
   const [again, setAgain] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -466,12 +477,14 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
   const [confirming, setConfirming] = useState(false);
   /** the account this PC is in, as it last said; undefined until it answered */
   const [pcAccount, setPcAccount] = useState<string | null | undefined>(undefined);
+  /** a QR code that came down is still being checked for a device it let in (lib/accountQrWatch.ts) */
+  const [late, setLate] = useState(accountQrPending);
   /** the PC's account and devices as the press found them */
-  const before = useRef<{ account: string | null; ids: ReadonlySet<string> } | null>(null);
+  const before = useRef<AccountQrBaseline | null>(null);
   /** bumped by every press and every take-down: an answer to an older one changes nothing */
   const run = useRef(0);
   /** the last take-down's requests: the next press waits for them, so it never ends the code it is about to get */
-  const ending = useRef<Promise<void>>(Promise.resolve());
+  const ending = useRef<Promise<boolean>>(Promise.resolve(true));
   const showButton = useRef<HTMLButtonElement>(null);
   const [refocus, setRefocus] = useState(0);
   // a notice that goes hands the focus to the button under it
@@ -481,6 +494,33 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
     let live = true;
     pcAccountStatus(apiFetch).then((status) => { if (live) setPcAccount((known) => known === undefined ? status.account : known); }, () => undefined);
     return () => { live = false; run.current++; };
+  }, []);
+
+  // what the watch after a take-down found: shown here, wherever this was meanwhile (another tab, a closed dialog)
+  useEffect(() => {
+    const adopt = () => {
+      setLate(accountQrPending());
+      const kind = drawn.current.kind;
+      // a QR code that is up, or on its way, reads the PC itself
+      if (kind === "shown" || kind === "starting") return;
+      const found = takeAccountQrNotice();
+      if (found === null) return;
+      run.current++;
+      setNote(null);
+      setAgain(true);
+      if (found.kind === "joined") {
+        setPcAccount(found.account);
+        setView({ kind: "joined", account: found.account, device: found.device });
+        return;
+      }
+      // from here on this reads the PC again, with that device still to name when the PC joins an account
+      stopAccountQrWatch();
+      before.current = { account: null, ids: new Set([...found.known.ids].filter((known) => known !== found.id)) };
+      setView({ kind: "alone", device: found.device, id: found.id });
+    };
+    adopt();
+    window.addEventListener(ACCOUNT_QR_WATCH_EVENT, adopt);
+    return () => window.removeEventListener(ACCOUNT_QR_WATCH_EVENT, adopt);
   }, []);
 
   const takeDown = useCallback(() => {
@@ -498,8 +538,20 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
       await ending.current;
       const [status, devices] = await Promise.all([pcAccountStatus(apiFetch), fetchDevices()]);
       if (mine !== run.current) return;
-      before.current = { account: status.account, ids: new Set(devices.map((device) => device.id)) };
+      // the QR code shown before may have let a device in, which the PC is still watched for or which waits to be
+      // told: this press goes on from there
+      const found = takeAccountQrNotice();
+      const earlier = stopAccountQrWatch();
       setPcAccount(status.account);
+      if (status.account !== null && (found?.kind === "joined" || earlier !== null)) {
+        run.current++;
+        setAgain(true);
+        setView({ kind: "joined", account: status.account, device: found?.kind === "joined" ? found.device : joinedBy(devices, earlier!.ids, status.account)?.label ?? null });
+        return;
+      }
+      // a device named as paired alone stays one this QR code has yet to tell of
+      const ids = found?.kind === "alone" ? new Set([...found.known.ids].filter((known) => known !== found.id)) : earlier?.ids;
+      before.current = { account: status.account, ids: status.account === null && ids !== undefined ? ids : new Set(devices.map((device) => device.id)) };
       setView({ kind: "shown" });
     } catch (reason) {
       if (mine !== run.current) return;
@@ -519,13 +571,42 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
   useEffect(() => {
     if (!shown) return;
     let code: string | null = null;
+    let ended = false;
     const onCode = (event: Event) => { code = (event as CustomEvent<PairingCode | undefined>).detail?.code ?? code; };
+    // the page goes (a reload, a closed tab or window, another address): no cleanup runs then, and nothing after an
+    // answer would, so the one request that ends this QR code's own code is sent to outlive the page
+    const onPageHide = () => {
+      if (ended) return;
+      ended = true;
+      ending.current = (code === null ? cancelRelayCode(true) : endPairing(code, true)).then(() => true, () => false);
+      // a page kept for Back comes back without its QR code
+      takeDown();
+    };
     window.addEventListener(PAIRING_CODE_EVENT, onCode);
+    window.addEventListener("pagehide", onPageHide);
     return () => {
       window.removeEventListener(PAIRING_CODE_EVENT, onCode);
-      ending.current = endShownCode(code);
+      window.removeEventListener("pagehide", onPageHide);
+      if (!ended) ending.current = endShownCode(code);
+      // a device may have taken the code a moment ago and link only now: unless this already says who came (a notice
+      // took the QR code's place), the PC is watched on, also once this component is gone
+      const next = drawn.current.kind;
+      const known = before.current;
+      if (known !== null && known.account === null && next !== "joined" && next !== "alone") watchEndedAccountQr(known, ending.current);
     };
-  }, [shown]);
+  }, [shown, takeDown]);
+
+  // a device named as paired alone may still put the PC in its account after its notice went (Done, a closed dialog)
+  const aloneId = view.kind === "alone" ? view.id : null;
+  useEffect(() => {
+    if (aloneId === null) return;
+    stopAccountQrWatch();
+    return () => {
+      const known = before.current;
+      if (known === null || drawn.current.kind === "joined") return;
+      watchEndedAccountQr({ account: null, ids: new Set([...known.ids, aloneId]) }, Promise.resolve(true), true);
+    };
+  }, [aloneId]);
 
   // while the QR code is up, and after a device paired without an account: what the PC says of its account and devices
   const watching = shown || view.kind === "alone";
@@ -536,42 +617,42 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
     let asking = false;
     let alone: number | undefined;
     let hidden: number | undefined;
+    let hiddenAt = 0;
+    const until = Date.now() + ACCOUNT_QR_MAX_MS;
+    /** either limit passed by the clock: a device that slept ran no timer, and may wake with the page still in sight */
+    const overdue = () => Date.now() >= until || (hidden !== undefined && Date.now() - hiddenAt >= ACCOUNT_QR_HIDDEN_MS);
     const ask = async () => {
+      if (overdue()) { takeDown(); return; }
       if (asking) return;
       asking = true;
       try {
         const [status, devices] = await Promise.all([pcAccountStatus(apiFetch), fetchDevices()]);
         if (mine !== run.current) return;
         setPcAccount(status.account);
-        const paired = newestRelayDevice(devices, known.ids);
         if (known.account === null && status.account !== null) {
           run.current++;
-          // the device the QR code let in; without one (it joined some other way meanwhile), the account's newest member here
-          const member = paired ?? devices.filter((device) => device.account === status.account)
-            .reduce<PairedDevice | null>((newest, device) => newest === null || device.created_at > newest.created_at ? device : newest, null);
-          setView({ kind: "joined", account: status.account, device: member?.label ?? null });
+          setView({ kind: "joined", account: status.account, device: joinedBy(devices, known.ids, status.account)?.label ?? null });
           return;
         }
+        const paired = newestRelayDevice(devices, known.ids);
         if (paired === null) return;
         // a PC already in an account: the device is paired, and its code is spent
         if (known.account !== null) { setNote(t("Paired: {name}.", { name: paired.label })); takeDown(); return; }
         alone ??= window.setTimeout(() => {
-          if (mine === run.current) setView((current) => current.kind === "shown" ? { kind: "alone", device: paired.label } : current);
+          if (mine === run.current) setView((current) => current.kind === "shown" ? { kind: "alone", device: paired.label, id: paired.id } : current);
         }, ACCOUNT_QR_ALONE_MS);
       } catch { /* the next round asks again */ } finally { asking = false; }
     };
     const poll = window.setInterval(() => void ask(), ACCOUNT_QR_POLL_MS);
-    const until = Date.now() + ACCOUNT_QR_MAX_MS;
     const cap = window.setTimeout(takeDown, ACCOUNT_QR_MAX_MS);
-    let hiddenAt = 0;
     const onVisibility = () => {
       if (document.hidden) {
         if (hidden === undefined) { hiddenAt = Date.now(); hidden = window.setTimeout(takeDown, ACCOUNT_QR_HIDDEN_MS); }
         return;
       }
+      // back in sight: the clock says whether either limit passed meanwhile
+      if (overdue()) takeDown();
       window.clearTimeout(hidden);
-      // a sleeping device runs no timer: back in sight, the clock says whether either limit passed meanwhile
-      if ((hidden !== undefined && Date.now() - hiddenAt >= ACCOUNT_QR_HIDDEN_MS) || Date.now() >= until) takeDown();
       hidden = undefined;
     };
     onVisibility();
@@ -587,7 +668,7 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
 
   // a device that pairs normally closes the dialog (Settings' device list); not while this may still have to say
   // which account the PC joined, or says it
-  const held = (shown && before.current?.account === null) || view.kind === "alone" || view.kind === "joined" || confirming;
+  const held = (shown && before.current?.account === null) || late || view.kind === "alone" || view.kind === "joined" || confirming;
   useEffect(() => { onPairingHeld?.(held); }, [held, onPairingHeld]);
   useEffect(() => () => onPairingHeld?.(false), [onPairingHeld]);
 
@@ -597,6 +678,9 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
   };
   const revokeAll = async () => {
     await revokeAllDevices();
+    // nobody is left to watch for
+    before.current = null;
+    resetAccountQrWatch();
     setConfirming(false);
     setPcAccount(null);
     setNote(t("Every paired device was revoked. The access token, this PC and its Tailscale login get in as before."));
@@ -627,7 +711,7 @@ export function AccountQr({ relay, phone, active, signedIn, inAccount: inAccount
         </div>
       ) : view.kind === "alone" ? (
         <div className="connect-account-qr-notice" role="status" data-testid="connect-account-alone">
-          <p className="settings-description">{t("{device} is paired with this PC alone: it is not signed in. Sign in on it to add this PC to your account.", { device: view.device })}</p>
+          <p className="settings-description">{t("{device} is paired with this PC alone so far: it has not added this PC to an account. Sign in on it to add this PC to your account.", { device: view.device })}</p>
           <div className="phone-actions"><button type="button" className="btn" onClick={dismiss}>{t("Done")}</button></div>
         </div>
       ) : !online ? (
