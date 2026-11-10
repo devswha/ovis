@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import * as fs from "node:fs";
-import { appendFileSync, chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -1748,6 +1748,76 @@ describe("ClaudeSubagentStatus", () => {
         await status.refresh([pane("p1", "codex")]);
         rest(s, 4);
         expect(status.loopHoldsNow("p1")).toBe(true);
+      } finally { status.stop(); }
+    });
+
+    it("reads the hold anew from another file found in the transcript's place since the pane's last poll, by what that file says alone", async () => {
+      // the file read before holds, and the one in its place tells of no self-resumed turn
+      {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        const { status, told } = await tracked(s);
+        try {
+          copyFileSync(s.path, `${s.path}.other`);
+          fire(s, 3);
+          expect(status.loopHoldsNow("p1")).toBe(true);
+          renameSync(`${s.path}.other`, s.path);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          expect(told.at(-1)).toBe(false);
+        } finally { status.stop(); }
+      }
+      // the file read before came to rest past its fire, and the one in its place has a fire written a second ago
+      // with no rest after it, right where the one before's stood: the place of a fire in one file says nothing of another's
+      {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        let now = NOW;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          firedAt(s, NOW - 1000);
+          copyFileSync(s.path, `${s.path}.other`);
+          status.poll();
+          rest(s, 4);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          renameSync(`${s.path}.other`, s.path);
+          // it holds as a fire found at any transcript's first read does: for what is left of its time
+          expect(status.loopHoldsNow("p1")).toBe(true);
+          expect(told.at(-1)).toBe(true);
+          now = NOW - 1000 + LOOP_HOLD_MS;
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          expect(told.at(-1)).toBe(false);
+        } finally { status.stop(); }
+      }
+    });
+
+    it.each(["the pane's poll", "a send's own read of the hold"] as const)("holds on a fire in a transcript rewritten in place, though it stands before the last one read, when %s finds it", async (first) => {
+      const s = session();
+      const long = { type: "user", timestamp: at(1), permissionMode: "default", origin: { kind: "human" }, message: { role: "user", content: "a long prompt ".repeat(100) } };
+      s.parent(long);
+      rest(s, 2);
+      const { status, told } = await tracked(s);
+      try {
+        fire(s, 3);
+        status.poll();
+        rest(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        // the same file written anew without that prompt, then the next wakeup's fire: it ends before where the first one did
+        const before = statSync(s.path);
+        writeFileSync(s.path, readFileSync(s.path, "utf8").replace(json(long), ""));
+        fire(s, 5);
+        expect(statSync(s.path).ino).toBe(before.ino);
+        expect(statSync(s.path).size).toBeLessThan(before.size);
+        // it is no fire the pane took account of: it holds
+        if (first === "the pane's poll") status.poll();
+        expect(status.loopHoldsNow("p1")).toBe(true);
+        expect(told.at(-1)).toBe(true);
+        rest(s, 6);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
       } finally { status.stop(); }
     });
 

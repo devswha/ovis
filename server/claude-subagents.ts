@@ -1540,7 +1540,8 @@ export const LOOP_HOLD_MS = 60_000;
  * The latest fire or self-resumed prompt the pane took account of (`fire`, its byte boundary:
  * Parent.loopAt), and since when it holds the queue (`since`). null: it holds nothing, as a rest
  * was written past it, or the transcript's first read found it written LOOP_HOLD_MS ago or longer
- * (history: its turn may have been interrupted long ago).
+ * (history: its turn may have been interrupted long ago). One found at any other boundary is another
+ * one, wherever that stands: a transcript rewritten in place keeps no boundary of the read before.
  */
 interface Loop { fire: number; since: number | null }
 
@@ -1644,17 +1645,24 @@ export class ClaudeSubagentStatus {
    * loopHolds as the pane's transcript says now: what was appended since the pane's last poll is read
    * first, as a task may have fired since, or the resumed turn come to rest. A hold that read finds
    * begun or ended, or one whose time ran out untold, is a poll's to take account of, made at once: it
-   * tells of it as any poll does (onChange). With no such change nothing more is read and nothing is
-   * told: the pane's counts, its turns and its busy signals stay as its last poll left them. A pane
-   * whose transcript is not found, or not read yet, has none to read: nothing holds it until then.
+   * tells of it as any poll does (onChange). So is a fire in another file found in the transcript's
+   * place: the poll begins the pane's turns anew from that file, and weighs the fire by its own age.
+   * With no such change nothing more is read and nothing is told: the pane's counts, its turns and
+   * its busy signals stay as its last poll left them. A pane whose transcript is not found, or not
+   * read yet, has none to read: nothing holds it until then. Nor is anything read of a pane that
+   * left Claude, or once the tracker stopped: what its last poll found stands, for its time.
    */
   loopHoldsNow(paneId: string): boolean {
     const tracked = this.panes.get(paneId);
     const turns = !this.stopped && tracked?.path != null && tracked.live && tracked.turns?.path === tracked.path ? tracked.turns : undefined;
     const parent = turns ? scanParent(turns.path) : null;
-    if (tracked && turns && parent?.id === turns.id) {
-      const changed = parent.loopAt === null ? turns.loop.since !== null : parent.loopAt > turns.loop.fire;
-      if (changed || this.loopHolds(paneId) !== (tracked.looping ?? false)) { tracked.sig = null; this.poll(paneId); }
+    if (tracked && turns && parent) {
+      // what the file tells of a self-resumed turn is not what the pane's turns have: none any more, or one that is
+      // not the one they took account of, in another place or in another file
+      const changed = parent.loopAt === null ? turns.loop.since !== null : parent.id !== turns.id || parent.loopAt !== turns.loop.fire;
+      // that poll reads the transcript: the file changed since its signature was certified, or none was, as
+      // a poll that finds a hold standing certifies none (poll)
+      if (changed || this.loopHolds(paneId) !== (tracked.looping ?? false)) this.poll(paneId);
     }
     return this.loopHolds(paneId);
   }
@@ -1860,9 +1868,10 @@ export class ClaudeSubagentStatus {
           settle(turns, parent, this.now());
           // a fire or a self-resumed prompt written since the read before holds the queue from now, whatever herdr
           // said or says of the pane; a rest written past it ends that. One the transcript's first read finds
-          // written holds by its own age (foundFiring)
+          // written holds by its own age (foundFiring). Any that is not the one last taken account of is one written
+          // since: it stands past that one, or anywhere in a transcript rewritten in place
           if (parent.loopAt === null) turns.loop.since = null;
-          else if (parent.loopAt > turns.loop.fire) turns.loop = { fire: parent.loopAt, since: turns === known ? this.now() : foundFiring(parent.loopTime, this.now()) };
+          else if (parent.loopAt !== turns.loop.fire) turns.loop = { fire: parent.loopAt, since: turns === known ? this.now() : foundFiring(parent.loopTime, this.now()) };
           // a turn seen at rest is history: a later signal with nothing to place it is not its own
           const latest = turnAt(parent);
           if (resting && latest !== null) turns.retired = Math.max(turns.retired, latest);
