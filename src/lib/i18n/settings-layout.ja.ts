@@ -19,6 +19,7 @@ export const SETTINGS_LAYOUT_JA: Record<string, string> = {
   "File format": "ファイル形式",
   "That file is too large to be a theme.": "テーマファイルにしては大きすぎます。",
   "No theme was found in that file. It needs Base16 colors, base00 to base0F.": "ファイルにテーマが見つかりません。Base16 の色(base00〜base0F)が必要です。",
+  "That file is not valid JSON. Look for a trailing comma or a comment.": "有効な JSON ファイルではありません。末尾のカンマやコメントがないか確認してください。",
   "That theme has no background (base00) and text (base05) color.": "このテーマには背景色(base00)と文字色(base05)がありません。",
   "{key} in that file is not a color. Colors are written #rrggbb.": "ファイルの {key} は色ではありません。色は #rrggbb で書きます。",
   "{count} themes are imported already. Remove one first.": "すでに {count} 個のテーマを読み込んでいます。先に 1 つ削除してください。",

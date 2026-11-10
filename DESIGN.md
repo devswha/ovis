@@ -221,8 +221,9 @@ themes against: a colour under a floor keeps its hue and moves in lightness by t
 that clears it, and a surface the text could only be read on by moving far (more than dE 12 past
 reading on the background) moves toward the background instead. `--bg-hover`, the hovered and
 selected row and the terminal's selection, is never under 1.05:1 on `--bg`: one that would end
-there takes a 1.2:1 step off it instead, the built-in themes' median. The row's mode is what its
-colours are (light text on a darker ground is dark), never what the file calls it. A scheme that
+there takes a 1.2:1 step off it instead, the built-in themes' median. Which side a block is filed
+under is told by the colours the file wrote (light text on a darker ground is dark), never by what
+the file calls it, and the row's mode by what they are once they read. A scheme that
 already reads is drawn as written.
 `settings.customThemes` holds the imported themes (12 at most) and the one chosen for each side,
 which is drawn in place of that side's `darkTheme` or `lightTheme`; those keep their value under

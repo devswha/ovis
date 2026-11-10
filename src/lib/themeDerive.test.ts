@@ -8,6 +8,11 @@ import { INDICATOR_ROLES, LIGHT_ANSI_ROLES, ROLES } from "./themeRoles.ts";
 
 /** Under this a hovered or selected row cannot be told from the ground (themeDerive.ts TELLS). */
 const TELLS = 1.05;
+/**
+ * The two tests that derive hundreds of themes take a few seconds of plain arithmetic: more than a
+ * single file's default five on a PC that is busy with other checks, where CI gives a minute.
+ */
+const HEAVY = 30_000;
 
 /**
  * What a derived theme is under: the pairs of themeContrast.ts, the way themes.contrast.test.ts reads a
@@ -53,7 +58,7 @@ describe("deriveTheme", () => {
       if (under.length > 0) failures.push(`palette ${index}: ${under.join("; ")} ${JSON.stringify(palette)}`);
     }
     expect(failures).toEqual([]);
-  });
+  }, HEAVY);
 
   test("the hardest grounds still read: one colour for all sixteen, greys at the balance point, black and white", () => {
     for (const all of ["#808080", "#777777", "#000000", "#ffffff", "#ff0000", "#00ff00", "#0000ff", "#757575", "#767676", "#959595"]) {
@@ -64,7 +69,7 @@ describe("deriveTheme", () => {
     for (const base00 of edges) for (const base01 of edges) for (const base02 of edges) for (const base05 of ["#757575", "#000000", "#ffffff", "#606060"]) {
       expect(below(deriveTheme(seeds({ base00, base01, base02, base05 }))), `${base00} ${base01} ${base02} ${base05}`).toEqual([]);
     }
-  });
+  }, HEAVY);
 
   test("a scheme that already reads is drawn in its own colours", () => {
     const dark = deriveTheme(DARK);

@@ -19,6 +19,7 @@ export const SETTINGS_LAYOUT_KO: Record<string, string> = {
   "File format": "파일 형식",
   "That file is too large to be a theme.": "테마 파일이라기에는 너무 큽니다.",
   "No theme was found in that file. It needs Base16 colors, base00 to base0F.": "파일에서 테마를 찾지 못했습니다. Base16 색(base00~base0F)이 있어야 합니다.",
+  "That file is not valid JSON. Look for a trailing comma or a comment.": "올바른 JSON 파일이 아닙니다. 끝에 남은 쉼표나 주석이 있는지 확인하세요.",
   "That theme has no background (base00) and text (base05) color.": "이 테마에는 배경색(base00)과 글자색(base05)이 없습니다.",
   "{key} in that file is not a color. Colors are written #rrggbb.": "파일의 {key} 값이 색이 아닙니다. 색은 #rrggbb로 적습니다.",
   "{count} themes are imported already. Remove one first.": "이미 테마 {count}개를 가져왔습니다. 먼저 하나를 지우세요.",

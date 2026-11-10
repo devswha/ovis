@@ -11,6 +11,10 @@ An imported theme appears as a card before the built-in ones, and is chosen for 
 and phones of that PC get it too. Up to 12 themes are kept; the trash button beside a name removes
 one.
 
+**Importing a file again replaces the theme of that name.** Change a color, import the file once
+more, and the new colors take the place of the old ones, on whichever side drew them. Two themes
+are two names.
+
 ## The colors
 
 A theme is the sixteen colors of a [Base16](https://github.com/chriskempson/base16) scheme,
@@ -49,9 +53,12 @@ the background and the text, and a hue that is left out is the text color, so a 
 colors is a plain two-tone theme. Keys the app does not know are ignored. A color that is there
 but is not written `#rrggbb` refuses the file, and the message names it.
 
-**Dark or light is told by the colors.** Light text on a darker background is a dark theme,
-whatever the file calls it: a block filed under the wrong side goes to its own, and a scheme's
-`variant` line is not read.
+**Dark or light is told by the colors the file writes.** Light text on a darker background is a
+dark theme, whatever the file calls it: a block filed under the wrong side goes to its own, two
+blocks filed under each other's side change places, and a scheme's `variant` line is not read. No
+block is left out: two dark blocks both stay where the file put them, and the light side then
+draws a dark one. A faint block whose text has to be moved across its background to be read stays
+on the side it was written for.
 
 The status glyphs of the sidebar and the tabs keep herdr's own colors, made lighter or darker only
 where the theme's surfaces need it.
@@ -106,6 +113,12 @@ scheme is one side: a background darker than the text is a dark theme.
 ## Limits
 
 - A file is at most 64 KB, and a name at most 40 characters.
+- A JSON file has to be plain JSON: a trailing comma or a comment refuses it, and the message says
+  so.
+- The imported themes and the choice for each side are one shared setting, and the last save wins.
+  When two devices change it before they have heard from each other (one imports a theme while
+  the other, offline, imports one or switches a side back to a built-in theme), the later save
+  stands and the other device's import is gone from every device. Import it again.
 - A theme changes colors only. Fonts, sizes, spacing and layout stay in Settings.
 - The theme is drawn from the first frame on a device that has opened it once; a device that
   receives it from the PC opens in the built-in theme for a moment the first time.

@@ -9,7 +9,7 @@
  * exist can be imported as they are. docs/themes.md describes both. Which side a block is, is told
  * by its colours and never by what the file calls it.
  */
-import { rgb } from "./colorMath.ts";
+import { lab, luminance, rgb } from "./colorMath.ts";
 import { LIGHT_ANSI_ROLES } from "./themeRoles.ts";
 import { BASE16_KEYS, deriveTheme, type Base16, type Base16Key } from "./themeDerive.ts";
 import { themeFor } from "./themeFor.ts";
@@ -124,15 +124,27 @@ function derived(seeds: Base16): ReturnType<typeof deriveTheme> {
 }
 
 /**
- * The theme of the blocks a file gave, each under the side its colours are: light text on a darker
- * ground is the dark side, whatever the file called it. Two blocks of one kind keep the one the
- * file filed under that side.
+ * The side a block is, by the colours the file wrote: light text on a darker ground is dark, and a
+ * block whose text is its ground's own colour goes by how light that ground is. Never by what the
+ * colours become once they are made to read (themeDerive.ts): a faint dark block whose text ends
+ * up darker than its ground is still the file's dark side.
+ */
+const kindOf = (seeds: Base16): Mode => {
+  const [ground, text] = [luminance(rgb(seeds.base00)), luminance(rgb(seeds.base05))];
+  return (ground === text ? lab(rgb(seeds.base00))[0] < 0.5 : ground < text) ? "dark" : "light";
+};
+
+/**
+ * The theme of the blocks a file gave, and no block is dropped. One block goes under the side its
+ * colours are, whatever the file called it. Two blocks each filed under the other's side change
+ * places; any other two stay where the file put them, two dark ones included (the light side then
+ * draws a dark block, as it does a built-in dark theme picked for it).
  */
 function themeFrom(name: string, given: Partial<Record<Mode, Base16>>): CustomTheme {
-  const blocks = SIDES.flatMap((side) => given[side] ? [{ side, seeds: given[side], mode: derived(given[side]).mode }] : []);
-  const placed: Partial<Record<Mode, Base16>> = {};
-  for (const block of [...blocks.filter((entry) => entry.side === entry.mode), ...blocks.filter((entry) => entry.side !== entry.mode)]) placed[block.mode] ??= block.seeds;
-  return themeOf(name, placed.dark, placed.light);
+  const { dark, light } = given;
+  if (dark && light) return kindOf(dark) === "light" && kindOf(light) === "dark" ? themeOf(name, light, dark) : themeOf(name, dark, light);
+  const only = dark ?? light;
+  return only === undefined || kindOf(only) === "dark" ? themeOf(name, only, undefined) : themeOf(name, undefined, only);
 }
 
 /** A line longer than this is no line of a scheme file. */
@@ -183,21 +195,25 @@ function readSchemeLines(text: string): Record<string, unknown> {
   return scheme;
 }
 
-export type ThemeFileError = "too-large" | "not-a-theme" | "no-colors" | "bad-color";
+export type ThemeFileError = "too-large" | "not-a-theme" | "not-json" | "no-colors" | "bad-color";
 /** `key`: the colour a "bad-color" file wrote wrongly. */
 export type ThemeFileResult = { theme: CustomTheme } | { error: ThemeFileError; key?: Base16Key };
 
 /**
  * The theme a file holds. `fallbackName` names a theme whose file gives none (the file's own
- * name, without its ending). A file is taken whole or refused: a colour it wrote wrongly, or a
- * side without a ground and a text colour, is said rather than left out.
+ * name, without its ending). A file is taken whole or refused: a colour it wrote wrongly, a side
+ * without a ground and a text colour, or JSON that does not parse is said rather than left out.
  */
 export function readThemeFile(file: string, fallbackName = ""): ThemeFileResult {
   if (file.length > MAX_THEME_FILE_BYTES) return { error: "too-large" };
   const text = file.startsWith("\ufeff") ? file.slice(1) : file;
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { parsed = readSchemeLines(text); }
+  let json = true;
+  try { parsed = JSON.parse(text); } catch { json = false; parsed = readSchemeLines(text); }
   if (!isObject(parsed)) return { error: "not-a-theme" };
+  // JSON in everything but a slip (a trailing comma, a comment): the line reader finds none of its quoted keys,
+  // and "no colors" would send its writer looking for the wrong thing
+  if (!json && Object.keys(parsed["palette"] as object).length === 0 && (/^\s*\{/.test(text) || /"base0[0-9a-f]"\s*:/i.test(text))) return { error: "not-json" };
   const name = cleanName(parsed["name"]) || cleanName(parsed["scheme"]) || cleanName(fallbackName) || "Theme";
   // the app's own shape: a block for either side
   if (isObject(parsed["dark"]) || isObject(parsed["light"])) {
@@ -254,6 +270,33 @@ export function withTheme(current: CustomThemes, theme: CustomTheme, side: Mode)
   if (at === -1 && current.themes.length >= MAX_CUSTOM_THEMES) return null;
   const themes = at === -1 ? [...current.themes, theme] : sameTheme(current.themes[at]!, theme) ? current.themes : current.themes.map((entry, index) => index === at ? theme : entry);
   return { ...current, themes, [side]: theme.id };
+}
+
+/**
+ * The list after `theme` is imported: chosen for each side it has, and null when the list is full.
+ * A held theme of the same name is the one this file was before it was edited: the new one takes
+ * its place in the list, and a side that drew the old one draws this one. So an author who changes
+ * a colour and imports again has one theme, not a row of twins that fills the list.
+ */
+export function withImported(current: CustomThemes, theme: CustomTheme): CustomThemes | null {
+  const earlier = current.themes.filter((entry) => entry.name === theme.name && entry.id !== theme.id).map((entry) => entry.id);
+  let next = current;
+  if (earlier.length > 0) {
+    const at = current.themes.findIndex((entry) => entry.id === earlier[0]);
+    const held = current.themes.some((entry) => entry.id === theme.id);
+    const moved = (id: string | null): string | null => id !== null && earlier.includes(id) ? theme.id : id;
+    next = {
+      themes: current.themes.flatMap((entry, index) => index === at && !held ? [theme] : earlier.includes(entry.id) ? [] : [entry]),
+      dark: moved(current.dark), light: moved(current.light),
+    };
+  }
+  for (const side of SIDES) {
+    if (!theme[side]) continue;
+    const chosen = withTheme(next, theme, side);
+    if (chosen === null) return null;
+    next = chosen;
+  }
+  return next;
 }
 
 /** The list without the theme, and no side left drawing it. */

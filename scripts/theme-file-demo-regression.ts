@@ -142,6 +142,20 @@ try {
             assert.equal(await palette(page), "custom", `${where}: the app goes on drawing it`);
             assert.equal(await token(page, "--bg"), want.bg);
 
+            // the file edited and imported again: the same card in its new colours, not a second one
+            await picker.setInputFiles(file("lamplight.json", EXAMPLE.replace(example.theme[scheme]!.base00, "#123456")));
+            await page.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() === "#123456");
+            assert.equal(await cards.count(), 1, `${where}: an edited file takes its earlier self's place`);
+            assert.equal(await cards.first().getAttribute("aria-checked"), "true");
+            assert.deepEqual((await stored(page)).list?.themes.map((theme) => theme.name), ["Lamplight"]);
+            // JSON but for a trailing comma is said to be that, and the theme drawn stays
+            await picker.setInputFiles(file("lamplight.json", '{"base00": "#101010", "base05": "#e0e0e0",}'));
+            await dialog.getByRole("alert").filter({ hasText: "That file is not valid JSON." }).waitFor();
+            assert.equal(await token(page, "--bg"), "#123456");
+            await picker.setInputFiles(file("lamplight.json", EXAMPLE));
+            await page.waitForFunction((bg) => getComputedStyle(document.documentElement).getPropertyValue("--bg").trim() === bg, want.bg);
+            assert.equal(await cards.count(), 1);
+
             // a built-in card takes the side back, the imported card takes it again
             const first = dialog.locator('[data-theme-card]:not([data-theme-card^="custom:"])').first();
             const firstId = await first.getAttribute("data-theme-card");
