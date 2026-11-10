@@ -184,12 +184,14 @@ const SOURCE_LABEL: Record<FoundSource, string> = { herdr: "herdr", ssh_config: 
 /**
  * SSH: the PCs found, each with Connect (saved in herdr, its own dialog), Add (Add PC with its address) or Added,
  * then a field for any other address. A window the server will not tell (an open LAN window, Portal, the relay)
- * gets the field alone.
+ * gets the field with one line saying so, so an empty tab is not taken for a PC that knows none.
  */
 export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
   const t = useT();
   const [found, setFound] = useState<SshCandidate[] | null>(null);
   const [failed, setFailed] = useState(false);
+  // the server keeps its list from this window (owner_only): said in one line above the field
+  const [withheld, setWithheld] = useState(false);
   const [reads, setReads] = useState(0);
   const [typed, setTyped] = useState("");
   // the Tailscale PCs whose Ovis is older than 0.5 (#3253), by MagicDNS name: told to update it there instead of Add
@@ -208,13 +210,16 @@ export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: read
   useEffect(() => {
     let live = true;
     setFailed(false);
+    setWithheld(false);
     findSshCandidates().then(({ pcs }) => { if (live) setFound(pcs); }, (error: unknown) => {
-      // a window the server will not tell (owner_only, read_only) gets the field alone; anything else says so, with Try again
+      // a window the server will not tell (owner_only, read_only) gets the field; anything else says so, with Try again
       const refused = error instanceof ApiError && (error.code === "owner_only" || error.code === "read_only");
       if (!refused) console.warn("Ovis: the PCs to add over SSH could not be read", error instanceof Error ? error.name : error);
       if (!live) return;
       setFound([]);
       setFailed(!refused);
+      // a watching device (read_only) adds no PC: only a window that may add one is told to type its address
+      setWithheld(error instanceof ApiError && error.code === "owner_only");
     });
     return () => { live = false; };
   }, [reads]);
@@ -256,6 +261,7 @@ export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: read
           <button type="button" className="btn" onClick={() => { setFound(null); setReads((count) => count + 1); }}><RefreshCw aria-hidden="true" />{t("Try again")}</button>
         </div>
       )}
+      {withheld && <p className="settings-hint" role="status">{t("This connection does not list the PCs this PC knows. Type the address of the PC to add.")}</p>}
       <form className="connect-ssh-form" onSubmit={add}>
         <label className="settings-label" htmlFor="connect-ssh-address">{t("Or type an SSH address")}</label>
         <div className="connect-ssh-field">

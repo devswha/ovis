@@ -203,6 +203,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "On the new device, sign in to the same Ovis account.": "在新设备上登录同一个 Ovis 账户。",
   "Turn on the relay, then add this PC to your account.": "打开中继，然后把这台电脑添加到你的账户。",
   "The PCs this PC knows could not be read.": "无法加载已保存的 SSH 连接列表。",
+  "This connection does not list the PCs this PC knows. Type the address of the PC to add.": "此连接不显示已保存的 SSH 连接列表。请直接输入要添加的 PC 地址。",
   "Open the account": "打开账户",
   "Or type an SSH address": "或输入 SSH 地址",
   "Phones and devices": "手机和设备",

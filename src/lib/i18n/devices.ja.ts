@@ -203,6 +203,7 @@ export const DEVICES_JA: Record<string, string> = {
   "On the new device, sign in to the same Ovis account.": "新しいデバイスで同じ Ovis アカウントにサインインしてください。",
   "Turn on the relay, then add this PC to your account.": "リレーをオンにしてから、この PC をアカウントに追加してください。",
   "The PCs this PC knows could not be read.": "この PC が知っている PC を読み込めませんでした。",
+  "This connection does not list the PCs this PC knows. Type the address of the PC to add.": "この接続では、この PC が知っている PC の一覧は表示されません。追加する PC のアドレスを入力してください。",
   "Open the account": "アカウントを開く",
   "Or type an SSH address": "または SSH アドレスを入力",
   "Phones and devices": "スマホ・デバイス",
