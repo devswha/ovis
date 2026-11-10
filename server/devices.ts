@@ -285,6 +285,7 @@ export class DeviceStore {
   /** Sessions of a row, told when a `link` moves it to another key (onLinked). */
   private readonly relinks = new Map<string, Set<(sessionId: string) => void>>();
   private readonly revokeAllListeners = new Set<() => void>();
+  private readonly gateListeners = new Set<() => void>();
   private readonly pairings = new Set<(event: DevicePairedEvent, origin: readonly string[]) => void>();
   private readonly codeStarts = new Set<() => void>();
   private readonly removals = new Set<(event: DeviceRemovedEvent) => void>();
@@ -371,6 +372,16 @@ export class DeviceStore {
    */
   get gated(): boolean {
     return this.error !== null || this.gateClosedAt !== null || this.devices.length > 0;
+  }
+
+  /**
+   * Hears of the gate closing to strangers (`gated` turning true): the first device's cookie came back, or the
+   * relay was turned on. Told once, as that write reaches disk and before the store's own fields say so. Whoever
+   * the open LAN let in has no access from then on, and neither a later device nor a revoke opens the gate again.
+   */
+  onGateClosed(listener: () => void): () => void {
+    this.gateListeners.add(listener);
+    return () => { this.gateListeners.delete(listener); };
   }
 
   /** Relay opt-in closes open LAN access before any outbound connection is made. */
@@ -819,6 +830,8 @@ export class DeviceStore {
 
   private save(devices = this.devices, gateClosedAt = this.gateClosedAt): void {
     writePrivateState(this.path, { gate_closed_at: gateClosedAt, devices });
+    // the write that closes the gate (callers set the fields after it): onGateClosed
+    if (!this.gated && (gateClosedAt !== null || devices.length > 0)) for (const listener of [...this.gateListeners]) listener();
   }
 
   /** The drive member of `account` whose key is `key`, the only signer whose `add` or `remove` applies. */

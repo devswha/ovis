@@ -1350,3 +1350,45 @@ it("POST /api/devices/pair/cancel with a code ends only that pairing, not one st
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+it("ends a socket the open LAN let in once the first device is paired, and refuses its next one", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-open-socket-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, machines: false, sidecar: false });
+  const base = `http://127.0.0.1:${app.port}`;
+  // another machine on the LAN, as a proxy in front of this server names it
+  const stranger = { "x-forwarded-for": "192.168.0.20" };
+  const RuntimeSocket = WebSocket as unknown as new (url: string, options: { headers: Record<string, string> }) => WebSocket;
+  const open = (): { socket: WebSocket; opened: Promise<boolean>; closed: Promise<CloseEvent> } => {
+    const socket = new RuntimeSocket(`${base.replace("http:", "ws:")}/ws`, { headers: stranger });
+    const closed = new Promise<CloseEvent>((resolve) => socket.addEventListener("close", resolve, { once: true }));
+    const opened = new Promise<boolean>((resolve) => {
+      socket.addEventListener("open", () => resolve(true), { once: true });
+      socket.addEventListener("error", () => resolve(false), { once: true });
+    });
+    return { socket, opened, closed };
+  };
+  const sockets: WebSocket[] = [];
+  try {
+    const health = async () => (await (await fetch(`${base}/api/health`, { headers: stranger })).json() as { auth: { authenticated: boolean; via?: string } }).auth;
+    expect(await health()).toMatchObject({ authenticated: true, via: "open" });
+    const first = open();
+    sockets.push(first.socket);
+    expect(await first.opened).toBe(true);
+    const store = app.context.services.devices;
+    // a first pairing whose cookie has not come back closes nothing: the socket stays
+    const phone = store.pair(store.startPairing().code, "Phone", "drive")!;
+    expect([store.gated, first.socket.readyState]).toEqual([false, WebSocket.OPEN]);
+    // the cookie comes back: the gate closes, and with it the connection nothing but the open LAN stood behind
+    store.match(phone.token);
+    const ended = await Promise.race([first.closed, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the open socket outlived the gate")), 5000))]);
+    expect([ended.code, ended.reason]).toEqual([1008, "Pairing required"]);
+    expect(await health()).toMatchObject({ authenticated: false });
+    const second = open();
+    sockets.push(second.socket);
+    expect(await second.opened).toBe(false);
+  } finally {
+    for (const socket of sockets) socket.close();
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}, 15_000);

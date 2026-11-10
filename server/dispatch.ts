@@ -428,7 +428,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot,
           (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser));
         await relay.ready;
-        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...recheck }) });
+        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...(access.level === "full" && access.via === "open" ? { open: true } : {}), ...recheck }) });
         if (upgraded) return undefined;
         relay.close();
       } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
@@ -465,7 +465,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         return () => { stopPaired(); stopRemoved?.(); stopRelay?.(); };
       } },
     } : undefined;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }), ...recheck }) });
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, deviceId, readOnly, ...(openAccess ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }), ...recheck }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }
