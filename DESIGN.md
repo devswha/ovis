@@ -3401,9 +3401,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   not another attached typist. The bridge retains disconnected presentation receipts and exact
   consumed IDs for up to ten minutes, capped at 1024 each. An authorized, non-observing reattach
   with the same opaque browser resume ID and device can resume that receipt or receive its exact
-  consumed removal on the local machine only. Remote-machine relays strip the resume ID from every
-  attach because their shared bridge token carries no trusted origin-device namespace; remote
-  reconnection cannot resume presentation receipts. This conveys no input permission. The browser's saved, non-resendable
+  consumed removal. Through a remote PC's relay a controlling attach carries a resume ID scoped to
+  that server (the shared bridge token names no origin device, so the relay makes the ID its own),
+  and a watch-only attach carries none: that one resumes no presentation receipt, and neither does
+  a reconnection after this server restarted. This conveys no input permission. The browser's saved, non-resendable
   **transcript confirmation unavailable** copy remains after server restart or retention expiry;
   neither matching text nor an empty queue clears it. A changed terminal or session also makes
   confirmation unavailable. Ovis does not claim that Pi queued or consumed
@@ -3426,10 +3427,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   This is a deliberate change for the rest: past the ten minutes, after a restart or update of this
   server or of the PC's own, on a remote PC that runs an older version, or through a watch-only attach
   (which carries no resume ID), such a copy keeps only Copy and **Discard**.
-  Any other follow-up's exact `sent`, `discarded` or `held` receipt is kept the same way (ten minutes;
-  at most 1024 held and discarded ones, while a `sent` one is never dropped before its ten minutes, so a
-  copy another tab still holds on a held receipt is not typed again; same browser resume ID and device)
-  and replayed with `resumed: true` on its
+  Any other follow-up's exact `sent`, `discarded` or `held` receipt is kept the same way (ten minutes on
+  a clock that only moves forward, whatever the PC's clock is set to; at most 1024 held and discarded
+  ones; same browser resume ID and device). A `sent` one is never dropped before its ten minutes, and
+  neither is the note of a Send now that may have typed the copy, which answers every later resend of
+  it "not confirmed" and is told to no browser: a copy another tab still holds on a held receipt is
+  not typed again. A pane herdr moves under a new ID takes its receipts with it. They are replayed
+  with `resumed: true` on its
   browser's reattach, or to that browser's already attached successor when the Enter's reply or the
   hold comes after the reload. `sent` and `discarded` settle only that exact ID's saved copy, while
   `held` recovers an untyped queued copy as **Held message — review and send** (**Send now** /

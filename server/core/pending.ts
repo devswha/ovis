@@ -180,7 +180,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
   const piCompleted: Array<{ paneId: string; key: string; id: string; at: number }> = [];
   /** a follow-up's sent, discarded or held receipt, kept for its browser's return (#2421): the same bounds and binding as Pi's */
-  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded" | "held"; at: number; /** a resend's text, when one sent it */ hash?: string }> = [];
+  /**
+   * `uncertain`: a Send now of the copy that may have typed it (its Enter was not confirmed). Like `sent` it answers a
+   * later resend of the ID, with "not confirmed", and it is never told to a browser as a receipt.
+   * `at` is on `elapsed`, a clock that only moves forward: a PC clock set forward must not end a receipt before the
+   * proof a page counts on its own clock, and one set back must not stretch it.
+   */
+  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded" | "held" | "uncertain"; at: number; /** a resend's text, when one sent it */ hash?: string }> = [];
+  const elapsed = (): number => performance.now();
   /** the resume key each follow-up's browser had when the bridge took it, by connection and message id */
   const receiptKeys = new WeakMap<Client, Map<string, string>>();
   const resumeKey = (client: Client, paneId: string): string | undefined => {
@@ -190,17 +197,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const prunePi = (): void => {
     const cutoff = Date.now() - PI_RESUME_MS;
     while (piCompleted.length && (piCompleted[0]!.at < cutoff || piCompleted.length > PI_RESUME_LIMIT)) piCompleted.shift();
-    // A receipt past its window goes, whatever it is. Past the limit, the oldest that is not `sent` goes: a held
-    // copy that is no longer told, or a discarded one that stays unconfirmed, loses nothing that was typed. A sent
-    // receipt stays its whole window, limit or not. It is what answers a resend of that ID once its resend record
-    // (a minute) is gone, and every held receipt issued for the ID came before the send, so it ends before this
-    // does: a tab that still holds its copy on one never types what another tab already sent.
-    while (completed.length && completed[0]!.at < cutoff) completed.shift();
-    for (let over = completed.length - PI_RESUME_LIMIT; over > 0; over--) {
-      const oldest = completed.findIndex((entry) => entry.outcome !== "sent");
-      if (oldest < 0) break;
-      completed.splice(oldest, 1);
-    }
+    // A receipt past its window goes, whatever it is. The limit counts held and discarded receipts alone, and past
+    // it the oldest of those goes: a held copy that is no longer told, or a discarded one that stays unconfirmed,
+    // loses nothing that was typed. A sent or uncertain one stays its whole window (their number is bounded by the
+    // sends a pane takes in ten minutes). It is what answers a resend of that ID once its resend record (a minute)
+    // is gone, and every held receipt issued for the ID came before the send, so it ends before this does: a tab
+    // that still holds its copy on one never types what another tab already sent, or may have sent.
+    const ended = elapsed() - PI_RESUME_MS;
+    while (completed.length && completed[0]!.at < ended) completed.shift();
+    const counted = (entry: (typeof completed)[number]): boolean => entry.outcome === "held" || entry.outcome === "discarded";
+    for (let over = completed.filter(counted).length - PI_RESUME_LIMIT; over > 0; over--) completed.splice(completed.findIndex(counted), 1);
     let count = 0;
     for (const [paneId, items] of piTyped) {
       const kept = items.filter((item) => {
@@ -420,6 +426,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const receipts = firstReceipts.get(from);
     firstReceipts.delete(from);
     if (receipts) firstReceipts.set(to, [...firstReceipts.get(to) ?? [], ...receipts].slice(-FIRST_MESSAGE_RECEIPTS));
+    // the follow-ups' receipts follow the pane too: a sent one must still answer a resend under the new ID (a page
+    // carries its saved copies there with their proof), and a held one still proves a reload there
+    for (const entry of completed) if (entry.paneId === from) entry.paneId = to;
     // typed Pi receipts, failed above as for a changed terminal, stay dismissible under the new ID
     const typed = piTyped.get(from);
     piTyped.delete(from);
@@ -1027,7 +1036,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         const mine = completed.filter((item) => item.paneId === paneId && item.key === key);
         const removed = [
           ...piCompleted.filter((item) => item.paneId === paneId && item.key === key).map(({ id }) => ({ id, outcome: "consumed" as const })),
-          ...mine.flatMap(({ id, outcome }) => outcome === "held" ? [] : [{ id, outcome, resumed: true as const }]),
+          ...mine.flatMap(({ id, outcome }) => outcome === "sent" || outcome === "discarded" ? [{ id, outcome, resumed: true as const }] : []),
         ];
         const held = mine.filter(({ outcome }) => outcome === "held");
         if (removed.length || held.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], ...(removed.length ? { removed } : {}), ...(held.length ? heldPart(held) : {}) });
@@ -1037,9 +1046,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   }
   /** held receipts as a frame tells them: their IDs, and how long the bridge keeps each (the page's proof ends with it) */
   function heldPart(entries: ReadonlyArray<{ id: string; at: number }>): { held: string[]; held_ms: Record<string, number>; held_until: Record<string, number>; server_time: number } {
-    const now = Date.now();
-    return { held: entries.map(({ id }) => id), held_ms: Object.fromEntries(entries.map(({ id, at }) => [id, Math.max(0, at + PI_RESUME_MS - now)])),
-      held_until: Object.fromEntries(entries.map(({ id, at }) => [id, at + PI_RESUME_MS])), server_time: now };
+    // how long is left runs on the forward-only clock; its end is told on the PC's clock as it reads now
+    const now = Date.now(), left = (at: number): number => Math.max(0, at + PI_RESUME_MS - elapsed());
+    return { held: entries.map(({ id }) => id), held_ms: Object.fromEntries(entries.map(({ id, at }) => [id, left(at)])),
+      held_until: Object.fromEntries(entries.map(({ id, at }) => [id, now + left(at)])), server_time: now };
   }
   /** `held`: an exact ID the bridge holds untyped, in its own field so a client that predates it never reads it as a removal. */
   function pushResumed(owner: Client, paneId: string, kept: string, part: { removed: PendingRemoval[] } | ReturnType<typeof heldPart>): void {
@@ -1076,7 +1086,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // tab told it is held could offer it again after that send's outcome became uncertain
       if (livePiOwner(owner)) continue;
       if (existing >= 0) completed.splice(existing, 1);
-      const at = Date.now();
+      const at = elapsed();
       completed.push({ paneId, key: kept, id: message.id, outcome: "held", at });
       pushResumed(owner, paneId, kept, heldPart([{ id: message.id, at }]));
     }
@@ -1086,7 +1096,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const existing = completed.findIndex((entry) => entry.id === item.id);
       if (existing >= 0) completed.splice(existing, 1);
       if (!kept || (item.outcome !== "sent" && item.outcome !== "discarded")) continue;
-      completed.push({ paneId, key: kept, id: item.id, outcome: item.outcome, at: Date.now() });
+      completed.push({ paneId, key: kept, id: item.id, outcome: item.outcome, at: elapsed() });
       // a reload can attach its successor before the Enter's reply settles the send
       pushResumed(owner, paneId, kept, { removed: [{ id: item.id, outcome: item.outcome, resumed: true }] });
     }
@@ -1263,6 +1273,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           const answer = await serialize(pane, async () => {
             // sent already to this pane (its resend record may have expired): a replay of it never types it again
             if (completed.some((entry) => entry.id === id && entry.outcome === "sent" && entry.paneId === pane && (entry.hash === undefined || entry.hash === hash))) return { ok: true };
+            // a Send now of it that may have typed it (its resend record may have expired): not confirmed, for every tab
+            if (completed.some((entry) => entry.id === id && entry.outcome === "uncertain" && entry.paneId === pane)) return { ok: false, code: "pending_uncertain", message: "Check the terminal before sending this message again" };
             // the held receipt is this pane's and this browser's to claim, no other's
             const at = completed.findIndex((entry) => entry.id === id && entry.outcome === "held" && entry.paneId === pane && entry.key === key);
             const held = at >= 0 ? completed.splice(at, 1)[0] : undefined;
@@ -1284,9 +1296,15 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             }
             if (sent.ok && (typedNow || held)) {
               // the claim, before the turn ends: a concurrent resend finds it sent
-              if (!completed.some((entry) => entry.id === id && entry.outcome === "sent" && entry.paneId === pane)) completed.push({ paneId: pane, key: held?.key ?? key ?? "", id, outcome: "sent", at: Date.now(), hash });
+              if (!completed.some((entry) => entry.id === id && entry.outcome === "sent" && entry.paneId === pane)) completed.push({ paneId: pane, key: held?.key ?? key ?? "", id, outcome: "sent", at: elapsed(), hash });
               if (held) pushResumed(client, pane, held.key, { removed: [{ id, outcome: "sent", resumed: true }] });
-            } else if (held && !sent.ok && submitNotTyped(sent.code ?? "")) restore(held);
+            } else if (!sent.ok && submitNotTyped(sent.code ?? "")) {
+              if (held) restore(held);
+            } else if (!sent.ok && !completed.some((entry) => entry.id === id && entry.outcome === "uncertain" && entry.paneId === pane)) {
+              // its Enter may have arrived: remembered for the receipt's whole window, past the resend record's minute,
+              // so a tab that still holds its copy on a held receipt is told "not confirmed" and types nothing
+              completed.push({ paneId: pane, key: held?.key ?? key ?? "", id, outcome: "uncertain", at: elapsed() });
+            }
             prunePi();
             return sent;
           });

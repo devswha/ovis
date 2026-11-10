@@ -138,7 +138,7 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     const late = name === "settled after reattach" || name.startsWith("late ");
     const scenario = name.replace(/^late /, "");
     let now = Date.now();
-    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const clock = clocks(() => now);
     try {
       const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>(), revoked = new Set<Client>();
       const client = (deviceId: string | undefined, receiptResumeId: string | undefined, readOnly = false): Client => {
@@ -175,9 +175,170 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     } finally { clock.mockRestore(); }
   });
 
+/**
+ * The PC's clock and the forward-only clock the bridge times its receipts and resend records by, read from one
+ * value unless `run` gives the second its own (a PC clock that was set forward while the time that passed stood still).
+ */
+function clocks(wall: () => number, run: () => number = wall): { mockRestore: () => void } {
+  const date = spyOn(Date, "now").mockImplementation(wall), elapsed = spyOn(performance, "now").mockImplementation(run);
+  return { mockRestore: () => { date.mockRestore(); elapsed.mockRestore(); } };
+}
+
+/** A bridge with one pane `p` and tabs of one browser, for what its receipts answer after the follow-up's own connection is gone. */
+function heldCopyBridge(submit: () => Promise<void> = async () => {}) {
+  const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
+  const tab = (...panes: string[]): Client => {
+    const output: ServerMessage[] = [];
+    const owner = { data: connectionData({ deviceId: "device", readOnly: false }), getBufferedAmount: () => 0,
+      send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+    for (const pane of panes.length ? panes : ["p"]) owner.data.attached.set(pane, { keepSize: false, receiptResumeId: token });
+    clients.add(owner); frames.set(owner, output); return owner;
+  };
+  let turns: Promise<void> = Promise.resolve();
+  const typed: string[] = [];
+  const delivery = createPendingDelivery({
+    options: {}, clients, attachments: new Map(), serialize: (_pane, task) => { const run = turns.then(task); turns = run.then(() => {}, () => {}); return run; }, lastTyped: new Map(),
+    sight: () => { throw new Error("a receipt replay takes no input lease"); },
+    submitText: async (pane: string) => { await submit(); typed.push(pane); },
+    authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: ["p", "q"].map((pane) => ({ pane_id: pane, terminal_id: pane, agent: "codex", agent_status: "idle" })) }) as SessionSnapshot,
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  });
+  const identity = { agent: "codex", terminalId: "p", session: null };
+  const told = (to: Client) => frames.get(to)!.filter((frame) => frame.type === "pending-messages");
+  return {
+    tab, typed, delivery, identity, clients,
+    heldIds: (to: Client): string[] => told(to).flatMap((frame) => frame.type === "pending-messages" ? frame.held ?? [] : []),
+    removed: (to: Client) => told(to).flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : []),
+    answer: (to: Client, id: number) => frames.get(to)!.find((frame) => frame.type === "submit-result" && frame.id === id),
+    /** a tab's Send now of its saved copy of `pending` */
+    resend: (to: Client, id: number, pending: string, pane = "p") => delivery.pendingFrames.submit(to, { type: "submit", id, pane_id: pane, text: "follow-up", payload: "follow-up", delivery: "immediate", resend_id: pending }),
+    /** a queued follow-up whose own connection then closes: the bridge holds it and keeps its held receipt */
+    heldAsItsConnectionClosed: () => {
+      const first = tab();
+      const item = delivery.pending.enqueue(first, "p", 1, "follow-up", null, identity);
+      clients.delete(first); delivery.closeConnection(first);
+      return item.message.id;
+    },
+  };
+}
+
+it("carries a pane's receipts to its new ID when herdr moves it: the sent one still stops a second tab, a held one still proves a reload", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    const bridge = heldCopyBridge();
+    const id = bridge.heldAsItsConnectionClosed();
+    const one = bridge.tab(), other = bridge.tab();
+    bridge.delivery.attached(one, "p"); bridge.delivery.attached(other, "p");
+    // another follow-up of that browser, held the same way and never sent
+    const unsentOwner = bridge.tab();
+    const unsent = bridge.delivery.pending.enqueue(unsentOwner, "p", 7, "left for later", null, bridge.identity).message.id;
+    bridge.clients.delete(unsentOwner); bridge.delivery.closeConnection(unsentOwner);
+    now += 60_001; bridge.delivery.pending.expire();
+    await bridge.resend(one, 2, id);
+    expect(bridge.typed).toEqual(["p"]);
+    // herdr moves the pane to another workspace, under a new ID; a minute later the resend record is gone
+    bridge.delivery.movePendingPane("p", "q");
+    now += 60_001; bridge.delivery.pending.expire();
+    // the other tab opens the moved pane: it is told the copy was sent, and its own Send now there types nothing
+    const moved = bridge.tab("q");
+    bridge.delivery.attached(moved, "q");
+    expect(bridge.removed(moved).filter((entry) => entry.id === id)).toEqual([{ id, outcome: "sent", resumed: true }]);
+    await bridge.resend(moved, 3, id, "q");
+    expect(bridge.typed).toEqual(["p"]);
+    expect(bridge.answer(moved, 3)).toMatchObject({ ok: true });
+    // and the follow-up that was never sent is still told held under the new ID
+    expect(bridge.heldIds(moved)).toEqual([unsent]);
+  } finally { clock.mockRestore(); }
+});
+
+it("remembers a Send now that may have typed the copy for its ten minutes: a second tab's still-proven copy is refused, also past a thousand other receipts", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    let fail = true;
+    const bridge = heldCopyBridge(async () => { if (fail) throw new herdr.HerdrError("submit_changed", "Enter was not confirmed"); });
+    const id = bridge.heldAsItsConnectionClosed();
+    const one = bridge.tab(), other = bridge.tab();
+    bridge.delivery.attached(one, "p"); bridge.delivery.attached(other, "p");
+    now += 60_001; bridge.delivery.pending.expire();
+    // one tab's Send now ends without an answer that says whether Enter arrived
+    await bridge.resend(one, 2, id);
+    expect(bridge.answer(one, 2)).toMatchObject({ ok: false, code: "submit_changed" });
+    fail = false;
+    // the resend record is gone after a minute, and more than a thousand other receipts have come
+    now += 60_001; bridge.delivery.pending.expire();
+    const busy = bridge.tab();
+    for (let n = 0; n < 1100; n++) {
+      if (n > 0 && n % 400 === 0) { now += 60_001; bridge.delivery.pending.expire(); }
+      expect(bridge.delivery.pending.discard(bridge.delivery.pending.enqueue(busy, "p", 10 + n, `other ${n}`, null, bridge.identity))).toBe(true);
+    }
+    // the other tab, inside its ten minutes, sends its copy: refused as not confirmed, nothing typed
+    await bridge.resend(other, 3, id);
+    expect(bridge.answer(other, 3)).toMatchObject({ ok: false, code: "pending_uncertain" });
+    expect(bridge.typed).toEqual([]);
+    // a connection that attaches is not told the copy is settled or held: it stays not confirmed there
+    const late = bridge.tab();
+    bridge.delivery.attached(late, "p");
+    expect([bridge.removed(late).filter((entry) => entry.id === id), bridge.heldIds(late)]).toEqual([[], []]);
+  } finally { clock.mockRestore(); }
+});
+
+it("counts only held and discarded receipts against the limit: under a thousand live sent ones a new held receipt still proves a reload, and a discarded one is still told", async () => {
+  let now = Date.now();
+  const clock = clocks(() => now);
+  try {
+    const bridge = heldCopyBridge();
+    // more than a thousand follow-ups sent inside ten minutes, each leaving its sent receipt
+    const sender = bridge.tab();
+    for (let n = 0; n < 1100; n++) {
+      if (n > 0 && n % 400 === 0) { now += 60_001; bridge.delivery.pending.expire(); }
+      const item = bridge.delivery.pending.enqueue(sender, "p", 10 + n, `sent ${n}`, null, bridge.identity);
+      expect(bridge.delivery.pending.claim(item, false)).toBe(true);
+      bridge.delivery.pending.settle(item);
+    }
+    // a queued follow-up is held as its connection closes, and another the same browser discarded just before its own closed
+    const id = bridge.heldAsItsConnectionClosed();
+    const discarder = bridge.tab();
+    const dropped = bridge.delivery.pending.enqueue(discarder, "p", 2, "not after all", null, bridge.identity);
+    expect(bridge.delivery.pending.discard(dropped)).toBe(true);
+    bridge.clients.delete(discarder); bridge.delivery.closeConnection(discarder);
+    // a reload of that browser, some time later, is told both
+    now += 5_000;
+    const reload = bridge.tab();
+    bridge.delivery.attached(reload, "p");
+    expect(bridge.heldIds(reload)).toEqual([id]);
+    expect(bridge.removed(reload).filter((entry) => entry.id === dropped.message.id)).toEqual([{ id: dropped.message.id, outcome: "discarded", resumed: true }]);
+  } finally { clock.mockRestore(); }
+});
+
+it("times a sent receipt by the time that passed, not by the PC's clock: a clock set forward does not end it before the other tab's proof", async () => {
+  let wall = Date.now(), run = 1_000_000;
+  const clock = clocks(() => wall, () => run);
+  try {
+    const bridge = heldCopyBridge();
+    const id = bridge.heldAsItsConnectionClosed();
+    const one = bridge.tab(), other = bridge.tab();
+    bridge.delivery.attached(one, "p"); bridge.delivery.attached(other, "p");
+    expect(bridge.heldIds(other)).toEqual([id]);
+    wall += 60_001; run += 60_001; bridge.delivery.pending.expire();
+    await bridge.resend(one, 2, id);
+    expect(bridge.typed).toEqual(["p"]);
+    // the PC's clock is corrected forward by ten minutes; two minutes really pass
+    wall += 10 * 60 * 1000 + 120_000; run += 120_000; bridge.delivery.pending.expire();
+    const late = bridge.tab();
+    bridge.delivery.attached(late, "p");
+    // the other tab's proof still runs on its own clock: its Send now types nothing
+    await bridge.resend(other, 3, id);
+    expect(bridge.typed).toEqual(["p"]);
+    expect(bridge.removed(late).filter((entry) => entry.id === id)).toEqual([{ id, outcome: "sent", resumed: true }]);
+  } finally { clock.mockRestore(); }
+});
+
 it("keeps a held copy's sent receipt through a thousand other receipts, so a second tab's still-proven copy is not typed again", async () => {
   let now = Date.now();
-  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const clock = clocks(() => now);
   try {
     const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
     const client = (): Client => {
@@ -273,7 +434,7 @@ it.each(["read-only", "revoked"] as const)(
 it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired", "concurrent resends after closed-owner expiry", "resend to another pane", "resend refused at its limit", "live owner's sibling tab", "held before close"] as const)(
   "replays a held follow-up receipt only while it remains unsent and held: %s", async (scenario) => {
     let now = Date.now();
-    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const clock = clocks(() => now);
     try {
       const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>(), revoked = new Set<Client>();
       const client = (deviceId: string | undefined, receiptResumeId: string | undefined, readOnly = false): Client => {
@@ -408,7 +569,7 @@ it.each(["held on close", "overlapping reload", "held after reattach", "wrong br
 
 it("keeps a held receipt's ten-minute expiry after a resend that typed nothing puts it back", async () => {
   let now = Date.now();
-  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const clock = clocks(() => now);
   try {
     const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>();
     const client = (): Client => {
