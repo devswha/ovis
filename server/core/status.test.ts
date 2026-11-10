@@ -853,12 +853,14 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
      * A pane at rest that herdr told, its queue delivered by the bridge: what is written to the pane, in order.
      * `on`: what a test has happen as the delivery reads the pane's screen (`read`) or pastes (`paste`), and an
      * answer on the queue's hold a test gives in the hub's place (`held`, asked `fresh` or not);
-     * `asked`: each answer the delivery got on the queue's hold; `results`: the answers its submits got.
+     * `asked`: each answer the delivery got on the queue's hold; `results`: the answers its submits got;
+     * `steps`: everything the delivery awaited of herdr and every answer on the hold it took, in order.
      */
     async function delivering() {
       const writes: string[] = [];
       const on: { read?: () => void; paste?: () => void; held?: (fresh: boolean) => boolean } = {};
       const asked: boolean[] = [];
+      const steps: ("screen" | "processes" | "hold as last read" | "hold read now" | "paste" | "keys")[] = [];
       const frames: { type: string; id?: number; ok?: boolean; code?: string; typed_now?: boolean; pending?: { state: string } }[] = [];
       const client: Client = { data: connectionData({ readOnly: false, deviceId: undefined }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; }, close: () => {} };
       let lane: Promise<unknown> = Promise.resolve();
@@ -869,15 +871,15 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         sight: () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: (data: string) => { writes.push(data); } }) as never,
         submitText: (async () => { throw new Error("no immediate send in this test"); }) as never, authorizeSocket: () => {},
         clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null },
-        queueHeld: (paneId, fresh) => { const held = on.held?.(fresh === true) ?? h.status.queueHeld(paneId, fresh); asked.push(held); return held; },
+        queueHeld: (paneId, fresh) => { steps.push(fresh === true ? "hold read now" : "hold as last read"); const held = on.held?.(fresh === true) ?? h.status.queueHeld(paneId, fresh); asked.push(held); return held; },
         SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
       h = await workingClaude(delivery.pending as never, delivery.drainPending);
       spies.push(
-        spyOn(herdr, "paneRead").mockImplementation(async () => { on.read?.(); return { text: "" } as never; }),
-        spyOn(herdr, "paneProcessInfo").mockResolvedValue({ foreground_processes: [], shell_pid: null } as never),
-        spyOn(herdr, "paneSendText").mockImplementation(async (_paneId, text) => { writes.push(`paste ${text}`); on.paste?.(); }),
-        spyOn(herdr, "paneSendKeys").mockImplementation(async (_paneId, keys) => { writes.push(`keys ${keys.join(",")}`); }),
+        spyOn(herdr, "paneRead").mockImplementation(async () => { steps.push("screen"); on.read?.(); return { text: "" } as never; }),
+        spyOn(herdr, "paneProcessInfo").mockImplementation(async () => { steps.push("processes"); return { foreground_processes: [], shell_pid: null } as never; }),
+        spyOn(herdr, "paneSendText").mockImplementation(async (_paneId, text) => { steps.push("paste"); writes.push(`paste ${text}`); on.paste?.(); }),
+        spyOn(herdr, "paneSendKeys").mockImplementation(async (_paneId, keys) => { steps.push("keys"); writes.push(`keys ${keys.join(",")}`); }),
       );
       h.rest(); h.poll();
       handlers.onStatus(h.pane.pane_id, "idle", "claude");
@@ -889,7 +891,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       };
       /** the states of the messages the pane's queue holds */
       const waiting = () => delivery.pending.list(client, h.pane.pane_id).map((message) => message.state);
-      return { h, delivery, writes, client, submit, flush, on, asked, waiting, results: () => frames.filter((frame) => frame.type === "submit-result") };
+      return { h, delivery, writes, client, submit, flush, on, asked, steps, waiting, results: () => frames.filter((frame) => frame.type === "submit-result") };
     }
     /** The wakeup fires at the delivery's first read of the screen after it asked for the hold and found none. */
     const firesAfterTheHoldCheck = (d: Awaited<ReturnType<typeof delivering>>) => {
@@ -972,6 +974,68 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       await flush();
       expect(writes).toEqual(["paste \u001b[200~soon\u001b[201~", "keys Enter"]);
       expect(waiting()).toEqual([]);
+    });
+
+    /** The screen reads a delivery makes between the first answer it takes on the queue's hold and its paste, in order. */
+    const BEFORE_PASTE = {
+      "queued behind a turn": ["its read of Claude's input box", "its check for a masked prompt, the last read before the paste"],
+      "typed at once": ["its look at the pane", "its read of Claude's input box", "its check for a masked prompt, the last read before the paste"],
+    } as const;
+    type Sent = keyof typeof BEFORE_PASTE;
+    /** A message sent to a pane at rest (`typed at once`), or queued behind a turn of the person's that then rests; `ready` runs once it only waits to be delivered. */
+    const sends = async (d: Awaited<ReturnType<typeof delivering>>, sent: Sent, id: number, text: string, ready: () => void) => {
+      const { h, submit } = d;
+      if (sent === "typed at once") { ready(); await submit(id, text); return; }
+      h.next();
+      h.herdrSays({ ...h.pane, agent_status: "working" });
+      handlers.onStatus(h.pane.pane_id, "working", "claude");
+      await submit(id, text);
+      ready();
+      turnEnds(h);
+      h.herdrSays(h.pane);
+      handlers.onStatus(h.pane.pane_id, "idle", "claude");
+    };
+
+    it.each((Object.keys(BEFORE_PASTE) as Sent[]).flatMap((sent) => BEFORE_PASTE[sent].map((during, at) => ({ sent, during, read: at + 1 }))))(
+      "pastes nothing for a message $sent when the wakeup fires before its paste, during $during", async ({ sent, read }) => {
+        const d = await delivering();
+        const { h, writes, flush, waiting, results } = d;
+        // Given a wakeup that fires at one of the reads of the screen the delivery makes once it found the queue free.
+        const fired = { yet: false };
+        let reads = 0;
+        await sends(d, sent, 22, "early", () => {
+          d.asked.length = 0;
+          d.on.read = () => { if (d.asked.length > 0 && ++reads === read) { fired.yet = true; fires(h.path); } };
+        });
+        await flush();
+        expect(fired.yet).toBe(true);
+        // Then the hold, read from the transcript after the last of those reads, stops the paste: nothing is left in Claude's
+        // input line, and the message waits as one queued.
+        expect(writes).toEqual([]);
+        expect(waiting()).toEqual(["queued"]);
+        if (sent === "typed at once") expect(results()).toMatchObject([{ id: 22, ok: true, pending: { state: "queued" } }]);
+        // And the resumed turn's rest sends it.
+        turnEnds(h); h.poll();
+        await flush();
+        expect(writes).toEqual(["paste \u001b[200~early\u001b[201~", "keys Enter"]);
+        expect(waiting()).toEqual([]);
+      });
+
+    it.each(Object.keys(BEFORE_PASTE) as Sent[])("reads the queue's hold from the transcript last of all before the paste, and again before the Enter, of a message %s", async (sent) => {
+      const d = await delivering();
+      const { writes, flush, steps } = d;
+      await sends(d, sent, 23, "through", () => { steps.length = 0; });
+      await flush();
+      expect(writes).toEqual(["paste \u001b[200~through\u001b[201~", "keys Enter"]);
+      // Nothing is awaited of herdr between either answer and the write it lets through: a wakeup has no read of the
+      // delivery's left to fire during, only the write itself.
+      const paste = steps.indexOf("paste");
+      const enter = steps.indexOf("keys");
+      expect(steps.slice(paste - 1, paste + 1)).toEqual(["hold read now", "paste"]);
+      expect(steps.slice(enter - 1, enter + 1)).toEqual(["hold read now", "keys"]);
+      // And the screen reads before the paste are the ones named above: each of them is tried with a wakeup.
+      const first = steps.findIndex((step) => step.startsWith("hold"));
+      expect(steps.slice(first, paste).filter((step) => step === "screen")).toHaveLength(BEFORE_PASTE[sent].length);
     });
 
     it("leaves the queue at working by its own word when its check before the paste finds the hold, and tries no other send", async () => {
