@@ -43,12 +43,19 @@ function writeDismissed(dismissed: readonly string[]): void {
  * Before a date still to come, by this browser's clock, only the sign-in reminder that names the date
  * shows, unless the relay already closed this PC for its pass: a refusal is the relay's own word that
  * it enforces, and it shows whatever the date and the clock say.
+ *
+ * The limit on new devices is an exception too: the PC says itself whether the relay enforces passes now
+ * (`enforced`), which a relay in `enforce` does with no date or with one far ahead. While it does and the
+ * pass says `new_sessions: false`, the PC refuses every new device, so the notice shows whatever the date;
+ * while it says it does not, nothing is refused and no such notice shows.
  */
 export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, signedIn = false, now = Date.now()): RelayNoticeInfo | null | undefined {
   if (relay === undefined) return undefined;
   if (relay === null || relay.phase === "off" || relay.blocked !== null) return null;
   const pass = relay.pass;
   if (pass === undefined) return null;
+  // a PC the relay refuses is not on it: what to say then is why, below
+  if (pass.new_sessions === false && pass.enforced === true && !pass.refused) return { kind: "data-limit", enforceAt: null };
   if (pass.enforce_at === null && !pass.refused) return null;
   const remind = pass.state === "no_account" && ((pass.relay !== null && pass.relay !== "ok") || !signedIn);
   const at = pass.enforce_at === null ? null : Date.parse(pass.enforce_at);
@@ -62,8 +69,9 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
   if (early && !closed) {
     return remind ? { kind: "sign-in-grace", enforceAt: Number.isNaN(at) ? null : pass.enforce_at } : null;
   }
-  // the data limit is no refusal: it holds only from the date on
-  if (!early && pass.new_sessions === false) {
+  // a server that does not say whether passes are enforced: past the date they are. The data limit
+  // is no refusal, so before the date it does not show beside one
+  if (!early && pass.new_sessions === false && pass.enforced === undefined) {
     return { kind: "data-limit", enforceAt: null };
   }
   // this browser's clock may be off either way: a PC limit shows only once the relay refused this PC
