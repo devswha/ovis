@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test"
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HerdrPane } from "../../shared/protocol.ts";
+import * as conversation from "../conversation.ts";
 import * as herdr from "../herdr/client.ts";
 import * as gjc from "../gjc-status.ts";
 import * as omo from "../omo.ts";
@@ -840,6 +841,47 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       h.poll();
       // Then the queue is told with no status event, and the message goes.
       expect(drained.slice(told)).toEqual([id]);
+      expect(h.pending.next(id)).not.toBeNull();
+    } finally { setSystemTime(); }
+  });
+
+  it("goes by herdr's status alone while the pane's transcript is not found, and holds from the lookup that finds it", async () => {
+    const old = await workingClaude();
+    const id = old.pane.pane_id;
+    old.rest();
+    const from = Date.now();
+    fires(old.path, from);
+    // Given a server whose lookup of the pane's session finds no transcript, with a wakeup just fired there.
+    const h = hub(old.path);
+    const lookup = spyOn(conversation, "claudePaneSession").mockResolvedValue(null);
+    try {
+      h.herdrSays(old.pane);
+      handlers.onBaseline([old.pane]);
+      await h.snapshot();
+      queue({ pending: h.pending, pane: old.pane });
+      // Then nothing tells of that wakeup: herdr reads the pane idle, so the message may go. A pane whose transcript
+      // is never found is not kept waiting, and a send's own read of the hold has no transcript to read.
+      expect(h.status.claudeAgents.sessionOf(id)).toBeNull();
+      expect(h.status.queueHeld(id, true)).toBe(false);
+      expect(h.pending.current(id)).toBe("idle");
+      expect(h.pending.next(id)).not.toBeNull();
+      // Nor does that read look the session up: a lookup that found nothing is made again 5 s later, by a snapshot.
+      const looked = lookup.mock.calls.length;
+      lookup.mockResolvedValue({ path: old.path, startedAt: null, pid: null });
+      await h.snapshot();
+      expect(lookup.mock.calls.length).toBe(looked);
+      expect(h.status.queueHeld(id, true)).toBe(false);
+      // When that lookup finds the transcript.
+      setSystemTime(from + 5000);
+      await h.snapshot();
+      expect(lookup.mock.calls.length).toBe(looked + 1);
+      // Then the fire it reads there holds the queue for what is left of its time, as one found when the server starts.
+      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.pending.current(id)).toBe("working");
+      expect(h.pending.next(id)).toBeNull();
+      // And the resumed turn's rest lets the message go.
+      turnEnds(old); h.poll();
+      expect(h.status.queueHeld(id)).toBe(false);
       expect(h.pending.next(id)).not.toBeNull();
     } finally { setSystemTime(); }
   });

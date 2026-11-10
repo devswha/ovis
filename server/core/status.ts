@@ -761,7 +761,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /**
    * Whether a pane shown at rest holds its queue (queueStatus). `fresh`: as its transcript says now, read
    * before answering, not as the last poll left it: a /loop wakeup may have fired since (#3494). That read
-   * tells the queue what it finds, as any poll does.
+   * tells the queue what it finds, as any poll does. A pane whose transcript is not found has none to read,
+   * and none is looked for here (a snapshot does, ClaudeSubagentStatus.ensure): nothing holds it until then.
    */
   const queueHeld = (paneId: string, fresh = false): boolean => {
     if (fresh && agentNow.get(paneId) === "claude") claudeAgents.poll(paneId);
