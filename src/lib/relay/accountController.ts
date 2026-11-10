@@ -156,6 +156,25 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     while (reading !== undefined) await reading.read.catch(() => undefined);
     if (accountView?.kind !== "signing-in") await refresh(accountView?.kind !== "signed-in", true);
   };
+  // the read a person asked for (Check again, Try again) that waits for the one out to land: later asks join it
+  let asked: Promise<void> | undefined;
+  /** Reads the directory because the person asked: a read already out may have been answered before what they just did
+   *  (a PC added a moment ago), so the list is read once more after it. Settles when a read begun after the ask has landed. */
+  const refreshNow = (): Promise<void> => {
+    if (asked !== undefined) return asked;
+    const out = reading;
+    if (out?.epoch !== generation) return refresh();
+    const queued = (async () => {
+      await out.read.catch(() => {});
+      asked = undefined;
+      // a read that began meanwhile (the next sign-in's, after the one waited for) began after the ask too
+      const next = reading;
+      if (next?.epoch === generation) await next.read.catch(() => {});
+      else await refresh();
+    })();
+    asked = queued;
+    return queued;
+  };
   const armRefresh = (): void => {
     const wanted = view.active() && accountView?.kind === "signed-in" && document.visibilityState === "visible";
     if (wanted && refreshTimer === undefined) refreshTimer = setInterval(() => { void refresh(); }, DIRECTORY_REFRESH_MS);
@@ -412,5 +431,5 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
 
   return { get state() { return accountView; }, get directory() { return directory; },
     /** the sign-in the signed-in view speaks of; none while signed out, or before a new sign-in's first read */
-    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, load, refresh, reread, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
+    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, load, refresh, refreshNow, reread, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
 }
