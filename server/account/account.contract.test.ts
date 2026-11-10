@@ -694,6 +694,20 @@ test("a remove signed before this PC paired the key again leaves the new pairing
   expect(f.app.context.services.devices.hasKey(lost.spki)).toBe(true);
 });
 
+test("a remove signed before a row was paired here still takes the key a link later moved that row onto", async () => {
+  const f = fixture();
+  const { key, link } = await member(f);
+  const stolen = await accountKey();
+  const removal = await sign({ v: 1, kind: "remove", account: ACCOUNT, key: stolen.spki, issued_at: new Date(Date.now() - 60_000).toISOString(), id: newRecordId(), signer: key.spki }, key);
+  // paired on this PC as another key after the removal was signed, then moved onto the removed key by a link
+  const legacy = await relayDevice(f);
+  expect((await post(await signedIn(f, legacy), "/api/account/link", { record: await linkRecord(legacy, stolen) })).status).toBe(200);
+  expect(f.app.context.services.devices.hasKey(stolen.spki)).toBe(true);
+  expect((await post(link, "/api/account/records", { records: [removal] })).body.results?.[0]?.outcome).toBe("applied");
+  expect(f.app.context.services.devices.hasKey(stolen.spki)).toBe(false);
+  expect(registryRow(f, legacy.id)).toBeUndefined();
+});
+
 /** A state dir as a stop between two writes leaves it: one relay row and a tombstone for its key. */
 async function interrupted(rowCreated: string, removed: string) {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-account-interrupted-"));

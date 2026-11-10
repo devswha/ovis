@@ -344,9 +344,9 @@ export class DeviceStore {
 
   /** A row whose key was removed at or after the row was made: revoked, whether or not its own write happened yet. */
   private stale(device: StoredDevice): boolean {
-    // a row an add or a remote approval made goes whatever its time, as removeAccountKey takes it
+    // a row an add or a remote approval made, or a `link` moved onto the key, goes whatever its time, as removeAccountKey takes it
     return device.relay_public_key !== undefined
-      && this.tombstones.some((t) => t.key === device.relay_public_key && (device.added_by !== undefined || t.removed_at >= device.created_at));
+      && this.tombstones.some((t) => t.key === device.relay_public_key && (device.added_by !== undefined || device.linked_at !== undefined || t.removed_at >= device.created_at));
   }
 
   /**
@@ -884,8 +884,9 @@ export class DeviceStore {
   removeAccountKey(key: string, account: string, record: { id: string; issuedAt: string; by?: { device_id: string; label: string }; signed?: RemoveRecord }, now = Date.now()): boolean {
     this.assertAccountWritable();
     // a pairing made on this PC (no `added_by`) after the removal was signed wins: a replayed or late remove
-    // leaves it be. A row an account record or a remote approval made goes, however late the remove arrives.
-    if (this.devices.some((d) => d.relay_public_key === key && d.added_by === undefined && d.created_at > record.issuedAt)) return false;
+    // leaves it be. A row an account record or a remote approval made goes, however late the remove arrives,
+    // and so does a row a `link` moved onto the key: it was paired as another key, never as this one.
+    if (this.devices.some((d) => d.relay_public_key === key && d.added_by === undefined && d.linked_at === undefined && d.created_at > record.issuedAt)) return false;
     const recordId = record.id;
     const fresh = !this.isTombstoned(key);
     const removal: AccountTombstone = { key, account, record_id: recordId, removed_at: new Date(now).toISOString(), ...(record.signed ? { records: [record.signed] } : {}) };
