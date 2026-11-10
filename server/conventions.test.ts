@@ -230,6 +230,12 @@ describe("herdr socket", () => {
 });
 
 describe("runtime gates", () => {
+  /**
+   * A gate on the runtime's name: a comparison with `"herdr-core"`, any read of the served runtime's
+   * name (`capabilities().runtime`), a comparison of the chosen one (`runtime()`), or a `case` on either name.
+   */
+  const NAMED = /[!=]== ?"herdr-core"|\bcapabilities\(\)\.runtime\b|\bruntime\(\)\s*[!=]==|\bcase "herdr(?:-core)?"\s*:/;
+
   // which runtime is served or named, not what it can do
   const RUNTIME_NAMED: Record<string, string> = {
     "server/runtime-move.ts": "the move goes from herdr to herdr-core",
@@ -239,15 +245,38 @@ describe("runtime gates", () => {
     "server/supervisor.ts": "the launcher reads which runtime the server it started says it serves",
     "server/machines.ts": "a remote PC's own Ovis is taken by the runtime its identity names",
     "server/conversation.ts": "the name of hc's program in an attach client's argv",
+    "server/agents-routes.ts": "herdr itself starts two agent kinds without a manifest",
+    "server/herdr-update.ts": "`herdr update` updates herdr, no other runtime",
   };
 
   it("asks the runtime for an ability, never for its name", () => {
-    const named = matches([...serverCode(), ...files("shared/**/*.ts")].filter((file) => !file.startsWith("server/herdr-core/") && file !== "server/runtime/capabilities.ts"), /[!=]== ?"herdr-core"/);
+    const named = matches([...serverCode(), ...files("shared/**/*.ts")].filter((file) => !file.startsWith("server/herdr-core/") && file !== "server/runtime/capabilities.ts"), NAMED);
     fail(named.filter((use) => !(use.file in RUNTIME_NAMED)).map((use) => use.at),
       "Do not branch on the runtime's name: read the ability the code needs from capabilities() (server/runtime/capabilities.ts), adding a field to RuntimeCapabilities and to each runtime's record when none fits.");
     const users = new Set(named.map((use) => use.file));
     fail(Object.keys(RUNTIME_NAMED).filter((file) => !users.has(file)),
       "These files no longer compare the runtime's name: remove them from RUNTIME_NAMED in server/conventions.test.ts.");
+  });
+
+  it("knows a gate on the runtime's name from another use of the word", () => {
+    for (const gate of [
+      'if (identity.runtime !== "herdr-core") return;',
+      'if (capabilities().runtime === "herdr") kinds.add("omp");',
+      'const other = capabilities().runtime !== "herdr";',
+      'if (runtime() !== "herdr") return null;',
+      'if (runtime() === "herdr-core") start();',
+      'switch (served) { case "herdr": return 1; case "herdr-core": return 2; }',
+    ]) expect(NAMED.test(gate)).toBe(true);
+    for (const other of [
+      // the runtime told, not asked: /api/health's answer
+      "return jsonResponse({ ok: true, runtime: runtime() });",
+      // another herdr: a query parameter, a turn's source, a program started
+      'const discover = url.searchParams.get("discover") === "herdr";',
+      'if (source === "herdr" && tracked) return;',
+      'const command = process.env["OVIS_HERDR_BIN"] || "herdr";',
+      // an ability read, which is what a gate should do
+      'if (capabilities().attach === "pty-cli") watch();',
+    ]) expect(NAMED.test(other)).toBe(false);
   });
 });
 
