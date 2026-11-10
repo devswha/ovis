@@ -231,10 +231,12 @@ describe("herdr socket", () => {
 
 describe("runtime gates", () => {
   /**
-   * A gate on the runtime's name: a comparison with `"herdr-core"`, any read of the served runtime's
-   * name (`capabilities().runtime`), a comparison of the chosen one (`runtime()`), or a `case` on either name.
+   * A gate on the runtime's name: a comparison with `"herdr-core"` or a `case` on it, any read of the
+   * served runtime's name (`capabilities().runtime`), or a comparison of the chosen one (`runtime()`).
+   * `"herdr"` alone names other things too (a turn's source, a query parameter), so it counts only
+   * beside one of those reads.
    */
-  const NAMED = /[!=]== ?"herdr-core"|\bcapabilities\(\)\.runtime\b|\bruntime\(\)\s*[!=]==|\bcase "herdr(?:-core)?"\s*:/;
+  const NAMED = /[!=]== ?"herdr-core"|\bcase "herdr-core"\s*:|\bcapabilities\(\)\.runtime\b|\bruntime\(\)\s*[!=]==/;
 
   // which runtime is served or named, not what it can do
   const RUNTIME_NAMED: Record<string, string> = {
@@ -266,6 +268,7 @@ describe("runtime gates", () => {
       'if (runtime() !== "herdr") return null;',
       'if (runtime() === "herdr-core") start();',
       'switch (served) { case "herdr": return 1; case "herdr-core": return 2; }',
+      'switch (capabilities().runtime) { case "herdr": return 1; default: return 2; }',
     ]) expect(NAMED.test(gate)).toBe(true);
     for (const other of [
       // the runtime told, not asked: /api/health's answer
@@ -273,6 +276,7 @@ describe("runtime gates", () => {
       // another herdr: a query parameter, a turn's source, a program started
       'const discover = url.searchParams.get("discover") === "herdr";',
       'if (source === "herdr" && tracked) return;',
+      'switch (signal.source) { case "herdr": return turns.chat; default: return turns.herdr; }',
       'const command = process.env["OVIS_HERDR_BIN"] || "herdr";',
       // an ability read, which is what a gate should do
       'if (capabilities().attach === "pty-cli") watch();',
