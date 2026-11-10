@@ -60,6 +60,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     const current = accountView;
     const live = (): boolean => epoch === generation;
     let replaced = false;
+    // another sign-in took this read's place: the rows kept from the earlier one are not its to draw, not even
+    // when its own read then fails, so it starts from its heading alone and is read again
+    const replacedBy = (next: { readonly provider: AccountProvider }): void => {
+      directory = [];
+      listedFor = undefined;
+      accountView = { kind: "signed-in", provider: next.provider, pcs: null, error: null };
+      replaced = true;
+    };
     const read = (async () => {
       try {
         const session = await account.session();
@@ -75,7 +83,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const still = await account.session();
         if (!live()) return;
         if (still === undefined) throw new SignedOutError();
-        if (!sameSignIn(still, session)) { replaced = true; return; }
+        if (!sameSignIn(still, session)) { replacedBy(still); return; }
         directory = listed;
         listedFor = { epoch, accountKey: key.public_spki, account: session.account };
         accountView = { kind: "signed-in", provider: session.provider, error: null, pcs: myPcs(listed, devices, { now: Date.now(), accountKey: key.public_spki, account: session.account, outdated: view.outdated() }) };
@@ -83,7 +91,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       } catch (error) {
         if (!live()) return;
         // the sign-in this read began with is gone; another one stored meanwhile (another tab) is read in its place
-        if (error instanceof SignedOutError && await account.session().catch(() => undefined) !== undefined) { if (live()) replaced = true; return; }
+        const next = error instanceof SignedOutError ? await account.session().catch(() => undefined) : undefined;
+        if (next !== undefined) { if (live()) replacedBy(next); return; }
         if (!live()) return;
         if (error instanceof SignedOutError) { directory = []; accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") }; }
         else {

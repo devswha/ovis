@@ -168,6 +168,23 @@ describe("a sign-in shared by tabs", () => {
     expect(await inner.get("session")).toBeUndefined();
   });
 
+  it("takes the id a tab of the earlier build gave a saved sign-in between this tab's read and its write", async () => {
+    const service = serviceWithSignIn();
+    const { store: inner, session } = await signIn(service);
+    const { sign_in_id: _later, ...old } = session;
+    await inner.set("session", old);
+    let reads = 0;
+    const store: typeof inner = { ...inner, get: (async (name: Parameters<typeof inner.get>[0]) => {
+      const value = await inner.get(name);
+      // the earlier build named it with a random id, in the store
+      if (name === "session" && ++reads === 1) await inner.update("session", (current) => current && { ...current, sign_in_id: "given-by-the-earlier-build" });
+      return value;
+    }) as typeof inner.get };
+    const read = await new AccountService({ store, fetch: service.fetch, lock: memoryLock() }).session();
+    expect(read?.sign_in_id).toBe("given-by-the-earlier-build");
+    expect((await inner.get("session"))?.sign_in_id).toBe("given-by-the-earlier-build");
+  });
+
   it("ends the sign-in on the service even when its access token has run out", async () => {
     const service = serviceWithSignIn();
     let now = Date.now();

@@ -275,9 +275,14 @@ export class AccountService {
   async session(): Promise<AccountSession | undefined> {
     const stored = await this.options.store.get("session");
     if (stored === undefined || stored.sign_in_id !== undefined) return stored;
-    const named: AccountSession = { ...stored, sign_in_id: legacySignInId(stored.refresh_token) };
+    let named: AccountSession = { ...stored, sign_in_id: legacySignInId(stored.refresh_token) };
     // only over the session that was read: one stored meanwhile (a refresh, another sign-in, none) stays as it is
-    await this.options.store.update("session", (current) => current !== undefined && current.sign_in_id === undefined && current.refresh_token === stored.refresh_token ? named : current);
+    await this.options.store.update("session", (current) => {
+      if (current === undefined || current.refresh_token !== stored.refresh_token) return current;
+      // named meanwhile by a tab of the build before this one, which gave a random id: that id is the stored one
+      if (current.sign_in_id !== undefined) { named = current; return current; }
+      return named;
+    });
     return named;
   }
 
