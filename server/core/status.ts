@@ -212,7 +212,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (agentNow.get(paneId) !== "claude" || !owns(paneId, "claude")) return;
       claudeAgentsChanged(paneId, running, turnRunning, promptAt, false, "claude");
       // the queue's hold came or went with the pane's status unchanged: its queued input is told now.
-      // Not for a pane that settles: what settles it tells the queue once its poll is done (onStatus, reportStatus)
+      // Not for a pane that settles: the status reported next tells the queue, and what settles it tells of a
+      // self-resumed turn's hold its poll found begun or ended (onStatus, reportStatus)
       if (paneId !== settling) tellQueue(paneId);
     },
   });
@@ -245,16 +246,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const before = heard.get(paneId);
     heard.set(paneId, status);
     if (status === "working" && (event || (before !== undefined && before !== "working"))) claudeAgents.busy(paneId, "herdr");
-    // only idle and done are rest words, after which a turn herdr tells next begins in what is written
-    // from then on. blocked (a permission prompt) and unknown come in the middle of a turn: the working
-    // after them is still that turn's, and placed past it would end a later wakeup's hold (#3494)
-    else if (status !== "working") claudeAgents.quiet(paneId, event && (status === "idle" || status === "done"));
+    else if (status !== "working") claudeAgents.quiet(paneId, event);
   }
   /**
    * The status the pane's queued input goes by: a Claude pane shown at rest while a busy signal
    * whose turn was never written holds it (ClaudeSubagentStatus.holdsQueue) is not ready for it.
-   * Nor is one a /loop wakeup just resumed, which herdr still reads at rest (loopHolds, #3494):
-   * that hold is the transcript's, so it needs no working word of herdr's.
+   * Nor is one whose turn Claude resumed by itself (a /loop wakeup, a scheduled task) and no rest was
+   * written since, which herdr may still read at rest, or at rest again (loopHolds, #3494): that
+   * hold is the transcript's alone, so no word of herdr's begins or ends it.
    */
   function queueStatus(paneId: string, status: AgentStatus): AgentStatus {
     if (agentNow.get(paneId) !== "claude" || (status !== "idle" && status !== "done")) return status;
@@ -547,6 +546,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     agentNow.set(paneId, agent);
     const was = settling;
     settling = paneId;
+    // a self-resumed turn's hold as the queue was last told of it: the poll below tells nobody (the pane settles)
+    const resumed = claudeAgents.loopTold(paneId);
     try {
       hearClaude(paneId, agent, read, replay === undefined);
       if (agent === "claude") claudeAgents.poll(paneId);
@@ -566,8 +567,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // a GJC pane's may be a provider child's while gjc's own transcript is tracked
     if (replay && (omo.runs(paneId) || gjc.tracks(paneId) || letta.tracks(paneId) || !completions.replayed(paneId, raw, replay))) {
       // no status is reported after this replay, and its poll told the queue nothing (the pane was
-      // settling): a hold that poll read the end of, with herdr's word unchanged, is told here (#3494)
-      if (agent === "claude" && owns(paneId, "claude")) tellQueue(paneId);
+      // settling): a self-resumed turn's hold that poll found begun or ended is told here (#3494).
+      // Only that: any other hold is told as before, by the next status or the next change
+      if (agent === "claude" && owns(paneId, "claude") && claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
       return;
     }
     // Native OmO discovery owns the pane even when herdr names its provider child.
@@ -608,12 +610,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // so does an OpenCode turn on the subagents it started, and an agy or grok one on its tasks
     const tracker = omo.runs(paneId) ? null : agent === "claude" ? claudeAgents : agent === "opencode" ? opencodeAgents : isTaskAgent(agent) ? taskAgents : null;
     if (tracker !== null) {
+      const resumed = claudeAgents.loopTold(paneId);
       settling = paneId;
       try { void tracker.poll(paneId); } finally { settling = null; }
-      // that poll told the queue nothing, as the pane settled. A /loop wakeup's hold it was the first to read the
-      // beginning or the end of (a fire, or the resumed turn's rest, written since the status event's own read)
-      // is told now: no later poll finds it changed, and the status told above was read before it (#3494)
-      if (tracker === claudeAgents) tellQueue(paneId);
+      // that poll told the queue nothing, as the pane settled. A self-resumed turn's hold it found begun or ended
+      // (a fire, or the resumed turn's rest, written since the status event's own read; its time run out) is
+      // told now: no later poll finds it changed, and the status told above was read before it (#3494)
+      if (tracker === claudeAgents && claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
       waits.status(paneId, status);
     } else waits.forget(paneId);
     broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));
@@ -762,17 +765,18 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
 
   /**
-   * Whether a pane shown at rest holds its queue (queueStatus). `fresh`: as its transcript says now, read
-   * before answering, not as the last poll left it: a /loop wakeup may have fired since (#3494). That read
-   * tells the queue what it finds, as any poll does. A pane whose transcript is not found has none to read,
-   * and none is looked for here (a snapshot does, ClaudeSubagentStatus.ensure): nothing holds it until then.
-   * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an
-   * answer up to a poll old, with every test still passing.
+   * Whether a pane shown at rest holds its queue (queueStatus), as its last poll left it. `fresh`: whether a
+   * turn Claude resumed by itself holds it, as the pane's transcript says now, read before answering: a /loop
+   * wakeup or a scheduled task may have fired since that poll (#3494). Only that hold is read anew, and only
+   * it is answered for: it is the one a transcript line begins with no word of herdr's, and a pane with no
+   * such line is asked nothing it was not asked before. A hold that read finds begun or ended is told to the
+   * queue, as by any poll (ClaudeSubagentStatus.loopHoldsNow). A pane whose transcript is not found has none
+   * to read, and none is looked for here (a snapshot does, ClaudeSubagentStatus.ensure): nothing holds it
+   * until then. `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks
+   * read an answer up to a poll old, with every test still passing.
    */
-  const queueHeld = (paneId: string, fresh: boolean): boolean => {
-    if (fresh && agentNow.get(paneId) === "claude") claudeAgents.poll(paneId);
-    return queueStatus(paneId, "idle") === "working";
-  };
+  const queueHeld = (paneId: string, fresh: boolean): boolean =>
+    fresh ? agentNow.get(paneId) === "claude" && claudeAgents.loopHoldsNow(paneId) : queueStatus(paneId, "idle") === "working";
   /**
    * The herdr this server reads now, as a snapshot names it, known without asking herdr anything: only the
    * one whose lifecycle subscription is open, under the same socket. A socket file alone proves nothing: a

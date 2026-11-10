@@ -115,8 +115,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   clientSnapshot: () => Promise<SessionSnapshot>;
   omo: Pick<OmoStatus, "sessionOf">;
   /**
-   * a pane shown at rest whose queue a busy signal or a /loop wakeup still holds (server/core/status.ts queueStatus):
-   * no automatic send. `fresh`: read from the pane's transcript now, not as its last poll left it
+   * a pane shown at rest whose queue a busy signal or a turn Claude resumed by itself still holds, as the pane's
+   * last poll left it (server/core/status.ts queueStatus): no automatic send. `fresh`: whether such a resumed
+   * turn (a /loop wakeup, a scheduled task) holds it, read from the pane's transcript now (#3494)
    */
   queueHeld?: (paneId: string, fresh: boolean) => boolean;
   SUBMIT_DEADLINE_MS: number;
@@ -663,9 +664,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // the last reads awaited too: a message past its deadline is not typed
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       authorizePending(owner, paneId, lease);
-      // and a /loop wakeup may have fired while they were awaited (#3494): the queue's hold is read from the transcript
-      // once more, with no wait between this and the paste. A hold found here leaves nothing in the input line and the
-      // message waiting; one that comes later is found before the Enter, with the paste made
+      // and a /loop wakeup or a scheduled task may have fired while they were awaited (#3494): whether the turn it
+      // resumed holds the queue is read from the transcript now, with nothing awaited between this and the paste's
+      // own write. A hold found here leaves nothing in the input line and the message waiting; one that comes later
+      // is found before the Enter, with the paste made
       if ((automatic || queued) && queueHeld(paneId, true)) {
         pending.observe(paneId, "working", mark);
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
@@ -724,10 +726,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
         throw error;
       };
-      // a turn begun since the paste, which herdr tells, turns an automatic send away. One herdr has not told yet is the
-      // queue's hold to find, asked last of all below
       let beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
-      if (automatic && beforeEnter.working) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
+      if (automatic && (beforeEnter.working || queueHeld(paneId, false))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
       authorizePending(owner, paneId, lease);
       // Capture Pi's exact active transcript position before Enter. Status is deliberately not
       // evidence: Pi can report idle/done while its TUI is staging an automatic-compaction input.
@@ -735,26 +735,33 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const piAnchor = piTracked ? await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null) : undefined;
       if (piAnchor !== undefined) {
         beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
-        if (automatic && beforeEnter.working) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
+        if (automatic && (beforeEnter.working || queueHeld(paneId, false))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
         await stillInFront(paneId, beforeCapturePid, identity, agentOnly).catch(enterRefused);
       }
       // its Enter only into the agent it was pasted for, never once the shell is in front or Codex's queue collapsed
       if (agentOnly && !beforeEnter.agentInFront) enterRefused(new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message));
       if (agentOnly && beforeEnter.collapsed) enterRefused(new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal"));
       await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity).catch(enterRefused);
-      // the queue's hold (a busy signal's, a /loop wakeup's that herdr has not told yet, #3494), read from the transcript
-      // after the last of those reads and with no wait before the Enter: a wakeup whose fire was written during any of
-      // them gets none. It turns away an automatic send and one queued and typed at once, whose Enter would go into the
-      // turn at work with nothing to say it steers. Not seen: a wakeup whose fire Claude has not written by now (the
-      // entry reaches the transcript some tens of milliseconds after the wakeup), or that fires during the key's own write
-      if ((automatic || queued) && queueHeld(paneId, true)) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
+      // a turn Claude resumed by itself since the paste (a /loop wakeup, a scheduled task, #3494) holds the queue whatever
+      // herdr reads the pane as: read from the transcript after the last of those reads, it turns away an automatic send
+      // and one queued and typed at once, whose Enter (Ctrl+Enter, once herdr tells that turn) would go into the turn at
+      // work. Asked here, before the message is said to be on its way, and once more as the key is written
+      const resumed = (): boolean => (automatic || queued) && queueHeld(paneId, true);
+      const refuseResumed = (): never => enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
+      if (resumed()) refuseResumed();
       authorizePending(owner, paneId, lease);
       const steering = !automatic && beforeEnter.working;
       committing(steering);
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.
       const sentAt = Date.now();
-      await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, allowed);
+      // the connection to herdr is awaited, and a task may fire meanwhile: the hold is read once more once connected,
+      // right before the key's own write. A key refused there was not sent, and its paste is not confirmed. Not seen: a
+      // task whose fire Claude has not written by then (the entry reaches the transcript some tens of milliseconds
+      // after the task fires), or that fires while herdr hands the key to the pane
+      let refused = false;
+      await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, () => allowed() && !(refused = resumed()))
+        .catch((error: unknown) => { if (refused) refuseResumed(); throw error; });
       // This proves only that Ovis committed Enter to Pi, not that Pi accepted, queued or recorded
       // the message. Keep a non-resendable receipt until the bound JSONL active branch appends it.
       if (receiptText !== undefined) {

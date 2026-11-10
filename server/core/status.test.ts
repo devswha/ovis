@@ -484,6 +484,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     h.herdrSays(h.pane);
     return h;
   };
+  /** herdr's word on the pane: what its snapshots read from here on, and its event. */
+  const says = (h: Pick<Fixture, "herdrSays" | "pane">, status: "working" | "blocked" | "idle") => {
+    h.herdrSays({ ...h.pane, agent_status: status });
+    handlers.onStatus(h.pane.pane_id, status, "claude");
+  };
 
   it("holds the queue from the fire to the resumed turn's rest, whatever herdr reads meanwhile", async () => {
     const h = await rested();
@@ -562,34 +567,85 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).toBeNull();
   });
 
-  it("goes by herdr's word once herdr tells the resumed turn", async () => {
-    const h = await rested();
+  it("keeps the queue held when herdr tells the resumed turn and then reads the pane at rest with no rest written, until the hold's time is up", async () => {
+    const drained: string[] = [];
+    const h = await rested(drained);
+    const id = h.pane.pane_id;
+    fires(h.path); resumes(h.path); h.poll();
+    queue(h);
+    expect(h.pending.next(id)).toBeNull();
+    // Given herdr telling the resumed turn, on time.
+    says(h, "working");
+    expect(h.last().status).toBe("working");
+    expect(h.pending.next(id)).toBeNull();
+    const from = Date.now();
+    try {
+      // When that turn is interrupted, which writes no rest here, and herdr says the pane does no work.
+      setSystemTime(from + 10_000);
+      says(h, "idle");
+      // Then herdr's word lets nothing go: nothing tells that pane from one herdr reads at rest while its turn runs.
+      expect(h.last().status).not.toBe("working");
+      expect(h.status.queueHeld(id, false)).toBe(true);
+      expect(h.pending.current(id)).toBe("working");
+      expect(h.pending.next(id)).toBeNull();
+      setSystemTime(from + 59_000);
+      h.poll();
+      expect(h.pending.next(id)).toBeNull();
+      const told = drained.length;
+      // And once the hold's time is up (LOOP_HOLD_MS after the turn's prompt was read) the queue is told with no
+      // status event, and the message is offered.
+      setSystemTime(from + 61_000);
+      h.poll();
+      expect(drained.slice(told)).toEqual([id]);
+      expect(h.status.queueHeld(id, false)).toBe(false);
+      expect(h.pending.current(id)).not.toBe("working");
+      expect(h.pending.next(id)).not.toBeNull();
+    } finally { setSystemTime(); }
+  });
+
+  it.each(["the timer's poll", "a replay that changes nothing", "a status herdr reports", "a send's own read of the hold"] as const)("tells the queue that the hold's time is up when %s is the first to find it so", async (first) => {
+    const drained: string[] = [];
+    const h = await rested(drained);
     const id = h.pane.pane_id;
     fires(h.path); h.poll();
     queue(h);
-    expect(h.pending.next(id)).toBeNull();
-    handlers.onStatus(id, "working", "claude");
-    expect(h.last().status).toBe("working");
-    expect(h.pending.next(id)).toBeNull();
-    // When that turn is interrupted, which writes no rest, and herdr says the pane does no work.
-    handlers.onStatus(id, "idle", "claude");
-    // Then nothing of the fire holds the queue any more.
-    expect(h.status.queueHeld(id, false)).toBe(false);
-    expect(h.pending.next(id)).not.toBeNull();
+    expect(h.pending.current(id)).toBe("working");
+    const from = Date.now();
+    try {
+      // Given a resumed turn that wrote nothing more, and no poll since its time ran out.
+      setSystemTime(from + 61_000);
+      expect(h.pending.next(id)).toBeNull();
+      const told = drained.length;
+      if (first === "the timer's poll") h.poll();
+      else if (first === "a replay that changes nothing") handlers.onStatus(id, "idle", "claude", { before: "done", agent: "claude" });
+      else if (first === "a status herdr reports") handlers.onStatus(id, "idle", "claude");
+      else expect(h.status.queueHeld(id, true)).toBe(false);
+      // Then the queue is told there and then: no later read would find anything changed.
+      expect(drained.slice(told).at(-1)).toBe(id);
+      expect(h.pending.current(id)).not.toBe("working");
+      expect(h.pending.next(id)).not.toBeNull();
+      const after = drained.length;
+      h.poll();
+      expect(drained.slice(after)).toEqual([]);
+    } finally { setSystemTime(); }
   });
 
-  it("goes by herdr's word when herdr told the resumed turn a moment before Claude wrote its fire", async () => {
+  it("holds the queue though herdr told the resumed turn a moment before Claude wrote its fire", async () => {
     const h = await rested();
     const id = h.pane.pane_id;
     // Given herdr reading the resumed turn before the fire reaches the transcript.
-    handlers.onStatus(id, "working", "claude");
+    says(h, "working");
     fires(h.path); h.poll();
     queue(h);
     expect(h.last().status).toBe("working");
     expect(h.pending.next(id)).toBeNull();
-    // When that turn is interrupted, which writes no rest, and herdr says the pane does no work.
-    handlers.onStatus(id, "idle", "claude");
-    // Then the fire, whose turn herdr told, holds nothing: the message goes at once.
+    // When herdr reads the pane at rest while that turn has written no rest.
+    says(h, "idle");
+    // Then the fire still holds the queue: herdr's word for the turn began no hold, and ends none.
+    expect(h.status.queueHeld(id, false)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+    // And the turn's rest lets the message go.
+    turnEnds(h); h.poll();
     expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
@@ -607,7 +663,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).toBeNull();
   });
 
-  it.each(["herdr's working for the wakeup's own turn", "the wakeup turn's rest"] as const)("keeps the queue held through herdr's late words for the turn before the fire, until %s", async (end) => {
+  it("keeps the queue held through herdr's late words for the turn before the fire, and through its words for the wakeup's own turn", async () => {
     const h = await rested();
     const id = h.pane.pane_id;
     // Given a short turn begun after herdr's idle word, its rest and then the wakeup's fire, all
@@ -618,20 +674,19 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     queue(h);
     expect(h.status.queueHeld(id, false)).toBe(true);
     // When herdr's working and idle words for the short turn come late.
-    handlers.onStatus(id, "working", "claude");
-    handlers.onStatus(id, "idle", "claude");
+    says(h, "working");
+    says(h, "idle");
     // Then they end nothing of the fire's hold: the message does not go into the wakeup's turn.
     expect(h.pending.next(id)).toBeNull();
     expect(h.status.queueHeld(id, false)).toBe(true);
-    if (end === "the wakeup turn's rest") {
-      turnEnds(h); h.poll();
-    } else {
-      // herdr's working for the wakeup's turn hands the queue over to herdr's status, as its idle word then lets it go
-      handlers.onStatus(id, "working", "claude");
-      expect(h.status.queueHeld(id, false)).toBe(false);
-      expect(h.pending.next(id)).toBeNull();
-      handlers.onStatus(id, "idle", "claude");
-    }
+    // Nor do herdr's words for the wakeup's own turn, a working and an idle it reads between two of its steps.
+    says(h, "working");
+    expect(h.pending.next(id)).toBeNull();
+    says(h, "idle");
+    expect(h.status.queueHeld(id, false)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+    // The wakeup turn's rest does.
+    turnEnds(h); h.poll();
     expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
@@ -639,12 +694,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
   it.each(["a poll before herdr's late words", "no poll before them"] as const)("keeps the queue held through herdr's late words when the turn before the fire stopped on a permission prompt herdr told in time (%s)", async (order) => {
     const h = await rested();
     const id = h.pane.pane_id;
-    const says = (status: "working" | "blocked" | "idle") => { h.herdrSays({ ...h.pane, agent_status: status }); handlers.onStatus(id, status, "claude"); };
     queue(h);
     // Given a person's turn herdr tells in time, which stops on a permission prompt herdr tells in time too.
     h.next();
-    says("working");
-    says("blocked");
+    says(h, "working");
+    says(h, "blocked");
     // Approved, the turn goes on and rests, and the due wakeup writes its fire and prompt, all before
     // herdr tells that the turn went on.
     turnEnds(h);
@@ -652,10 +706,9 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     resumes(h.path);
     if (order === "a poll before herdr's late words") { h.poll(); expect(h.status.queueHeld(id, false)).toBe(true); }
     // When herdr's working for the approved turn and its idle come late.
-    says("working");
-    says("idle");
-    // Then they end nothing of the wakeup's hold. herdr's blocked was no rest word: the working after
-    // it is still the turn before's, not one begun past it.
+    says(h, "working");
+    says(h, "idle");
+    // Then they end nothing of the wakeup's hold, wherever herdr's words stand among the turns written.
     expect(h.status.queueHeld(id, true)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
     // And the wakeup turn's rest lets the message go.
@@ -707,7 +760,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       // When herdr's working and idle words for the short turn come late.
       handlers.onStatus(id, "working", "claude");
       handlers.onStatus(id, "idle", "claude");
-      // Then the message does not go into the wakeup's turn: the working word was still placed before the fire.
+      // Then the message does not go into the wakeup's turn.
       expect(h.pending.next(id)).toBeNull();
       expect(h.status.queueHeld(id, false)).toBe(true);
       // And the wakeup turn's rest lets it go.
@@ -748,7 +801,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     // And herdr's idle word for the short turn follows.
     h.herdrSays(h.pane);
     handlers.onStatus(id, "idle", "claude");
-    // Then that working, which no rest word of herdr's placed, told nothing of the wakeup's turn: the message does not go into it.
+    // Then the message does not go into the wakeup's turn, though no rest word of herdr's says which turn that working told.
     expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
     // And the wakeup turn's rest lets it go.
@@ -757,21 +810,18 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).not.toBeNull();
   });
 
-  it("leaves the first wakeup after a server start to its turn's rest or its time though herdr tells that turn, and goes by herdr's word again from herdr's next rest word", async () => {
+  it("holds on the first wakeup after a server start as on any other: to its turn's rest or its time, though herdr tells that turn", async () => {
     const drained: string[] = [];
     const h = await restarted(drained);
     const id = h.pane.pane_id;
     queue(h);
     fires(h.path); h.poll();
     expect(h.status.queueHeld(id, false)).toBe(true);
-    // Given herdr's working for the wakeup's own turn: with no rest word of herdr's heard in an event, it may as well
-    // be a late one for the turn before, so it ends nothing.
-    h.herdrSays({ ...h.pane, agent_status: "working" });
-    handlers.onStatus(id, "working", "claude");
+    // Given herdr's working for the wakeup's own turn.
+    says(h, "working");
     expect(h.pending.next(id)).toBeNull();
-    // When that turn is interrupted, which writes no rest, and herdr says the pane does no work.
-    h.herdrSays(h.pane);
-    handlers.onStatus(id, "idle", "claude");
+    // When that turn is interrupted, which writes no rest here, and herdr says the pane does no work.
+    says(h, "idle");
     // Then the message waits out the fire's time.
     expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
@@ -784,15 +834,15 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       // And the queue is told with no status event, so the message goes.
       expect(drained.slice(told)).toEqual([id]);
       expect(h.pending.next(id)).not.toBeNull();
-      // The next wakeup, minutes later: herdr's working for its turn is placed by that idle word, heard in an event.
+      // The next wakeup, minutes later, holds in the same way, through herdr's words for its turn.
       fires(h.path, at + 4000 + 5 * 60_000); h.poll();
       expect(h.status.queueHeld(id, false)).toBe(true);
-      h.herdrSays({ ...h.pane, agent_status: "working" });
-      handlers.onStatus(id, "working", "claude");
+      says(h, "working");
+      says(h, "idle");
+      expect(h.status.queueHeld(id, false)).toBe(true);
       expect(h.pending.next(id)).toBeNull();
-      // So when that turn is interrupted too, herdr's idle word lets the message go at once.
-      h.herdrSays(h.pane);
-      handlers.onStatus(id, "idle", "claude");
+      // And its turn's rest lets the message go.
+      turnEnds(h); h.poll();
       expect(h.status.queueHeld(id, false)).toBe(false);
       expect(h.pending.next(id)).not.toBeNull();
     } finally { setSystemTime(); }
@@ -805,12 +855,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     fires(h.path); fires(h.path); resumes(h.path); h.poll();
     queue(h);
     expect(h.status.queueHeld(id, false)).toBe(true);
-    handlers.onStatus(id, "working", "claude");
-    expect(h.status.queueHeld(id, false)).toBe(false);
+    says(h, "working");
     expect(h.pending.next(id)).toBeNull();
     // When that turn rests and the second loop's prompt runs at once, before herdr's idle word for the first.
     turnEnds(h); resumes(h.path); h.poll();
-    handlers.onStatus(id, "idle", "claude");
+    says(h, "idle");
     // Then that idle word lets nothing into the second loop's turn.
     expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
@@ -839,7 +888,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     turnEnds(h); resumes(h.path); h.poll();
     h.herdrSays(h.pane);
     handlers.onStatus(id, "idle", "claude");
-    // Then that idle word lets nothing into the second loop's turn: herdr's working was heard before the first one's rest.
+    // Then that idle word lets nothing into the second loop's turn.
     expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
     // And the second loop turn's rest lets the message go.
@@ -995,21 +1044,79 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     } finally { setSystemTime(); }
   });
 
+  describe("a pane with no wakeup goes as before", () => {
+    it("is told nothing at a replay that changes nothing: the queue stays as a delivery's own look at the pane left it", async () => {
+      const drained: string[] = [];
+      const h = await rested(drained);
+      const id = h.pane.pane_id;
+      queue(h);
+      // Given a queue told to wait by a delivery's look at the pane, which read herdr's working before its event came.
+      h.pending.observe(id, "working", h.pending.mark(id));
+      expect(h.pending.next(id)).toBeNull();
+      const told = drained.length;
+      // When a snapshot's replay around a gap changes nothing.
+      handlers.onStatus(id, "idle", "claude", { before: "done", agent: "claude" });
+      // Then nothing is told: the hub tells the queue there only of a self-resumed turn's hold.
+      expect(drained.slice(told)).toEqual([]);
+      expect(h.pending.current(id)).toBe("working");
+      expect(h.pending.next(id)).toBeNull();
+    });
+
+    it("places herdr's working after a permission prompt past that prompt: a turn it may tell holds the pane at work", async () => {
+      const h = await rested();
+      const id = h.pane.pane_id;
+      queue(h);
+      // Given a turn of the person's whose first word from herdr is a permission prompt.
+      h.next();
+      says(h, "blocked");
+      // Approved, the turn goes on and rests, before herdr tells that it went on.
+      turnEnds(h);
+      // When herdr's working comes after that rest: the turn's own, late, or a next turn's whose first entry is not written.
+      says(h, "working");
+      h.poll();
+      // Then the pane is at work, and its queue waits: that word is placed past the prompt herdr told, not in the turn before it.
+      expect(h.last().status).toBe("working");
+      expect(h.pending.current(id)).toBe("working");
+      expect(h.pending.next(id)).toBeNull();
+    });
+
+    it("answers a send's own read of the hold for a self-resumed turn alone: a busy signal's hold is asked where it was", async () => {
+      const h = await rested();
+      const id = h.pane.pane_id;
+      const from = Date.now();
+      try {
+        // Given herdr's working with no turn written for it, which waited its time in vain: the pane rests on
+        // its background subagent, and that signal holds its queue.
+        says(h, "working");
+        setSystemTime(from + 6000);
+        h.poll();
+        expect(h.status.claudeAgents.holdsQueue(id)).toBe(true);
+        expect(h.status.queueHeld(id, false)).toBe(true);
+        // Then the read made right before a write finds no wakeup, and answers for nothing else.
+        expect(h.status.queueHeld(id, true)).toBe(false);
+      } finally { setSystemTime(); }
+    });
+  });
+
   describe("with the bridge's own delivery", () => {
+    let sockets = 0;
     const READY = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 80 };
     const spies: { mockRestore(): void }[] = [];
     afterEach(() => { for (const spy of spies.splice(0)) spy.mockRestore(); });
 
     /**
      * A pane at rest that herdr told, its queue delivered by the bridge: what is written to the pane, in order.
-     * `on`: what a test has happen as the delivery reads the pane's screen (`read`) or pastes (`paste`), and an
-     * answer on the queue's hold a test gives in the hub's place (`held`, asked `fresh` or not);
+     * `on`: what a test has happen as the delivery reads the pane's screen (`read`), pastes (`paste`), or while the
+     * connection its Enter is written on is still being made (`connect`), and an answer on the queue's hold a test
+     * gives in the hub's place (`held`, asked `fresh` or not);
      * `asked`: each answer the delivery got on the queue's hold; `results`: the answers its submits got;
      * `steps`: everything the delivery awaited of herdr and every answer on the hold it took, in order.
+     * `keys`: the Enter goes through a stand-in that asks the write's guard once connected, as herdr's client
+     * does, or through that client itself (herdrRpc), to a socket the test listens on in herdr's place.
      */
-    async function delivering() {
+    async function delivering(keys: "a stand-in" | "herdr's own client" = "a stand-in") {
       const writes: string[] = [];
-      const on: { read?: () => void; paste?: () => void; held?: (fresh: boolean) => boolean } = {};
+      const on: { read?: () => void; paste?: () => void; connect?: () => void; held?: (fresh: boolean) => boolean } = {};
       const asked: boolean[] = [];
       const steps: ("screen" | "processes" | "hold as last read" | "hold read now" | "paste" | "keys")[] = [];
       const frames: { type: string; id?: number; ok?: boolean; code?: string; typed_now?: boolean; pending?: { state: string } }[] = [];
@@ -1030,8 +1137,43 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         spyOn(herdr, "paneRead").mockImplementation(async () => { steps.push("screen"); on.read?.(); return { text: "" } as never; }),
         spyOn(herdr, "paneProcessInfo").mockImplementation(async () => { steps.push("processes"); return { foreground_processes: [], shell_pid: null } as never; }),
         spyOn(herdr, "paneSendText").mockImplementation(async (_paneId, text) => { steps.push("paste"); writes.push(`paste ${text}`); on.paste?.(); }),
-        spyOn(herdr, "paneSendKeys").mockImplementation(async (_paneId, keys) => { steps.push("keys"); writes.push(`keys ${keys.join(",")}`); }),
       );
+      if (keys === "a stand-in") {
+        spies.push(spyOn(herdr, "paneSendKeys").mockImplementation(async (_paneId, sent, _socket, guard) => {
+          steps.push("keys");
+          on.connect?.();
+          if (guard && !guard()) throw new herdr.HerdrError("cancelled", "herdr pane.send_keys was not sent: the sender may no longer send");
+          writes.push(`keys ${sent.join(",")}`);
+        }));
+      } else {
+        const socket = join(root, `keys${++sockets}.sock`);
+        const before = process.env["HERDR_SOCKET"];
+        process.env["HERDR_SOCKET"] = socket;
+        const listener = Bun.listen<{ buffer: string }>({
+          unix: socket,
+          socket: {
+            open(peer) { peer.data = { buffer: "" }; },
+            data(peer, chunk) {
+              peer.data.buffer += chunk.toString();
+              if (!peer.data.buffer.includes("\n")) return;
+              const request = JSON.parse(peer.data.buffer) as { id: string; method: string; params: { keys?: string[] } };
+              // only the key is herdr's to take here: everything else the delivery asks of herdr is stood in for
+              if (request.method !== "pane.send_keys") { peer.end(`${JSON.stringify({ id: request.id, error: { code: "not_stood_in", message: request.method } })}\n`); return; }
+              writes.push(`keys ${request.params.keys?.join(",")}`);
+              peer.end(`${JSON.stringify({ id: request.id, result: {} })}\n`);
+            },
+          },
+        });
+        const connect = Bun.connect;
+        spies.push(
+          // the client's connection to herdr is asked for and not made yet: what a test has happen now comes before the key's write
+          spyOn(Bun, "connect").mockImplementation(((options: { unix?: string }) => {
+            if (options.unix === socket) { steps.push("keys"); on.connect?.(); }
+            return connect(options as never);
+          }) as never),
+          { mockRestore: () => { listener.stop(true); if (before === undefined) delete process.env["HERDR_SOCKET"]; else process.env["HERDR_SOCKET"] = before; } },
+        );
+      }
       h.rest(); h.poll();
       handlers.onStatus(h.pane.pane_id, "idle", "claude");
       h.herdrSays(h.pane);
@@ -1044,6 +1186,23 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       const waiting = () => delivery.pending.list(client, h.pane.pane_id).map((message) => message.state);
       return { h, delivery, writes, client, submit, flush, on, asked, steps, waiting, results: () => frames.filter((frame) => frame.type === "submit-result") };
     }
+    /**
+     * The wakeup fires. `told`: its turn writes its prompt and herdr tells that turn at once, on time, in what its
+     * snapshots read from here on and in an event: the delivery under way hears it at whatever step it has reached.
+     */
+    const wakes = (h: Pick<Fixture, "path" | "herdrSays" | "pane">, told: boolean) => {
+      fires(h.path);
+      if (!told) return;
+      resumes(h.path);
+      says(h, "working");
+    };
+    /** The resumed turn rests, read by the timer's poll, or told by herdr where herdr told the turn (`told`). */
+    const rests = (h: Pick<Fixture, "path" | "herdrSays" | "pane" | "poll">, told: boolean) => {
+      turnEnds(h);
+      if (told) says(h, "idle"); else h.poll();
+    };
+    /** herdr tells nothing of the resumed turn before the delivery ends, or tells it at once. */
+    const HERDR: { told: boolean; herdr: string }[] = [{ told: false, herdr: "herdr not telling the resumed turn yet" }, { told: true, herdr: "herdr telling the resumed turn at once" }];
     /** The wakeup fires at the delivery's first read of the screen after it asked for the hold and found none. */
     const firesAfterTheHoldCheck = (d: Awaited<ReturnType<typeof delivering>>) => {
       const fired = { yet: false };
@@ -1147,8 +1306,8 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       handlers.onStatus(h.pane.pane_id, "idle", "claude");
     };
 
-    it.each((Object.keys(BEFORE_PASTE) as Sent[]).flatMap((sent) => BEFORE_PASTE[sent].map((during, at) => ({ sent, during, read: at + 1 }))))(
-      "pastes nothing for a message $sent when the wakeup fires before its paste, during $during", async ({ sent, read }) => {
+    it.each((Object.keys(BEFORE_PASTE) as Sent[]).flatMap((sent) => BEFORE_PASTE[sent].flatMap((during, at) => HERDR.map((word) => ({ sent, during, read: at + 1, ...word })))))(
+      "pastes nothing for a message $sent when the wakeup fires before its paste, during $during ($herdr)", async ({ sent, read, told }) => {
         const d = await delivering();
         const { h, writes, flush, waiting, results } = d;
         // Given a wakeup that fires at one of the reads of the screen the delivery makes once it found the queue free.
@@ -1156,17 +1315,17 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         let reads = 0;
         await sends(d, sent, 22, "early", () => {
           d.asked.length = 0;
-          d.on.read = () => { if (d.asked.length > 0 && ++reads === read) { fired.yet = true; fires(h.path); } };
+          d.on.read = () => { if (d.asked.length > 0 && ++reads === read) { fired.yet = true; wakes(h, told); } };
         });
         await flush();
         expect(fired.yet).toBe(true);
         // Then the hold, read from the transcript after the last of those reads, stops the paste: nothing is left in Claude's
-        // input line, and the message waits as one queued.
+        // input line, and the message waits as one queued. herdr's word for the resumed turn, heard meanwhile, ends no hold.
         expect(writes).toEqual([]);
         expect(waiting()).toEqual(["queued"]);
         if (sent === "typed at once") expect(results()).toMatchObject([{ id: 22, ok: true, pending: { state: "queued" } }]);
         // And the resumed turn's rest sends it.
-        turnEnds(h); h.poll();
+        rests(h, told);
         await flush();
         expect(writes).toEqual(["paste \u001b[200~early\u001b[201~", "keys Enter"]);
         expect(waiting()).toEqual([]);
@@ -1178,12 +1337,12 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       await sends(d, sent, 23, "through", () => { steps.length = 0; });
       await flush();
       expect(writes).toEqual(["paste \u001b[200~through\u001b[201~", "keys Enter"]);
-      // Nothing is awaited of herdr between either answer and the write it lets through: a wakeup has no read of the
-      // delivery's left to fire during, only the write itself.
+      // Nothing is awaited of herdr between either answer and the write it lets through, but that write's own connection:
+      // a wakeup has no read of the delivery's left to fire during. The Enter's is read once more once connected.
       const paste = steps.indexOf("paste");
       const enter = steps.indexOf("keys");
       expect(steps.slice(paste - 1, paste + 1)).toEqual(["hold read now", "paste"]);
-      expect(steps.slice(enter - 1, enter + 1)).toEqual(["hold read now", "keys"]);
+      expect(steps.slice(enter - 1)).toEqual(["hold read now", "keys", "hold read now"]);
       // And the screen reads before the paste are the ones named above: each of them is tried with a wakeup.
       const first = steps.findIndex((step) => step.startsWith("hold"));
       expect(steps.slice(first, paste).filter((step) => step === "screen")).toHaveLength(BEFORE_PASTE[sent].length);
@@ -1208,11 +1367,12 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       expect(asked).toEqual([false, true]);
     });
 
-    it("sends no Enter for a message typed at once when the wakeup fires as it is pasted, and leaves the queue free", async () => {
+    it.each(HERDR)("sends no Enter, nor a Ctrl+Enter, for a message typed at once when the wakeup fires as it is pasted ($herdr), and leaves the queue free", async ({ told }) => {
       const d = await delivering();
       const { h, writes, submit, flush, waiting, results } = d;
-      // Given a pane at rest with nothing waiting, and a wakeup that fires during the paste itself.
-      d.on.paste = () => { delete d.on.paste; fires(h.path); };
+      // Given a pane at rest with nothing waiting, and a wakeup that fires during the paste itself. Where herdr tells
+      // its turn at once, the look before the Enter reads the pane at work, as it does for a turn the message may steer.
+      d.on.paste = () => { delete d.on.paste; wakes(h, told); };
       await submit(14, "now");
       await flush();
       // Then its Enter is not sent into the resumed turn: the paste stays in Claude's input line, and the send is answered as not confirmed.
@@ -1220,7 +1380,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       expect(results()).toMatchObject([{ id: 14, ok: false, code: "submit_changed" }]);
       // No copy of it waits to be typed a second time, and the queue is not stuck behind it.
       expect(waiting()).toEqual([]);
-      turnEnds(h); h.poll();
+      rests(h, told);
       await submit(16, "after");
       await flush();
       expect(writes.slice(1)).toEqual(["paste \u001b[200~after\u001b[201~", "keys Enter"]);
@@ -1238,7 +1398,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       expect(results()).toMatchObject([{ id: 17, ok: true }]);
     });
 
-    it("leaves a paste uncommitted when the wakeup fires between a queued message's paste and its Enter", async () => {
+    it.each(HERDR)("leaves a paste uncommitted when the wakeup fires between a queued message's paste and its Enter ($herdr)", async ({ told }) => {
       const d = await delivering();
       const { h, writes, submit, flush, waiting } = d;
       const id = h.pane.pane_id;
@@ -1247,7 +1407,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       handlers.onStatus(id, "working", "claude");
       await submit(18, "pasted");
       // Given a wakeup that fires during the paste itself: no check before the paste can see it.
-      d.on.paste = () => { delete d.on.paste; fires(h.path); };
+      d.on.paste = () => { delete d.on.paste; wakes(h, told); };
       turnEnds(h);
       h.herdrSays(h.pane);
       handlers.onStatus(id, "idle", "claude");
@@ -1255,24 +1415,25 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       // Then the Enter is refused, and the message is left for the person to check: never typed into the resumed turn, never typed twice.
       expect(writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
       expect(waiting()).toEqual(["uncertain"]);
-      turnEnds(h); h.poll();
+      rests(h, told);
       await flush();
       expect(writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
     });
 
-    it.each([
+    it.each(([
       { sent: "queued behind a turn", during: "its last look at the pane", read: 1 },
       { sent: "queued behind a turn", during: "its check for a masked prompt, the last read before the Enter", read: 2 },
       { sent: "typed at once", during: "its last look at the pane", read: 1 },
       { sent: "typed at once", during: "its check for a masked prompt, the last read before the Enter", read: 2 },
-    ] as const)("sends no Enter for a message $sent when the wakeup fires after its paste, during $during", async ({ sent, read }) => {
+    ] as const).flatMap((each) => HERDR.map((word) => ({ ...each, ...word }))))("sends no Enter for a message $sent when the wakeup fires after its paste, during $during ($herdr)", async ({ sent, read, told }) => {
       const d = await delivering();
       const { h, writes, submit, flush, waiting, results } = d;
       const id = h.pane.pane_id;
       // Given a wakeup that fires at one of the two reads of the screen the delivery makes between its paste and its Enter.
+      // Where herdr tells its turn at once, that word is heard with the delivery at its last checks: it ends no hold.
       const fired = { yet: false };
       let reads = 0;
-      d.on.paste = () => { delete d.on.paste; d.on.read = () => { if (++reads === read) { fired.yet = true; fires(h.path); } }; };
+      d.on.paste = () => { delete d.on.paste; d.on.read = () => { if (++reads === read) { fired.yet = true; wakes(h, told); } }; };
       if (sent === "typed at once") await submit(20, "late");
       else {
         h.next();
@@ -1291,6 +1452,64 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         expect(results()).toMatchObject([{ id: 20, ok: false, code: "submit_changed" }]);
         expect(waiting()).toEqual([]);
       } else expect(waiting()).toEqual(["uncertain"]);
+    });
+
+    it.each((["queued behind a turn", "typed at once"] as const).flatMap((sent) => HERDR.map((word) => ({ sent, ...word }))))(
+      "sends no Enter for a message $sent when the wakeup fires while its Enter's connection to herdr is being made ($herdr)", async ({ sent, told }) => {
+        // Given the Enter written by herdr's own client, to a socket that stands in for herdr's.
+        const d = await delivering("herdr's own client");
+        const { h, writes, submit, flush, waiting, results, steps } = d;
+        // And a wakeup that fires once every check before the Enter found the queue free, with the connection asked for.
+        const fired = { yet: false };
+        d.on.paste = () => { delete d.on.paste; d.on.connect = () => { delete d.on.connect; fired.yet = true; wakes(h, told); }; };
+        if (sent === "typed at once") await submit(24, "last");
+        else {
+          h.next();
+          says(h, "working");
+          await submit(24, "last");
+          turnEnds(h);
+          says(h, "idle");
+        }
+        await flush();
+        expect(fired.yet).toBe(true);
+        // Then the hold is read once more once connected, right before the key's write: herdr is sent no key, and the
+        // paste stays, not confirmed.
+        expect(steps.slice(-3)).toEqual(["hold read now", "keys", "hold read now"]);
+        expect(writes).toEqual(["paste \u001b[200~last\u001b[201~"]);
+        if (sent === "typed at once") {
+          expect(results()).toMatchObject([{ id: 24, ok: false, code: "submit_changed" }]);
+          expect(waiting()).toEqual([]);
+        } else expect(waiting()).toEqual(["uncertain"]);
+        // And with no wakeup that same client writes the Enter: a message sent once the turn rested goes through.
+        if (sent === "typed at once") {
+          rests(h, told);
+          await submit(25, "next");
+          await flush();
+          expect(writes.slice(1)).toEqual(["paste \u001b[200~next\u001b[201~", "keys Enter"]);
+        }
+      });
+
+    it("types a message the person sends now though the wakeup's hold stands: only what is sent by itself waits for it", async () => {
+      const d = await delivering();
+      const { h, delivery, writes, client, submit, flush, waiting } = d;
+      const id = h.pane.pane_id;
+      // Given a resumed turn herdr told and then read at rest with no rest written (interrupted): its hold stands for its time.
+      fires(h.path); resumes(h.path); h.poll();
+      says(h, "working");
+      says(h, "idle");
+      await submit(26, "now anyway");
+      await flush();
+      expect(writes).toEqual([]);
+      expect(waiting()).toEqual(["queued"]);
+      expect(h.status.queueHeld(id, true)).toBe(true);
+      // When the person sends that message now.
+      const queued = delivery.pending.list(client, id)[0];
+      if (queued === undefined) throw new Error("no queued message");
+      await delivery.pendingFrames["pending-action"](client, { type: "pending-action", id: 27, pane_id: id, pending_id: queued.id, action: "steer" } as never);
+      await flush();
+      // Then it is typed and committed at once: the hold is for the queue's own sends.
+      expect(writes).toEqual(["paste \u001b[200~now anyway\u001b[201~", "keys Enter"]);
+      expect(waiting()).toEqual([]);
     });
 
     it("types nothing into the second of two loops' turns when the first was short, and sends the message at its rest", async () => {
