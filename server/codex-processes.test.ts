@@ -2621,3 +2621,633 @@ describe("another session's conversation is never shown for a plain Codex pane",
     expect(await resolve()).toBeNull();
   });
 });
+
+
+// --- #3262: the three screens that tied a Codex pane to no conversation, each through codexTranscriptPath ---
+
+describe("a Codex pane whose last answer the screen never shows whole binds only the conversation that ended on it (#3262 case 1)", () => {
+  /** Conversation B, of the same folder as the fixture's own (A: `thread`, `path`). */
+  const threadB = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc0b";
+  const longAnswer = "The migration plan keeps every legacy record readable while the new schema is rolled out region by region, and the rollback script restores the previous indexes within a minute if any of the nightly reports fails its checksum.";
+  const header = (version = "0.164.0") => [`  >_ OpenAI Codex (v${version})`, "     /tmp/proj", ""];
+  const footer = "  Worked for 12s • 7:05 PM";
+  /** The idle composer with Codex's model and hint rows under it. */
+  const idle = ["", "", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj · Write a script", "  ← for agents · ? for shortcuts"];
+  /** A text as a pane 96 columns wide wraps it: the first row after `lead`, the rows it wraps onto indented under it. */
+  const wrapped = (lead: string, text: string, indent = "  "): string[] => {
+    const rows: string[] = [];
+    let row = lead;
+    for (const word of text.split(" ")) {
+      if (row.length + word.length + 1 > 96 && row.trim() !== "") { rows.push(row.trimEnd()); row = indent; }
+      row += `${word} `;
+    }
+    return [...rows, row.trimEnd()];
+  };
+  /** A finished turn as Codex draws it: the prompt, what it did and said (`body`), the completed-turn footer. */
+  const finishedTurn = (asked: string, body: readonly string[]): string[] => [...wrapped("› ", asked), "", ...body, "", footer];
+
+  /** A rollout whose turns all finished, as Codex 0.164 records one: each prompt and each answer both ways. */
+  function finishedRollout(file: string, id: string, turns: readonly (readonly [prompt: string, reply: string])[]): void {
+    writeFileSync(file, [
+      { type: "session_meta", payload: { id, cwd: root } },
+      ...turns.flatMap(([prompt, reply], at) => [
+        { type: "event_msg", payload: { type: "user_message", message: prompt } },
+        { type: "event_msg", payload: { type: "item_completed", turn_id: `turn-${at}`, item: { type: "UserMessage", content: [{ type: "input_text", text: prompt }] } } },
+        { type: "event_msg", payload: { type: "agent_message", message: reply } },
+        { type: "event_msg", payload: { type: "task_complete", turn_id: `turn-${at}`, last_agent_message: reply } },
+      ]),
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  }
+
+  /** Conversation B's thread in the store, of this folder, with what it recorded so far; its rollout. */
+  function conversationB(turns: readonly (readonly [prompt: string, reply: string])[], created = 2, updated = 3): string {
+    const file = join(home, "sessions", `rollout-${threadB}.jsonl`);
+    finishedRollout(file, threadB, turns);
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, ?, ?, 'cli')").run(threadB, file, root, created, updated);
+    db.close();
+    return file;
+  }
+
+  const fresh = (pid: number) => [{ pid, argv: ["/usr/bin/codex"] }];
+  const resumedOnB = (pid: number) => [{ pid, argv: ["/usr/bin/codex", "resume", threadB] }];
+
+  // the pane runs B, and its prompt quotes the end of A's last answer (#3558's review)
+  const quotePrompt = `Another agent proposed this, answer yes or no: ${longAnswer}`;
+  const quoteScreen = () => [...header(), ...finishedTurn(quotePrompt, ["• Yes."]), ...idle].join("\n");
+  function quotedInPrompt(): string {
+    finishedRollout(path, thread, [["Summarize the migration plan", longAnswer]]);
+    return conversationB([[quotePrompt, "Yes."]]);
+  }
+
+  it("keeps the conversation the command line resumed when the prompt quotes another conversation's answer", async () => {
+    const fileB = quotedInPrompt();
+    foreground = resumedOnB(2147483501);
+    screen = quoteScreen();
+    expect(await resolve()).toBe(fileB);
+  });
+
+  it("binds a fresh pane to its own conversation, never the one its prompt only quotes, and keeps it on a read that proves nothing", async () => {
+    const fileB = quotedInPrompt();
+    foreground = fresh(2147483502);
+    screen = quoteScreen();
+    // its own short answer below the prompt it was asked tells (case 2); the quoted answer above it tells nothing
+    const first = await resolve();
+    // a tool run under way
+    screen = [...wrapped("› ", "Now run the whole suite"), "", "• Running bun test ./server", "  └ 164 pass", "    0 fail", "", "• Working (41s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj · Write a script", "  ← for agents · ? for shortcuts"].join("\n");
+    expect([first, await resolve()]).toEqual([fileB, fileB]);
+  });
+
+  it("binds no conversation a prompt quotes while the pane's own is not among this folder's", async () => {
+    // Given the pane's conversation is no candidate (resumed from another folder through the picker): only A is
+    finishedRollout(path, thread, [["Summarize the migration plan", longAnswer]]);
+    foreground = fresh(2147483503);
+    screen = quoteScreen();
+    expect(await resolve()).toBeNull();
+  });
+
+  // a tool of B's turn printed A's answer, then B answered shortly (#3558's review)
+  it("binds no conversation a tool's output shows: the pane's own, fresh or resumed", async () => {
+    const askedB = "Show the other agent's notes and say whether to ship";
+    finishedRollout(path, thread, [["Summarize the migration plan", longAnswer]]);
+    const fileB = conversationB([[askedB, "Yes."]]);
+    screen = [...header(), ...finishedTurn(askedB, ["• Ran cat notes.txt", ...wrapped("  └ ", longAnswer, "    "), "", "• Yes."]), ...idle].join("\n");
+    foreground = fresh(2147483504);
+    const unresumed = await resolve();
+    foreground = resumedOnB(2147483505);
+    expect([unresumed, await resolve()]).toEqual([fileB, fileB]);
+    // and none at all while the pane's own is not among this folder's
+    rmSync(fileB);
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("DELETE FROM threads WHERE id = ?").run(threadB);
+    db.close();
+    foreground = fresh(2147483511);
+    expect(await resolve()).toBeNull();
+  });
+
+  // an earlier Codex's turn above the header of the one running now (#3558's review)
+  for (const [name, below] of [
+    ["an idle composer", idle],
+    ["a first turn under way", ["", "› New session", "", "• Working (2s • esc to interrupt)", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj · Write a script", "  ← for agents · ? for shortcuts"]],
+  ] as const) {
+    it(`reads no turn of an earlier Codex above the header of the one shown now (${name})`, async () => {
+      finishedRollout(path, thread, [["Summarize the migration plan", longAnswer]]);
+      // the Codex started since made its thread just now, and nothing is said in it yet
+      const now = Math.floor(Date.now() / 1000);
+      conversationB([], now, now);
+      foreground = fresh(2147483506);
+      screen = [
+        ...header("0.163.0"), ...finishedTurn("Summarize the migration plan", wrapped("• ", longAnswer)), "",
+        "Token usage: total=1,234 input=1,000 (+ 0 cached) output=234", `To continue this session, run codex resume ${thread}`, "$ codex",
+        ...header(), ...below,
+      ].join("\n");
+      expect(await resolve()).toBeNull();
+    });
+  }
+
+  // letters and digits alone take `||` for `&&` (#3558's review)
+  it("binds no conversation whose answer differs from the shown one in its operators", async () => {
+    // long enough that the answer's anchor (its last 160 letters and digits) lies inside the code, past the fence's "python"
+    const strict = ["import audit_helpers", "from access_rules import check_permission, is_admin", "def may_run(user):", "    prepare_session(user)",
+      "    if (check_permission(user) && is_admin(user)) { execute_sensitive_operation(); log_action(user); }", "    return audit_trail(user)"];
+    const line = strict[4]!.trim();
+    finishedRollout(path, thread, [["Show the strict check", `\`\`\`python\n${strict.join("\n")}\n\`\`\``]]);
+    const shown = strict.map((line) => line.replace("&&", "||"));
+    const results: (string | null)[] = [];
+    // the pane shows a conversation that is no candidate (resumed from another folder through the picker): as a
+    // code block (indented, no bullet), and as one line of prose
+    for (const [index, body] of [shown.map((line) => `  ${line}`), [`• ${line.replace("&&", "||")}`]].entries()) {
+      foreground = fresh(2147483507 + index);
+      if (index === 1) finishedRollout(path, thread, [["Show the strict check", line]]);
+      screen = [...header(), ...finishedTurn("Show the permissive check", body), ...idle].join("\n");
+      results.push(await resolve());
+    }
+    expect(results).toEqual([null, null]);
+  });
+
+  // a code block longer than the screen: 40 rows, the block's last 30 lines (indented, no bullet, no fences), the footer, the idle composer
+  const script = Array.from({ length: 60 }, (_, at) => `value_${at} = compute_step(${at}) + carried_${at}`).join("\n");
+  const scriptPrompt = "Print a Python script of about 60 lines in one fenced code block and nothing else.";
+  const scrolled = () => [...script.split("\n").slice(-30).map((line) => `  ${line}`), "", footer, ...idle].join("\n");
+
+  it("binds a conversation whose 60-line code block has scrolled its head off the screen, and keeps it when the screen no longer tells", async () => {
+    finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
+    foreground = fresh(2147483510);
+    screen = scrolled();
+    expect(await resolve()).toBe(path);
+    screen = "";
+    expect(await resolve()).toBe(path);
+  });
+
+  it("binds no scrolled answer two conversations of the folder ended on, nor one another's tool printed", async () => {
+    finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
+    const fileB = conversationB([[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
+    foreground = fresh(2147483512);
+    screen = scrolled();
+    expect(await resolve()).toBeNull();
+    // B ran `cat script.py` and answered shortly: its read holds the text, so its pane may be the one showing it
+    writeFileSync(fileB, [
+      { type: "session_meta", payload: { id: threadB, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Show the script" } },
+      { type: "event_msg", payload: { type: "item_completed", turn_id: "turn-0", item: { type: "CommandExecution", command: "cat script.py", aggregated_output: script } } },
+      { type: "event_msg", payload: { type: "agent_message", message: "Shown." } },
+      { type: "event_msg", payload: { type: "task_complete", turn_id: "turn-0", last_agent_message: "Shown." } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    expect(await resolve()).toBeNull();
+  });
+
+  heldIt("binds no scrolled answer a conversation of another folder that Codex has loaded ended on too", async () => {
+    const fenced = `\`\`\`python\n${script}\n\`\`\``;
+    finishedRollout(path, thread, [[scriptPrompt, fenced]]);
+    // a resume through the picker opens a thread of another folder in this pane (#896): Codex keeps it loaded
+    const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f58";
+    elsewhereThread(elsewhere, [
+      { type: "event_msg", payload: { type: "user_message", message: scriptPrompt } },
+      { type: "event_msg", payload: { type: "agent_message", message: fenced } },
+      { type: "event_msg", payload: { type: "task_complete", turn_id: "turn-0", last_agent_message: fenced } },
+    ]);
+    foreground = fresh(2147483515);
+    screen = scrolled();
+    const holder = await loaded(elsewhere);
+    expect(await resolve()).toBeNull();
+    // once it is unloaded, only this folder's can be the one shown
+    holder.kill();
+    await holder.exited;
+    expect(await resolve()).toBe(path);
+  });
+
+  it("binds no scrolled answer while another conversation of the folder has a turn under way, or the folder holds more than are read", async () => {
+    finishedRollout(path, thread, [[scriptPrompt, `\`\`\`python\n${script}\n\`\`\``]]);
+    // B was asked something and has not finished: its screen may show an answer its rollout does not hold yet
+    const fileB = conversationB([]);
+    appendFileSync(fileB, `${JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-0" } })}\n${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "Print the script again" } })}\n`);
+    foreground = fresh(2147483513);
+    screen = scrolled();
+    expect(await resolve()).toBeNull();
+    // B's turn ended on something else: this pane's conversation tells again
+    appendFileSync(fileB, `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-0", last_agent_message: "No." } })}\n`);
+    expect(await resolve()).toBe(path);
+    // a 33rd thread of the folder: one of them is left out of the read, and may be the one shown
+    const db = new Database(join(home, "state_5.sqlite"));
+    for (let at = 0; at < 31; at++) {
+      const id = `01a0c7a1-56d9-7e20-9f08-${String(at).padStart(12, "0")}`;
+      const file = join(home, "sessions", `rollout-${id}.jsonl`);
+      finishedRollout(file, id, [[`Unrelated prompt number ${at}`, `unrelated reply number ${at}`]]);
+      db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, ?, 'cli')").run(id, file, root, 4 + at);
+    }
+    db.close();
+    foreground = fresh(2147483514);
+    expect(await resolve()).toBeNull();
+  });
+});
+
+
+describe("a Codex pane whose last answer is shorter than 64 letters and digits binds only its own conversation (#3262 case 2)", () => {
+  const live = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
+  const asked = "Do not run any tools. Reply with just the word ok and nothing else.";
+  const otherThread = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc59";
+  type RolloutRecord = { type: string; payload: Record<string, unknown> };
+
+  /**
+   * One turn as Codex 0.164 records it: the prompt (the event the chat parser reads, and the UserMessage item
+   * the footer paths read), the answer, and, once the turn finished, its task_complete.
+   */
+  const turn = (id: string, prompt: string, reply: string, finished = true): RolloutRecord[] => [
+    { type: "event_msg", payload: { type: "user_message", message: prompt } },
+    { type: "event_msg", payload: { type: "item_completed", turn_id: id, item: { type: "UserMessage", content: [{ type: "input_text", text: prompt }] } } },
+    { type: "event_msg", payload: { type: "agent_message", message: reply } },
+    ...(finished ? [{ type: "event_msg", payload: { type: "task_complete", turn_id: id, last_agent_message: reply } }] : []),
+  ];
+
+  const writeRollout = (file: string, id: string, records: RolloutRecord[], header: Record<string, unknown> = {}): void => {
+    writeFileSync(file, [{ type: "session_meta", payload: { id, cwd: root, ...header } }, ...records].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  };
+
+  /** Another interactive conversation of this folder (another pane's), with a rollout of its own. */
+  const folderThread = (id: string, records: RolloutRecord[], updated = 1): string => {
+    const file = join(home, "sessions", `rollout-${id}.jsonl`);
+    writeRollout(file, id, records);
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1, ?, 'cli')").run(id, file, root, updated);
+    db.close();
+    return file;
+  };
+
+  /** A pane whose last turn finished, in the shape of the PR's own fixture (Codex 0.164): prompt rows, answer rows, footer, idle composer. */
+  const footed = (prompt: readonly string[], body: readonly string[]): string => [
+    "  >_ OpenAI Codex (v0.164.0)",
+    "     /tmp/proj",
+    "",
+    ...prompt,
+    "",
+    "",
+    ...body,
+    "",
+    "  Worked for 1s • 7:05 PM",
+    "",
+    "",
+    "",
+    "› Ask Codex to do anything",
+    "",
+    "  GPT-6-Luna low · /tmp/proj · Reply with one word",
+    "  ← for agents · ? for shortcuts",
+  ].join("\n");
+
+  it("binds the one conversation that finished the short turn shown, and keeps it while the next turn runs", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBe(path);
+    // the next turn under way: no footer under it yet, and the binding holds
+    screen = `${screen.split("› Ask Codex")[0]}› And now the word done.\n\n• Working (2s • esc to interrupt)\n\n› Ask Codex to do anything\n\n  GPT-6-Luna low · /tmp/proj\n  ← for agents · ? for shortcuts`;
+    expect(await resolve()).toBe(path);
+  });
+
+  it("binds past a Stop hook's message under the answer and a hint row a split pane cuts", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok", "", "  ↳ Hook · Stop completed", "  ran the project's stop-check"]).replace("? for shortcuts", "? for shortcu");
+    expect(await resolve()).toBe(path);
+  });
+
+  it("takes no conversation that recorded `ok (a)` while the pane's own recorded a link Codex draws that way", async () => {
+    foreground = live;
+    // Given two conversations of the folder asked the same prompt: the pane's own answered with a link, the other with plain text
+    writeRollout(path, thread, turn("t1", asked, "[ok](/tmp/proj/a)"));
+    folderThread(otherThread, turn("t9", asked, "ok (a)"));
+    // When the pane shows its own answer as Codex draws the link: label, then the target relative to the folder
+    screen = footed([`› ${asked}`], ["• ok (a)"]);
+    // Then nothing tells the two apart
+    expect(await resolve()).toBeNull();
+  });
+
+  it("takes no conversation that answered `ok` while the pane's own answer goes on in a paragraph shaped like a hook row", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok\n\n↳ Hook · Stop completed\nextra"));
+    folderThread(otherThread, turn("t9", asked, "ok"));
+    // the pane's own answer, drawn under its bullet: the second paragraph indented like the first
+    screen = footed([`› ${asked}`], ["• ok", "", "  ↳ Hook · Stop completed", "  extra"]);
+    expect(await resolve()).toBeNull();
+  });
+
+  it("takes no conversation that finished `ok` while the pane's own shows it and has not recorded its finish yet", async () => {
+    foreground = live;
+    // the screen and the rollout are read separately: the pane's own turn is drawn finished, its task_complete not written yet
+    writeRollout(path, thread, turn("t1", asked, "ok", false));
+    folderThread(otherThread, turn("t9", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBeNull();
+  });
+
+  it("takes no short answer while the folder holds more threads than are read (the pane's own outside the 32 newest)", async () => {
+    foreground = live;
+    // the pane's own conversation, updated longest ago of 33
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    folderThread(otherThread, turn("t9", asked, "ok"), 100);
+    for (let at = 0; at < 31; at++) {
+      folderThread(`01a0c7a1-56d9-7e20-9f08-${String(at).padStart(12, "0")}`, turn("t", `Unrelated prompt number ${at}`, `unrelated reply number ${at}`), 2 + at);
+    }
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBeNull();
+  });
+
+  it("takes no short answer while a thread of the folder has no rollout to read (the pane's own, gone)", async () => {
+    foreground = live;
+    // the pane's own thread row stays, its rollout is gone from the store
+    rmSync(path);
+    folderThread(otherThread, turn("t9", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBeNull();
+  });
+
+  it.skipIf(process.getuid?.() === 0)("takes no short answer while a thread's rollout cannot be read (the pane's own)", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    fs.chmodSync(path, 0o000);
+    folderThread(otherThread, turn("t9", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    try {
+      expect(await resolve()).toBeNull();
+    } finally { fs.chmodSync(path, 0o600); }
+  });
+
+  it("takes no short answer while a candidate continues a rollout that was not read (the pane's own, a fork)", async () => {
+    foreground = live;
+    // the pane's own conversation continues another (history_base) whose rollout the store no longer holds: the
+    // turn it shows is in the part that was not read
+    writeRollout(path, thread, [], { history_base: { thread_id: "01a0c7a1-56d9-7e20-9f08-cccccccccccc", end_ordinal_exclusive: 5, end_byte_offset: 900 } });
+    folderThread(otherThread, turn("t9", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBeNull();
+  });
+
+  it("takes no short answer while a candidate is longer than the read (the pane's own finish before the last 1 MiB)", async () => {
+    foreground = live;
+    // more than 1 MiB of records after the pane's own finished turn: the tail read holds none of that turn
+    const padding = Array.from({ length: 1200 }, (_, at) => ({ type: "event_msg", payload: { type: "token_count", at, info: "x".repeat(1000) } }));
+    writeRollout(path, thread, [...turn("t1", asked, "ok"), ...padding]);
+    expect(statSync(path).size).toBeGreaterThan(1024 * 1024);
+    folderThread(otherThread, turn("t9", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBeNull();
+  });
+
+  it("binds a short answer whose prompt the pane wraps inside a word", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", "Reply with just the word ok about electroencephalography and nothing else.", "ok"));
+    screen = footed(["› Reply with just the word ok about electroencephalo", "  graphy and nothing else."], ["• ok"]);
+    expect(await resolve()).toBe(path);
+  });
+
+  it("binds a short answer the pane wraps inside a word", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "electroencephalography"));
+    screen = footed([`› ${asked}`], ["• electroencephalo", "  graphy"]);
+    expect(await resolve()).toBe(path);
+  });
+
+  it("binds a short answer the pane wraps at a space onto a second row", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "The fixture is ready for inspection."));
+    screen = footed([`› ${asked}`], ["• The fixture is ready", "  for inspection."]);
+    expect(await resolve()).toBe(path);
+  });
+
+  it("binds beside a second Codex that was only started in the folder, and not once that one's first turn is under way", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    // the second Codex's thread: made at its start, nothing asked yet
+    const second = folderThread(otherThread, []);
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBe(path);
+    // another pane of this pane's own Codex, so that nothing is kept from the read above
+    foreground = [{ pid: 2147483645, argv: ["/usr/bin/codex"] }];
+    appendFileSync(second, `${JSON.stringify({ type: "event_msg", payload: { type: "task_started", turn_id: "t9" } })}\n`);
+    expect(await resolve()).toBeNull();
+  });
+
+  it("takes no short answer for a nested pane or a TUI of an app server elsewhere, whose long answers still tell", async () => {
+    const short = footed([`› ${asked}`], ["• ok"]);
+    const long = footed(["› Explain which conversation this pane shows"], [`• ${answer}`]);
+    /** The conversation's last turn: the short one, or the long one. */
+    const endOn = (index: number) => writeRollout(path, thread, index === 0 ? turn("t1", asked, "ok") : turn("t1", "Explain which conversation this pane shows", answer));
+    // --remote: the conversation shown is in another store
+    for (const [index, shown] of [short, long].entries()) {
+      endOn(index);
+      foreground = [{ pid: 2147483640 - index, argv: ["/usr/bin/codex", "--remote", "ws://127.0.0.1:4500"] }];
+      screen = shown;
+      expect([index, await resolve()]).toEqual([index, index === 0 ? null : path]);
+    }
+    // a Codex inside Kiro's wrapper: only a substantial match ties it to a conversation
+    unlabelled = true;
+    foreground = [{ pid: 2147483647, argv: ["zsh (kiro-cli-term)"] }];
+    shellPid = 2147483647;
+    const mac = asOnMac();
+    const nested = spyOn(kiro, "kiroCodexProcess");
+    try {
+      for (const [index, shown] of [short, long].entries()) {
+        endOn(index);
+        nested.mockResolvedValue({ pid: 2147483646, argv: ["codex"], identity: `10:1,20:1,2147483646:${index + 7}` });
+        screen = shown;
+        expect([index, await resolve()]).toEqual([index, index === 0 ? null : path]);
+      }
+    } finally { nested.mockRestore(); mac.mockRestore(); }
+  });
+
+  // a resume through the picker opens a thread of another folder in this pane (#896): Codex keeps it loaded
+  const elsewhere = "01a16b22-7e1f-7072-8897-d5e46a0d5f59";
+  heldIt("takes no short answer a conversation of another folder that Codex has loaded was asked too", async () => {
+    foreground = live;
+    // Given this folder's conversation (another pane's) and one of another folder ended on the same exchange
+    writeRollout(path, thread, turn("t1", "thanks", "You're welcome!"));
+    elsewhereThread(elsewhere, turn("t9", "thanks", "You're welcome!"));
+    screen = footed(["› thanks"], ["• You're welcome!"]);
+    // When Codex has that other one loaded: this pane may be the one showing it
+    const holder = await loaded(elsewhere);
+    expect(await resolve()).toBeNull();
+    // Then, once it is unloaded, only this folder's can be shown
+    holder.kill();
+    await holder.exited;
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("binds a short answer beside a loaded conversation of another folder that was asked something else", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    elsewhereThread(elsewhere, turn("t9", "Summarize the plan in one word.", "Done."));
+    await loaded(elsewhere);
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBe(path);
+  });
+
+  it.skipIf(process.platform !== "linux")("takes no short answer while what Codex has loaded cannot be read", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    elsewhereThread(elsewhere, turn("t9", "Summarize the plan in one word.", "Done."));
+    // held by a process whose open files cannot be listed: which thread it has loaded is not known
+    await loadedUnreadably(elsewhere);
+    screen = footed([`› ${asked}`], ["• ok"]);
+    expect(await resolve()).toBeNull();
+  }, 20_000);
+
+  it("takes neither conversation for either of two panes that answered the same short text to the same prompt", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    folderThread(otherThread, turn("t9", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    // the other pane under an id of this test's own: a binding is remembered per pane id, across tests
+    const peer = `${root}-peer`;
+    peerScreens.set(peer, footed([`› ${asked}`], ["• ok"]));
+    foregrounds.set(peer, [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    const panes = [fixturePane(root), fixturePane(peer)];
+    expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+    expect(await codexTranscriptPath(peer, root, home, panes)).toBeNull();
+  });
+});
+
+
+describe("a bound Codex pane keeps its conversation beside a second Codex started in its folder, while its screen stands (#3262 case 3)", () => {
+  const live = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
+  const secondThread = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc60";
+  const longPrompt = "Explain which conversation this pane shows";
+  const shortPrompt = "Reply with just the word ok.";
+  /** An answer Codex renders its own way (no "**"), which only the footed turn ties to its conversation. */
+  const rendered = "The **migration** rewrote every legacy record in place, and all of the remaining verification steps completed successfully.";
+  const renderedShown = "The migration rewrote every legacy record in place, and all of the remaining verification steps completed successfully.";
+  type RolloutRecord = { type: string; payload: Record<string, unknown> };
+
+  /** One finished turn as Codex 0.164 records it: the prompt (event and UserMessage item), the answer, its task_complete. */
+  const turn = (id: string, prompt: string, reply: string): RolloutRecord[] => [
+    { type: "event_msg", payload: { type: "user_message", message: prompt } },
+    { type: "event_msg", payload: { type: "item_completed", turn_id: id, item: { type: "UserMessage", content: [{ type: "input_text", text: prompt }] } } },
+    { type: "event_msg", payload: { type: "agent_message", message: reply } },
+    { type: "event_msg", payload: { type: "task_complete", turn_id: id, last_agent_message: reply } },
+  ];
+  const lines = (records: RolloutRecord[]): string => records.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+  const writeRollout = (file: string, id: string, records: RolloutRecord[]): void => {
+    writeFileSync(file, lines([{ type: "session_meta", payload: { id, cwd: root } }, ...records]));
+  };
+
+  /** A second Codex started in this folder now: its thread is made at once, and no pane claims it. */
+  const startSecondCodex = (records: RolloutRecord[] = []): string => {
+    const file = join(home, "sessions", `rollout-${secondThread}.jsonl`);
+    writeRollout(file, secondThread, records);
+    const now = Math.floor(Date.now() / 1000);
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, ?, ?, 'cli')").run(secondThread, file, root, now, now);
+    db.close();
+    return file;
+  };
+
+  const header = ["  >_ OpenAI Codex (v0.164.0)", "     /tmp/proj", ""];
+  const composer = ["", "", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj · Reply with one word", "  ← for agents · ? for shortcuts"];
+  /** A pane whose last turn finished (Codex 0.164, the PR's fixture shape); `top`: the rows above its prompt. */
+  const finished = (prompt: string, reply: string, clock: string, top: readonly string[] = header): string =>
+    [...top, `› ${prompt}`, "", "", `• ${reply}`, "", `  Worked for 1s • ${clock}`, ...composer].join("\n");
+  /** The pane right after /new: the logo again, no turn. */
+  const redrawn = [...header, "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
+
+  it("keeps a pane whose long answer is still on screen: the answer matches again", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", longPrompt, answer));
+    screen = finished(longPrompt, answer, "7:05 PM");
+    expect(await resolve()).toBe(path);
+    startSecondCodex();
+    expect(await resolve()).toBe(path);
+  });
+
+  it("keeps a pane whose screen stands unmoved once the second Codex's thread makes its match fail, until /new or a draft", async () => {
+    foreground = live;
+    // Given a pane bound on a finished turn whose answer Codex rendered its own way: only the footed turn ties it
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    screen = finished(longPrompt, renderedShown, "7:05 PM");
+    expect(await resolve()).toBe(path);
+    // When a second Codex starts here: its thread has no prompt yet, so it may have been asked the one shown
+    startSecondCodex();
+    // Then the pane, showing what it showed, keeps its conversation
+    expect(await resolve()).toBe(path);
+    // a draft typed into the composer ends it: the screen is no longer the one that proved the binding
+    const proving = screen;
+    screen = proving.replace("› Ask Codex to do anything", "› hello there");
+    expect(await resolve()).toBeNull();
+    // and the proving screen back again proves nothing by itself: the proof is forgotten
+    screen = proving;
+    expect(await resolve()).toBeNull();
+  });
+
+  it("drops the pane once /new redraws its screen: the new thread may be its own", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    screen = finished(longPrompt, renderedShown, "7:05 PM");
+    expect(await resolve()).toBe(path);
+    startSecondCodex();
+    expect(await resolve()).toBe(path);
+    screen = redrawn;
+    expect(await resolve()).toBeNull();
+  });
+
+  it("keeps a pane bound by a code block that scrolled its head off (case 1) when the second Codex starts", async () => {
+    foreground = live;
+    const script = Array.from({ length: 60 }, (_, at) => `value_${at} = compute_step(${at}) + carried_${at}`).join("\n");
+    writeRollout(path, thread, turn("t1", "Print the script", `\`\`\`python\n${script}\n\`\`\``));
+    screen = [...script.split("\n").slice(-30).map((line) => `  ${line}`), "", "  Worked for 12s • 7:05 PM", ...composer].join("\n");
+    expect(await resolve()).toBe(path);
+    // the second Codex's first turn is under way: the same screen would bind nothing now, and still stands
+    startSecondCodex([{ type: "event_msg", payload: { type: "task_started", turn_id: "t9" } }]);
+    expect(await resolve()).toBe(path);
+    screen = redrawn;
+    expect(await resolve()).toBeNull();
+  });
+
+  for (const [name, second] of [["no turn yet", [] as RolloutRecord[]], ["the same short exchange", turn("t9", shortPrompt, "ok")]] as const) {
+    it(`keeps a pane whose matched answer scrolled away before the second Codex started, on its short last turn (its thread: ${name})`, async () => {
+      foreground = live;
+      // Given a pane bound on a substantial answer
+      writeRollout(path, thread, turn("t1", longPrompt, answer));
+      screen = finished(longPrompt, answer, "7:05 PM");
+      expect(await resolve()).toBe(path);
+      // whose next turn finished on a short answer: the long one and the header are gone from the read, which
+      // begins at that turn's footer
+      appendFileSync(path, lines(turn("t2", shortPrompt, "ok")));
+      screen = finished(shortPrompt, "ok", "7:06 PM", ["  Worked for 9s • 7:05 PM", "", ""]);
+      expect(await resolve()).toBe(path);
+      // When a second Codex starts in the folder, and the pane still shows that screen
+      startSecondCodex([...second]);
+      // Then it keeps its conversation
+      expect(await resolve()).toBe(path);
+    });
+  }
+
+  it("keeps the pane beside a peer pane that claims nothing, while its own screen stands", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    screen = finished(longPrompt, renderedShown, "7:05 PM");
+    expect(await resolve()).toBe(path);
+    startSecondCodex();
+    peerScreens.set("peer", `OpenAI Codex (v0.164.0)\n\n› ${shortPrompt}\n\n• ok\n\n› `);
+    expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
+  });
+
+  it("drops the pane when it moved to /new while the other panes were being read", async () => {
+    foreground = live;
+    // Given a bound pane whose screen proved its binding
+    writeRollout(path, thread, turn("t1", longPrompt, rendered));
+    screen = finished(longPrompt, renderedShown, "7:05 PM");
+    expect(await resolve()).toBe(path);
+    // and a thread begun since that no pane claims
+    startSecondCodex();
+    // When the pane is redrawn by /new while the lookup reads the other Codex pane of the folder
+    let peerReads = 0;
+    peerScreens = new (class extends Map<string, string | Error> {
+      override get(key: string): string | Error | undefined {
+        if (key === "peer") { peerReads++; screen = redrawn; }
+        return super.get(key);
+      }
+    })([["peer", `OpenAI Codex (v0.164.0)\n\n› ${shortPrompt}\n\n• ok\n\n› `]]);
+    const found = await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")]);
+    // (the other pane was read during this lookup, after this pane's own screen)
+    expect(peerReads).toBeGreaterThan(0);
+    // Then the screen read before that proves nothing any more: the new thread may be this pane's
+    expect(found).toBeNull();
+  });
+});
