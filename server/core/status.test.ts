@@ -498,17 +498,17 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.last().status).toBe(shown);
     expect(h.pending.current(id)).toBe("working");
     expect(h.pending.next(id)).toBeNull();
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     // A snapshot that still reads the pane idle lets nothing go, nor does herdr's idle word for the turn before.
     expect((await h.snapshot()).panes[0]?.agent_status).toBe(shown);
     handlers.onStatus(id, "idle", "claude");
     expect(h.pending.next(id)).toBeNull();
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     // The resumed turn's own rest does.
     turnEnds(h); h.poll();
     expect(h.pending.current(id)).toBe(shown);
     expect(h.pending.next(id)).not.toBeNull();
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
   });
 
   it("tells the queue when a replay that changes nothing is the first to read the resumed turn's rest", async () => {
@@ -522,7 +522,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     turnEnds(h);
     handlers.onStatus(id, "idle", "claude", { before: "done", agent: "claude" });
     // Then the queue is told all the same: nothing else would tell it before the pane's next status.
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.current(id)).not.toBe("working");
     expect(h.pending.next(id)).not.toBeNull();
   });
@@ -541,7 +541,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     const told = drained.length;
     try { handlers.onStatus(id, "idle", "claude"); } finally { between.mockRestore(); }
     // Then the queue hears of the hold's end from that report: no later read would find anything changed.
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.current(id)).not.toBe("working");
     expect(h.pending.next(id)).not.toBeNull();
     expect(drained.slice(told).at(-1)).toBe(id);
@@ -557,7 +557,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     const between = spyOn(h.status.gjc, "poll").mockImplementationOnce(async () => { fires(h.path); });
     try { handlers.onStatus(id, "idle", "claude"); } finally { between.mockRestore(); }
     // Then the queue is told of the hold at once, not by the delivery's own check.
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.current(id)).toBe("working");
     expect(h.pending.next(id)).toBeNull();
   });
@@ -574,7 +574,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     // When that turn is interrupted, which writes no rest, and herdr says the pane does no work.
     handlers.onStatus(id, "idle", "claude");
     // Then nothing of the fire holds the queue any more.
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
 
@@ -590,7 +590,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     // When that turn is interrupted, which writes no rest, and herdr says the pane does no work.
     handlers.onStatus(id, "idle", "claude");
     // Then the fire, whose turn herdr told, holds nothing: the message goes at once.
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
 
@@ -603,7 +603,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     // When the wakeup fires next: that word told nothing of the turn it resumes.
     fires(h.path); h.poll();
     queue(h);
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
   });
 
@@ -616,23 +616,51 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     turnEnds(h);
     fires(h.path); h.poll();
     queue(h);
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     // When herdr's working and idle words for the short turn come late.
     handlers.onStatus(id, "working", "claude");
     handlers.onStatus(id, "idle", "claude");
     // Then they end nothing of the fire's hold: the message does not go into the wakeup's turn.
     expect(h.pending.next(id)).toBeNull();
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     if (end === "the wakeup turn's rest") {
       turnEnds(h); h.poll();
     } else {
       // herdr's working for the wakeup's turn hands the queue over to herdr's status, as its idle word then lets it go
       handlers.onStatus(id, "working", "claude");
-      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.status.queueHeld(id, false)).toBe(false);
       expect(h.pending.next(id)).toBeNull();
       handlers.onStatus(id, "idle", "claude");
     }
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
+  it.each(["a poll before herdr's late words", "no poll before them"] as const)("keeps the queue held through herdr's late words when the turn before the fire stopped on a permission prompt herdr told in time (%s)", async (order) => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    const says = (status: "working" | "blocked" | "idle") => { h.herdrSays({ ...h.pane, agent_status: status }); handlers.onStatus(id, status, "claude"); };
+    queue(h);
+    // Given a person's turn herdr tells in time, which stops on a permission prompt herdr tells in time too.
+    h.next();
+    says("working");
+    says("blocked");
+    // Approved, the turn goes on and rests, and the due wakeup writes its fire and prompt, all before
+    // herdr tells that the turn went on.
+    turnEnds(h);
+    fires(h.path);
+    resumes(h.path);
+    if (order === "a poll before herdr's late words") { h.poll(); expect(h.status.queueHeld(id, false)).toBe(true); }
+    // When herdr's working for the approved turn and its idle come late.
+    says("working");
+    says("idle");
+    // Then they end nothing of the wakeup's hold. herdr's blocked was no rest word: the working after
+    // it is still the turn before's, not one begun past it.
+    expect(h.status.queueHeld(id, true)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+    // And the wakeup turn's rest lets the message go.
+    turnEnds(h); h.poll();
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
 
@@ -643,21 +671,21 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     turnEnds(h);
     fires(h.path); h.poll();
     queue(h);
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     // When a snapshot is answered between herdr's change to working for the short turn and that change's event.
     h.herdrSays({ ...h.pane, agent_status: "working" });
     await h.snapshot();
     handlers.onStatus(id, "working", "claude");
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     // And herdr's idle word for that turn follows.
     h.herdrSays(h.pane);
     handlers.onStatus(id, "idle", "claude");
     // Then the word heard a second time ended nothing of the fire's hold: the message does not go into the wakeup's turn.
     expect(h.pending.next(id)).toBeNull();
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     // And the wakeup turn's rest lets it go.
     turnEnds(h); h.poll();
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
 
@@ -675,16 +703,16 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       turnEnds(h);
       fires(h.path); h.poll();
       queue(h);
-      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.status.queueHeld(id, false)).toBe(true);
       // When herdr's working and idle words for the short turn come late.
       handlers.onStatus(id, "working", "claude");
       handlers.onStatus(id, "idle", "claude");
       // Then the message does not go into the wakeup's turn: the working word was still placed before the fire.
       expect(h.pending.next(id)).toBeNull();
-      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.status.queueHeld(id, false)).toBe(true);
       // And the wakeup turn's rest lets it go.
       turnEnds(h); h.poll();
-      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.status.queueHeld(id, false)).toBe(false);
       expect(h.pending.next(id)).not.toBeNull();
     } finally { setSystemTime(); }
   });
@@ -711,7 +739,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     turnEnds(h);
     if (heard === "after the fire was read") {
       fires(h.path); h.poll();
-      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.status.queueHeld(id, false)).toBe(true);
     }
     // When herdr's working for the short turn comes late, with the wakeup's fire written before it or right after.
     h.herdrSays({ ...h.pane, agent_status: "working" });
@@ -721,11 +749,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     h.herdrSays(h.pane);
     handlers.onStatus(id, "idle", "claude");
     // Then that working, which no rest word of herdr's placed, told nothing of the wakeup's turn: the message does not go into it.
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
     // And the wakeup turn's rest lets it go.
     turnEnds(h); h.poll();
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
 
@@ -735,7 +763,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     const id = h.pane.pane_id;
     queue(h);
     fires(h.path); h.poll();
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     // Given herdr's working for the wakeup's own turn: with no rest word of herdr's heard in an event, it may as well
     // be a late one for the turn before, so it ends nothing.
     h.herdrSays({ ...h.pane, agent_status: "working" });
@@ -745,27 +773,27 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     h.herdrSays(h.pane);
     handlers.onStatus(id, "idle", "claude");
     // Then the message waits out the fire's time.
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
     const from = Date.now();
     try {
       const told = drained.length;
       setSystemTime(from + 60_000);
-      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.status.queueHeld(id, false)).toBe(false);
       h.poll();
       // And the queue is told with no status event, so the message goes.
       expect(drained.slice(told)).toEqual([id]);
       expect(h.pending.next(id)).not.toBeNull();
       // The next wakeup, minutes later: herdr's working for its turn is placed by that idle word, heard in an event.
       fires(h.path, at + 4000 + 5 * 60_000); h.poll();
-      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.status.queueHeld(id, false)).toBe(true);
       h.herdrSays({ ...h.pane, agent_status: "working" });
       handlers.onStatus(id, "working", "claude");
       expect(h.pending.next(id)).toBeNull();
       // So when that turn is interrupted too, herdr's idle word lets the message go at once.
       h.herdrSays(h.pane);
       handlers.onStatus(id, "idle", "claude");
-      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.status.queueHeld(id, false)).toBe(false);
       expect(h.pending.next(id)).not.toBeNull();
     } finally { setSystemTime(); }
   });
@@ -776,19 +804,19 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     // Given two loops due in one tick: both fires, then the first loop's prompt and turn, which herdr tells.
     fires(h.path); fires(h.path); resumes(h.path); h.poll();
     queue(h);
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     handlers.onStatus(id, "working", "claude");
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).toBeNull();
     // When that turn rests and the second loop's prompt runs at once, before herdr's idle word for the first.
     turnEnds(h); resumes(h.path); h.poll();
     handlers.onStatus(id, "idle", "claude");
     // Then that idle word lets nothing into the second loop's turn.
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
     // And the second loop turn's rest lets the message go.
     turnEnds(h); h.poll();
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
 
@@ -801,7 +829,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     h.rest(); fires(h.path); fires(h.path); resumes(h.path);
     h.herdrSays(h.pane);
     handlers.onStatus(id, "idle", "claude");
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
     // herdr's working for the first loop's turn finds no turn written past that idle word, and waits for one.
     h.herdrSays({ ...h.pane, agent_status: "working" });
@@ -812,11 +840,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     h.herdrSays(h.pane);
     handlers.onStatus(id, "idle", "claude");
     // Then that idle word lets nothing into the second loop's turn: herdr's working was heard before the first one's rest.
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.next(id)).toBeNull();
     // And the second loop turn's rest lets the message go.
     turnEnds(h); h.poll();
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
 
@@ -827,7 +855,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     // When the read a queued send makes of the pane is the first to find the fire.
     await h.snapshot();
     // Then that send finds the queue held, and waits.
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.current(id)).toBe("working");
   });
 
@@ -845,11 +873,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       setSystemTime(from + 6000);
       h.poll();
       expect(h.pending.next(id)).toBeNull();
-      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.status.queueHeld(id, false)).toBe(true);
       const told = drained.length;
       // When the hold's own time (LOOP_HOLD_MS, checked to the millisecond in claude-subagents.test.ts) is long up.
       setSystemTime(from + 10 * 60_000);
-      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.status.queueHeld(id, false)).toBe(false);
       h.poll();
       // Then the queue is told with no status event, and the message goes.
       expect(drained.slice(told)).toEqual([id]);
@@ -871,7 +899,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     h.poll();
     queue({ pending: h.pending, pane: old.pane });
     // Then that fire is history: nothing says its turn still runs.
-    expect(h.status.queueHeld(old.pane.pane_id)).toBe(false);
+    expect(h.status.queueHeld(old.pane.pane_id, false)).toBe(false);
     expect(h.pending.current(old.pane.pane_id)).toBe("idle");
     expect(h.pending.next(old.pane.pane_id)).not.toBeNull();
   });
@@ -888,12 +916,12 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     await h.snapshot();
     queue({ pending: h.pending, pane: old.pane });
     // Then the queue waits for the turn it resumed, as on a fire read while the server ran.
-    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(true);
     expect(h.pending.current(id)).toBe("working");
     expect(h.pending.next(id)).toBeNull();
     // And that turn's rest lets the message go.
     turnEnds(old); h.poll();
-    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.status.queueHeld(id, false)).toBe(false);
     expect(h.pending.next(id)).not.toBeNull();
   });
 
@@ -914,11 +942,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       // It holds for the 30 s its time (LOOP_HOLD_MS, to the millisecond in claude-subagents.test.ts) has left.
       setSystemTime(from + 29_000);
       h.poll();
-      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.status.queueHeld(id, false)).toBe(true);
       expect(h.pending.next(id)).toBeNull();
       const told = drained.length;
       setSystemTime(from + 31_000);
-      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.status.queueHeld(id, false)).toBe(false);
       h.poll();
       // Then the queue is told with no status event, and the message goes.
       expect(drained.slice(told)).toEqual([id]);
@@ -957,12 +985,12 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       await h.snapshot();
       expect(lookup.mock.calls.length).toBe(looked + 1);
       // Then the fire it reads there holds the queue for what is left of its time, as one found when the server starts.
-      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.status.queueHeld(id, false)).toBe(true);
       expect(h.pending.current(id)).toBe("working");
       expect(h.pending.next(id)).toBeNull();
       // And the resumed turn's rest lets the message go.
       turnEnds(old); h.poll();
-      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.status.queueHeld(id, false)).toBe(false);
       expect(h.pending.next(id)).not.toBeNull();
     } finally { setSystemTime(); }
   });
@@ -1853,7 +1881,7 @@ describe("queued input while a busy signal holds a Claude pane's queue (#2072)",
       options: { submitDelayMs: 0 }, clients: new Set([client]), attachments: new Map(), serialize, lastTyped: new Map(),
       sight: () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: (data: string) => { writes.push(data); } }) as never,
       submitText: (async () => { throw new Error("no immediate send in this test"); }) as never, authorizeSocket: () => {},
-      clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null }, queueHeld: (paneId) => h.status.queueHeld(paneId),
+      clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null }, queueHeld: (paneId) => h.status.queueHeld(paneId, false),
       SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
     });
     h = await workingClaude(delivery.pending as never, delivery.drainPending);

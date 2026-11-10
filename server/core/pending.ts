@@ -118,7 +118,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * a pane shown at rest whose queue a busy signal or a /loop wakeup still holds (server/core/status.ts queueStatus):
    * no automatic send. `fresh`: read from the pane's transcript now, not as its last poll left it
    */
-  queueHeld?: (paneId: string, fresh?: boolean) => boolean;
+  queueHeld?: (paneId: string, fresh: boolean) => boolean;
   SUBMIT_DEADLINE_MS: number;
   SUBMIT_DELAY_MS: number;
   TYPED_SETTLE_MS: number;
@@ -631,7 +631,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       piReservation = piTracked ? reservePiReceipt(owner, context.identity) : null;
       const receiptText = piTracked ? piReceiptText(context.identity, text) : undefined;
       const piTemplate = piTracked && piListsTemplate(context.pane, text);
-      if (automatic && (context.working || queueHeld(paneId))) {
+      if (automatic && (context.working || queueHeld(paneId, false))) {
         pending.observe(paneId, "working", mark);
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
       }
@@ -683,7 +683,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         // the lookup above awaited the service: the pane, its session and its state are read again before every key
         const revalidate = async (): Promise<void> => {
           const current = await pendingContext(owner, paneId, lease, identity, typed);
-          if (automatic && !typed && (current.working || queueHeld(paneId))) throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
+          if (automatic && !typed && (current.working || queueHeld(paneId, false))) throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
           // and the screen last, as before the plain paste: no skill key goes into a masked prompt that came up meanwhile
           await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
         };
@@ -1157,7 +1157,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             // kept for an agent: its delivery types it only into that same agent (samePendingIdentity)
             if (agentOnly && !context.agentInFront) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
             // a pane shown at rest whose queue a busy signal still holds is not ready for a queued message
-            const held = queueHeld(message.pane_id);
+            const held = queueHeld(message.pane_id, false);
             // typed at once, but the queue's hold came up before anything was written: it waits its turn after all
             let waited = false;
             if (!context.working && !held) {

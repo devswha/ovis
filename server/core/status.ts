@@ -245,7 +245,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const before = heard.get(paneId);
     heard.set(paneId, status);
     if (status === "working" && (event || (before !== undefined && before !== "working"))) claudeAgents.busy(paneId, "herdr");
-    else if (status !== "working") claudeAgents.quiet(paneId, event);
+    // only idle and done are rest words, after which a turn herdr tells next begins in what is written
+    // from then on. blocked (a permission prompt) and unknown come in the middle of a turn: the working
+    // after them is still that turn's, and placed past it would end a later wakeup's hold (#3494)
+    else if (status !== "working") claudeAgents.quiet(paneId, event && (status === "idle" || status === "done"));
   }
   /**
    * The status the pane's queued input goes by: a Claude pane shown at rest while a busy signal
@@ -763,8 +766,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * before answering, not as the last poll left it: a /loop wakeup may have fired since (#3494). That read
    * tells the queue what it finds, as any poll does. A pane whose transcript is not found has none to read,
    * and none is looked for here (a snapshot does, ClaudeSubagentStatus.ensure): nothing holds it until then.
+   * `fresh` is asked of every caller: a wiring that dropped it would make delivery's last checks read an
+   * answer up to a poll old, with every test still passing.
    */
-  const queueHeld = (paneId: string, fresh = false): boolean => {
+  const queueHeld = (paneId: string, fresh: boolean): boolean => {
     if (fresh && agentNow.get(paneId) === "claude") claudeAgents.poll(paneId);
     return queueStatus(paneId, "idle") === "working";
   };
