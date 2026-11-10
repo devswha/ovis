@@ -289,8 +289,10 @@ ovis link --code     # a code to type and the relay QR code, renewed until Ctrl+
 
 The installer runs `ovis add` as its last step when it is given `--add`
 (`curl -fsSL https://ovis.sh/install.sh | sh -s -- --add`), at a terminal you can answer at and
-while the app runs. On a PC where it has just installed herdr the app is not up yet: start herdr,
-then run `ovis add`, as its last lines say.
+while the app runs. What was typed in that terminal while the installer worked is discarded before
+the step starts, so it answers nothing the step asks; where the installer cannot discard it, it
+prints the command instead. On a PC where it has just installed herdr the app is not up yet: start
+herdr, then run `ovis add`, as its last lines say.
 
 `add`, `login` and `link` are one command under three names. Both ways turn the relay on first when
 it is off, and wait until it is online.

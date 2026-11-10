@@ -36,14 +36,15 @@ const CONSTANTS = ["REPO", "BIN_DIR", "LAUNCHER_MARK"].map((name) => {
   if (!line) throw new Error(`install.sh sets no ${name}`);
   return line;
 }).join("\n");
-const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_command", "in_foreground", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted"].map(fn).join("\n");
+const FUNCTIONS = ["say", "link", "launcher_text", "find_other_ovis", "write_launcher", "ovis_command", "find_add_name", "add_command", "in_foreground", "discard_typed", "add_pc", "token_line", "closing_lines", "release_js", "running_code", "quoted"].map(fn).join("\n");
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-install-command-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 /**
  * The plugin's script, as a stand-in: it says where it ran from, what it was given and the dirs it
- * was handed. `add` (and `link`) leave a record, with whether their input is a terminal, and like the
+ * was handed. `add` (and `link`) leave a record, with whether their input is a terminal (and, on a PC
+ * flagged `add-reads`, the line already typed there when they start), and like the
  * real one they fail while the app is not running. `status` says "running" while the PC's `running`
  * flag is set. `knows` is the release: one with `add`, one from before it (only `link`), or one from
  * before both, which answers a name it does not know with its usage and exit 2 as the real one does
@@ -53,8 +54,10 @@ function pluginScript(knows: "add" | "link" | "neither" = "add"): string {
   const record = `{
   const { appendFileSync, existsSync } = await import("node:fs");
   if (!existsSync(process.env.SCRATCH + "/running")) { console.error("Ovis is not running at http://127.0.0.1:7317; start it first"); process.exit(1); }
-  appendFileSync(process.env.SCRATCH + "/add.calls", JSON.stringify({ command, rest, terminal: process.stdin.isTTY === true, ...(process.env.RELEASE ? { release: process.env.RELEASE } : {}) }) + "\\n");
   console.log("the add step");
+  // what is already typed at its terminal when it starts: the line a question it asks later would take for its answer
+  const typed = existsSync(process.env.SCRATCH + "/add-reads") ? { typed: await Promise.race([new Promise((resolve) => process.stdin.once("data", (line) => resolve(String(line)))), Bun.sleep(1500).then(() => null)]) } : {};
+  appendFileSync(process.env.SCRATCH + "/add.calls", JSON.stringify({ command, rest, terminal: process.stdin.isTTY === true, ...typed, ...(process.env.RELEASE ? { release: process.env.RELEASE } : {}) }) + "\\n");
   if (existsSync(process.env.SCRATCH + "/add-waits")) { console.log("waiting for an approval"); await Bun.sleep(60_000); }
   process.exit(existsSync(process.env.SCRATCH + "/add-fails") ? 1 : 0);
 }`;
@@ -97,7 +100,8 @@ class Pc {
     this.launcher = join(this.scratch, ".local", "bin", "ovis");
     this.app = join(this.scratch, ".local", "share", "ovis", "app");
     mkdirSync(this.bin);
-    for (const tool of ["sh", "cat", "uname", "ldd", "grep", "git", "tar", "awk", "sed", "mktemp", "rm", "sleep", "mv", "mkdir", "cp", "chmod", "ps", "tail", "readlink"]) {
+    // (no perl: the add step empties the terminal with stty and dd, and finds its foreground with ps)
+    for (const tool of ["sh", "cat", "uname", "ldd", "grep", "git", "tar", "awk", "sed", "mktemp", "rm", "sleep", "mv", "mkdir", "cp", "chmod", "ps", "tail", "readlink", "stty", "dd"]) {
       const real = Bun.which(tool);
       if (real) symlinkSync(real, join(this.bin, tool));
     }
@@ -167,9 +171,9 @@ class Pc {
     writeFileSync(join(this.scratch, "herdr-config", id, name), text);
     return this;
   }
-  flag(name: "add-fails" | "add-waits" | "running"): this { writeFileSync(join(this.scratch, name), ""); return this; }
+  flag(name: "add-fails" | "add-waits" | "add-reads" | "running"): this { writeFileSync(join(this.scratch, name), ""); return this; }
   /** what the add step was run with, one record per run */
-  addCalls(): { command: string; rest: string[]; terminal: boolean; release?: string }[] {
+  addCalls(): { command: string; rest: string[]; terminal: boolean; typed?: string | null; release?: string }[] {
     const log = join(this.scratch, "add.calls");
     return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)) : [];
   }
@@ -205,10 +209,10 @@ class Pc {
 
   /**
    * The whole installer at a terminal (script(1) gives one), the script on stdin as under `curl … | sh`.
-   * `typed` goes to the terminal once `after` is on it. The wrapping shell survives Ctrl-C as the
-   * user's own shell does, and reports the installer's exit code.
+   * `typed` goes to the terminal once `after` is on it, again and again until the run ends, or `once`.
+   * The wrapping shell survives Ctrl-C as the user's own shell does, and reports the installer's exit code.
    */
-  async atTerminal(args: string, extra?: Record<string, string>, typed?: { after: string; text: string }, background = false): Promise<{ out: string; exitCode: number }> {
+  async atTerminal(args: string, extra?: Record<string, string>, typed?: { after: string; text: string; once?: boolean }, background = false): Promise<{ out: string; exitCode: number }> {
     const install = `cat "${join(ROOT, "install.sh")}" | sh -s -- ${args}`;
     // in the background as an interactive shell runs `… &`: with job control, so in a process group that is not the terminal's
     const command = background ? `"${Bun.which("bash")}" -c 'set -m; ${install} & wait $!; echo "exit=$?"'` : `trap : INT; ${install}; echo "exit=$?"`;
@@ -229,7 +233,7 @@ class Pc {
         if (again !== undefined || typed === undefined || !out.includes(typed.after)) continue;
         // Ctrl-C is a signal, and the add step's own handlers come a moment after its first words: pressed until it lands
         type(typed.text);
-        again = setInterval(() => type(typed.text), 100);
+        again = setInterval(() => { if (!typed.once) type(typed.text); }, 100);
       }
       await child.exited;
     } finally {
@@ -819,6 +823,37 @@ describe.skipIf(platform() === "win32")("install.sh --add", () => {
       expect(out.split(TOKEN_LINE)).toHaveLength(2);
       expect(out.indexOf(TOKEN_LINE)).toBeGreaterThan(out.indexOf("the phone step"));
       expect(out.indexOf(TOKEN_LINE)).toBeLessThan(out.indexOf("the add step"));
+    });
+
+    // What was typed while the installer worked, or pasted after its command, is still in the terminal when the
+    // add step starts: it must not be there to answer what the add asks later (a device's approval, y/N).
+    for (const how of ["perl", "stty and dd"] as const) {
+      it.concurrent(`discards what was typed before the add step starts (${how})`, async () => {
+        const pc = new Pc().flag("running").flag("add-reads");
+        if (how === "perl") { symlinkSync(Bun.which("perl")!, join(pc.bin, "perl")); rmSync(join(pc.bin, "stty")); }
+        // typed as soon as the installer says its first word, long before the add step
+        const { out, exitCode } = await pc.atTerminal("--add", {}, { after: "Ovis", text: "y\n", once: true });
+        expect(exitCode, out).toBe(0);
+        expect(out.indexOf("y\r\n")).toBeLessThan(out.indexOf(TOKEN_LINE));
+        expect(pc.addCalls()).toEqual([{ command: "add", rest: [], terminal: true, typed: null }]);
+      });
+    }
+
+    it.concurrent("what is typed once the add step runs still reaches it", async () => {
+      const pc = new Pc().flag("running").flag("add-reads");
+      const { out, exitCode } = await pc.atTerminal("--add", {}, { after: "the add step", text: "y\n" });
+      expect(exitCode, out).toBe(0);
+      expect(pc.addCalls()).toEqual([{ command: "add", rest: [], terminal: true, typed: "y\n" }]);
+    });
+
+    it.concurrent("does not run the add step where what was typed cannot be discarded, and says what to run", async () => {
+      // neither perl nor stty: nothing here can empty the terminal, so nothing typed before is taken for an answer
+      const pc = new Pc().flag("running").flag("add-reads");
+      rmSync(join(pc.bin, "stty"));
+      const { out, exitCode } = await pc.atTerminal("--add", {}, { after: "Ovis", text: "y\n", once: true });
+      expect(exitCode, out).toBe(0);
+      expect(pc.addCalls()).toEqual([]);
+      expect(out).toContain(`Ovis: ${HINT_LINE}${pc.launcher} add`);
     });
 
     it.concurrent("OVIS_ADD=1 means the same as --add", async () => {
