@@ -21,6 +21,10 @@ type InputWindow = Window & { typed_: { pane: string; text: string }[] };
 /** what each tapped key puts on the wire: a sticky modifier sends nothing by itself */
 const SENT: Record<string, string | null> = { Control: null, Enter: "\r", Escape: "\x1b" };
 
+/**
+ * Key-bar taps keep the terminal's focus and leave the soft keyboard as it was: with the keyboard
+ * down a touch tap holds it down (inputmode=none until the click), with it up inputmode is never touched.
+ */
 export async function checkKeyBarKeepsKeyboardDown(browser: Browser, origin: string): Promise<void> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-keybar-focus-")));
   const created = await workspaceCreate({ cwd: root, label: "ovis-test-keybar-focus" });

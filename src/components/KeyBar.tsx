@@ -83,6 +83,7 @@ function releaseKeyboardHold(): void {
   keyboardHold = null;
   release?.();
 }
+/** Holds the keyboard down for one key tap while it is down (see above); does nothing while it is up. */
 function holdKeyboardForTap(): void {
   releaseKeyboardHold();
   if (keyboardUp()) return;
