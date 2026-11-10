@@ -205,12 +205,18 @@
 .relay-overview-empty-os { display: block; margin-top: var(--space-2); color: var(--text-dim); }
 .relay-overview-empty-command-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-2); margin-top: var(--space-2); }
 .relay-overview-empty-command {
-  flex: 1; min-width: 0; margin: 0; padding: var(--space-2) var(--space-3);
+  /* a real basis, not 0: where the line has no room for it beside Copy, Copy wraps under the command instead of squeezing it to a few characters a line */
+  flex: 1 1 16rem; min-width: 0; margin: 0; padding: var(--space-2) var(--space-3);
   background: var(--bg-input); border: var(--hairline) solid var(--border); border-radius: var(--radius-sm);
   color: var(--text-strong); font-family: var(--font-mono); font-size: max(var(--relay-fs-min), var(--fs-xs));
   white-space: pre-wrap; overflow-wrap: anywhere; user-select: all;
 }
 .relay-overview-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); margin-top: var(--space-1); }
+/* a read under way: aria-disabled, so a press keeps the focus on the button, and it reads as a disabled .btn does (styles.css) */
+.btn.relay-overview-check-again[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+@media (hover: hover) {
+  .btn.relay-overview-check-again[aria-disabled="true"]:hover { background: var(--bg-elevated); border-color: var(--border); }
+}
 
 .relay-overview-map-disclosure {
   display: flex;

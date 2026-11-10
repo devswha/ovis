@@ -54,7 +54,7 @@ export const DASHBOARD_KO: Record<string, string> = {
   "On Windows, in PowerShell:": "Windows에서는 PowerShell에서:",
   "On that PC, open Settings → Devices and PCs → Account and sign in with a GitHub or Google sign-in that is linked to this account.": "그 PC에서 설정 → 기기와 PC → 계정을 열고, 이 계정에 연결된 GitHub 또는 Google 로그인으로 로그인하세요.",
   "Signed in with {provider}. A PC signs in with GitHub or Google only, and each is a separate Ovis account until you link it to this one. Without a linked sign-in, pair with a QR or code instead.": "{provider}로 로그인했습니다. PC에서는 GitHub 또는 Google로만 로그인할 수 있고, 이 계정에 연결하기 전까지는 각각 다른 Ovis 계정입니다. 연결된 로그인이 없으면 QR 또는 코드로 페어링하세요.",
-  "On that PC, open Settings → Devices and PCs → Account and sign in with {provider}.": "그 PC에서 설정 → 기기와 PC → 계정을 열고 {provider}로 로그인하세요.",
+  "On that PC, open Settings → Devices and PCs → Account and sign in with the same {provider} account as on this device.": "그 PC에서 설정 → 기기와 PC → 계정을 열고, 이 기기와 같은 {provider} 계정으로 로그인하세요.",
   "Choose Add this PC to my account there. It then shows here with Add.": "거기서 '이 PC를 내 계정에 추가'를 선택하세요. 그러면 여기에 '추가'와 함께 나타납니다.",
   "Signed in with {provider}. GitHub and Google are separate Ovis accounts until you link them, so a PC signed in the other way is not listed here.": "{provider}로 로그인했습니다. GitHub와 Google은 연결하기 전까지 서로 다른 Ovis 계정이라서, 다른 방식으로 로그인한 PC는 여기에 나오지 않습니다.",
   "No PC matches this filter.": "이 필터에 맞는 PC가 없습니다.",

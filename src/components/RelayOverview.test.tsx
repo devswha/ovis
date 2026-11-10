@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -496,7 +497,7 @@ describe("RelayOverview", () => {
     expect(empty.findAll((node) => node.type === "ol")).toHaveLength(1);
     expect(empty.findAll((node) => node.type === "li").map(textOf)).toEqual([
       `Install Ovis on the PC.On macOS or Linux:${INSTALLER_COMMAND}CopyOn Windows, in PowerShell:${WINDOWS_INSTALLER_COMMAND}Copy`,
-      "On that PC, open Settings → Devices and PCs → Account and sign in with Google.",
+      "On that PC, open Settings → Devices and PCs → Account and sign in with the same Google account as on this device.",
       "Choose Add this PC to my account there. It then shows here with Add.",
     ]);
     expect(empty.findAll((node) => node.type === "code").map(textOf)).toEqual([INSTALLER_COMMAND, WINDOWS_INSTALLER_COMMAND]);
@@ -506,17 +507,19 @@ describe("RelayOverview", () => {
     expect(empty.findAll((node) => node.type === "button" && String(node.props.className ?? "").includes("btn-primary")).map(textOf)).toEqual(["Add a PC"]);
 
     const check = () => empty.find((node) => node.type === "button" && node.props["data-action"] === "check-again");
-    expect([check().props.disabled, check().props["aria-busy"]]).toEqual([false, undefined]);
+    // aria-disabled, never disabled: a disabled button drops the keyboard's focus to the page
+    const busyState = () => [check().props.disabled, check().props["aria-disabled"], check().props["aria-busy"], textOf(check())];
+    expect(busyState()).toEqual([undefined, undefined, undefined, "Check again"]);
     await act(async () => { check().props.onClick(); });
     expect(refreshed).toBe(1);
-    expect([check().props.disabled, check().props["aria-busy"]]).toEqual([true, true]);
+    expect(busyState()).toEqual([undefined, true, true, "Checking…"]);
     // a click that still lands while it is busy asks nothing
     await act(async () => { check().props.onClick(); });
     expect(refreshed).toBe(1);
     const busy = [...scheduledTimers.values()].filter((timer) => timer.ms === CHECK_AGAIN_BUSY_MS);
     expect(busy).toHaveLength(1);
     await act(async () => { busy[0]?.fn(); });
-    expect([check().props.disabled, check().props["aria-busy"]]).toEqual([false, undefined]);
+    expect(busyState()).toEqual([undefined, undefined, undefined, "Check again"]);
     await act(async () => { check().props.onClick(); });
     expect(refreshed).toBe(2);
 
@@ -541,6 +544,55 @@ describe("RelayOverview", () => {
     await act(async () => { renderer?.unmount(); });
     renderer = undefined;
     expect(copiedTimers()).toHaveLength(0);
+  });
+
+  it("keeps Check again busy until the read it asked for has landed, however long that takes, and never for less than its least time", async () => {
+    const reads: ReturnType<typeof Promise.withResolvers<void>>[] = [];
+    const root = await mount({ pcs: [], mode: "account", provider: "github", defaultRelay: GLOBAL, now: NOW, onRefreshAccount: () => { const read = Promise.withResolvers<void>(); reads.push(read); return read.promise; } });
+    const check = () => root.find((node) => node.type === "button" && node.props["data-action"] === "check-again");
+    const busyTimer = () => [...scheduledTimers.values()].filter((timer) => timer.ms === CHECK_AGAIN_BUSY_MS);
+    // the read is slower than the least time: the button stays busy and a press asks nothing more
+    await act(async () => { check().props.onClick(); });
+    await act(async () => { busyTimer()[0]?.fn(); });
+    expect([check().props["aria-disabled"], textOf(check())]).toEqual([true, "Checking…"]);
+    await act(async () => { check().props.onClick(); });
+    expect(reads).toHaveLength(1);
+    await act(async () => { reads[0]?.resolve(); });
+    expect([check().props["aria-disabled"], textOf(check())]).toEqual([undefined, "Check again"]);
+    // the read is faster than the least time, and fails: still busy until the time is up, then free again
+    await act(async () => { check().props.onClick(); });
+    expect(reads).toHaveLength(2);
+    await act(async () => { reads[1]?.reject(new Error("the read failed")); });
+    expect(check().props["aria-disabled"]).toBe(true);
+    // the harness keeps a timer that ran: the second press's is the last one
+    await act(async () => { busyTimer().at(-1)?.fn(); });
+    expect(check().props["aria-disabled"]).toBeUndefined();
+  });
+
+  it("shows no steps to add a PC, and no second refresh button, under an account read that failed", async () => {
+    let refreshed = 0;
+    const failed = "The account service could not be reached. The PCs this device is paired with still work.";
+    const root = await mount({ pcs: [], mode: "account", provider: "github", defaultRelay: GLOBAL, now: NOW, error: failed, onRefreshAccount: () => { refreshed += 1; }, onAddPc: () => {}, onPairByQr: () => {} });
+    expect(textOf(root.find((node) => node.props["data-directory-error"] === ""))).toBe(`${failed}Try again`);
+    const empty = root.find((node) => node.props["data-dashboard-empty"] === "");
+    // the list was not read, so it is not known to be empty: nobody is told to install Ovis and add their PCs again
+    expect(textOf(empty)).toBe("No PCs yetAdd a PCPair with a QR or code");
+    expect(empty.findAll((node) => node.type === "ol" || node.type === "pre" || node.props["data-empty-provider"] === "")).toHaveLength(0);
+    expect(root.findAll((node) => node.type === "button").map(textOf)).toEqual(["Try again", "Add a PC", "Pair with a QR or code"]);
+    await act(async () => { root.find((node) => node.props["data-action"] === "retry-directory").props.onClick(); });
+    expect(refreshed).toBe(1);
+  });
+
+  it("names each Copy button by the system its command is for, and gives the command a basis so Copy wraps under it on a narrow screen", async () => {
+    const root = await mount({ pcs: [], mode: "account", provider: "github", defaultRelay: GLOBAL, now: NOW });
+    const described = root.findAll((node) => node.type === "button" && String(node.props["data-action"] ?? "").startsWith("copy-install"))
+      .map((button) => textOf(root.find((node) => node.type === "span" && node.props.id === button.props["aria-describedby"])));
+    expect(described).toEqual(["On macOS or Linux:", "On Windows, in PowerShell:"]);
+    const css = readFileSync(new URL("./RelayOverview.css", import.meta.url), "utf8");
+    const command = /\.relay-overview-empty-command \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    // `flex: 1` is a basis of 0: the row then never wraps and the command is squeezed to a few characters a line
+    expect(command).toMatch(/flex: 1 1 \d+rem;/);
+    expect(/\.relay-overview-empty-command-row \{([^}]*)\}/.exec(css)?.[1]).toContain("flex-wrap: wrap");
   });
 
   it("does not tell an account signed in with Apple to sign in on the PC with Apple, which a PC's page cannot do", async () => {
