@@ -7,7 +7,7 @@ import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
 import { loadRelayIdentity } from "../server/relay/identity.ts";
 import { updateStateDir } from "../server/update-state.ts";
-import { COMMAND_ALIASES, link } from "./plugin-link.ts";
+import { approveWaiting, COMMAND_ALIASES, link, type WaitingDevice } from "./plugin-link.ts";
 
 const ORIGIN = "http://127.0.0.1:7317";
 const SERVICE = "https://account.test";
@@ -1385,5 +1385,111 @@ describe("ovis link, on the PC itself", () => {
       expect(stdout).toContain("release took its code back");
       expect(await child.exited).toBe(0);
     } finally { server.stop(true); }
+  });
+});
+
+describe("pair --approve, asked as ovis add asks", () => {
+  const waiting = (id: string, digits: string): WaitingDevice => ({ id, label: `Phone ${id}`, digits });
+
+  /**
+   * `pair --approve` over the requests that wait: `said` hears every line, to `type` a line at that very moment or to
+   * `answer` two seconds later (the time a person takes to compare the digits), and `decide` answers for the PC's server.
+   */
+  async function approving(options: { pairings: WaitingDevice[]; said: (text: string, type: (line: string) => void, answer: (...lines: string[]) => void) => void; terminal?: boolean; lines?: AsyncIterator<string>; decide?: (attempt: number) => "taken" | "gone" | "away" }) {
+    let at = Date.parse("2026-11-06T12:00:00Z");
+    const keys = keyboard();
+    const out: string[] = [];
+    const decisions: { id: string; decision: string }[] = [];
+    let attempts = 0;
+    const code = await approveWaiting(options.pairings, {
+      lines: options.lines ?? keys.lines, terminal: options.terminal ?? true, signal: new AbortController().signal, now: () => at,
+      out: (text) => {
+        out.push(text);
+        // a turn later: the lines come once the one who asks waits for them
+        options.said(text, keys.type, (...lines) => { setTimeout(() => { at += 2_000; for (const line of lines) keys.type(line); }, 0); });
+      },
+      decide: async (id, decision) => {
+        const sent = options.decide?.(++attempts) ?? "taken";
+        if (sent === "taken") decisions.push({ id, decision });
+        return sent;
+      },
+    });
+    return { code, out, text: out.join(""), decisions };
+  }
+
+  it("asks about each waiting request with its digits, and approves the ones whose digits are typed", async () => {
+    const { code, out, decisions } = await approving({
+      pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
+      said: (said, _type, answer) => {
+        if (said.includes("Phone p1 wants")) answer("222");
+        if (said.includes("Phone p2 wants")) answer("");
+      },
+    });
+    expect(code).toBe(0);
+    expect(out).toEqual([
+      "Phone p1 wants to pair with this PC. Approve it only if its screen shows 111 222. Type 222 to approve, or press Enter to decline: ",
+      "Approved.\n",
+      "Phone p2 wants to pair with this PC. Approve it only if its screen shows 333 444. Type 444 to approve, or press Enter to decline: ",
+      "Declined.\n",
+    ]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "decline" }]);
+  });
+
+  it("answers one request with one line: a second line sent right behind an answer never answers the request after it", async () => {
+    let asked = 0;
+    const { code, out, decisions } = await approving({
+      pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
+      said: (said, _type, answer) => {
+        // its digits for p1, and Enter once more: an empty line would decline p2 unseen
+        if (said.includes("Phone p1 wants")) answer("222", "");
+        // p2's own answer, typed once its digits were compared
+        if (said.includes("Phone p2 wants") && ++asked === 1) answer("444");
+      },
+    });
+    expect(code).toBe(0);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "approve" }]);
+    expect(out.filter((said) => said === "Declined.\n")).toEqual([]);
+  });
+
+  it("drops a line that comes as a request shows, too soon to have compared its digits, and asks again", async () => {
+    let asked = 0;
+    const { code, out, text, decisions } = await approving({
+      pairings: [waiting("p1", "111222"), waiting("p2", "111222")],
+      said: (said, type, answer) => {
+        if (said.includes("Phone p1 wants")) answer("222");
+        // the same digits and Enter once more, as p2's prompt comes on the screen; then nothing but Enter
+        if (said.includes("Phone p2 wants")) { if (++asked === 1) type("111222"); else answer(""); }
+      },
+    });
+    expect(code).toBe(0);
+    expect(text).toContain("That line answered nothing: it came as the request showed, too soon to have compared its digits.");
+    expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "decline" }]);
+  });
+
+  it("declines every request when its input is not a terminal, whatever was piped in, without reading it", async () => {
+    let reads = 0;
+    const lines = answers("222", "444");
+    const { code, out, decisions } = await approving({
+      pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
+      lines: { next: () => { reads++; return lines.next(); } }, terminal: false,
+      said: () => undefined,
+    });
+    expect(code).toBe(0);
+    expect(reads).toBe(0);
+    expect(out[0]).toBe("This is not run in a terminal, so no request can be answered here: each is declined as it shows. Run this in a terminal to approve one (over ssh, run ssh -t).\n");
+    expect(out.filter((said) => said === "Declined.\n")).toHaveLength(2);
+    expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
+  });
+
+  it("says so when a request no longer waits, and goes on to the next", async () => {
+    const gone = await approving({
+      pairings: [waiting("p1", "111222"), waiting("p2", "333444")],
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer("222"); if (said.includes("Phone p2 wants")) answer("444"); },
+      decide: (attempt) => attempt === 1 ? "gone" : "taken",
+    });
+    expect(gone.code).toBe(0);
+    expect(gone.out).toContain("Phone p1 is no longer waiting.\n");
+    expect(gone.decisions).toEqual([{ id: "p2", decision: "approve" }]);
   });
 });

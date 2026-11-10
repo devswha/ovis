@@ -24,19 +24,20 @@ async function status(): Promise<{ out: string; err: string; exitCode: number }>
   return run("status");
 }
 
-async function run(command: string, extra: Record<string, string | undefined> = {}): Promise<{ out: string; err: string; exitCode: number }> {
-  const child = launch(command, extra);
+async function run(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; stdin?: string } = {}): Promise<{ out: string; err: string; exitCode: number }> {
+  const child = launch(command, extra, more);
   const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   return { out, err, exitCode };
 }
 
-function launch(command: string, extra: Record<string, string | undefined> = {}) {
+function launch(command: string, extra: Record<string, string | undefined> = {}, more: { args?: string[]; stdin?: string } = {}) {
   const bin = join(scratch, "bin");
   const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state") };
   for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "PORT", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
   Object.assign(env, extra);
   for (const [key, value] of Object.entries(extra)) if (value === undefined) delete env[key];
-  return Bun.spawn(["bun", "scripts/plugin.ts", command], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
+  // `stdin`: what is piped in, which is not a terminal
+  return Bun.spawn(["bun", "scripts/plugin.ts", command, ...more.args ?? []], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe", ...more.stdin === undefined ? {} : { stdin: new Blob([more.stdin]) } });
 }
 
 beforeEach(() => {
@@ -813,6 +814,48 @@ describe("add and login", () => {
       "add (also login, link): sign this PC in and add it to your Ovis account. link --code: show a code and a QR code to pair one device instead.",
       "",
     ].join("\n"));
+  });
+});
+
+describe("pair --approve", () => {
+  /** An Ovis on a port of its own with two requests waiting, which records what is decided about them. */
+  function waitingPc() {
+    const decisions: unknown[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/api/health") return Response.json(APP_HEALTH);
+      if (path === "/api/relay/pairings") return Response.json({ pairings: [{ id: "p1", label: "Phone one", digits: "111222" }, { id: "p2", label: "Phone two", digits: "333444" }] });
+      if (path === "/api/relay/pairing") { decisions.push(await request.json()); return Response.json({ ok: true }); }
+      return new Response(null, { status: 404 });
+    } });
+    return { server, decisions };
+  }
+
+  it("approves nothing with lines piped in, whatever they carry: it is not a terminal, so each request is declined as it shows", async () => {
+    const { server, decisions } = waitingPc();
+    try {
+      // both requests' digits, as `printf '222\n444\n' | ovis pair --approve` hands them over
+      const result = await run("pair", { PORT: String(server.port) }, { args: ["--approve"], stdin: "222\n444\n" });
+      expect(result.exitCode, result.err).toBe(0);
+      expect(result.out).toBe([
+        "This is not run in a terminal, so no request can be answered here: each is declined as it shows. Run this in a terminal to approve one (over ssh, run ssh -t).",
+        "Phone one wants to pair with this PC. Approve it only if its screen shows 111 222. Type 222 to approve, or press Enter to decline: Declined.",
+        "Phone two wants to pair with this PC. Approve it only if its screen shows 333 444. Type 444 to approve, or press Enter to decline: Declined.",
+        "",
+      ].join("\n"));
+      expect(decisions).toEqual([{ id: "p1", decision: "decline" }, { id: "p2", decision: "decline" }]);
+    } finally { await server.stop(true); }
+  });
+
+  it("says so when no device waits", async () => {
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+      const path = new URL(request.url).pathname;
+      return path === "/api/health" ? Response.json(APP_HEALTH) : path === "/api/relay/pairings" ? Response.json({ pairings: [] }) : new Response(null, { status: 404 });
+    } });
+    try {
+      const result = await run("pair", { PORT: String(server.port) }, { args: ["--approve"], stdin: "" });
+      expect([result.out, result.exitCode], result.err).toEqual(["No device is waiting to pair.\n", 0]);
+    } finally { await server.stop(true); }
   });
 });
 

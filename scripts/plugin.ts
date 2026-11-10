@@ -35,7 +35,7 @@ import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
 import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
-import { approvalPrompt, approves, COMMAND_ALIASES, declinedNote, link as linkPc, plainLabel } from "./plugin-link.ts";
+import { approveWaiting, COMMAND_ALIASES, link as linkPc, type WaitingDevice } from "./plugin-link.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
@@ -860,21 +860,26 @@ async function approvePairings(): Promise<number> {
     process.stderr.write(`could not read the waiting pairings (${listed.status}): ${await listed.text()}\n`);
     return 1;
   }
-  const { pairings } = (await listed.json()) as { pairings: { id: string; label: string; digits: string; intent?: string }[] };
+  const { pairings } = (await listed.json()) as { pairings: WaitingDevice[] };
   if (pairings.length === 0) {
     process.stdout.write("No device is waiting to pair.\n");
     return 0;
   }
-  const lines = console[Symbol.asyncIterator]();
-  for (const pairing of pairings) {
-    process.stdout.write(approvalPrompt(pairing));
-    const answer = await lines.next();
-    // only the request's own digits approve it: a line typed ahead, or for the one before, carries none of them
-    const decision = !answer.done && approves(answer.value, pairing.digits) ? "approve" : "decline";
-    const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id: pairing.id, decision }) });
-    process.stdout.write(decided.ok ? decision === "approve" ? "Approved.\n" : declinedNote(answer.done ? null : answer.value) : `${plainLabel(pairing.label)} is no longer waiting.\n`);
-  }
-  return 0;
+  // asked as `ovis add` asks (scripts/plugin-link.ts): a line answers only the request it was typed under
+  return approveWaiting(pairings, {
+    out: (text) => process.stdout.write(text),
+    lines: console[Symbol.asyncIterator](),
+    // a pipe, a file or a closed stdin approves nothing, whatever it carries and whenever
+    terminal: process.stdin.isTTY === true,
+    // Ctrl+C ends the process as it is
+    signal: new AbortController().signal,
+    decide: async (id, decision) => {
+      try {
+        const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
+        return decided.ok ? "taken" : "gone";
+      } catch { return "away"; }
+    },
+  });
 }
 
 /**
