@@ -68,6 +68,28 @@ type SubmitReply = { ok: boolean; pending?: PendingMessage; sending_at?: string;
 class CodexOwnScreenRefusal extends HerdrError {
   constructor() { super("agent_blocked", CODEX_OWN_SCREEN_MESSAGE); }
 }
+/** Codex's question whether to trust the folder it was started in, by its card's title (0.167, and as older versions asked it). */
+const CODEX_FOLDER_QUESTION_RE = /^(?:Trust this folder\?|Do you trust the contents)/i;
+/**
+ * What a screen of Codex's own that has the input (codexOwnScreenOpen) is refused as, given the card the chat reads
+ * of it, if any; null when the composer has the input.
+ * - A screen the user opened is not reported by herdr, and neither is its end (CodexOwnScreenRefusal): one with no
+ *   card, and /model's levels, which the chat reads as a card (registry.waits).
+ * - A prompt Codex asks (an approval, a question: a card) is one herdr reports, maybe a moment after the screen: the
+ *   refusal of a waiting menu, after whose end a status event drains the queue again. So is anything herdr already
+ *   calls blocked.
+ * - The folder question is a card herdr reports on a wide pane only (blocked at 80 columns and up, at rest at 60
+ *   and under, Codex 0.167 under herdr 0.9.5). Where herdr is known not to report it (`herdr` is "rest"), nothing
+ *   tells its end either, and it is refused as a screen the user opened; a caller that has not read the pane's
+ *   status ("unknown") leaves it to the waiting-menu refusal.
+ */
+function codexScreenRefusal(screen: string, card: { title: string | null } | null, herdr: "blocked" | "rest" | "unknown"): HerdrError | null {
+  if (!codexOwnScreenOpen(screen)) return null;
+  const waiting = (): HerdrError => new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
+  if (herdr === "blocked") return waiting();
+  if (card === null || registry.waits("codex", screen)) return new CodexOwnScreenRefusal();
+  return herdr === "rest" && CODEX_FOLDER_QUESTION_RE.test(card.title ?? "") ? new CodexOwnScreenRefusal() : waiting();
+}
 type PiTypedReceipt = { owner: Client; resumeKey?: string; message: PendingMessage; match: string; template: boolean; identity: PendingIdentity; anchor: PiDeliveryAnchor | null };
 /** a first message refused before anything was typed because its connection could not type it yet stays queued for its next attach or turn */
 const FIRST_MESSAGE_RETRY_CODES = new Set(["input_not_ready", "pending_lease_lost", "disconnected", "read_only"]);
@@ -601,7 +623,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (secretPrompt(screen, cols) !== null) {
       throw new HerdrError("agent_blocked", "The terminal is waiting for masked input; answer it with the secret-input form first");
     }
-    if (pinned?.agent === "codex" && codexOwnScreenOpen(screen)) throw new CodexOwnScreenRefusal();
+    // read as pendingContext reads it: a prompt Codex asks that came up meanwhile is a waiting menu, not a screen the user opened
+    const own = pinned?.agent === "codex" ? codexScreenRefusal(screen, parseInteractivePrompt("codex", screen, null, true, [], null), "unknown") : null;
+    if (own !== null) throw own;
     await sameStart(pinned);
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false, agentOnly = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined; held: { pid: number; started: number | null } | null; collapsed: boolean; agentInFront: boolean }> {
@@ -642,14 +666,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // as the card's own reader decides it: Claude's grey text under a hint left behind is no held message
     const waits = prompt !== null && !(pasted && isClaudeHeld(prompt)) && !(await claudeHeldIsGrey(paneId, prompt));
     // One of Codex's own screens (a list, a field, a pager) has the input while herdr reports Codex at rest: as a menu
-    // herdr does report, nothing is typed into it. A screen the user opened ends with no status event
-    // (CodexOwnScreenRefusal). Not so a prompt the agent asks, which the chat reads as a card (an approval, a question, the
-    // folder question) and herdr reports, maybe a moment late: that one keeps the refusal of a waiting menu, whose end
-    // drains the queue again. /model's levels are a card too, but one the user opened (registry.waits).
-    const ownScreen = current.agent === "codex" && codexOwnScreenOpen(screen);
-    const listed = current.agent !== null && registry.waits(current.agent, screen);
-    if (ownScreen && pane.agent_status !== "blocked" && (!waits || listed)) throw new CodexOwnScreenRefusal();
-    if (current.agent && (waits || ownScreen || listed || (pane.agent_status === "blocked" && !collapsed))) {
+    // herdr does report, nothing is typed into it (codexScreenRefusal says as which of the two it is refused)
+    const own = current.agent === "codex" ? codexScreenRefusal(screen, waits ? prompt : null, pane.agent_status === "blocked" ? "blocked" : "rest") : null;
+    if (own !== null) throw own;
+    if (current.agent && (waits || registry.waits(current.agent, screen) || (pane.agent_status === "blocked" && !collapsed))) {
       throw new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal");
     }
     if (current.agent && !["working", "idle", "done"].includes(pane.agent_status) && !collapsed) {
@@ -869,6 +889,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // a paste left in the input line (#511) is uncertain like a delivery not confirmed: the pane's queue stops behind it, and
     // only the user copies or discards it
     pending.settle(item, fault, reply.code === "submit_changed" || reply.code === "pasted_not_sent", automatic && retryable && !unattended);
+    // The messages queued behind one held for a screen of Codex's own are held with it, in the same step: tried one
+    // by one, a later one would be typed ahead of it if the screen closed between two tries.
+    if (automatic && reply.unannounced === true && fault !== undefined) pending.holdPane(item.paneId, fault);
     return reply;
   }
   function drainPending(paneId: string): void {
@@ -1404,7 +1427,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     },
     async "pending-action"(client: Client, message: Frame<"pending-action">): Promise<void> {
       // a client that does not tell a launch that ended apart takes its code as maybe typed: it gets the code it knows
-      const known = (reply: SubmitReply): SubmitReply => reply.code === LAUNCH_GONE.code && message.launch_ended !== true ? { ...reply, code: TARGET_CHANGED.code } : reply;
+      const known = ({ unannounced: _, ...reply }: SubmitReply): SubmitReply => reply.code === LAUNCH_GONE.code && message.launch_ended !== true ? { ...reply, code: TARGET_CHANGED.code } : reply;
       const result = (reply: SubmitReply) => send(client, { type: "pending-result", id: message.id, pane_id: message.pane_id, pending_id: message.pending_id, ...known(reply) });
       if (!Number.isSafeInteger(message.id) || typeof message.pane_id !== "string" || !message.pane_id
         || typeof message.pending_id !== "string" || !message.pending_id || !["steer", "discard"].includes(message.action)) {

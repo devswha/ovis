@@ -3701,13 +3701,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   key by the sentence it ends with (`Press the new key now. Esc cancels.`). A key the user
   remapped is drawn as Codex draws it (`^q back`, `alt+x back`) and is read written with a hyphen
   too (`ctrl-g`). The message stays in the box, **Send anyway** included. A queued one is held
-  with that reason (**Send now** / **Discard**), and so are the ones queued behind it as each is
-  tried: herdr says nothing when the screen closes, so queued again the message would wait with
-  no reason shown while Codex sits idle, and go out by itself at the next status event, which may
-  be the end of a turn started since. A prompt Codex asks (an approval, a question, the folder
+  with that reason (**Send now** / **Discard**), and with it, in the same step, every other
+  message queued for the pane: tried one by one, a later one would be typed ahead of it if the
+  screen closed between two tries. herdr says nothing when the screen closes, so queued again the
+  message would wait with no reason shown while Codex sits idle, and go out by itself at the next
+  status event, which may be the end of a turn started since. The row says it in the reader's
+  language, with the words of a menu waiting in the terminal. A prompt Codex asks (an approval, a
   question: a card the chat reads) still queues the message again, as any menu herdr reports
-  does, since its end brings a status event; `/model`'s levels are a card too, but of a list the
-  user opened, and hold. A held one stays held. The composer never ends that way: its
+  does, since its end brings a status event, also when it comes up during the last checks before
+  the paste. Two cards are screens of the other kind: `/model`'s levels, a list the user opened,
+  and the folder question where herdr does not report it (blocked on a wide pane, at rest at 60
+  columns and under), whose answer brings no status event either. A held one stays held. The composer never ends that way: its
   last rows are its status line, which begins with the model, and `← for agents · ? for
   shortcuts`; with its shortcuts shown the last row is `? / esc close`, where no item starts at
   `esc`, and the composer still takes what is typed. A screen whose footer names no such key is
