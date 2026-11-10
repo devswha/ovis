@@ -577,6 +577,67 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.current(old.pane.pane_id)).toBe("idle");
     expect(h.pending.next(old.pane.pane_id)).not.toBeNull();
   });
+
+  describe("with the bridge's own delivery", () => {
+    const READY = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 80 };
+    const spies: { mockRestore(): void }[] = [];
+    afterEach(() => { for (const spy of spies.splice(0)) spy.mockRestore(); });
+
+    /** A pane at rest that herdr told, its queue delivered by the bridge: what is written to the pane, in order. */
+    async function delivering() {
+      const writes: string[] = [];
+      const client: Client = { data: connectionData({ readOnly: false, deviceId: undefined }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: () => 1, close: () => {} };
+      let lane: Promise<unknown> = Promise.resolve();
+      const serialize = <T>(_paneId: string, task: () => T | Promise<T>): Promise<T> => { const next = lane.catch(() => undefined).then(task); lane = next; return next; };
+      let h!: Awaited<ReturnType<typeof workingClaude<Client, unknown>>>;
+      const delivery = createPendingDelivery({
+        options: { submitDelayMs: 0 }, clients: new Set([client]), attachments: new Map(), serialize, lastTyped: new Map(),
+        sight: () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: (data: string) => { writes.push(data); } }) as never,
+        submitText: (async () => { throw new Error("no immediate send in this test"); }) as never, authorizeSocket: () => {},
+        clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null }, queueHeld: (paneId) => h.status.queueHeld(paneId),
+        SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+      });
+      h = await workingClaude(delivery.pending as never, delivery.drainPending);
+      spies.push(
+        spyOn(herdr, "paneRead").mockResolvedValue({ text: "" } as never),
+        spyOn(herdr, "paneProcessInfo").mockResolvedValue({ foreground_processes: [], shell_pid: null } as never),
+        spyOn(herdr, "paneSendText").mockImplementation(async (_paneId, text) => { writes.push(`paste ${text}`); }),
+        spyOn(herdr, "paneSendKeys").mockImplementation(async (_paneId, keys) => { writes.push(`keys ${keys.join(",")}`); }),
+      );
+      h.rest(); h.poll();
+      handlers.onStatus(h.pane.pane_id, "idle", "claude");
+      h.herdrSays(h.pane);
+      const submit = (id: number, text: string) => delivery.pendingFrames.submit(client, { type: "submit", id, pane_id: h.pane.pane_id, text, payload: text, delivery: "queue" } as never);
+      return { h, delivery, writes, client, submit, flush: async () => { await lane; await lane; } };
+    }
+
+    it("keeps a message sent as the wakeup fires waiting, and types it at the resumed turn's rest", async () => {
+      const { h, delivery, writes, client, submit, flush } = await delivering();
+      // When the wakeup fires, and the send's own read of the pane is the first to find it.
+      fires(h.path);
+      await submit(11, "wait");
+      await flush();
+      // Then nothing is typed into the resumed turn.
+      expect(writes).toEqual([]);
+      expect(delivery.pending.list(client, h.pane.pane_id).map((message) => message.state)).toEqual(["queued"]);
+      // And the turn's rest sends it by itself.
+      turnEnds(h); h.poll();
+      await flush();
+      expect(writes).toEqual(["paste \u001b[200~wait\u001b[201~", "keys Enter"]);
+    });
+
+    it("refuses the automatic send of a queued message while the fire holds, though the queue was told the pane rests", async () => {
+      const { h, delivery, writes, client, submit, flush } = await delivering();
+      fires(h.path); h.poll();
+      await submit(12, "first");
+      // When a status read before the fire reaches the queue after it.
+      delivery.pending.status(h.pane.pane_id, "done"); delivery.drainPending(h.pane.pane_id);
+      await flush();
+      // Then the delivery's own check of the hold turns the send away, and the message waits on.
+      expect(writes).toEqual([]);
+      expect(delivery.pending.list(client, h.pane.pane_id)[0]?.state).toBe("queued");
+    });
+  });
 });
 
 describe("Claude turn starts the transcript does not show yet (#2072)", () => {
