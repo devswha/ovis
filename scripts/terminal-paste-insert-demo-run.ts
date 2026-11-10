@@ -737,6 +737,8 @@ async function captureStates(page: Page, variant: Variant, phone: boolean): Prom
 export async function runPasteInsert(part: "main" | "variants"): Promise<void> { try {
   // the variants part makes nothing but its screenshots: with no folder to write them into, it has nothing to run
   if (part === "variants" && !evidence) { console.log("SKIP the Paste and Insert variants: UI_EVIDENCE_DIR is not set, and this part only writes its captures there"); return; }
+  // each part's records in files of its own: the serial lane gives both parts one evidence folder
+  const records = part === "main" ? "" : `-${part}`;
   await buildDemoApp(app);
   const index = join(app, "index.html");
   const html = readFileSync(index, "utf8");
@@ -781,8 +783,8 @@ export async function runPasteInsert(part: "main" | "variants"): Promise<void> {
             assert.deepEqual(opened.errors, []);
           } finally { await opened.context.close(); }
         }
-        writeFileSync(join(evidence, "manifest.json"), JSON.stringify(manifest, null, 2));
-        writeFileSync(join(evidence, "measurements.json"), JSON.stringify(measurements, null, 2));
+        writeFileSync(join(evidence, `manifest${records}.json`), JSON.stringify(manifest, null, 2));
+        writeFileSync(join(evidence, `measurements${records}.json`), JSON.stringify(measurements, null, 2));
         console.log(`PASS ${manifest.length} captures in ${evidence}`);
       }
     } finally { await browser.close(); }
@@ -793,6 +795,6 @@ export async function runPasteInsert(part: "main" | "variants"): Promise<void> {
     if (part === "main") for (const name of ["paste-acknowledged-insert", "clipboard-target-changed", "older-bridge-and-uncertainty"]) {
       writeFileSync(join(evidence, `${name}.json`), JSON.stringify({ scenario: name, tool, at: new Date().toISOString(), checks: results[name] ?? [] }, null, 2));
     }
-    writeFileSync(join(evidence, "results.json"), JSON.stringify(results, null, 2));
+    writeFileSync(join(evidence, `results${records}.json`), JSON.stringify(results, null, 2));
   }
 } finally { rmSync(app, { recursive: true, force: true }); } }

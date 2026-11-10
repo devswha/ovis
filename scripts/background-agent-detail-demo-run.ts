@@ -341,6 +341,8 @@ export async function runBackgroundAgentDetail(part: BackgroundAgentDetailPart):
           await page.keyboard.press("Escape");
           await dialog(page).waitFor({ state: "detached" });
           await openDetail(page);
+          // the reopened sheet's own read (not held: the first one took the hold) has landed, so the count is the sheet's
+          await dialog(page).locator('.icon-button[aria-label="Refresh"]:not(:disabled)').waitFor();
           const fresh = await events.count();
           await page.evaluate(() => window.bgRelease?.());
           await page.waitForFunction(() => window.bgLog.delivered >= 2);

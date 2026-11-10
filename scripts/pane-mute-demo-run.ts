@@ -661,8 +661,9 @@ export async function runPaneMute(part: "behaviour" | "captures"): Promise<void>
           assert.deepEqual(errorsOf(page), []);
           await context.close();
         }
-        // each part lists the captures it made: the behaviour sections made one, of the other PC's alert
-        writeFileSync(join(evidence, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+        // each part lists the captures it made, in a file of its own (the serial lane gives both parts one
+        // folder): the behaviour sections made one, of the other PC's alert
+        writeFileSync(join(evidence, part === "captures" ? "manifest.json" : `manifest-${part}.json`), `${JSON.stringify(manifest, null, 2)}\n`);
         checks.push(`${manifest.length} captures written to ${evidence}`);
       }
       for (const check of checks) console.log(`PASS ${check}`);

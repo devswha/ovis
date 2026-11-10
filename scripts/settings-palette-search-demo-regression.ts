@@ -89,8 +89,9 @@ const landing = async (page: Page, label: (name: string) => string): Promise<{ p
   return { page: id, section, visible };
   });
   // the panel is named by its page's label in the language shown: back to the page's id
-  const ids = ["appearance", "chat", "terminal", "alerts", "agents", "shortcuts", "devices", "about"];
-  return { ...shown, page: shown.page === null ? null : ids[PAGES.findIndex((name) => label(name) === shown.page)] ?? `unknown: ${shown.page}` };
+  const ids: Record<string, string> = { Appearance: "appearance", Chat: "chat", Terminal: "terminal", Alerts: "alerts", Agents: "agents", Shortcuts: "shortcuts", "Devices and PCs": "devices", Experimental: "experimental", About: "about" };
+  const name = PAGES.find((name) => label(name) === shown.page);
+  return { ...shown, page: shown.page === null ? null : name === undefined ? `unknown: ${shown.page}` : ids[name] };
 };
 /** Anything in the palette or Settings wider than the window: a long query or label must not push the sheet sideways. */
 const sideways = (page: Page): Promise<string[]> => page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".command-palette, .palette-results, .settings-dialog, .settings-body:not([hidden])")]
