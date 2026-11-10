@@ -543,8 +543,12 @@ export class DeviceStore {
     this.announce(device, now, origin);
   }
 
-  /** No cookie is issued: even the first relay pairing is durable and closes the gate at once. */
-  pairRelay(code: string, label: string, publicKey: string, now = Date.now()): { device: DeviceMatch } | null {
+  /**
+   * No cookie is issued: even the first relay pairing is durable and closes the gate at once. `admit` is asked once
+   * the code holds and nothing else refuses the key, before any device is made: false makes none, spends no code and
+   * counts no failure (server/relay/session.ts, a relay pass that allows no new sessions).
+   */
+  pairRelay(code: string, label: string, publicKey: string, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
     this.assertRelayPairing("code", now);
     if (!this.checkPairingCode(code, now) || !isRelayPublicKey(publicKey)) {
       this.noteRelayFailure("code", now);
@@ -566,6 +570,7 @@ export class DeviceStore {
     // one that brings back a key this PC revoked itself (on a PC in no account) undoes that revoke, and is the PC's own
     // pairing, so a tombstone that comes back (a sibling dir, a stop before it is cleared) takes it only if newer
     const undoesRevoke = remote && accountless && this.isTombstoned(publicKey);
+    if (admit && !admit()) return null;
     const paired = this.enrollRelay(label, publicKey, now, true, undoesRevoke ? undefined : startedBy ?? undefined);
     if (!remote || accountless) this.clearTombstone(publicKey);
     return paired;
@@ -588,9 +593,10 @@ export class DeviceStore {
 
   /**
    * A pairing by comparing digits that was approved (server/relay/session.ts): on this PC, or by the
-   * account member `addedBy` through the relay. No code is spent.
+   * account member `addedBy` through the relay. No code is spent. `admit` as in pairRelay: asked last, false makes
+   * no device and counts no failure.
    */
-  pairRelayApproved(label: string, publicKey: string, approval: { path: PairingPath; addedBy?: string; id?: string }, now = Date.now()): { device: DeviceMatch } | null {
+  pairRelayApproved(label: string, publicKey: string, approval: { path: PairingPath; addedBy?: string; id?: string }, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
     this.assertRelayPairing(approval.path, now);
     if (!isRelayPublicKey(publicKey)) { this.noteRelayFailure(approval.path, now); return null; }
     // an approver revoked or demoted while the device waited approves nothing
@@ -599,6 +605,7 @@ export class DeviceStore {
     if (approval.addedBy !== undefined && (this.accountError !== null || this.isTombstoned(publicKey))) { this.noteRelayFailure(approval.path, now); return null; }
     // the id an approver was told is the one the row takes; a row already holding it (the same key) is not made twice
     if (approval.id !== undefined && this.has(approval.id)) { this.noteRelayFailure(approval.path, now); return null; }
+    if (admit && !admit()) return null;
     // no code was used, so one still showing on the PC keeps working
     const paired = this.enrollRelay(label, publicKey, now, false, approval.addedBy, approval.id);
     // written after the row, so a stop between the two leaves a row newer than its tombstone (finishInterruptedWrites)

@@ -147,11 +147,14 @@ pairing hosts, in a release most PCs run.
   `new` 0, the relay then closes that client `4403` (`no new sessions for this server`), whether it
   arrived before or after the PC; otherwise it drops the frame. The PC's own devices, reconnecting
   or not, its other clients and its own sockets stay, and a client the PC has not identified hears
-  nothing of the pass. `off` and `grace` let every client in whatever the pass says. Ovis's PCs do
-  not send `new_session` yet.
+  nothing of the pass. `off` and `grace` let every client in whatever the pass says. An Ovis PC
+  names a client once a pairing on its session would make a device (a code that holds, or a
+  comparison both people confirmed), and only while `sync` says passes are enforced
+  ([docs/relay.md](../docs/relay.md#relay-pass)).
 - **Modes**, from `RELAY_PASS_MODE` (`--pass-mode`): `off` (the default) lets every PC in as
-  before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at"}` to the control
-  socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`) and, while the room has no pass
+  before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at","mode"}` to the control
+  socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`; `mode` the configured one, `grace` or
+  `enforce`, from which with `enforce_at` a PC knows whether passes are enforced now) and, while the room has no pass
   that holds, to a client's `assigned` (`missing`), so the app can say so; older PCs read neither.
   `enforce` closes a PC socket without a pass that holds `4402` (on Cloudflare in the Worker, before
   any Durable Object), and a room whose pass ran out closes its PC sockets `4402` (its clients with

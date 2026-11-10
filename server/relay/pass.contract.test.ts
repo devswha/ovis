@@ -155,7 +155,7 @@ test("an enforcing relay refuses a PC with no account to name; once its owner na
   expect((await f.nameAccount("acct_2")).status).toBe(204);
   expect((await f.nameAccount("not an id")).status).toBe(400);
   expect((await f.nameAccount("acct_1")).status).toBe(204);
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z", mode: "enforce" });
   const online: RelayStatus = f.service.status();
   expect(online.phase).toBe("online");
   expect(online.error_code).toBeNull();
@@ -215,7 +215,7 @@ test("a restarted PC goes online on the pass it saved, without asking the accoun
   expect(asked).toBeGreaterThan(0);
   await f.restart();
   await f.start();
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z", mode: "enforce" });
   expect(f.asked).toHaveLength(asked);
 });
 
@@ -227,7 +227,7 @@ test("a pass saved before the account service's address stopped parsing still le
   // restarted with an OVIS_ACCOUNT_SERVICE_URL that does not parse: no new pass can be asked for, the saved one still holds
   await f.restart({ accountService: new Error("Invalid OVIS_ACCOUNT_SERVICE_URL") });
   await f.start();
-  expect(await bounded(Promise.race([f.synced.then((sync) => sync["relay_pass"]), f.refused]))).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect(await bounded(Promise.race([f.synced.then((sync) => sync["relay_pass"]), f.refused]))).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z", mode: "enforce" });
   // the status says so too, after a refresh as well (naming another account asks again): a pass is in use, though no
   // new one can be asked for
   expect((await f.nameAccount("acct_2")).status).toBe(204);
@@ -283,7 +283,7 @@ test("a test PC on a staging copy of Ovis's relay (OVIS_RELAY_STAGING=1 with OVI
   // written by hand: any case, a trailing dot): the relay counts as Ovis's for the setting alone
   await f.restart({ relay: undefined, ovisRelays: undefined, accountService: "https://Account-Staging.devswha.workers.dev." });
   await f.start();
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z", mode: "enforce" });
   expect(f.headers.at(-1)?.[RELAY_PASS_HEADER]).toStartWith("ovp1.");
 });
 
@@ -309,7 +309,7 @@ test("with the staging setting the PC uses the one relay OVIS_RELAY_URL names, a
   withEnv({ OVIS_RELAY_STAGING: "1", OVIS_RELAY_URL: regional });
   await f.restart({ relay: undefined, ovisRelays: undefined, accountService: STAGING_ACCOUNT_SERVICE });
   await f.start();
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z", mode: "enforce" });
   expect(f.dialed.map((socket) => socket.origin)).toEqual(f.dialed.map(() => regional));
 });
 
@@ -333,7 +333,7 @@ test("a pass the relay refuses is dropped and a new one asked for at once", asyn
   writeFileSync(join(f.stateDir, "relay", "pass.json"), JSON.stringify({ pass: await signRelayPass(stale.privateKey, KID, identity.server_id, Math.floor(Date.now() / 1000)), server_id: identity.server_id, service: "https://account.test", expires_at: Date.now() + 3_600_000, refresh_at: Date.now() + 3_600_000 }));
   await f.start();
   expect(await bounded(f.refused)).toEqual({ code: 4402, reason: "relay pass invalid" });
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "ok", enforce_at: "2099-01-01T00:00:00.000Z", mode: "enforce" });
   expect(f.service.status().phase).toBe("online");
 });
 
@@ -351,7 +351,7 @@ test("a pass renewed while online goes to the relay on the open control socket",
 test("in grace, a PC that signs in sends its pass on the open control socket and the sign-in notice is over", async () => {
   const f = await fixture("grace");
   await f.start();
-  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "missing", enforce_at: "2099-01-01T00:00:00.000Z" });
+  expect((await bounded(f.synced))["relay_pass"]).toEqual({ state: "missing", enforce_at: "2099-01-01T00:00:00.000Z", mode: "grace" });
   expect(f.service.status().pass).toMatchObject({ relay: "missing", enforce_at: "2099-01-01T00:00:00.000Z" });
   expect((await f.nameAccount("acct_1")).status).toBe(204);
   await bounded(f.renewal);

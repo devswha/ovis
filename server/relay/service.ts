@@ -316,7 +316,7 @@ export class RelayService {
       ...(this.options.accountFetch ? { fetch: this.options.accountFetch } : {}), ...(this.options.passClock ? { clock: this.options.passClock } : {}),
       onPass: (pass) => {
         // the relay takes a renewal on the open control socket without a word: a notice that the pass was missing is over
-        if (this.passNotice !== null && this.passNotice.state !== "ok") this.passNotice = { state: "ok", enforce_at: this.passNotice.enforce_at };
+        if (this.passNotice !== null && this.passNotice.state !== "ok") this.passNotice = { ...this.passNotice, state: "ok" };
         if (this.passFor(this.relay) === pass) this.link?.renewPass(pass);
         if (this.passFor(this.regionalRelay) === pass) this.regionalLink?.renewPass(pass); },
     });

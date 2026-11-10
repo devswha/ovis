@@ -710,8 +710,15 @@ run yourself need no account and no pass.
   it, and only once every relay runs a version that reads it. An older PC names none and gets v1.
   While passes are enforced and the PC's pass says `new` 0, a relay closes a client the PC has
   identified as a device new to it (named on its control socket with `new_session`) with `4403`
-  (`no new sessions for this server`); its own devices and the clients already connected stay. The
-  PC does not send `new_session` yet.
+  (`no new sessions for this server`); its own devices and the clients already connected stay.
+  The PC names a client only once a pairing on its session would make a device (`server/relay/link.ts`
+  `refuseNewDevice`): a pairing code that holds, or a comparison of digits both people confirmed. It
+  then makes no device, spends no code and counts no failed pairing, and closes the client's socket
+  itself after 2 s should the relay not. A device it knows signs in as ever, on a new socket too, and a
+  client that has not got that far (a wrong code, a comparison nobody approved) hears nothing of the
+  pass. The PC does so only while the relay enforces passes, which `sync` says in `relay_pass.mode`
+  (`enforce`, or `grace` past `enforce_at`), and the pass it sends is a v2 pass with `new` 0 that has not
+  run out; a relay that names no mode counts as enforcing only past its `enforce_at`.
 - **Keeping it.** The pass lasts 48 hours. The PC keeps it in `relay/pass.json` (readable by your user
   only), so a restart or an account service outage costs nothing while it holds, and asks for the
   next one after 12 hours, backing off (and honoring `Retry-After`) when the service does not answer.
@@ -729,7 +736,7 @@ run yourself need no account and no pass.
   says where it stands in `pass`: `state` (`ok`, `no_account`, `not_listed`, `limit` or
   `unavailable`), what the relay last said of it (`relay`), and from when the relay will need it
   (`enforce_at`). `new_sessions: false` there means the pass in use says new client sessions to this
-  PC are not allowed for the pass's lifetime (enforced by a later relay change), shown only while
+  PC are not allowed for the pass's lifetime, shown only while
   the relay says passes are on and this one holds (`relay` `ok`); it is absent otherwise. `pass` is absent on a relay that is not Ovis's, and with
   `OVIS_ACCOUNT_SERVICE_URL=off`. `error_code` says which of the reasons below it is.
 
