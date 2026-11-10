@@ -44,15 +44,17 @@ const SIDES = ["dark", "light"] as const;
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
- * A name as it is kept: one line, at most MAX_THEME_NAME characters, without control characters or
- * the marks that reorder the text around it (a name from someone else's file is drawn in Settings).
- * A name that would draw nothing is no name.
+ * A name as it is kept: one line, at most MAX_THEME_NAME characters, in one spelling (NFC), without
+ * control characters and without anything that draws nothing or reorders the text around it: a
+ * name from someone else's file is drawn in Settings, and two names that look the same are one
+ * name. A name that would draw nothing is no name. Cleaning a clean name changes nothing.
  */
 function cleanName(value: unknown): string {
   if (typeof value !== "string") return "";
-  const plain = value.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ");
+  // the unseen marks go first: a letter and its accent they stood between then join as one
+  const plain = value.replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").normalize("NFC");
   const name = [...plain.replace(/\s+/g, " ").trim()].slice(0, MAX_THEME_NAME).join("").trim();
-  return /[^\p{Cf}\p{Z}]/u.test(name) ? name : "";
+  return /[^\p{Z}]/u.test(name) ? name : "";
 }
 
 const color = (value: unknown): string | null => {
@@ -177,8 +179,10 @@ function scalar(text: string): string {
  * A Base16 scheme's YAML, read line by line: its sixteen `baseXX: "rrggbb"` lines wherever they
  * are indented, and its `name:` (or the older `scheme:`). No YAML beyond that is understood, and
  * none is needed for a scheme file. Every step is linear in the line, and a long line is skipped.
+ * A scheme is one side: null for a file that holds more than one (a colour named twice, or a
+ * `dark:` or `light:` block of its own), whose lines would otherwise run together into one block.
  */
-function readSchemeLines(text: string): Record<string, unknown> {
+function readSchemeLines(text: string): Record<string, unknown> | null {
   const palette: Record<string, string> = {};
   const scheme: Record<string, unknown> = { palette };
   for (const raw of text.split("\n")) {
@@ -188,9 +192,15 @@ function readSchemeLines(text: string): Record<string, unknown> {
     if (colon <= 0) continue;
     const key = line.slice(0, colon).trimEnd();
     const value = scalar(line.slice(colon + 1).trimStart());
-    if (/^base0[0-9a-f]$/i.test(key)) palette[key] = value;
-    // a field of the scheme itself, not of something nested in it
-    else if ((key === "name" || key === "scheme") && raw.startsWith(key) && !(key in scheme)) scheme[key] = value;
+    const seed = BASE16_KEYS.find((known) => known.toLowerCase() === key.toLowerCase());
+    if (seed) {
+      if (seed in palette) return null;
+      palette[seed] = value;
+    } else if (raw.startsWith(key)) {
+      // a field of the scheme itself, not of something nested in it
+      if (key === "dark" || key === "light") return null;
+      if ((key === "name" || key === "scheme") && !(key in scheme)) scheme[key] = value;
+    }
   }
   return scheme;
 }
@@ -208,12 +218,14 @@ export function readThemeFile(file: string, fallbackName = ""): ThemeFileResult 
   if (file.length > MAX_THEME_FILE_BYTES) return { error: "too-large" };
   const text = file.startsWith("\ufeff") ? file.slice(1) : file;
   let parsed: unknown;
-  let json = true;
-  try { parsed = JSON.parse(text); } catch { json = false; parsed = readSchemeLines(text); }
+  try { parsed = JSON.parse(text); } catch {
+    // JSON in everything but a slip (a trailing comma, a comment, unquoted keys) is said to be that. The line
+    // reader would take some of its lines for a scheme's and import half of it, or find none and say "no colors".
+    if (/^\s*(\{|\/\/|\/\*)/.test(text)) return { error: "not-json" };
+    parsed = readSchemeLines(text);
+    if (parsed !== null && Object.keys((parsed as { palette: object }).palette).length === 0 && /"base0[0-9a-f]"\s*:/i.test(text)) return { error: "not-json" };
+  }
   if (!isObject(parsed)) return { error: "not-a-theme" };
-  // JSON in everything but a slip (a trailing comma, a comment): the line reader finds none of its quoted keys,
-  // and "no colors" would send its writer looking for the wrong thing
-  if (!json && Object.keys(parsed["palette"] as object).length === 0 && (/^\s*\{/.test(text) || /"base0[0-9a-f]"\s*:/i.test(text))) return { error: "not-json" };
   const name = cleanName(parsed["name"]) || cleanName(parsed["scheme"]) || cleanName(fallbackName) || "Theme";
   // the app's own shape: a block for either side
   if (isObject(parsed["dark"]) || isObject(parsed["light"])) {
@@ -274,12 +286,15 @@ export function withTheme(current: CustomThemes, theme: CustomTheme, side: Mode)
 
 /**
  * The list after `theme` is imported: chosen for each side it has, and null when the list is full.
- * A held theme of the same name is the one this file was before it was edited: the new one takes
- * its place in the list, and a side that drew the old one draws this one. So an author who changes
- * a colour and imports again has one theme, not a row of twins that fills the list.
+ * A held theme of the same name and the same sides is the one this file was before it was edited:
+ * the new one takes its place in the list, and a side that drew the old one draws this one. So an
+ * author who changes a colour and imports again has one theme, not a row of twins that fills the
+ * list. A theme of that name with other sides is another theme (a dark file and a light file both
+ * called theme.json): it stays, and the list tells the two apart by their sides.
  */
 export function withImported(current: CustomThemes, theme: CustomTheme): CustomThemes | null {
-  const earlier = current.themes.filter((entry) => entry.name === theme.name && entry.id !== theme.id).map((entry) => entry.id);
+  const sameSides = (entry: CustomTheme): boolean => SIDES.every((side) => (entry[side] === undefined) === (theme[side] === undefined));
+  const earlier = current.themes.filter((entry) => entry.name === theme.name && entry.id !== theme.id && sameSides(entry)).map((entry) => entry.id);
   let next = current;
   if (earlier.length > 0) {
     const at = current.themes.findIndex((entry) => entry.id === earlier[0]);

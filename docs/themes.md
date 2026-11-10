@@ -12,8 +12,10 @@ and phones of that PC get it too. Up to 12 themes are kept; the trash button bes
 one.
 
 **Importing a file again replaces the theme of that name.** Change a color, import the file once
-more, and the new colors take the place of the old ones, on whichever side drew them. Two themes
-are two names.
+more, and the new colors take the place of the old ones, on whichever side drew them. Only a theme
+with the same name and the same sides is replaced: a dark file and a light file of one name are
+kept as two themes, told apart by the side written beside each. Names that look the same are the
+same name: characters that draw nothing are not kept.
 
 ## The colors
 
@@ -108,13 +110,15 @@ palette:
 ```
 
 The older flat form (`scheme: "Name"` with `base00: "181613"` lines beside it) is read too. A
-scheme is one side: a background darker than the text is a dark theme.
+scheme is one side: a background darker than the text is a dark theme. A file with a dark and a
+light side is the JSON above; YAML that holds two sides (a `dark:` or `light:` block, or a color
+named twice) is refused rather than read as one.
 
 ## Limits
 
 - A file is at most 64 KB, and a name at most 40 characters.
-- A JSON file has to be plain JSON: a trailing comma or a comment refuses it, and the message says
-  so.
+- A JSON file has to be plain JSON: a trailing comma, a comment or an unquoted key refuses it, and
+  the message says so.
 - The imported themes and the choice for each side are one shared setting, and the last save wins.
   When two devices change it before they have heard from each other (one imports a theme while
   the other, offline, imports one or switches a side back to a built-in theme), the later save

@@ -124,12 +124,24 @@ describe("readThemeFile", () => {
     expect(theme(`\ufeff${JSON.stringify({ name: "B", base00: "#101010", base05: "#e0e0e0" })}`).name).toBe("B");
   });
 
+  test("a scheme is one side: a file whose lines hold two is refused, not run together into one", () => {
+    // the app's two-sided shape written as YAML: its blocks' lines would overwrite each other
+    const yaml = `name: "Two"\ndark:\n  base00: "101010"\n  base05: "e0e0e0"\n  base0D: "ff0000"\nlight:\n  base00: "ffffff"\n  base05: "202020"\n`;
+    expect(readThemeFile(yaml)).toEqual({ error: "not-a-theme" });
+    expect(readThemeFile(`dark:\n  base00: "101010"\n  base05: "e0e0e0"\n`)).toEqual({ error: "not-a-theme" });
+    // a colour named twice, whatever the case of its key
+    expect(readThemeFile(`base00: "101010"\nbase05: "e0e0e0"\nBASE00: "ffffff"\n`)).toEqual({ error: "not-a-theme" });
+    // a scheme whose nested fields are called dark or light is still a scheme
+    expect(theme(`name: "Nested"\nmeta:\n  dark: true\npalette:\n  base00: "101010"\n  base05: "e0e0e0"\n`).dark?.base00).toBe("#101010");
+  });
+
   test("a line no scheme would write takes no time: a long one is skipped", () => {
     const long = `name: a${" ".repeat(63_000)}x\nbase00: "101010"\nbase05: "e0e0e0"\n`;
     const started = performance.now();
     expect(theme(long, "fallback").name).toBe("fallback");
     expect(readThemeFile(`${"base00: ".repeat(7_000)}\n`)).toEqual({ error: "not-a-theme" });
-    expect(readThemeFile(`base00:${" ".repeat(150)}#\n`.repeat(400))).toEqual({ error: "bad-color", key: "base00" });
+    expect(readThemeFile(`base00:${" ".repeat(150)}#\n`)).toEqual({ error: "bad-color", key: "base00" });
+    expect(readThemeFile(`base00:${" ".repeat(150)}#\n`.repeat(400))).toEqual({ error: "not-a-theme" });
     expect(performance.now() - started).toBeLessThan(500);
   });
 
@@ -148,7 +160,9 @@ describe("readThemeFile", () => {
     expect(readThemeFile("x".repeat(MAX_THEME_FILE_BYTES + 1))).toEqual({ error: "too-large" });
     for (const text of ["", "hello", "42", "null", "[]", "{}", '{"name":"x"}', "name: only\n", "<html>", "[theme.custom.dark]\nbase00 = \"#101010\"\n"]) expect(readThemeFile(text), text).toEqual({ error: "not-a-theme" });
     // JSON but for a slip is said to be that, not a file without colours
-    for (const text of [EXAMPLE.replace(/"\s*\}\s*\}\s*$/, '",\n  }\n}\n'), `// my theme\n${EXAMPLE}`, `/* mine */ ${EXAMPLE}`, EXAMPLE.replace(/\}\s*$/, ""), '{"base00": "#101010", "base05": "#e0e0e0",}', "{ name: 'x' }"]) {
+    // (JSON5 with its unquoted keys among them: the line reader would take one of its two blocks and call it a theme)
+    const json5 = `{\n  name: "Two",\n  dark: {\n    base00: "#101010",\n    base05: "#e0e0e0",\n  },\n  light: {\n    base00: "#ffffff",\n    base05: "#202020",\n  },\n}\n`;
+    for (const text of [EXAMPLE.replace(/"\s*\}\s*\}\s*$/, '",\n  }\n}\n'), `// my theme\n${EXAMPLE}`, `/* mine */ ${EXAMPLE}`, EXAMPLE.replace(/\}\s*$/, ""), '{"base00": "#101010", "base05": "#e0e0e0",}', "{ name: 'x' }", json5, `// two\n${json5}`, `  \n{ base00: "#101010", base05: "#e0e0e0" }`]) {
       expect(() => JSON.parse(text), text.slice(0, 30)).toThrow();
       expect(readThemeFile(text), text.slice(0, 30)).toEqual({ error: "not-json" });
     }
@@ -179,6 +193,16 @@ describe("readThemeFile", () => {
     // a mark that would draw the rest of the line backwards is dropped, in a file and in a stored list
     expect(theme(JSON.stringify({ name: "ab\u202ecd\u2066ef\u200f", base00: "#000000", base05: "#ffffff" })).name).toBe("abcdef");
     expect(sanitizeCustomThemes({ themes: [{ ...read, name: "x\u202ey" }], dark: null, light: null }).themes[0]!.name).toBe("xy");
+    // names that look the same are one name: nothing unseen is kept (a soft hyphen, a zero-width space, a word
+    // joiner, a variation selector, a tag), and one spelling of an accented letter
+    const named = (name: string): string => theme(JSON.stringify({ name, base00: "#000000", base05: "#ffffff" })).name;
+    for (const unseen of ["\u200b", "\u00ad", "\u2060", "\ufe0f", "\u{e0001}", "\u200d", "\u034f", "\u3164"]) expect(named(`Lamp${unseen}light${unseen}`), unseen.codePointAt(0)!.toString(16)).toBe("Lamplight");
+    expect(named("Rose\u0301 Pine")).toBe("Ros\u00e9 Pine");
+    expect(named("Ros\u00e9 Pine")).toBe("Ros\u00e9 Pine");
+    // a letter and its accent with something unseen between them join as well, so cleaning a kept name changes nothing
+    expect(named("Rose\u200d\u0301")).toBe("Ros\u00e9");
+    for (const name of ["Rose\u200d\u0301 Pine", "\u202eab\u00adc", "e\u0301".repeat(60), "\ud83d", "A\u0085B"]) expect(named(named(name)), name).toBe(named(name));
+    expect(sanitizeCustomThemes({ themes: [{ ...read, name: "Lamp\u200blight" }], dark: null, light: null }).themes[0]!.name).toBe("Lamplight");
     // a name that would draw nothing is no name: the file's own name stands in, and a stored one is dropped
     expect(theme(JSON.stringify({ name: "\u200b\u200d \u2060", base00: "#000000", base05: "#ffffff" }), "from-file").name).toBe("from-file");
     expect(sanitizeCustomThemes({ themes: [{ ...read, name: "\u200b" }], dark: null, light: null })).toBe(NO_CUSTOM_THEMES);
@@ -232,16 +256,33 @@ describe("the kept list", () => {
     expect(list).toEqual({ themes: [second, last], dark: last.id, light: last.id });
     // the same file once more changes nothing
     expect(withImported(list, last)).toEqual(list);
-    // a side that draws another theme keeps it when the edited one has no block for it
+    // a theme of that name with other sides is another theme: it is added, and the side it has no block for keeps what it drew
     const darkOnly = theme(JSON.stringify({ name: "Lamplight", dark: last.dark }));
-    expect(withImported({ ...list, light: second.id }, darkOnly)).toEqual({ themes: [second, darkOnly], dark: darkOnly.id, light: second.id });
-    // and one that drew the earlier file draws the new one, on the block it has
-    expect(withImported(list, darkOnly)).toEqual({ themes: [second, darkOnly], dark: darkOnly.id, light: darkOnly.id });
+    expect(withImported(list, darkOnly)).toEqual({ themes: [second, last, darkOnly], dark: darkOnly.id, light: last.id });
+    // and an edit of that one replaces it, not the two-sided one
+    const darkAgain = theme(JSON.stringify({ name: "Lamplight", dark: { ...last.dark, base00: "#000000" } }));
+    expect(withImported(withImported(list, darkOnly)!, darkAgain)).toEqual({ themes: [second, last, darkAgain], dark: darkAgain.id, light: last.id });
     // twins left by an earlier build fold into one
     const twins = { themes: [first, second, edit("#181601"), edit("#181602")], dark: edit("#181602").id, light: second.id };
     expect(withImported(twins, last)).toEqual({ themes: [last, second], dark: last.id, light: last.id });
     // every list it makes is one the shared document's copy survives (lib/preferencesSync.ts)
     for (const made of [list, withImported(twins, last)!]) expect(JSON.stringify(sanitizeCustomThemes(JSON.parse(JSON.stringify(made))))).toBe(JSON.stringify(made));
+  });
+
+  test("two files of one name and different sides are two themes: neither import deletes the other", () => {
+    // a dark scheme and a light scheme nobody renamed, or two unnamed files that both fall back to their file's name
+    const night = theme(`scheme: "Mine"\nbase00: "101010"\nbase05: "e0e0e0"\n`), day = theme(`scheme: "Mine"\nbase00: "ffffff"\nbase05: "202020"\n`);
+    expect(night.name).toBe(day.name);
+    let list = withImported(NO_CUSTOM_THEMES, night)!;
+    expect(list).toEqual({ themes: [night], dark: night.id, light: null });
+    list = withImported(list, day)!;
+    expect(list).toEqual({ themes: [night, day], dark: night.id, light: day.id });
+    expect(customRow(chosenTheme(list, "dark")!, "dark").mode).toBe("dark");
+    expect(customRow(chosenTheme(list, "light")!, "light").mode).toBe("light");
+    // either one again changes nothing
+    expect(withImported(withImported(list, night)!, day)).toEqual(list);
+    const unnamedNight = theme(JSON.stringify({ base00: "#101010", base05: "#e0e0e0" }), "theme"), unnamedDay = theme(JSON.stringify({ base00: "#ffffff", base05: "#202020" }), "theme");
+    expect(withImported(withImported(NO_CUSTOM_THEMES, unnamedNight)!, unnamedDay)!.themes).toEqual([unnamedNight, unnamedDay]);
   });
 
   test("a full list still takes an edit of a theme it holds, and refuses another name", () => {
