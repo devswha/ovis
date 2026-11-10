@@ -469,7 +469,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     h.pending.enqueue("owner", h.pane.pane_id, 1, "queued", null, { agent: "claude", terminalId: "test", session: h.pane.agent_session.value });
   const fires = (path: string) =>
     appendFileSync(path, line({ type: "system", subtype: "scheduled_task_fire", taskKind: "loop", taskId: "591b6f5a", timestamp: new Date(at + 4000).toISOString() }));
-  const turnEnds = (h: Fixture) =>
+  const turnEnds = (h: Pick<Fixture, "path">) =>
     appendFileSync(h.path, line({ type: "system", subtype: "turn_duration", timestamp: new Date(at + 6000).toISOString() }));
   /** A turn that set its wakeup and came to rest, which herdr told: every read of the pane says idle from here. `drained`: each time its queue is told to look again. */
   const rested = async (drained: string[] = []): Promise<Fixture> => {
