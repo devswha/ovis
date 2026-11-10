@@ -36,10 +36,12 @@ const snapshot: ServerMessage = { type: "snapshot", features: ["submit", "pendin
 const message = (id: string, state: PendingMessage["state"] = "queued"): PendingMessage => ({ id, request_id: 1, text: "review this next", state, created_at: "2026-10-11T00:00:00Z" });
 function setup(machineId = "local", sharedStore?: PendingMessageStore) {
   const data = new Map<string, string>();
-  const store = sharedStore ?? new PendingMessageStore(() => ({ getItem: (key) => data.get(key) ?? null, setItem: (key, value) => { data.set(key, value); }, removeItem: (key) => { data.delete(key); } }));
+  /** what the page saved: another store on it reads as a page opened later does */
+  const port = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
+  const store = sharedStore ?? new PendingMessageStore(() => port);
   const socket = new FakeSocket();
   const session = new MachineSession(machineId, { socket: socket as unknown as HerdrSocket, pendingStore: store });
-  return { session, socket, store };
+  return { session, socket, store, port };
 }
 function start(session: MachineSession, socket: FakeSocket): void { session.connect(); socket.receive(snapshot); }
 const named = (herdr_lifetime: string): ServerMessage => ({ type: "snapshot", features: ["submit", "pending-input"], snapshot: { version: "test", protocol: 22, workspaces: [], tabs: [], panes: [], agents: [], layouts: [], herdr_lifetime } });
@@ -443,25 +445,34 @@ describe("PC connection ownership", () => {
     session.close();
   });
 
-  it("suspends ownership on a real disconnect before view callbacks and never revives it on reconnect", () => {
-    const { session, socket, store } = setup();
+  it("suspends ownership on a real disconnect before view callbacks and never revives it on reconnect; a hold its sender asked for stays held", () => {
+    const { session, socket, store, port } = setup();
     start(session, socket);
     const epoch = session.epoch, oldScope = session.scope;
     const owner = paneStorageId("local", "w1:p1");
     session.acceptPending("w1:p1", message("queued"), epoch);
-    session.acceptPending("w1:p1", message("held", "held"), epoch);
+    // the bridge held this one for a reason of its own, and it names the reason
+    session.acceptPending("w1:p1", { ...message("held", "held"), error: { code: "pending_turn_unconfirmed", message: "The next turn did not start in time; review and send the remaining messages explicitly" } }, epoch);
+    // its sender asked the bridge to hold this one (Alt+Enter, or automatic sending off): held, with no reason
+    session.acceptPending("w1:p1", message("asked", "held"), epoch);
+    const rows = () => store.read(owner).map(({ id, state, serverOwned }) => [id, state, serverOwned]);
     session.onDisconnect(() => {
       expect(session.scope).toBeNull();
       expect(session.epoch).toBe(epoch + 1);
-      // a held row lost with its connection is uncertain until a receipt proves it again
-      expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["uncertain", false]]);
+      // a row the bridge held, lost with its connection, is uncertain until a receipt proves it again;
+      // the hold its sender asked for stays held: nothing sends it but its Send now
+      expect(rows()).toEqual([["queued", "uncertain", false], ["held", "uncertain", false], ["asked", "held", false]]);
     });
     socket.disconnect();
     start(session, socket);
     expect(session.scope).not.toBe(oldScope);
+    // a bridge that restarted knows none of them and sends no receipt
     socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [] });
     session.acceptPending("w1:p1", message("queued"), epoch);
-    expect(store.read(owner).map(({ state, serverOwned }) => [state, serverOwned])).toEqual([["uncertain", false], ["uncertain", false]]);
+    expect(rows()).toEqual([["queued", "uncertain", false], ["held", "uncertain", false], ["asked", "held", false]]);
+    // and a page opened after it (a reload) reads them the same from what was saved
+    expect(new PendingMessageStore(() => port).read(owner).map(({ id, state }) => [id, state]))
+      .toEqual([["queued", "uncertain"], ["held", "uncertain"], ["asked", "held"]]);
     session.close();
   });
 

@@ -1,8 +1,18 @@
 import type { PendingMessage, PendingRemoval } from "../../shared/protocol.ts";
 import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
 
-/** `heldUntil`: held only on this page, by a held receipt, until this time (Date.now); saved, and once it passes, the copy is uncertain */
-export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number; heldUntil?: number }
+/**
+ * `heldUntil`: held only on this page, by a held receipt, until this time (Date.now); saved, and once it passes, the copy is uncertain.
+ * `heldByRequest`: its sender held it on purpose (`delivery: "hold"`: Alt+Enter, or a follow-up with automatic sending off). The
+ * bridge never sends such a message by itself, so its saved copy stays held, with Send now, through a lost connection, a reload
+ * and a restart of the server; it needs no receipt and takes no `heldUntil`.
+ */
+export interface PendingMessageView extends PendingMessage { serverOwned: boolean; resendInFlight?: true; resendGeneration?: number; heldUntil?: number; heldByRequest?: true }
+/**
+ * Whether the bridge's own message says its sender asked for the hold: the bridge holds that one with no reason, and every
+ * other hold names its reason (a lost connection, a turn that never started, a refused send; server/pending-input.ts).
+ */
+const requestedHold = (message: PendingMessage): boolean => message.state === "held" && message.error === undefined;
 type StoragePort = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 /** a resumed `held` ID (the frame's own `held` field) travels with the removals */
 export type Removal = PendingRemoval | { id: string; outcome: "held"; resumed: true; /** when (Date.now) the bridge's receipt ends */ until: number };
@@ -117,15 +127,19 @@ export class PendingMessageStore {
       const ids = new Set<string>();
       return data.messages.flatMap((item: unknown) => {
         if (!item || typeof item !== "object") return [];
-        const message = item as PendingMessage & { resendInFlight?: unknown; resendGeneration?: unknown };
+        const message = item as PendingMessage & { resendInFlight?: unknown; resendGeneration?: unknown; heldByRequest?: unknown };
         if (typeof message.id !== "string" || !message.id || ids.has(message.id) || typeof message.text !== "string" || typeof message.created_at !== "string"
           || !Number.isSafeInteger(message.request_id) || !["queued", "sending", "held", "uncertain"].includes(message.state)) return [];
         ids.add(message.id);
         const error = message.error && typeof message.error.code === "string" && typeof message.error.message === "string" ? message.error : undefined;
         const restoredError = error?.code === "pi_transcript_pending"
           ? { code: "transcript_unconfirmed", message: "The bridge connection ended before Pi's transcript append was confirmed" } : error;
+        // a hold its sender asked for is held on its saved copy's word, as before; any other needs a receipt.
+        // A copy an older release saved has no mark: held with no reason, it is one too (requestedHold)
+        const heldByRequest = message.heldByRequest === true || (message.state === "held" && error === undefined);
         return [{ id: message.id, request_id: message.request_id, text: message.text, created_at: message.created_at,
-          state: saved && message.state === "held" && message.resendInFlight !== true ? "held" as const : "uncertain" as const,
+          state: (saved || heldByRequest) && message.state === "held" && message.resendInFlight !== true ? "held" as const : "uncertain" as const,
+          ...(heldByRequest ? { heldByRequest: true as const } : {}),
           ...(typeof message.resendGeneration === "number" && Number.isSafeInteger(message.resendGeneration) && message.resendGeneration >= 0 ? { resendGeneration: message.resendGeneration } : {}),
           ...(message.resendInFlight === true ? { resendInFlight: true as const } : {}), ...(restoredError ? { error: restoredError } : {}),
           ...(message.agent_only === true ? { agent_only: true as const } : {}), serverOwned: false }];
@@ -177,6 +191,8 @@ export class PendingMessageStore {
       const proven = new Map((this.rows.get(owner) ?? []).filter((message) => message.state === "held" && freshReceipt(message.heldUntil))
         .map((message) => [message.id, { text: message.text, until: message.heldUntil!, error: message.error?.code }]));
       const next = loaded.map((message) => {
+        // a hold its sender asked for is held as it is saved: it takes no receipt's end
+        if (message.heldByRequest === true && message.state === "held") return message;
         const kept = proven.get(message.id);
         return kept?.text === message.text && ["uncertain", "held"].includes(String(savedStates.get(message.id))) && !message.resendInFlight && message.error?.code === kept.error
           ? { ...message, state: "held" as const, heldUntil: kept.until } : this.applyHeldResumed(owner, message);
@@ -243,11 +259,14 @@ export class PendingMessageStore {
     const previous = this.read(owner);
     const resendInFlight = previous.find((item) => item.id === message.id)?.resendInFlight;
     const resendGeneration = previous.find((item) => item.id === message.id)?.resendGeneration;
+    // once the bridge told it so, for as long as the copy lives: a refused Send now gives it a reason, not another kind
+    const heldByRequest = previous.find((item) => item.id === message.id)?.heldByRequest === true || requestedHold(message);
     const until = this.heldResumed.get(owner)?.get(message.id);
-    const heldByReceipt = scope === null && !resendInFlight && !this.unconfirmed.has(`${owner}\0${message.id}`)
+    const heldByReceipt = !heldByRequest && scope === null && !resendInFlight && !this.unconfirmed.has(`${owner}\0${message.id}`)
       && !piReceipt(message) && freshReceipt(until);
     const prior = previous.find((item) => item.id === message.id)?.heldUntil;
     const view: PendingMessageView = { ...message, serverOwned: scope !== null,
+      ...(heldByRequest ? { heldByRequest: true as const } : {}),
       ...(resendInFlight ? { resendInFlight } : {}),
       ...(resendGeneration !== undefined ? { resendGeneration } : {}),
       state: resendInFlight ? "uncertain" : heldByReceipt ? "held"
@@ -257,7 +276,8 @@ export class PendingMessageStore {
     // a late held answer for a copy this page holds on a receipt keeps that proof this page's alone
     // (and once its proof has ended, the copy is uncertain)
     // a held answer with no connection left to prove it holds only on a live receipt: otherwise it is uncertain
-    else if (scope === null && view.state === "held") {
+    // (a hold its sender asked for stays held: nothing sends it but its Send now)
+    else if (scope === null && view.state === "held" && !heldByRequest) {
       if (freshReceipt(prior)) view.heldUntil = prior; else view.state = "uncertain";
     }
     const at = previous.findIndex((item) => item.id === message.id);
@@ -349,8 +369,9 @@ export class PendingMessageStore {
       changed = true;
       return message.error?.code === "pi_transcript_pending"
         ? { ...message, serverOwned: false, state: "uncertain" as const, error: { code: "transcript_unconfirmed", message: "The connection ended before Pi's transcript append was confirmed" } }
-        // held only while a connection proved it: past that, a receipt must prove it again
-        : { ...message, serverOwned: false, state: "uncertain" as const };
+        // held only while a connection proved it: past that, a receipt must prove it again. A hold its sender
+        // asked for stays held: the bridge never sends it by itself, so only an ambiguous Send now makes it uncertain
+        : { ...message, serverOwned: false, state: message.heldByRequest && message.state === "held" && !message.resendInFlight ? "held" as const : "uncertain" as const };
     });
     if (proofs?.size === 0) this.scopes.delete(owner);
     if (changed) this.write(owner, next);
@@ -485,11 +506,12 @@ export class PendingMessageStore {
       if (attemptedGeneration !== undefined && (message.resendGeneration ?? 0) > attemptedGeneration) return message;
       const { resendInFlight: _, heldUntil, ...settled } = message;
       // a saved copy refused with nothing typed is held again only while its receipt's proof lasts: after a
-      // disconnect ended that proof, the refusal leaves it uncertain until a receipt proves it again
-      const proven = !uncertain && !message.serverOwned && freshReceipt(heldUntil);
+      // disconnect ended that proof, the refusal leaves it uncertain until a receipt proves it again.
+      // One its sender held on purpose needs no proof: the refusal typed nothing, so it is held as it was
+      const proven = !uncertain && !message.serverOwned && (message.heldByRequest === true || freshReceipt(heldUntil));
       return { ...settled, error,
         ...(uncertain ? { resendInFlight: true as const } : {}),
-        ...(proven ? { heldUntil } : {}),
+        ...(proven && heldUntil !== undefined ? { heldUntil } : {}),
         ...(attemptedGeneration !== undefined ? { resendGeneration: uncertain ? attemptedGeneration : attemptedGeneration + 1 } : {}),
         state: uncertain ? "uncertain" : message.serverOwned ? (attemptedGeneration !== undefined ? "held" : message.state) : proven ? "held" : "uncertain" };
     }));

@@ -9,9 +9,100 @@ const storage = () => {
 /** a held receipt frame as the bridge sends it now (its clock = this page's): each ID with the ms it has left */
 const heldFrame = (left: Record<string, unknown>, sentAt = Date.now()) => ({ held: Object.keys(left), held_ms: left, server_time: sentAt,
   held_until: Object.fromEntries(Object.entries(left).map(([id, ms]) => [id, typeof ms === "number" ? sentAt + ms : ms])) });
-const message = (id: string, state: PendingMessage["state"] = "queued", text = "check the tests"): PendingMessage => ({ id, request_id: 1, text, state, created_at: "2026-10-06T00:00:00Z" });
+/** why the bridge holds a message it was not asked to hold: every such hold names its reason (server/pending-input.ts) */
+const HELD_REASON = { code: "pending_lease_lost", message: "The pane connection changed; send this message explicitly after reviewing it" };
+/** A message as the bridge sends it. One it holds for a reason of its own carries that reason; `requested` is the other kind. */
+const message = (id: string, state: PendingMessage["state"] = "queued", text = "check the tests"): PendingMessage => ({ id, request_id: 1, text, state, created_at: "2026-10-06T00:00:00Z", ...(state === "held" ? { error: HELD_REASON } : {}) });
+/** A message its sender asked the bridge to hold (`delivery: "hold"`: Alt+Enter, or automatic sending off): held, with no reason. */
+const requested = (id: string, text = "check the tests"): PendingMessage => ({ id, request_id: 1, text, state: "held", created_at: "2026-10-06T00:00:00Z" });
 
 describe("pending message ownership", () => {
+  it("keeps a hold its sender asked for held, with Send now, through a lost connection, a reload, a restarted bridge and a refused send; it takes no receipt's end", () => {
+    let now = Date.parse("2026-11-10T00:00:00Z");
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const port = storage(), page = new PendingMessageStore(() => port);
+      const shown = (store: PendingMessageStore) => store.read("p").map(({ id, state, serverOwned, heldByRequest, heldUntil }) => [id, state, serverOwned, heldByRequest ?? false, heldUntil ?? null]);
+      // Alt+Enter, or a follow-up with automatic sending off: the bridge holds it at once, with no reason
+      page.publish("p", [requested("asked")], [], "first");
+      expect(shown(page)).toEqual([["asked", "held", true, true, null]]);
+      // the connection is lost
+      page.suspendScope("first");
+      expect(shown(page)).toEqual([["asked", "held", false, true, null]]);
+      // a reload, and another tab, read it from what was saved
+      expect(shown(new PendingMessageStore(() => port))).toEqual([["asked", "held", false, true, null]]);
+      // a bridge that restarted knows nothing of it: an empty snapshot and no receipt
+      page.publish("p", [], [], "second");
+      expect(shown(page)).toEqual([["asked", "held", false, true, null]]);
+      // a bridge that kept its held receipt tells it: the copy takes no end from it, so ten minutes later it is still held
+      page.publish("p", [], frameRemovals(heldFrame({ asked: 60_000 }, now)), "second");
+      expect(shown(page)).toEqual([["asked", "held", false, true, null]]);
+      now += 10 * 60 * 1000 + 1;
+      expect(shown(page)).toEqual([["asked", "held", false, true, null]]);
+      expect(shown(new PendingMessageStore(() => port))).toEqual([["asked", "held", false, true, null]]);
+      // the old connection's answer coming late, with no connection left to prove it, changes nothing
+      page.accept("p", requested("asked"), null);
+      expect(shown(page)).toEqual([["asked", "held", false, true, null]]);
+      // its Send now refused with nothing typed (a menu is up): held as it was, now with the reason, after a reload too
+      expect(page.begin("p", "asked")).toBe(true);
+      expect(page.unconfirm("p", "asked")).toBe(true);
+      expect(new PendingMessageStore(() => port).read("p")[0]).toMatchObject({ state: "uncertain", resendInFlight: true });
+      page.fail("p", "asked", { code: "agent_blocked", message: "The agent is waiting for an answer in the terminal" }, false, 0);
+      page.end("p", "asked");
+      expect(page.read("p")[0]).toMatchObject({ state: "held", heldByRequest: true, error: { code: "agent_blocked" } });
+      expect(new PendingMessageStore(() => port).read("p")[0]).toMatchObject({ state: "held", heldByRequest: true, error: { code: "agent_blocked" } });
+      // the bridge giving it a reason while it holds it (its pane changed) does not make it another kind of hold
+      const live = new PendingMessageStore(() => storage());
+      live.publish("p", [requested("asked")], [], "first");
+      live.publish("p", [{ ...requested("asked"), error: HELD_REASON }], [], "first");
+      live.suspendScope("first");
+      expect(shown(live)).toEqual([["asked", "held", false, true, null]]);
+    } finally { clock.mockRestore(); }
+  });
+  it("never offers a hold its sender asked for again once its send may have typed it, or once it was discarded", () => {
+    const port = storage(), page = new PendingMessageStore(() => port);
+    page.publish("p", [requested("going"), requested("gone")], [], "first");
+    page.suspendScope("first");
+    // Send now left the page and the connection dropped before any answer: it may have been typed
+    expect(page.begin("p", "going")).toBe(true);
+    expect(page.unconfirm("p", "going")).toBe(true);
+    page.fail("p", "going", { code: "disconnected", message: "The connection closed before the send was confirmed" }, true, 0);
+    page.end("p", "going");
+    expect(page.read("p").find((row) => row.id === "going")).toMatchObject({ state: "uncertain", resendInFlight: true });
+    expect(new PendingMessageStore(() => port).read("p").find((row) => row.id === "going")?.state).toBe("uncertain");
+    // a held receipt that still names it does not hold it again either
+    page.publish("p", [], [{ id: "going", outcome: "held", resumed: true, until: Date.now() + 60_000 }], "second");
+    expect(page.read("p").find((row) => row.id === "going")?.state).toBe("uncertain");
+    // discarded here, then written back by a tab that still had it: not held again on this page
+    const stale = port.getItem("ovis:pending:p")!;
+    page.removeCopy("p", "gone");
+    expect(page.read("p").map((row) => row.id)).toEqual(["going"]);
+    port.setItem("ovis:pending:p", stale);
+    page.refresh("p");
+    expect(page.read("p").find((row) => row.id === "gone")?.state).toBe("uncertain");
+  });
+  it("tells the two kinds of held copy apart by the bridge's reason: only the one its sender asked for is held on its saved copy's word", () => {
+    const port = storage(), page = new PendingMessageStore(() => port);
+    // a follow-up queued and then held as its connection closed, one the bridge held for its own reason, and one its sender asked to hold
+    page.publish("p", [message("queued"), message("faulted", "held"), requested("asked")], [], "first");
+    expect(page.read("p").map(({ id, state, heldByRequest }) => [id, state, heldByRequest ?? false])).toEqual([["queued", "queued", false], ["faulted", "held", false], ["asked", "held", true]]);
+    page.suspendScope("first");
+    const states = (store: PendingMessageStore) => store.read("p").map(({ id, state }) => [id, state]);
+    expect(states(page)).toEqual([["queued", "uncertain"], ["faulted", "uncertain"], ["asked", "held"]]);
+    expect(states(new PendingMessageStore(() => port))).toEqual([["queued", "uncertain"], ["faulted", "uncertain"], ["asked", "held"]]);
+    // the bridge's held receipt proves the other two untyped, on this page only and until its end
+    page.publish("p", [], frameRemovals(heldFrame({ queued: 60_000, faulted: 60_000, asked: 60_000 })), "second");
+    expect(page.read("p").map(({ id, state, heldUntil }) => [id, state, heldUntil !== undefined])).toEqual([["queued", "held", true], ["faulted", "held", true], ["asked", "held", false]]);
+    expect(states(new PendingMessageStore(() => port))).toEqual([["queued", "uncertain"], ["faulted", "uncertain"], ["asked", "held"]]);
+    // any later disconnect ends those proofs, and leaves the asked one held
+    page.suspendScope("second");
+    expect(states(page)).toEqual([["queued", "uncertain"], ["faulted", "uncertain"], ["asked", "held"]]);
+    // copies an older release saved carry no mark: held with no reason is one its sender asked for, held with a reason is not
+    const old = storage();
+    old.setItem("ovis:pending:p", JSON.stringify({ version: 1, messages: [requested("asked"), message("faulted", "held"), message("queued")] }));
+    expect(new PendingMessageStore(() => old).read("p").map(({ id, state, heldByRequest }) => [id, state, heldByRequest ?? false]))
+      .toEqual([["asked", "held", true], ["faulted", "uncertain", false], ["queued", "uncertain", false]]);
+  });
   it("settles a follow-up's exact resumed receipt after reload, never a same-text or live-owned row (#2421)", () => {
     const port = storage(), before = new PendingMessageStore(() => port);
     before.accept("p", message("delivered", "sending", "same"), "old");
@@ -59,7 +150,8 @@ describe("pending message ownership", () => {
     expect(reloaded.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
       ["queued", "uncertain", false], ["unproved", "uncertain", false],
     ]);
-    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("queued", "held"), message("early", "queued")] }));
+    // another tab saves the list: its copy of the one this page holds on a receipt is uncertain, as every page saves it
+    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("queued", "uncertain"), message("early", "queued")] }));
     before.refresh("p");
     expect(before.read("p").map(({ id, state, serverOwned }) => [id, state, serverOwned])).toEqual([
       ["queued", "held", false], ["early", "held", false],
@@ -120,7 +212,8 @@ describe("pending message ownership", () => {
     expect(tab.read("p").find((row) => row.id === "late")?.state).toBe("held");
     expect(new PendingMessageStore(() => port).read("p").map(({ id, state }) => [id, state])).toEqual([["late", "uncertain"], ["sent", "uncertain"]]);
     // another tab saves the copy as being sent, with no mark or error: this page does not hold it again
-    port.setItem("ovis:pending:p", JSON.stringify({ messages: [message("late", "uncertain"), message("sent", "sending")] }));
+    // (the late answer's copy is saved as this page left it: uncertain, with the bridge's reason)
+    port.setItem("ovis:pending:p", JSON.stringify({ messages: [{ ...message("late", "held"), state: "uncertain" }, message("sent", "sending")] }));
     tab.refresh("p");
     expect(tab.read("p").map(({ id, state }) => [id, state])).toEqual([["late", "held"], ["sent", "uncertain"]]);
   });

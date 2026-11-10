@@ -3355,13 +3355,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   neither matching text nor an empty queue clears it. A changed terminal or session also makes
   confirmation unavailable. Ovis does not claim that Pi queued or consumed
   the message until the transcript proves it. Next-turn delivery and an explicit Send
-  now action claim the same server ID. Connection loss never resumes automatic input. A held copy
-  offers **Send now** only on live proof: its own live connection, or the bridge's held receipt for this
-  browser within the receipt's window (below). A saved held copy (after a reload, in another tab, after the
-  connection that held it ended, or one an older release saved) shows as uncertain until such a receipt
-  proves it again, so it is never sent on the word of storage alone. This is a deliberate change: a held
-  copy on a remote PC (whose relay strips the resume ID), after a server restart or update, past the ten
-  minutes, or one held for another reason once its connection is gone, keeps only Copy and **Discard**.
+  now action claim the same server ID. Connection loss never resumes automatic input. A message its
+  sender held on purpose (`delivery: "hold"`: Alt+Enter, or a follow-up with automatic sending off) stays
+  held, with **Send now** and **Discard**, through a lost connection, a reload, another tab and a restart
+  or update of the server: the bridge never sends it by itself, so its saved copy is held on its own word,
+  as before, and takes no receipt's end. The page knows it by the bridge holding it with no reason (every
+  hold the bridge makes by itself names one) and keeps that for the copy's life, also once a refused Send
+  now gave it a reason; a copy an older release saved held with no reason is one too. Only a Send now that
+  may have typed it makes it uncertain. Every other held copy (a queued follow-up held as its connection
+  closed, or one the bridge held for a reason of its own) offers **Send now** only on live proof: its own
+  live connection, or the bridge's held receipt for this browser within the receipt's window (below).
+  Saved (after a reload, in another tab, after the connection that held it ended), such a copy shows as
+  uncertain until a receipt proves it again, so it is never sent on the word of storage alone. This is a
+  deliberate change: such a copy on a remote PC (whose relay strips the resume ID), after a server restart
+  or update, or past the ten minutes keeps only Copy and **Discard**.
   Any other follow-up's exact `sent`, `discarded` or `held` receipt is kept the same way (ten minutes, 1024,
   same browser resume ID and device, local machine only) and replayed with `resumed: true` on its
   browser's reattach, or to that browser's already attached successor when the Enter's reply or the

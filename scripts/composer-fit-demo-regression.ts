@@ -950,8 +950,8 @@ try {
       });
       console.log("PASS selectable pending bubbles fit phones; explicit Send now and Discard act on IDs");
 
-      // With automatic sending turned off, a follow-up sent while the agent works is held by the PC at once:
-      // a reconnect leaves it held and sends nothing, and only Send now delivers it.
+      // With automatic sending turned off, a follow-up sent while the agent works is held by the PC at once, at its
+      // sender's request: a reconnect leaves it held and sends nothing, and only Send now delivers it.
       await withCard(browser, 390, { agent: "codex", model: "gpt-5.6", autoSend: false }, async (page) => {
         const text = "held at once follow-up";
         await page.getByRole("textbox", { name: "Message", exact: true }).fill(text);
@@ -963,6 +963,16 @@ try {
         assert.equal(await page.locator(".pending-message").getAttribute("data-state"), "held", "a reconnect leaves a held follow-up held");
         const notSent = await page.evaluate(async (paneId) => await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`)).json(), panes.api);
         assert.ok(!JSON.stringify(notSent).includes(text), "a held follow-up is not sent by the reconnect");
+        // A hold its sender asked for needs no receipt: with the page off for longer than the bridge keeps one (the same
+        // ten minutes after which the queued copy below is uncertain), it is still held, and still goes only on Send now.
+        await page.evaluate(() => { const fit = window as unknown as { fitSocket: { close: () => void }; fitOffline?: boolean }; fit.fitOffline = true; fit.fitSocket.close(); });
+        await page.clock.setSystemTime(await page.evaluate(() => Date.now()) + 10 * 60 * 1000 + 1000);
+        await page.evaluate(() => { (window as unknown as { fitOffline?: boolean }).fitOffline = false; });
+        await page.waitForFunction(() => (window as unknown as { fitSocket?: { readyState: number } }).fitSocket?.readyState === 1);
+        await page.waitForFunction(() => !(document.querySelector(".pending-message-send") as HTMLButtonElement | null)?.disabled);
+        assert.equal(await page.locator(".pending-message").getAttribute("data-state"), "held", "past the receipt's ten minutes a hold its sender asked for is still held");
+        const stillNotSent = await page.evaluate(async (paneId) => await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`)).json(), panes.api);
+        assert.ok(!JSON.stringify(stillNotSent).includes(text), "nor is it sent by that reconnect");
         await page.getByRole("button", { name: `Send now: ${text}`, exact: true }).click();
         await page.locator(".pending-message-bubble").waitFor({ state: "hidden" });
         const sent = await page.evaluate(async (paneId) => await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`)).json(), panes.api);
