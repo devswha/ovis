@@ -1351,6 +1351,26 @@ it("POST /api/devices/pair/cancel with a code ends only that pairing, not one st
   }
 });
 
+it("ends an events stream the open LAN let in once the gate closes, and refuses its next one", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-open-stream-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false });
+  const base = `http://127.0.0.1:${app.port}`;
+  const stranger = { "x-forwarded-for": "192.168.0.20" };
+  const abort = new AbortController();
+  try {
+    const events = await openEvents(base, stranger, abort.signal);
+    await events.next((event) => event.type === "machines", "initial roster");
+    // the relay turned on: the gate closes with no device paired, and the stream that read this PC's roster ends
+    app.context.services.devices.closeGate();
+    await Promise.race([events.ended, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the open stream outlived the gate")), 5000))]);
+    expect((await fetch(`${base}/api/machines/events`, { headers: stranger })).status).toBe(401);
+  } finally {
+    abort.abort();
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}, 15_000);
+
 it("ends a socket the open LAN let in once the first device is paired, and refuses its next one", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ovis-open-socket-"));
   const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, machines: false, sidecar: false });

@@ -376,12 +376,19 @@ export class DeviceStore {
 
   /**
    * Hears of the gate closing to strangers (`gated` turning true): the first device's cookie came back, or the
-   * relay was turned on. Told once, as that write reaches disk and before the store's own fields say so. Whoever
-   * the open LAN let in has no access from then on, and neither a later device nor a revoke opens the gate again.
+   * relay was turned on. Told once, right after the call that closed it (save). Whoever the open LAN let in has
+   * no access from then on, and neither a later device nor a revoke opens the gate again. Never told of a gate
+   * that is closed already: endWithGate.
    */
   onGateClosed(listener: () => void): () => void {
     this.gateListeners.add(listener);
     return () => { this.gateListeners.delete(listener); };
+  }
+
+  /** The end of what the open LAN alone let in: `close` when the gate closes, at once when it is closed already. */
+  endWithGate(close: () => void): () => void {
+    if (this.gated) { close(); return () => {}; }
+    return this.onGateClosed(close);
   }
 
   /** Relay opt-in closes open LAN access before any outbound connection is made. */
@@ -829,9 +836,16 @@ export class DeviceStore {
   }
 
   private save(devices = this.devices, gateClosedAt = this.gateClosedAt): void {
+    const closes = !this.gated && (gateClosedAt !== null || devices.length > 0);
     writePrivateState(this.path, { gate_closed_at: gateClosedAt, devices });
-    // the write that closes the gate (callers set the fields after it): onGateClosed
-    if (!this.gated && (gateClosedAt !== null || devices.length > 0)) for (const listener of [...this.gateListeners]) listener();
+    // The write that closes the gate: onGateClosed. Told once the caller has set the store's own fields, which each
+    // does right after this returns, and before anything else of this process runs (no frame of a connection is
+    // read in between). Each on its own: one that throws ends neither the others nor the pairing that closed the gate.
+    if (closes) queueMicrotask(() => {
+      for (const listener of [...this.gateListeners]) {
+        try { listener(); } catch (error) { console.warn(`[devices] ending what the open LAN let in failed: ${error instanceof Error ? error.message : String(error)}`); }
+      }
+    });
   }
 
   /** The drive member of `account` whose key is `key`, the only signer whose `add` or `remove` applies. */

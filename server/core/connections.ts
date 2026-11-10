@@ -19,8 +19,8 @@ export interface SocketData {
   machineEvents?: MachineEventDocument;
   deviceId?: string;
   readOnly?: boolean;
-  /** let in by the open LAN alone, while nothing was paired (access.ts `via: "open"`): no device, token or sign-in
-   * stands behind it, so it ends when the pairing gate closes (admit) */
+  /** let in by the open LAN alone, while nothing was paired (access.ts `via: "open"`): no device, token, sign-in or
+   * bridge token stands behind it, so it ends when the pairing gate closes (admit) */
   open?: boolean;
   relay?: MachineRelay;
   /** another Ovis server reading this PC with its bridge token: it gets snapshots whole and applies its own sidebar rows (#2160) */
@@ -277,8 +277,7 @@ export function createConnections({ clients, present, pending, devices, detachCl
   function admit(client: Client): boolean {
     const state = stateOf(client);
     if (client.data.open) {
-      if (devices.gated) end(client, "gated");
-      else state.unwatchGate = devices.onGateClosed(() => end(client, "gated"));
+      state.unwatchGate = devices.endWithGate(() => end(client, "gated"));
       if (state.revoked) return false;
     }
     if (client.data.deviceId) {

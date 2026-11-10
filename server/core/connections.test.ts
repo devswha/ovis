@@ -243,7 +243,7 @@ it("revoking every device ends local and relayed device connections alike, and a
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-it("ends a connection the open LAN let in once the gate closes, and admits none after", () => {
+it("ends a connection the open LAN let in once the gate closes, and admits none after", async () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-connections-gate-"));
   try {
     const store = new DeviceStore(root);
@@ -264,7 +264,9 @@ it("ends a connection the open LAN let in once the gate closes, and admits none 
     const phone = store.pair(store.startPairing().code, "Phone", "drive")!;
     expect([store.gated, stranger.log]).toEqual([false, []]);
     store.match(phone.token);
-    expect(store.gated).toBe(true);
+    // told right after the call that closed the gate, with the store saying so
+    expect([store.gated, stranger.log]).toEqual([true, []]);
+    await Promise.resolve();
     expect(stranger.log).toEqual(["detach claimed", "drop claims", "closed 1008 Pairing required"]);
     expect(proxied.log).toEqual(["detach claimed", "drop claims", "closed 1008 Pairing required"]);
     expect(relayed).toEqual(["relay closed"]);
@@ -275,6 +277,7 @@ it("ends a connection the open LAN let in once the gate closes, and admits none 
     const tablet = store.pair(store.startPairing().code, "Tablet", "drive")!;
     store.match(tablet.token);
     store.revokeAll();
+    await Promise.resolve();
     expect(stranger.log).toHaveLength(3);
     // an upgrade the open LAN passed just before the gate closed is not admitted
     const late = harness({ open: true, store });
@@ -283,15 +286,17 @@ it("ends a connection the open LAN let in once the gate closes, and admits none 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-it("ends an open connection when the relay is turned on, which closes the gate with no device paired", () => {
+it("ends an open connection when the relay is turned on, which closes the gate with no device paired", async () => {
   const root = mkdtempSync(join(tmpdir(), "herdr-connections-gate-relay-"));
   try {
     const store = new DeviceStore(root);
     const stranger = harness({ open: true, store });
     expect(stranger.admit(stranger.client)).toBe(true);
     store.closeGate();
+    await Promise.resolve();
     expect(stranger.log).toEqual(["detach claimed", "drop claims", "closed 1008 Pairing required"]);
     store.closeGate();
+    await Promise.resolve();
     expect(stranger.log).toHaveLength(3);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
