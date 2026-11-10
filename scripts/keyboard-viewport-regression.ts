@@ -382,34 +382,72 @@ try {
   }
   // an iPad home-screen app in a window (iPadOS 26): the window's controls sit over the page's top-left corner, so
   // the header's first button moves clear of them, by the controls' width in points through Safari's page zoom.
-  // A full-screen app, a Safari tab and a desktop browser keep the header as it is.
-  for (const [name, width, scale, standalone, ipad, room] of [
-    ["windowed", 800, 1, true, true, 68], ["windowed at 85% page zoom", 941, 0.85, true, true, 80],
-    ["full screen", 1180, 1, true, true, null], ["Safari tab", 800, 1, false, true, null], ["desktop", 800, 1, true, false, null],
+  // A full-screen app, a Safari tab and a desktop browser keep the header as it is, and so does iPadOS 16 to 18,
+  // whose Split View and Slide Over are narrower than the screen too with nothing in that corner. A full-screen
+  // app is not taken for a window when a high page zoom rounds its width (an iPad mini at 300% and at 115%)
+  const air = { width: 1180, height: 820 };
+  const mini = { width: 1133, height: 744 };
+  for (const [name, width, scale, screen, portrait, standalone, ipad, os26, room] of [
+    ["windowed", 800, 1, air, false, true, true, true, 68],
+    ["windowed at 85% page zoom", 941, 0.85, air, false, true, true, true, 80],
+    ["windowed under 769px", 600, 1, air, false, true, true, true, 68],
+    ["full screen", 1180, 1, air, false, true, true, true, null],
+    ["full screen at 85% page zoom", 1388, 0.85, air, false, true, true, true, null],
+    ["Split View on iPadOS 18", 590, 1, air, false, true, true, false, null],
+    ["Slide Over on iPadOS 18", 320, 1, air, false, true, true, false, null],
+    ["full screen at 300% page zoom", 377, 3, mini, false, true, true, true, null],
+    ["full screen in portrait at 115% page zoom", 646, 1.15, mini, true, true, true, true, null],
+    ["Safari tab", 800, 1, air, false, false, true, true, null],
+    ["desktop", 800, 1, air, false, true, false, true, null],
   ] as const) {
-    const context = await browser.newContext({ viewport: { width, height: 820 }, screen: { width: 1180, height: 820 }, hasTouch: ipad });
+    const context = await browser.newContext({ viewport: { width, height: 820 }, screen, hasTouch: ipad });
     try {
-      await context.addInitScript(({ width, scale, standalone, ipad }) => {
+      await context.addInitScript(({ width, scale, portrait, standalone, ipad, os26 }) => {
         if (ipad) {
           Object.defineProperty(Navigator.prototype, "platform", { configurable: true, get: () => "MacIntel" });
           Object.defineProperty(Navigator.prototype, "maxTouchPoints", { configurable: true, get: () => 5 });
         }
-        const fake = new EventTarget();
-        for (const [key, value] of [["width", width], ["height", 820], ["scale", scale]] as const) Object.defineProperty(fake, key, { get: () => value });
-        Object.defineProperty(window, "visualViewport", { configurable: true, value: fake });
+        const fixture = { width, viewport: new EventTarget() };
+        Object.assign(window, { windowFixture: fixture });
+        Object.defineProperty(fixture.viewport, "width", { get: () => fixture.width });
+        for (const [key, value] of [["height", 820], ["scale", scale]] as const) Object.defineProperty(fixture.viewport, key, { get: () => value });
+        Object.defineProperty(window, "visualViewport", { configurable: true, value: fixture.viewport });
+        // iOS keeps screen.width and screen.height as they are in portrait, whichever way the iPad is held
+        Object.defineProperty(window.screen, "orientation", { configurable: true, value: { type: portrait ? "portrait-primary" : "landscape-primary" } });
         const originalMatchMedia = window.matchMedia.bind(window);
         window.matchMedia = (query) => query === "(display-mode: standalone)" ? ({ matches: standalone } as MediaQueryList) : originalMatchMedia(query);
-      }, { width, scale, standalone, ipad });
+        // what lib/viewport.ts asks to tell iPadOS 26 from the ones before it, whatever this Chromium supports
+        const supports = CSS.supports.bind(CSS);
+        CSS.supports = ((...args: [string, string?]) => args[0] === "anchor-name: --a" ? os26 : supports(...(args as [string]))) as typeof CSS.supports;
+      }, { width, scale, portrait, standalone, ipad, os26 });
       const page = await context.newPage();
       await page.goto(`http://127.0.0.1:${server.port}/`);
-      const header = await page.evaluate(() => {
-        const header = document.createElement("header");
-        header.className = "app-header";
-        document.querySelector(".app")!.prepend(header);
-        return { marked: document.documentElement.hasAttribute("data-window-controls"), padding: parseFloat(getComputedStyle(header).paddingLeft) };
+      // the connecting shell's bare header, and the app's own: zoned, with the sidebar's top row (.header-side) in it
+      await page.evaluate(() => document.querySelector(".app")!.insertAdjacentHTML("afterbegin", '<header class="app-header" id="fixture-bare"></header><header class="app-header is-zoned" id="fixture-zoned"><div class="header-side"></div></header>'));
+      const header = () => page.evaluate(() => {
+        const left = (selector: string) => parseFloat(getComputedStyle(document.querySelector(selector)!).paddingLeft);
+        return { marked: document.documentElement.hasAttribute("data-window-controls"), bare: left("#fixture-bare"), zoned: left("#fixture-zoned"), side: left("#fixture-zoned .header-side") };
       });
-      assert.equal(header.marked, room !== null, `${name}: the window's controls are ${room === null ? "not " : ""}there`);
-      if (room !== null) assert.equal(header.padding, room, `${name}: the header leaves the controls' room`);
+      const open = await header();
+      assert.equal(open.marked, room !== null, `${name}: the window's controls are ${room === null ? "not " : ""}there`);
+      if (room === null) continue;
+      assert.equal(open.bare, room, `${name}: a bare header leaves the controls' room`);
+      // from 769px the sidebar's top row is the header's first zone: the room goes there and the header adds none
+      assert.deepEqual({ zoned: open.zoned, side: open.side }, width >= 769 ? { zoned: 0, side: room } : { zoned: room, side: 0 }, `${name}: the room is left once, in the zone that holds the first button`);
+      await page.locator(".app").evaluate((app) => app.classList.add("sidebar-collapsed"));
+      const collapsed = await header();
+      assert.deepEqual({ zoned: collapsed.zoned, side: collapsed.side }, { zoned: room, side: 0 }, `${name}: with the sidebar collapsed the header itself leaves the room`);
+      await page.locator(".app").evaluate((app) => app.classList.remove("sidebar-collapsed"));
+      // the window goes full screen and back: the mark follows the resize
+      const resize = (to: number) => page.evaluate((to) => {
+        const fixture = (window as any).windowFixture;
+        fixture.width = to;
+        fixture.viewport.dispatchEvent(new Event("resize"));
+      }, to);
+      await resize(Math.round(screen.width / scale));
+      assert.equal((await header()).marked, false, `${name}: full screen clears the mark`);
+      await resize(width);
+      assert.equal((await header()).marked, true, `${name}: a window again is marked again`);
     } finally { await context.close(); }
   }
   console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell, field size on iOS, iPad window controls");

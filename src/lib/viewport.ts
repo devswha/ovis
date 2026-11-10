@@ -178,7 +178,12 @@ if (ios) {
 // viewport's width × scale is the window's width in points whatever Safari's page zoom. The controls
 // are drawn in points and the page in CSS pixels, so their room is converted through the page zoom
 // (viewport.scale while the visual viewport is as wide as the layout, i.e. not pinched).
+// Only iPadOS 26 and later draw them. iPadOS 16 to 18 show a home-screen app narrower than the screen too
+// (Split View, Slide Over, a Stage Manager window) with nothing in that corner, and a home-screen app's
+// user agent on an iPad names no system version. CSS anchor positioning arrived with Safari 26, so its
+// support tells the two apart.
 const WINDOW_CONTROLS_PT = 68; // the controls' right edge plus a gap, in points, measured on iPadOS 26
+const drawsWindowControls = ios && typeof CSS !== "undefined" && CSS.supports("anchor-name: --a");
 const standaloneApp = window.matchMedia("(display-mode: standalone)");
 const syncWindowControls = (): void => {
   if (viewport && Math.abs(viewport.width - window.innerWidth) < 2)
@@ -186,11 +191,17 @@ const syncWindowControls = (): void => {
   const width = viewport ? viewport.width * viewport.scale : window.innerWidth;
   const landscape = screen.orientation ? screen.orientation.type.startsWith("landscape") : window.innerWidth > window.innerHeight;
   const screenWidth = landscape ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
-  root.toggleAttribute("data-window-controls", ios && standaloneApp.matches && width < screenWidth - 1);
+  // the width carries up to one CSS pixel of rounding, which is `scale` points: at a 300% page zoom a
+  // full-screen app can read two points narrower than its screen. A real window is far narrower than that.
+  const slack = Math.max(1, viewport?.scale ?? 1) + 1;
+  root.toggleAttribute("data-window-controls", standaloneApp.matches && width < screenWidth - slack);
 };
-viewport?.addEventListener("resize", syncWindowControls);
-window.addEventListener("resize", syncWindowControls);
-syncWindowControls();
+// every way in or out of a window changes its width, so a resize is the only event to follow
+if (drawsWindowControls) {
+  viewport?.addEventListener("resize", syncWindowControls);
+  window.addEventListener("resize", syncWindowControls);
+  syncWindowControls();
+}
 viewport?.addEventListener("resize", syncKeyboard);
 viewport?.addEventListener("scroll", syncKeyboard);
 window.addEventListener("resize", syncKeyboard);
