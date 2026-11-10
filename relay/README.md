@@ -68,8 +68,9 @@ the PC with `4000` and retried. Refusing a data socket does not stop the control
   names this control socket's generation, new for each one),
   `{"type":"connected","connection_id":"..."}` when a client arrives and
   `{"type":"disconnected","connection_id":"..."}` when one leaves. The PC answers `connected` (or
-  `sync`) by opening the client's data socket. Anything else the PC sends on the control socket is
-  dropped.
+  `sync`) by opening the client's data socket. The PC may send `{"type":"relay_pass","pass":"..."}`
+  ("Relay pass" below) and `{"type":"new_session","connection_id":"..."}` ("New sessions" below);
+  anything else the PC sends on the control socket is dropped.
 - Warm socket: so that a client does not wait for the PC to open and prove a socket, the PC may
   keep one proven `warm` socket ready, opened with the generation its control socket's `sync` named.
   A client arriving while that control socket is connected takes it at once: the warm socket hears `{"type":"bound","connection_id":"..."}` before any of
@@ -110,7 +111,10 @@ pairing hosts, in a release most PCs run.
 - **The pass.** `ovp1.<payload>.<signature>`, base64url. The payload is JSON with exactly `v` (1),
   `kid`, `aud` (`ovis-relay`), `sid` (the PC's `server_id`), `iat` and `exp` (seconds; 48 hours
   apart, and a relay refuses one good for longer); the signature is Ed25519 over `ovis-relay-pass/1.` followed by the payload's text. It names
-  no account.
+  no account. A v2 payload has the same fields with `v` 2 and one more, `new`: 1 when new client
+  sessions to the PC are allowed, 0 when they are not for the pass's lifetime; a v1 pass allows
+  them. The prefix stays `ovp1.`: the signature covers the payload, `v` and `new` included. The
+  relay accepts both forms; what `new` does is under "New sessions" below.
 - **Sending it.** The PC puts it in the `x-ovis-relay-pass` header of every PC socket's upgrade
   (control, data, warm), never in the URL. A pass alone opens nothing: the socket still answers the
   server challenge for that `server_id`'s key, so a copied pass is no use without the PC's secret key.
@@ -132,9 +136,41 @@ pairing hosts, in a release most PCs run.
   kept in the Durable Object's storage, so it outlives an eviction. The PC renews it on its proven
   control socket with `{"type":"relay_pass","pass":"..."}`, which only ever moves the expiry later; a
   relay without passes drops that frame like any other.
+- **New sessions.** The account service issues a pass with `new` 0 to a PC whose account is past
+  its limits (a relay data limit, say). The room keeps what the pass that authorizes it says: the
+  one that runs out last, which is the one issued last, so a later renewal with `new` 1 lifts it at
+  once; of two passes issued the same second (the same expiry), the one with `new` 0 holds, in
+  whichever order they are proven. Only the PC can tell a device new to it from one it knows: the
+  relay sees no device, and the frames are end-to-end encrypted. So every client gets in as before,
+  and once the PC has identified a client as a device new to it, it says so on its control socket
+  with `{"type":"new_session","connection_id":"..."}`. While enforced and the room's pass says
+  `new` 0, the relay then closes that client `4403` (`no new sessions for this server`), whether it
+  arrived before or after the PC; otherwise it drops the frame. The PC's own devices, reconnecting
+  or not, its other clients and its own sockets stay, and a client the PC has not identified hears
+  nothing of the pass. `off` and `grace` let every client in whatever the pass says. An Ovis PC
+  names a client once a pairing on its session would make a device new to it (a code that holds, or
+  a comparison both people confirmed, with a key none of its devices holds), and only while `sync`
+  says passes are enforced ([docs/relay.md](../docs/relay.md#relay-pass)). The relay refuses only
+  whom the PC names, so the pass the PC holds decides: a room still holding an older pass refuses
+  nobody by itself. Where the PC refuses a device on a pass the room does not hold yet (a renewal
+  still on its way, a control socket reconnecting), the relay drops the frame and the PC closes the
+  client's data socket itself 2 s later; the client then hears `1012` (`server gone`), not `4403`.
+  Since a renewal within a minute of the one before on the same socket is dropped unanswered, the
+  PC sends a later one only once that minute has passed, so the room holds the PC's latest pass
+  about a minute after it changed at the latest.
+- **What a PC and a relay of different versions do.** `relay_pass.mode` and `new_session` are both
+  additions an older side ignores, so the relay and the app deploy in either order and nothing
+  breaks. A PC from before it names clients never sends `new_session`: this relay refuses nobody
+  for new sessions on its behalf, whatever its pass says. A PC that names clients on a relay from
+  before `mode` reads the relay as enforcing only past its `enforce_at`: in `enforce` with no date
+  or one still ahead it names nobody, and the limit is not applied; on a relay that does not know
+  `new_session` at all the frame is dropped and the PC refuses the device by itself (the 2 s close
+  above). So deploy this relay before passes are switched to `enforce`, and before the release
+  whose PCs name clients.
 - **Modes**, from `RELAY_PASS_MODE` (`--pass-mode`): `off` (the default) lets every PC in as
-  before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at"}` to the control
-  socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`) and, while the room has no pass
+  before. `grace` lets every PC in, and adds `"relay_pass":{"state","enforce_at","mode"}` to the control
+  socket's `sync` (`state` `ok`, `missing`, `invalid` or `expired`; `mode` the configured one, `grace` or
+  `enforce`, from which with `enforce_at` a PC knows whether passes are enforced now) and, while the room has no pass
   that holds, to a client's `assigned` (`missing`), so the app can say so; older PCs read neither.
   `enforce` closes a PC socket without a pass that holds `4402` (on Cloudflare in the Worker, before
   any Durable Object), and a room whose pass ran out closes its PC sockets `4402` (its clients with
@@ -152,8 +188,14 @@ pairing hosts, in a release most PCs run.
   it offers (or offering none) closes `4402`, on Cloudflare in the Worker; a device that types a code
   never needs one. A host keeps its nameplate only while that holds: once enforcement begins, or its
   pass runs out (5 minutes allowed for clocks), it closes `4402` with its device, at the alarm set for
-  that moment or at the next frame or arrival in the room, whichever comes first. The PC then opens
-  the nameplate again with the pass it holds now.
+  that moment or at the next frame or arrival in the room, whichever comes first; once the relay
+  revokes its PC or no longer trusts its pass's key, at the next frame, arrival or alarm that the new
+  settings reach: after a deploy, a Durable Object may run the previous version and its settings for
+  a few minutes, and a host admitted by a version older than this check names no pass key or PC. Any
+  revocation in the settings closes it the same way (nothing on it says which PC was revoked); a key
+  removed from the settings cannot be matched against one, so without a revocation it is held to its
+  pass's expiry and its 11-minute deadline. The PC then opens the nameplate again with the pass it
+  holds now.
 - **Storage.** With passes off, and for pairing rooms always, the Durable Object never reads its
   storage.
 
@@ -187,6 +229,7 @@ pairing hosts, in a release most PCs run.
 | `1013` | a limit above; try again later |
 | `4401` | to a PC socket, or a pairing host that offers a key: proof missing, a key that does not derive the `server_id`, or a wrong or late answer |
 | `4402` | to a PC socket or a pairing host: no relay pass that holds while the relay asks for one (`relay pass required`, `relay pass expired`, `relay pass invalid`) |
+| `4403` | to a client the PC identified as a device new to it, while passes are enforced and the PC's pass allows no new sessions (account limits; `no new sessions for this server`). Its other clients stay |
 
 A socket that closes itself has its close answered at once, with its own code when that is `1000`
 or `3000`-`4999` (`1000` otherwise, such as for `1001` or `1005`), and its partner is closed as above. On Cloudflare the
