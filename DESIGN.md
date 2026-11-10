@@ -210,6 +210,29 @@ herdr mapping (`mapTheme`), including repairs the proposal tool already made, is
 `scripts/herdr-theme-overrides.ts` with its dE and reason; every entry passes AA on its
 committed hex.
 
+**Imported themes.** A theme can also come from a file the user imports in Settings → Appearance
+([docs/themes.md](docs/themes.md)): a name and the sixteen Base16 seeds of a dark side, a light
+side or both, and nothing else. No code or CSS is read from a file. The public contract is the
+seeds, not the roles above, so a role can be renamed, split or added without breaking a theme
+file. `src/lib/themeDerive.ts` derives every role, `--notice-tint`, herdr's `--indicator-*` state
+colours and a light row's ANSI colours from the seeds and holds them to
+`src/lib/themeContrast.ts`, the one list of floors `themes.contrast.test.ts` checks the built-in
+themes against: a colour under a floor keeps its hue and moves in lightness by the smallest step
+that clears it, and a surface the text could only be read on by moving far (more than dE 12 past
+reading on the background) moves toward the background instead. `--bg-hover`, the hovered and
+selected row and the terminal's selection, is never under 1.05:1 on `--bg`: one that would end
+there takes a 1.2:1 step off it instead, the built-in themes' median. Which side a block is filed
+under is told by the colours the file wrote (light text on a darker ground is dark), never by what
+the file calls it, and the row's mode by what they are once they read. A scheme that
+already reads is drawn as written.
+`settings.customThemes` holds the imported themes (12 at most) and the one chosen for each side,
+which is drawn in place of that side's `darkTheme` or `lightTheme`; those keep their value under
+it. The row is `data-palette="custom"` over the side's amber base block, with its colours set as
+custom properties on `<html>`, and a built-in row takes them off again. The design follows Warp's
+custom themes, a small file of colours the app draws its interface from; it differs in reading
+Base16, so the schemes that exist work as they are, and in checking contrast when a file is
+imported.
+
 `--bubble-border` is the edge of the chat's user bubble. It is `transparent` where `--bg-elevated`
 alone parts the bubble from `--bg`: dark amber and dark charcoal. It is `var(--border)`
 where the two surfaces sit close: every light theme (the `[data-theme="light"]` block sets it for
@@ -1192,7 +1215,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Field (`.field`, `.input`, `.select`)
 - Stacked uppercase label, optional hint and `--bg-input` field. Desktop fields use `--fs-sm`;
   small-screen fields retain `--fs-input` to avoid focus zoom.
-- Focus names the edge with accent; errors use blocked/danger tokens and `role="alert"`. A failure
+- A focused field draws one line. On `:focus-visible` that is the shared offset ring (`--ring`,
+  `--ring-offset`) and the field's own border stays as it was: its resting colour, the ink of
+  `prefers-contrast: more`, or an invalid access-gate field's `--status-blocked`. It never turns
+  `--accent` under the ring: two accent lines, one inside the other, read as a drawing error. A
+  browser counts a text field as `:focus-visible` however it took the focus (a click, a tap, a
+  dialog's autofocus), and Chrome a select too, so the ring is what a field shows; the `--accent`
+  border is left for a focus the browser draws no ring for (`:focus:not(:focus-visible)`). The
+  terminal's input line, a reply comment's field and the prompt card's custom answer keep the same
+  rule, as Settings' fields and the access gate's already did (this app's own fields, not another
+  app's, are what it follows). A rename field in the sidebar (a workspace's, a PC's) draws the ring
+  inside its edge, over its border (`--ring-inset-offset`): the list clips what a row draws outside
+  it, and the first row's ring would lose its top. The composer and a queued message being edited
+  draw no ring: their own border names the focus. In forced colours the browser itself paints a
+  focused field's border and the ring in the system's highlight.
+- Errors use blocked/danger tokens and `role="alert"`. A failure
   leads with a plain sentence (`lib/userError.ts`); what the PC or the browser said follows on a
   second line in the interface face, selectable, never in the mono stack (which has no Hangul and
   would set Korean with letter-wide spaces).
@@ -4481,7 +4518,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   saved settings, no shared settings, no paired device); Settings opens it again. A watching device
   never sees it.
 - The welcome is centered: the app mark, "Is this your first time using Ovis?" and two big choice rows
-  (`--radius-xl` cards on `--bg-panel`, an accent border on hover).
+  (`--radius-xl` cards on `--bg-panel`, an accent border on hover; keyboard focus is the ring alone).
 - Then one screen in a 552px column, "Set up Ovis" and "Skip setup" over it, no progress bar. It first
   shows Ovis checking the PC (GET /api/agent-catalog): every coding agent in a two-column `--bg-panel`
   list, each line a spinner until the answer, then "Installed · v…" in `--status-done` or "Not
@@ -4618,8 +4655,23 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   When the rows share one reason it's said once as a caption above them ("Add window closed · an
   account member must approve") rather than on every row. Then the PC table (below), and last the
   **Connection map**, a 44 px disclosure row that opens `#relay` with "N relays · M PCs" on its right.
-  A first-time account gets one empty state instead of the strip: an icon, one title,
-  one line ("Sign in on a PC, or scan the QR code it shows, to see it here."), **Add a PC** and **Pair with a QR or code**.
+  A first-time account gets one empty state instead of the strip: an icon, one title ("No PCs yet"),
+  then three numbered steps read from the start edge: install Ovis on the PC (the macOS or Linux
+  line and the Windows PowerShell line, each a mono box with its own **Copy**, which wraps under the
+  box where the row has no room for both and is described by the system its line is for), sign in
+  there with the same provider account as on this device, and choose Add this PC to my account. A
+  dim line under them says which sign-in this is and that GitHub and Google are separate Ovis
+  accounts until linked; an Apple account, which a PC's page cannot sign in with, is told to use a
+  linked GitHub or Google sign-in or to pair with a QR or code. Then **Check again**, **Add a PC**
+  (the one primary) and **Pair with a QR or code**. Check again reads the account's PCs at once,
+  and once more after a read that was already out; while it reads (1 s at least) it says
+  "Checking…" and stays a button, `aria-disabled`, so a keyboard's focus is not dropped. Under
+  the banner of a list that could not be read there is only the title and the two pairing
+  buttons, with the banner's **Try again**: an unread list is not known to be empty. Without an
+  account the empty state keeps one line ("Sign in on a PC, or scan the QR code it shows, to see it
+  here.") and the two buttons. None of the apps this design looks at has an account that lists PCs
+  to add, so the steps follow this app's own pieces instead: the command box with Copy of the
+  manual-update screen, and the Agents page's Check again.
 - PCs table (RelayPcTable.tsx), filtered by All / Ready / Needs you / Offline with **Check now**
   beside the filters, `--table-row-h` (44 px) rows under a 36 px head, or a two-line `<ul>` list
   on phones (768 px and under) and narrow containers. Columns: **Name** (state dot and name),
