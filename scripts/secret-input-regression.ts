@@ -28,6 +28,8 @@ process.stdin.on("data", chunk => {
   if (text === "\\x0e") { count = 0; process.stdout.write("\\x1b[2J\\x1b[HPassword for 'https://alice@github.com':"); return; }
   if (text === "\\x0f") { count = 0; process.stdout.write("\\x1b[2J\\x1b[HEnter passphrase (empty for no passphrase):"); return; }
   if (text === "\\x14") { count = 0; working = true; process.stdout.write("\\x1b[2J\\x1b[HPassword for 'https://alice@github.com':"); return; }
+  // a prompt whose colon fills the row's last column: the space after it wraps, and the cursor is on the next row
+  if (text === "\\x15") { count = 0; process.stdout.write("\\x1b[2J\\x1b[HPassword for " + "a".repeat(process.stdout.columns - 14) + ": "); return; }
   if (text === "\\x03") { count = 0; process.stdout.write("\\r\\nCancelled>"); return; }
   count += text.length;
   if (text.includes("\\r")) { writeFileSync(${JSON.stringify(result)}, String(count)); count = 0; process.stdout.write(working ? "\\r\\n" : "\\r\\nAccepted\\r\\nReady>"); working = false; }
@@ -148,6 +150,16 @@ process.stdin.on("data", chunk => {
     await field.waitFor({ state: "detached" });
     assert.match((await paneRead({ paneId: pane, source: "visible", format: "text" })).text.trimEnd(), /Password for 'https:\/\/alice@github\.com':$/, "the prompt is still the last text");
     assert.deepEqual(sent, ["secret", "secret", "secret", "secret", "secret"]);
+    // A prompt as wide as the pane, its last space wrapped onto the next row: herdr draws the two rows apart, and
+    // the cursor past that space is still the prompt asking
+    rmSync(result, { force: true });
+    await paneSendText(pane, "\u0015");
+    await field.waitFor();
+    await field.fill("edge-secret");
+    await page.locator(".secret-input").getByRole("button", { name: "Send", exact: true }).click();
+    await field.waitFor({ state: "detached" });
+    await accepted("edge-secret");
+    assert.deepEqual(sent, ["secret", "secret", "secret", "secret", "secret", "secret"]);
     await paneSendText(pane, "\u0010");
     await field.waitFor();
     await page.getByTitle(/^Live terminal \(.+\)$/).click();
@@ -156,7 +168,7 @@ process.stdin.on("data", chunk => {
     await field.fill("discarded-secret");
     await page.locator(".secret-input").getByRole("button", { name: "Cancel", exact: true }).click();
     await field.waitFor({ state: "detached" });
-    assert.deepEqual(sent, ["secret", "secret", "secret", "secret", "secret", "input"]);
+    assert.deepEqual(sent, ["secret", "secret", "secret", "secret", "secret", "secret", "input"]);
     assert.deepEqual(errors, []);
     // On a desktop (no key bar, which a touch screen hides while the masked input is up) the masked
     // input floats over the grid's last rows: its arrival leaves the grid's height, the shared pty's

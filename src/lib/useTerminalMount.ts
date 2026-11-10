@@ -1304,7 +1304,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // a prompt asks only while the cursor is on its line (promptHasCursor). A mirrored pane's repaints carry no
         // cursor, so its prompt counts while it is the last text, as before; so does one not known to be attached
         if (prompt === null || mirroredRef.current !== false) return prompt;
-        return promptHasCursor(lines, starts, buffer.baseY + buffer.cursorY) ? prompt : null;
+        return promptHasCursor(lines, starts, buffer.baseY + buffer.cursorY, buffer.cursorX, term.cols) ? prompt : null;
       };
       // the idle release's clock: when the terminal was last typed, clicked or pasted in, and the check that follows it
       // (idleCheck, with the release machinery below)
@@ -1446,10 +1446,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // A masked prompt does not close the grid: a desktop answers it there, as in any terminal,
             // and the masked input stands by for a phone (#1031). onData keeps what is typed then out
             // of every draft.
-            const prompt = screenSecret();
-            secretRef.current = prompt;
+            // Read at a whole frame only: herdr hides the cursor, draws its rows and places the cursor last, so a
+            // chunk that ends inside a frame has the cursor wherever drawing stopped. Read there, the prompt would
+            // seem to ask no more, and the field would leave with what was typed in it
+            if (stamp.boundary) {
+              const prompt = screenSecret();
+              secretRef.current = prompt;
+              setSecret((previous) => previous?.pane === owner && previous.prompt === prompt ? previous : prompt ? { pane: owner, prompt } : null);
+            }
             term.options.disableStdin = observeRef.current || heldRef.current;
-            setSecret((previous) => previous?.pane === owner && previous.prompt === prompt ? previous : prompt ? { pane: owner, prompt } : null);
             // a whole frame for this grid: the agent's input row may be read (a watched peek, the still-open guard)
             if (frameGateRef.current.settle(stamp, lifetime === outputLifetime && recoveringPane !== owner && gridMatches())) onInputRowFrameRef.current();
           }, false, acknowledge);

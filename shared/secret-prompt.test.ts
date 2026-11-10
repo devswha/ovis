@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { promptHasCursor, secretPrompt, validSecret } from "./secret-prompt.ts";
+import { promptHasCursor, promptSet, secretPrompt, validSecret } from "./secret-prompt.ts";
 
 it("recognizes only a short secret request on the last nonempty line", () => {
   for (const prompt of ["[sudo] password for alice:", "alice@server's password:", "Password:", "Password for alice:", "Enter passphrase:", "Enter passphrase for key '/tmp/key':", "Enter PIN:", "Enter PIN for token:", "Repeat password:", "Verify password:", "Confirm password:"]) {
@@ -114,7 +114,8 @@ it("reads the password asks of an interactive ssh sign-in, doas, sudo in any lan
     "Enter pass phrase for server.key:",
   ]) {
     expect(secretPrompt(`$ make deploy\n${prompt} `)).toBe(prompt);
-    expect(secretPrompt(prompt, Infinity, true)).toBeNull();
+    // read by no server released before this set: neither one from before secret-prompts-2 nor one that lists it
+    expect([secretPrompt(prompt, Infinity, 1), secretPrompt(prompt, Infinity, 2), promptSet(prompt)]).toEqual([null, null, 3]);
   }
   for (const screen of [
     // what sudo-rs and an ssh server ask in the clear
@@ -135,28 +136,51 @@ it("counts a prompt only while the cursor is on its line", () => {
   // lines as the page reads them, each with its first screen row: a wrapped row belongs to the line above it
   const lines = ["$ git push", "Password for 'https://alice@github.com':", "", ""];
   const starts = [10, 11, 12, 13];
-  expect(promptHasCursor(lines, starts, 11)).toBe(true);
+  expect(promptHasCursor(lines, starts, 11, 41, 80)).toBe(true);
   // git read the answer and printed a line break: it asks no more, though its prompt is still the last text
-  expect(promptHasCursor(lines, starts, 12)).toBe(false);
-  expect(promptHasCursor(lines, starts, 10)).toBe(false);
+  expect(promptHasCursor(lines, starts, 12, 0, 80)).toBe(false);
+  expect(promptHasCursor(lines, starts, 10, 10, 80)).toBe(false);
+  // The same prompt in 40 columns, which its colon fills: the space after it wraps, and the cursor is on the next
+  // row past that space. herdr draws each row at its own place, so the page has two lines here, the second blank
+  expect(promptHasCursor(lines, starts, 12, 1, 40)).toBe(true);
+  // not after the answer (the program's line break leaves the cursor at the row's start, or two rows down), nor
+  // below a prompt that did not reach the right edge
+  expect(promptHasCursor(lines, starts, 12, 0, 40)).toBe(false);
+  expect(promptHasCursor(lines, starts, 13, 1, 40)).toBe(false);
+  expect(promptHasCursor(lines, starts, 12, 1, 41)).toBe(false);
+  // two full rows of it in 20 columns, and a row of text below is no blank row
+  expect(promptHasCursor(["Password for 'https:", "//alice@github.com':", ""], [0, 1, 2], 2, 1, 20)).toBe(true);
+  expect(promptHasCursor(["Password for 'https://alice@github.com':", "x"], [0, 1], 1, 1, 40)).toBe(true);
+  expect(promptHasCursor(["Password for 'https://alice@github.com':", "x", ""], [0, 1, 2], 2, 1, 40)).toBe(false);
   // a prompt wrapped over three rows, the last holding only its final space: the cursor is on any of them
   const wrapped = ["$ ssh-add", "Enter passphrase for /home/alice/.ssh/id_ed25519: ", ""];
-  for (const row of [21, 22, 23]) expect(promptHasCursor(wrapped, [20, 21, 24], row)).toBe(true);
-  expect(promptHasCursor(wrapped, [20, 21, 24], 24)).toBe(false);
+  for (const row of [21, 22, 23]) expect(promptHasCursor(wrapped, [20, 21, 24], row, 1, 17)).toBe(true);
+  expect(promptHasCursor(wrapped, [20, 21, 24], 24, 0, 17)).toBe(false);
   // the prompt on the screen's last row, and a screen with no text
-  expect(promptHasCursor(["Password:"], [0], 0)).toBe(true);
-  expect(promptHasCursor(["", ""], [0, 1], 0)).toBe(false);
-  expect(promptHasCursor([], [], 0)).toBe(false);
+  expect(promptHasCursor(["Password:"], [0], 0, 9, 80)).toBe(true);
+  expect(promptHasCursor(["", ""], [0, 1], 0, 0, 80)).toBe(false);
+  expect(promptHasCursor([], [], 0, 0, 80)).toBe(false);
+});
+
+it("reads the prompts of a server that lists secret-prompts-2 as that server does", () => {
+  // what #3566 added: read by such a server and by this one, not by one from before it
+  for (const prompt of NEWER) expect([secretPrompt(prompt, Infinity, 2), secretPrompt(prompt), secretPrompt(prompt, Infinity, 1), promptSet(prompt)]).toEqual([prompt, prompt, null, 2]);
+  // its yes/no test, where the two differ: a bare three-way choice was a prompt to it
+  expect([secretPrompt("Password for alice y/n/a:", Infinity, 2), secretPrompt("Password for alice y/n/a:")]).toEqual(["Password for alice y/n/a:", null]);
+  // and every server reads these
+  for (const prompt of ["Password:", "[sudo] password for alice:", "alice@server's password:", "Enter passphrase for key '/tmp/key':"]) {
+    expect([secretPrompt(prompt, Infinity, 2), promptSet(prompt)]).toEqual([prompt, 1]);
+  }
 });
 
 it("reads only the prompts an earlier server takes when asked to, and each of those either way", () => {
   // what a page sends as a `secret` to a server without secret-prompts-2, which refuses one for any newer prompt
-  for (const prompt of NEWER) expect(secretPrompt(`$ git push\n${prompt} `, Infinity, true)).toBeNull();
+  for (const prompt of NEWER) expect(secretPrompt(`$ git push\n${prompt} `, Infinity, 1)).toBeNull();
   for (const prompt of ["[sudo] password for alice:", "alice@server's password:", "Password:", "Password for alice:", "Enter passphrase:", "Enter passphrase for key '/tmp/key':", "Enter PIN:", "Enter PIN for token:", "Repeat password:", "Verify password:", "Confirm password:"]) {
-    expect(secretPrompt(prompt, Infinity, true)).toBe(prompt);
+    expect(secretPrompt(prompt, Infinity, 1)).toBe(prompt);
     expect(secretPrompt(prompt)).toBe(prompt);
   }
-  expect(secretPrompt("Enter passph\nrase for key\n '/tmp/a-ver\ny-long-priva\nte-key':", 12, true)).toBe("Enter passphrase for key '/tmp/a-very-long-private-key':");
+  expect(secretPrompt("Enter passph\nrase for key\n '/tmp/a-ver\ny-long-priva\nte-key':", 12, 1)).toBe("Enter passphrase for key '/tmp/a-very-long-private-key':");
 });
 
 it("rejects multiline and terminal-control secrets while preserving spaces and Unicode", () => {

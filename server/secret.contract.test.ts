@@ -211,7 +211,8 @@ it("a secret is taken at a prompt of the wider set, which the snapshot says the 
     expect(sends.map((entry) => entry.method)).toEqual(["pane.send_text", "pane.send_keys"]);
     const expected = "fixture-value\r";
     expect(received).toEqual({ hash: createHash("sha256").update(expected).digest("hex"), length: expected.length });
-    expect((JSON.parse(frames) as { type: string; features?: string[] }[]).find((frame) => frame.type === "snapshot")?.features).toContain("secret-prompts-2");
+    const features = (JSON.parse(frames) as { type: string; features?: string[] }[]).find((frame) => frame.type === "snapshot")?.features;
+    expect(features).toEqual(expect.arrayContaining(["secret-prompts-2", "secret-prompts-3"]));
   }
 }, 60_000);
 

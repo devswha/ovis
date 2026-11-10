@@ -597,7 +597,8 @@ it("types a secret for a prompt only a newer bridge takes as direct input to a b
   // a bridge from before `submit` (0.2.0 and earlier): a message sent to it leaves nothing this page could see is
   // still on its way, so a typed secret could land behind one. It is told to update instead
   const first = liveClient(["secret-input"]);
-  expect(first.client.typesSecret(git)).toBe(true);
+  // and its field does not say the value is typed: Send would only say to update
+  expect(first.client.typesSecret(git)).toBe(false);
   expect(await first.client.sendSecret("w1:p1", git, "hunter2", () => true)).toMatchObject({ ok: false, code: "unsupported" });
   expect(typed(first.socket)).toEqual([]);
   first.client.close();
@@ -691,6 +692,23 @@ it("sends a secret for a prompt of the wider set as a secret to a bridge that ta
   FakeSocket.last.open();
   expect(unknown.typesSecret(git)).toBe(false);
   unknown.close();
+  // a prompt that came after secret-prompts-2 shipped: a bridge that lists only that would answer invalid_secret,
+  // so it is typed there, and sent as a secret to one that lists secret-prompts-3
+  const mysql = "Enter password:";
+  const second = liveClient(["submit", "secret-input", "secret-prompts-2"]);
+  expect([second.client.typesSecret(mysql), second.client.typesSecret(git)]).toEqual([true, false]);
+  expect(await second.client.sendSecret("w1:p1", mysql, "hunter2", () => true)).toEqual({ ok: true });
+  expect(secrets(second.socket)).toEqual([]);
+  expect(second.socket.sent.filter((frame) => frame.type === "input")).toEqual([{ type: "input", pane_id: "w1:p1", text: "hunter2" }, { type: "input", pane_id: "w1:p1", text: "\r" }]);
+  second.client.close();
+  const third = liveClient(["submit", "secret-input", "secret-prompts-2", "secret-prompts-3"]);
+  expect([third.client.typesSecret(mysql), third.client.typesSecret(git)]).toEqual([false, false]);
+  const taken = third.client.sendSecret("w1:p1", mysql, "hunter2", () => true);
+  for (let turn = 0; turn < 10 && secrets(third.socket).length === 0; turn++) await Promise.resolve();
+  expect(secrets(third.socket)).toMatchObject([{ type: "secret", pane_id: "w1:p1", prompt: mysql, secret: "hunter2" }]);
+  third.socket.receive({ type: "secret-result", id: secrets(third.socket)[0]!["id"], pane_id: "w1:p1", ok: true });
+  expect(await taken).toEqual({ ok: true });
+  third.client.close();
   const result = client.sendSecret("w1:p1", git, "hunter2", () => true);
   for (let turn = 0; turn < 10 && secrets(socket).length === 0; turn++) await Promise.resolve();
   expect(secrets(socket)).toMatchObject([{ type: "secret", pane_id: "w1:p1", prompt: git, secret: "hunter2" }]);
