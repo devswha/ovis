@@ -481,6 +481,17 @@ find_add_name() {
   fi
 }
 
+# Whether the add step that would run tells a line typed ahead from an answer. A release up to v0.5.2
+# asks about a device with [y/N] and takes the next line the terminal hands it, so a "y" and Enter
+# typed during the minutes of its sign-in would approve the first device that asks: nothing this
+# installer discards before the add starts covers those. The reader that takes a line only when it
+# was typed under the request shown, and approves only with that request's own digits, is `answerOf`
+# (scripts/plugin-link.ts), a name only releases with that reader have. Looked for in the release that
+# runs ($code): the checkout's own script hands the add on to it (find_add_name).
+add_reads_answers() {
+  grep -qs 'export function answerOf' "${code:-$root}/scripts/plugin-link.ts"
+}
+
 # The command that adds this PC, as the closing lines print it: `ovis add` through the launcher, which
 # finds the name the release knows by itself; without a launcher of ours, the script under that name.
 add_command() {
@@ -536,16 +547,23 @@ discard_typed() {
 # run: nothing typed for something else answers it. A release from before `add` knows
 # it as `link`; one from before that has neither. It asks the running app, so it runs only while the
 # app does ($add_waits says it does not: a fresh PC whose herdr this install could not start). Wherever
-# it does not run, the closing lines say what to run instead.
+# it does not run, the closing lines say what to run instead. Nor does it run on a release whose add step
+# would take a line typed ahead for its answer (add_reads_answers; $add_old says so): the closing lines
+# then say to update first.
 # Who counts as this PC is said before it starts, while the token can still be set first ($token_said).
 # Ctrl+C ends the add, not the install: what follows it is still printed.
 add_pc() {
   add_result=none
   token_said=0
   add_waits=0
+  add_old=0
   find_add_name
   [ "$add" = 1 ] || return 0
   [ -n "$add_name" ] || return 0
+  if ! add_reads_answers; then
+    add_old=1
+    return 0
+  fi
   if ! bun "$root/scripts/plugin.ts" status </dev/null 2>/dev/null | grep -q '^running'; then
     add_waits=1
     return 0
@@ -581,6 +599,8 @@ closing_lines() {
     :
   elif [ -z "$add_name" ]; then
     say "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again"
+  elif [ "$add" = 1 ] && [ "${add_old:-0}" = 1 ]; then
+    say "this Ovis release would take a line typed ahead as its answer about the device that adds this PC, so the installer does not start that step for it. Update Ovis in Settings → Updates, then run in a terminal on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "${add_waits:-0}" = 1 ]; then
     say "the app is not running yet, so this PC was not added to your Ovis account. Once it runs, run in a terminal on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "$add_result" = none ]; then
