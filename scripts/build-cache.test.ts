@@ -853,6 +853,26 @@ cat "$file"
     expect(readdirSync(join(runner.outboxes, "s1"))).toEqual([`judged-${fresh}`]);
   });
 
+  it("removes an entry whose directories its job left without the owner's write bit, and goes on to the next slot's build either way", () => {
+    const runner = launcher(["s1"], { "9": { slots: ["s1"] } });
+    const [left, key] = ["e".repeat(64), "a".repeat(64)];
+    // what the launcher before filed by the key alone, holding a directory nothing can be removed from as it is
+    store(runner.entries, left, built({ "index.html": "filed by the key alone" }), 1 << 30);
+    mkdirSync(join(runner.entries, left, "assets"));
+    writeFileSync(join(runner.entries, left, "assets", "app.js"), "export {};\n");
+    chmodSync(join(runner.entries, left, "assets"), 0o555);
+    deliver(join(runner.outboxes, "s1"), key, built({ "index.html": "built by run 9" }), "9", "1");
+    try {
+      expect(runner.pass().status).toBe(0);
+      // the old entry is gone, and the pass did not end on it: the slot's build was judged and filed
+      expect(runner.filed()).toEqual(["9/", `9/${key}`]);
+      expect(readdirSync(join(runner.outboxes, "s1"))).toEqual([`judged-${key}`]);
+    } finally {
+      // were it still there, the test's own cleanup could not remove it either
+      if (existsSync(join(runner.entries, left, "assets"))) chmodSync(join(runner.entries, left, "assets"), 0o755);
+    }
+  });
+
   it("files nothing for a claim whose run is no plain number, whatever GitHub would say of it", () => {
     const odd = ["../escape", "7/../8", "7/", "/7", "-7", "+7", "0x7", "7.0", "7e1", "1".repeat(21), "7 1"];
     const slots = odd.map((_, index) => `s${index}`);

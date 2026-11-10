@@ -90,13 +90,21 @@ admit() {
     [ -z "$(find "$staging" -mindepth 1 ! -type f ! -type d -print -quit)" ] &&
     (cd "$staging" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum) > "$staging.manifest" &&
     [ ! -e "$staging/.manifest" ] && mv "$staging.manifest" "$staging/.manifest" &&
-    chmod -R a+rX,go-w "$staging" &&
+    chmod -R u+rwX,a+rX,go-w "$staging" &&
     run_directory "$dir" &&
     mv -T "$staging" "$dir/$key" 2>/dev/null; then
     return 0
   fi
   rm -rf "$staging" "$staging.manifest"
   return 1
+}
+
+# Removes an entry or what is left of one. A build's directories keep the modes its job gave them,
+# so one without the owner's write bit is given it first; and a removal that fails says so and ends
+# no pass: every later slot's build is still judged.
+discard() {
+  chmod -R u+rwX "$1" 2>/dev/null || true
+  rm -rf "$1" 2>/dev/null || log "could not remove $1"
 }
 
 # Every entry's path, one a line: entries/<run id>/<key>.
@@ -127,7 +135,7 @@ evict() {
     path="${line#* }"
     size="$(du -sb "$path" | cut -f1)" || continue
     total=$((total + size))
-    if [ "$total" -gt "$limit" ]; then rm -rf "$path"; fi
+    if [ "$total" -gt "$limit" ]; then discard "$path"; fi
   done < <(entries | while read -r path; do
     used="$(stat -c %Y "$path")"
     if [ -f "$USED/${path##*/}" ]; then stamp="$(stat -c %Y "$USED/${path##*/}")"; [ "$stamp" -gt "$used" ] && used="$stamp"; fi
@@ -168,7 +176,7 @@ refused_before() {
 # at once: a job of a commit from before still reads there, whichever run filed it, and would
 # restore another run's build. From this launcher's first pass on, no run restores across runs.
 for path in "$ENTRIES"/*; do
-  if [[ "${path##*/}" =~ ^[0-9a-f]{64}$ ]] && [ -d "$path" ] && [ ! -L "$path" ]; then rm -rf "$path"; fi
+  if [[ "${path##*/}" =~ ^[0-9a-f]{64}$ ]] && [ -d "$path" ] && [ ! -L "$path" ]; then discard "$path"; fi
 done
 
 promoted=0
