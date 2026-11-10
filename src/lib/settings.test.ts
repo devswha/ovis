@@ -12,7 +12,9 @@ import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems } from "./keyBar.ts";
 import { SHARED_SETTING_KEYS } from "../../shared/preferences.ts";
 import { NOTICE_VERSION, TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
 import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, wantsVoiceInput } from "./settings.ts";
-import { applyToDocument, loadSettings, pcLoadOn, saveSettings } from "./settings.ts";
+import { applyToDocument, loadSettings, pcLoadOn, saveBootRows, saveSettings } from "./settings.ts";
+import { customRow, NO_CUSTOM_THEMES, readThemeFile, withTheme } from "./customThemes.ts";
+import { CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY } from "./themeBoot.ts";
 import { sanitizeSettings as oldSanitizeSettings, saveSettings as oldSaveSettings } from "./settings.legacy-fixture.ts";
 import { themeFor } from "./themeFor.ts";
 import { readStoredAppearance, storedAppearance } from "./themeBoot.ts";
@@ -243,6 +245,27 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalFoldKeyBar).toBe(false);
     records.set("ovis:terminal-fold-key-bar", "\"true\"");
     expect(loadSettings().terminalFoldKeyBar).toBe(false);
+  });
+
+  it("keeps the imported themes in their own key, out of an old tab's whole-record save, and their rows for the first frame", () => {
+    const read = readThemeFile(JSON.stringify({ name: "Night", dark: { base00: "#101418", base05: "#d0d8e0" } }));
+    if (!("theme" in read)) throw new Error("the fixture is no theme");
+    const custom = withTheme(NO_CUSTOM_THEMES, read.theme, "dark")!;
+    expect(loadSettings().customThemes).toBe(NO_CUSTOM_THEMES);
+    saveSettings({ ...loadSettings(), customThemes: custom });
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("customThemes");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().customThemes).toEqual(custom);
+    records.set(CUSTOM_THEMES_STORAGE_KEY, "{not json");
+    expect(loadSettings().customThemes).toBe(NO_CUSTOM_THEMES);
+
+    // no record of rows while no side draws an imported theme
+    saveBootRows(NO_CUSTOM_THEMES);
+    expect(records.has(CUSTOM_ROWS_STORAGE_KEY)).toBe(false);
+    saveBootRows(custom);
+    expect(JSON.parse(records.get(CUSTOM_ROWS_STORAGE_KEY) ?? "{}")).toEqual({ dark: customRow(read.theme, "dark") });
+    saveBootRows({ ...custom, dark: null });
+    expect(records.has(CUSTOM_ROWS_STORAGE_KEY)).toBe(false);
   });
 
   it("keeps Keyboard only from the key bar in its own key, out of an old tab's whole-record save", () => {

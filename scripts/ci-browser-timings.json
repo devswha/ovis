@@ -30,6 +30,7 @@
   "scripts/deep-link-demo-regression.ts": 63,
   "scripts/terminal-keyboard-demo-regression.ts": 61,
   "scripts/theme-first-paint-demo-regression.ts": 58,
+  "scripts/theme-file-demo-regression.ts": 40,
   "scripts/diff-find-demo-regression.ts": 53,
   "scripts/plan-chip-demo-regression.ts": 46,
   "scripts/file-text-size-demo-regression.ts": 42,
