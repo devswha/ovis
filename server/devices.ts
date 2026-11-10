@@ -286,7 +286,8 @@ export class DeviceStore {
    * member that started it there, whose addition the new device then is; `holders`: the paired devices that
    * started it or were handed it, on any transport. It ends when one of them is revoked (`revoke`)
    */
-  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; holders: Set<string> } | null = null;
+  /** `open`: started by a request the open LAN alone let in (access.ts `via: "open"`), so it ends when the gate closes */
+  private pending: { code: string; expires: number; attempts: number; lanAttempts?: number; remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; holders: Set<string> } | null = null;
   private codeIssues: number[] = [];
   private readonly relayFailures: Record<PairingFailurePath, { at: number[]; blockedUntil: number }> = {
     code: { at: [], blockedUntil: 0 }, account: { at: [], blockedUntil: 0 }, lan: { at: [], blockedUntil: 0 },
@@ -497,7 +498,7 @@ export class DeviceStore {
    * (null for this PC itself), which holds it from then on. One that is paired no more by now starts nothing
    * (DeviceGoneError), and the code pending stays as it was.
    */
-  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; by?: string | null } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
+  startPairing(now = Date.now(), from: { remote: boolean; startedBy: string | null; memberRequired: boolean; open?: boolean; by?: string | null } = { remote: false, startedBy: null, memberRequired: false }): PairingCode {
     this.assertWritable();
     const { by = null, ...how } = from;
     for (const id of [by, how.startedBy]) if (id !== null && !this.has(id)) throw new DeviceGoneError();
@@ -750,6 +751,10 @@ export class DeviceStore {
       // Once one first-pair cookie closes the gate, every sibling candidate is stale:
       // subsequent devices must be issued through the gated pairing flow.
       this.unconfirmedFirstPairs = [];
+      // So is a code the open LAN started: it admits whoever holds it, and until now anyone on the LAN could start
+      // one. It ends with the gate, and whoever shows it is told (endPairing). A code this PC, its token or its owner's
+      // login started stays: the request that brings the first cookie back may be the one that redeems it.
+      if (this.pending?.open) this.endPairing();
       this.announce(confirmed, now, origin);
       return { id: confirmed.id, label: confirmed.label, role: confirmed.role };
     }
@@ -1139,7 +1144,8 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
       const startedBy = remote ? access.device?.id ?? null : null;
       // the paired device that asks, through the relay or at this PC's own address: the code goes when it is revoked
       const by = access.level === "full" ? access.device?.id ?? null : null;
-      return jsonResponse(store.startPairing(Date.now(), { remote, startedBy, memberRequired: remote && store.account() !== null, by }), 200, { "cache-control": "no-store" });
+      const open = access.level === "full" && access.via === "open";
+      return jsonResponse(store.startPairing(Date.now(), { remote, startedBy, memberRequired: remote && store.account() !== null, by, ...(open ? { open } : {}) }), 200, { "cache-control": "no-store" });
     } catch (error) {
       if (error instanceof PairingRateLimitedError) return jsonResponse({ error: { code: error.code, message: error.message } }, 429, { "retry-after": String(error.retryAfter), "cache-control": "no-store" });
       // revoked since this request was let in: answered as its next request will be
