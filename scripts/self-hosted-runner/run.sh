@@ -174,7 +174,9 @@ if [ -n "$BUILD_CACHE" ]; then
   esac
 fi
 
-# Set when each runner starts: its slot's outbox, emptied of what an earlier job left.
+# Set when each runner starts: its slot's outbox, emptied of what an earlier job left. Emptied
+# before the slot's next container exists: the promoter takes what is in the outbox while a
+# container is the slot's for that container's job's (build-cache-promote.sh).
 build_cache_args() {
   local outbox="$BUILD_CACHE_OUTBOXES/$1"
   BUILD_CACHE_ARGS=()

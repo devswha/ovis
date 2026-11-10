@@ -882,8 +882,14 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const key = "a".repeat(64);
   const slot = "herdr-ci-host-3";
 
-  /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
+  /**
+   * A job's outbox holding one build, promoted against a GitHub that answers as `github` says. The
+   * slot's container registered runner 31, which the run's job is on; `runnerId` puts the job on
+   * another runner (an earlier container's), `registered` names the runner registered under the
+   * slot's name now (null: none), and `container` says what docker answers for the slot: nothing
+   * at all, or another container by the time GitHub has answered about the jobs.
+   */
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean; runnerId?: number; registered?: number | null; container?: "none" | "changes" } = {}, build: "files" | "link" | "sealed" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -897,7 +903,14 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       writeFileSync(join(dist, "assets/a.js"), "a");
       if (build === "link") symlinkSync("/etc/hostname", join(dist, "leak"));
       if (ownManifest) writeFileSync(join(dist, ".manifest"), "the app's own");
+      // a directory nothing can be removed from as it is, beside a file nobody may read
+      if (build === "sealed") chmodSync(join(dist, "assets"), 0o555);
       spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
+      if (build === "sealed") {
+        writeFileSync(join(dir, "secret"), "s");
+        spawnSync("tar", ["--mode=0000", "-rf", join(outbox, `${key}.tar`), "-C", dir, "./secret"]);
+        chmodSync(join(dist, "assets"), 0o755);
+      }
       writeFileSync(join(outbox, `${key}.claim`), claim);
       // more claims in the same outbox: a job flooding the launcher's GitHub quota
       for (let i = 0; i < extraClaims; i++) {
@@ -924,8 +937,13 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       const sha = "5".repeat(40);
       const answer = (github: NonNullable<Parameters<typeof promote>[0]>) => {
       if (github.fail) writeFileSync(join(dir, "fail"), ""); else rmSync(join(dir, "fail"), { force: true });
+      // what docker names as the slot's container, and whether it is another once GitHub was asked about the jobs
+      if (github.container === "none") rmSync(join(dir, "container"), { force: true }); else writeFileSync(join(dir, "container"), "c1\n");
+      if (github.container === "changes") writeFileSync(join(dir, "next-container"), "c2\n"); else rmSync(join(dir, "next-container"), { force: true });
+      const registered = github.registered === undefined ? 31 : github.registered;
       const answers: Record<string, unknown> = {
-        jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress" }] },
+        jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress", runner_id: github.runnerId ?? 31 }] },
+        runners: { runners: [{ name: "herdr-ci-host-9", id: 9 }, ...(registered === null ? [] : [{ name: slot, id: registered }])] },
         run: { event: github.event ?? "pull_request", head_branch: github.branch ?? "feature", head_sha: sha, head_repository: { full_name: github.headRepo ?? "owner/repo" }, triggering_actor: { login: github.actor ?? "devswha" }, pull_requests: [{ number: 5 }] },
         pull: { user: { login: github.author ?? "devswha" }, head: { sha: github.prSha ?? sha } },
       };
@@ -937,7 +955,11 @@ echo "$2" >> "\${0%/bin/gh}/gh.log"
 # GitHub failing for a moment
 [ -e "\${0%/bin/gh}/fail" ] && exit 1
 case "$2" in
-  repos/owner/repo/actions/runs/7/attempts/[12]/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
+  repos/owner/repo/actions/runs/7/attempts/[12]/jobs*)
+    cat "\${0%/bin/gh}/jobs.json"
+    # the slot's job ended and its next container started while GitHub answered
+    if [ -e "\${0%/bin/gh}/next-container" ]; then mv "\${0%/bin/gh}/next-container" "\${0%/bin/gh}/container"; fi ;;
+  repos/owner/repo/actions/runners) cat "\${0%/bin/gh}/runners.json" ;;
   repos/owner/repo/actions/runs/7) cat "\${0%/bin/gh}/run.json" ;;
   repos/owner/repo/pulls/5) cat "\${0%/bin/gh}/pull.json" ;;
   repos/owner/repo) echo main ;;
@@ -946,6 +968,12 @@ case "$2" in
 esac
 `);
       chmodSync(join(bin, "gh"), 0o755);
+      // docker container inspect -f '{{.Id}}' <slot>: the id of the slot's container, when it has one
+      writeFileSync(join(bin, "docker"), `#!/bin/sh
+[ "$1 $2" = "container inspect" ] && [ -f "\${0%/bin/docker}/container" ] || { echo "Error: No such container" >&2; exit 1; }
+cat "\${0%/bin/docker}/container"
+`);
+      chmodSync(join(bin, "docker"), 0o755);
       const pass = () => spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
       const result = pass();
       // later passes, each after the job claimed again (the claim's run and attempt), each for another build
@@ -1101,5 +1129,40 @@ esac
       expect(run.runs).toEqual([]);
       expect(run.outbox).toEqual([`judged-${key}`]);
     }
+  });
+
+  it("takes in a build only while the container whose job wrote its claim is still the slot's", () => {
+    // the slot's job ended and its next container started while GitHub answered: its word is about that one's job
+    const moved = promote({ container: "changes" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(moved.stderr).toContain("the container that built it is no longer the slot's");
+    expect(moved.callsBefore[0]).toBeGreaterThan(0);
+    // the next container's own claim is taken in: the slot was not held off
+    expect(moved.entries).toEqual([`7/${"0".padStart(64, "f")}`]);
+    // a slot without a container: nothing GitHub says could be about the claim's job, so it is not asked
+    const none = promote({ container: "none" });
+    expect(none.status).toBe(0);
+    expect(none.runs).toEqual([]);
+    expect(none.ghCalls).toEqual([]);
+    expect(none.outbox).toEqual([`judged-${key}`]);
+  });
+
+  it("refuses a claim naming a run whose job under the slot's name is an earlier container's", () => {
+    // that container was killed and GitHub still lists its job as running; the runner registered under the name now is another
+    const stale = promote({ runnerId: 30 }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"]);
+    expect(stale.runs).toEqual([]);
+    // the claim is at fault, so its slot is held off: the next claim costs no call
+    expect(stale.callsBefore[0]).toBe(2);
+    expect(stale.ghCalls).toHaveLength(2);
+    // no runner under the name any more (the job ended while GitHub was asked): refused, and the slot is not held off
+    const ended = promote({ registered: null }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(ended.stderr).toContain("no runner is registered as");
+    expect(ended.entries).toEqual([`7/${"0".padStart(64, "f")}`]);
+  });
+
+  it("leaves nothing in the cache of a refused build whose directories cannot be emptied as they are", () => {
+    const run = promote({}, "sealed");
+    expect(run.status).toBe(0);
+    expect(run.runs).toEqual([]);
+    expect(run.outbox).toEqual([`judged-${key}`]);
   });
 });

@@ -6,6 +6,12 @@
 # running a job of that run and the run is trusted: a push to the default branch, or a pull request
 # from this repository that --writer opened and pushed. Every other outbox file is deleted.
 #
+# A slot runs one job per container, under the same runner name each time, and GitHub answers for
+# the job the slot runs when it answers. So a claim is its container's: it is taken in only while the
+# container that was the slot's when the claim was taken still is, and when the job GitHub lists is on
+# the runner that container registered. A claim naming the run of the slot's next job, or of an
+# earlier job GitHub still lists as running, is refused.
+#
 # A build is filed under the run GitHub confirmed for its slot, entries/<run id>/<key>, and a job
 # reads only its own run's directory (scripts/build-cache.ts). The key is the job's word for what it
 # built, which nothing here can check: filed by the key alone, a trusted pull request's build under
@@ -40,11 +46,18 @@ ask() {
 # Whether the runner named $1 is running a job of run $2 (attempt $3), and that run is trusted: 0 when
 # it is; 1 when GitHub says the run is not trusted; 4 when it is a stale run of the writer's pull
 # request (its head moved on); 3 when the claim is at fault (no job of that run on this slot, or no
-# such run); 2 when GitHub did not answer.
+# such run); 5 when the slot's runner is gone (its job ended meanwhile); 2 when GitHub did not answer.
 trusted() {
-  local name="$1" run="$2" attempt="$3" jobs info default pulls number pull
+  local name="$1" run="$2" attempt="$3" jobs runners runner info default pulls number pull
   jobs="$(ask "repos/$REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100")" || return $?
   jq -e --arg name "$name" 'any(.jobs[]; .runner_name == $name and .status == "in_progress")' >/dev/null <<<"$jobs" || { log "run $run has no job running on $name"; return 3; }
+  # Each container of a slot registers a runner of its own under the slot's name, and GitHub goes on
+  # listing the job of a container that was killed as running for minutes: only a job on the runner
+  # registered under the name now is the slot's.
+  runners="$(ask "repos/$REPO/actions/runners" -X GET -f "name=$name" -f per_page=100)" || return 2
+  runner="$(jq -r --arg name "$name" '[.runners[]? | select(.name == $name) | .id] | if length == 1 then .[0] else "" end' <<<"$runners")"
+  [[ "$runner" =~ ^[0-9]+$ ]] || { log "no runner is registered as $name any more"; return 5; }
+  jq -e --arg name "$name" --argjson runner "$runner" 'any(.jobs[]; .runner_name == $name and .status == "in_progress" and .runner_id == $runner)' >/dev/null <<<"$jobs" || { log "run $run's job on $name is an earlier container's, not the one registered under that name now"; return 3; }
   info="$(ask "repos/$REPO/actions/runs/$run")" || return $?
   [ "$(jq -r '.head_repository.full_name // ""' <<<"$info")" = "$REPO" ] || { log "run $run is not from $REPO"; return 1; }
   case "$(jq -r '.event // ""' <<<"$info")" in
@@ -95,7 +108,8 @@ admit() {
     mv -T "$staging" "$dir/$key" 2>/dev/null; then
     return 0
   fi
-  rm -rf "$staging" "$staging.manifest"
+  discard "$staging"
+  rm -f "$staging.manifest"
   return 1
 }
 
@@ -130,7 +144,11 @@ held() {
 # Keeps the most recently used entries within MAX_MB, whichever run they belong to.
 evict() {
   local total=0 limit=$(( 10#$MAX_MB * 1024 * 1024 )) line size path used stamp dir
-  find "$ENTRIES" -mindepth 1 -maxdepth 1 -name '.new-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+  # what an admission that was cut short, or an entry that could not be removed at once, left
+  for path in "$ENTRIES"/.new-*; do
+    if [ -L "$path" ]; then rm -f "$path"
+    elif [ -n "$(find "$path" -maxdepth 0 -mmin +60 2>/dev/null)" ]; then discard "$path"; fi
+  done
   while read -r line; do
     path="${line#* }"
     size="$(du -sb "$path" | cut -f1)" || continue
@@ -175,9 +193,25 @@ refused_before() {
 # What a launcher from before entries were kept per run filed by the key alone, entries/<key>, goes
 # at once: a job of a commit from before still reads there, whichever run filed it, and would
 # restore another run's build. From this launcher's first pass on, no run restores across runs.
+# It is renamed first, to a name no job reads: that needs only entries/ itself, whoever owns what is
+# inside, so an entry that cannot be removed is out of reach all the same and is not walked again
+# every second (evict tries it again). One that cannot even be renamed is said once a day.
 for path in "$ENTRIES"/*; do
-  if [[ "${path##*/}" =~ ^[0-9a-f]{64}$ ]] && [ -d "$path" ] && [ ! -L "$path" ]; then discard "$path"; fi
+  if [[ "${path##*/}" =~ ^[0-9a-f]{64}$ ]] && [ -d "$path" ] && [ ! -L "$path" ]; then
+    if gone="$(mktemp -d "$ENTRIES/.new-gone-XXXXXX" 2>/dev/null)" && mv -T "$path" "$gone" 2>/dev/null; then discard "$gone"
+    else
+      rmdir "$gone" 2>/dev/null || true
+      if [ ! -e "$REFUSED/stuck-${path##*/}" ]; then
+        log "could not move $path away: a job of a commit from before can still restore it"
+        touch "$REFUSED/stuck-${path##*/}" 2>/dev/null || true
+      fi
+    fi
+  fi
 done
+
+# The container that is the slot $1's now, as docker names it: nothing when it has none, or when
+# docker does not answer. run.sh empties a slot's outbox before it starts the slot's next container.
+container() { timeout 10 docker container inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
 
 promoted=0
 for name in "$@"; do
@@ -205,6 +239,8 @@ for name in "$@"; do
       continue
     fi
     judged=1
+    # read before the claim is taken: what is in the outbox while this container is the slot's, its job wrote
+    wrote="$(container "$name")"
     work="$(mktemp -d "$TAKEN/XXXXXX")" || continue
     # only plain files, and small claims: a link could make this host user read or keep a file of its own
     if [[ "$key" =~ ^[0-9a-f]{64}$ ]] && take "$tar" "$work/build.tar" && take "$claim" "$work/claim" &&
@@ -213,16 +249,21 @@ for name in "$@"; do
     fi
     if [[ "$run" =~ $RUN_ID && "$attempt" =~ ^[0-9]{1,5}$ ]] && [ ! -e "$ENTRIES/$run/$key" ] &&
       [ "$(stat -c %s "$work/build.tar")" -le $(( 10#$MAX_MB * 1024 * 1024 )) ]; then
-      if refused_before "$name" "$run" "$attempt"; then
+      if [ -z "$wrote" ]; then
+        log "refused $key from $name: the slot has no container now, so GitHub cannot say whose build it is"
+      elif refused_before "$name" "$run" "$attempt"; then
         log "refused $key from $name: run $run or this slot was refused before"
       else
         verdict=0
         trusted "$name" "$run" "$attempt" || verdict=$?
+        # GitHub answered for the job the slot runs now: that is the claim's only while the container is the same
+        if [ "$verdict" = 0 ] && [ "$(container "$name")" != "$wrote" ]; then verdict=5; fi
         case "$verdict" in
           0) if admit "$work/build.tar" "$key" "$run"; then log "cached $key from $name (run $run)"; promoted=1; fi ;;
           1) touch "$REFUSED/run-$run-$attempt" "$REFUSED/slot-$name" 2>/dev/null || true ;;
           3) touch "$REFUSED/slot-$name" 2>/dev/null || true ;;
           4) touch "$REFUSED/run-$run-$attempt" 2>/dev/null || true ;;
+          5) log "refused $key from $name: the container that built it is no longer the slot's" ;;
           *) log "refused $key from $name: GitHub did not answer about run $run" ;;
         esac
       fi
