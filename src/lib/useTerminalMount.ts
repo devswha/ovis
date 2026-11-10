@@ -15,7 +15,7 @@ import { reserveOsc52Copy, type Osc52Reservation } from "./osc52Clipboard.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
 import { unwrapAgentRows } from "./agentCopy.ts";
 import { paneStorageId } from "../../shared/machines.ts";
-import { promptHasCursor, secretPrompt } from "../../shared/secret-prompt.ts";
+import { promptAsks, promptHasCursor, secretPrompt } from "../../shared/secret-prompt.ts";
 import { TERMINAL_HISTORY_LINES } from "../../shared/terminal-flow.ts";
 import type { ClientRole, ServerMessage } from "../../shared/protocol.ts";
 import type { Settings } from "./settings.ts";
@@ -1287,6 +1287,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       };
       typeAheadRef.current = adoptTypeAhead;
       // the masked prompt the screen shows now, if any (shared/secret-prompt.ts)
+      // the prompt last seen with the cursor on its line (promptAsks)
+      let promptSeen: string | null = null;
       const screenSecret = (): string | null => {
         const lines: string[] = [];
         // each line's first screen row
@@ -1301,10 +1303,12 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           else { lines.push(text); starts.push(row); }
         }
         const prompt = secretPrompt(lines.join("\n"), term.cols);
-        // a prompt asks only while the cursor is on its line (promptHasCursor). A mirrored pane's repaints carry no
-        // cursor, so its prompt counts while it is the last text, as before; so does one not known to be attached
-        if (prompt === null || mirroredRef.current !== false) return prompt;
-        return promptHasCursor(lines, starts, buffer.baseY + buffer.cursorY, buffer.cursorX, term.cols) ? prompt : null;
+        // A prompt whose cursor was on its line and left has been answered (promptAsks). A mirrored pane's repaints
+        // carry no cursor, so its prompt counts while it is the last text, as before; so does one not known to be attached
+        if (mirroredRef.current !== false) return prompt;
+        const read = promptAsks(prompt, prompt !== null && promptHasCursor(lines, starts, buffer.baseY + buffer.cursorY, buffer.cursorX, term.cols), promptSeen);
+        promptSeen = read.seen;
+        return read.asks ? prompt : null;
       };
       // the idle release's clock: when the terminal was last typed, clicked or pasted in, and the check that follows it
       // (idleCheck, with the release machinery below)
@@ -1449,7 +1453,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             // Read at a whole frame only: herdr hides the cursor, draws its rows and places the cursor last, so a
             // chunk that ends inside a frame has the cursor wherever drawing stopped. Read there, the prompt would
             // seem to ask no more, and the field would leave with what was typed in it
-            if (stamp.boundary) {
+            // A herdr-core pane's stream is the program's own bytes, with no frame of herdr's to wait for: a program
+            // that opened a synchronized update and never closed it (a TUI killed mid-draw, `cat` of a raw log)
+            // would leave every later chunk inside one, and a later prompt unread
+            if (stamp.boundary || socket.hasTerminalHistory()) {
               const prompt = screenSecret();
               secretRef.current = prompt;
               setSecret((previous) => previous?.pane === owner && previous.prompt === prompt ? previous : prompt ? { pane: owner, prompt } : null);

@@ -47,9 +47,10 @@ const SECRET_PROMPT = new RegExp(`^(?:(?:doas )?\\([^\\s()]+@[^\\s()]+\\) )?(?:$
 
 // a yes/no choice is no secret: `y/n` in brackets, or after a space or a mark and before anything that does not
 // go on as a name (` y/n:`, `,y/n:`, `-y/n:`, ` y/n/a:`, `'y/n'`). Not inside a name: the letters around a path's
-// slash (`/home/andy/notes/key`), two of its folders (`/home/y/n/key`), a repository (`team-y/n-tools.git`), or
-// the start of a wrapped row, which is tested before the rows above it are joined (`…/compan` then `y/n-prod:`)
-const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?![a-z0-9_.-])/i;
+// slash (`/home/andy/notes/key`), two of its folders (`/home/y/n/key`), a repository (`team-y/n-tools.git`), a
+// path that goes on (`team-y/n/repo.git`: more than one letter after the next slash is no third option), or the
+// start of a wrapped row, which is tested before the rows above it are joined (`…/compan` then `y/n-prod:`)
+const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?![a-z0-9_.-]|\/[a-z0-9_.-]{2})/i;
 
 /** Whose reading of a prompt: 3 this one's, 2 a server's that lists `secret-prompts-2` and no more, 1 any server's before that. */
 export type PromptSet = 1 | 2 | 3;
@@ -148,6 +149,9 @@ export function promptSet(prompt: string): PromptSet {
  * page has no wrapped row to join there: the space's row is a line of its own, blank. That is still the prompt
  * asking: the cursor on the row right below, past its start (`cursorX`), on a blank row, under a prompt whose last
  * row reaches the right edge (`columns`). After an answer the line break leaves the cursor at a row's start.
+ * herdr writes every cell of a row, so the page's lines are all as wide as the pane: the prompt's row is measured
+ * without its trailing spaces, to the edge or one column short of it (a colon there with its space in the last
+ * column, or a wide character that did not fit: secretPrompt joins rows by the same measure).
  */
 export function promptHasCursor(lines: readonly string[], starts: readonly number[], cursorRow: number, cursorX: number, columns: number): boolean {
   let last = lines.length - 1;
@@ -155,8 +159,20 @@ export function promptHasCursor(lines: readonly string[], starts: readonly numbe
   if (last < 0) return false;
   const below = last + 1 < starts.length ? starts[last + 1]! : Infinity;
   if (cursorRow >= starts[last]! && cursorRow < below) return true;
-  const width = displayWidth(lines[last]!);
-  return cursorRow === below && cursorX > 0 && width > 0 && width % columns === 0;
+  return cursorRow === below && cursorX > 0 && displayWidth(lines[last]!.trimEnd()) >= columns - 1;
+}
+
+/**
+ * Whether a prompt on the screen still asks, for a pane whose cursor is known. `onLine`: promptHasCursor. `seen` is
+ * the prompt last seen with the cursor on it, which the caller keeps and passes back. A prompt whose cursor was on
+ * its line and has left was answered: the program printed its line break. One whose cursor was never seen on it asks
+ * for as long as it is the last text: a script that prints the prompt and a line break and reads below it
+ * (`echo "Password:"; read -s`), or a screen first seen after the answer, which reads as it always did.
+ */
+export function promptAsks(prompt: string | null, onLine: boolean, seen: string | null): { asks: boolean; seen: string | null } {
+  if (prompt === null) return { asks: false, seen: null };
+  if (onLine) return { asks: true, seen: prompt };
+  return { asks: seen !== prompt, seen };
 }
 
 // where no passphrase is an answer: ssh-keygen says so when it asks for a new one, and asks for the same again

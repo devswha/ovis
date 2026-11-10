@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { promptHasCursor, promptSet, secretPrompt, validSecret } from "./secret-prompt.ts";
+import { promptAsks, promptHasCursor, promptSet, secretPrompt, validSecret } from "./secret-prompt.ts";
 
 it("recognizes only a short secret request on the last nonempty line", () => {
   for (const prompt of ["[sudo] password for alice:", "alice@server's password:", "Password:", "Password for alice:", "Enter passphrase:", "Enter passphrase for key '/tmp/key':", "Enter PIN:", "Enter PIN for token:", "Repeat password:", "Verify password:", "Confirm password:"]) {
@@ -47,6 +47,8 @@ const NEWER = [
   "Enter passphrase for /home/andy/notes/id_ed25519:",
   "Enter passphrase for /home/y/n/id_ed25519:",
   "Password for 'https://alice@example.com/team-y/n-tools.git':",
+  "Password for 'https://alice@example.com/team-y/n/repo.git':",
+  "Enter passphrase for /srv/team-y/n/key:",
   "Enter passphrase for key 'C:/y/n/id_ed25519':",
 ];
 
@@ -147,7 +149,19 @@ it("counts a prompt only while the cursor is on its line", () => {
   // below a prompt that did not reach the right edge
   expect(promptHasCursor(lines, starts, 12, 0, 40)).toBe(false);
   expect(promptHasCursor(lines, starts, 13, 1, 40)).toBe(false);
-  expect(promptHasCursor(lines, starts, 12, 1, 41)).toBe(false);
+  expect(promptHasCursor(lines, starts, 12, 1, 42)).toBe(false);
+  // As the page has them: herdr writes every cell of a row, so each line is as wide as the pane, spaces and all.
+  // The prompt's row is measured without those: a short prompt with the cursor below it, past the row's start
+  // (a reader in raw mode ends its line with a line feed alone), has been answered
+  const padded = (width: number, ...rows: string[]): string[] => rows.map((row) => row.padEnd(width));
+  expect(promptHasCursor(padded(80, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 41, 80)).toBe(false);
+  expect(promptHasCursor(padded(80, "$ sudo ls", "Password: ", ""), [0, 1, 2], 2, 10, 80)).toBe(false);
+  expect(promptHasCursor(padded(80, "$ sudo ls", "Password: ", ""), [0, 1, 2], 1, 10, 80)).toBe(true);
+  // and one that fills its row still asks from the row below: its colon in the last column, or in the one before it
+  // with the space after it in the last
+  expect(promptHasCursor(padded(40, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 40)).toBe(true);
+  expect(promptHasCursor(padded(41, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 41)).toBe(true);
+  expect(promptHasCursor(padded(42, "$ git push", "Password for 'https://alice@github.com':", "", ""), starts, 12, 1, 42)).toBe(false);
   // two full rows of it in 20 columns, and a row of text below is no blank row
   expect(promptHasCursor(["Password for 'https:", "//alice@github.com':", ""], [0, 1, 2], 2, 1, 20)).toBe(true);
   expect(promptHasCursor(["Password for 'https://alice@github.com':", "x"], [0, 1], 1, 1, 40)).toBe(true);
@@ -160,6 +174,22 @@ it("counts a prompt only while the cursor is on its line", () => {
   expect(promptHasCursor(["Password:"], [0], 0, 9, 80)).toBe(true);
   expect(promptHasCursor(["", ""], [0, 1], 0, 0, 80)).toBe(false);
   expect(promptHasCursor([], [], 0, 0, 80)).toBe(false);
+});
+
+it("takes a prompt as answered only once its cursor was seen on it and then left", () => {
+  const git = "Password for 'https://alice@github.com':";
+  // git: the cursor waits on the prompt's line, the answer is read, and a line break moves it below
+  let seen: string | null = null;
+  const read = (prompt: string | null, onLine: boolean): boolean => { const next = promptAsks(prompt, onLine, seen); seen = next.seen; return next.asks; };
+  expect([read(git, true), read(git, false), read(git, false)]).toEqual([true, false, false]);
+  // asked again (a wrong password), the same words with the cursor back on them
+  expect([read(git, true), read(null, false), read(git, true)]).toEqual([true, false, true]);
+  // a script that prints its prompt and a line break, then reads below it (`echo "Password:"; read -s`): the cursor
+  // was never on the prompt, which asks for as long as it is the last text
+  seen = null;
+  expect([read("Password:", false), read("Password:", false)]).toEqual([true, true]);
+  // another prompt after an answered one is not that one
+  expect([read(git, true), read(git, false), read("Password:", false)]).toEqual([true, false, true]);
 });
 
 it("reads the prompts of a server that lists secret-prompts-2 as that server does", () => {
