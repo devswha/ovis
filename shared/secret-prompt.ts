@@ -14,15 +14,47 @@ export function displayWidth(text: string): number {
   return width;
 }
 
-/** Deliberately narrow: prose mentioning passwords must not become an input prompt. */
-export function secretPrompt(screen: string, columns = Infinity): string | null {
+// what a passphrase is asked for when it is not ssh's quoted key: a path or a key's comment as it
+// is (ssh-add), or in double quotes (ssh-keygen). It holds no colon but a Windows drive's
+const NAMED = /["'’]?(?:[a-z]:(?=[\\/]))?[^:]+/.source;
+
+/** The line a program prints before it reads a secret, up to its colon, as each of these writes it. */
+const SECRET_PROMPT = new RegExp(`^(?:${[
+  // sudo
+  /\[sudo\] password for [^:]+/,
+  // ssh: user@host, and an IPv6 host is written with colons
+  /[^\s@]+@\S+['’]s password/,
+  // su and login; git over HTTPS names the remote in quotes, its scheme's and port's colons and all
+  /password(?: for (?:['’][^'’\r\n]+['’]|[^:]+))?/,
+  // ssh names its key in quotes; ssh-add and ssh-keygen name theirs as NAMED, and ssh-add asks again
+  /enter passphrase(?: for key ['’][^\r\n]+['’])?/,
+  new RegExp(`(?:enter passphrase|bad passphrase, try again) for ${NAMED}`),
+  /enter pin(?: for [^:]+)?/,
+  /(?:repeat|verify|confirm) password/,
+].map((prompt) => prompt.source).join("|")}):$`, "i");
+
+// a yes/no choice is no secret: `y/n` on its own, not the letters around a path's slash
+// (`/home/andy/notes/key`)
+const ASKS_CHOICE = /\?|(?:^|[^a-z0-9])y\s*\/\s*n(?![a-z0-9])/i;
+
+// Both as every server before this one has them. Such a server refuses a masked input for any
+// other prompt (`invalid_secret`), and a page can be newer than its PC (app.ovis.sh), where
+// nothing yet says which prompts the PC takes: the page reads the screen with these.
+const EARLIER_PROMPT = /^(?:\[sudo\] password for [^:]+|[^\s@]+@[^\s:]+['’]s password|password(?: for [^:]+)?|enter passphrase(?: for key ['’][^\r\n]+['’])?|enter pin(?: for [^:]+)?|(?:repeat|verify|confirm) password):$/i;
+const EARLIER_CHOICE = /\?|y\s*\/\s*n/i;
+
+/**
+ * Deliberately narrow: prose mentioning passwords must not become an input prompt. `earlier`: only
+ * the prompts every earlier server takes too (EARLIER_PROMPT), each of them a prompt without it as well.
+ */
+export function secretPrompt(screen: string, columns = Infinity, earlier = false): string | null {
   const lines = screen.split(/\r?\n/);
   while (lines.length && !lines.at(-1)?.trim()) lines.pop();
   let line = lines.pop()?.trimEnd() ?? "";
   for (;;) {
     const candidate = line.trimStart();
-    if (!candidate || candidate.length > 120 || /\?|y\s*\/\s*n/i.test(candidate)) return null;
-    if (/^(?:\[sudo\] password for [^:]+|[^\s@]+@[^\s:]+['’]s password|password(?: for [^:]+)?|enter passphrase(?: for key ['’][^\r\n]+['’])?|enter pin(?: for [^:]+)?|(?:repeat|verify|confirm) password):$/i.test(candidate)) return candidate;
+    if (!candidate || candidate.length > 120 || (earlier ? EARLIER_CHOICE : ASKS_CHOICE).test(candidate)) return null;
+    if ((earlier ? EARLIER_PROMPT : SECRET_PROMPT).test(candidate)) return candidate;
     // herdr's screen-diff stream does not preserve xterm's soft-wrap flags. Only
     // continue a row that reached the right edge (a final space can be trimmed).
     const previous = lines.pop()?.trimEnd();

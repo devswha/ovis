@@ -10,6 +10,64 @@ it("recognizes only a short secret request on the last nonempty line", () => {
   }
 });
 
+// git: "Password for '%s': ", the remote as git describes it (read from git 2.53 through an askpass helper)
+// ssh: "%s@%s's password: "
+// ssh-add: "Enter passphrase for %s%s: " and "Bad passphrase, try again for %s%s: ", a path or the key's comment
+// ssh-keygen: 'Enter passphrase for "%s": '
+const NEWER = [
+  "Password for 'https://alice@github.com':",
+  "Password for 'https://alice@git.example.com:8443':",
+  "Password for 'https://alice%40example.com@github.com':",
+  "Password for 'https://alice smith@github.com':",
+  "Password for 'https://alice@[fe80::1]:8443':",
+  "Password for 'https://org@dev.azure.com/org/My%20Project/_git/repo':",
+  "Password for 'smtp://alice%40example.com@smtp.example.com:587':",
+  "alice@fe80::1's password:",
+  "alice@2001:db8::7%eth0's password:",
+  "Enter passphrase for /home/alice/.ssh/id_ed25519:",
+  "Enter passphrase for /home/alice/.ssh/id_ed25519 (will confirm each use):",
+  "Enter passphrase for alice@laptop:",
+  "Bad passphrase, try again for /home/alice/.ssh/id_ed25519:",
+  "Enter passphrase for C:\\Users\\alice/.ssh/id_ed25519:",
+  "Enter passphrase for PKCS#11:",
+  'Enter passphrase for "/home/alice/.ssh/id_ed25519":',
+  'Enter passphrase for "C:\\Users\\alice\\.ssh\\id_ed25519":',
+  // the letters around a path's slash are no yes/no choice
+  "Enter passphrase for key '/home/andy/notes/id_ed25519':",
+  "Enter passphrase for /home/andy/notes/id_ed25519:",
+];
+
+it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen and an IPv6 host's password", () => {
+  for (const prompt of NEWER) expect(secretPrompt(`$ git push\n${prompt} `)).toBe(prompt);
+  // wrapped at the right edge, inside the remote's name
+  expect(secretPrompt("$ git push\nPassword for 'https:\n//alice@github.com':", 20)).toBe("Password for 'https://alice@github.com':");
+  for (const screen of [
+    // git's other question is no secret
+    "Username for 'https://github.com':",
+    "Password for 'https://alice@github.com': ok",
+    "Password for 'https://alice@github.com' and 'b':",
+    "Enter passphrase for a: b:",
+    "Bad passphrase, try again:",
+    "see alice@fe80::1's password:",
+    // a yes/no choice, however it is written
+    "Enter passphrase for key [y/n]:",
+    "Password for alice (y/N):",
+    "Password for alice y / n:",
+  ]) {
+    expect(secretPrompt(screen)).toBeNull();
+  }
+});
+
+it("reads only the prompts an earlier server takes when asked to, and each of those either way", () => {
+  // what a page shows a masked input for: a server older than the page refuses one for any newer prompt
+  for (const prompt of NEWER) expect(secretPrompt(`$ git push\n${prompt} `, Infinity, true)).toBeNull();
+  for (const prompt of ["[sudo] password for alice:", "alice@server's password:", "Password:", "Password for alice:", "Enter passphrase:", "Enter passphrase for key '/tmp/key':", "Enter PIN:", "Enter PIN for token:", "Repeat password:", "Verify password:", "Confirm password:"]) {
+    expect(secretPrompt(prompt, Infinity, true)).toBe(prompt);
+    expect(secretPrompt(prompt)).toBe(prompt);
+  }
+  expect(secretPrompt("Enter passph\nrase for key\n '/tmp/a-ver\ny-long-priva\nte-key':", 12, true)).toBe("Enter passphrase for key '/tmp/a-very-long-private-key':");
+});
+
 it("rejects multiline and terminal-control secrets while preserving spaces and Unicode", () => {
   expect(validSecret("  한글🔒  ")).toBe(true);
   for (const value of [null, "", "x".repeat(4097), "one\ntwo", "one\rtwo", "\u001b[200~", "\u0003", "\u007f", "\u009b"]) expect(validSecret(value)).toBe(false);
