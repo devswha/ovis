@@ -154,7 +154,10 @@ two screens instead, as in Bluetooth's numeric comparison:
    device, the same record and key a pairing with a code makes, and `AUTH_OK` follows as usual.
    On a PC without a screen, `bun scripts/plugin.ts pair --approve` in its terminal shows each
    waiting phone with its digits and asks for them: typing the six digits, or their last three,
-   approves, and anything else (a bare Enter, `y`) declines. The PC's terminal is the PC itself.
+   approves, Enter by itself declines, and anything else answers nothing and is asked again. It
+   asks as `add` does, by the same rules for which line answers which request
+   ([A PC with no screen](#a-pc-with-no-screen)): piped input approves nothing. The PC's terminal
+   is the PC itself.
 
 The approval may also come from a phone already linked to the owner's account, connected through
 the relay: it is shown three sets of digits and must pick the new device's
@@ -307,9 +310,14 @@ it is off, and wait until it is online.
   account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the terminal shows the request with its six digits
   (**… wants to join your account. Approve it only if its screen shows 123 456. Type 456 to
   approve, or press Enter to decline**). Only the request's own digits approve it: all six, with
-  or without the space, or the last three. Anything else declines, a bare Enter and `y` among
-  them (a `y` is told that the digits are what approves), so a line begun for another request, or
-  typed ahead of any, cannot approve this one. That approval is this PC's own, as on its screen:
+  or without the space, or the last three, so a line begun for another request, or typed ahead of
+  any, cannot approve this one. Full-width digits, as an input method types them, are the same
+  digits. When the last three are also those of another request (one asked about earlier in the
+  run, or waiting now: once in a thousand pairs), they name neither: the question says so and
+  asks for all six, and only all six approve. Only Enter by itself declines. Any other line (a
+  `y` out of habit, a mistyped digit) answers nothing: a decline ends the request for good, so
+  it is not read into a line that was not one. One line says what approves and what declines,
+  and the question is asked again. That approval is this PC's own, as on its screen:
   the window it opens takes approvals from this PC only.
   The waiting goes on under that question: a request that stops waiting unanswered
   is dropped with a line saying so, and an answer the server did not take is asked for again
@@ -323,7 +331,16 @@ it is off, and wait until it is online.
   out, or was answered elsewhere), whenever it comes and whatever it says: a terminal hands a line
   over only when Enter is pressed, so what was typed at that request's question and not sent would
   otherwise arrive under the next one. The question shown then is asked again, and the line typed
-  under that counts.
+  under that counts. The same holds for the first line after an answer that did not reach the
+  PC's server: it may have been typed while that answer was on its way.
+  For the same reason, what was typed and not sent before a question showed is discarded as the
+  question first shows (the terminal's input is emptied, with `tcflush`), so it is no part of the
+  line sent at it. Where the input cannot be emptied (Windows, or no C library found), the first
+  line after each question answers nothing instead, and the question is asked again.
+  One limit remains, as the terminal is read a line at a time and shows only when Enter was
+  pressed, not when a line was begun: keys pressed in the moment after a question showed, before
+  it was read, are part of the line sent at it. Such a line approves only if it is that request's
+  own digits, and declines only if it is empty.
   Input that is not a terminal
   (a pipe, a file, a closed stdin) answers nothing, whatever it carries and whenever: the command
   says so, names the way out (over ssh, `ssh -t`), and declines every request as it shows.

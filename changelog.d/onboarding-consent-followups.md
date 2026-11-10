@@ -17,3 +17,20 @@
 - `install.sh --add` discards what was typed in the terminal while the installer worked before its
   add step starts, so a line typed ahead no longer answers a device's approval there; where it
   cannot be discarded, the installer prints the command to run instead.
+- `ovis add` (also `login` and `link`) and `pair --approve` ask about a device more carefully.
+  A line that is neither the request's digits nor empty (a `y` out of habit, a mistyped digit)
+  no longer declines the request for good: it answers nothing, one line says what approves and
+  what declines, and the question is asked again; Enter by itself still declines. Full-width
+  digits typed with an input method approve as the digits they are. A request whose last three
+  digits another request shares (one asked about earlier in the run, or waiting now) asks for
+  all six, and only all six approve it.
+- `ovis add` and `pair --approve` no longer take what was typed before a question as part of
+  its answer: the terminal's input is discarded as a request's question first shows, and the
+  first line after an answer that did not reach the PC's server answers nothing. Where the
+  input cannot be discarded (Windows), the first line after each question answers nothing
+  instead and the question is asked again.
+- `pair --approve` asks as `ovis add` does: a second line sent right behind an answer no longer
+  answers the next request, a line counts only a second and a half after its question showed,
+  and input that is not a terminal (`printf '456\n' | ovis pair --approve`) approves nothing:
+  each request is declined as it shows. An answer the PC's server does not take is asked for
+  again instead of ending the command with an error.
