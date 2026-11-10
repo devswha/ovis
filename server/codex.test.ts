@@ -1714,6 +1714,22 @@ describe("a Codex pane whose last answer the screen never shows whole (#3262 cas
     expect(footedTailTranscript(screen, [...own, { path: other, text: finishedOn(answer) }], owners)).toBeNull();
   });
 
+  it("counts what another candidate said where Codex draws every stretch of it its own way: a list it numbers, a language on each fence", () => {
+    // short items: every 48 letters and digits of the list hold a number, which the record wrote "1." each time
+    const items = Array.from({ length: 40 }, (_, at) => `${"abcdefghij"[at % 10]}${"klmnopqrst"[(at * 3) % 10]} region read`);
+    const counted = items.map((item, at) => `${at + 1}. ${item}`);
+    const list = codexTurnScreen(null, counted.slice(-30).map((row) => `  ${row}`));
+    const relayed = [{ path, text: finishedOn(counted.join("\n")) }];
+    expect(footedTailTranscript(list, relayed, owners)).toBe(path);
+    expect(footedTailTranscript(list, [...relayed, elsewhere({ type: "agent_message", message: items.map((item) => `1. ${item}`).join("\n") })], both)).toBeNull();
+    // small blocks: every 48 letters hold a fence's language, which the screen does not show
+    const steps = Array.from({ length: 40 }, (_, at) => `run step ${"abcdefghij"[at % 10]}${"klmnopqrst"[(at * 7) % 10]} of the check`);
+    const blocks = codexTurnScreen(null, steps.slice(-30).map((row) => `  ${row}`));
+    const plain = [{ path, text: finishedOn(steps.join("\n\n")) }];
+    expect(footedTailTranscript(blocks, plain, owners)).toBe(path);
+    expect(footedTailTranscript(blocks, [...plain, elsewhere({ type: "agent_message", message: steps.map((step) => `\`\`\`sh\n${step}\n\`\`\``).join("\n") })], both)).toBeNull();
+  });
+
   it("never takes a conversation that is not this folder's: one only a title or herdr's report offered", () => {
     expect(footedTailTranscript(codexTurnScreen(null, tail), candidates, new Set())).toBeNull();
   });

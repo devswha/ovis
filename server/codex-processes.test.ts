@@ -2927,6 +2927,51 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
     expect(found === path ? "A, which the pane only relayed to" : found === fileB ? "B" : found).toBeNull();
   });
 
+  // the adversarial review of that fix: the same relay, for each way Codex draws the end of an answer its own way
+  const drawings: Record<string, { written: string[]; drawn: string[] }> = {
+    "emphasis and inline code": { written: ["The **nightly** job reads `config.toml` and _skips_ every empty region it finds."], drawn: ["The nightly job reads config.toml and skips every empty region it finds."] },
+    "an ordered list it numbers itself": { written: ["1. east region checked and clean", "1. west region checked and late", "1. north region skipped for now"], drawn: ["1. east region checked and clean", "2. west region checked and late", "3. north region skipped for now"] },
+    "a table": { written: ["| Region | Status |", "| --- | --- |", "| east | clean |", "| west | late |"], drawn: ["Region  Status", "──────────────", "east    clean", "west    late"] },
+    "a heading": { written: ["## Result of the nightly check"], drawn: ["Result of the nightly check"] },
+    "a link whose label is its target": { written: ["Read [https://example.com/runbook](https://example.com/runbook) before the next run."], drawn: ["Read https://example.com/runbook (https://example.com/runbook) before the next run."] },
+    "a bare URL": { written: ["Read https://example.com/runbook before the next run."], drawn: ["Read https://example.com/runbook (https://example.com/runbook) before the next run."] },
+    "a named entity that is a sign": { written: ["Billing &amp; invoicing were both checked against the ledger."], drawn: ["Billing & invoicing were both checked against the ledger."] },
+    "a named entity that is a letter": { written: ["The caf&eacute; ledger and the r&eacute;sum&eacute; of the nightly run were both checked."], drawn: ["The café ledger and the résumé of the nightly run were both checked."] },
+  };
+  for (const [at, [name, { written, drawn }]] of Object.entries(drawings).entries()) {
+    it(`binds no conversation that ended on the drawn text of the pane's own answer, its prompt off screen (${name})`, async () => {
+      const closing = "That is everything the nightly check found this time.";
+      for (const [shape, head] of [["its start scrolled off", Array.from({ length: 40 }, (_, row) => `Step ${row} of the rollout was checked against its region and reported clean.`)],
+        ["under its bullet, below a tool's row", ["The nightly check, region by region, with what it found in each of them:"]]] as const) {
+        // the pane's own recorded `written`; another conversation of the folder read the pane and ended on what it drew
+        finishedRollout(path, thread, [["Summarize the nightly check", [...head, ...written, closing].join("\n\n")]]);
+        const relayed = [...head, ...drawn, closing];
+        const fileA = join(home, "sessions", `rollout-${threadB}.jsonl`);
+        if (shape === "its start scrolled off") conversationB([["Relay what the other pane says", relayed.join("\n")]]);
+        else finishedRollout(fileA, threadB, [["Relay what the other pane says", relayed.join("\n")]]);
+        foreground = fresh(2147483560 + at * 2 + (shape === "its start scrolled off" ? 0 : 1));
+        screen = (shape === "its start scrolled off" ? [...relayed.slice(-28).map((row) => `  ${row}`)]
+          : ["• Ran bun run nightly-check", "  └ 164 regions read", "", `• ${relayed[0]}`, ...relayed.slice(1).map((row) => `  ${row}`)]).concat(["", footer, ...idle]).join("\n");
+        const found = await resolve();
+        expect([shape, found === fileA ? "the one that only relayed it" : found]).toEqual([shape, null]);
+      }
+    });
+  }
+
+  it("binds no scrolled answer whose visible end holds too few letters to tell who else may have said it", async () => {
+    // the pane's own wrote "1." on every row, each a figure with its unit in parentheses; Codex counts the rows.
+    // Without digits and parentheses nothing of the rows is left to look for in another read
+    const figures = Array.from({ length: 44 }, (_, row) => `${137 + row * 29} (ms)`);
+    const heading = "Timings of the forty-four regions, slowest last:";
+    const drawn = [heading, ...figures.map((figure, row) => `${row + 1}. ${figure}`)];
+    const fileB = conversationB([["Time every region", [heading, ...figures.map((figure) => `1. ${figure}`)].join("\n")]]);
+    finishedRollout(path, thread, [["Read the other pane and relay what it says", drawn.join("\n")]]);
+    foreground = fresh(2147483580);
+    screen = [...drawn.slice(-30).map((row) => `  ${row}`), "", footer, ...idle].join("\n");
+    const found = await resolve();
+    expect(found === path ? "A, which the pane only relayed to" : found === fileB ? "B" : found).toBeNull();
+  });
+
   // the merge pass's second review of #3582: a read cut by its budget may begin inside the very record that tells
   for (const cut of ["its finished answer, longer than the read", "a tool's output, longer than the read", "a turn begun before the read, its finish not written yet"] as const) {
     it(`binds no scrolled answer beside a conversation whose read was cut inside what tells (${cut})`, async () => {

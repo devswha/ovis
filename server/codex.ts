@@ -1291,11 +1291,11 @@ function withoutParens(text: string): string {
 /**
  * The letters of a text, without what a screen may draw another way than a rollout records it: a parenthesized
  * stretch (a link's target, which Codex draws after its label, relative to the folder: "the runbook
- * (docs/runbook.md)" for `[the runbook](/repo/docs/runbook.md)`), a named entity, a task mark, a tag, and every
- * digit (a list Codex numbers itself, a location it writes its own way). Only for what a conversation may have
- * said (saidAnywhere), where leaving more out only adds a doubt.
+ * (docs/runbook.md)" for `[the runbook](/repo/docs/runbook.md)`), a named entity, a task mark, a tag, every
+ * digit (a list Codex numbers itself, a location it writes its own way) and the case of its letters. Only for
+ * what a conversation may have said (saidAnywhere), where leaving more out only adds a doubt.
  */
-const bareLetters = (text: string): string => withoutParens(text).replace(/&[A-Za-z][A-Za-z0-9]{1,31};|\[[ xX]\]|<[^<>\n]{1,40}>/g, "").normalize("NFKC").replace(/[^\p{L}]/gu, "");
+const bareLetters = (text: string): string => withoutParens(text).replace(/&[A-Za-z][A-Za-z0-9]{1,31};|\[[ xX]\]|<[^<>\n]{1,40}>/g, "").normalize("NFKC").toLowerCase().replace(/[^\p{L}]/gu, "");
 
 /** A stretch of JSON text with its string escapes read: what a record that could not be parsed holds as written. */
 const unescaped = (json: string): string => json.replace(/\\(?:u([0-9a-fA-F]{4})|([\s\S]))/g, (_escape, hex: string | undefined, char: string) =>
@@ -1304,24 +1304,22 @@ const unescaped = (json: string): string => json.replace(/\\(?:u([0-9a-fA-F]{4})
 /**
  * Whether what was read of a rollout holds `letters` (letters and digits) anywhere: in a message, a prompt, a tool's
  * call or its output. Each text is read as written, in the forms a screen shows it in (decoded, shownMarkup,
- * withoutMemoryCitations), as Codex draws it (withoutFences: a fence's language is not on screen) and as an
- * answer's anchor is looked for (saidText, cut at link targets); and, against `bare` (bareLetters of the text
- * shown), without what Codex draws another way, so that an answer with a local link counts as said where the
- * screen shows its target relative to the folder. A line that is no record counts too, for all it holds: the read
- * began inside it (an answer or an output longer than the read), or it is being written.
+ * withoutMemoryCitations) and as an answer's anchor is looked for (saidText, cut at link targets); and, against
+ * `bare` (bareLetters of the text shown), without what Codex draws another way (withoutFences: a fence's language
+ * is not on screen; bareLetters), so that an answer with a local link counts as said where the screen shows its
+ * target relative to the folder. Any stretch of the text counts, not only all of it
+ * (holdsStretch). A line that is no record counts too, for all it holds: the read began inside it (an answer or
+ * an output longer than the read), or it is being written.
  */
 function saidAnywhere(rollout: string, letters: string, bare: string): boolean {
   let cut = "";
   let written = "";
-  let drawn = "";
   let stripped = "";
   const weigh = (text: string) => {
     for (const form of new Set([text, decoded(text), shownMarkup(text), withoutMemoryCitations(text)])) {
       cut += saidText(form).join("");
       written += normalizeDisplay(form);
-      const unfenced = withoutFences(form);
-      drawn += normalizeDisplay(unfenced);
-      stripped += bareLetters(unfenced);
+      stripped += bareLetters(withoutFences(form));
     }
   };
   for (const line of rollout.split("\n")) {
@@ -1330,7 +1328,19 @@ function saidAnywhere(rollout: string, letters: string, bare: string): boolean {
     // its escapes read once, and twice: a tool's output is JSON in a string
     else if (line.trim() !== "") for (const text of new Set([line, unescaped(line), unescaped(unescaped(line))])) weigh(text);
   }
-  return cut.includes(letters) || written.includes(letters) || drawn.includes(letters) || bare !== "" && stripped.includes(bare);
+  return holdsStretch(cut, letters) || holdsStretch(written, letters) || holdsStretch(stripped, bare);
+}
+
+/**
+ * Whether `said` holds a stretch of `shown`: all of it when it is short, else any 48 of its characters, taken
+ * every 16. What Codex draws another way than a rollout records it changes a letter here and there (an entity
+ * that is a letter, a mark), not every stretch: a conversation that holds any stretch of the text shown may be
+ * the one that said it.
+ */
+function holdsStretch(said: string, shown: string): boolean {
+  if (shown.length <= 48) return shown !== "" && said.includes(shown);
+  for (let at = 0; at + 48 <= shown.length; at += 16) if (said.includes(shown.slice(at, at + 48))) return true;
+  return said.includes(shown.slice(-48));
 }
 
 /** What a conversation's turns tell of it, for a footed turn (footedTurnOwner): read from its parsed turns once per read. */
@@ -1483,6 +1493,9 @@ export function footedTailTranscript(screen: string, candidates: { path: string;
   if (candidates.some((candidate) => underWay(candidate, wholeRead))) return null;
   const anchor = letters.slice(-160);
   const bare = bareLetters(drawn).slice(-160);
+  // too few letters outside what Codex draws its own way (rows of figures, each numbered): nothing is left to
+  // look for in another read, so nothing tells whether another conversation said this
+  if (bare.length < 48) return null;
   return candidates.some((candidate) => candidate.path !== own.path && saidBy(candidate, anchor, bare)) ? null : own.path;
 }
 
