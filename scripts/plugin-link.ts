@@ -164,6 +164,22 @@ function answer(lines: AsyncIterator<string>, signal: AbortSignal): Promise<Iter
   });
 }
 
+/** A line being read at a prompt: `done` once it came (`reply`) or the reading failed (`failed`, Ctrl+C among them). */
+interface Typed {
+  done: boolean; reply?: IteratorResult<string>; failed?: unknown; readonly settled: Promise<void>;
+  /** the request it was read for went away while it was still being typed: its line answers nothing */
+  stale?: boolean;
+}
+
+/** Reads the next answer without waiting for it, so what asked can go on with its work meanwhile. */
+function read(lines: AsyncIterator<string>, signal: AbortSignal): Typed {
+  const typed: Typed = {
+    done: false,
+    settled: answer(lines, signal).then((reply) => { typed.reply = reply; typed.done = true; }, (error: unknown) => { typed.failed = error; typed.done = true; }),
+  };
+  return typed;
+}
+
 const groups = (id: string): string => id.match(/.{1,4}/g)?.join(" ") ?? id;
 
 const remaining = (ms: number): string => `${Math.floor(ms / 60_000)}:${String(Math.floor((ms % 60_000) / 1000)).padStart(2, "0")}`;
@@ -247,11 +263,10 @@ interface Listing { readonly serverId: string; readonly entry: { label: string; 
  * listThisPc). An entry about to stop showing as new is listed anew: the service keeps `added_at`
  * over a PUT, so only a DELETE then a PUT shows the card again. The entry is `unlisted.listing` from
  * before that DELETE (whose answer can be lost after the service applied it) until the PUT lands: the
- * caller lists it again until it is back, so a renewal never leaves the PC unlisted. With `known`, the
- * entry of an earlier listing, only the account's list is renewed: the window is not asked for again.
+ * caller lists it again until it is back, so a renewal never leaves the PC unlisted.
  */
-async function listThisPc(api: Api, service: AccountService, now: () => number, unlisted: { listing: Listing | null }, known: Listing | null = null): Promise<Listing> {
-  const listing = known ?? await openedListing(api);
+async function listThisPc(api: Api, service: AccountService, now: () => number, unlisted: { listing: Listing | null }): Promise<Listing> {
+  const listing = await openedListing(api);
   const listed = (await service.listPcs()).find((pc) => pc.server_id === listing.serverId);
   if (listed === undefined || now() - Date.parse(listed.added_at) < NEW_PC_MS - RELIST_MS) {
     await service.putPc(listing.serverId, listing.entry);
@@ -404,13 +419,56 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       "Its request shows here to approve. Press Ctrl+C to stop.",
       "",
     ].join("\n"));
+    // it is not this account's PC: its entry there, whose Add could not work, goes, and nothing puts it back
+    const elsewhere = async (account: string): Promise<number> => {
+      pending.listing = null;
+      const unlistedThere = await service.deletePc(first.serverId).then(() => true, () => false);
+      // its relay pass is asked under the account it is in, not the one that signed in here
+      await api("POST", "/api/account/relay-account", { body: { account } }).catch(() => undefined);
+      say(`This PC joined another Ovis account (${shortId(account)}), not the one you signed in to (${shortId(signedIn)}). ${unlistedThere ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
+      return 1;
+    };
+    // how long the last look took, and whether the run's last window was asked for
+    let lookMs = 0;
+    let lastAsked = false;
+    // the last look that may still open a window: one more look would come too late for it, whatever a look takes
+    const lastLook = () => !lastAsked && mayOpen() && now() + POLL_MS + lookMs > stopAt - WINDOW_MS;
     const asked = new Set<string>();
+    // the request the terminal asks about: one at a time, and the waiting goes on while it is unanswered
+    let open: { id: string; label: string; prompt: string } | null = null;
+    // the line being read for it. A line counts only when it came while a request was asked about: one typed
+    // after its request went away is dropped, never taken as the answer to the next request
+    let typed: Typed | null = null;
+    // the cursor stands after the prompt: what is said next starts on a line of its own
+    let atPrompt = false;
+    const say = (text: string): void => { out(atPrompt ? `\n${text}` : text); atPrompt = false; };
     for (;;) {
+      const lookAt = now();
       try {
         if (away && !added && !mayOpen()) {
-          // a server that restarted has no window, and this run may not open one that would outlive it
-          out("The Ovis on this PC stopped answering, too close to this run's 30 minutes to open its approval window again. Run this again once it is back.\n");
-          return 1;
+          // one unanswered call is not a restart, and the PC may have been added meanwhile: that is looked at first
+          let back: { account: string | null } | null = null;
+          try { back = await status(); } catch (error) {
+            if (!(error instanceof AwayError)) throw error;
+          }
+          if (back === null || back.account === null) {
+            // a server that restarted has no window, and this run may not open one that would outlive it
+            say("The Ovis on this PC stopped answering, too close to this run's 30 minutes to open its approval window again. Run this again once it is back.\n");
+            return 1;
+          }
+          // in another account: said as such below, never counted as added to this one
+          added = back.account === signedIn;
+          if (!added) return await elsewhere(back.account);
+        }
+        // a line whose request went away before it was sent is dropped, and the request asked about now gets a read of its own
+        if (typed !== null && typed.done && typed.stale) {
+          // dropped under a later request's prompt: said, so that prompt shows again beneath it and nobody waits on a line that went nowhere
+          if (open !== null && typed.reply !== undefined && !typed.reply.done) {
+            // the Enter that sent the line ended the prompt's
+            atPrompt = false;
+            say("That line answered nothing: a request went away while it was being typed. Answer again for the one shown now.\n");
+          }
+          typed = open === null ? null : read(options.lines, signal);
         }
         if (away) {
           // the first call that is answered again: a server that restarted has no window, so it is asked for at once
@@ -418,82 +476,122 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           else await status();
           openedAt = now();
           away = false;
-          out("The Ovis on this PC answers again.\n");
+          say("The Ovis on this PC answers again.\n");
         }
-        const { pairings } = await api<{ pairings: { id: string; label: string; digits: string; intent?: string }[] }>("GET", "/api/relay/pairings");
-        for (const pairing of pairings) {
-          if (asked.has(pairing.id)) continue;
-          asked.add(pairing.id);
-          const label = plainLabel(pairing.label);
-          const what = pairing.intent === "account" ? "join your account" : "pair with this PC";
-          out(`${label} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
-          let reply: IteratorResult<string>;
-          try { reply = await answer(options.lines, signal); } catch (error) {
-            if (signal.aborted) { out("\nStopped. Run this again to keep waiting.\n"); return 1; }
-            throw error;
-          }
-          const decision = !reply.done && /^y(es)?$/i.test(reply.value.trim()) ? "approve" : "decline";
+        if (open !== null && typed !== null && typed.done) {
+          const { id, label } = open;
+          const line = typed;
+          open = null;
+          typed = null;
+          // the Enter that sent the line ended the prompt's
+          atPrompt = false;
+          if (line.reply === undefined) throw line.failed;
+          const decision = !line.reply.done && /^y(es)?$/i.test(line.reply.value.trim()) ? "approve" : "decline";
           try {
-            await api("POST", "/api/relay/pairing", { body: { id: pairing.id, decision } });
+            await api("POST", "/api/relay/pairing", { body: { id, decision } });
             out(decision === "approve" ? "Approved.\n" : "Declined.\n");
           } catch (error) {
+            if (error instanceof AwayError) {
+              // whether it was taken is not known: the request is asked about again while it still waits, never answered by itself
+              asked.delete(id);
+              out(`Your answer may not have reached the Ovis on this PC. ${label} is asked about again if it is still waiting.\n`);
+            }
             if (!(error instanceof LocalError)) throw error;
             out(`${label} is no longer waiting.\n`);
           }
         }
-        const joined = await status();
-        if (joined.account !== null && joined.account !== signedIn) {
-          // it is not this account's PC: its entry there, whose Add could not work, goes, and nothing puts it back
-          pending.listing = null;
-          const unlistedThere = await service.deletePc(first.serverId).then(() => true, () => false);
-          // its relay pass is asked under the account it is in, not the one that signed in here
-          await api("POST", "/api/account/relay-account", { body: { account: joined.account } }).catch(() => undefined);
-          out(`This PC joined another Ovis account (${shortId(joined.account)}), not the one you signed in to (${shortId(signedIn)}). ${unlistedThere ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
-          return 1;
+        const { pairings } = await api<{ pairings: { id: string; label: string; digits: string; intent?: string }[] }>("GET", "/api/relay/pairings");
+        const shown = open;
+        if (shown !== null && !pairings.some((pairing) => pairing.id === shown.id)) {
+          // it ran out, was answered elsewhere, or the server restarted: its prompt ends, and so does a line typed for it
+          say(`${shown.label} is no longer waiting.\n`);
+          open = null;
+          if (typed !== null && typed.done) typed = null;
+          // still being typed: whatever it brings was meant for the request that is gone, not for the next one shown
+          else if (typed !== null) typed.stale = true;
         }
+        const next = open === null ? pairings.find((pairing) => !asked.has(pairing.id)) : undefined;
+        if (next !== undefined) {
+          asked.add(next.id);
+          const label = plainLabel(next.label);
+          const what = next.intent === "account" ? "join your account" : "pair with this PC";
+          open = { id: next.id, label, prompt: `${label} wants to ${what}. Approve it only if its screen shows ${next.digits.slice(0, 3)} ${next.digits.slice(3)}. Approve? [y/N] ` };
+          // a line that came while nothing was asked answers nothing
+          if (typed === null || (typed.done && !typed.stale)) typed = read(options.lines, signal);
+        }
+        const joined = await status();
+        if (joined.account !== null && joined.account !== signedIn) return await elsewhere(joined.account);
         if (joined.account !== null && joined.enrolling !== true) {
-          out(`This PC is in your account (${shortId(joined.account)}): every device of your account can use it.\n`);
+          say(`This PC is in your account (${shortId(joined.account)}): every device of your account can use it.\n`);
           return 0;
         }
         added = joined.account !== null;
         // in the account, while the device that added it still brings in the account's other devices
         if (added && !enrollingSaid) {
           enrollingSaid = true;
-          out("Added. Bringing in your account's other devices…\n");
+          say("Added. Bringing in your account's other devices…\n");
         }
         if (!added && now() < stopAt) {
           if (pending.listing !== null && await putListing(service, pending.listing)) pending.listing = null;
-          if (now() - listedAt >= RELIST_MS) {
+          const last = lastLook();
+          // also with the last look: the card on the account's devices then shows as new until this run's end, as the window does
+          if ((now() - listedAt >= RELIST_MS || last) && mayOpen()) {
             // a renewal that failed after its DELETE went out keeps waiting: the listing is put back above, as after a failed PUT.
-            // In the last ten minutes only the account's list is renewed, with the entry it already has
-            try { await listThisPc(api, service, now, pending, mayOpen() ? null : first); } catch (error) {
+            // None in the last ten minutes: it would show the PC as new for ten more, past the window's end
+            try { await listThisPc(api, service, now, pending); } catch (error) {
               if (pending.listing === null) throw error;
             }
-            if (pending.listing !== null) out(unlisted);
+            if (pending.listing !== null) say(unlisted);
             listedAt = now();
-            if (mayOpen()) openedAt = listedAt;
+            openedAt = listedAt;
+            if (last) lastAsked = true;
           }
-          if (now() - openedAt >= REOPEN_MS && mayOpen()) {
+          // the last look that may still open one asks too, so the last window ends with the run, not up to 30 seconds before it
+          if (mayOpen() && (now() - openedAt >= REOPEN_MS || (last && !lastAsked))) {
+            if (last) lastAsked = true;
             // the window alone, not the listing: a server that restarted meanwhile takes requests again
             await api("POST", "/api/relay/link", { headers: { "x-ovis-local-only": "1" } });
             openedAt = now();
           }
         }
       } catch (error) {
+        if (signal.aborted) { say("Stopped. Run this again to keep waiting.\n"); return 1; }
         if (!(error instanceof AwayError)) throw error;
         if (!away) {
           away = true;
-          out("The Ovis on this PC is not answering (is it restarting?). Waiting for it…\n");
+          say("The Ovis on this PC is not answering (is it restarting?). Waiting for it…\n");
         }
       }
+      lookMs = now() - lookAt;
       if (now() >= stopAt) {
-        out(added
+        say(added
           ? "Stopped waiting after 30 minutes: this PC is in your account, but its other devices are not in yet. Open the Ovis app on the phone that added it, then run this again.\n"
           : "Stopped waiting after 30 minutes. Run this again to keep waiting.\n");
         return 1;
       }
-      try { await wait(POLL_MS, signal); } catch (error) {
-        if (signal.aborted) { out("Stopped. Run this again to keep waiting.\n"); return 1; }
+      // shown first, or again under what was said since
+      if (open !== null && !atPrompt) {
+        // what was typed before this prompt showed was not typed for it. A read still open from the request that went away
+        // stays that request's: handing it to this one would let a line begun there approve a device whose digits were never compared
+        if (typed !== null && typed.stale && typed.done) typed = read(options.lines, signal);
+        out(open.prompt);
+        atPrompt = true;
+      }
+      // the answer is already there: it is sent before any waiting
+      // (not while the PC's server is away: nothing can be sent, and looking again at once would spin)
+      if (!away && open !== null && typed !== null && typed.done && !typed.stale) continue;
+      try {
+        if (open === null || typed === null || typed.done) await wait(POLL_MS, signal);
+        else {
+          // the poll's wait ends early when the answer comes
+          const early = new AbortController();
+          const pause = wait(POLL_MS, AbortSignal.any([signal, early.signal]));
+          const first = await Promise.race([pause.then(() => "waited" as const), typed.settled.then(() => "typed" as const)]);
+          if (first === "typed") { pause.catch(() => undefined); early.abort(); }
+          signal.throwIfAborted();
+        }
+      } catch (error) {
+        if (signal.aborted) { say("Stopped. Run this again to keep waiting.\n"); return 1; }
         throw error;
       }
     }
