@@ -14,10 +14,15 @@ export function displayWidth(text: string): number {
   return width;
 }
 
-/** The line a program prints before it reads a secret, up to its colon, as each of these writes it. */
-const SECRET_PROMPT = new RegExp(`^(?:${[
-  // sudo
-  /\[sudo\] password for [^:]+/,
+/**
+ * The line a program prints before it reads a secret, up to its colon, as each of these writes it. An ssh server
+ * that asks interactively (a Mac, PAM) and doas put `(user@host) ` before theirs. A colon of either width ends a
+ * prompt: sudo's in Chinese is full-width.
+ */
+const SECRET_PROMPT = new RegExp(`^(?:(?:doas )?\\([^\\s()]+@[^\\s()]+\\) )?(?:${[
+  // sudo names the user in the session's language (`[sudo] alice의 암호:`), so anything it asks after `[sudo] `;
+  // sudo-rs asks `[sudo: authenticate] Password:`, and what it asks in the clear is `[sudo: input needed] …`
+  /\[sudo(?:: authenticate)?\] [^:：]+/,
   // ssh: user@host, and an IPv6 host is written with colons
   /[^\s@]+@\S+['’]s password/,
   // su and login; git over HTTPS names the remote in quotes, its scheme's and port's colons and all
@@ -30,14 +35,21 @@ const SECRET_PROMPT = new RegExp(`^(?:${[
   /enter (?:old |new |same )?passphrase(?: again)?(?: \(empty for no passphrase\))?/,
   /enter pin(?: for [^:]+)?/,
   /(?:repeat|verify|confirm) password/,
-].map((prompt) => prompt.source).join("|")}):$`, "i");
+  // passwd
+  /(?:current|new|retype new) password/,
+  // mysql and mariadb; restic and pass say what the password is for
+  /enter password(?: for [^:]+)?/,
+  // gpg's pinentry on a terminal
+  /passphrase/,
+  // openssl, which asks again for a new key
+  /(?:verifying - )?enter (?:pem )?pass phrase(?: for [^:]+)?/,
+].map((prompt) => prompt.source).join("|")})[:：]$`, "i");
 
-// a yes/no choice is no secret: `y/n` in brackets, with more options or not (`[Y/n]`, `(y/n/q)`), or as the last
-// thing before a space, the colon or the line's end, after a space or a mark (` y/n:`, `,y/n:`, `-y/n:`). Not inside
-// a name: the letters around a path's slash (`/home/andy/notes/key`), two of its folders (`/home/y/n/key`), a
-// repository (`team-y/n-tools.git`), or the start of a wrapped row, which is tested before the rows above it are
-// joined (`…/compan` then `y/n-prod:`)
-const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?=\s|:|$)/i;
+// a yes/no choice is no secret: `y/n` in brackets, or after a space or a mark and before anything that does not
+// go on as a name (` y/n:`, `,y/n:`, `-y/n:`, ` y/n/a:`, `'y/n'`). Not inside a name: the letters around a path's
+// slash (`/home/andy/notes/key`), two of its folders (`/home/y/n/key`), a repository (`team-y/n-tools.git`), or
+// the start of a wrapped row, which is tested before the rows above it are joined (`…/compan` then `y/n-prod:`)
+const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?![a-z0-9_.-])/i;
 
 // Both as a server without the `secret-prompts-2` feature has them: it answers `invalid_secret` to a
 // masked input for any other prompt, so a page sends such a server one only for these (ws.ts sendSecret).
@@ -93,6 +105,20 @@ export function looksLikeKey(text: string): boolean {
   if (KEY_SHAPES.some((shape) => shape.test(text))) return true;
   return (text.match(/[A-Za-z0-9/+_]{24,}/g) ?? []).some((run) => /[a-z]/.test(run) && /[A-Z]/.test(run) && !/[a-z]{8}/.test(run)
     && (!run.includes("/") || run.length === 40) && (/\d/.test(run) || run.length >= 40));
+}
+
+/**
+ * Whether the cursor is on the last line of the screen that holds text, which is where a prompt asks. `lines` are
+ * the screen's lines, a wrapped row joined to the line above it, and `starts` each line's first screen row. A
+ * program that has read its answer prints a line break and works on (git signing in, ssh-add reading its key,
+ * sudo running a quiet command) with its prompt still the last text: it asks no more then, and an answer sent
+ * again would wait in the terminal for whatever reads next, a shell for instance.
+ */
+export function promptHasCursor(lines: readonly string[], starts: readonly number[], cursorRow: number): boolean {
+  let last = lines.length - 1;
+  while (last >= 0 && !lines[last]!.trim()) last--;
+  if (last < 0) return false;
+  return cursorRow >= starts[last]! && (last + 1 >= starts.length || cursorRow < starts[last + 1]!);
 }
 
 // where no passphrase is an answer: ssh-keygen says so when it asks for a new one, and asks for the same again

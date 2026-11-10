@@ -15,7 +15,7 @@ import { reserveOsc52Copy, type Osc52Reservation } from "./osc52Clipboard.ts";
 import { matchHerdrWidths } from "./terminalWidths.ts";
 import { unwrapAgentRows } from "./agentCopy.ts";
 import { paneStorageId } from "../../shared/machines.ts";
-import { secretPrompt } from "../../shared/secret-prompt.ts";
+import { promptHasCursor, secretPrompt } from "../../shared/secret-prompt.ts";
 import { TERMINAL_HISTORY_LINES } from "../../shared/terminal-flow.ts";
 import type { ClientRole, ServerMessage } from "../../shared/protocol.ts";
 import type { Settings } from "./settings.ts";
@@ -1289,6 +1289,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // the masked prompt the screen shows now, if any (shared/secret-prompt.ts)
       const screenSecret = (): string | null => {
         const lines: string[] = [];
+        // each line's first screen row
+        const starts: number[] = [];
         const buffer = term.buffer.active;
         // the screen only: a prompt is on its last lines, and a herdr-core pane's history (syncHistory) would
         // cost every output frame a pass over its 2,000 lines
@@ -1296,9 +1298,13 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           const line = buffer.getLine(row);
           const text = line?.translateToString(!buffer.getLine(row + 1)?.isWrapped) ?? "";
           if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
-          else lines.push(text);
+          else { lines.push(text); starts.push(row); }
         }
-        return secretPrompt(lines.join("\n"), term.cols);
+        const prompt = secretPrompt(lines.join("\n"), term.cols);
+        // a prompt asks only while the cursor is on its line (promptHasCursor). A mirrored pane's repaints carry no
+        // cursor, so its prompt counts while it is the last text, as before; so does one not known to be attached
+        if (prompt === null || mirroredRef.current !== false) return prompt;
+        return promptHasCursor(lines, starts, buffer.baseY + buffer.cursorY) ? prompt : null;
       };
       // the idle release's clock: when the terminal was last typed, clicked or pasted in, and the check that follows it
       // (idleCheck, with the release machinery below)

@@ -1,5 +1,5 @@
 import { expect, it } from "bun:test";
-import { secretPrompt, validSecret } from "./secret-prompt.ts";
+import { promptHasCursor, secretPrompt, validSecret } from "./secret-prompt.ts";
 
 it("recognizes only a short secret request on the last nonempty line", () => {
   for (const prompt of ["[sudo] password for alice:", "alice@server's password:", "Password:", "Password for alice:", "Enter passphrase:", "Enter passphrase for key '/tmp/key':", "Enter PIN:", "Enter PIN for token:", "Repeat password:", "Verify password:", "Confirm password:"]) {
@@ -74,14 +74,79 @@ it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen
     // after a dash or a comma, with no space
     "Password for alice -y/n:",
     "Enter passphrase for key,y/n:",
-    // with a third option too
+    // with a third option too, in brackets or bare, and in quotes
     "Password for alice (y/n/q):",
     "Enter passphrase for key [Y/n/skip]:",
+    "Password for alice y/n/a:",
+    "Enter passphrase for key y/n/q:",
+    "Password for alice 'y/n':",
+    'Password for alice "y/n":',
     // ssh-keygen's asks, not anything that mentions a passphrase
     "Enter the passphrase again:",
   ]) {
     expect(secretPrompt(screen)).toBeNull();
   }
+});
+
+it("reads the password asks of an interactive ssh sign-in, doas, sudo in any language, sudo-rs, passwd, mysql, gpg and openssl", () => {
+  for (const prompt of [
+    // OpenSSH keyboard-interactive: "(%s@%s) %s", the server's own prompt after it; doas the same way
+    "(alice@mac.local) Password:",
+    "(alice@fe80::1) Password:",
+    "doas (alice@host) password:",
+    // sudo names the user in the session's language, and some of them end with a full-width colon; sudo-rs
+    "[sudo] alice의 암호:",
+    "[sudo] Passwort für alice:",
+    "[sudo] alice 的密码：",
+    "[sudo: authenticate] Password:",
+    // passwd (pam_unix)
+    "Current password:",
+    "New password:",
+    "Retype new password:",
+    // mysql and mariadb; restic and pass name what the password is for
+    "Enter password:",
+    "enter password for repository:",
+    // gpg's pinentry on a terminal
+    "Passphrase:",
+    // openssl, which asks twice for a new key
+    "Enter PEM pass phrase:",
+    "Verifying - Enter PEM pass phrase:",
+    "Enter pass phrase for server.key:",
+  ]) {
+    expect(secretPrompt(`$ make deploy\n${prompt} `)).toBe(prompt);
+    expect(secretPrompt(prompt, Infinity, true)).toBeNull();
+  }
+  for (const screen of [
+    // what sudo-rs and an ssh server ask in the clear
+    "[sudo: input needed] Username:",
+    "(alice@host) Verification code:",
+    "(alice@host) Password: ok",
+    // prose that mentions one
+    "Enter the password:",
+    "The new password:",
+    "A passphrase:",
+    "[sudo] alice의 암호: 틀림",
+  ]) {
+    expect(secretPrompt(screen)).toBeNull();
+  }
+});
+
+it("counts a prompt only while the cursor is on its line", () => {
+  // lines as the page reads them, each with its first screen row: a wrapped row belongs to the line above it
+  const lines = ["$ git push", "Password for 'https://alice@github.com':", "", ""];
+  const starts = [10, 11, 12, 13];
+  expect(promptHasCursor(lines, starts, 11)).toBe(true);
+  // git read the answer and printed a line break: it asks no more, though its prompt is still the last text
+  expect(promptHasCursor(lines, starts, 12)).toBe(false);
+  expect(promptHasCursor(lines, starts, 10)).toBe(false);
+  // a prompt wrapped over three rows, the last holding only its final space: the cursor is on any of them
+  const wrapped = ["$ ssh-add", "Enter passphrase for /home/alice/.ssh/id_ed25519: ", ""];
+  for (const row of [21, 22, 23]) expect(promptHasCursor(wrapped, [20, 21, 24], row)).toBe(true);
+  expect(promptHasCursor(wrapped, [20, 21, 24], 24)).toBe(false);
+  // the prompt on the screen's last row, and a screen with no text
+  expect(promptHasCursor(["Password:"], [0], 0)).toBe(true);
+  expect(promptHasCursor(["", ""], [0, 1], 0)).toBe(false);
+  expect(promptHasCursor([], [], 0)).toBe(false);
 });
 
 it("reads only the prompts an earlier server takes when asked to, and each of those either way", () => {

@@ -1221,6 +1221,14 @@ export class HerdrSocket {
   }
 
   /**
+   * Whether a secret for `prompt` is typed to this bridge instead of sent as a `secret` (sendSecret): the bridge has
+   * said what it takes, and it does not take that prompt. Nothing on such a bridge checks that the prompt is still there.
+   */
+  typesSecret(prompt: string): boolean {
+    return this.featuresKnown && !this.features.has("secret-prompts-2") && secretPrompt(prompt, Infinity, true) !== prompt;
+  }
+
+  /**
    * Send once on this connection. Only a result callback is retained, never the value. A prompt that only a bridge
    * with `secret-prompts-2` takes (shared/secret-prompt.ts) goes to any other bridge as typing at a masked prompt does:
    * the value, then Enter, as `input`, never kept. That bridge would answer `invalid_secret`, and the masked field has
@@ -1245,6 +1253,9 @@ export class HerdrSocket {
         // nothing is typed past it
         if (!this.featuresKnown) { secret = ""; return CAPABILITIES_UNKNOWN; }
         if (!this.features.has("secret-prompts-2")) {
+          // a bridge from before `submit`: a message sent to it leaves no request here (submit answers unconfirmed), so
+          // the check below would not see one still on its way to the pane
+          if (!this.features.has("submit")) { secret = ""; return { ok: false, code: "unsupported", message: "Update this PC to use masked input." }; }
           if ([...this.requests.values()].some((request) => request.paneId === paneId)) { secret = ""; return { ok: false, code: "pane_busy", message: "Check the terminal before trying again." }; }
           if (this.inputLease(paneId) !== lease || !shown()) { secret = ""; return { ok: false, code: "prompt_changed", message: "Check the terminal before trying again." }; }
           // Enter in a frame of its own, as the input line's Enter is sent: a mirrored pane's shell may not take a `\r`
