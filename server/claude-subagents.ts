@@ -1578,8 +1578,9 @@ export class ClaudeSubagentStatus {
 
   /**
    * A `/loop` wakeup fired and herdr has not told the turn it resumed: the pane's queue holds, whatever
-   * herdr reads the pane as. Until that turn's rest is written, herdr says the pane works (busy), or
-   * LOOP_HOLD_MS passed; never by herdr reading the pane at rest (quiet), which it does until it reads the turn.
+   * herdr reads the pane as. Until that turn's rest is written, herdr's working tells that turn or one
+   * after it (busy; its working for a turn before the fire, come late, ends nothing), or LOOP_HOLD_MS
+   * passed; never by herdr reading the pane at rest (quiet), which it does until it reads the turn.
    */
   loopHolds(paneId: string): boolean {
     const since = this.panes.get(paneId)?.turns?.loop.since ?? null;
@@ -1616,9 +1617,12 @@ export class ClaudeSubagentStatus {
     // the signal's own read, ahead of the poll that would take a turn it finds at rest for history
     const parent = turns && size?.id === turns.id ? scanParent(turns.path) : null;
     if (turns && parent?.id === turns.id) {
-      match(turns, parent, signal, size!.size);
-      // herdr's working with a /loop fire already written tells the turn it resumed: the queue goes by herdr's status from here
-      if (source === "herdr") turns.loop = { fire: Math.max(turns.loop.fire, parent.loopAt ?? -1), since: null };
+      const told = match(turns, parent, signal, size!.size);
+      // herdr's working with a /loop fire already written tells the turn it resumed, or one not written yet
+      // (null): the queue goes by herdr's status from here. Not one matched to a turn begun before the
+      // fire: herdr's words for the turn before it can come after the fire was written, and its rest
+      // word next would let queued input into the turn the wakeup resumed
+      if (source === "herdr" && (told === null || told >= (parent.loopAt ?? -1))) turns.loop = { fire: Math.max(turns.loop.fire, parent.loopAt ?? -1), since: null };
     }
     // a pane whose transcript is not found yet keeps its latest signals, not every one
     else this.deferred.set(paneId, [...(this.deferred.get(paneId) ?? []).slice(-15), signal]);
@@ -1859,9 +1863,10 @@ const startsFor = (parent: Parent, source: BusySource): Start[] => source === "c
  * for a chat send, the first begun since its Enter; for herdr's, the first begun past herdr's last
  * word that the pane did no work; with nothing to place it, the turn going on if no signal told
  * it (for a chat send with no time, the latest no signal told and no poll saw at rest). Otherwise
- * its turn is not written yet, and it waits for it.
+ * its turn is not written yet, and it waits for it. Returns where the turn it was matched to began,
+ * null while it waits.
  */
-function match(turns: Turns, parent: Parent, signal: Signal, size: number): void {
+function match(turns: Turns, parent: Parent, signal: Signal, size: number): number | null {
   settle(turns, parent, null);
   const claim = turns[signal.source];
   const other = turns[signal.source === "herdr" ? "chat" : "herdr"];
@@ -1881,6 +1886,7 @@ function match(turns: Turns, parent: Parent, signal: Signal, size: number): void
   }
   if (start !== undefined) claim.turn = start.end;
   else claim.barriers.push({ size, at: signal.at });
+  return start?.end ?? null;
 }
 
 /** Each waiting signal takes the first turn begun past it; one that waited BUSY_HOLD_MS began none (`now`). */

@@ -1289,6 +1289,59 @@ describe("ClaudeSubagentStatus", () => {
         expect(status.loopHolds("p1")).toBe(false);
       } finally { status.stop(); }
     });
+
+    it("keeps the hold when herdr's late working tells the turn before the fire, and lets go when it tells the fire's own", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status, told } = await tracked(s);
+      try {
+        // herdr's rest word for the turn read at rest: a turn it tells next began past here
+        status.quiet("p1", true);
+        // a short turn of the person's and its rest, then the wakeup's fire, all written before herdr tells that turn
+        s.prompt(3);
+        rest(s, 4);
+        fire(s, 5);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // herdr's working, late, is the short turn's (the first begun past its rest word): it tells nothing of the fire's
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(true);
+        // nor does the rest word that follows it
+        status.quiet("p1", true);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        expect(told.at(-1)).toBe(true);
+        // herdr's next working is of a turn begun past that rest word, so the fire's or one after it: the hold ends, and is told
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(false);
+        expect(told.at(-1)).toBe(false);
+      } finally { status.stop(); }
+    });
+
+    it("ends a hold herdr's late working left standing at the resumed turn's rest, or when its time is up", async () => {
+      for (const end of ["rest", "time"] as const) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        let now = NOW;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          status.quiet("p1", true);
+          s.prompt(3);
+          rest(s, 4);
+          fire(s, 5);
+          status.poll();
+          status.busy("p1", "herdr");
+          status.quiet("p1", true);
+          expect(status.loopHolds("p1")).toBe(true);
+          if (end === "rest") rest(s, 6); else now += LOOP_HOLD_MS;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told.at(-1)).toBe(false);
+        } finally { status.stop(); }
+      }
+    });
   });
 });
 

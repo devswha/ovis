@@ -567,6 +567,35 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).toBeNull();
   });
 
+  it.each(["herdr's working for the wakeup's own turn", "the wakeup turn's rest"] as const)("keeps the queue held through herdr's late words for the turn before the fire, until %s", async (end) => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    // Given a short turn begun after herdr's idle word, its rest and then the wakeup's fire, all
+    // written before herdr tells that turn.
+    h.next();
+    turnEnds(h);
+    fires(h.path); h.poll();
+    queue(h);
+    expect(h.status.queueHeld(id)).toBe(true);
+    // When herdr's working and idle words for the short turn come late.
+    handlers.onStatus(id, "working", "claude");
+    handlers.onStatus(id, "idle", "claude");
+    // Then they end nothing of the fire's hold: the message does not go into the wakeup's turn.
+    expect(h.pending.next(id)).toBeNull();
+    expect(h.status.queueHeld(id)).toBe(true);
+    if (end === "the wakeup turn's rest") {
+      turnEnds(h); h.poll();
+    } else {
+      // herdr's working for the wakeup's turn hands the queue over to herdr's status, as its idle word then lets it go
+      handlers.onStatus(id, "working", "claude");
+      expect(h.status.queueHeld(id)).toBe(false);
+      expect(h.pending.next(id)).toBeNull();
+      handlers.onStatus(id, "idle", "claude");
+    }
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
   it("holds the queue from the snapshot a send reads the pane with, before the timer's poll", async () => {
     const h = await rested();
     const id = h.pane.pane_id;
