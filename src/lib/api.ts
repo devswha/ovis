@@ -948,6 +948,14 @@ export async function startPairing(): Promise<PairingCode> {
   return (await sendJson("/api/devices/pair/start", "POST", {})).json();
 }
 
+/**
+ * POST /api/devices/pair/cancel { code }: takes that six-digit code back, and the typed relay code bound to it, when it
+ * is the one pending; `cancelled` is false when it was not (used up, expired, or replaced by a newer code).
+ */
+export async function endPairing(code: string): Promise<{ readonly ok: true; readonly cancelled: boolean }> {
+  return (await sendJson("/api/devices/pair/cancel", "POST", { code })).json();
+}
+
 export async function renameDevice(id: string, label: string): Promise<PairedDevice> {
   return (await sendJson(`/api/devices/${encodeURIComponent(id)}`, "PATCH", { label })).json();
 }

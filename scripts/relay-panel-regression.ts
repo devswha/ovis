@@ -232,7 +232,11 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await ui.openTab("relay");
     const signInButton = relayTab.getByTestId("connect-signin").getByRole("button", { name: "Sign in to Ovis", exact: true });
     await signInButton.waitFor();
-    assert.equal(await relayTab.getByRole("switch").count(), 0, "signed out, the relay's tab has no switch");
+    // signed out, the relay's switch is in the QR code's part, which offers no QR code while the relay is off
+    const accountQr = relayTab.getByTestId("connect-account-qr");
+    assert.equal(await relayTab.getByRole("switch").count(), 1, "signed out, the relay's tab has one switch");
+    assert.equal(await accountQr.getByRole("switch", { name: "Ovis relay", exact: true }).count(), 1, "and it is the QR code's");
+    assert.equal(await accountQr.getByRole("button", { name: "Show the QR code", exact: true }).count(), 0, "a relay that is off shows no QR code");
     const beforeSignIn = page.url();
     const opened = context.waitForEvent("page");
     await signInButton.click();
@@ -284,6 +288,23 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await toggle.getAttribute("aria-checked"), "true", "the sheet's switch shows the relay on");
     await gateNote.waitFor({ state: "detached" });
     assert.equal(await sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true }).count(), 0, "online, the sheet still offers no relay pairing QR code");
+
+    // the QR code waits for its press, and comes down with its code when another tab opens
+    const relayQr = sheet.getByRole("img", { name: "QR code that pairs a phone through the relay", exact: true });
+    const showQr = accountQr.getByRole("button", { name: "Show the QR code", exact: true });
+    await showQr.waitFor();
+    assert.equal(await accountQr.getByRole("switch").count(), 0, "signed in, the QR code's part repeats no switch");
+    const offered = answered(page, "/api/relay/offer");
+    await showQr.click();
+    assert.equal((await offered).status(), 200, "the press asks for the offer");
+    await relayQr.waitFor();
+    assert.equal(await sheet.isVisible(), true, "the sheet stays open under its QR code");
+    const codeEnded = answered(page, "/api/devices/pair/cancel");
+    await ui.openTab("ssh");
+    assert.equal((await codeEnded).status(), 200, "another tab ends the QR code's pairing code");
+    await ui.openTab("relay");
+    await accountQr.getByRole("button", { name: "Show a new code", exact: true }).waitFor();
+    assert.equal(await relayQr.count(), 0, "the QR code is down until it is asked for again");
 
     // Phones and devices starts a six-digit code at once; its panel stays while another tab is open, with the same code
     const codeStart = pairStart();

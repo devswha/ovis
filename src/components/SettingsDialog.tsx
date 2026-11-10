@@ -1309,6 +1309,10 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   /** the end of this PC's own row, for the device list's Check now (DevicesPanel `checkSlot`) */
   const [devicesCheck, setDevicesCheck] = useState<HTMLDivElement | null>(null);
   const closeConnect = useCallback(() => setConnecting(false), []);
+  // the relay tab's QR code may have put this PC in an account: Add a connection stays up to say which, and by which device
+  const pairingHeld = useRef(false);
+  const holdPairing = useCallback((held: boolean) => { pairingHeld.current = held; }, []);
+  const closeConnectOnPair = useCallback(() => { if (!pairingHeld.current) setConnecting(false); }, []);
   // a reset relay identity is a new ID for this PC: My devices reads it again
   const [identityResets, setIdentityResets] = useState(0);
   // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
@@ -1344,7 +1348,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
       <SettingsGroup section="devices">
         <div className="settings-item my-devices">
           <MyPcRows machines={machines} accountPcs={account.pcs} watching={auth?.role === "watch"} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} selfAction={setDevicesCheck}>
-            <DevicesPanel onDevicePaired={closeConnect} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} checkSlot={devicesCheck} />
+            <DevicesPanel onDevicePaired={closeConnectOnPair} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} checkSlot={devicesCheck} />
           </MyPcRows>
         </div>
         {/* how anything else gets connected: one button, its sheet picks the way; a search finds it as a row by every way it holds */}
@@ -1415,7 +1419,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
           signedIn={account.signedIn} joinBySignIn={joinBySignIn}
           account={accountService !== null && account.reachable ? { service: accountService, onOpen: openAccount, onSignedIn: readAccountAgain } : null}
           onAddPc={(preset) => { setConnecting(false); openAddPc(preset); }} machines={machines}
-          onConnectMachine={(machine) => { setConnecting(false); connectPc(machine); }} onClose={closeConnect} />
+          onConnectMachine={(machine) => { setConnecting(false); connectPc(machine); }}
+          onPairingHeld={holdPairing} onRevokedAll={onRevokedAll} onClose={closeConnect} />
       )}
     </>
   );

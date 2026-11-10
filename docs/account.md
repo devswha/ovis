@@ -128,6 +128,11 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   directly on the PC (any window there with drive access, as before), or by a drive account member
   through the relay (`403 account_required` for any other relay device, `read_only` for a watch
   device). A PC in no account keeps letting any driving relay device start one, as before.
+- **A pairing code admits whoever holds it**, with no approval on the PC: that is what a code is.
+  On a PC that has no member yet, a signed-in device let in by a code links itself and so becomes
+  the PC's first member: the PC joins that device's account
+  ([Adding a PC](#adding-a-pc), "By QR code"). The code is therefore shown only where its owner
+  asked for it, and the PC says afterwards which account it joined and by which device.
 - **Every admission is announced** on every device connected to the PC: the new device's name and who
   approved it.
 
@@ -333,6 +338,32 @@ removal to be off or unreachable.
 How a person adds a PC to the account in the apps (WhatsApp's linked devices and Tailscale's
 Tailnet Lock follow the same idea: an existing device approves once, and the server only carries
 messages):
+
+**By QR code.** On the new PC, Settings → Devices and PCs → Add a connection → Ovis relay →
+**Show the QR code**, with the relay on. A device that is signed in to the account scans it: it is
+paired with its account key, links itself as the PC's first member, lists the PC in the account's
+directory and enrolls it ([Enrolling a PC](#enrolling-a-pc)). Nothing is typed and nothing is
+approved on the PC, and the PC itself needs no sign-in. Because the code admits whoever holds it
+([Who may admit a device](#who-may-admit-a-device)), the page guards it:
+
+- Nothing is asked of the PC before the press. The QR code comes down, and its six-digit code and
+  typed code are ended on the PC (`POST /api/devices/pair/cancel`, `POST /api/relay/code/cancel`),
+  when the dialog closes or another tab opens, once the page was hidden for a minute, and 30
+  minutes after the press. **Show a new code** starts again.
+- While the QR code is up the page reads `GET /api/account/status` and the device list every 3
+  seconds. When the PC goes from no account to one, the QR code gives way to "This PC joined an
+  Ovis account (the id's first 12 characters). Added by (the newest device paired through the
+  relay since the press)", with **Not me: revoke every device**: after a confirmation that is
+  `POST /api/devices/revoke-all`, which leaves the PC with no member and so in no account.
+- A device that paired and left the PC in no account for 10 seconds is named as paired with this
+  PC alone: it is not signed in, and signing in on it adds the PC.
+- On a PC already in an account the same QR code only pairs the scanning device with this PC; the
+  account's other PCs still ask for their one approval.
+
+Where Ovis's relay asks for a relay pass, a PC in no account is not online and shows no QR code
+until someone signs in on it; the steps below are then the way.
+
+**By signing in on the PC:**
 
 1. On the new PC, Settings → Devices and PCs → Account: sign in, then **Add this PC to my account**.
    The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens

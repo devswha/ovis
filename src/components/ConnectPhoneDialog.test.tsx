@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, mock, spyOn } from "bun:test";
+import type { ReactNode } from "react";
+import * as ReactDom from "react-dom";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
@@ -8,10 +10,14 @@ import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AddPcPreset } from "../lib/actions.ts";
-import { CodeRoute, connectTabs, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } from "./ConnectPhoneDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
 import { RelayPairing } from "./RelayPanel.tsx";
 import { QrCode } from "./QrCode.tsx";
+
+// the confirmation before Revoke all is a portal on document.body, which this renderer has none of
+await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
+const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, ACCOUNT_QR_POLL_MS, CodeRoute, connectTabs, newestRelayDevice, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } = await import("./ConnectPhoneDialog.tsx");
+const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
 
 // Connect a phone on the phone itself: the QR codes wait behind Show QR code, a phone online with
 // the relay pairs itself in one tap through its own offer, and the desktop keeps its QR codes.
@@ -293,5 +299,329 @@ describe("sameNameRelayDevice", () => {
     expect(sameNameRelayDevice([device({})], "iPhone · Safari")).toBeNull();
     expect(sameNameRelayDevice([device({ via_relay: true, current: true })], "iPhone · Safari")).toBeNull();
     expect(sameNameRelayDevice([device({ via_relay: true, label: "Pixel 9" })], "iPhone · Safari")).toBeNull();
+  });
+});
+
+// The relay tab where the page has an Ovis account: the relay's QR code behind a press. A signed-in device that scans
+// it puts a PC in no account into its own, so nothing is minted before the press, the code is ended when the QR code
+// comes down, and the tab then says which account the PC joined and by which device (docs/account.md, "Adding a PC").
+describe("the relay tab's QR code behind a press", () => {
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  const ACCOUNT_ID = "acct_0123456789abcdefgh";
+  const SERVICE = { service: "https://account.ovis.example", onOpen: () => undefined, onSignedIn: () => undefined };
+  let renderer: ReactTestRenderer | undefined;
+  let requests: string[];
+  /** the bodies POST /api/devices/pair/cancel got */
+  let ended: unknown[];
+  /** what GET /api/account/status and GET /api/devices answer */
+  let pcAccount: string | null;
+  let devices: PairedDevice[];
+  /** whether the six-digit code the QR code carries is still pending on the PC */
+  let codePending: boolean;
+  let hidden: boolean;
+  let visibility: EventTarget;
+  let held: boolean[];
+  let revokedAll: number;
+
+  const device = (extra: Partial<PairedDevice>): PairedDevice => ({ id: "a", label: "Laptop · Chrome", role: "drive", created_at: "2026-10-01T00:00:00Z", last_seen_at: null, current: false, ...extra });
+  const phoneDevice = (extra: Partial<PairedDevice> = {}) => device({ id: "b", label: "iPhone · Safari", created_at: "2026-11-10T00:00:00Z", via_relay: true, ...extra });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    requests = [];
+    ended = [];
+    pcAccount = null;
+    devices = [device({})];
+    codePending = true;
+    hidden = false;
+    visibility = new EventTarget();
+    held = [];
+    revokedAll = 0;
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    // the confirmation's focus trap asks what an element is
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", maxTouchPoints: 0 } });
+    const events = new EventTarget();
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      isSecureContext: true,
+      location: { href: "https://workstation.example.ts.net/" },
+      addEventListener: events.addEventListener.bind(events),
+      removeEventListener: events.removeEventListener.bind(events),
+      dispatchEvent: events.dispatchEvent.bind(events),
+      // the fake clock's, installed above
+      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+    } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      activeElement: null,
+      get hidden() { return hidden; },
+      addEventListener: visibility.addEventListener.bind(visibility),
+      removeEventListener: visibility.removeEventListener.bind(visibility),
+    } });
+    const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(String(input instanceof Request ? input.url : input), "https://workstation.example.ts.net").pathname;
+      requests.push(path);
+      const expires_at = new Date(Date.now() + 600_000).toISOString();
+      if (path === "/api/account/status") return Response.json({ account: pcAccount, unlinked: [], removals: [], adds: [], blocked: [] });
+      if (path === "/api/devices") return Response.json({ devices });
+      if (path === "/api/relay/code") return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID });
+      if (path === "/api/relay/offer") return Response.json({ url: OFFER_URL, expires_at });
+      if (path === "/api/relay/code/cancel") return Response.json({ ok: true });
+      if (path === "/api/devices/pair/cancel") {
+        ended.push(JSON.parse(String(init?.body)));
+        const cancelled = codePending;
+        codePending = false;
+        return Response.json({ ok: true, cancelled });
+      }
+      if (path === "/api/devices/revoke-all") { devices = []; pcAccount = null; return Response.json({ revoked: 2 }); }
+      return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
+    };
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
+  });
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    mock.restore();
+    jest.useRealTimers();
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+    descriptors.clear();
+  });
+
+  interface TabOptions { signedIn?: boolean; joinBySignIn?: boolean; relay?: RelayState; active?: boolean }
+  const tab = ({ signedIn = true, joinBySignIn = false, relay = relayState(), active = true }: TabOptions = {}) => (
+    <SettingsProvider>
+      <RelayTab relay={relay} closesGate={false} signedIn={signedIn} joinBySignIn={joinBySignIn} account={SERVICE} phone={false} active={active}
+        onPairingHeld={(next) => { held.push(next); }} onRevokedAll={() => { revokedAll += 1; }} />
+    </SettingsProvider>
+  );
+  const flush = async () => { for (let round = 0; round < 6; round += 1) await act(async () => {}); };
+  const mount = async (options?: TabOptions) => {
+    await act(async () => { renderer = create(tab(options), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false, addEventListener() {}, removeEventListener() {} }) }); });
+    await flush();
+  };
+  const update = async (options?: TabOptions) => { await act(async () => { renderer!.update(tab(options)); }); await flush(); };
+  const advance = async (ms: number) => { await act(async () => { jest.advanceTimersByTime(ms); }); await flush(); };
+  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
+  const section = () => renderer!.root.findByProps({ "data-testid": "connect-account-qr" });
+  const buttons = () => section().findAll((node) => node.type === "button").map((node) => text(node).trim());
+  const press = async (label: string) => {
+    const found = section().findAll((node) => node.type === "button" && text(node).trim() === label);
+    expect(found.map(text)).toEqual([label]);
+    await act(async () => { found[0]!.props.onClick(); });
+    await flush();
+  };
+  const qrCodes = () => renderer!.root.findAllByType(QrCode);
+  const minted = () => requests.filter((path) => path === "/api/relay/code" || path === "/api/relay/offer" || path === "/api/devices/pair/start");
+  const count = (path: string) => requests.filter((request) => request === path).length;
+
+  for (const [name, options, heading, inAccount] of [
+    ["signed out", { signedIn: false }, "Add with a QR code", false],
+    ["signed in, with the PC in no account", { signedIn: true }, "Add with a QR code", false],
+    ["signed in, with the PC in the account", { signedIn: true, joinBySignIn: true }, "Add a device with a QR code", true],
+  ] as const) {
+    it(`${name}: asks for no code or offer before the press, and draws the QR code after it`, async () => {
+      if (inAccount) pcAccount = ACCOUNT_ID;
+      await mount(options);
+      expect(text(section())).toContain(heading);
+      expect(text(section())).toContain(inAccount ? "Its other PCs still ask for one approval." : "this PC joins that account, with no number to type");
+      expect(buttons()).toEqual(["Show the QR code"]);
+      expect(qrCodes()).toHaveLength(0);
+      expect(minted()).toEqual([]);
+      await press("Show the QR code");
+      expect(minted()).toEqual(["/api/relay/code", "/api/relay/offer"]);
+      expect(qrCodes()).toHaveLength(1);
+      expect(text(section())).toContain("7K3QD-M2XHA");
+      expect(buttons()).not.toContain("Show the QR code");
+    });
+  }
+
+  it("with the relay off, shows the relay's switch and no button; signed in, the switch above is the only one", async () => {
+    const off = relayState({ ...ONLINE, phase: "off" });
+    await mount({ signedIn: false, relay: off });
+    expect(section().findAllByProps({ label: "Ovis relay", checked: false })).toHaveLength(1);
+    expect(buttons()).not.toContain("Show the QR code");
+    expect(text(section())).toContain("Off. Nothing goes through the relay.");
+    await update({ signedIn: true, relay: off });
+    expect(renderer!.root.findAllByProps({ label: "Ovis relay", checked: false })).toHaveLength(1);
+    expect(section().findAllByProps({ label: "Ovis relay" })).toHaveLength(0);
+    expect(buttons()).not.toContain("Show the QR code");
+    expect(minted()).toEqual([]);
+  });
+
+  it("signed out on a relay that refused this PC for its pass, says to sign in first", async () => {
+    const refused = relayState({ ...ONLINE, phase: "error", error: "pass", pass: { state: "no_account", relay: "missing", enforce_at: null, refused: true } });
+    await mount({ signedIn: false, relay: refused });
+    expect(text(section())).toContain("Sign in above first; then this PC can show its QR code.");
+    expect(buttons()).not.toContain("Show the QR code");
+  });
+
+  it("takes the QR code down 30 minutes after the press and ends its code, leaving Show a new code", async () => {
+    await mount();
+    await press("Show the QR code");
+    await advance(ACCOUNT_QR_MAX_MS - 1000);
+    expect(qrCodes()).toHaveLength(1);
+    expect(ended).toEqual([]);
+    await advance(1000);
+    expect(qrCodes()).toHaveLength(0);
+    expect(buttons()).toEqual(["Show a new code"]);
+    expect(count("/api/relay/code/cancel")).toBe(1);
+    expect(ended).toEqual([{ code: "482913" }]);
+    // nothing renews it afterwards
+    const before = minted().length;
+    await advance(ACCOUNT_QR_MAX_MS);
+    expect(minted()).toHaveLength(before);
+  });
+
+  it("takes the QR code down once the page was hidden for a minute, not before, and not when it came back in time", async () => {
+    await mount();
+    await press("Show the QR code");
+    hidden = true;
+    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await advance(ACCOUNT_QR_HIDDEN_MS - 1000);
+    hidden = false;
+    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await advance(ACCOUNT_QR_HIDDEN_MS);
+    expect(qrCodes()).toHaveLength(1);
+    hidden = true;
+    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await advance(ACCOUNT_QR_HIDDEN_MS);
+    expect(qrCodes()).toHaveLength(0);
+    expect(buttons()).toEqual(["Show a new code"]);
+    expect(ended).toEqual([{ code: "482913" }]);
+  });
+
+  it("takes the QR code down when the page comes back after a sleep that ran no timer", async () => {
+    await mount();
+    await press("Show the QR code");
+    hidden = true;
+    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    // the device slept: the clock moved, no timer ran
+    const now = Date.now();
+    spyOn(Date, "now").mockImplementation(() => now + ACCOUNT_QR_HIDDEN_MS);
+    hidden = false;
+    await act(async () => { visibility.dispatchEvent(new Event("visibilitychange")); });
+    await flush();
+    expect(qrCodes()).toHaveLength(0);
+    expect(buttons()).toEqual(["Show a new code"]);
+  });
+
+  it("takes the QR code down and ends its code when another tab opens, and when the dialog closes", async () => {
+    await mount();
+    await press("Show the QR code");
+    await update({ active: false });
+    expect(qrCodes()).toHaveLength(0);
+    expect(ended).toEqual([{ code: "482913" }]);
+    await update({ active: true });
+    expect(buttons()).toEqual(["Show a new code"]);
+    codePending = true;
+    await press("Show a new code");
+    expect(qrCodes()).toHaveLength(1);
+    await act(async () => { renderer!.unmount(); });
+    renderer = undefined;
+    await act(async () => {});
+    expect(ended).toEqual([{ code: "482913" }, { code: "482913" }]);
+    expect(count("/api/relay/code/cancel")).toBe(2);
+  });
+
+  it("tells the page's other places that the ended code ran out, only when it was still pending", async () => {
+    const announced: string[] = [];
+    await mount();
+    window.addEventListener("ovis:pairing-code", (event) => { announced.push((event as CustomEvent<{ expires_at: string }>).detail.expires_at); });
+    await press("Show the QR code");
+    await update({ active: false });
+    expect(announced.at(-1)).toBe(new Date(0).toISOString());
+    // a code a device used up is not pending: nothing is announced, so the list's "Paired" line stays
+    await update({ active: true });
+    await press("Show a new code");
+    const before = announced.length;
+    await update({ active: false });
+    expect(announced.slice(before).filter((expires) => expires === new Date(0).toISOString())).toEqual([]);
+  });
+
+  it("says which account the PC joined and which device added it, and holds the dialog open for it", async () => {
+    await mount();
+    expect(held.at(-1)).toBe(false);
+    await press("Show the QR code");
+    expect(held.at(-1)).toBe(true);
+    devices = [...devices, phoneDevice({ account: ACCOUNT_ID })];
+    pcAccount = ACCOUNT_ID;
+    await advance(ACCOUNT_QR_POLL_MS);
+    expect(qrCodes()).toHaveLength(0);
+    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-joined" });
+    expect(text(notice)).toContain("This PC joined an Ovis account (acct_0123456).");
+    expect(text(notice)).toContain("Added by iPhone · Safari.");
+    expect(buttons()).toEqual(["Done", "Not me: revoke every device"]);
+    expect(held.at(-1)).toBe(true);
+    // the PC is in an account now: what the QR code does from here on
+    expect(text(section())).toContain("Add a device with a QR code");
+    await press("Done");
+    expect(buttons()).toEqual(["Show a new code"]);
+    expect(held.at(-1)).toBe(false);
+  });
+
+  it("Not me asks before it revokes, and revokes every device once", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice({ account: ACCOUNT_ID })];
+    pcAccount = ACCOUNT_ID;
+    await advance(ACCOUNT_QR_POLL_MS);
+    await press("Not me: revoke every device");
+    expect(count("/api/devices/revoke-all")).toBe(0);
+    const confirm = renderer!.root.findByType(ConfirmDialog);
+    expect(confirm.props.body).toContain("this PC leaves that account");
+    await act(async () => { await confirm.props.onConfirm(); });
+    await flush();
+    expect(count("/api/devices/revoke-all")).toBe(1);
+    expect(revokedAll).toBe(1);
+    expect(renderer!.root.findAllByType(ConfirmDialog)).toHaveLength(0);
+    expect(text(section())).toContain("Every paired device was revoked.");
+    expect(text(section())).toContain("Add with a QR code");
+    expect(buttons()).toEqual(["Show a new code"]);
+  });
+
+  it("names a device that paired without an account as not signed in, after ten seconds, and still tells a later join", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice()];
+    await advance(ACCOUNT_QR_POLL_MS);
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
+    await advance(ACCOUNT_QR_ALONE_MS);
+    const notice = renderer!.root.findByProps({ "data-testid": "connect-account-alone" });
+    expect(text(notice)).toBe("iPhone · Safari is paired with this PC alone: it is not signed in. Sign in on it to add this PC to your account.Done");
+    expect(qrCodes()).toHaveLength(0);
+    expect(held.at(-1)).toBe(true);
+    // it signed in after all
+    devices = [devices[0]!, phoneDevice({ account: ACCOUNT_ID })];
+    pcAccount = ACCOUNT_ID;
+    await advance(ACCOUNT_QR_POLL_MS);
+    expect(text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }))).toContain("Added by iPhone · Safari.");
+  });
+
+  it("on a PC already in an account, a device that pairs is named and the dialog is not held", async () => {
+    pcAccount = ACCOUNT_ID;
+    await mount({ joinBySignIn: true });
+    await press("Show the QR code");
+    expect(held).not.toContain(true);
+    devices = [...devices, phoneDevice()];
+    await advance(ACCOUNT_QR_POLL_MS);
+    expect(qrCodes()).toHaveLength(0);
+    expect(text(section())).toContain("Paired: iPhone · Safari.");
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-joined" })).toHaveLength(0);
+    expect(buttons()).toEqual(["Show a new code"]);
+  });
+
+  it("picks the newest relay device the press did not know", () => {
+    const known = new Set(["a"]);
+    expect(newestRelayDevice([device({ via_relay: true })], known)).toBeNull();
+    expect(newestRelayDevice([device({ id: "c" })], known)).toBeNull();
+    expect(newestRelayDevice([phoneDevice({ id: "c", label: "old", created_at: "2026-11-09T00:00:00Z" }), phoneDevice()], known)?.label).toBe("iPhone · Safari");
   });
 });

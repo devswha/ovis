@@ -215,6 +215,30 @@
   align-self: flex-start;
 }
 
+/* the relay tab's QR code behind a press: its own part under the sign-in or the account's line */
+.connect-account-qr,
+.connect-account-qr-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.connect-account-qr {
+  padding-top: var(--space-3);
+  border-top: var(--hairline) solid var(--border);
+}
+
+.connect-account-qr-notice {
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.connect-account-qr .phone-actions {
+  flex-wrap: wrap;
+}
+
 /* on a phone the address goes under the name, so the name, its source and its button keep one line */
 @media (max-width: 480px) {
   .connect-found-row {
