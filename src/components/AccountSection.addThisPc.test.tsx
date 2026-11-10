@@ -15,14 +15,22 @@ const MARKER = "ovis-add-pc-waiting";
 const ACCOUNT = "acct_0123456789abcdef";
 const keys = generateKeyPair();
 const publicKey = exportPublicKey(keys.publicKey);
-const offerUrl = encodeOffer({ v: 1, server_id: deriveServerId(importPublicKey(publicKey)), server_public_key: publicKey, relay: "wss://relay.ovis.sh", name: "desk" }, "https://app.ovis.sh");
+const SERVER = deriveServerId(importPublicKey(publicKey));
+const offerOf = (key: string, name: string): string => encodeOffer({ v: 1, server_id: deriveServerId(importPublicKey(key)), server_public_key: key, relay: "wss://relay.ovis.sh", name }, "https://app.ovis.sh");
+const otherKey = exportPublicKey(generateKeyPair().publicKey);
+const OTHER_SERVER = deriveServerId(importPublicKey(otherKey));
+const RELIST_MS = 9 * 60_000;
+/** a wait as its tab keeps it: pressed `ago` before now on this PC under this account, last listed `listed` before now */
+const kept = (ago: number, listed = ago, over: Record<string, unknown> = {}): string => JSON.stringify({ name: "desk", until: at - ago + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: at - listed, ...over });
 
 describe("AddThisPc", () => {
-  const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator"];
+  const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator", "location"];
   const saved = new Map<string, PropertyDescriptor | undefined>();
   let renderers: ReactTestRenderer[];
   /** what the PC answers: its account, and how the link route fails (null: it gives a link) */
-  let pc: { account: string | null; linkError: { status: number; code: string } | null };
+  let pc: { account: string | null; linkError: { status: number; code: string } | null; statusDown: boolean; offer: string };
+  /** the account this tab is signed in to; null when signed out */
+  let signedIn: string | null;
   /** every request to the PC: its path, and whether it asked for an approve-here window */
   let asked: { path: string; localOnly: boolean }[];
   /** the account directory's writes */
@@ -34,12 +42,13 @@ describe("AddThisPc", () => {
     listPcs: async () => [],
     putPc: async () => { directory.push("putPc"); },
     deletePc: async () => { directory.push("deletePc"); },
-    session: async () => undefined,
+    session: async () => signedIn === null ? undefined : { account: signedIn },
   }) as unknown as AccountService;
 
   beforeEach(() => {
     renderers = [];
-    pc = { account: null, linkError: null };
+    pc = { account: null, linkError: null, statusDown: false, offer: offerOf(publicKey, "desk") };
+    signedIn = ACCOUNT;
     asked = [];
     directory = [];
     tab = new Map();
@@ -58,13 +67,15 @@ describe("AddThisPc", () => {
       },
       getComputedStyle: () => style,
       navigator: { languages: ["en"], userAgent: "Mozilla/5.0", maxTouchPoints: 0 },
+      location: { pathname: "/", origin: "http://localhost" },
     };
     for (const name of globals) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: values[name] });
     const answer = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const path = new URL(String(input instanceof Request ? input.url : input), "http://localhost").pathname;
       asked.push({ path, localOnly: new Headers(init?.headers).get("x-ovis-local-only") === "1" });
+      if (path === "/api/account/status" && pc.statusDown) return Response.json({ error: { code: "internal", message: "restarting" } }, { status: 503 });
       if (path === "/api/account/status") return Response.json({ account: pc.account, unlinked: [], removals: [], adds: [], blocked: [] });
-      if (path === "/api/relay/link") return pc.linkError === null ? Response.json({ url: offerUrl }) : Response.json({ error: { code: pc.linkError.code, message: "refused" } }, { status: pc.linkError.status });
+      if (path === "/api/relay/link") return pc.linkError === null ? Response.json({ url: pc.offer }) : Response.json({ error: { code: pc.linkError.code, message: "refused" } }, { status: pc.linkError.status });
       return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
     };
     setTransport({ ...nativeTransport, fetch: answer });
@@ -120,7 +131,7 @@ describe("AddThisPc", () => {
     expect(words(renderer)).toContain("Waiting. The window reopens by itself if Ovis restarts.");
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
     expect(directory).toEqual(["putPc"]);
-    expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: at + WAITING_MS });
+    expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: at + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: at });
   });
 
   test("opens the window again every 30 seconds, approve-here only, with no directory write", async () => {
@@ -136,7 +147,9 @@ describe("AddThisPc", () => {
     expect(asked.filter((request) => request.path === "/api/relay/link").every((request) => request.localOnly)).toBe(true);
     // the press listed the PC once; no reopening wrote to the directory or asked any other route
     expect(directory).toEqual(["putPc"]);
-    expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/relay/link"]));
+    // (the press also told the PC which account it asks its relay pass under, once)
+    expect(new Set(asked.map((request) => request.path))).toEqual(new Set(["/api/account/status", "/api/relay/link", "/api/account/relay-account"]));
+    expect(asked.filter((request) => request.path === "/api/account/relay-account").length).toBe(1);
   });
 
   test("goes on reopening after a refused attempt, as while Ovis restarts", async () => {
@@ -179,7 +192,7 @@ describe("AddThisPc", () => {
   });
 
   test("a reloaded tab that was waiting goes on waiting and opens the window, without a press or a directory write", async () => {
-    tab.set(MARKER, JSON.stringify({ name: "desk", until: at + 10 * 60_000 }));
+    tab.set(MARKER, kept(20 * 60_000, 60_000));
     const renderer = await mount();
     expect(words(renderer)).toContain("choose Add on desk.");
     expect(links()).toBe(1);
@@ -191,8 +204,8 @@ describe("AddThisPc", () => {
   });
 
   test("a reloaded tab whose wait ran out, or whose marker is not one, offers the button and opens nothing", async () => {
-    for (const kept of [JSON.stringify({ name: "desk", until: at - 1 }), JSON.stringify({ name: "desk", until: at + WAITING_MS + 60_000 }), "{", JSON.stringify({ name: 3, until: "soon" })]) {
-      tab.set(MARKER, kept);
+    for (const stale of [kept(WAITING_MS + 1), kept(-60_000), "{", JSON.stringify({ name: 3, until: "soon" }), JSON.stringify({ name: "desk", until: at + 10 * 60_000 })]) {
+      tab.set(MARKER, stale);
       const renderer = await mount();
       expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
       expect(tab.has(MARKER)).toBe(false);
@@ -201,12 +214,137 @@ describe("AddThisPc", () => {
   });
 
   test("a reloaded tab finds the PC added meanwhile and says so", async () => {
-    tab.set(MARKER, JSON.stringify({ name: "desk", until: at + 10 * 60_000 }));
+    tab.set(MARKER, kept(20 * 60_000));
     pc.account = ACCOUNT;
     const renderer = await mount();
     expect(words(renderer)).toContain("This PC is in your account. Your other devices can open it now.");
     expect(tab.has(MARKER)).toBe(false);
     expect(links()).toBe(0);
+  });
+
+  test("a wait kept under another account, or with no sign-in now, is not taken up: the offer, and nothing opened or listed", async () => {
+    for (const now of ["acct_someone_else", null]) {
+      signedIn = now;
+      tab.set(MARKER, kept(60_000));
+      const renderer = await mount();
+      expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+      expect(tab.has(MARKER)).toBe(false);
+      await advance(RELIST_MS + REOPEN_MS);
+    }
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
+  });
+
+  test("a wait kept for another PC of the hosted app is not taken up on this one's page", async () => {
+    Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: `/s/${OTHER_SERVER}/`, origin: "http://localhost" } });
+    tab.set(MARKER, kept(60_000));
+    const renderer = await mount();
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(tab.has(MARKER)).toBe(false);
+    await advance(RELIST_MS + REOPEN_MS);
+    expect(links()).toBe(0);
+    expect(directory).toEqual([]);
+
+    // nor does that wait make this PC, already in an account, say it was just added
+    tab.set(MARKER, kept(60_000));
+    pc.account = ACCOUNT;
+    expect((await mount()).toJSON()).toBeNull();
+  });
+
+  test("a wait kept for this PC of the hosted app goes on, on its own page", async () => {
+    Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: `/s/${SERVER}/`, origin: "http://localhost" } });
+    tab.set(MARKER, kept(60_000));
+    expect(buttons(await mount())).toEqual(["Stop waiting"]);
+    expect(links()).toBe(1);
+  });
+
+  test("an address that now answers for another PC ends the wait kept for the first, with nothing listed", async () => {
+    tab.set(MARKER, kept(60_000));
+    pc.offer = offerOf(otherKey, "laptop");
+    const renderer = await mount();
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(tab.has(MARKER)).toBe(false);
+    expect(links()).toBe(1);
+    await advance(RELIST_MS + REOPEN_MS);
+    expect(links()).toBe(1);
+    expect(directory).toEqual([]);
+  });
+
+  test("a PC that joined another account than the one waited under does not say it is in yours", async () => {
+    const renderer = await waitingFrom();
+    pc.account = "acct_someone_else";
+    await advance(ADDED_POLL_MS);
+    expect(renderer.toJSON()).toBeNull();
+    expect(tab.has(MARKER)).toBe(false);
+    expect(jest.getTimerCount()).toBe(0);
+
+    tab.set(MARKER, kept(60_000));
+    expect((await mount()).toJSON()).toBeNull();
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("a sign-in that changed under a waiting screen ends the wait before the PC is listed again", async () => {
+    const renderer = await waitingFrom();
+    signedIn = "acct_someone_else";
+    await advance(RELIST_MS);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(directory).toEqual(["putPc"]);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("lists the PC again nine minutes after it was last listed, also across a reload", async () => {
+    tab.set(MARKER, kept(8 * 60_000));
+    await mount();
+    expect(directory).toEqual([]);
+    await advance(60_000 - 1);
+    expect(directory).toEqual([]);
+    await advance(1);
+    expect(directory).toEqual(["putPc"]);
+    expect(JSON.parse(tab.get(MARKER)!).listedAt).toBe(at + 60_000);
+    // and from then every nine minutes, as without a reload
+    await advance(RELIST_MS - 1);
+    expect(directory).toEqual(["putPc"]);
+    await advance(1);
+    expect(directory).toEqual(["putPc", "putPc"]);
+  });
+
+  test("a reloaded tab whose listing is already due lists the PC at once", async () => {
+    tab.set(MARKER, kept(20 * 60_000, 9 * 60_000 + 30_000));
+    await mount();
+    await advance(0);
+    expect(directory).toEqual(["putPc"]);
+    expect(JSON.parse(tab.get(MARKER)!).listedAt).toBe(Date.now());
+  });
+
+  test("a listing that failed is tried again with the next reopen, not nine minutes later", async () => {
+    await waitingFrom();
+    pc.linkError = { status: 503, code: "internal" };
+    await advance(RELIST_MS);
+    expect(directory).toEqual(["putPc"]);
+    pc.linkError = null;
+    await advance(REOPEN_MS);
+    expect(directory).toEqual(["putPc", "putPc"]);
+  });
+
+  test("a reloaded tab whose PC does not answer yet asks again and then goes on waiting", async () => {
+    tab.set(MARKER, kept(60_000));
+    pc.statusDown = true;
+    const renderer = await mount();
+    expect(renderer.toJSON()).toBeNull();
+    expect(tab.has(MARKER)).toBe(true);
+    await advance(ADDED_POLL_MS);
+    expect(renderer.toJSON()).toBeNull();
+    pc.statusDown = false;
+    await advance(ADDED_POLL_MS);
+    expect(buttons(renderer)).toEqual(["Stop waiting"]);
+    expect(links()).toBe(1);
+  });
+
+  test("a PC that does not answer on a page with no wait kept is not asked again", async () => {
+    pc.statusDown = true;
+    const renderer = await mount();
+    expect(jest.getTimerCount()).toBe(0);
+    expect(renderer.toJSON()).toBeNull();
   });
 
   test("a PC already in an account, with no wait kept, shows nothing", async () => {
@@ -230,7 +368,7 @@ describe("AddThisPc", () => {
 
     await press(renderer, "Keep waiting");
     expect(buttons(renderer)).toEqual(["Stop waiting"]);
-    expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: Date.now() + WAITING_MS });
+    expect(JSON.parse(tab.get(MARKER)!)).toEqual({ name: "desk", until: Date.now() + WAITING_MS, serverId: SERVER, account: ACCOUNT, listedAt: Date.now() });
     const opened = links();
     await advance(REOPEN_MS);
     expect(links()).toBe(opened + 1);
