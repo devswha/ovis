@@ -1408,6 +1408,35 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
+    it("holds on the second loop's prompt though the first loop's turn was interrupted, and wrote no rest before it", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status, told } = await tracked(s);
+      try {
+        status.quiet("p1", true);
+        fire(s, 3);
+        fire(s, 3);
+        resumes(s, 3);
+        answer(s, 3);
+        status.poll();
+        // herdr tells the first loop's turn, which is then interrupted: no rest is written
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(false);
+        // the second loop's prompt runs 12 s after the fires: that turn is another one, which herdr has not told
+        resumes(s, 3.2);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        status.quiet("p1", true);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // herdr's working for it comes with no turn written past its rest word: the queue goes by herdr's status again
+        status.busy("p1", "herdr");
+        expect(status.loopHolds("p1")).toBe(false);
+        expect(told).toEqual([false, true, false, true, false]);
+      } finally { status.stop(); }
+    });
+
     it("takes the fires of one tick for one wakeup: herdr's working for the turn they resumed ends the hold", async () => {
       const s = session();
       s.prompt(1);
@@ -1510,6 +1539,27 @@ describe("ClaudeSubagentStatus", () => {
       }
     });
 
+    it("ends a wakeup at its rest: what resumes next holds anew, though that turn wrote nothing else", async () => {
+      for (const next of ["fire", "prompt"] as const) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        const { status, told } = await tracked(s);
+        try {
+          fire(s, 3);
+          status.poll();
+          rest(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          // seconds later, inside the time the first fire would have held for
+          if (next === "fire") fire(s, 3.1); else resumes(s, 3.1);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          expect(told).toEqual([false, true, false, true]);
+        } finally { status.stop(); }
+      }
+    });
+
     it("takes the keys of a self-resumed prompt only from the session's own entry, not from words that quote them", async () => {
       const s = session();
       s.prompt(1);
@@ -1522,6 +1572,11 @@ describe("ClaudeSubagentStatus", () => {
         s.parent({ type: "user", isSidechain: true, isMeta: true, turnOrigin: "scheduled", wakeupSource: "loop_wakeup", timestamp: at(5), message: { role: "user", content: "check" } });
         // nor from an entry that is no prompt
         s.parent({ type: "assistant", turnOrigin: "scheduled", wakeupSource: "loop_wakeup", timestamp: at(5), message: { role: "assistant", content: [{ type: "text", text: "on it" }] } });
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        // a subagent's entry is told by its parsed key, however the line is spaced
+        rest(s, 6);
+        appendFileSync(s.path, `{"type":"user","isSidechain": true,"isMeta":true,"turnOrigin":"scheduled","wakeupSource":"loop_wakeup","timestamp":"${at(7)}","message":{"role":"user","content":"check"}}\n`);
         status.poll();
         expect(status.loopHolds("p1")).toBe(false);
       } finally { status.stop(); }

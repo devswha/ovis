@@ -362,9 +362,9 @@ interface Parent {
    * tick, a scheduled task that is no loop.
    */
   loopAt: number | null;
-  /** when that entry was written, by its own timestamp: how old one found at the transcript's first read is */
+  /** when the entry `loopAt` is the boundary of was written, by its own timestamp: how old one found at the transcript's first read is */
   loopTime: number | null;
-  /** a fire was read and nothing a turn writes after it yet: a fire or a self-resumed prompt that comes now may be the same wakeup's (sameWakeup) */
+  /** a fire was read, and since then neither a rest nor anything else a turn writes: a fire or a self-resumed prompt that comes now may be the same wakeup's (sameWakeup) */
   loopFired: boolean;
   /** what a slash command's echo found, until the next entry says whether it began a turn (scanParentLine) */
   echo: { command: string | null; restAt: number | null; promptAt: number | null; turnOpen: boolean; starts: Start[] } | null;
@@ -480,12 +480,12 @@ const SELF_RESUMED_RE = /"turnOrigin":"scheduled"|"wakeupSource":"/;
 /**
  * Whether a fire or a self-resumed prompt written at `written` is of the wakeup the fire read before
  * it told (Parent.loopAt), and so tells nothing new: the fires of one scheduler tick are written
- * together, ahead of the first one's prompt, and resume one turn. Only with nothing a turn writes
- * read between them (Parent.loopFired), and inside the time that fire holds for by its own
- * timestamp: one whose turn wrote nothing at all is not waited on for ever.
+ * together, ahead of the first one's prompt, and resume one turn. Only with neither a rest nor
+ * anything else a turn writes read between them (Parent.loopFired), and inside the time that fire
+ * holds for by its own timestamp: one whose turn wrote nothing at all is not waited on for ever.
  */
 function sameWakeup(parent: Parent, written: number | null): boolean {
-  return parent.loopAt !== null && parent.loopFired && written !== null && parent.loopTime !== null && Math.abs(written - parent.loopTime) < LOOP_HOLD_MS;
+  return parent.loopFired && written !== null && parent.loopTime !== null && Math.abs(written - parent.loopTime) < LOOP_HOLD_MS;
 }
 
 /**
@@ -530,7 +530,7 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
         // the rest of whatever turn went on, a /loop wakeup's too
-        if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; parent.loopTime = null; parent.loopFired = false; }
+        if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; parent.loopFired = false; }
       }
     } catch { /* a line caught half written is read again */ }
   } else if (line.includes('"subtype":"scheduled_task_fire"') && !line.includes('"isSidechain":true')) {
