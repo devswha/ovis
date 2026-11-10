@@ -32,9 +32,11 @@ const NEWER = [
   "Enter passphrase for PKCS#11:",
   'Enter passphrase for "/home/alice/.ssh/id_ed25519":',
   'Enter passphrase for "C:\\Users\\alice\\.ssh\\id_ed25519":',
-  // the letters around a path's slash are no yes/no choice
+  // the letters around a path's slash are no yes/no choice, nor are two of its folders
   "Enter passphrase for key '/home/andy/notes/id_ed25519':",
   "Enter passphrase for /home/andy/notes/id_ed25519:",
+  "Enter passphrase for /home/y/n/id_ed25519:",
+  "Enter passphrase for key 'C:/y/n/id_ed25519':",
 ];
 
 it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen and an IPv6 host's password", () => {
@@ -53,6 +55,8 @@ it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen
     "Enter passphrase for key [y/n]:",
     "Password for alice (y/N):",
     "Password for alice y / n:",
+    "Password for alice, y/n:",
+    "y/n password:",
   ]) {
     expect(secretPrompt(screen)).toBeNull();
   }

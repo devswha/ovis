@@ -34,8 +34,8 @@ const SECRET_PROMPT = new RegExp(`^(?:${[
 ].map((prompt) => prompt.source).join("|")}):$`, "i");
 
 // a yes/no choice is no secret: `y/n` on its own, not the letters around a path's slash
-// (`/home/andy/notes/key`)
-const ASKS_CHOICE = /\?|(?:^|[^a-z0-9])y\s*\/\s*n(?![a-z0-9])/i;
+// (`/home/andy/notes/key`) nor two folders of a path (`/home/y/n/key`)
+const ASKS_CHOICE = /\?|(?:^|[^a-z0-9/])y\s*\/\s*n(?![a-z0-9/])/i;
 
 // Both as every server before this one has them. Such a server refuses a masked input for any
 // other prompt (`invalid_secret`), and a page can be newer than its PC (app.ovis.sh), where
