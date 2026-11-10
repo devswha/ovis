@@ -262,17 +262,27 @@ describe("ovis link, on the PC itself", () => {
     expect(text).toContain("This PC is in your account (acct_1): every device of your account can use it.");
   });
 
-  /** `link` signed in to acct_1 and waiting; `status` answers each look at the account, by the count of pairing polls so far. */
-  async function waiting(status: (polls: number) => { account: string | null; enrolling?: boolean }) {
+  /**
+   * `link` signed in to acct_1 and waiting; `status` answers each look at the account, by the count of pairing polls
+   * so far and the time since this PC was listed (the waiting began). `down`: when the PC's server refuses every connection.
+   */
+  async function waiting(status: (polls: number, elapsed: number) => { account: string | null; enrolling?: boolean }, down: (elapsed: number) => boolean = () => false) {
     const pc = identity();
     const time = clock();
+    let began: number | null = null;
+    const elapsed = () => began === null ? -1 : time.now() - began;
     const service = new FakeAccountService(time.now);
     let polls = 0;
     const writes: string[] = [];
-    const local = localPc((request, path) => {
-      if (path === "/api/account/status") return Response.json({ unlinked: [], removals: [], adds: [], blocked: [], ...status(polls) });
+    // when the approve-here window was asked for, and the accounts this PC was told it asks its relay pass under
+    const linkAt: number[] = [];
+    const named: string[] = [];
+    const local = localPc(async (request, path) => {
+      if (down(elapsed())) throw new TypeError("connection refused");
+      if (path === "/api/account/status") return Response.json({ unlinked: [], removals: [], adds: [], blocked: [], ...status(polls, elapsed()) });
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
-      if (path === "/api/account/relay-account") return new Response(null, { status: 204 });
+      if (path === "/api/account/relay-account") { named.push((await request.json() as { account: string }).account); return new Response(null, { status: 204 }); }
+      if (path === "/api/relay/link") { began ??= time.now(); linkAt.push(elapsed()); }
       if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
       if (path === "/api/relay/pairings") { polls++; return Response.json({ pairings: [] }); }
       return undefined;
@@ -287,7 +297,7 @@ describe("ovis link, on the PC itself", () => {
       },
       out: (text) => { out.push(text); const shown = /code:? ([A-Z0-9-]{4,16})\b/.exec(text); if (shown) service.approveDevice(shown[1]!, "acct_1"); },
     });
-    return { code, out, text: out.join(""), calls: local.calls, writes, time, pc, polls: () => polls };
+    return { code, out, text: out.join(""), calls: local.calls, writes, time, pc, polls: () => polls, linkAt, named, service };
   }
 
   it("asks for its approve-here window again after 30 seconds of waiting, without writing to the account's list", async () => {
@@ -314,6 +324,46 @@ describe("ovis link, on the PC itself", () => {
     expect(polls()).toBe(901);
   });
 
+  it("never asks for a window that would outlive its 30 minutes: none in the last ten, while the account's list is still renewed", async () => {
+    const { code, linkAt, writes, pc } = await waiting(() => ({ account: null }));
+    expect(code).toBe(1);
+    // the server keeps a window ten minutes from when it was asked for: the last one ends as the run does
+    expect(Math.max(...linkAt)).toBe(20 * 60_000);
+    expect(linkAt.filter((at) => at > 19 * 60_000)).toEqual([19 * 60_000 + 30_000, 20 * 60_000]);
+    // listed, then listed anew at 9, 18 and 27 minutes (2-second polls): the last without asking for the window
+    const entry = `/v1/pcs/${pc.server_id}`;
+    expect(writes).toEqual([`PUT ${entry} at poll 0`, ...[271, 541, 811].flatMap((poll) => [`DELETE ${entry} at poll ${poll}`, `PUT ${entry} at poll ${poll}`])]);
+  });
+
+  it("waits for an Ovis server that restarts, and asks for its window again with the first call it answers", async () => {
+    // refusing connections from 40 s to 50 s; in the account a minute in
+    const { code, out, calls, linkAt } = await waiting((_polls, elapsed) => ({ account: elapsed >= 60_000 ? "acct_1" : null }), (elapsed) => elapsed >= 40_000 && elapsed < 50_000);
+    expect(code).toBe(0);
+    expect(out.filter((text) => text.includes("not answering"))).toEqual(["The Ovis on this PC is not answering (is it restarting?). Waiting for it…\n"]);
+    expect(out.filter((text) => text.includes("answers again"))).toHaveLength(1);
+    // the listing's own, the 30-second one, then at once when the server is back (a restarted server has no window)
+    expect(linkAt).toEqual([0, 30_000, 50_000]);
+    // while it was away only the window was asked for: one poll failed, then nothing else was tried
+    const paths = calls.map((call) => call.path);
+    const lost = paths.indexOf("/api/relay/pairings", paths.lastIndexOf("/api/relay/link") - 6);
+    expect(paths.slice(lost, lost + 7)).toEqual(["/api/relay/pairings", ...Array(5).fill("/api/relay/link"), "/api/relay/pairings"]);
+    expect(out.at(-1)).toBe("This PC is in your account (acct_1): every device of your account can use it.\n");
+  });
+
+  it("stops when the server goes away too late in the run to ask for its window again", async () => {
+    const { code, out, linkAt } = await waiting(() => ({ account: null }), (elapsed) => elapsed >= 25 * 60_000);
+    expect(code).toBe(1);
+    expect(out.at(-1)).toBe("The Ovis on this PC stopped answering, too close to this run's 30 minutes to open its approval window again. Run this again once it is back.\n");
+    expect(Math.max(...linkAt)).toBe(20 * 60_000);
+  });
+
+  it("keeps waiting for the account's other devices over a server restart, without asking for a window", async () => {
+    const { code, linkAt } = await waiting((polls, elapsed) => ({ account: polls >= 2 ? "acct_1" : null, enrolling: elapsed < 60_000 }), (elapsed) => elapsed >= 20_000 && elapsed < 40_000);
+    expect(code).toBe(0);
+    // in the account: nothing is left to approve
+    expect(linkAt).toEqual([0]);
+  });
+
   it("keeps waiting while the account's other devices are brought in, saying so once, and ends well when they are", async () => {
     const { code, out, polls } = await waiting((polls) => ({ account: polls >= 3 ? "acct_1" : null, enrolling: polls >= 3 && polls < 8 }));
     expect(code).toBe(0);
@@ -325,14 +375,38 @@ describe("ovis link, on the PC itself", () => {
   it("stops after 30 minutes when the account's other devices never come in, without saying it is done", async () => {
     const { code, text, out } = await waiting((polls) => ({ account: polls >= 1 ? "acct_1" : null, enrolling: true }));
     expect(code).toBe(1);
-    expect(text).not.toContain("This PC is in your account");
-    expect(out.at(-1)).toBe("Stopped waiting after 30 minutes. Run this again to keep waiting.\n");
+    expect(text).not.toContain("This PC is in your account (");
+    expect(out.at(-1)).toBe("Stopped waiting after 30 minutes: this PC is in your account, but its other devices are not in yet. Open the Ovis app on the phone that added it, then run this again.\n");
+  });
+
+  it("run again while the account's other devices are still coming in, it waits for them without a sign-in", async () => {
+    const time = clock();
+    let looks = 0;
+    let until = 4;
+    const local = localPc((_request, path) => path === "/api/account/status" ? Response.json({ account: "acct_1", enrolling: ++looks < until, unlinked: [], removals: [], adds: [], blocked: [] }) : undefined);
+    const out: string[] = [];
+    const base = { origin: ORIGIN, headers: {}, fetch: local.fetch, out: (text: string) => out.push(text), signal: new AbortController().signal, lines: answers(), now: time.now, wait: time.wait, accountService: SERVICE,
+      serviceFetch: () => { throw new Error("no sign-in is needed to wait"); } };
+    expect(await link([], base)).toBe(0);
+    expect(looks).toBe(4);
+    expect(out[0]).toContain("its account's other devices are not in yet");
+    expect(out.at(-1)).toBe("This PC is in an Ovis account (acct_1): every device of that account can use it.\n");
+    // never done within the 30 minutes: it fails, and says where the wait is
+    out.length = 0;
+    until = Infinity;
+    expect(await link([], base)).toBe(1);
+    expect(out.at(-1)).toBe("Stopped waiting after 30 minutes: this PC is in the account, but its other devices are not in yet. Open the Ovis app on the phone that added it, then run this again.\n");
+    expect(local.calls.every((call) => call.path === "/api/account/status")).toBe(true);
   });
 
   it("fails, naming both accounts and the way out, when this PC ended in another account than the one that signed in", async () => {
-    const { code, text, out } = await waiting((polls) => ({ account: polls >= 2 ? "acct_someone_else_entirely" : null, enrolling: true }));
+    const { code, text, out, writes, pc, named, service } = await waiting((polls) => ({ account: polls >= 2 ? "acct_someone_else_entirely" : null, enrolling: true }));
     expect(code).toBe(1);
-    expect(out.at(-1)).toBe("This PC joined another Ovis account (acct_someone), not the one you signed in to (acct_1). If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n");
+    expect(out.at(-1)).toBe("This PC joined another Ovis account (acct_someone), not the one you signed in to (acct_1). It was taken off the list of the account you signed in to. If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n");
+    // the account that signed in no longer lists a PC it cannot add, and the PC names the account it is in
+    expect(writes).toEqual([`PUT /v1/pcs/${pc.server_id} at poll 0`, `DELETE /v1/pcs/${pc.server_id} at poll 2`]);
+    expect(service.pcs("acct_1")).toEqual([]);
+    expect(named).toEqual(["acct_1", "acct_someone_else_entirely"]);
     expect(text).not.toContain("This PC is in your account");
     expect(text).not.toContain("Bringing in");
   });

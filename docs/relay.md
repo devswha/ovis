@@ -298,17 +298,24 @@ it is off, and wait until it is online.
   tap **Add** on this PC; the terminal shows the request with its six digits
   (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
   y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
-  this PC only. It asks for that window again every 30 seconds, so an Ovis server that restarted
-  meanwhile takes the request again, and every nine minutes it lists the PC anew so the account's
-  devices keep showing it as new; a renewal the account service does not take is tried again until
-  it is, so the PC never stays off the list. It ends well only once the PC is in the account that
-  signed in and the adding device has brought in the account's other devices
-  (**Added. Bringing in your account's other devices…** while it does), and names the account by
-  the start of its id. A PC that ended in another account is reported with both ids and what to do
-  (**Revoke all** in Settings → Devices and PCs), and the command fails. After 30 minutes of
-  waiting it stops by itself; run it again to keep waiting. However it ends, the sign-in ends with
-  it: nothing of it is kept on the PC. On a PC already in an account it says so, with the start of
-  that account's id, and signs in to nothing. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to
+  this PC only. It asks for that window again every 30 seconds, and every nine minutes it lists the
+  PC anew so the account's devices keep showing it as new; a renewal the account service does not
+  take is tried again until it is, so the PC never stays off the list. An Ovis server that stops
+  answering meanwhile (a restart, an update) does not end the command: it waits, keeping the
+  sign-in, and asks for the window again with the first call the server answers. It ends well only
+  once the PC is in the account that signed in and the adding device has brought in the account's
+  other devices (**Added. Bringing in your account's other devices…** while it does), and names
+  the account by the start of its id. A PC that ended in another account is reported with both ids
+  and what to do (**Revoke all** in Settings → Devices and PCs), is taken off the list of the
+  account that signed in, and the command fails. After 30 minutes of waiting it stops by itself;
+  run it again to keep waiting. The server keeps a window ten minutes from when it was last asked
+  for, so the command stops asking ten minutes before its end: a run that reaches the 30 minutes
+  leaves no window behind, and a server that goes away in those last ten minutes ends it. A run
+  that ends sooner (the PC was added, Ctrl+C) leaves the window to run out by itself, within ten
+  minutes. However it ends, the sign-in ends with it: nothing of it is kept on the PC. On a PC
+  already in an account it says so, with the start of that account's id, and signs in to nothing;
+  when that account's other devices are still being brought in, it waits for them, up to 30
+  minutes, and fails if they are not in by then. With `OVIS_ACCOUNT_SERVICE_URL=off` it points to
   `--code` instead.
 - **`link --code`** prints what **Connect a device** shows: the code to type at app.ovis.sh
   (**Pair with a code**), the relay pairing link as a QR code drawn in the terminal, and this PC's
