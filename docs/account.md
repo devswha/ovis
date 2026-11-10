@@ -334,15 +334,25 @@ How a person adds a PC to the account in the apps (WhatsApp's linked devices and
 Tailnet Lock follow the same idea: an existing device approves once, and the server only carries
 messages):
 
-1. On the new PC, Settings → Devices and PCs → Account: sign in, then **Add this PC to my account**.
-   The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens
-   a pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. What that window takes is decided on
+1. On the new PC, Settings → Devices and PCs → Account (or the first-run welcome): sign in. A PC in
+   no account is added by that sign-in, in the same step (the link page's one button reads
+   **Sign in and add this PC**): the PC lists itself in the account's directory (`PUT /v1/pcs`,
+   its relay key and relay) and opens a pairing window with `POST /api/relay/link` and the header
+   `x-ovis-local-only: 1`. Only the sign-in that just finished on that screen does this, once, and
+   only while it is still the sign-in stored. A sign-in that was already there when the screen
+   opened lists nothing by itself and offers **Add this PC to my account**, which does the same on
+   a press; so does a sign-in again for the same account. The sign-in never turns the relay on:
+   with the relay off it lists nothing and offers **Turn on the relay and add this PC**, one press
+   for both (a browser that is in only because the device gate is still open is paired first, as
+   turning the relay on closes that gate).
+   What the window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
    once the PC has members. The screen keeps the window open while it waits: it asks for the link again
    every 30 seconds while its page shows (that call writes nothing to the directory) and lists the PC anew
-   every nine minutes, for 30 minutes a press, then offers **Keep waiting**; **Stop waiting** ends it
-   sooner. Either way the screen does not close the window already open: it closes by itself, up to ten
-   minutes later. A reloaded tab
+   every nine minutes, for 30 minutes a press or sign-in, then offers **Keep waiting**; **Stop waiting**
+   ends it sooner and closes the window on the PC at once (`POST /api/relay/link/close`; an Ovis from
+   before that route lets it run out). A wait that ran out by itself does not close the window
+   already open: it closes by itself, up to ten minutes later. A reloaded tab
    goes on waiting only for the same PC under the same sign-in. Once a device added the PC the screen says
    so, and that the account's other devices can open it only when the PC's status no longer says `enrolling`.
    The window is kept
@@ -354,6 +364,8 @@ messages):
    is still waiting on the PC: that screen asks for its window again at its next reopen, which is an
    act of the PC's own page, so **Stop waiting** on it (or leaving that screen) is what ends the wait.
    A comparison approved before a close makes no device when the other side confirms after it.
+   The PC has one pairing window: **Stop waiting** also ends a code-less phone link opened
+   meanwhile from **Add a connection**: that link is asked for again before a phone can use it.
 2. On any device already in the account, the dashboard lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the
