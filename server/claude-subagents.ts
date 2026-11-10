@@ -1655,6 +1655,10 @@ export class ClaudeSubagentStatus {
    * after it (busy; its working for a turn before the fire, come late, ends nothing, nor does that
    * word heard a second time, nor one heard before the rest the fire followed), or LOOP_HOLD_MS
    * passed; never by herdr reading the pane at rest (quiet), which it does until it reads the turn.
+   * A late working is told from the wakeup's own only by where herdr's rest word before it, heard in
+   * an event, stood in the transcript. With no such word to place it (after a server start, a rest
+   * read only from a snapshot), or with herdr a whole turn behind, it can be taken for the wakeup's:
+   * herdr's rest word after it then lets the queue go while the resumed turn runs.
    */
   loopHolds(paneId: string): boolean {
     const since = this.panes.get(paneId)?.turns?.loop.since ?? null;

@@ -743,9 +743,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (agentOnly && beforeEnter.collapsed) enterRefused(new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal"));
       await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity).catch(enterRefused);
       // the queue's hold (a busy signal's, a /loop wakeup's that herdr has not told yet, #3494), read from the transcript
-      // after the last of those reads and with no wait before the Enter: a wakeup that fired during any of them gets
-      // none. It turns away an automatic send and one queued and typed at once, whose Enter would go into the turn at
-      // work with nothing to say it steers. Only a wakeup that fires during the key's own write is not seen
+      // after the last of those reads and with no wait before the Enter: a wakeup whose fire was written during any of
+      // them gets none. It turns away an automatic send and one queued and typed at once, whose Enter would go into the
+      // turn at work with nothing to say it steers. Not seen: a wakeup whose fire Claude has not written by now (the
+      // entry reaches the transcript some tens of milliseconds after the wakeup), or that fires during the key's own write
       if ((automatic || queued) && queueHeld(paneId, true)) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
       authorizePending(owner, paneId, lease);
       const steering = !automatic && beforeEnter.working;
