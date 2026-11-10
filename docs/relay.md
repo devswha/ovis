@@ -310,26 +310,38 @@ it is off, and wait until it is online.
     too small for the QR code the command says so and shows the code to type, and draws the QR
     code when the window grew.
   - However the run ends, the code is taken back (`POST /api/devices/pair/cancel` with the six
-    digits its QR code carried, as `link --code` does). A new code comes as one runs out, three at
-    most, about 30 minutes; then the command stops. Once a device paired, no code is shown again.
+    digits its QR code carried, as `link --code` does). A new code comes as one runs out, three
+    codes at most, about 30 minutes; then the command stops. A code is made only after a look at
+    this PC's account and devices that was answered and found nothing new: once a device paired,
+    through the relay or with the six digits at this PC's own address, no code is shown again.
   - It says what the code let in. It ends well only once this PC is in the account that signed in
     and that account's other devices are in: **This PC is in your account (the start of its id),
-    added by (the device)**, where the device is the newest one paired through the relay since the
-    command started. A PC that ended in another account is reported with both ids, that device and
-    what to do (**Revoke all** in Settings → Devices and PCs), is taken off the list of the
-    account that signed in, and the command fails.
-  - A device that paired and left the PC in no account for 15 seconds is not signed in: the
-    command names it and asks **Keep that device? [y/N]**. Anything but y, no answer in the time
-    left, and an input that is not a terminal remove it (`DELETE /api/devices/{id}`); either way
-    the command fails with **Sign in on that device, then run ovis add again**. Only a line typed
-    at least a second and a half after the question showed answers it. When that device adds the
-    PC after all while the question waits, the question is dropped and the command ends well. A
-    run stopped with Ctrl+C names a device that got in and stays paired.
+    added by (the device)**. The device named is a member of that account (`account` on its row
+    of `GET /api/devices`): the newest member that came since the command started, else the
+    account's newest member on this PC (a device paired before that linked itself meanwhile). A
+    device that only took the code is never named as the one that added the PC. A PC that ended
+    in another account is reported with both ids, that account's device and what to do (**Revoke
+    all** in Settings → Devices and PCs), is taken off the list of the account that signed in,
+    and the command fails.
+  - Every device that came since the first code and is not a member of this PC's account got in
+    by the code alone, and nobody vouched for it: the command names it and asks **Keep that
+    device? [y/N]**, whether this PC is in no account or joined one by another device meanwhile.
+    One paired through the relay gets 15 seconds first, in which a signed-in device links itself;
+    one paired at this PC's own address is asked about at once. Anything but y, no answer in the
+    time left, and an input that is not a terminal remove it (`DELETE /api/devices/{id}`). With
+    this PC in no account the command then fails with **Sign in on that device, then run ovis add
+    again**; with this PC in the account it ends as above, and fails only when the device could
+    not be removed. Only a line typed at least a second and a half after the question showed
+    answers it. When that device becomes a member after all while the question waits, the
+    question is dropped and the command ends well. A run that stops (Ctrl+C, the 30 minutes)
+    removes nothing by itself and names each such device that stays paired.
 
   The approve-here window that listing the PC opens is closed at once
   (`POST /api/relay/link/close`): this way takes no approval. An Ovis server that stops answering
-  for a moment is waited for; one that restarted lost the code, and the next comes when that one
-  would have run out. However it ends, the sign-in ends with it: nothing of it is kept on
+  for a moment is waited for, also when a code is due: none is made while a look goes unanswered,
+  and one that was refused because the relay is not back online is asked for again, as one of the
+  same three. A server that restarted lost the code, and the next comes when that one would have
+  run out. However it ends, the sign-in ends with it: nothing of it is kept on
   the PC. On a PC already in an account it says so, with the start of that account's id, and
   signs in to nothing; when that account's other devices are still being brought in, it waits for
   them, up to 30 minutes, and fails if they are not in by then. With

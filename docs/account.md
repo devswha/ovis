@@ -132,7 +132,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
   itself as the PC's first member, so the PC joins that device's account. The code is therefore
   made only by that command, shown only on a terminal and cleared from it, kept for 30 minutes at
-  most, and the command says afterwards which account the PC joined and by which device
+  most, and the command says afterwards which account the PC joined and by which of that
+  account's devices; any other device the code let in is named and removed unless kept
   ([A PC with no screen](relay.md#a-pc-with-no-screen)). `add --approve` keeps the approval in the
   terminal: no code, and the adding device's digits are compared there.
 - **Every admission is announced** on every device connected to the PC: the new device's name and who
