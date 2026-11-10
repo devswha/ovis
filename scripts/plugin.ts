@@ -901,14 +901,19 @@ async function linkCommand(): Promise<number> {
   const headers: Record<string, string> = {};
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   const stop = new AbortController();
-  // Ctrl+C, a supervisor's SIGTERM or the terminal closing (SIGHUP): each takes the code back on the way out.
-  // A signal can come twice (to the process group, and passed on by a checkout's link), so every one is
-  // caught, and the clean-up gets ten seconds before the process ends anyway
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => {
+  // Ctrl+C, a supervisor's SIGTERM or the terminal closing (SIGHUP): each takes the code back on the way out, and
+  // removes a device the code let in that nobody kept. A signal can come twice (to the process group, and passed on
+  // by a checkout's link), so every one is caught, and the clean-up gets ten seconds before the process ends anyway
+  const halt = (): void => {
     if (stop.signal.aborted) return;
     stop.abort();
     setTimeout(() => process.exit(1), 10_000).unref();
-  });
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, halt);
+  // An output that went away (the terminal closed, a pipe's reader ended) fails the next write. A failed write nobody
+  // hears ends the process where it stands, or leaves it running with nobody to read it: the code stays valid either
+  // way. It is heard instead, and stops the run as its signal would
+  process.stdout.on("error", halt);
   return linkPc(process.argv.slice(3), {
     origin, headers, signal: stop.signal,
     accountService: accountServiceOrigin(env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE),

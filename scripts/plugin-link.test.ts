@@ -1275,7 +1275,7 @@ describe("ovis link, on the PC itself", () => {
   const PHONE = { id: "00000000000000a1", label: "Hako's iPhone", role: "drive", created_at: "2026-11-06T12:00:30.000Z", last_seen_at: null, current: false, via_relay: true };
   const OLD = { id: "00000000000000b2", label: "Old tablet", role: "drive", created_at: "2026-10-01T09:00:00.000Z", last_seen_at: null, current: false, via_relay: true };
   /** A row of GET /api/devices: `account` only on a member of the PC's account, `via_relay` only on one paired through the relay. */
-  type Row = Omit<typeof PHONE, "via_relay"> & { via_relay?: true; account?: string };
+  type Row = Omit<typeof PHONE, "via_relay"> & { via_relay?: true; account?: string; added_by?: string };
   // the phone once it linked itself: a member of the account, which the account's key vouches for
   const MEMBER: Row = { ...PHONE, via_relay: true, account: "acct_1" };
   // a device that typed the QR code's six digits at this PC's own address
@@ -1290,7 +1290,9 @@ describe("ovis link, on the PC itself", () => {
     args?: string[]; isTty?: boolean; terminal?: boolean; size?: () => { rows: number; columns: number };
     step?: (pc: { account: string | null; enrolling: boolean; devices: Row[] }, looks: number, elapsed: number, stop: AbortController) => void;
     said?: (text: string, type: (line: string) => void, answer: (line: string, waits?: number) => void, stop: AbortController) => void;
-    cancel?: () => Response; revoke?: () => Response;
+    cancel?: () => Response;
+    /** an answer to a removal instead of the PC's own; with none, what happens to the PC as the removal is on its way */
+    revoke?: (pc: { account: string | null; enrolling: boolean; devices: Row[] }, id: string) => Response | undefined;
     /** an answer the PC gives instead of its own, by the path and the codes shown so far; one that throws is a PC that does not answer */
     refuse?: (path: string, codes: number) => Response | undefined;
     /** the account service's answer to one call, instead of `pass()` */
@@ -1311,6 +1313,8 @@ describe("ovis link, on the PC itself", () => {
     const renewedAt: number[] = [];
     const cancels: unknown[] = [];
     const revoked: string[] = [];
+    // the accounts this PC was told to ask its relay pass under
+    const named: unknown[] = [];
     const local = localPc(async (request, path) => {
       const refusal = options.refuse?.(path, offers.length);
       if (refusal !== undefined) return refusal;
@@ -1321,7 +1325,7 @@ describe("ovis link, on the PC itself", () => {
         return Response.json({ account: state.account, enrolling: state.enrolling, unlinked: [], removals: [], adds: [], blocked: [] });
       }
       if (path === "/api/relay" && request.method === "GET") return Response.json({ phase: "online", blocked: null });
-      if (path === "/api/account/relay-account") return new Response(null, { status: 204 });
+      if (path === "/api/account/relay-account") { named.push((await request.json() as { account?: unknown }).account); return new Response(null, { status: 204 }); }
       if (path === "/api/relay/link") return Response.json({ url: encodeOffer({ v: 1, server_id: pc.server_id, server_public_key: pc.public_key, relay: RELAY, name: "old-desktop" }, "https://app.ovis.sh") });
       if (path === "/api/relay/link/close") return Response.json({ ok: true });
       if (path === "/api/devices" && request.method === "GET") return Response.json({ devices: state.devices });
@@ -1337,8 +1341,19 @@ describe("ovis link, on the PC itself", () => {
         // as the app's own revoke: from this app's origin, as a machine call
         expect(request.headers.get("x-herdr-machine")).toBe("1");
         expect(request.headers.get("origin")).toBe(ORIGIN);
-        revoked.push(path.slice("/api/devices/".length));
-        return options.revoke?.() ?? new Response(null, { status: 204 });
+        const id = path.slice("/api/devices/".length);
+        const refusal = options.revoke?.(state, id);
+        if (refusal !== undefined) return refusal;
+        // as the PC's own revoke (server/devices.ts): never a member of the account `x-ovis-unless-account` names,
+        // and a PC whose last member of an account went is in none
+        const row = state.devices.find((device) => device.id === id);
+        if (row === undefined) return Response.json({ error: { code: "not_found", message: "no such device" } }, { status: 404 });
+        const unless = request.headers.get("x-ovis-unless-account");
+        if (unless !== null && row.account === unless) return Response.json({ error: { code: "account_member", message: "that device is a member of the account by now" } }, { status: 409 });
+        state.devices = state.devices.filter((device) => device !== row);
+        if (row.account !== undefined && !state.devices.some((device) => device.account === row.account)) state.account = null;
+        revoked.push(id);
+        return new Response(null, { status: 204 });
       }
       return undefined;
     });
@@ -1361,7 +1376,7 @@ describe("ovis link, on the PC itself", () => {
       },
     });
     const paths = local.calls.map((call) => `${call.method} ${call.path}`);
-    return { code, out, text: out.join(""), offers, renewedAt, cancels, revoked, service, pc, time, paths, looks: () => looks };
+    return { code, out, text: out.join(""), offers, renewedAt, cancels, revoked, named, service, pc, time, paths, looks: () => looks };
   }
 
   const ON = "\x1b[?1049h";
@@ -1424,13 +1439,22 @@ describe("ovis link, on the PC itself", () => {
     expect(time.waits.filter((ms) => ms === 2_000).length).toBe(900);
   });
 
-  it("Ctrl+C takes the QR code off the screen and back, and names a device that got in just before", async () => {
+  it("Ctrl+C takes the QR code off the screen and back, and removes a device that got in just before", async () => {
     const quiet = await scanning({ step: (_state, looks, _elapsed, stop) => { if (looks === 2) stop.abort(); } });
     expect(quiet.code).toBe(1);
     expect(quiet.out.slice(-3)).toEqual([OFF, "The code and the QR code no longer work.\n", "Stopped. Run ovis add again to add this PC.\n"]);
     expect(quiet.cancels).toEqual([{ code: "100001" }]);
     const late = await scanning({ step: (state, looks, _elapsed, stop) => { if (looks === 2) { state.devices = [OLD, PHONE]; stop.abort(); } } });
-    expect(late.out.at(-1)).toBe("Stopped. Run ovis add again to add this PC. Hako's iPhone paired with this PC and stays paired: if it is not yours, revoke it in Settings → Devices and PCs on this PC.\n");
+    expect(late.out.at(-1)).toBe("Stopped. Run ovis add again to add this PC. Hako's iPhone paired with this PC since the code was shown and was removed: nobody kept it.\n");
+    expect(late.revoked).toEqual([PHONE.id]);
+    // the code went first: a device that pairs as it is removed would get in again with it
+    expect(late.paths.lastIndexOf("POST /api/devices/pair/cancel")).toBeLessThan(late.paths.indexOf(`DELETE /api/devices/${PHONE.id}`));
+    // one that could not be removed is named, with where to revoke it
+    const stuck = await scanning({
+      step: (state, looks, _elapsed, stop) => { if (looks === 2) { state.devices = [OLD, PHONE]; stop.abort(); } },
+      revoke: () => Response.json({ error: { code: "read_only", message: "this device can only watch" } }, { status: 403 }),
+    });
+    expect(stuck.out.at(-1)).toBe("Stopped. Run ovis add again to add this PC. Hako's iPhone could not be removed (/api/devices/00000000000000a1: this device can only watch): revoke it in Settings → Devices and PCs on this PC.\n");
   });
 
   it("takes the code back when the run fails, and says when it could not be", async () => {
@@ -1464,14 +1488,102 @@ describe("ovis link, on the PC itself", () => {
     ]);
   });
 
-  it("fails when the PC ended in another account, naming both accounts, the device and the way out", async () => {
-    const { code, out, service, cancels } = await scanning({
+  // what is said once every device that came since the code was shown is gone, and this PC is out of the other account
+  const OUT = "This PC is in no account again. Run ovis add again, and scan the code with a device signed in to the account you signed in to here.\n";
+
+  it("removes whoever came since the code was shown when the PC ended in another account, without a question, and names both accounts and the device", async () => {
+    // a stranger who holds the code and is signed in to an account of their own: their device links itself as this
+    // PC's first member, so the PC joins their account
+    const { code, out, text, service, pc, cancels, revoked, named } = await scanning({
       step: (state, looks) => { if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, label: "\x1b[2JMallory", account: "acct_2" }]; } },
     });
     expect(code).toBe(1);
-    expect(out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by [2JMallory, not the one you signed in to (acct_1). It was taken off the list of the account you signed in to. If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n");
-    expect(service.pcs("acct_1")).toEqual([]);
+    expect(revoked).toEqual([PHONE.id]);
+    expect(out.at(-1)).toBe(`This PC joined another Ovis account (acct_2), added by [2JMallory, not the one you signed in to (acct_1). [2JMallory paired with this PC since the code was shown and was removed. ${OUT}`);
+    expect(text).not.toContain("Keep");
     expect(cancels).toEqual([{ code: "100001" }]);
+    // its relay pass is never asked under the other account, and it stays listed in the one that signed in
+    expect(named.length).toBeGreaterThan(0);
+    expect(named.filter((account) => account !== "acct_1")).toEqual([]);
+    expect(service.pcs("acct_1").map((entry) => entry.server_id)).toEqual([pc.server_id]);
+  });
+
+  it("removes a device that was asked about and then signed in to an account of its own, with its question unanswered", async () => {
+    const { code, out, revoked, named } = await scanning({
+      step: (state, looks) => {
+        if (looks === 2) state.devices = [OLD, PHONE];
+        // while "Keep that device?" waits
+        if (looks === 14) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; }
+      },
+    });
+    expect(code).toBe(1);
+    expect(revoked).toEqual([PHONE.id]);
+    expect(out.slice(-2)).toEqual([
+      "Hako's iPhone paired with this PC but has not added this PC to an account yet, so this PC is in no account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      `\nThis PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone paired with this PC since the code was shown and was removed. ${OUT}`,
+    ]);
+    expect(named.filter((account) => account !== "acct_1")).toEqual([]);
+  });
+
+  it("removes the other account's devices that its member brings in meanwhile, looking again until none is left", async () => {
+    const TABLET: Row = { id: "00000000000000e5", label: "Mallory's tablet", role: "drive", created_at: "2026-11-06T12:00:45.000Z", last_seen_at: null, current: false, via_relay: true, account: "acct_2", added_by: PHONE.id };
+    const LAPTOP: Row = { ...TABLET, id: "00000000000000f6", label: "Mallory's laptop", created_at: "2026-11-06T12:00:50.000Z" };
+    const { code, out, revoked } = await scanning({
+      step: (state, looks) => { if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }, TABLET]; } },
+      // enrolled as the phone's removal is on its way
+      revoke: (state, id) => { if (id === PHONE.id) state.devices = [...state.devices, LAPTOP]; return undefined; },
+    });
+    expect(code).toBe(1);
+    expect(revoked).toEqual([PHONE.id, TABLET.id, LAPTOP.id]);
+    // the one that linked itself is named as the adder, not the ones it brought in after it
+    expect(out.at(-1)).toBe(`This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone, Mallory's tablet, Mallory's laptop paired with this PC since the code was shown and were removed. ${OUT}`);
+  });
+
+  it("says so when the PC stays in the other account: by a device paired before this run, or one that could not be removed", async () => {
+    // a device paired before this run linked itself to another account, and brought one of that account's in
+    const before = await scanning({
+      step: (state, looks) => { if (looks === 2) { state.account = "acct_2"; state.devices = [{ ...OLD, account: "acct_2" }, { ...PHONE, account: "acct_2", added_by: OLD.id }]; } },
+    });
+    expect(before.code).toBe(1);
+    expect(before.revoked).toEqual([PHONE.id]);
+    expect(before.out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by Old tablet, not the one you signed in to (acct_1). Hako's iPhone paired with this PC since the code was shown and was removed. This PC is still in that account, by Old tablet, paired before this run. It was taken off the list of the account you signed in to. If that account is not yours, open Settings → Devices and PCs on this PC and choose Revoke all.\n");
+    // its entry in the account that signed in, whose Add could not work, goes; its relay pass is left to its members
+    expect(before.service.pcs("acct_1")).toEqual([]);
+    expect(before.named.filter((account) => account !== "acct_1")).toEqual([]);
+    const stuck = await scanning({
+      step: (state, looks) => { if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; } },
+      revoke: () => Response.json({ error: { code: "read_only", message: "this device can only watch" } }, { status: 403 }),
+    });
+    expect(stuck.code).toBe(1);
+    expect(stuck.out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone could not be removed (/api/devices/00000000000000a1: this device can only watch): revoke it in Settings → Devices and PCs on this PC. This PC is still in that account. It was taken off the list of the account you signed in to. If that account is not yours, open Settings → Devices and PCs on this PC and choose Revoke all.\n");
+    // where the PC is after the removal cannot be read: what went is said all the same, and nothing is claimed
+    let gone = false;
+    const unread = await scanning({
+      step: (state, looks) => { if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; } },
+      revoke: () => { gone = true; return undefined; },
+      refuse: (path) => gone && path === "/api/account/status" ? Response.json({ error: { code: "internal_error", message: "internal error (y)" } }, { status: 500 }) : undefined,
+    });
+    expect(unread.code).toBe(1);
+    expect(unread.revoked).toEqual([PHONE.id]);
+    expect(unread.out.at(-1)).toBe("This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone paired with this PC since the code was shown and was removed. Whether this PC is still in that account could not be read just now (/api/account/status: internal error (y)). Run ovis add again to see.\n");
+    expect(unread.service.pcs("acct_1").length).toBe(1);
+  });
+
+  it("goes on when a device of the account that signed in links itself as the other account's devices go", async () => {
+    const owner: Row = { ...OLD, account: "acct_1" };
+    const { code, out, revoked } = await scanning({
+      step: (state, looks) => {
+        if (looks === 2) { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; }
+        // the look after the removal: the tablet paired before, whose link the other account kept out, got in
+        if (looks === 3) { state.account = "acct_1"; state.devices = [owner]; }
+      },
+    });
+    expect(revoked).toEqual([PHONE.id]);
+    expect(out.slice(-2)).toEqual([
+      "This PC joined another Ovis account (acct_2), added by Hako's iPhone, not the one you signed in to (acct_1). Hako's iPhone paired with this PC since the code was shown and was removed.\n",
+      "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n",
+    ]);
+    expect(code).toBe(0);
   });
 
   it("asks about a device that paired but is not signed in, and removes it on N", async () => {
@@ -1483,7 +1595,7 @@ describe("ovis link, on the PC itself", () => {
     expect(out.slice(-5)).toEqual([
       OFF,
       "Hako's iPhone paired with this PC. Waiting for it to add this PC to your account…\n",
-      "Hako's iPhone paired with this PC but is not signed in to an Ovis account, so this PC is in no account yet. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      "Hako's iPhone paired with this PC but has not added this PC to an account yet, so this PC is in no account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "Removed.\n",
       "Sign in on that device, then run ovis add again.\n",
     ]);
@@ -1549,7 +1661,7 @@ describe("ovis link, on the PC itself", () => {
   it("takes no line begun at a question that changed as the answer to the next one, however late its Enter comes", async () => {
     const owner: Row = { ...OLD, account: "acct_1" };
     const HELD = "That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n";
-    const NEXT = "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ";
+    const NEXT = "Hako's iPhone paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ";
     // y typed at the first question and not sent; this PC joins the account by another device, the question is asked
     // anew, and the Enter comes two seconds after it showed, or two looks later
     for (const looksLater of [1, 2]) {
@@ -1595,7 +1707,7 @@ describe("ovis link, on the PC itself", () => {
         if (looks === 16) state.devices = [OLD, MEMBER, DIRECT];
         if (looks === 30) state.enrolling = false;
       },
-      said: (text, _type, answer) => { if (text.includes("Tailnet laptop paired with this PC with the code shown here")) answer(++shows === 1 ? "keep" : ""); },
+      said: (text, _type, answer) => { if (text.includes("Tailnet laptop paired with this PC while the code was shown")) answer(++shows === 1 ? "keep" : ""); },
     });
     expect(out.filter((line) => line.includes("answered nothing"))).toEqual(["That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n"]);
     expect(out).not.toContain("Kept.\n");
@@ -1605,7 +1717,7 @@ describe("ovis link, on the PC itself", () => {
 
   it("says of a line handed over as its question went that it answered nothing, and still drops the next one", async () => {
     const owner: Row = { ...OLD, account: "acct_1" };
-    const NEXT = "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ";
+    const NEXT = "Hako's iPhone paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ";
     let typeNow: (line: string) => void = () => undefined;
     let shows = 0;
     const { out, revoked } = await scanning({
@@ -1664,7 +1776,7 @@ describe("ovis link, on the PC itself", () => {
     expect(soon.out.slice(-5)).toEqual([
       OFF,
       "Hako's iPhone paired with this PC. Waiting for it to add this PC to your account…\n",
-      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      "Hako's iPhone paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "Removed.\n",
       "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n",
     ]);
@@ -1681,11 +1793,11 @@ describe("ovis link, on the PC itself", () => {
     });
     // the first line after the question changed answers nothing (it may have been begun at the old one): asked once more
     expect(waiting.out.slice(-7)).toEqual([
-      "Hako's iPhone paired with this PC but is not signed in to an Ovis account, so this PC is in no account yet. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      "Hako's iPhone paired with this PC but has not added this PC to an account yet, so this PC is in no account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "\n",
-      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      "Hako's iPhone paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n",
-      "Hako's iPhone paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      "Hako's iPhone paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "Removed.\n",
       "This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n",
     ]);
@@ -1707,6 +1819,108 @@ describe("ovis link, on the PC itself", () => {
     expect(untold.out.slice(-2)).toEqual(["Kept.\n", "This PC is in your account (acct_1): every device of your account can use it.\n"]);
   });
 
+  it("names as the adder the member that linked itself, not a device of the account it then brought in", async () => {
+    const BARE: Row = { id: "00000000000000d4", label: "Hako's MacBook", role: "drive", created_at: "2026-11-06T12:00:50.000Z", last_seen_at: null, current: false, via_relay: true, account: "acct_1" };
+    // the phone scanned the code, then brought the account's laptop in, whose row is the newer one
+    const scanned = await scanning({
+      step: (state, looks) => {
+        if (looks === 3) { state.account = "acct_1"; state.enrolling = true; state.devices = [OLD, MEMBER, { ...BARE, added_by: PHONE.id }]; }
+        if (looks === 5) state.enrolling = false;
+      },
+    });
+    expect(scanned.out.slice(-2)).toEqual([
+      "Added by Hako's iPhone. Bringing in your account's other devices…\n",
+      "This PC is in your account (acct_1), added by Hako's iPhone: every device of your account can use it.\n",
+    ]);
+    expect(scanned.code).toBe(0);
+    // a device paired before this run linked itself and brought the laptop in: the laptop came since, and added nothing
+    const before = await scanning({
+      step: (state, looks) => { if (looks === 3) { state.account = "acct_1"; state.devices = [{ ...OLD, account: "acct_1" }, { ...BARE, added_by: OLD.id }]; } },
+    });
+    expect(before.out.at(-1)).toBe("This PC is in your account (acct_1), added by Old tablet: every device of your account can use it.\n");
+    // where it cannot be told which one linked itself (an Ovis that does not say who brought a member in), none is named
+    const untold = await scanning({
+      step: (state, looks) => { if (looks === 3) { state.account = "acct_1"; state.devices = [OLD, MEMBER, BARE]; } },
+    });
+    expect(untold.out.at(-1)).toBe("This PC is in your account (acct_1): every device of your account can use it.\n");
+    expect(untold.code).toBe(0);
+  });
+
+  it("keeps a device that linked itself as its removal was on its way: the account that signed in vouches for it by then", async () => {
+    // slow to link: asked about after its 15 seconds, and Enter pressed just as it became a member
+    const { code, out, revoked } = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer(""); },
+      revoke: (state) => { state.account = "acct_1"; state.devices = [OLD, MEMBER]; return undefined; },
+    });
+    expect(revoked).toEqual([]);
+    expect(out.slice(-2)).toEqual([
+      "Hako's iPhone is in your account by now, so it stays.\n",
+      "This PC is in your account (acct_1), added by Hako's iPhone: every device of your account can use it.\n",
+    ]);
+    expect(code).toBe(0);
+    // and one whose row says so in the same look, though the account was read before it linked: no removal is asked for
+    let pcState: { account: string | null; devices: Row[] } | null = null;
+    let asked = false;
+    const told = await scanning({
+      step: (state, looks) => { pcState = state; if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) { asked = true; answer(""); } },
+      refuse: (path) => {
+        if (asked && path === "/api/devices") { pcState!.account = "acct_1"; pcState!.devices = [OLD, MEMBER]; }
+        return undefined;
+      },
+    });
+    expect(told.paths.filter((call) => call.startsWith("DELETE "))).toEqual([]);
+    expect(told.out.slice(-2)).toEqual([
+      "That line answered nothing: its question is no longer asked.\n",
+      "This PC is in your account (acct_1), added by Hako's iPhone: every device of your account can use it.\n",
+    ]);
+    expect(told.code).toBe(0);
+  });
+
+  it("drops the line begun at a question that changed also when another line came in the look that changed it", async () => {
+    const owner: Row = { ...OLD, account: "acct_1" };
+    const NEXT = "Hako's iPhone paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ";
+    const HELD = "That line answered nothing: the question changed while it may have been typed. Answer again for the question shown now.\n";
+    let typeNow: (line: string) => void = () => undefined;
+    let answered = false;
+    let joined = false;
+    let shows = 0;
+    const { code, out, revoked } = await scanning({
+      step: (state, looks) => {
+        if (looks === 2) state.devices = [OLD, PHONE];
+        // keep was sent at the first question; in the look that takes it, this PC joins the account by another device
+        // and a second line is handed over: both came under the old question, and neither is the one held back
+        if (answered && !joined) { joined = true; typeNow(""); state.account = "acct_1"; state.devices = [owner, PHONE]; }
+      },
+      said: (text, type, answer) => {
+        typeNow = type;
+        if (text.includes("so this PC is in no account. Keep that device?")) { answered = true; answer("keep"); }
+        // a line begun at the first question: its Enter comes two looks after the next one showed
+        if (text === NEXT && ++shows === 1) answer("keep", 2);
+        if (text === HELD) answer("", 3);
+      },
+    });
+    expect(out.filter((line) => line.includes("answered nothing"))).toEqual(["That line answered nothing: its question is no longer asked.\n", HELD]);
+    expect(out).not.toContain("Kept.\n");
+    expect(revoked).toEqual([PHONE.id]);
+    expect(code).toBe(0);
+  });
+
+  it("ends a code pending from elsewhere before its QR code when the relay takes no typed code, so the QR code carries digits of its own", async () => {
+    const { code, text, cancels, paths } = await scanning({
+      refuse: (path) => path === "/api/relay/code" ? Response.json({ error: { code: "code_unavailable", message: "Pairing with a typed code works through Ovis's relay only; scan the QR code instead." } }, { status: 409 }) : undefined,
+      step: (state, looks) => { if (looks === 1) { state.account = "acct_1"; state.devices = [OLD, MEMBER]; } },
+    });
+    expect(code).toBe(0);
+    expect(text).toContain("No code to type this time");
+    // what was pending (from Settings or ovis pair, which showed its six digits) went before the offer; the code the
+    // QR code carried is then taken back by its own digits
+    expect(cancels).toEqual([{}, { code: "100001" }]);
+    const order = ["POST /api/relay/code", "POST /api/devices/pair/cancel", "POST /api/relay/offer"].map((call) => paths.indexOf(call));
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
   it("counts a device that typed the code at this PC's own address as let in: no further code, and it is asked about at once", async () => {
     const { code, out, offers, cancels, revoked } = await scanning({
       step: (state, looks) => { if (looks === 2) state.devices = [OLD, DIRECT]; },
@@ -1716,7 +1930,7 @@ describe("ovis link, on the PC itself", () => {
     expect(out.slice(-5)).toEqual([
       OFF,
       "Tailnet laptop paired with this PC at its own address, not through the relay.\n",
-      "Tailnet laptop paired with this PC with the code shown here and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
+      "Tailnet laptop paired with this PC while the code was shown and is not in your account. Keep that device? Type keep to keep it, or press Enter to remove it: ",
       "Removed.\n",
       "This PC is in no account yet. Run ovis add again.\n",
     ]);
@@ -1753,18 +1967,92 @@ describe("ovis link, on the PC itself", () => {
     expect(revoked).toEqual([PHONE.id]);
   });
 
-  it("Ctrl+C at the question removes nothing, and names the device that stays", async () => {
+  it("Ctrl+C, a SIGTERM or the terminal closing at the question removes the device: only the word keep keeps it", async () => {
     const { code, out, revoked } = await scanning({
       step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
       said: (text, _type, _answer, stop) => { if (text.includes("Keep that device?")) stop.abort(); },
     });
     expect(code).toBe(1);
-    expect(revoked).toEqual([]);
-    expect(out.at(-1)).toBe("\nStopped. Run ovis add again to add this PC. Hako's iPhone paired with this PC and stays paired: if it is not yours, revoke it in Settings → Devices and PCs on this PC.\n");
+    expect(revoked).toEqual([PHONE.id]);
+    expect(out.at(-1)).toBe("\nStopped. Run ovis add again to add this PC. Hako's iPhone paired with this PC since the code was shown and was removed: nobody kept it.\n");
     expect(out.join("")).not.toContain("not kept");
+    // one still in the 15 seconds it gets to add the PC, of which nothing was asked yet, goes as well
+    const early = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, _answer, stop) => { if (text.includes("Waiting for it to add this PC")) stop.abort(); },
+    });
+    expect(early.text).not.toContain("Keep");
+    expect(early.revoked).toEqual([PHONE.id]);
+    const two = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE, DIRECT]; },
+      said: (text, _type, _answer, stop) => { if (text.includes("Keep those devices?")) stop.abort(); },
+    });
+    expect(two.out.at(-1)).toBe("\nStopped. Run ovis add again to add this PC. Hako's iPhone, Tailnet laptop paired with this PC since the code was shown and were removed: nobody kept them.\n");
+    expect(two.revoked).toEqual([PHONE.id, DIRECT.id]);
+    // a device the person kept stays, and so does a member of the account that signed in
+    const owner: Row = { ...OLD, account: "acct_1" };
+    const kept = await scanning({
+      step: (state, looks, _elapsed, stop) => {
+        if (looks === 2) { state.account = "acct_1"; state.enrolling = true; state.devices = [owner, MEMBER, DIRECT]; }
+        if (looks === 12) stop.abort();
+      },
+      said: (text, _type, answer) => { if (text.includes("Keep that device?")) answer("keep"); },
+    });
+    expect(kept.out).toContain("Kept.\n");
+    expect(kept.out.at(-1)).toBe("Stopped. Run ovis add again to add this PC.\n");
+    expect(kept.revoked).toEqual([]);
+    // a PC that does not answer for its devices just then: the one the question named is removed all the same
+    let halt: AbortController | null = null;
+    const unlisted = await scanning({
+      step: (state, looks, _elapsed, stop) => { halt = stop; if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, _answer, stop) => { if (text.includes("Keep that device?")) stop.abort(); },
+      refuse: (path) => { if (halt?.signal.aborted === true && path === "/api/devices") throw new TypeError("connection refused"); return undefined; },
+    });
+    expect(unlisted.revoked).toEqual([PHONE.id]);
   });
 
-  it("Ctrl+C while a look is on its way at the question removes nothing either, and says nothing of an answer", async () => {
+  it("removes a device that links itself to another account as the run is stopped, and keeps one that links itself to the account that signed in", async () => {
+    // read as not signed in, then a member of another account by the time its removal lands
+    const stranger = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, _answer, stop) => { if (text.includes("Keep that device?")) stop.abort(); },
+      revoke: (state) => { state.account = "acct_2"; state.devices = [OLD, { ...PHONE, account: "acct_2" }]; return undefined; },
+    });
+    expect(stranger.revoked).toEqual([PHONE.id]);
+    // the owner's own phone, slow to link: a member of the account that signed in by then, which vouches for it
+    const own = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
+      said: (text, _type, _answer, stop) => { if (text.includes("Keep that device?")) stop.abort(); },
+      revoke: (state) => { state.account = "acct_1"; state.devices = [OLD, MEMBER]; return undefined; },
+    });
+    expect(own.revoked).toEqual([]);
+    expect(own.out.at(-1)).toBe("\nStopped. Run ovis add again to add this PC.\n");
+  });
+
+  it("takes the code back and removes the device also when the terminal is gone and every write fails", async () => {
+    // the window closed, or the ssh session dropped (SIGHUP): nothing can be written any more
+    let cancelled = false;
+    let removed = false;
+    const writes: boolean[][] = [];
+    const { code, cancels, revoked } = await scanning({
+      step: (state, looks, _elapsed, stop) => { if (looks === 2) { state.devices = [OLD, PHONE]; stop.abort(); } },
+      cancel: () => { cancelled = true; return Response.json({ ok: true, cancelled: true }); },
+      revoke: () => { removed = true; return undefined; },
+      said: (_text, _type, _answer, stop) => {
+        if (!stop.signal.aborted) return;
+        writes.push([cancelled, removed]);
+        throw new Error("write EIO");
+      },
+    });
+    expect(code).toBe(1);
+    expect(cancels).toEqual([{ code: "100001" }]);
+    expect(revoked).toEqual([PHONE.id]);
+    // a write to a terminal that is gone can end the process where it stands: none comes before the code is back and
+    // the device is gone
+    expect(writes[0]).toEqual([true, true]);
+  });
+
+  it("Ctrl+C while a look is on its way at the question removes the device too, and says nothing of an answer", async () => {
     let asked = false;
     const { code, out, revoked, text } = await scanning({
       step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; },
@@ -1783,9 +2071,9 @@ describe("ovis link, on the PC itself", () => {
       },
     });
     expect(code).toBe(1);
-    expect(revoked).toEqual([]);
+    expect(revoked).toEqual([PHONE.id]);
     expect(text).not.toContain("not kept");
-    expect(out.join("")).toContain("Stopped. Run ovis add again to add this PC. Hako's iPhone paired with this PC and stays paired");
+    expect(out.join("")).toContain("Stopped. Run ovis add again to add this PC. Hako's iPhone paired with this PC since the code was shown and was removed: nobody kept it.");
   });
 
   it("removes the device when no answer came by the 30-minute stop", async () => {
@@ -1794,6 +2082,25 @@ describe("ovis link, on the PC itself", () => {
     expect(out.slice(-3)).toEqual(["\nNo answer came in time, so it is not kept.\n", "Removed.\n", "Sign in on that device, then run ovis add again.\n"]);
     expect(revoked).toEqual([PHONE.id]);
     expect(time.waits.filter((ms) => ms === 2_000).length).toBe(900);
+    // one that paired in the run's last seconds, of which nothing was asked yet, goes with the stop
+    const last = await scanning({ step: (state, _looks, elapsed) => { if (elapsed >= 1_794_000) state.devices = [OLD, PHONE]; } });
+    expect(last.text).not.toContain("Keep");
+    expect(last.out.at(-1)).toBe("Stopped after 30 minutes. Run ovis add again. Hako's iPhone paired with this PC since the code was shown and was removed: nobody kept it.\n");
+    expect(last.revoked).toEqual([PHONE.id]);
+  });
+
+  it("removes the device also when the run fails with it unanswered for", async () => {
+    let failing = false;
+    const { code, out, revoked } = await scanning({
+      step: (state, looks) => { if (looks === 2) state.devices = [OLD, PHONE]; if (looks === 4) failing = true; },
+      refuse: (path) => failing && path === "/api/account/status" ? Response.json({ error: { code: "internal_error", message: "internal error (y)" } }, { status: 500 }) : undefined,
+    });
+    expect(code).toBe(1);
+    expect(revoked).toEqual([PHONE.id]);
+    expect(out.slice(-2)).toEqual([
+      "Hako's iPhone paired with this PC since the code was shown and was removed: nobody kept it.\n",
+      "Could not link this PC: /api/account/status: internal error (y)\n",
+    ]);
   });
 
   it("waits for a PC whose server stops answering: no spin, no early code, and a renewal that got no answer is asked again", async () => {
