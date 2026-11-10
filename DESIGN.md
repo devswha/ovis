@@ -1882,9 +1882,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 
 ### PC load (`.machine-stats`)
-- Shown while Settings → Remote PCs → **PC load in the sidebar** is on, for this device only. Until
-  it is flipped it follows the roster: on while two or more PCs are connected, off for a lone PC,
-  whose load is not what tells PCs apart.
+- Shown while Settings → Devices and PCs → **PC load in the status bar** is on, for this device
+  only. It is on until it is turned off: the reading is one small ask every 5 s for the selected PC
+  while the page is visible, read from counters the kernel keeps anyway.
 - Under an expanded, connected PC's name and above its workspaces: one button holding three
   meters in a row, each a label, the percent in `tabular-nums` and a 3px bar on a `--border-strong`
   track (the plan meters' construction): **CPU**, **Memory** (without the file cache) and
