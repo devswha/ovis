@@ -1857,6 +1857,29 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
+    it("ends the hold of a fire written while another turn worked at that turn's rest: the task's own turn holds from its prompt", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status } = await tracked(s);
+      try {
+        // a turn of the person's at work, and a task that comes due meanwhile, whose fire Claude writes then
+        s.prompt(3);
+        fire(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // that turn's rest ends the hold as any rest does: which turn a fire began is not kept
+        rest(s, 4);
+        expect(status.loopHoldsNow("p1")).toBe(false);
+        // the task's turn begins at once, and holds from its own prompt on. A known bound: nothing holds between
+        // that rest and this line, which Claude writes some tens of milliseconds into the turn
+        resumes(s, 4);
+        expect(status.loopHoldsNow("p1")).toBe(true);
+        rest(s, 5);
+        expect(status.loopHoldsNow("p1")).toBe(false);
+      } finally { status.stop(); }
+    });
+
   });
 });
 

@@ -477,8 +477,12 @@ const SELF_RESUMED_RE = /"turnOrigin":"scheduled"|"wakeupSource":"/;
 /**
  * A self-resumed turn's prompt (SELF_RESUMED_RE), which no person typed and no chat sent: it holds
  * the queue as a scheduled task's fire does (Parent.loopAt). After a fire of its own it only holds
- * on; with none before it, it is what tells of the turn: the second of two loops due in one tick,
- * whose prompt runs right after the first loop turn's rest with no fire between.
+ * on; with no fire between the rest before it and itself, it is what tells of the turn. So for the
+ * second of two loops due in one tick, whose prompt runs right after the first loop turn's rest. And
+ * for a task that came due while another turn worked, where Claude wrote its fire during that turn:
+ * that turn's rest ended the fire's hold, as a rest ends whatever was told before it (scanParentLine),
+ * and the task's own turn begins at once. Either turn is told by this line and not by its fire, so it
+ * holds nothing from that rest until Claude has written this line, some tens of milliseconds into it.
  */
 function selfResumed(parent: Parent, line: string, end: number): void {
   try {
@@ -514,7 +518,9 @@ function scanParentLine(parent: Parent, line: string, end: number): void {
       const entry = row(JSON.parse(line));
       if (entry?.["type"] === "system" && entry["isSidechain"] !== true) {
         parent.restAt = stamp(entry["timestamp"]) === null ? null : end;
-        // the rest of whatever turn went on, one Claude resumed by itself too
+        // the rest of whatever turn went on, one Claude resumed by itself too: it ends what every fire and
+        // self-resumed prompt before it told, which of them began the turn at rest is not kept (selfResumed).
+        // A rest that tells no time is none here either: what it follows holds on, for its time at most
         if (parent.restAt !== null) { parent.turnOpen = false; parent.loopAt = null; }
       }
     } catch { /* a line caught half written is read again */ }
