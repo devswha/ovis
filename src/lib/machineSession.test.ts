@@ -95,6 +95,34 @@ describe("PC connection ownership", () => {
     expect(store.read(owner)).toMatchObject(outcome === "held" ? [{ id: "saved", state: "held", serverOwned: false }] : []);
     session.close();
   });
+  it("keeps one PC's proven held copy held when another PC's connection drops", () => {
+    // Given a page connected to two PCs over one store, each with its own connection
+    const a = setup("pc-a"), b = setup("pc-b", a.store), store = a.store;
+    const ownerA = paneStorageId("pc-a", "w1:p1"), ownerB = paneStorageId("pc-b", "w1:p1");
+    const connect = ({ session, socket }: typeof a, lifetime: string): void => {
+      session.connect();
+      socket.receive({ type: "features", features: ["pending-input"], connection: lifetime, herdr_lifetime: lifetime, server_time: Date.now() });
+      socket.receive(named(lifetime));
+    };
+    connect(a, "herdr-a");
+    connect(b, "herdr-b");
+    // a follow-up queued on each; PC B's connection drops, and its next one brings the bridge's held receipt
+    a.session.acceptPending("w1:p1", message("on-a"), a.session.epoch);
+    b.session.acceptPending("w1:p1", message("on-b"), b.session.epoch);
+    b.socket.disconnect();
+    connect(b, "herdr-b");
+    b.socket.receive({ type: "pending-messages", pane_id: "w1:p1", messages: [], held: ["on-b"], held_ms: { "on-b": 60_000 }, held_until: { "on-b": Date.now() + 60_000 }, server_time: Date.now() });
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "held" }]);
+    // When PC A's connection drops
+    a.socket.disconnect();
+    // Then A's own follow-up is uncertain, and B's stays held with its Send now: B's connection, which proved it, still lives
+    expect(store.read(ownerA)).toMatchObject([{ id: "on-a", state: "uncertain" }]);
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "held" }]);
+    // and B's own disconnect ends it
+    b.socket.disconnect();
+    expect(store.read(ownerB)).toMatchObject([{ id: "on-b", state: "uncertain" }]);
+    a.session.close(); b.session.close();
+  });
   it("holds a resumed copy only until the bridge's end, whichever frame came late, and never past a later disconnect", () => {
     let now = Date.parse("2026-11-08T00:00:00Z");
     const clock = spyOn(Date, "now").mockImplementation(() => now);

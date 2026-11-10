@@ -175,6 +175,43 @@ it.each(["same browser", "no device", "wrong browser", "wrong device", "read-onl
     } finally { clock.mockRestore(); }
   });
 
+it.each(["read-only", "revoked"] as const)(
+  "a connection that may not resume when it closes leaves no held receipt, and still the sent receipt of a send that ends after the close: %s", (why) => {
+    const token = crypto.randomUUID(), frames = new Map<Client, ServerMessage[]>(), clients = new Set<Client>(), revoked = new Set<Client>();
+    const client = (readOnly = false): Client => {
+      const output: ServerMessage[] = [];
+      const owner = { data: connectionData({ deviceId: "device", readOnly }), getBufferedAmount: () => 0,
+        send: (value: string) => { output.push(JSON.parse(value)); return 1; } } as Client;
+      owner.data.attached.set("p", { keepSize: false, receiptResumeId: token });
+      clients.add(owner); frames.set(owner, output); return owner;
+    };
+    const first = client();
+    const delivery = createPendingDelivery({
+      options: {}, clients, attachments: new Map(), serialize: async (_pane, task) => task(), lastTyped: new Map(),
+      sight: () => { throw new Error("a receipt replay takes no input lease"); },
+      submitText: async () => { throw new Error("a receipt replay never types"); },
+      authorizeSocket: (owner) => { if (revoked.has(owner) || owner.data.readOnly) throw new Error(why); },
+      clientSnapshot: async () => ({ panes: [] }) as unknown as SessionSnapshot,
+      omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+    });
+    const identity = { agent: "codex", terminalId: "p", session: null };
+    // one message on its way, one the bridge holds, both taken while the connection could still resume
+    const going = delivery.pending.enqueue(first, "p", 1, "on its way", null, identity);
+    const held = delivery.pending.enqueue(first, "p", 2, "held", null, identity, true);
+    expect(delivery.pending.claim(going, false)).toBe(true);
+    // the connection turns read-only, or its device is revoked, and then closes
+    if (why === "revoked") revoked.add(first); else first.data.readOnly = true;
+    clients.delete(first); delivery.closeConnection(first);
+    // the Enter's reply comes after the close
+    delivery.pending.settle(going);
+    const resumed = client();
+    delivery.attached(resumed, "p");
+    const told = frames.get(resumed)!.filter((frame) => frame.type === "pending-messages");
+    // the same browser's next connection is told the send went, so its saved copy is settled, and is told of no held message
+    expect(told.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([{ id: going.message.id, outcome: "sent", resumed: true }]);
+    expect(told.some((frame) => "held" in frame && (frame.held as string[]).includes(held.message.id))).toBe(false);
+  });
+
 it.each(["held on close", "overlapping reload", "held after reattach", "wrong browser", "wrong device", "read-only", "revoked", "owner revoked", "expired", "resent after closed-owner expiry", "ambiguous resend after closed-owner expiry", "attach during resend after closed-owner expiry", "replayed resend after its record expired", "concurrent resends after closed-owner expiry", "resend to another pane", "resend refused at its limit", "live owner's sibling tab", "held before close"] as const)(
   "replays a held follow-up receipt only while it remains unsent and held: %s", async (scenario) => {
     let now = Date.now();

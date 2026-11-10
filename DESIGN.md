@@ -3375,8 +3375,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   or update of the server: the bridge never sends it by itself, so its saved copy is held on its own word,
   as before, and takes no receipt's end. The page knows it by the bridge holding it with no reason (every
   hold the bridge makes by itself names one) and keeps that for the copy's life, also once a refused Send
-  now gave it a reason; a copy an older release saved held with no reason is one too. Only a Send now that
-  may have typed it makes it uncertain. Every other held copy (a queued follow-up held as its connection
+  now gave it a reason; a copy an older release saved held with no reason is one too, and a tab still on
+  an older bundle that saves the list without the mark does not take it from a page that has it. Only a
+  Send now that may have typed it makes it uncertain. Every other held copy (a queued follow-up held as its connection
   closed, or one the bridge held for a reason of its own) offers **Send now** only on live proof: its own
   live connection, or the bridge's held receipt for this browser within the receipt's window (below).
   Saved (after a reload, in another tab, after the connection that held it ended), such a copy shows as
@@ -3397,9 +3398,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   that ends on the PC's clock (`held_until`); the connection's `features` frame carries the PC's clock
   (`server_time`). The page holds the copy until the sooner of its arrival plus `held_ms` and `held_until`
   on its own clock, on this page only (saved, the copy stays uncertain), then shows it uncertain again;
-  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. A resend
-  checks and claims the receipt in the pane's serialized turn, by its original ID and for its own pane and
-  browser only, so two resends of one copy type it once.
+  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. The
+  proof also ends with the connection that brought it, and only with that one: a page that shows several
+  PCs keeps one PC's held copies when another PC's connection drops. A resend checks and claims the
+  receipt in the pane's serialized turn, by its original ID and for its own pane and browser only, so two
+  resends of one copy type it once. A connection that may no longer resume when it closes (read-only, a
+  revoked device) leaves no held receipt; a send of its that ends after the close still leaves its `sent`
+  receipt for that browser's next connection.
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to
   the PC's socket) is the placeholder while the box is empty and moves into the status content once
   there is a draft (`composerStatusHint`), on a phone too; it says no more (nothing is queued, and

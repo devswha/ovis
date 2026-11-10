@@ -971,12 +971,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     let resumable = true;
     try { authorizeSocket(client); } catch { resumable = false; }
     if (!resumable) {
+      // only its held receipts go: the keys stay, so a send still on its way when the connection closed leaves its
+      // sent or discarded receipt as before (replayed only to a connection that may resume, resumePi)
       const keys = receiptKeys.get(client);
       if (keys) for (const id of keys.keys()) {
         const at = completed.findIndex((entry) => entry.id === id && entry.outcome === "held");
         if (at >= 0) completed.splice(at, 1);
       }
-      receiptKeys.delete(client);
     }
     pending.close(client);
     holdRequested(client);

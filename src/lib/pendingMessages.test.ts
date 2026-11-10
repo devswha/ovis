@@ -81,6 +81,62 @@ describe("pending message ownership", () => {
     page.refresh("p");
     expect(page.read("p").find((row) => row.id === "gone")?.state).toBe("uncertain");
   });
+  it("ends a receipt's proof with the connection that brought it, not with another PC's", () => {
+    const port = storage(), page = new PendingMessageStore(() => port);
+    const state = (owner: string) => page.read(owner).map((row) => row.state);
+    // a page that shows two PCs: PC B's queued follow-up was held as B's connection closed, and B's next connection proved it
+    page.accept("pc-a:pane", message("a"), "A");
+    page.accept("pc-b:pane", message("b"), "B-old");
+    page.suspendScope("B-old");
+    page.publish("pc-b:pane", [], frameRemovals(heldFrame({ b: 60_000 })), "B-new");
+    // B also told held IDs for panes whose copies this page has not read yet
+    page.publish("pc-b:later", [], frameRemovals(heldFrame({ later: 60_000 })), "B-new");
+    page.publish("pc-b:gone", [], frameRemovals(heldFrame({ gone: 60_000 })), "B-new");
+    expect(page.read("pc-b:pane")[0]).toMatchObject({ state: "held", heldBy: "B-new" });
+    // PC A's connection drops: A's own row is uncertain, and everything B's connection proved stays
+    page.suspendScope("A");
+    expect(state("pc-a:pane")).toEqual(["uncertain"]);
+    expect(state("pc-b:pane")).toEqual(["held"]);
+    port.setItem("ovis:pending:pc-b:later", JSON.stringify({ messages: [message("later")] }));
+    page.refresh("pc-b:later");
+    expect(state("pc-b:later")).toEqual(["held"]);
+    // saved, a receipt's copy is uncertain whichever connection brought it
+    expect(new PendingMessageStore(() => port).read("pc-b:pane").map((row) => row.state)).toEqual(["uncertain"]);
+    // B's own connection drops: its proofs end, the remembered one too
+    page.suspendScope("B-new");
+    expect(state("pc-b:pane")).toEqual(["uncertain"]);
+    expect(state("pc-b:later")).toEqual(["uncertain"]);
+    port.setItem("ovis:pending:pc-b:gone", JSON.stringify({ messages: [message("gone")] }));
+    page.refresh("pc-b:gone");
+    expect(state("pc-b:gone")).toEqual(["uncertain"]);
+  });
+  it("keeps a requested hold's mark when a tab on an older bundle saves the list without it", () => {
+    const port = storage(), page = new PendingMessageStore(() => port);
+    const refused = { code: "agent_blocked", message: "The agent is waiting for an answer in the terminal" };
+    page.publish("p", [requested("asked"), requested("going"), requested("other")], [], "first");
+    page.suspendScope("first");
+    // A tab opened before the update shares the storage and drops the fields it does not know. Its Send now of one
+    // was refused with nothing typed (held, now with a reason); another's connection dropped mid-send; and under the
+    // third ID it saved another text
+    port.setItem("ovis:pending:p", JSON.stringify({ version: 1, messages: [
+      { ...requested("asked"), error: refused, resendGeneration: 1 },
+      { ...requested("going"), state: "uncertain", resendInFlight: true },
+      { ...requested("other", "another text"), error: refused },
+    ] }));
+    page.refresh("p");
+    // this page knows the first two were asked for: the refused one is held as it was, the ambiguous one stays uncertain
+    expect(page.read("p").map(({ id, state, heldByRequest }) => [id, state, heldByRequest ?? false]))
+      .toEqual([["asked", "held", true], ["going", "uncertain", true], ["other", "uncertain", false]]);
+    expect(page.read("p")[0]?.error).toEqual(refused);
+    // and the mark is saved again, so a page opened later reads the refused one held too
+    expect(new PendingMessageStore(() => port).read("p").map(({ id, state, heldByRequest }) => [id, state, heldByRequest ?? false]))
+      .toEqual([["asked", "held", true], ["going", "uncertain", true], ["other", "uncertain", false]]);
+    // one this page discarded is not held again by the older tab's stale copy
+    page.removeCopy("p", "asked");
+    port.setItem("ovis:pending:p", JSON.stringify({ version: 1, messages: [{ ...requested("asked"), error: refused }] }));
+    page.refresh("p");
+    expect(page.read("p").map(({ id, state }) => [id, state])).toEqual([["asked", "uncertain"]]);
+  });
   it("tells the two kinds of held copy apart by the bridge's reason: only the one its sender asked for is held on its saved copy's word", () => {
     const port = storage(), page = new PendingMessageStore(() => port);
     // a follow-up queued and then held as its connection closed, one the bridge held for its own reason, and one its sender asked to hold
