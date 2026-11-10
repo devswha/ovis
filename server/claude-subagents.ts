@@ -1551,15 +1551,16 @@ interface Claim { turn: number; barriers: Barrier[]; held: Barrier[] }
  * (#3494). Claude resumes its turn by itself as the wakeup fires, and herdr reads that turn a moment
  * later: queued input sent in between would land in the turn at work. A turn interrupted before
  * herdr read it writes no rest, and herdr has no word to say of it, so the hold ends by itself.
+ * So for a self-resumed turn told by its own prompt, with no fire of its own (Parent.loopAt).
  */
 export const LOOP_HOLD_MS = 60_000;
 
 /**
- * The latest `/loop` fire the pane took account of (`fire`, its byte boundary), and since when it
- * holds the queue (`since`). null: it holds nothing, as herdr told its turn or one after it (the
- * queue goes by herdr's status from there), or a rest was written past it, or the transcript's
- * first read found it written LOOP_HOLD_MS ago or longer (history: its turn may have been
- * interrupted long ago).
+ * The latest `/loop` fire the pane took account of (`fire`, its byte boundary: Parent.loopAt, which
+ * a self-resumed turn's own prompt gives too), and since when it holds the queue (`since`). null:
+ * it holds nothing, as herdr told its turn or one after it (the queue goes by herdr's status from
+ * there), or a rest was written past it, or the transcript's first read found it written
+ * LOOP_HOLD_MS ago or longer (history: its turn may have been interrupted long ago).
  */
 interface Loop { fire: number; since: number | null }
 
