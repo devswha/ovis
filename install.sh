@@ -214,7 +214,9 @@ open_app() {
 # has it: with a plugin listed it installs herdr-core's Ovis nowhere, so a checkout found beside a
 # plugin is an earlier install the plugin took over from. scripts/plugin.ts itself hands `add` on
 # to the release that runs, so the launcher picks no version; a checkout from before `add` and `login`
-# gets the name it knows, `link`.
+# gets the name it knows, `link`. herdr's checkout stays at the version first installed, so one from
+# before `link` cannot hand on at all: for it the launcher finds the release that runs, as
+# running_code does below, and runs that; where that one has no `link` either, it says to update.
 launcher_text() {
   printf '%s\n' '#!/bin/sh' "$LAUNCHER_MARK"
   cat <<'EOF'
@@ -250,45 +252,116 @@ if [ -z "$root" ] || [ ! -f "$root/scripts/plugin.ts" ]; then
   echo "ovis: Ovis is not installed on this PC. Install it with: curl -fsSL https://ovis.sh/install.sh | sh" >&2
   exit 1
 fi
+code=$root
 case "${1:-}" in
-  add | login)
-    if ! grep -qs COMMAND_ALIASES "$root/scripts/plugin.ts"; then
+  add | login | link)
+    if ! grep -qs '"link"' "$root/scripts/plugin.ts"; then
+      # a checkout from before link: Settings → Updates runs newer releases from the app's state dir
+      state="${OVIS_STATE_DIR:-${HERDR_WEB_STATE_DIR:-}}"
+      if [ -z "$state" ]; then
+        state="${XDG_CONFIG_HOME:-$HOME/.config}/ovis"
+        [ -d "$state" ] || state="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-web-ui"
+      fi
+      head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
+      code=$(bun -e '
+        const [root, state, head] = process.argv.slice(1);
+        const { readdirSync, readFileSync } = await import("node:fs");
+        let found = root;
+        try {
+          for (const name of readdirSync(`${state}/updates`)) {
+            try {
+              const saved = JSON.parse(readFileSync(`${state}/updates/${name}/current.json`, "utf8"));
+              if (saved.source_revision === head && String(saved.directory).startsWith(`${state}/updates/${name}/release-`)) found = saved.directory;
+            } catch {}
+          }
+        } catch {}
+        console.log(found);
+      ' "$root" "$state" "$head" 2>/dev/null) || code=$root
+      [ -n "$code" ] || code=$root
+    fi
+    if grep -qs COMMAND_ALIASES "$code/scripts/plugin.ts"; then
+      :
+    elif grep -qs '"link"' "$code/scripts/plugin.ts"; then
       shift
       set -- link "$@"
+    else
+      echo "ovis: this Ovis is from before it could add a PC to an account. Update it in Settings → Updates, then run this again" >&2
+      exit 1
     fi
     ;;
 esac
-exec bun "$root/scripts/plugin.ts" "$@"
+exec bun "$code/scripts/plugin.ts" "$@"
 EOF
+}
+
+# Another program called ovis on the user's own PATH, outside BIN_DIR: its path in $other_ovis (empty:
+# none), and in $other_ovis_hidden whether BIN_DIR comes before it there, so that a launcher in BIN_DIR
+# would take its name.
+find_other_ovis() {
+  other_ovis=""
+  other_ovis_hidden=0
+  other_saved_ifs=$IFS
+  IFS=:
+  set -f
+  for other_dir in ${original_path:-}; do
+    # shellcheck disable=SC3013 # -ef: the same folder under another spelling; dash, bash and busybox have it
+    if [ "$other_dir" = "$BIN_DIR" ] || [ "$other_dir" -ef "$BIN_DIR" ]; then
+      other_ovis_hidden=1
+    elif [ -n "$other_dir" ] && [ -f "$other_dir/ovis" ] && [ -x "$other_dir/ovis" ]; then
+      other_ovis="$other_dir/ovis"
+      break
+    fi
+  done
+  set +f
+  IFS=$other_saved_ifs
+  [ -n "$other_ovis" ] || other_ovis_hidden=0
 }
 
 # Writes the launcher, and says in $launcher_ours whether BIN_DIR/ovis is it. A file of that name the
 # installer did not write (no mark on its second line, or a link) is someone's own: it stays, and the
-# installer says so. Nothing here can fail the install.
+# installer says so. So does another ovis elsewhere on the PATH: where BIN_DIR comes first, a new
+# launcher would take its name, so none is written; where it comes first, the launcher is written and
+# the installer says which one the name runs. Nothing here can fail the install.
 write_launcher() {
   launcher="$BIN_DIR/ovis"
   launcher_ours=0
+  launcher_there=0
   if [ -e "$launcher" ] || [ -L "$launcher" ]; then
     if [ -L "$launcher" ] || [ ! -f "$launcher" ] || [ "$(sed -n 2p "$launcher" 2>/dev/null || true)" != "$LAUNCHER_MARK" ]; then
       say "$launcher is there already and is not this installer's, so it is left as it is and no ovis command was installed"
       return 0
     fi
+    launcher_there=1
   fi
-  # written beside it and moved over it: an interrupted run leaves no half-written command
-  if mkdir -p "$BIN_DIR" && launcher_text >"$launcher.new" && chmod 755 "$launcher.new" && mv -f "$launcher.new" "$launcher"; then
+  find_other_ovis
+  if [ -n "$other_ovis" ] && [ "$other_ovis_hidden" = 1 ] && [ "$launcher_there" = 0 ]; then
+    say "$other_ovis is another ovis on your PATH, and $BIN_DIR comes before it there: an ovis command of this installer's would take its name, so none was installed"
+    return 0
+  fi
+  # written beside it under a name of its own (mktemp never follows a link or reuses a file that is
+  # there) and moved over it: an interrupted run leaves no half-written command
+  launcher_new=""
+  if mkdir -p "$BIN_DIR" 2>/dev/null && launcher_new=$(mktemp "$BIN_DIR/.ovis.XXXXXX" 2>/dev/null) \
+    && launcher_text >"$launcher_new" && chmod 755 "$launcher_new" && mv -f "$launcher_new" "$launcher"; then
     launcher_ours=1
   else
-    rm -f "$launcher.new" 2>/dev/null || true
+    [ -z "$launcher_new" ] || rm -f "$launcher_new" 2>/dev/null || true
     say "could not write $launcher, so no ovis command was installed"
+    return 0
+  fi
+  if [ -n "$other_ovis" ] && [ "$other_ovis_hidden" = 1 ]; then
+    say "$other_ovis is another ovis on your PATH: $launcher, this installer's, comes before it there"
+  elif [ -n "$other_ovis" ]; then
+    say "ovis on your PATH runs $other_ovis, another program: this installer's is $launcher"
   fi
 }
 
 # How to call the launcher, in what the installer prints: by its name where the user's own PATH finds
 # it, by its path where it does not (or finds another ovis first), and without a launcher of ours, the
-# script it would run.
+# script it would run: the running release's, which is what the launcher itself ends at.
 ovis_command() {
   if [ "$launcher_ours" != 1 ]; then
-    printf '%s' "bun $root/scripts/plugin.ts"
+    printf '%s' "bun ${code:-$root}/scripts/plugin.ts"
   elif [ "$(PATH="${original_path:-}"; command -v ovis 2>/dev/null || true)" = "$BIN_DIR/ovis" ]; then
     printf '%s' "ovis"
   else
@@ -296,27 +369,67 @@ ovis_command() {
   fi
 }
 
-# --add (or OVIS_ADD=1): ends the install by adding this PC to the account, as `ovis add` does, and
-# says in $add_result how that went (none: it did not run; done; failed). It signs in and asks y/N, so it runs only with someone to answer: at a
-# terminal that shows what it prints and can be read from (under `curl | sh` stdin is the script, so
-# the answers come from /dev/tty itself), and never under OVIS_NO_OPEN, which an install run for
-# someone else sets (the app's own SSH installer). A release from before `add` knows it as `link`; one
-# from before that has neither. Wherever it does not run, the closing lines say what to run instead.
-# Who counts as this PC is said before it starts, while the token can still be set first ($token_said).
-# Ctrl+C ends the add, not the install: what follows it is still printed.
-add_pc() {
-  add_result=none
-  token_said=0
-  [ "$add" = 1 ] || return 0
-  [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
+# The name the release that runs knows the add step by, in $add_name: `add`, `link` for one from
+# before `add`, or nothing for one from before both, which cannot add a PC from its terminal.
+find_add_name() {
   if grep -qs 'COMMAND_ALIASES' "$code/scripts/plugin.ts"; then
     add_name=add
   elif grep -qs '"link"' "$code/scripts/plugin.ts"; then
     add_name=link
   else
+    add_name=""
+  fi
+}
+
+# The command that adds this PC, as the closing lines print it: `ovis add` through the launcher, which
+# finds the name the release knows by itself; without a launcher of ours, the script under that name.
+add_command() {
+  if [ "$launcher_ours" = 1 ]; then
+    printf '%s' "$(ovis_command) add"
+  else
+    printf '%s' "$(ovis_command) $add_name"
+  fi
+}
+
+# Whether this install holds the terminal's foreground: a background job that read from the terminal
+# would be stopped by it (SIGTTIN) until someone brought it forward.
+in_foreground() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -MPOSIX -e 'exit 1 unless POSIX::tcgetpgrp(0) == POSIX::getpgrp()' </dev/tty >/dev/null 2>&1
+  else
+    # the terminal's foreground process group and this shell's own, as ps has them
+    foreground_ids=$(ps -o tpgid= -o pgid= -p $$ 2>/dev/null) || return 1
+    # shellcheck disable=SC2086 # two numbers, split on purpose
+    set -- $foreground_ids
+    [ $# = 2 ] && [ "$1" = "$2" ]
+  fi
+}
+
+# --add (or OVIS_ADD=1): ends the install by adding this PC to the account, as `ovis add` does, and
+# says in $add_result how that went (none: it did not run; done; failed). It signs in and asks y/N, so it runs only with someone to answer: at a
+# terminal that shows what it prints and can be read from (under `curl | sh` stdin is the script, so
+# the answers come from /dev/tty itself), and never under OVIS_NO_OPEN, which an install run for
+# someone else sets (the app's own SSH installer), and only in the terminal's foreground: the add reads
+# its answer there, and a background job that did would be stopped. A release from before `add` knows
+# it as `link`; one from before that has neither. It asks the running app, so it runs only while the
+# app does ($add_waits says it does not: a fresh PC whose herdr this install could not start). Wherever
+# it does not run, the closing lines say what to run instead.
+# Who counts as this PC is said before it starts, while the token can still be set first ($token_said).
+# Ctrl+C ends the add, not the install: what follows it is still printed.
+add_pc() {
+  add_result=none
+  token_said=0
+  add_waits=0
+  find_add_name
+  [ "$add" = 1 ] || return 0
+  [ -n "$add_name" ] || return 0
+  if ! bun "$root/scripts/plugin.ts" status </dev/null 2>/dev/null | grep -q '^running'; then
+    add_waits=1
     return 0
   fi
+  [ "$terminal" = 1 ] && [ -z "${OVIS_NO_OPEN:-${HERDR_WEB_NO_OPEN:-}}" ] || return 0
   (exec 3<>/dev/tty) 2>/dev/null || return 0
+  in_foreground || return 0
   echo
   token_line
   token_said=1
@@ -332,15 +445,20 @@ token_line() {
 }
 
 # The installer's last words before the star: how this PC gets into the account (unless --add just put
-# it there), and who counts as this PC while it has no token (unless the add step said it as it began).
+# it there), by a command that can run here: a release from before the add step is told to update
+# instead. Then who counts as this PC while it has no token (unless the add step said it as it began).
 closing_lines() {
   echo
   if [ "$add_result" = done ]; then
     :
+  elif [ -z "$add_name" ]; then
+    say "this Ovis is from before it could add a PC to an account from its terminal: update it in Settings → Updates, then run this installer again"
+  elif [ "$add" = 1 ] && [ "${add_waits:-0}" = 1 ]; then
+    say "the app is not running yet, so this PC was not added to your Ovis account. Once it runs, run in a terminal on this PC: $(add_command)"
   elif [ "$add" = 1 ] && [ "$add_result" = none ]; then
-    say "to add this PC to your Ovis account, run in a terminal on this PC: $(ovis_command) add"
+    say "to add this PC to your Ovis account, run in a terminal on this PC: $(add_command)"
   else
-    say "to add this PC to your Ovis account: $(ovis_command) add"
+    say "to add this PC to your Ovis account: $(add_command)"
   fi
   [ "${token_said:-0}" = 1 ] || token_line
 }

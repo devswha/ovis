@@ -148,7 +148,7 @@ ovis pair      # a pairing code
 ovis status    # whether the app runs, and where
 ```
 
-An `ovis` of your own that is already in `~/.local/bin` is left as it is, and the installer says so. Without the command (an install from before it, until the installer is run again; Windows; a checkout), run the script itself, `bun scripts/plugin.ts <command>`, in the folder that holds Ovis: a checkout, or the plugin's own folder:
+An `ovis` of your own that is already in `~/.local/bin` is left as it is, and the installer says so. So is another `ovis` elsewhere on your PATH: where `~/.local/bin` comes before it, the installer writes no command, since that would take its name; where it comes first, the installer writes the command and says to call it by its path. Without the command (an install from before it, until the installer is run again; Windows; a checkout), run the script itself, `bun scripts/plugin.ts <command>`, in the folder that holds Ovis: a checkout, or the plugin's own folder:
 
 ```bash
 root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "devswha.ovis")?.plugin_root ?? "")')
@@ -169,9 +169,9 @@ ovis pair
 ovis add
 ```
 
-To install and add in one line, give the installer `--add`: `curl -fsSL https://ovis.sh/install.sh | sh -s -- --add` (or set `OVIS_ADD=1`). It ends the install with `ovis add`, at a terminal you can answer at; anywhere else it prints the command to run. On a PC other people log in to, set `OVIS_TOKEN` first ([Who counts as this PC](relay.md#a-pc-with-no-screen)).
+To install and add in one line, give the installer `--add`: `curl -fsSL https://ovis.sh/install.sh | sh -s -- --add` (or set `OVIS_ADD=1`). It ends the install with `ovis add`, at a terminal you can answer at and while the app runs; anywhere else (a script, a background job, a PC whose herdr is not started yet) it prints the command to run. On a PC other people log in to, set `OVIS_TOKEN` first ([Who counts as this PC](relay.md#a-pc-with-no-screen)).
 
-`add` (also `login` and `link`: one command) signs the PC in to your Ovis account with a code you enter on any device, lists it there, and asks y/N in the terminal for the device of your account that adds it. It ends once the PC is in the account you signed in to, and stops by itself after 30 minutes of waiting. `link --code` shows a code to type and the relay QR code instead, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). A plugin checkout from before `link` needs a plugin reinstall first, since in-app updates do not replace the checkout; one from before `add` and `login` still has `link`.
+`add` (also `login` and `link`: one command) signs the PC in to your Ovis account with a code you enter on any device, lists it there, and asks y/N in the terminal for the device of your account that adds it. It ends once the PC is in the account you signed in to, and stops by itself after 30 minutes of waiting. `link --code` shows a code to type and the relay QR code instead, or the QR code alone when the relay mints no code ([A PC with no screen](relay.md#a-pc-with-no-screen)). In-app updates do not replace the plugin's checkout, so `ovis add` runs the release that runs: with a checkout from before `link`, it works once **Settings → Updates** has installed a release that has it. Without the `ovis` command, such a checkout needs a plugin reinstall first; one from before `add` and `login` still has `link`.
 
 The actions start, stop and report on the server:
 
@@ -191,6 +191,7 @@ Its PID and log live under `HERDR_PLUGIN_STATE_DIR`. For persistent settings (se
 herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
 herdr plugin uninstall devswha.ovis || herdr plugin uninstall devswha.herdr-web-ui
 tailscale serve --https=<port> off    # the port the installer printed, if it served the app
+rm -f ~/.local/bin/ovis               # the installer's ovis command; leave an ovis of your own
 ```
 
 The installer's herdr, Bun and Node stay, since other tools may use them: `~/.local/bin/herdr`, `~/.bun`, and `~/.local/share/ovis/node` (`~/.local/share/herdr-web-ui/node` for an install from before the rename); an older installer also linked it as `~/.local/bin/node`. Running the installer again removes that link once the installed release finds its Node itself; a release from before that still needs the link, so it stays until the installer runs again after Ovis is updated. Push keys, paired devices and the identity file that owns the app's Portal address are in `~/.config/ovis`.
