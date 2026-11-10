@@ -77,6 +77,11 @@ export async function handleRelayRequest(request: Request, pathname: string, con
         // a query string is refused for every relay control (updateRequestAllowed), so the flag travels as a header,
         // which another site cannot set without a preflight the PC never answers
         return reply(service.pairingLink({ localOnly: request.headers.get("x-ovis-local-only") === "1" }));
+      case "/api/relay/link/close":
+        setRequestRoute("/api/relay/link/close");
+        // the owner stopped waiting: nothing more is taken, whatever the relay's state
+        service.approvals.closeWindow();
+        return reply({ ok: true });
       case "/api/relay/pairing": {
         setRequestRoute("/api/relay/pairing");
         const body = await readJsonObject(request);
