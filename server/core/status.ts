@@ -754,7 +754,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const untrackOpenCode = trackVerifiedOpenCodePanes((paneId) => collector.trackPane(paneId));
   const tracked = { ...collector, stop() { untrackOpenCode(); stopMutes(); stopSubmitted(); desktopActivity?.stop(); taskAgents.stop(); collector.stop(); } };
 
-  const queueHeld = (paneId: string): boolean => queueStatus(paneId, "idle") === "working";
+  /**
+   * Whether a pane shown at rest holds its queue (queueStatus). `fresh`: as its transcript says now, read
+   * before answering, not as the last poll left it: a /loop wakeup may have fired since (#3494). That read
+   * tells the queue what it finds, as any poll does.
+   */
+  const queueHeld = (paneId: string, fresh = false): boolean => {
+    if (fresh && agentNow.get(paneId) === "claude") claudeAgents.poll(paneId);
+    return queueStatus(paneId, "idle") === "working";
+  };
   /**
    * The herdr this server reads now, as a snapshot names it, known without asking herdr anything: only the
    * one whose lifecycle subscription is open, under the same socket. A socket file alone proves nothing: a

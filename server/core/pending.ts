@@ -114,8 +114,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   authorizeSocket: (client: Client) => void;
   clientSnapshot: () => Promise<SessionSnapshot>;
   omo: Pick<OmoStatus, "sessionOf">;
-  /** a pane shown at rest whose queue a busy signal still holds (server/core/status.ts queueStatus): no automatic send */
-  queueHeld?: (paneId: string) => boolean;
+  /**
+   * a pane shown at rest whose queue a busy signal or a /loop wakeup still holds (server/core/status.ts queueStatus):
+   * no automatic send. `fresh`: read from the pane's transcript now, not as its last poll left it
+   */
+  queueHeld?: (paneId: string, fresh?: boolean) => boolean;
   SUBMIT_DEADLINE_MS: number;
   SUBMIT_DELAY_MS: number;
   TYPED_SETTLE_MS: number;
@@ -660,6 +663,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // the last reads awaited too: a message past its deadline is not typed
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       authorizePending(owner, paneId, lease);
+      // and a /loop wakeup may have fired while they were awaited (#3494): the queue's hold is read from the transcript
+      // once more, with no wait between this and the paste. A hold found here leaves nothing in the input line and the
+      // message waiting; one that comes later is found before the Enter, with the paste made
+      if ((automatic || queued) && queueHeld(paneId, true)) {
+        pending.observe(paneId, "working", mark);
+        throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
+      }
       // asked again right before herdr is written to: its connect is awaited (#666)
       const allowed = (): boolean => {
         try { authorizePending(owner, paneId, lease); return true; } catch { return false; }
@@ -1140,6 +1150,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             if (agentOnly && !context.agentInFront) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
             // a pane shown at rest whose queue a busy signal still holds is not ready for a queued message
             const held = queueHeld(message.pane_id);
+            // typed at once, but the queue's hold came up before anything was written: it waits its turn after all
+            let waited = false;
             if (!context.working && !held) {
               // the agent left while the message was on its way: a chat follow-up is not typed into what is there now
               if (context.identity.agent === null) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
@@ -1152,10 +1164,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
                 // before anything is typed: the message's turn is written after this on this PC's clock (src/lib/sentWaiting.ts)
                 const sendingAt = new Date().toISOString();
                 const typed = await dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt, undefined, false, message.id, agentOnly, true);
-                return typed.ok ? { ...typed, sending_at: sendingAt } : typed;
+                // pending_wait: the hold was found right before the paste (a /loop wakeup fired during the checks, #3494).
+                // Nothing was typed, or the code would be submit_changed, so the message is queued as one that arrived a
+                // moment later would be; the status that check gave the queue stands
+                if (typed.ok || typed.code !== "pending_wait") return typed.ok ? { ...typed, sending_at: sendingAt } : typed;
+                waited = true;
               }
             }
-            pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
+            if (!waited) pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
             // hold: kept for the owner's Send now, never sent by the turn's end
             const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold", agentOnly);
             return { ok: true, pending: item.message };
