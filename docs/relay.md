@@ -153,7 +153,8 @@ two screens instead, as in Bluetooth's numeric comparison:
    match**, and the PC's owner approves (`POST /api/relay/pairing`). Only both together make the
    device, the same record and key a pairing with a code makes, and `AUTH_OK` follows as usual.
    On a PC without a screen, `bun scripts/plugin.ts pair --approve` in its terminal shows each
-   waiting phone with its digits and asks y/n: the PC's terminal is the PC itself.
+   waiting phone with its digits and asks for them: typing the six digits, or their last three,
+   approves, and anything else (a bare Enter, `y`) declines. The PC's terminal is the PC itself.
 
 The approval may also come from a phone already linked to the owner's account, connected through
 the relay: it is shown three sets of digits and must pick the new device's
@@ -296,19 +297,29 @@ it is off, and wait until it is online.
   provider's own device page and its code instead. Signing in adds nothing by itself. Then it lists this PC in your
   account ([Adding a PC](account.md#adding-a-pc)) and waits. On a device already signed in to this
   account (the Ovis app or app.ovis.sh), choose **Add** on this PC; the terminal shows the request with its six digits
-  (**… wants to join your account. Approve it only if its screen shows 123 456**) and asks
-  y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
-  this PC only. The waiting goes on under that question: a request that stops waiting unanswered
+  (**… wants to join your account. Approve it only if its screen shows 123 456. Type 456 to
+  approve, or press Enter to decline**). Only the request's own digits approve it: all six, with
+  or without the space, or the last three. Anything else declines, a bare Enter and `y` among
+  them (a `y` is told that the digits are what approves), so a line begun for another request, or
+  typed ahead of any, cannot approve this one. That approval is this PC's own, as on its screen:
+  the window it opens takes approvals from this PC only.
+  The waiting goes on under that question: a request that stops waiting unanswered
   is dropped with a line saying so, and an answer the server did not take is asked for again
   rather than sent a second time. Only a line typed after a request's question showed, with its
   digits, answers it: the terminal is read from the moment the PC is listed to the end of the
   wait, so a line typed ahead (during the sign-in, while nothing is asked, before the question is
   on the screen, or a second line at one question) is dropped with a line saying so and never
   kept for a later request. So is a line that comes within a second and a half of a question
-  showing, too soon to have compared its digits: one begun for the request answered or gone just
-  before, or a key pressed twice; the question is then asked again. Input that is not a terminal
+  showing, too soon to have compared its digits (a key pressed twice); the question is then asked
+  again. And so is the first line that comes after a request left the screen unanswered (it ran
+  out, or was answered elsewhere), whenever it comes and whatever it says: a terminal hands a line
+  over only when Enter is pressed, so what was typed at that request's question and not sent would
+  otherwise arrive under the next one. The question shown then is asked again, and the line typed
+  under that counts.
+  Input that is not a terminal
   (a pipe, a file, a closed stdin) answers nothing, whatever it carries and whenever: the command
-  says so and declines every request as it shows. So does a terminal whose input ended (Ctrl+D),
+  says so, names the way out (over ssh, `ssh -t`), and declines every request as it shows.
+  So does a terminal whose input ended (Ctrl+D),
   from then on. It asks for that window again every 30 seconds, and with every
   look of the last half minute in which a window may still be opened, so the last one ends with
   the run however long a look takes (short of one look that alone takes over half a minute, after
