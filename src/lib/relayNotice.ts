@@ -34,7 +34,8 @@ function writeDismissed(dismissed: readonly string[]): void {
 
 /**
  * Derives the relay notice state from a health or relay status answer:
- * - undefined before a known answer arrives (so stored dismissals are kept)
+ * - undefined before a known answer arrives (so stored dismissals are kept), and while an answer cannot
+ *   say whether the relay still refuses this PC (below): nothing shows then, and nothing is forgotten
  * - null when the relay is off, not Ovis-hosted, or needs no notice
  * - RelayNoticeInfo when this PC uses the Ovis-hosted relay and needs sign-in or hit a limit
  *
@@ -42,7 +43,9 @@ function writeDismissed(dismissed: readonly string[]): void {
  * (`enforce_at`, grace) or a refusal. A relay that says neither changes nothing on screen.
  * Before a date still to come, by this browser's clock, only the sign-in reminder that names the date
  * shows, unless the relay already closed this PC for its pass: a refusal is the relay's own word that
- * it enforces, and it shows whatever the date and the clock say.
+ * it enforces, and it shows whatever the date and the clock say. A PC it closed looks again every 30
+ * minutes and whenever a pass comes; until the relay answers that attempt, whether it still refuses is
+ * not known, so a notice dismissed before is not forgotten for it (undefined, where nothing else shows).
  *
  * The limit on new devices is an exception too: the PC says itself whether the relay enforces passes now
  * (`enforced`), which a relay in `enforce` does with no date or with one far ahead. While it does and the
@@ -72,7 +75,13 @@ export function relayNoticeFromStatus(relay: RelayStatus | null | undefined, sig
   // the codes names none, and its error beside the flag is read as one
   const closed = refused && (relay.error_code === undefined || relay.error_code?.startsWith("pass_") === true);
   if (early && !closed) {
-    return remind ? { kind: "sign-in-grace", enforceAt: Number.isNaN(at) ? null : pass.enforce_at } : null;
+    if (remind) return { kind: "sign-in-grace", enforceAt: Number.isNaN(at) ? null : pass.enforce_at };
+    // The flag stands and the global link neither let this PC in nor refused it for its pass: it is trying
+    // (a PC the relay closed looks again every 30 minutes and whenever a pass comes, and each attempt reads
+    // "connecting"), or it is down for another reason meanwhile. Until the relay answers, nothing says
+    // whether it still refuses: no refusal shows, since the flag may be a regional relay's, and none is
+    // read as over either, so one dismissed before stays dismissed when the relay refuses again
+    return pass.refused && relay.phase !== "online" ? undefined : null;
   }
   // a server that does not say whether passes are enforced: past the date they are. The data limit
   // is no refusal, so before the date it does not show beside one
