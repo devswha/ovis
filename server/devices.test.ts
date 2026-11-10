@@ -558,6 +558,68 @@ describe("revoking a device unless an account vouches for it", () => {
   });
 });
 
+describe("revoking a device that holds a pairing code", () => {
+  const guard = { origin: "http://127.0.0.1", "x-herdr-machine": "1" };
+  const call = (store: DeviceStore, method: string, path: string, access: Parameters<typeof handleDeviceRequest>[3], relayKey: string | null = null) =>
+    handleDeviceRequest(new Request(`http://127.0.0.1${path}`, { method, headers: guard }), path, store, access, relayKey);
+  const local = { level: "full", via: "local", role: "drive" } as const;
+
+  it("ends the code that device started through the relay, so nobody pairs with it after the device is gone", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "revoke-code-relay-")));
+    // let in by a code this PC showed, on a PC in no account: any driving relay device may start a code there
+    const keys = await relayKeys();
+    const stranger = store.pairRelay(store.startPairing().code, "Stranger", keys.publicKeySpki)!.device;
+    let told = 0;
+    store.onPairingStarted(() => { told++; });
+    const started = await call(store, "POST", "/api/devices/pair/start", { level: "full", via: "relay", role: "drive", device: stranger }, keys.publicKeySpki);
+    expect(started.status).toBe(200);
+    const { code } = await started.json() as { code: string };
+    expect(store.activePairing()?.code).toBe(code);
+    expect((await call(store, "DELETE", `/api/devices/${stranger.id}`, local)).status).toBe(204);
+    // the code went with it, and so does a typed relay code bound to it (its listeners hear of the end)
+    expect(store.activePairing()).toBeNull();
+    expect(told).toBe(2);
+    expect(store.pairRelay(code, "Stranger 2", (await relayKeys()).publicKeySpki)).toBeNull();
+    expect(store.list(null)).toEqual([]);
+  });
+
+  it("ends the code a device paired at this PC's own address started, and leaves a code nobody revoked started", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "revoke-code-direct-")));
+    const pairHere = (label: string) => {
+      const paired = store.pair(store.startPairing().code, label, "drive")!;
+      store.match(paired.token);
+      return paired.device;
+    };
+    const laptop = pairHere("Laptop");
+    const tablet = pairHere("Tablet");
+    const started = await call(store, "POST", "/api/devices/pair/start", { level: "full", via: "device", role: "drive", device: laptop });
+    const { code } = await started.json() as { code: string };
+    // another device's removal leaves it
+    expect((await call(store, "DELETE", `/api/devices/${tablet.id}`, local)).status).toBe(204);
+    expect(store.activePairing()?.code).toBe(code);
+    expect((await call(store, "DELETE", `/api/devices/${laptop.id}`, local)).status).toBe(204);
+    expect(store.activePairing()).toBeNull();
+    expect(store.pair(code, "Too late", "drive")).toBeNull();
+    // a code this PC itself started is nobody's to take along
+    const phone = pairHere("Phone");
+    const own = await (await call(store, "POST", "/api/devices/pair/start", local)).json() as { code: string };
+    expect((await call(store, "DELETE", `/api/devices/${phone.id}`, local)).status).toBe(204);
+    expect(store.activePairing()?.code).toBe(own.code);
+  });
+
+  it("ends a code a device was handed, not only one it started", () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "revoke-code-handed-")));
+    const paired = store.pair(store.startPairing().code, "Laptop", "drive")!;
+    store.match(paired.token);
+    // this PC's own code, which the laptop then asked the relay offer for
+    const own = store.startPairing();
+    store.holdPairing(paired.device.id);
+    expect(store.revoke(paired.device.id)).toBe(true);
+    expect(store.activePairing()).toBeNull();
+    expect(store.pair(own.code, "Too late", "drive")).toBeNull();
+  });
+});
+
 describe("revoke all", () => {
   it("revoke all is atomic and stays gated after restart", () => {
     const root = mkdtempSync(join(dir, "revoke-all-"));
