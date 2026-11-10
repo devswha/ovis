@@ -2,11 +2,11 @@
   "0.5.2": {
     "en": {
       "new": [
-        "Alt+Enter in the chat composer holds a message until you send it.",
+        "On a computer, Alt+Enter in Chat holds a message until you send it.",
         "Hermes's dangerous-command approval is answered from a card in Chat.",
         "Letta Code's /model opens as a card in Chat.",
         "app.ovis.sh is now a console with an Overview of all your PCs.",
-        "Settings shows your account's plan, PC slots and relay data."
+        "Typing / in a Letta Code pane's Chat lists Letta's own commands."
       ],
       "improved": [
         "The header and tab row are one compact line, with + for New workspace.",
@@ -25,11 +25,11 @@
     },
     "ko": {
       "new": [
-        "채팅 입력란에서 Alt+Enter를 누르면 메시지를 잡아 두었다가 원할 때 보내요.",
+        "컴퓨터에서는 채팅 입력창에서 Alt+Enter로 메시지를 잡아 두었다가 원할 때 보내요.",
         "Hermes의 위험한 명령 승인을 채팅의 카드에서 답할 수 있어요.",
         "Letta Code의 /model이 채팅에서 카드로 열려요.",
         "app.ovis.sh가 모든 PC를 개요에서 한눈에 보는 콘솔로 바뀌었어요.",
-        "설정에서 계정의 요금제, PC 자리 수, 릴레이 데이터를 볼 수 있어요."
+        "Letta Code 패널의 채팅에서 /를 입력하면 Letta의 명령 목록이 나와요."
       ],
       "improved": [
         "헤더와 탭 줄이 한 줄로 합쳐지고, +로 새 워크스페이스를 만들어요.",
@@ -48,11 +48,11 @@
     },
     "ja": {
       "new": [
-        "チャットの入力欄で Alt+Enter を押すと、送るまでメッセージを保留します。",
+        "パソコンでは、チャットの入力欄で Alt+Enter を押すと、送るまでメッセージを保留します。",
         "Hermes の危険なコマンドの承認に、チャットのカードで答えられます。",
         "Letta Code の /model がチャットでカードとして開きます。",
         "app.ovis.sh が、すべての PC を概要で見渡せるコンソールになりました。",
-        "設定でアカウントのプラン、PC の枠、リレーのデータ量を確認できます。"
+        "Letta Code のペインのチャットで / を入力すると、Letta のコマンド一覧が出ます。"
       ],
       "improved": [
         "ヘッダーとタブの行が 1 行にまとまり、+ で新しいワークスペースを作れます。",
@@ -71,11 +71,11 @@
     },
     "zh": {
       "new": [
-        "在聊天输入框按 Alt+Enter 可暂存消息，等你点发送时再发出。",
+        "在电脑上，在聊天输入框按 Alt+Enter 可暂存消息，等你点发送时再发出。",
         "Hermes 的危险命令审批可在聊天中的卡片上回答。",
         "Letta Code 的 /model 在聊天中以卡片形式打开。",
         "app.ovis.sh 改为控制台，可在概览中查看你的所有电脑。",
-        "设置中可查看账户的套餐、电脑名额和中继流量。"
+        "在 Letta Code 窗格的聊天中输入 /，会列出 Letta 自己的命令。"
       ],
       "improved": [
         "标题栏和标签栏合并为紧凑的一行，点 + 新建工作区。",
