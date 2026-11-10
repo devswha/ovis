@@ -851,12 +851,13 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
 
     /**
      * A pane at rest that herdr told, its queue delivered by the bridge: what is written to the pane, in order.
-     * `on`: what a test has happen as the delivery reads the pane's screen (`read`) or pastes (`paste`);
+     * `on`: what a test has happen as the delivery reads the pane's screen (`read`) or pastes (`paste`), and an
+     * answer on the queue's hold a test gives in the hub's place (`held`, asked `fresh` or not);
      * `asked`: each answer the delivery got on the queue's hold; `results`: the answers its submits got.
      */
     async function delivering() {
       const writes: string[] = [];
-      const on: { read?: () => void; paste?: () => void } = {};
+      const on: { read?: () => void; paste?: () => void; held?: (fresh: boolean) => boolean } = {};
       const asked: boolean[] = [];
       const frames: { type: string; id?: number; ok?: boolean; code?: string; typed_now?: boolean; pending?: { state: string } }[] = [];
       const client: Client = { data: connectionData({ readOnly: false, deviceId: undefined }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; }, close: () => {} };
@@ -868,7 +869,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         sight: () => ({ origin: null, pty: null, claim: null, facts: () => READY, write: (data: string) => { writes.push(data); } }) as never,
         submitText: (async () => { throw new Error("no immediate send in this test"); }) as never, authorizeSocket: () => {},
         clientSnapshot: () => h.status.clientSnapshot(), omo: { sessionOf: () => null },
-        queueHeld: (paneId, fresh) => { const held = h.status.queueHeld(paneId, fresh); asked.push(held); return held; },
+        queueHeld: (paneId, fresh) => { const held = on.held?.(fresh === true) ?? h.status.queueHeld(paneId, fresh); asked.push(held); return held; },
         SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
       });
       h = await workingClaude(delivery.pending as never, delivery.drainPending);
@@ -971,6 +972,25 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       await flush();
       expect(writes).toEqual(["paste \u001b[200~soon\u001b[201~", "keys Enter"]);
       expect(waiting()).toEqual([]);
+    });
+
+    it("leaves the queue at working by its own word when its check before the paste finds the hold, and tries no other send", async () => {
+      const d = await delivering();
+      const { h, delivery, writes, submit, flush, waiting, results, asked } = d;
+      // Given a hold that the delivery's check right before the paste is the first to find, and that nothing else
+      // tells the queue of: the answer is given here in the hub's place, whose own read tells the queue as it answers.
+      let found = false;
+      asked.length = 0;
+      d.on.held = (fresh) => (found ||= fresh);
+      await submit(21, "held");
+      await flush();
+      // Then nothing is typed and the message is queued, with the queue at working by the delivery's own word.
+      expect(writes).toEqual([]);
+      expect(results()).toMatchObject([{ id: 21, ok: true, pending: { state: "queued" } }]);
+      expect(waiting()).toEqual(["queued"]);
+      expect(delivery.pending.current(h.pane.pane_id)).toBe("working");
+      // And no other send was tried behind it: the hold was asked for by the submit and by that check alone.
+      expect(asked).toEqual([false, true]);
     });
 
     it("sends no Enter for a message typed at once when the wakeup fires as it is pasted, and leaves the queue free", async () => {

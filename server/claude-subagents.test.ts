@@ -1536,7 +1536,7 @@ describe("ClaudeSubagentStatus", () => {
 
     it("holds anew on a later wakeup though the turn the one before resumed wrote no rest", async () => {
       for (const before of ["a turn", "nothing"] as const) {
-        for (const next of ["fire", "prompt"] as const) {
+        for (const next of ["fire", "prompt", "prompt dated before that fire"] as const) {
           const s = session();
           s.prompt(1);
           rest(s, 2);
@@ -1550,8 +1550,9 @@ describe("ClaudeSubagentStatus", () => {
             now += LOOP_HOLD_MS;
             status.poll();
             expect(status.loopHolds("p1")).toBe(false);
-            // minutes later the next wakeup: another fire, or a scheduled task's prompt, is not one more of that tick
-            if (next === "fire") fire(s, 8); else resumes(s, 8, false);
+            // minutes later the next wakeup: another fire, or a scheduled task's prompt, is not one more of that tick.
+            // Nor is one dated minutes before that fire (a clock set back since): only the time between the two counts
+            if (next === "fire") fire(s, 8); else resumes(s, next === "prompt" ? 8 : 1, false);
             status.poll();
             expect(status.loopHolds("p1")).toBe(true);
             expect(told).toEqual([false, true, false, true]);
