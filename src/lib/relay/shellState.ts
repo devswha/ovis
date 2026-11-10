@@ -317,3 +317,28 @@ export function takeDeviceOnlyPc(): string | null {
     return serverId;
   } catch { return null; }
 }
+
+/**
+ * The sign-in a pairing's confirm was drawn for, kept for the load that follows: a reload before the app opened (for
+ * a newer shell) starts from the saved pairing, which does not say whose account was confirmed, and would add the
+ * PC to the account of whoever is signed in by then. Only the PC ID and the sign-in's id (`sign_in_id`, none of its
+ * tokens; null for a sign-in that has none), in this tab, and consumed by the next load whatever it opens.
+ */
+export interface ConfirmedSignIn { readonly server_id: string; readonly sign_in_id: string | null }
+export function keepConfirmedSignIn(confirmed: ConfirmedSignIn | null): void {
+  try {
+    if (confirmed === null) sessionStorage.removeItem("ovis-confirmed-sign-in");
+    else sessionStorage.setItem("ovis-confirmed-sign-in", JSON.stringify({ server_id: confirmed.server_id, sign_in_id: confirmed.sign_in_id }));
+  } catch { /* the confirm cannot cross the load: the reloaded page opens the PC as a saved one */ }
+}
+export function takeConfirmedSignIn(): ConfirmedSignIn | null {
+  try {
+    const kept: unknown = JSON.parse(sessionStorage.getItem("ovis-confirmed-sign-in") ?? "null");
+    sessionStorage.removeItem("ovis-confirmed-sign-in");
+    if (kept === null || typeof kept !== "object") return null;
+    const { server_id, sign_in_id } = kept as Record<string, unknown>;
+    if (typeof server_id !== "string") return null;
+    // an id that cannot be read names no sign-in: the pairing then joins no account, as for a sign-in without one
+    return { server_id, sign_in_id: typeof sign_in_id === "string" && sign_in_id !== "" ? sign_in_id : null };
+  } catch { return null; }
+}

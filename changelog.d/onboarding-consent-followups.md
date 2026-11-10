@@ -10,3 +10,6 @@
   a key cannot press Approve for a second after the focus came into the prompt. Its guards now count
   to when a key or a click was made, so one already on its way when the prompt arrived or moved
   approves nothing on a busy page.
+- A pairing confirmed for one sign-in no longer adds the PC to another account when the hosted app
+  reloads itself for a newer build before the PC opens and another sign-in is stored by then: the
+  PC then opens with the key this device holds and joins no account.
