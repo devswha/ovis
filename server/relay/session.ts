@@ -70,6 +70,12 @@ export interface RelaySessionOptions {
    * nothing pairs (a code or a comparison), so pairing and its guesses stay on the relay.
    */
   readonly signInOnly?: boolean;
+  /**
+   * Asked once a pairing on this carrier would make a device new to this PC (a code that holds, or a comparison both
+   * people confirmed), before the device is made: true when its relay refuses new client sessions to this PC now
+   * (server/relay/link.ts). The session then makes no device and says nothing more: the relay closes the client.
+   */
+  readonly refuseNewDevice?: () => boolean;
 }
 
 export interface RelayWebSocketRequest {
@@ -85,7 +91,7 @@ export interface RelayWebSocketRequest {
 export class RelaySession {
   readonly mux: MuxEngine;
   readonly sessionId = randomBytes(16).toString("hex");
-  private state: "hello" | "auth" | "pair-commit" | "pair-wait" | "verifying" | "ready" | "closed" = "hello";
+  private state: "hello" | "auth" | "pair-commit" | "pair-wait" | "verifying" | "refused" | "ready" | "closed" = "hello";
   private readonly nonce = randomBytes(32);
   /** This session's channel binding, when the phone offered pairing by comparing digits and this PC selected it. */
   private sasBinding: Uint8Array | undefined;
@@ -96,7 +102,7 @@ export class RelaySession {
   /** A pairing by comparing digits under way; `ended` once it made a device or counted as a failure. */
   private sas: {
     label: string; publicKey: string; commitment: Uint8Array; pcNonce: Uint8Array; expiresAt: number;
-    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
+    phoneConfirmed: boolean; approved: boolean; approvedBy?: string; ended: boolean; membersOnly: boolean; localOnly: boolean; /** approvals.closes when it was taken */ closes: number; withdraw?: () => void; cancelDeadline?: () => void; stopRevokeAll?: () => void; stopApprover?: () => void;
   } | undefined;
   private device: DeviceMatch | undefined;
   /** The key this session's device signed in or paired with: a `link` must start from it (docs/account.md). */
@@ -242,7 +248,18 @@ export class RelaySession {
     else this.mux.fail(code, code);
   }
 
+  /** The pairing would have made a device while new client sessions are refused: nothing is answered from here on. */
+  private get refused(): boolean { return this.state === "refused"; }
+
+  /** The device store's last question before a pairing makes a device (server/devices.ts pairRelay): false makes none. */
+  private readonly admitNewDevice = (): boolean => {
+    if (!this.options.refuseNewDevice?.()) return true;
+    this.state = "refused";
+    return false;
+  };
+
   private async admit(frame: SessionFrame): Promise<void> {
+    if (this.refused) return;
     switch (frame.type) {
       case FrameType.HELLO:
         if (this.state !== "hello") { this.close("protocol_error"); return; }
@@ -279,7 +296,9 @@ export class RelaySession {
         this.keyProven = frame.type === FrameType.AUTH;
         const device = frame.type === FrameType.AUTH
           ? await devices.matchRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId)
-          : devices.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key)?.device;
+          : devices.pairRelay(frame.payload.code, frame.payload.label, frame.payload.public_key, undefined, this.admitNewDevice)?.device;
+        // no auth_failed: the code held and was not spent, and the relay closes this client for the pass
+        if (this.refused) return;
         this.enter(device);
         return;
       }
@@ -303,7 +322,7 @@ export class RelaySession {
         this.state = "pair-commit";
         this.sas = {
           label: frame.payload.label, publicKey: frame.payload.public_key, commitment: fromBase64Url(frame.payload.commitment),
-          pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly,
+          pcNonce: randomPairNonce(), expiresAt: Date.now() + PAIR_APPROVAL_MS, phoneConfirmed: false, approved: false, ended: false, membersOnly, localOnly, closes: this.options.services.relay.approvals.closes,
         };
         // past the comparison's deadline the session ends with `timeout` and its prompt goes at once;
         // the mux's own setup deadline stays just behind it as the backstop
@@ -319,6 +338,9 @@ export class RelaySession {
         if (this.state !== "pair-commit" || !sas || !this.sasBinding) { this.close("protocol_error"); return; }
         const phoneNonce = fromBase64Url(frame.payload.nonce);
         if (!commitmentHolds(sas.commitment, this.sasBinding, sas.publicKey, phoneNonce)) { this.close("auth_failed"); return; }
+        // the window it was taken under was closed while this phone held its reveal: no prompt after a close
+        // (a join shown to account members only never depended on the window)
+        if (!sas.membersOnly && this.options.services.relay.approvals.closes !== sas.closes) { this.close("auth_failed"); return; }
         // a pause that began while this phone held its reveal still keeps its prompt off the owner's screen
         this.options.services.devices.assertRelayPairing(this.path);
         const asked = this.options.services.relay.approvals.ask(sas.label,
@@ -366,13 +388,14 @@ export class RelaySession {
     // only a pairing approved on this PC itself does
     if (sas.approvedBy !== undefined && this.options.services.accountMailbox.gates().held(sas.publicKey)) { this.close("auth_failed"); return; }
     let device: DeviceMatch | undefined;
-    try { device = this.options.services.devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id: accountDeviceId(this.options.serverId, sas.publicKey), ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }) })?.device; }
+    try { device = this.options.services.devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id: accountDeviceId(this.options.serverId, sas.publicKey), ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }) }, undefined, this.admitNewDevice)?.device; }
     catch (error) {
       if (error instanceof PairingRateLimitedError) { this.close("auth_failed"); return; }
       throw error;
     }
     // pairRelayApproved counted a refused key itself
     this.endPairing(true);
+    if (this.refused) return;
     this.enter(device);
   }
 
