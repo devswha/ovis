@@ -7,11 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { forgetTranscriptState, paneConversation, paneTranscript, toolOutput, transcriptPage } from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
-import { FileBusyError, setFilePoolOptions } from "./file-pool.ts";
+import { FileBusyError, fileTask, setFilePoolOptions } from "./file-pool.ts";
 import { runFileTask } from "./file-tasks.ts";
 import * as herdr from "./herdr/client.ts";
 import * as letta from "./letta.ts";
-import { LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
+import { LettaScanCut, LettaUnavailable, lettaToolOutput, parseLettaTranscript } from "./letta.ts";
 import * as lettaStore from "./letta-store.ts";
 import { isLettaProcess, type LettaProcess, lettaBinding, paneLettaProcess, lettaInStartFolder, lettaLocalOwner, lettaLocalSettings, lettaRecordOwned, lettaOpenedSessions, lettaSessionOf, lettaTranscriptFor, lettaTranscriptHeld, lettaTranscriptPath, parseEnviron, resolveLettaTranscript } from "./letta-store.ts";
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
@@ -122,8 +122,8 @@ describe("Letta transcript", () => {
     expect(tool).toMatchObject({ kind: "tool", output_ref: "Bash-1-1", output_size: long.length });
     expect(lettaToolOutput(path, "Bash-1-1")).toBe(long);
     expect(lettaToolOutput(path, "Bash-9-9")).toBeNull();
-    // past its time limit a scan reads no further and answers as for a call it did not find: its thread is free again
-    expect(lettaToolOutput(path, "Bash-1-1", Date.now() - 1)).toBeNull();
+    // past its time limit a scan reads no further, so its thread is free again, and says it did not get to the end
+    expect(() => lettaToolOutput(path, "Bash-1-1", Date.now() - 1)).toThrow(LettaScanCut);
     expect(lettaToolOutput(path, "Bash-1-1", Date.now() + 60_000)).toBe(long);
     // a link put where the transcript was is not followed
     const link = join(root, "linked.jsonl");
@@ -176,6 +176,30 @@ describe("Letta transcript", () => {
     writeFileSync(path, `${call("Bash-0-0", big)}${call("Bash-1-1", "unfinished").trimEnd()}`);
     expect(lettaToolOutput(path, "Bash-1-1")).toBeNull();
     expect(lettaToolOutput(path, "Bash-0-0")).toBe(big);
+  });
+
+  test("tells a scan cut by its time limit apart from one that read the transcript to its end", () => {
+    const path = join(root, "transcript.jsonl");
+    // two reads long: a line past the first of them, then the call
+    writeFileSync(path, `${call("Bash-0-0", "x".repeat(1024 * 1024))}${call("Bash-1-1", "past the first read")}`);
+    // the clock moves one step each time the scan looks at it, which it does before each read
+    let ticks = 0;
+    const clock = spyOn(Date, "now").mockImplementation(() => ticks++);
+    try {
+      // out of time after the first read, with the rest unread: the call may lie there, or may not
+      expect(() => lettaToolOutput(path, "Bash-1-1", 1)).toThrow(LettaScanCut);
+      ticks = 0;
+      expect(() => lettaToolOutput(path, "Bash-9-9", 1)).toThrow(LettaScanCut);
+      // given the time, it finds the call, or reads to the end and knows there is none
+      ticks = 0;
+      expect(lettaToolOutput(path, "Bash-1-1", 100)).toBe("past the first read");
+      ticks = 0;
+      expect(lettaToolOutput(path, "Bash-9-9", 100)).toBeNull();
+      // out of time only once all the transcript held was read: no such call, as with time to spare
+      writeFileSync(path, call("Bash-1-1", "the only line"));
+      ticks = 0;
+      expect(lettaToolOutput(path, "Bash-9-9", 1)).toBeNull();
+    } finally { clock.mockRestore(); }
   });
 
   test("a file thread reads only the file the lookup authorized, and cuts the output to the cap there", async () => {
@@ -297,6 +321,24 @@ describe("Letta transcript", () => {
     await expect(toolOutput(own.id, "Bash-1-1")).rejects.toBeInstanceOf(FileBusyError);
     setFilePoolOptions();
     expect(await toolOutput(own.id, "Bash-1-1")).toBe("the call's output");
+  });
+
+  test("answers busy, not missing, when the scan ran out of time before the end of the transcript", async () => {
+    const path = join(root, "transcript.jsonl");
+    writeFileSync(path, call("Bash-1-1", "the call's output"));
+    const own = lettaPane(path);
+    // a scan with no time at all, as on a disk too slow to read the transcript within its limit: its
+    // file thread answers that it was cut, which is not "no such call"
+    const { dev, ino } = fs.statSync(path);
+    expect(await fileTask({ op: "letta-output", path, ref: "Bash-1-1", file: { dev, ino }, max: 100, budgetMs: 0 })).toEqual({ cut: true });
+    // the pane's route answers as for a busy pool, for a call the transcript holds and for one it does not
+    setFilePoolOptions({ inline: (task) => runFileTask(task.op === "letta-output" ? { ...task, budgetMs: 0 } : task) });
+    await expect(toolOutput(own.id, "Bash-1-1")).rejects.toBeInstanceOf(FileBusyError);
+    await expect(toolOutput(own.id, "Bash-9-9")).rejects.toBeInstanceOf(FileBusyError);
+    // read to the end, the answers are the output and "not found"
+    setFilePoolOptions();
+    expect(await toolOutput(own.id, "Bash-1-1")).toBe("the call's output");
+    expect(await toolOutput(own.id, "Bash-9-9")).toBeNull();
   });
 
   test("a field the reader does not know falls back, and a ref the output route refuses is not offered", () => {
