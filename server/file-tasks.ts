@@ -7,6 +7,8 @@ import { agyCatalog } from "./agy.ts";
 import type { HistoryEvidence } from "./claude-command-history.ts";
 import { wholeClaudeSubagents } from "./claude-subagents.ts";
 import { paneCommands } from "./commands.ts";
+import type { FileIdentity } from "./conversation-shared.ts";
+import { lettaToolOutputIn } from "./letta.ts";
 import type { ProcessRoots } from "./skills/index.ts";
 import { byteRange, describeWithin, fileInfo, openAuthorized, pageFileHooks, pageWithLocalFiles, pathsByName, release, STREAM_CHUNK_BYTES, type PageMedia, type PageMediaGrant } from "./file-view.ts";
 import { readMarkdownDocuments, walkFiles } from "./files.ts";
@@ -34,6 +36,11 @@ export type FileTask =
   | { op: "documents"; cwd: string; paths: string[] | null; budgetMs?: number }
   /** an Agy ledger's catalog (`agyCatalogOffThread`): its active step indices */
   | { op: "agy-catalog"; path: string }
+  /**
+   * The whole output of the call `ref` names in a Letta transcript (`lettaToolOutputOffThread`), read
+   * only from the file `file` names at `path` and cut to `max` characters before it is answered.
+   */
+  | { op: "letta-output"; path: string; ref: string; file: FileIdentity; max: number }
   /** A Claude agent session's background-task list, read whole with the thread's own parser caches (`wholeClaudeSubagents`). */
   | { op: "claude-tasks"; path: string; live: boolean; since: number | null; history?: HistoryEvidence | null }
   /**
@@ -83,7 +90,7 @@ export interface OpenedFile { size: number; range: [number, number] | "unsatisfi
 export const FAST_DISK_MS = 50;
 const PROBE_BYTES = 64 * 1024;
 
-export type FileTaskResult = FileInfo | FileInfo[] | { documents: MarkdownDocument[]; cut: boolean } | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | RenderedPage | OpenedFile | { info: FileInfo; within: string } | TextTaskResult | null;
+export type FileTaskResult = FileInfo | FileInfo[] | { documents: MarkdownDocument[]; cut: boolean } | string[] | number[] | SlashCommand[] | OmoTask[] | boolean | string | RenderedPage | OpenedFile | { info: FileInfo; within: string } | TextTaskResult | null;
 
 export function runFileTask(task: FileTask): FileTaskResult {
   switch (task.op) {
@@ -94,6 +101,7 @@ export function runFileTask(task: FileTask): FileTaskResult {
     case "walk": return walkFiles(task.cwd);
     case "documents": return readMarkdownDocuments(task.cwd, task.paths, task.budgetMs);
     case "agy-catalog": return [...agyCatalog(task.path)];
+    case "letta-output": return lettaToolOutputIn(task.path, task.ref, task.file, task.max);
     case "claude-tasks": return wholeClaudeSubagents(task.path, task.live, Date.now(), task.since, Date.now() + CLAUDE_TASKS_READ_MS, Date.now, task.history ?? null);
     case "commands": return paneCommands(task.agent, task.cwd, task.home, task.roots, task.version, task.serverEnv);
     case "render": return render(task.path, task.media, task.within ?? null);
