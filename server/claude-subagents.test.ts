@@ -1330,6 +1330,31 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
+    it("holds no longer than LOOP_HOLD_MS past the poll that finds this PC's clock set back since the hold began", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      let now = NOW;
+      const { status, told } = await tracked(s, () => now);
+      try {
+        fire(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // the clock is set back ten minutes with the hold standing, and its turn writes no rest
+        now = NOW - 10 * 60_000;
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // the hold's time runs from that poll at the latest, not from a start ten minutes ahead of this clock
+        now += LOOP_HOLD_MS - 1;
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        now += 1;
+        expect(status.loopHolds("p1")).toBe(false);
+        status.poll();
+        expect(told).toEqual([false, true, false]);
+      } finally { status.stop(); }
+    });
+
     it("lets go by itself, and says so, once no rest was written for LOOP_HOLD_MS", async () => {
       const s = session();
       s.prompt(1);

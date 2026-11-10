@@ -1888,6 +1888,8 @@ export class ClaudeSubagentStatus {
           // since: it stands past that one, or anywhere in a transcript rewritten in place
           if (parent.loopAt === null) turns.loop.since = null;
           else if (parent.loopAt !== turns.loop.fire) turns.loop = { fire: parent.loopAt, since: turns === known ? this.now() : foundFiring(parent.loopTime, this.now()) };
+          // a clock set back while the hold stands would let it outlive its time: it holds from this read at the latest
+          else if (turns.loop.since !== null && turns.loop.since > this.now()) turns.loop.since = this.now();
           // a turn seen at rest is history: a later signal with nothing to place it is not its own
           const latest = turnAt(parent);
           if (resting && latest !== null) turns.retired = Math.max(turns.retired, latest);
