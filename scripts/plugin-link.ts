@@ -461,7 +461,15 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           if (!added) return await elsewhere(back.account);
         }
         // a line whose request went away before it was sent is dropped, and the request asked about now gets a read of its own
-        if (typed !== null && typed.done && typed.stale) typed = open === null ? null : read(options.lines, signal);
+        if (typed !== null && typed.done && typed.stale) {
+          // dropped under a later request's prompt: said, so that prompt shows again beneath it and nobody waits on a line that went nowhere
+          if (open !== null && typed.reply !== undefined && !typed.reply.done) {
+            // the Enter that sent the line ended the prompt's
+            atPrompt = false;
+            say("That line answered nothing: a request went away while it was being typed. Answer again for the one shown now.\n");
+          }
+          typed = open === null ? null : read(options.lines, signal);
+        }
         if (away) {
           // the first call that is answered again: a server that restarted has no window, so it is asked for at once
           if (!added) await api("POST", "/api/relay/link", { headers: { "x-ovis-local-only": "1" } });
@@ -563,8 +571,9 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       }
       // shown first, or again under what was said since
       if (open !== null && !atPrompt) {
-        // what was typed before this prompt showed was not typed for it; a line that comes from here on is
-        if (typed !== null && typed.stale) { if (typed.done) typed = read(options.lines, signal); else typed.stale = false; }
+        // what was typed before this prompt showed was not typed for it. A read still open from the request that went away
+        // stays that request's: handing it to this one would let a line begun there approve a device whose digits were never compared
+        if (typed !== null && typed.stale && typed.done) typed = read(options.lines, signal);
         out(open.prompt);
         atPrompt = true;
       }

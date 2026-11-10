@@ -675,6 +675,33 @@ describe("ovis link, on the PC itself", () => {
     expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
   });
 
+  it("never hands a read begun under a request that went away to the next one: its line answers nothing, also when it comes after the next prompt", async () => {
+    let shown = 0;
+    const { code, out, text, decisions } = await prompting({
+      pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
+      said: (said, type) => {
+        // the y begun at p1's prompt is sent only once p2's prompt is on the screen; the answer to p2 follows at its second showing
+        if (said.includes("Phone p2 wants")) type(++shown === 1 ? "y" : "n");
+      },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(code).toBe(0);
+    expect(text).toContain("That line answered nothing");
+    // p2 is asked again under the notice
+    expect(out.filter((said) => said.includes("Approve?")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
+    expect(decisions).toEqual([{ id: "p2", decision: "decline" }]);
+  });
+
+  it("approves nothing when the only line sent was begun under the request before the one shown", async () => {
+    let typedOnce = false;
+    const { code, decisions } = await prompting({
+      pending: (polls) => polls <= 3 ? ["p1"] : ["p2"],
+      said: (said, type) => { if (said.includes("Phone p2 wants") && !typedOnce) { typedOnce = true; type("y"); } },
+    });
+    expect(code).toBe(1);
+    expect(decisions).toEqual([]);
+  });
+
   it("leaves a request unanswered when the only line typed was for the one before it", async () => {
     const { code, decisions } = await prompting({
       pending: (polls) => polls <= 3 ? ["p1"] : ["p2"],
