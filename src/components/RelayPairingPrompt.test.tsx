@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { RelayPairingPrompt, secondsLeft } from "./RelayPairingPrompt.tsx";
+import { APPROVE_KEY_GUARD_MS, RelayPairingPrompt, aroundDigits, deadlineOf, secondsLeft, takesFocus } from "./RelayPairingPrompt.tsx";
 
 const AT = Date.parse("2026-11-10T00:00:00.000Z");
 const request = (over: Partial<RelayPairingRequest> = {}): RelayPairingRequest => ({ id: "p1", label: "Hako's iPhone", digits: "725403", expires_at: new Date(AT + 90_000).toISOString(), ...over });
@@ -22,14 +22,20 @@ describe("the PC's prompt for a device waiting for approval", () => {
   class HTMLElement {
     isConnected = true;
     focused = 0;
-    constructor(readonly name: string, readonly inside: HTMLElement[] = []) {}
-    focus(): void { this.focused += 1; page.activeElement = this; }
+    /** refuses the focus, as under an inert column */
+    inert = false;
+    /** `within`: what `closest` finds around it, as words of the selectors asked ("textarea", "aria-modal") */
+    constructor(readonly name: string, readonly inside: HTMLElement[] = [], readonly within: string[] = []) {}
+    focus(): void { this.focused += 1; if (!this.inert) page.activeElement = this; }
+    closest(selector: string): HTMLElement | null { return this.within.some((word) => selector.includes(word)) ? this : null; }
     contains(other: unknown): boolean { return other === this || this.inside.some((node) => node.contains(other)); }
   }
   /** the document: what has the focus now */
   let page: { activeElement: HTMLElement | null; body: HTMLElement };
-  /** what had the focus when the prompt arrived */
+  /** what had the focus when the prompt arrived: a button in Settings, a modal dialog */
   let opener: HTMLElement;
+  /** set before show(): the prompts drawn refuse the focus */
+  let inert: boolean;
   /** the node behind each drawn element, by test id or tag */
   let nodes: Map<string, HTMLElement>;
   let renderer: ReactTestRenderer | undefined;
@@ -38,7 +44,8 @@ describe("the PC's prompt for a device waiting for approval", () => {
     decided = [];
     for (const key of keys) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const events = new EventTarget();
-    opener = new HTMLElement("opener");
+    opener = new HTMLElement("opener", [], ["aria-modal"]);
+    inert = false;
     page = { activeElement: opener, body: new HTMLElement("body") };
     nodes = new Map();
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
@@ -75,14 +82,15 @@ describe("the PC's prompt for a device waiting for approval", () => {
   });
 
   const element = (pairings: RelayPairingRequest[]) => createElement(SettingsProvider, null, createElement(RelayPairingPrompt, { pairings }));
-  async function show(pairings: RelayPairingRequest[]): Promise<ReactTestInstance> {
+  async function show(pairings: RelayPairingRequest[], wrap: (drawn: ReturnType<typeof element>) => Parameters<typeof create>[0] = (drawn) => drawn): Promise<ReactTestInstance> {
     const layer = new HTMLElement("layer");
     await act(async () => {
-      renderer = create(element(pairings), { createNodeMock: (drawn) => {
+      renderer = create(wrap(element(pairings)), { createNodeMock: (drawn) => {
         const props = drawn.props as { className?: string; id?: string };
         if (props.className === "relay-pairing-layer") return layer;
         if (drawn.type !== "div" || !props.className?.includes("relay-pairing-prompt")) return null;
         const node = new HTMLElement("prompt");
+        node.inert = inert;
         layer.inside.push(node);
         nodes.set(String((drawn.props as { "aria-labelledby": string })["aria-labelledby"]), node);
         return node;
@@ -95,11 +103,39 @@ describe("the PC's prompt for a device waiting for approval", () => {
   const sentence = (prompt: ReactTestInstance) => text(prompt.find((node) => node.type === "span" && node.props.id === prompt.props["aria-labelledby"]));
   const left = (prompt: ReactTestInstance) => text(prompt.find((node) => node.props["data-testid"] === "relay-pairing-left")).trim();
 
+  const SENTENCE = "{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here. Approve only after {name} accepted the number or shows the same one.";
+  /** a click a pointer made; one a key made has detail 0 */
+  const POINTER = { detail: 1 };
+  const KEY = { detail: 0 };
+
   it("tells the owner to type the number on the other device when this PC waits to be added", async () => {
     const [prompt] = prompts(await show([request({ local_only: true })]));
-    expect(sentence(prompt!)).toBe("Hako's iPhone wants to add this PC to your account. Type 725 403 on Hako's iPhone, then press Approve here. Approve only after Hako's iPhone accepted the number.");
+    // it also holds for a device that came by an ordinary link meanwhile and shows digits to compare
+    expect(sentence(prompt!)).toBe("Hako's iPhone wants to add this PC to your account. Type 725 403 on Hako's iPhone, or check that Hako's iPhone shows the same number, then press Approve here. Approve only after Hako's iPhone accepted the number or shows the same one.");
     expect(text(prompt!.findByType("strong"))).toBe("725 403");
     expect(prompt!.props["data-local-only"]).toBe("true");
+  });
+
+  it("keeps the whole sentence whatever the asking device calls itself", async () => {
+    // the label is the other device's to choose (shared/relay-mux.ts pairLabel limits its length only)
+    for (const label of ["Hako's iPhone\u0000", "\u0000", "{digits}", "a {digits} b {name} c", "$& $1 $`"]) {
+      const [prompt] = prompts(await show([request({ local_only: true, label })]));
+      const drawn = sentence(prompt!);
+      const [before, after] = SENTENCE.split("{digits}").map((part) => part.replaceAll("{name}", () => label));
+      expect(drawn).toBe(`${before}725 403${after}`);
+      expect(drawn.startsWith(`${label} wants to add this PC to your account. Type 725 403 on ${label}, or check`)).toBe(true);
+      expect(drawn.endsWith(`Approve only after ${label} accepted the number or shows the same one.`)).toBe(true);
+      // the digits are drawn once, in their own element, where the sentence put them
+      expect(prompt!.findAllByType("strong").map(text)).toEqual(["725 403"]);
+      await act(async () => { renderer!.unmount(); });
+      renderer = undefined;
+      page.activeElement = opener;
+    }
+    expect(aroundDigits("a {name} {digits} b {name}", "{digits}")).toEqual(["a {digits} ", " b {digits}"]);
+    expect(aroundDigits("no place for them {name}", "x")).toEqual(["no place for them x ", ""]);
+    // and the compared sentence, which ends in the digits
+    const [compared] = prompts(await show([request({ label: "x\u0000{digits}{name}" })]));
+    expect(sentence(compared!)).toBe("x\u0000{digits}{name} wants to pair through the relay. Approve it only if its screen shows 725 403");
   });
 
   it("asks to compare the digits when the other device shows them", async () => {
@@ -124,27 +160,56 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(left(prompts(root)[0]!)).toBe("0 s left");
   });
 
+  it("counts from what the PC said is left, not from a clock that differs from the PC's", async () => {
+    // this window's clock runs two minutes ahead of the PC's: by expires_at the request is long over
+    const fast = request({ expires_at: new Date(AT - 30_000).toISOString(), left_ms: 90_000 });
+    const root = await show([fast]);
+    expect(left(prompts(root)[0]!)).toBe("90 s left");
+    await act(async () => { jest.advanceTimersByTime(60_000); });
+    expect(left(prompts(root)[0]!)).toBe("30 s left");
+    // the list told again (another device asked) carries what is left by then
+    await act(async () => { renderer!.update(element([{ ...fast, left_ms: 30_000 }, request({ id: "p2", label: "desk2", expires_at: new Date(AT - 30_000 + 60_000).toISOString(), left_ms: 90_000 })])); });
+    expect(prompts(root).map(left)).toEqual(["30 s left", "90 s left"]);
+    await act(async () => { jest.advanceTimersByTime(31_000); });
+    expect(prompts(root).map(left)).toEqual(["0 s left", "59 s left"]);
+    // a slow clock: two minutes more by expires_at
+    const slow = request({ id: "p3", expires_at: new Date(Date.now() + 210_000).toISOString(), left_ms: 90_000 });
+    await act(async () => { renderer!.update(element([slow])); });
+    expect(prompts(root).map(left)).toEqual(["90 s left"]);
+    // read once per telling, and a left_ms that is no time falls back to expires_at
+    expect(deadlineOf(slow, Date.now() + 5000)).toBe(Date.now() + 90_000);
+    expect(deadlineOf(request({ left_ms: Number.NaN }), AT)).toBe(AT + 90_000);
+    expect(deadlineOf(request({ left_ms: -1 }), AT)).toBe(AT + 90_000);
+  });
+
   it("shows no time for a request without one it can read", async () => {
     const root = await show([request({ expires_at: "" })]);
     expect(root.findAll((node) => node.props["data-testid"] === "relay-pairing-left")).toEqual([]);
-    expect(secondsLeft("", AT)).toBeNull();
-    expect(secondsLeft(new Date(AT + 1).toISOString(), AT)).toBe(1);
-    expect(secondsLeft(new Date(AT - 5000).toISOString(), AT)).toBe(0);
+    expect(deadlineOf(request({ expires_at: "" }), AT)).toBeNull();
+    expect(secondsLeft(AT + 1, AT)).toBe(1);
+    expect(secondsLeft(AT - 5000, AT)).toBe(0);
   });
 
-  it("is an alertdialog named by its sentence, in a layer labelled for devices", async () => {
+  it("is a named group, not a dialog, in a layer labelled for devices", async () => {
     const root = await show([request()]);
     const [prompt] = prompts(root);
-    expect(prompt!.props.role).toBe("alertdialog");
-    expect(prompt!.props["aria-modal"]).toBe("false");
+    // an alertdialog would count as a cover for every "a dialog is open" check on the page: Escape in
+    // Connect a phone and in the phone drawer, the pane's cover, the web popup's trap
+    expect(prompt!.props.role).toBe("group");
+    expect(prompt!.props["aria-modal"]).toBeUndefined();
+    expect(root.findAll((node) => typeof node.type === "string" && (node.props.role === "alertdialog" || node.props.role === "dialog"))).toEqual([]);
     expect(prompt!.props.tabIndex).toBe(-1);
+    // what a dialog's focus trap lets keep its own Tab (lib/useFocusTrap.ts)
+    expect(String(prompt!.props.className).split(" ")).toContain("relay-pairing-prompt");
     expect(sentence(prompt!)).toContain("Hako's iPhone");
     // the clock is not part of the name, and is not announced each second
     expect(prompt!.find((node) => node.props["data-testid"] === "relay-pairing-left").props["aria-live"]).toBe("off");
-    expect(root.find((node) => node.props.className === "relay-pairing-layer").props["aria-label"]).toBe("Devices waiting for approval");
+    const layer = root.find((node) => node.props.className === "relay-pairing-layer");
+    expect(layer.props["aria-label"]).toBe("Devices waiting for approval");
+    expect(layer.props["aria-live"]).toBe("assertive");
   });
 
-  it("takes the focus on the prompt itself, never on Approve, and gives it back when the prompt goes", async () => {
+  it("takes the focus from a dialog on the prompt itself, never on Approve, and gives it back when the prompt goes", async () => {
     const root = await show([request()]);
     const node = nodeOf(prompts(root)[0]!);
     expect(page.activeElement).toBe(node);
@@ -168,6 +233,67 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(opener.focused).toBe(1);
   });
 
+  it("keeps the focus it took when development runs its effects twice", async () => {
+    // StrictMode (src/main.tsx) runs each effect's cleanup once right after the first run: the hand-back
+    // meant for a prompt that went must not leave the focus in Settings while the prompt is still there
+    const root = await show([request()], (drawn) => createElement(StrictMode, null, drawn));
+    const node = nodeOf(prompts(root)[0]!);
+    expect(page.activeElement).toBe(node);
+    page.activeElement = page.body;
+    await act(async () => { renderer!.unmount(); });
+    renderer = undefined;
+    expect(page.activeElement).toBe(opener);
+  });
+
+  it("leaves the focus in a field the person is typing in, a terminal's included", async () => {
+    // xterm's helper textarea, the chat composer, a field in Settings: the keys on their way (a shell's
+    // Tab, then Enter) must not land on the prompt and walk to Approve
+    for (const field of [new HTMLElement("terminal", [], ["textarea"]), new HTMLElement("composer", [], ["contenteditable"]), new HTMLElement("settings field", [], ["input", "aria-modal"])]) {
+      page.activeElement = field;
+      const root = await show([request()]);
+      const node = nodeOf(prompts(root)[0]!);
+      expect(node.focused).toBe(0);
+      expect(page.activeElement).toBe(field);
+      // nor when another device asks, or the first prompt goes
+      await act(async () => { renderer!.update(element([request(), request({ id: "p2", label: "desk2" })])); });
+      await act(async () => { renderer!.update(element([request({ id: "p2", label: "desk2" })])); });
+      expect(page.activeElement).toBe(field);
+      await act(async () => { renderer!.unmount(); });
+      renderer = undefined;
+      // nothing was taken, so nothing is given back
+      expect(page.activeElement).toBe(field);
+      expect(field.focused).toBe(0);
+    }
+  });
+
+  it("takes the focus only where the prompt could not be reached otherwise", () => {
+    expect(takesFocus(null)).toBe(true);
+    expect(takesFocus(page.body as never)).toBe(true);
+    expect(takesFocus(new HTMLElement("settings button", [], ["aria-modal"]) as never)).toBe(true);
+    // a sidebar row, a header button: Tab reaches the prompt from the page, and their keys stay theirs
+    expect(takesFocus(new HTMLElement("sidebar row") as never)).toBe(false);
+    expect(takesFocus(new HTMLElement("terminal", [], ["textarea"]) as never)).toBe(false);
+    expect(takesFocus(new HTMLElement("settings field", [], ["select", "aria-modal"]) as never)).toBe(false);
+  });
+
+  it("takes nothing, and gives nothing back, when the prompt refuses the focus", async () => {
+    // under an inert pane column (a phone's open drawer) focus() does nothing
+    inert = true;
+    const root = await show([request()]);
+    const node = nodeOf(prompts(root)[0]!);
+    expect(node.focused).toBe(1);
+    expect(page.activeElement).toBe(opener);
+    // the person moves on; the prompt going must not pull the focus back to where it was
+    const elsewhere = new HTMLElement("drawer row");
+    page.activeElement = elsewhere;
+    await act(async () => { renderer!.update(element([request({ id: "p2", label: "desk2" })])); });
+    page.activeElement = page.body;
+    await act(async () => { renderer!.unmount(); });
+    renderer = undefined;
+    expect(page.activeElement).toBe(page.body);
+    expect(opener.focused).toBe(0);
+  });
+
   it("leaves the focus where the person moved it meanwhile", async () => {
     const root = await show([request(), request({ id: "p2", label: "desk2" })]);
     const elsewhere = new HTMLElement("composer");
@@ -181,11 +307,31 @@ describe("the PC's prompt for a device waiting for approval", () => {
     expect(opener.focused).toBe(0);
   });
 
+  it("does not approve by a key in the first second, which was typed before the prompt was there", async () => {
+    const root = await show([request()]);
+    const approve = () => prompts(root)[0]!.findAllByType("button")[0]!;
+    await act(async () => { approve().props.onClick(KEY); });
+    await act(async () => { jest.advanceTimersByTime(APPROVE_KEY_GUARD_MS - 1); });
+    await act(async () => { approve().props.onClick(KEY); });
+    expect(decided).toEqual([]);
+    // a second device starts its own second; the first prompt's has passed
+    await act(async () => { jest.advanceTimersByTime(1); });
+    await act(async () => { renderer!.update(element([request(), request({ id: "p2", label: "desk2" })])); });
+    await act(async () => { prompts(root)[1]!.findAllByType("button")[0]!.props.onClick(KEY); });
+    expect(decided).toEqual([]);
+    await act(async () => { approve().props.onClick(KEY); });
+    expect(decided).toEqual([["/api/relay/pairing", { id: "p1", decision: "approve" }]]);
+    // a pointer's click was aimed at the prompt: at once
+    await act(async () => { prompts(root)[1]!.findAllByType("button")[0]!.props.onClick(POINTER); });
+    expect(decided[1]).toEqual(["/api/relay/pairing", { id: "p2", decision: "approve" }]);
+  });
+
   it("still approves and declines through decideRelayPairing", async () => {
     const root = await show([request(), request({ id: "p2", label: "desk2", local_only: true })]);
     const [first, second] = prompts(root);
-    await act(async () => { first!.findAllByType("button")[0]!.props.onClick(); });
-    await act(async () => { second!.findAllByType("button")[1]!.props.onClick(); });
+    await act(async () => { first!.findAllByType("button")[0]!.props.onClick(POINTER); });
+    // declining is never held back
+    await act(async () => { second!.findAllByType("button")[1]!.props.onClick(KEY); });
     expect(decided).toEqual([["/api/relay/pairing", { id: "p1", decision: "approve" }], ["/api/relay/pairing", { id: "p2", decision: "decline" }]]);
   });
 });

@@ -450,7 +450,7 @@ const BASE: Record<string, string> = {
   "Approve": "承認",
   "Devices waiting for approval": "承認待ちのデバイス",
   "{name} wants to pair through the relay. Approve it only if its screen shows": "{name} がリレー経由でペアリングしようとしています。その画面に次の数字が表示されている場合だけ承認してください:",
-  "{name} wants to add this PC to your account. Type {digits} on {name}, then press Approve here. Approve only after {name} accepted the number.": "{name} がこの PC をアカウントに追加しようとしています。{name} で {digits} を入力してから、ここで「承認」を押してください。{name} が数字を受け付けた後にだけ承認してください。",
+  "{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here. Approve only after {name} accepted the number or shows the same one.": "{name} がこの PC をアカウントに追加しようとしています。{name} で {digits} を入力するか、{name} に同じ数字が表示されていることを確認してから、ここで「承認」を押してください。{name} が数字を受け付けた後、または同じ数字を表示している場合にだけ承認してください。",
   "{n} s left": "残り {n} 秒",
   "Decline": "拒否",
   "differs": "不一致",

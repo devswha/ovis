@@ -132,9 +132,10 @@ export function useFocusTrap<T extends HTMLElement>(open: boolean, options: Focu
       if (event.key !== "Tab" || openTraps.at(-1) !== trap || typeAheadFocused()) return;
       const node = surface.current;
       if (!node || nativeModalOver(node)) return;
-      // another dialog or menu that has the focus (a row's action sheet over the drawer) keeps its own Tab
+      // another dialog or menu that has the focus (a row's action sheet over the drawer) keeps its own Tab;
+      // so does a device waiting for approval, a banner over every dialog that is no dialog itself
       const holder = document.activeElement;
-      if (holder instanceof Element && !node.contains(holder) && holder.closest('[role="dialog"], [role="alertdialog"], [role="menu"]') !== null) return;
+      if (holder instanceof Element && !node.contains(holder) && holder.closest('[role="dialog"], [role="alertdialog"], [role="menu"], .relay-pairing-prompt') !== null) return;
       const stops = tabStops(node, latest.current);
       // every control disabled (a deed that cannot be undone): Tab goes nowhere rather than out
       if (stops.length === 0) { event.preventDefault(); return; }

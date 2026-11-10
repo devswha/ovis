@@ -452,7 +452,7 @@ const BASE: Record<string, string> = {
   "Approve": "批准",
   "Devices waiting for approval": "等待批准的设备",
   "{name} wants to pair through the relay. Approve it only if its screen shows": "{name} 想通过中继配对。只有它的屏幕显示以下数字时才批准:",
-  "{name} wants to add this PC to your account. Type {digits} on {name}, then press Approve here. Approve only after {name} accepted the number.": "{name} 想把这台电脑添加到你的账户。请在 {name} 上输入 {digits}，然后在这里点击“批准”。只有在 {name} 接受该数字后才批准。",
+  "{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here. Approve only after {name} accepted the number or shows the same one.": "{name} 想把这台电脑添加到你的账户。请在 {name} 上输入 {digits}，或确认 {name} 显示相同的数字，然后在这里点击“批准”。只有在 {name} 接受该数字或显示相同数字后才批准。",
   "{n} s left": "剩余 {n} 秒",
   "Decline": "拒绝",
   "differs": "不同",

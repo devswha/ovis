@@ -448,7 +448,7 @@ const BASE: Record<string, string> = {
   "Approve": "승인",
   "Devices waiting for approval": "승인을 기다리는 기기",
   "{name} wants to pair through the relay. Approve it only if its screen shows": "{name}에서 릴레이로 연결하려고 합니다. 그 화면에 다음 숫자가 보일 때만 승인하세요:",
-  "{name} wants to add this PC to your account. Type {digits} on {name}, then press Approve here. Approve only after {name} accepted the number.": "{name}에서 이 PC를 계정에 추가하려고 합니다. {name}에 숫자 {digits} 입력 후 여기서 승인을 누르세요. {name}에서 숫자가 받아들여진 뒤에만 승인하세요.",
+  "{name} wants to add this PC to your account. Type {digits} on {name}, or check that {name} shows the same number, then press Approve here. Approve only after {name} accepted the number or shows the same one.": "{name}에서 이 PC를 계정에 추가하려고 합니다. {name}에 숫자 {digits} 입력 후, 또는 {name} 화면에 같은 숫자가 보이는지 확인한 후 여기서 승인을 누르세요. {name}에서 숫자가 받아들여졌거나 같은 숫자가 보일 때만 승인하세요.",
   "{n} s left": "{n}초 남음",
   "Decline": "거절",
   "differs": "다름",

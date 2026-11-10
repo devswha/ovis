@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { RelayPairingRequest } from "../../shared/machines.ts";
 import { privateStateFs } from "../private-state.ts";
 import { PAIRING_WINDOW_MS, RelayPairingApprovals, pairingWindowFs } from "./pairing-approvals.ts";
 
@@ -326,5 +327,35 @@ describe("what the PC's own windows are told of a waiting request", () => {
     // what members are told carries no such field either
     expect(approvals.remoteList()).toHaveLength(1);
     expect("local_only" in approvals.remoteList()[0]!).toBe(false);
+  });
+
+  // nothing here tells which device shows digits and which takes them typed: the mark is the PC's
+  // window, and a plain link asked meanwhile must not hand what the add-me screen waits for to members
+  it("keeps the mark, and the request off members' screens, when an ordinary link is asked for meanwhile", () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.openWindow(f.clock.at, { localOnly: true });
+    f.clock.at += 60_000;
+    approvals.openWindow(f.clock.at);
+    expect(approvals.localOnlyOpen()).toBe(true);
+    approvals.ask("phone", "123456", f.clock.at + 90_000, device);
+    expect(approvals.list()[0]!.local_only).toBe(true);
+    expect(approvals.remoteList()).toEqual([]);
+  });
+
+  it("says how long each request still waits by this PC's clock, never below 0", () => {
+    const f = fixture();
+    const approvals = f.open();
+    approvals.openWindow(f.clock.at);
+    approvals.ask("phone", "123456", f.clock.at + 90_000, device);
+    expect(approvals.list()[0]!.left_ms).toBe(90_000);
+    f.clock.at += 30_500;
+    // counted again at each telling: a window that subscribes late hears what is left now
+    const seen: RelayPairingRequest[][] = [];
+    approvals.subscribe((pairings) => seen.push(pairings));
+    expect(seen[0]![0]!.left_ms).toBe(59_500);
+    expect(seen[0]![0]!.expires_at).toBe(new Date(f.clock.at + 59_500).toISOString());
+    f.clock.at += 120_000;
+    expect(approvals.list()[0]!.left_ms).toBe(0);
   });
 });

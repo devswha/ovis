@@ -242,6 +242,7 @@ run_script scripts/phone-worktree-sheet-regression.ts
 run_script scripts/preferences-sync-regression.ts
 run_script scripts/machine-dialog-regression.ts
 run_script scripts/machine-conflict-regression.ts
+run_script scripts/relay-pairing-prompt-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
 # runs relay-shell-browser-qa.ts and relay-media-browser-qa.ts too
