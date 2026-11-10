@@ -300,8 +300,8 @@ it is off, and wait until it is online.
   y/N. That approval is this PC's own, as on its screen: the window it opens takes approvals from
   this PC only. The waiting goes on under that question: a request that stops waiting unanswered
   is dropped with a line saying so, a line typed after it answers nothing, and an answer the server
-  did not take is asked for again rather than sent a second time. It asks for that window again every 30 seconds, and every nine minutes it lists the
-  PC anew so the account's devices keep showing it as new; a renewal the account service does not
+  did not take is asked for again rather than sent a second time. It asks for that window again every 30 seconds, and every nine minutes, and once more with its last window, it lists the
+  PC anew so the account's devices keep showing it as new until the run ends; a line typed for a request that went away answers no later request; a renewal the account service does not
   take is tried again until it is, so the PC never stays off the list. An Ovis server that stops
   answering meanwhile (a restart, an update) does not end the command: it waits, keeping the
   sign-in, and asks for the window again with the first call the server answers. It ends well only

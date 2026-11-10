@@ -165,7 +165,11 @@ function answer(lines: AsyncIterator<string>, signal: AbortSignal): Promise<Iter
 }
 
 /** A line being read at a prompt: `done` once it came (`reply`) or the reading failed (`failed`, Ctrl+C among them). */
-interface Typed { done: boolean; reply?: IteratorResult<string>; failed?: unknown; readonly settled: Promise<void> }
+interface Typed {
+  done: boolean; reply?: IteratorResult<string>; failed?: unknown; readonly settled: Promise<void>;
+  /** the request it was read for went away while it was still being typed: its line answers nothing */
+  stale?: boolean;
+}
 
 /** Reads the next answer without waiting for it, so what asked can go on with its work meanwhile. */
 function read(lines: AsyncIterator<string>, signal: AbortSignal): Typed {
@@ -415,6 +419,20 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
       "Its request shows here to approve. Press Ctrl+C to stop.",
       "",
     ].join("\n"));
+    // it is not this account's PC: its entry there, whose Add could not work, goes, and nothing puts it back
+    const elsewhere = async (account: string): Promise<number> => {
+      pending.listing = null;
+      const unlistedThere = await service.deletePc(first.serverId).then(() => true, () => false);
+      // its relay pass is asked under the account it is in, not the one that signed in here
+      await api("POST", "/api/account/relay-account", { body: { account } }).catch(() => undefined);
+      say(`This PC joined another Ovis account (${shortId(account)}), not the one you signed in to (${shortId(signedIn)}). ${unlistedThere ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
+      return 1;
+    };
+    // how long the last look took, and whether the run's last window was asked for
+    let lookMs = 0;
+    let lastAsked = false;
+    // the last look that may still open a window: one more look would come too late for it, whatever a look takes
+    const lastLook = () => !lastAsked && mayOpen() && now() + POLL_MS + lookMs > stopAt - WINDOW_MS;
     const asked = new Set<string>();
     // the request the terminal asks about: one at a time, and the waiting goes on while it is unanswered
     let open: { id: string; label: string; prompt: string } | null = null;
@@ -425,6 +443,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
     let atPrompt = false;
     const say = (text: string): void => { out(atPrompt ? `\n${text}` : text); atPrompt = false; };
     for (;;) {
+      const lookAt = now();
       try {
         if (away && !added && !mayOpen()) {
           // one unanswered call is not a restart, and the PC may have been added meanwhile: that is looked at first
@@ -437,8 +456,12 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
             say("The Ovis on this PC stopped answering, too close to this run's 30 minutes to open its approval window again. Run this again once it is back.\n");
             return 1;
           }
-          added = true;
+          // in another account: said as such below, never counted as added to this one
+          added = back.account === signedIn;
+          if (!added) return await elsewhere(back.account);
         }
+        // a line whose request went away before it was sent is dropped, and the request asked about now gets a read of its own
+        if (typed !== null && typed.done && typed.stale) typed = open === null ? null : read(options.lines, signal);
         if (away) {
           // the first call that is answered again: a server that restarted has no window, so it is asked for at once
           if (!added) await api("POST", "/api/relay/link", { headers: { "x-ovis-local-only": "1" } });
@@ -476,6 +499,8 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           say(`${shown.label} is no longer waiting.\n`);
           open = null;
           if (typed !== null && typed.done) typed = null;
+          // still being typed: whatever it brings was meant for the request that is gone, not for the next one shown
+          else if (typed !== null) typed.stale = true;
         }
         const next = open === null ? pairings.find((pairing) => !asked.has(pairing.id)) : undefined;
         if (next !== undefined) {
@@ -484,18 +509,10 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           const what = next.intent === "account" ? "join your account" : "pair with this PC";
           open = { id: next.id, label, prompt: `${label} wants to ${what}. Approve it only if its screen shows ${next.digits.slice(0, 3)} ${next.digits.slice(3)}. Approve? [y/N] ` };
           // a line that came while nothing was asked answers nothing
-          if (typed === null || typed.done) typed = read(options.lines, signal);
+          if (typed === null || (typed.done && !typed.stale)) typed = read(options.lines, signal);
         }
         const joined = await status();
-        if (joined.account !== null && joined.account !== signedIn) {
-          // it is not this account's PC: its entry there, whose Add could not work, goes, and nothing puts it back
-          pending.listing = null;
-          const unlistedThere = await service.deletePc(first.serverId).then(() => true, () => false);
-          // its relay pass is asked under the account it is in, not the one that signed in here
-          await api("POST", "/api/account/relay-account", { body: { account: joined.account } }).catch(() => undefined);
-          say(`This PC joined another Ovis account (${shortId(joined.account)}), not the one you signed in to (${shortId(signedIn)}). ${unlistedThere ? "It was taken off the list of the account you signed in to." : "It could not be taken off the list of the account you signed in to; remove it there."} If that was not you, open Settings → Devices and PCs on this PC and choose Revoke all.\n`);
-          return 1;
-        }
+        if (joined.account !== null && joined.account !== signedIn) return await elsewhere(joined.account);
         if (joined.account !== null && joined.enrolling !== true) {
           say(`This PC is in your account (${shortId(joined.account)}): every device of your account can use it.\n`);
           return 0;
@@ -508,7 +525,9 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         }
         if (!added && now() < stopAt) {
           if (pending.listing !== null && await putListing(service, pending.listing)) pending.listing = null;
-          if (now() - listedAt >= RELIST_MS && mayOpen()) {
+          const last = lastLook();
+          // also with the last look: the card on the account's devices then shows as new until this run's end, as the window does
+          if ((now() - listedAt >= RELIST_MS || last) && mayOpen()) {
             // a renewal that failed after its DELETE went out keeps waiting: the listing is put back above, as after a failed PUT.
             // None in the last ten minutes: it would show the PC as new for ten more, past the window's end
             try { await listThisPc(api, service, now, pending); } catch (error) {
@@ -517,9 +536,11 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
             if (pending.listing !== null) say(unlisted);
             listedAt = now();
             openedAt = listedAt;
+            if (last) lastAsked = true;
           }
           // the last look that may still open one asks too, so the last window ends with the run, not up to 30 seconds before it
-          if (mayOpen() && (now() - openedAt >= REOPEN_MS || now() + POLL_MS > stopAt - WINDOW_MS)) {
+          if (mayOpen() && (now() - openedAt >= REOPEN_MS || (last && !lastAsked))) {
+            if (last) lastAsked = true;
             // the window alone, not the listing: a server that restarted meanwhile takes requests again
             await api("POST", "/api/relay/link", { headers: { "x-ovis-local-only": "1" } });
             openedAt = now();
@@ -533,6 +554,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
           say("The Ovis on this PC is not answering (is it restarting?). Waiting for it…\n");
         }
       }
+      lookMs = now() - lookAt;
       if (now() >= stopAt) {
         say(added
           ? "Stopped waiting after 30 minutes: this PC is in your account, but its other devices are not in yet. Open the Ovis app on the phone that added it, then run this again.\n"
@@ -540,11 +562,17 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         return 1;
       }
       // shown first, or again under what was said since
-      if (open !== null && !atPrompt) { out(open.prompt); atPrompt = true; }
+      if (open !== null && !atPrompt) {
+        // what was typed before this prompt showed was not typed for it; a line that comes from here on is
+        if (typed !== null && typed.stale) { if (typed.done) typed = read(options.lines, signal); else typed.stale = false; }
+        out(open.prompt);
+        atPrompt = true;
+      }
       // the answer is already there: it is sent before any waiting
-      if (open !== null && typed !== null && typed.done) continue;
+      // (not while the PC's server is away: nothing can be sent, and looking again at once would spin)
+      if (!away && open !== null && typed !== null && typed.done && !typed.stale) continue;
       try {
-        if (open === null || typed === null) await wait(POLL_MS, signal);
+        if (open === null || typed === null || typed.done) await wait(POLL_MS, signal);
         else {
           // the poll's wait ends early when the answer comes
           const early = new AbortController();
