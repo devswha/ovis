@@ -2,7 +2,9 @@
 - `bun scripts/plugin.ts add` and `login` now run `link`, the terminal command that signs a PC with
   no screen in and adds it to your account. While it waits it reopens its approval window every 30
   seconds and waits for an Ovis server that restarts instead of ending the sign-in, so a restart no
-  longer leaves the window closed for up to nine minutes. It stops by itself after 30 minutes.
+  longer leaves the window closed for up to nine minutes. It stops by itself after 30 minutes, also
+  with a request left unanswered at its y/N question, and asks again about a request whose answer
+  did not reach the server.
 
 ### Fixed
 - `link` no longer reports "This PC is in your account" before that is true: it waits until the
