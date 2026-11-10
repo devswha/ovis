@@ -724,12 +724,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
         throw error;
       };
-      // a turn begun since the paste: herdr's working turns an automatic send away; the queue's hold (a busy signal's, a
-      // /loop wakeup's that herdr has not told yet, #3494) also one queued and typed at once, whose Enter would go into
-      // the turn at work with nothing to say it steers. Read after pendingContext, whose snapshot polls the transcript
-      const turned = (context: { working: boolean }): boolean => (automatic && context.working) || ((automatic || queued) && queueHeld(paneId));
+      // a turn begun since the paste, which herdr tells, turns an automatic send away. One herdr has not told yet is the
+      // queue's hold to find, asked last of all below
       let beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
-      if (turned(beforeEnter)) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
+      if (automatic && beforeEnter.working) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
       authorizePending(owner, paneId, lease);
       // Capture Pi's exact active transcript position before Enter. Status is deliberately not
       // evidence: Pi can report idle/done while its TUI is staging an automatic-compaction input.
@@ -737,13 +735,18 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const piAnchor = piTracked ? await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null) : undefined;
       if (piAnchor !== undefined) {
         beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
-        if (turned(beforeEnter)) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
+        if (automatic && beforeEnter.working) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
         await stillInFront(paneId, beforeCapturePid, identity, agentOnly).catch(enterRefused);
       }
       // its Enter only into the agent it was pasted for, never once the shell is in front or Codex's queue collapsed
       if (agentOnly && !beforeEnter.agentInFront) enterRefused(new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message));
       if (agentOnly && beforeEnter.collapsed) enterRefused(new HerdrError("agent_blocked", "The agent is waiting for an answer in the terminal"));
       await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity).catch(enterRefused);
+      // the queue's hold (a busy signal's, a /loop wakeup's that herdr has not told yet, #3494), read from the transcript
+      // after the last of those reads and with no wait before the Enter: a wakeup that fired during any of them gets
+      // none. It turns away an automatic send and one queued and typed at once, whose Enter would go into the turn at
+      // work with nothing to say it steers. Only a wakeup that fires during the key's own write is not seen
+      if ((automatic || queued) && queueHeld(paneId, true)) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
       authorizePending(owner, paneId, lease);
       const steering = !automatic && beforeEnter.working;
       committing(steering);

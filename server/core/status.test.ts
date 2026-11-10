@@ -1025,6 +1025,39 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       expect(writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
     });
 
+    it.each([
+      { sent: "queued behind a turn", during: "its last look at the pane", read: 1 },
+      { sent: "queued behind a turn", during: "its check for a masked prompt, the last read before the Enter", read: 2 },
+      { sent: "typed at once", during: "its last look at the pane", read: 1 },
+      { sent: "typed at once", during: "its check for a masked prompt, the last read before the Enter", read: 2 },
+    ] as const)("sends no Enter for a message $sent when the wakeup fires after its paste, during $during", async ({ sent, read }) => {
+      const d = await delivering();
+      const { h, writes, submit, flush, waiting, results } = d;
+      const id = h.pane.pane_id;
+      // Given a wakeup that fires at one of the two reads of the screen the delivery makes between its paste and its Enter.
+      const fired = { yet: false };
+      let reads = 0;
+      d.on.paste = () => { delete d.on.paste; d.on.read = () => { if (++reads === read) { fired.yet = true; fires(h.path); } }; };
+      if (sent === "typed at once") await submit(20, "late");
+      else {
+        h.next();
+        h.herdrSays({ ...h.pane, agent_status: "working" });
+        handlers.onStatus(id, "working", "claude");
+        await submit(20, "late");
+        turnEnds(h);
+        h.herdrSays(h.pane);
+        handlers.onStatus(id, "idle", "claude");
+      }
+      await flush();
+      expect(fired.yet).toBe(true);
+      // Then the hold, read from the transcript after that last read, stops the Enter: the paste stays, not confirmed.
+      expect(writes).toEqual(["paste \u001b[200~late\u001b[201~"]);
+      if (sent === "typed at once") {
+        expect(results()).toMatchObject([{ id: 20, ok: false, code: "submit_changed" }]);
+        expect(waiting()).toEqual([]);
+      } else expect(waiting()).toEqual(["uncertain"]);
+    });
+
     it("types nothing into the second of two loops' turns when the first was short, and sends the message at its rest", async () => {
       const d = await delivering();
       const { h, writes, submit, flush, waiting } = d;
