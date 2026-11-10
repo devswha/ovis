@@ -832,6 +832,36 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       expect(waiting()).toEqual([]);
     });
 
+    it("sends no Enter for a message typed at once when the wakeup fires as it is pasted, and leaves the queue free", async () => {
+      const d = await delivering();
+      const { h, writes, submit, flush, waiting, results } = d;
+      // Given a pane at rest with nothing waiting, and a wakeup that fires during the paste itself.
+      d.on.paste = () => { delete d.on.paste; fires(h.path); };
+      await submit(14, "now");
+      await flush();
+      // Then its Enter is not sent into the resumed turn: the paste stays in Claude's input line, and the send is answered as not confirmed.
+      expect(writes).toEqual(["paste \u001b[200~now\u001b[201~"]);
+      expect(results()).toMatchObject([{ id: 14, ok: false, code: "submit_changed" }]);
+      // No copy of it waits to be typed a second time, and the queue is not stuck behind it.
+      expect(waiting()).toEqual([]);
+      turnEnds(h); h.poll();
+      await submit(16, "after");
+      await flush();
+      expect(writes.slice(1)).toEqual(["paste \u001b[200~after\u001b[201~", "keys Enter"]);
+    });
+
+    it("still commits a message typed at once into a turn herdr tells as it is pasted: only the queue's hold stops its Enter", async () => {
+      const d = await delivering();
+      const { h, writes, submit, flush, results } = d;
+      // When a turn of the person's begins during the paste, which herdr reads at once.
+      d.on.paste = () => { delete d.on.paste; h.next(); h.herdrSays({ ...h.pane, agent_status: "working" }); };
+      await submit(17, "steer");
+      await flush();
+      // Then it is sent into that turn as before (Claude Code takes Ctrl+Enter now): no hold of the queue's says otherwise.
+      expect(writes).toEqual(["paste \u001b[200~steer\u001b[201~", "keys ctrl+enter"]);
+      expect(results()).toMatchObject([{ id: 17, ok: true }]);
+    });
+
     it("leaves a paste uncommitted when the wakeup fires between a queued message's paste and its Enter", async () => {
       const d = await delivering();
       const { h, writes, submit, flush, waiting } = d;

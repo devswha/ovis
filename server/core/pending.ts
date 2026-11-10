@@ -724,8 +724,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
         throw error;
       };
+      // a turn begun since the paste: herdr's working turns an automatic send away; the queue's hold (a busy signal's, a
+      // /loop wakeup's that herdr has not told yet, #3494) also one queued and typed at once, whose Enter would go into
+      // the turn at work with nothing to say it steers. Read after pendingContext, whose snapshot polls the transcript
+      const turned = (context: { working: boolean }): boolean => (automatic && context.working) || ((automatic || queued) && queueHeld(paneId));
       let beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
-      if (automatic && (beforeEnter.working || queueHeld(paneId))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
+      if (turned(beforeEnter)) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
       authorizePending(owner, paneId, lease);
       // Capture Pi's exact active transcript position before Enter. Status is deliberately not
       // evidence: Pi can report idle/done while its TUI is staging an automatic-compaction input.
@@ -733,7 +737,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const piAnchor = piTracked ? await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null) : undefined;
       if (piAnchor !== undefined) {
         beforeEnter = await pendingContext(owner, paneId, lease, identity, true, agentOnly).catch(enterRefused);
-        if (automatic && (beforeEnter.working || queueHeld(paneId))) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
+        if (turned(beforeEnter)) enterRefused(new HerdrError("pending_wait", "The agent started another turn before this queued message could be committed"));
         await stillInFront(paneId, beforeCapturePid, identity, agentOnly).catch(enterRefused);
       }
       // its Enter only into the agent it was pasted for, never once the shell is in front or Codex's queue collapsed
