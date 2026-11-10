@@ -146,6 +146,9 @@ export async function repositoryOf(folder: string): Promise<Repository> {
   const where = await git(folder, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--git-dir"]);
   const [top, common, own] = where.stdout.split("\n");
   if (!where.ok || !top || !common || !own) throw new WorktreeError("not_git_worktree", `${folder} is not in a git worktree`);
+  // git before 2.31 knows no --path-format and writes the switch back as its first line, so the three
+  // answers would be read one line off: refused, as its rejected -z refused the listing before
+  if (!isAbsolute(top) || !isAbsolute(common) || !isAbsolute(own)) throw new WorktreeError("worktree_list_failed", "git on this PC is older than 2.31, which worktrees here need");
   let listed = await git(folder, ["worktree", "list", "--porcelain", "-z"]);
   // git before 2.36 (Ubuntu 22.04 has 2.34) knows no -z and answers with its usage: it lists by line
   const byLine = !listed.ok && /\bunknown switch\b/u.test(listed.stderr);

@@ -812,9 +812,11 @@ describe("herdr-core adapter, new and closed terminals", () => {
   }
   /**
    * A git before 2.36 (2.34 on Ubuntu 22.04), first on the PATH until the test ends: its
-   * `worktree list` has no -z and answers one with its usage. Every other call is this PC's git.
+   * `worktree list` has no -z and answers one with its usage, leaving `git.rejected` beside itself
+   * each time. `before231`: nor does its `rev-parse` know --path-format, which it writes back as a
+   * line of its answer (2.25 on Ubuntu 20.04, 2.30 on Debian 11). Every other call is this PC's git.
    */
-  function gitBefore236(dir: string) {
+  function gitBefore236(dir: string, before231 = false) {
     const real = Bun.which("git")!;
     const bin = join(dir, "git-2.34");
     mkdirSync(bin);
@@ -824,10 +826,20 @@ describe("herdr-core adapter, new and closed terminals", () => {
       'for arg in "$@"; do',
       '  [ "$arg" = list ] && list=1',
       '  if [ "$list" = 1 ] && [ "$arg" = -z ]; then',
+      '    : > "$0.rejected"',
       "    printf '%s\\n' \"error: unknown switch \\`z'\" 'usage: git worktree add [<options>] <path> [<commit-ish>]' '   or: git worktree list [<options>]' >&2",
       "    exit 129",
       "  fi",
       "done",
+      ...(before231 ? [
+        'for arg in "$@"; do',
+        '  if [ "$arg" = --path-format=absolute ]; then',
+        "    echo --path-format=absolute",
+        '    for kept do shift; [ "$kept" = --path-format=absolute ] || set -- "$@" "$kept"; done',
+        "    break",
+        "  fi",
+        "done",
+      ] : []),
       `exec '${real}' "$@"`,
       "",
     ].join("\n"), { mode: 0o755 });
@@ -948,6 +960,8 @@ describe("herdr-core adapter, new and closed terminals", () => {
     const { socket } = await labeling([terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
 
     const listed = await worktreeList("S", socket);
+    // the stand-in was the git asked, with -z first: a git that has it is never listed by line
+    expect(existsSync(join(dir, "git-2.34", "git.rejected"))).toBeTrue();
     expect(listed.source).toMatchObject({ repo_root: repo, repo_name: '앱 "old" git', source_checkout_path: repo, source_workspace_id: "S" });
     expect(listed.worktrees).toEqual([
       expect.objectContaining({ path: repo, branch: "main", is_detached: false, is_linked_worktree: false, open_workspace_id: "S" }),
@@ -960,6 +974,14 @@ describe("herdr-core adapter, new and closed terminals", () => {
     expect((await worktreeList("S", socket)).worktrees.map((worktree) => [worktree.path, worktree.open_workspace_id])).toEqual([[repo, "S"], [join(dir, "detached"), null], [checkout, created.workspace.workspace_id]]);
     expect(await worktreeRemove(created.workspace.workspace_id, false, socket)).toMatchObject({ type: "worktree_removed", path: checkout });
     expect(existsSync(checkout)).toBeFalse();
+  });
+
+  it("refuses the listing of a git before 2.31, whose rev-parse answers are one line off", async () => {
+    const { dir, repo } = repository();
+    gitBefore236(dir, true);
+    const { socket } = await labeling([terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } })]);
+    // not a listing read from the wrong lines (the switch as the checkout, the checkout as the repository)
+    await expect(worktreeList("S", socket)).rejects.toMatchObject({ code: "worktree_list_failed", message: expect.stringContaining("older than 2.31") });
   });
 
   it("reads git's line listing of checkouts as its -z one, each path as it is", () => {
