@@ -207,6 +207,103 @@ open_app() {
   fi
 }
 
+# The folder of the code that runs for the checkout $1 (bun -e "$(release_js)" <checkout>): the release
+# Settings → Updates installed for it, or the checkout itself. JavaScript, with no single quote in it,
+# since the launcher keeps it in one. It finds what scripts/plugin.ts finds, the same way:
+# - the settings: the shell's own, then the plugin's `env` and `.env` files (KEY=value lines, read and
+#   never run; `.env` wins, and a file wins over the shell), each with its names from before the rename
+#   (readEnvFile, mergeEnvLayers). The files are in HERDR_PLUGIN_CONFIG_DIR, else the folder herdr
+#   names for the plugin, else ~/.config/ovis;
+# - the state dir: OVIS_STATE_DIR, else ovis under XDG_CONFIG_HOME or ~/.config, or herdr-web-ui there
+#   while that still holds state of its own (defaultStateDir);
+# - the port: PORT, else the one a start settled on (<state>/plugin-port), else 7317;
+# - the release: updates/<the first 16 of sha256("<checkout>:<port>")>/current.json and no other
+#   folder, taken only while it names the checkout's commit and a release-* folder of its own
+#   (updateStateDir, activePluginScript). Another port's folder, or another checkout's at the same
+#   commit, is some other server's release.
+release_js() {
+  cat <<'EOF'
+  const { createHash } = await import("node:crypto");
+  const { existsSync, readFileSync, readdirSync, realpathSync, statSync } = await import("node:fs");
+  const { homedir } = await import("node:os");
+  const { basename, dirname, join, resolve, sep } = await import("node:path");
+  const root = process.argv[1];
+  let found = root;
+  try {
+    const FILES = ["env", ".env"];
+    const IDS = ["devswha.ovis", "devswha.herdr-web-ui"];
+    const holds = (dir) => FILES.some((name) => existsSync(join(dir, name)));
+    const own = (parent) => existsSync(join(parent, "ovis")) || !existsSync(join(parent, "herdr-web-ui")) ? join(parent, "ovis") : join(parent, "herdr-web-ui");
+    const asked = () => {
+      const herdr = Bun.which("herdr");
+      if (herdr === null) return null;
+      for (const id of IDS) {
+        try {
+          const run = Bun.spawnSync([herdr, "plugin", "config-dir", id], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 3000 });
+          const dir = run.exitCode === 0 ? run.stdout.toString().trim() : "";
+          if (dir !== "" && holds(dir)) return dir;
+        } catch { return null; }
+      }
+      return null;
+    };
+    let config = process.env.HERDR_PLUGIN_CONFIG_DIR ?? asked() ?? own(join(homedir(), ".config"));
+    // the new id has no settings yet: scripts/plugin.ts copies the old id there and reads them
+    if (basename(config) === IDS[0] && !holds(config)) config = join(dirname(config), IDS[1]);
+    const read = (file) => {
+      const vars = {};
+      for (const line of readFileSync(file, "utf8").split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0 || trimmed.startsWith("#")) continue;
+        const eq = trimmed.indexOf("=");
+        if (eq <= 0) continue;
+        vars[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim().replace(/^["\x27]|["\x27]$/g, "");
+      }
+      return vars;
+    };
+    const env = {};
+    for (const layer of [process.env, ...FILES.map((name) => join(config, name)).filter((file) => existsSync(file)).map(read)]) {
+      const named = { ...layer };
+      for (const [name, value] of Object.entries(layer)) {
+        if (!name.startsWith("HERDR_WEB_") || value === undefined) continue;
+        const next = name === "HERDR_WEB_UI_REF" ? "OVIS_REF" : "OVIS_" + name.slice("HERDR_WEB_".length);
+        if (named[next] === undefined) named[next] = value;
+      }
+      Object.assign(env, named);
+    }
+    const isDir = (path) => { try { return statSync(path).isDirectory(); } catch { return false; } };
+    const same = (left, right) => { try { return readFileSync(left).equals(readFileSync(right)); } catch { return false; } };
+    const COPIES = ["devices.json", "preferences.json", "muted-panes.json", "preferences-id.json", "state-merge.json", "state-merge-devices-incomplete.json"];
+    // the dir under the old name holds state of its own: more than the bridge registry and the merge copies
+    const ownState = (legacy, next) => {
+      try {
+        if (!isDir(legacy)) return false;
+        const entries = readdirSync(legacy);
+        if (entries.length === 0 || isDir(next) && realpathSync(legacy) === realpathSync(next)) return false;
+        return !entries.every((entry) => entry === "bridges" || entry === "state-merge-backups" || COPIES.includes(entry) && same(join(legacy, entry), join(next, entry)));
+      } catch { return false; }
+    };
+    const base = env.XDG_CONFIG_HOME || join(homedir(), ".config");
+    const state = env.OVIS_STATE_DIR || (ownState(join(base, "herdr-web-ui"), join(base, "ovis")) ? join(base, "herdr-web-ui") : join(base, "ovis"));
+    const saved = () => {
+      try {
+        const port = Number(readFileSync(join(state, "plugin-port"), "utf8").trim());
+        return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+      } catch { return null; }
+    };
+    const port = (env.PORT ?? "") !== "" ? Number(env.PORT) : saved() ?? 7317;
+    const updates = join(resolve(state), "updates", createHash("sha256").update(`${resolve(root)}:${port}`).digest("hex").slice(0, 16));
+    const current = JSON.parse(readFileSync(join(updates, "current.json"), "utf8"));
+    const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 3000 });
+    if (head.exitCode === 0 && current.source_revision === head.stdout.toString().trim() && typeof current.directory === "string") {
+      const directory = realpathSync(current.directory);
+      const file = join(directory, "scripts", "plugin.ts");
+      if (dirname(directory) === realpathSync(updates) && basename(directory).startsWith("release-") && existsSync(file) && realpathSync(file).startsWith(directory + sep)) found = directory;
+    }
+  } catch {}
+  console.log(found);
+EOF
+}
+
 # The `ovis` launcher, as written into BIN_DIR. It holds no path of this install: where Ovis is, it
 # looks up each time it runs, so an update, a reinstall or a move to herdr-core needs no new launcher.
 # First the herdr plugin, under its id or the one before the rename; then Ovis on herdr-core (its
@@ -216,12 +313,19 @@ open_app() {
 # to the release that runs, so the launcher picks no version; a checkout from before `add` and `login`
 # gets the name it knows, `link`. herdr's checkout stays at the version first installed, so one from
 # before `link` cannot hand on at all: for it the launcher finds the release that runs, as
-# running_code does below, and runs that; where that one has no `link` either, it says to update.
+# running_code does below (release_js, which the launcher carries), and runs that; where that one has
+# no `link` either, it says to update.
 launcher_text() {
   printf '%s\n' '#!/bin/sh' "$LAUNCHER_MARK"
   cat <<'EOF'
 # Runs the installed Ovis's command line (scripts/plugin.ts): ovis add, ovis pair, ovis status.
 set -eu
+EOF
+  # shellcheck disable=SC2016 # the launcher's own words
+  printf '%s\n' '# JavaScript: prints the folder of the release that runs for the checkout it is given (install.sh, release_js)' "release_js='"
+  release_js
+  printf '%s\n' "'"
+  cat <<'EOF'
 # where the installer puts herdr and Bun, for a shell whose PATH has neither
 PATH="$PATH:$HOME/.local/bin:$HOME/.bun/bin"
 export PATH
@@ -257,26 +361,7 @@ case "${1:-}" in
   add | login | link)
     if ! grep -qs '"link"' "$root/scripts/plugin.ts"; then
       # a checkout from before link: Settings → Updates runs newer releases from the app's state dir
-      state="${OVIS_STATE_DIR:-${HERDR_WEB_STATE_DIR:-}}"
-      if [ -z "$state" ]; then
-        state="${XDG_CONFIG_HOME:-$HOME/.config}/ovis"
-        [ -d "$state" ] || state="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-web-ui"
-      fi
-      head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
-      code=$(bun -e '
-        const [root, state, head] = process.argv.slice(1);
-        const { readdirSync, readFileSync } = await import("node:fs");
-        let found = root;
-        try {
-          for (const name of readdirSync(`${state}/updates`)) {
-            try {
-              const saved = JSON.parse(readFileSync(`${state}/updates/${name}/current.json`, "utf8"));
-              if (saved.source_revision === head && String(saved.directory).startsWith(`${state}/updates/${name}/release-`)) found = saved.directory;
-            } catch {}
-          }
-        } catch {}
-        console.log(found);
-      ' "$root" "$state" "$head" 2>/dev/null) || code=$root
+      code=$(bun -e "$release_js" "$root" 2>/dev/null </dev/null) || code=$root
       [ -n "$code" ] || code=$root
     fi
     if grep -qs COMMAND_ALIASES "$code/scripts/plugin.ts"; then
@@ -321,7 +406,8 @@ find_other_ovis() {
 # installer did not write (no mark on its second line, or a link) is someone's own: it stays, and the
 # installer says so. So does another ovis elsewhere on the PATH: where BIN_DIR comes first, a new
 # launcher would take its name, so none is written; where it comes first, the launcher is written and
-# the installer says which one the name runs. Nothing here can fail the install.
+# the installer says which one the name runs, and that it is the launcher's once BIN_DIR comes first (a
+# profile that puts ~/.local/bin first does that at the next login). Nothing here can fail the install.
 write_launcher() {
   launcher="$BIN_DIR/ovis"
   launcher_ours=0
@@ -352,29 +438,43 @@ write_launcher() {
   if [ -n "$other_ovis" ] && [ "$other_ovis_hidden" = 1 ]; then
     say "$other_ovis is another ovis on your PATH: $launcher, this installer's, comes before it there"
   elif [ -n "$other_ovis" ]; then
-    say "ovis on your PATH runs $other_ovis, another program: this installer's is $launcher"
+    say "ovis on your PATH runs $other_ovis, another program: this installer's is $launcher, which takes the name once $BIN_DIR comes before it on your PATH"
   fi
+}
+
+# A path as a command line takes it: as it is, or in single quotes where it holds a space or anything
+# else a shell reads (a home directory called "John Smith").
+quoted() {
+  case $1 in
+    *[!A-Za-z0-9_./+:@%,=-]*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")" ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 # How to call the launcher, in what the installer prints: by its name where the user's own PATH finds
 # it, by its path where it does not (or finds another ovis first), and without a launcher of ours, the
-# script it would run: the running release's, which is what the launcher itself ends at.
+# script it would run ($add_code, as find_add_name picks it), which is what the launcher itself ends at.
 ovis_command() {
   if [ "$launcher_ours" != 1 ]; then
-    printf '%s' "bun ${code:-$root}/scripts/plugin.ts"
+    printf 'bun %s' "$(quoted "${add_code:-${code:-$root}}/scripts/plugin.ts")"
   elif [ "$(PATH="${original_path:-}"; command -v ovis 2>/dev/null || true)" = "$BIN_DIR/ovis" ]; then
     printf '%s' "ovis"
   else
-    printf '%s' "$BIN_DIR/ovis"
+    quoted "$BIN_DIR/ovis"
   fi
 }
 
-# The name the release that runs knows the add step by, in $add_name: `add`, `link` for one from
-# before `add`, or nothing for one from before both, which cannot add a PC from its terminal.
+# The script that adds this PC, by its folder in $add_code, and the name it knows the add step by in
+# $add_name: `add`, `link` for one from before `add`, or nothing for one from before both, which cannot
+# add a PC from its terminal. The checkout's own script where it knows `link`: it hands on to the
+# release that runs by itself, with settings the installer does not read. Only a checkout from before
+# `link` cannot, so for it the release that runs ($code) is the script.
 find_add_name() {
-  if grep -qs 'COMMAND_ALIASES' "$code/scripts/plugin.ts"; then
+  add_code=$root
+  grep -qs '"link"' "$root/scripts/plugin.ts" || add_code=${code:-$root}
+  if grep -qs 'COMMAND_ALIASES' "$add_code/scripts/plugin.ts"; then
     add_name=add
-  elif grep -qs '"link"' "$code/scripts/plugin.ts"; then
+  elif grep -qs '"link"' "$add_code/scripts/plugin.ts"; then
     add_name=link
   else
     add_name=""
@@ -435,7 +535,7 @@ add_pc() {
   token_said=1
   trap ':' INT
   add_result=done
-  bun "$code/scripts/plugin.ts" "$add_name" </dev/tty || add_result=failed
+  bun "$add_code/scripts/plugin.ts" "$add_name" </dev/tty || add_result=failed
   trap - INT
 }
 
@@ -611,30 +711,11 @@ node_link() {
 
 # herdr's checkout stays at the version first installed: Settings → Updates builds each newer release
 # in the app's state dir and runs it from there (server/updater.ts, current.json). The directory of the
-# code that runs now, so the phone step is the running version's, not the first install's.
+# code that runs now, so the phone step is the running version's, not the first install's: the release
+# kept for this checkout and the port its server has, as release_js finds it, and never another folder's.
 running_code() {
-  state="${OVIS_STATE_DIR:-${HERDR_WEB_STATE_DIR:-}}"
-  if [ -z "$state" ]; then
-    state="${XDG_CONFIG_HOME:-$HOME/.config}/ovis"
-    # an install whose server has not run since the rename still has its state under the old name
-    [ -d "$state" ] || state="${XDG_CONFIG_HOME:-$HOME/.config}/herdr-web-ui"
-  fi
-  head=$(git -C "$1" rev-parse HEAD 2>/dev/null || true)
-  # shellcheck disable=SC2016 # JavaScript, not shell
-  bun -e '
-    const [root, state, head] = process.argv.slice(1);
-    const { readdirSync, readFileSync } = await import("node:fs");
-    let found = root;
-    try {
-      for (const name of readdirSync(`${state}/updates`)) {
-        try {
-          const saved = JSON.parse(readFileSync(`${state}/updates/${name}/current.json`, "utf8"));
-          if (saved.source_revision === head && String(saved.directory).startsWith(`${state}/updates/${name}/release-`)) found = saved.directory;
-        } catch {}
-      }
-    } catch {}
-    console.log(found);
-  ' "$1" "$state" "$head"
+  running_found=$(bun -e "$(release_js)" "$1" 2>/dev/null </dev/null) || running_found=""
+  printf '%s\n' "${running_found:-$1}"
 }
 
 # Whether $1 is herdr-core: it exits 0 from `--version` within 5 s and its first line is `hc <version>`.
@@ -857,12 +938,13 @@ install_core() {
     new_install=1
   fi
   root=$APP_DIR
-  code=$(running_code "$root")
   core_settings
   # every scripts/plugin.ts this run starts (the start below, the phone step, open_app) reads what the service does
   HERDR_PLUGIN_CONFIG_DIR=$settings_dir
   HERDR_PLUGIN_STATE_DIR=$state_dir
   export HERDR_PLUGIN_CONFIG_DIR HERDR_PLUGIN_STATE_DIR
+  # after them: the release that runs is found with the settings the service reads
+  code=$(running_code "$root")
   core_service
   bun "$root/scripts/plugin.ts" start </dev/null \
     || say "Ovis did not start; what it said is above. Start it again with: $start_line"

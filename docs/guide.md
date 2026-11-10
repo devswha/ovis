@@ -138,7 +138,7 @@ the pinned card.
 
 ### In a terminal
 
-**The phone address, again:** run the one-line installer again. On a PC where the app is installed it installs nothing and prints the address and its QR code, serving the app to your tailnet first if nothing does yet. It finds the version that actually runs: herdr's plugin directory keeps the version first installed, and **Settings → Updates** runs newer ones from `~/.config/ovis/updates`. From a checkout, `bun scripts/plugin.ts phone` does the same.
+**The phone address, again:** run the one-line installer again. On a PC where the app is installed it installs nothing and prints the address and its QR code, serving the app to your tailnet first if nothing does yet. It finds the version that actually runs: herdr's plugin directory keeps the version first installed, and **Settings → Updates** runs newer ones from `~/.config/ovis/updates`, each checkout and port in a folder of its own. From a checkout, `bun scripts/plugin.ts phone` does the same.
 
 **The `ovis` command:** the installer puts it in `~/.local/bin`. It runs the installed Ovis's own command line (`scripts/plugin.ts`), which it finds each time it runs, so it keeps working after an update or a reinstall:
 
@@ -148,7 +148,7 @@ ovis pair      # a pairing code
 ovis status    # whether the app runs, and where
 ```
 
-An `ovis` of your own that is already in `~/.local/bin` is left as it is, and the installer says so. So is another `ovis` elsewhere on your PATH: where `~/.local/bin` comes before it, the installer writes no command, since that would take its name; where it comes first, the installer writes the command and says to call it by its path. Without the command (an install from before it, until the installer is run again; Windows; a checkout), run the script itself, `bun scripts/plugin.ts <command>`, in the folder that holds Ovis: a checkout, or the plugin's own folder:
+An `ovis` of your own that is already in `~/.local/bin` is left as it is, and the installer says so. So is another `ovis` elsewhere on your PATH: where `~/.local/bin` comes before it, the installer writes no command, since that would take its name; where it comes first, the installer writes the command and says to call it by its path. That other `ovis` keeps the name only until `~/.local/bin` comes before it on your PATH (a shell profile that puts `~/.local/bin` first does that at the next login), and from then on `ovis` is the installer's command. Without the command (an install from before it, until the installer is run again; Windows; a checkout), run the script itself, `bun scripts/plugin.ts <command>`, in the folder that holds Ovis: a checkout, or the plugin's own folder:
 
 ```bash
 root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "devswha.ovis")?.plugin_root ?? "")')
@@ -191,7 +191,8 @@ Its PID and log live under `HERDR_PLUGIN_STATE_DIR`. For persistent settings (se
 herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
 herdr plugin uninstall devswha.ovis || herdr plugin uninstall devswha.herdr-web-ui
 tailscale serve --https=<port> off    # the port the installer printed, if it served the app
-rm -f ~/.local/bin/ovis               # the installer's ovis command; leave an ovis of your own
+# the installer's ovis command, and only that: an ovis of your own there stays
+[ ! -L ~/.local/bin/ovis ] && [ "$(sed -n 2p ~/.local/bin/ovis 2>/dev/null)" = "# ovis launcher, written by install.sh" ] && rm -f ~/.local/bin/ovis
 ```
 
 The installer's herdr, Bun and Node stay, since other tools may use them: `~/.local/bin/herdr`, `~/.bun`, and `~/.local/share/ovis/node` (`~/.local/share/herdr-web-ui/node` for an install from before the rename); an older installer also linked it as `~/.local/bin/node`. Running the installer again removes that link once the installed release finds its Node itself; a release from before that still needs the link, so it stays until the installer runs again after Ovis is updated. Push keys, paired devices and the identity file that owns the app's Portal address are in `~/.config/ovis`.
