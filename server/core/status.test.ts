@@ -1489,6 +1489,30 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         }
       });
 
+    it("sends no Enter for a queued message when a busy signal's hold comes up after its paste: the looks before the Enter ask for that hold where they did", async () => {
+      const d = await delivering();
+      const { h, writes, submit, flush, waiting } = d;
+      const id = h.pane.pane_id;
+      h.next();
+      says(h, "working");
+      await submit(28, "behind");
+      const from = Date.now();
+      try {
+        // Given herdr's working with no turn written for it, heard as the message is pasted, which waits its time in vain
+        // while the delivery goes on: the pane rests on its background subagent, and that signal holds its queue.
+        d.on.paste = () => { delete d.on.paste; says(h, "working"); setSystemTime(from + 6000); h.poll(); };
+        turnEnds(h);
+        says(h, "idle");
+        await flush();
+        // Then no wakeup holds the queue, so the reads made right before the writes find nothing; the look before the
+        // Enter still finds the busy signal's hold, as it did before this: the paste is left, not confirmed.
+        expect(h.status.claudeAgents.holdsQueue(id)).toBe(true);
+        expect(h.status.queueHeld(id, true)).toBe(false);
+        expect(writes).toEqual(["paste \u001b[200~behind\u001b[201~"]);
+        expect(waiting()).toEqual(["uncertain"]);
+      } finally { setSystemTime(); }
+    });
+
     it("types a message the person sends now though the wakeup's hold stands: only what is sent by itself waits for it", async () => {
       const d = await delivering();
       const { h, delivery, writes, client, submit, flush, waiting } = d;
