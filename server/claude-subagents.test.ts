@@ -1140,6 +1140,8 @@ describe("ClaudeSubagentStatus", () => {
     type Session = ReturnType<typeof session>;
     const rest = (s: Session, minute: number) => s.parent({ type: "system", subtype: "turn_duration", isSidechain: false, timestamp: at(minute) });
     const fire = (s: Session, minute: number) => s.parent({ type: "system", subtype: "scheduled_task_fire", timestamp: at(minute), taskKind: "loop", taskId: "591b6f5a" });
+    /** A fire dated by its own timestamp (`ms`, on the tracker's clock), or carrying none (null). */
+    const firedAt = (s: Session, ms: number | null) => s.parent({ type: "system", subtype: "scheduled_task_fire", ...(ms === null ? {} : { timestamp: new Date(ms).toISOString() }), taskKind: "loop", taskId: "591b6f5a" });
     const answer = (s: Session, minute: number) => s.parent({ type: "assistant", timestamp: at(minute), message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "checked" }] } });
     /** A tracker that has read a session at rest, and each word it gave of the queue's hold as it changed. */
     const tracked = async (s: Session, clock: () => number = () => NOW) => {
@@ -1176,10 +1178,11 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
-    it("takes a fire found written at the first read for history, and holds on the next one", async () => {
+    it("takes a fire found written long before the first read for history, and holds on the next one", async () => {
       const s = session();
       s.prompt(1);
       rest(s, 2);
+      // written 57 minutes before the tracker's first read
       fire(s, 3);
       const { status } = await tracked(s);
       try {
@@ -1192,6 +1195,79 @@ describe("ClaudeSubagentStatus", () => {
         fire(s, 6);
         status.poll();
         expect(status.loopHolds("p1")).toBe(true);
+      } finally { status.stop(); }
+    });
+
+    it("holds on a fire written a moment before the first read, for what is left of its time by its own timestamp", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      // a wakeup that fired 20 s before the server started, or before the pane's session was found
+      firedAt(s, NOW - 20_000);
+      let now = NOW;
+      const { status, told } = await tracked(s, () => now);
+      try {
+        // nothing says its turn is over, and herdr may still read the pane at rest
+        expect(status.loopHolds("p1")).toBe(true);
+        expect(told).toEqual([true]);
+        status.quiet("p1", true);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // to the millisecond LOOP_HOLD_MS after the fire was written, not after it was found
+        now = NOW - 20_000 + LOOP_HOLD_MS - 1;
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        now += 1;
+        expect(status.loopHolds("p1")).toBe(false);
+        status.poll();
+        expect(told).toEqual([true, false]);
+      } finally { status.stop(); }
+    });
+
+    it("ends the hold of a fire found at the first read at its turn's rest, or when herdr tells that turn", async () => {
+      for (const end of ["rest", "herdr"] as const) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        firedAt(s, NOW - 1000);
+        const { status, told } = await tracked(s);
+        try {
+          expect(status.loopHolds("p1")).toBe(true);
+          if (end === "rest") { rest(s, 3); status.poll(); } else status.busy("p1", "herdr");
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told).toEqual([true, false]);
+        } finally { status.stop(); }
+      }
+    });
+
+    it("takes a fire found at the first read for history once it is as old as LOOP_HOLD_MS, or tells no time", async () => {
+      for (const written of [NOW - LOOP_HOLD_MS, null]) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        firedAt(s, written);
+        const { status, told } = await tracked(s);
+        try {
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told).toEqual([false]);
+        } finally { status.stop(); }
+      }
+    });
+
+    it("holds no longer than LOOP_HOLD_MS from the first read on a fire dated ahead of this PC's clock", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      // a clock set back since, or a transcript copied from a PC whose clock runs ahead
+      firedAt(s, NOW + 60 * 60 * 1000);
+      let now = NOW;
+      const { status, told } = await tracked(s, () => now);
+      try {
+        expect(status.loopHolds("p1")).toBe(true);
+        now += LOOP_HOLD_MS;
+        expect(status.loopHolds("p1")).toBe(false);
+        status.poll();
+        expect(told).toEqual([true, false]);
       } finally { status.stop(); }
     });
 

@@ -467,8 +467,9 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
   type Fixture = Awaited<ReturnType<typeof workingClaude>>;
   const queue = (h: Pick<Fixture, "pending" | "pane">) =>
     h.pending.enqueue("owner", h.pane.pane_id, 1, "queued", null, { agent: "claude", terminalId: "test", session: h.pane.agent_session.value });
-  const fires = (path: string) =>
-    appendFileSync(path, line({ type: "system", subtype: "scheduled_task_fire", taskKind: "loop", taskId: "591b6f5a", timestamp: new Date(at + 4000).toISOString() }));
+  /** `written`: the fire's own timestamp, by which a transcript's first read tells how old it is. */
+  const fires = (path: string, written = at + 4000) =>
+    appendFileSync(path, line({ type: "system", subtype: "scheduled_task_fire", taskKind: "loop", taskId: "591b6f5a", timestamp: new Date(written).toISOString() }));
   const turnEnds = (h: Pick<Fixture, "path">) =>
     appendFileSync(h.path, line({ type: "system", subtype: "turn_duration", timestamp: new Date(at + 6000).toISOString() }));
   /** A turn that set its wakeup and came to rest, which herdr told: every read of the pane says idle from here. `drained`: each time its queue is told to look again. */
@@ -635,11 +636,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     } finally { setSystemTime(); }
   });
 
-  it("holds nothing on a fire the server finds written when it starts", async () => {
+  it("holds nothing on a fire the server finds written long before it starts", async () => {
     const old = await workingClaude();
     old.rest();
-    fires(old.path);
-    // Given a server that first reads the pane idle, the fire's turn interrupted before it started.
+    fires(old.path, Date.now() - 10 * 60_000);
+    // Given a server that first reads the pane idle, the fire's turn interrupted long before it started.
     const h = hub(old.path);
     h.herdrSays(old.pane);
     handlers.onBaseline([old.pane]);
@@ -650,6 +651,56 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.status.queueHeld(old.pane.pane_id)).toBe(false);
     expect(h.pending.current(old.pane.pane_id)).toBe("idle");
     expect(h.pending.next(old.pane.pane_id)).not.toBeNull();
+  });
+
+  it("holds the queue on a fire written a moment before the server first reads the pane's transcript", async () => {
+    const old = await workingClaude();
+    const id = old.pane.pane_id;
+    old.rest();
+    // Given a wakeup that fired as the server started, or as the pane's session was found: herdr still reads the pane idle.
+    fires(old.path, Date.now());
+    const h = hub(old.path);
+    h.herdrSays(old.pane);
+    handlers.onBaseline([old.pane]);
+    await h.snapshot();
+    queue({ pending: h.pending, pane: old.pane });
+    // Then the queue waits for the turn it resumed, as on a fire read while the server ran.
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.current(id)).toBe("working");
+    expect(h.pending.next(id)).toBeNull();
+    // And that turn's rest lets the message go.
+    turnEnds(old); h.poll();
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
+  it("lets a fire found as the server starts hold only for what is left of its time", async () => {
+    const drained: string[] = [];
+    const old = await workingClaude();
+    const id = old.pane.pane_id;
+    old.rest();
+    const from = Date.now();
+    // Given a fire written 50 s before the server's first read, whose turn was interrupted: no rest, and no word of herdr's.
+    fires(old.path, from - 50_000);
+    const h = hub(old.path, undefined, (paneId) => { drained.push(paneId); });
+    h.herdrSays(old.pane);
+    handlers.onBaseline([old.pane]);
+    await h.snapshot();
+    queue({ pending: h.pending, pane: old.pane });
+    try {
+      // It holds for the 10 s its time (LOOP_HOLD_MS, to the millisecond in claude-subagents.test.ts) has left.
+      setSystemTime(from + 9000);
+      h.poll();
+      expect(h.status.queueHeld(id)).toBe(true);
+      expect(h.pending.next(id)).toBeNull();
+      const told = drained.length;
+      setSystemTime(from + 11_000);
+      expect(h.status.queueHeld(id)).toBe(false);
+      h.poll();
+      // Then the queue is told with no status event, and the message goes.
+      expect(drained.slice(told)).toEqual([id]);
+      expect(h.pending.next(id)).not.toBeNull();
+    } finally { setSystemTime(); }
   });
 
   describe("with the bridge's own delivery", () => {
