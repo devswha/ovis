@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test"
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { HerdrPane } from "../../shared/protocol.ts";
+import * as claudeStore from "../claude-store.ts";
 import * as conversation from "../conversation.ts";
 import * as herdr from "../herdr/client.ts";
 import * as gjc from "../gjc-status.ts";
@@ -908,6 +909,24 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.current(id)).toBe("working");
   });
 
+  it("holds nothing of the queue once herdr names another agent in the pane, though the Claude session it had still holds", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    fires(h.path); h.poll();
+    expect(h.status.queueHeld(id, false)).toBe(true);
+    expect(h.status.queueHeld(id, true)).toBe(true);
+    // When herdr's event names Codex there, before any snapshot shows the Claude tracker that its session is gone.
+    handlers.onStatus(id, "idle", "codex");
+    queue(h);
+    // Then that session's hold says nothing of the pane's queue, as its last poll left it or read anew: the
+    // resumed turn was Claude's, and Codex's message goes by herdr's status.
+    expect(h.status.claudeAgents.loopHolds(id)).toBe(true);
+    expect(h.status.queueHeld(id, false)).toBe(false);
+    expect(h.status.queueHeld(id, true)).toBe(false);
+    expect(h.pending.current(id)).not.toBe("working");
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
   it("lets the queue go when herdr never tells the resumed turn, however long nothing is written", async () => {
     const drained: string[] = [];
     const h = await rested(drained);
@@ -1113,10 +1132,11 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
      * `steps`: everything the delivery awaited of herdr and every answer on the hold it took, in order.
      * `keys`: the Enter goes through a stand-in that asks the write's guard once connected, as herdr's client
      * does, or through that client itself (herdrRpc), to a socket the test listens on in herdr's place.
+     * `on.front`: the process herdr reads in front of the pane's shell; none unless a test names one (claudeInFront).
      */
     async function delivering(keys: "a stand-in" | "herdr's own client" = "a stand-in") {
       const writes: string[] = [];
-      const on: { read?: () => void; paste?: () => void; connect?: () => void; held?: (fresh: boolean) => boolean } = {};
+      const on: { read?: () => void; paste?: () => void; connect?: () => void; held?: (fresh: boolean) => boolean; front?: { pid: number; name: string; argv: string[] } } = {};
       const asked: boolean[] = [];
       const steps: ("screen" | "processes" | "hold as last read" | "hold read now" | "paste" | "keys")[] = [];
       const frames: { type: string; id?: number; ok?: boolean; code?: string; typed_now?: boolean; pending?: { state: string } }[] = [];
@@ -1135,7 +1155,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       h = await workingClaude(delivery.pending as never, delivery.drainPending);
       spies.push(
         spyOn(herdr, "paneRead").mockImplementation(async () => { steps.push("screen"); on.read?.(); return { text: "" } as never; }),
-        spyOn(herdr, "paneProcessInfo").mockImplementation(async () => { steps.push("processes"); return { foreground_processes: [], shell_pid: null } as never; }),
+        spyOn(herdr, "paneProcessInfo").mockImplementation(async () => { steps.push("processes"); return { foreground_processes: on.front ? [on.front] : [], shell_pid: on.front ? on.front.pid - 1 : null } as never; }),
         spyOn(herdr, "paneSendText").mockImplementation(async (_paneId, text) => { steps.push("paste"); writes.push(`paste ${text}`); on.paste?.(); }),
       );
       if (keys === "a stand-in") {
@@ -1177,7 +1197,8 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       h.rest(); h.poll();
       handlers.onStatus(h.pane.pane_id, "idle", "claude");
       h.herdrSays(h.pane);
-      const submit = (id: number, text: string) => delivery.pendingFrames.submit(client, { type: "submit", id, pane_id: h.pane.pane_id, text, payload: text, delivery: "queue" } as never);
+      /** `only`: a message for an agent alone (#511), which a paste refused its Enter leaves held for the person */
+      const submit = (id: number, text: string, only = false) => delivery.pendingFrames.submit(client, { type: "submit", id, pane_id: h.pane.pane_id, text, payload: text, delivery: "queue", ...(only ? { agent_only: true } : {}) } as never);
       /** every delivery begun so far has run, and whatever its end began in turn */
       const flush = async () => {
         for (let seen: unknown = null; seen !== lane;) { seen = lane; await lane.catch(() => undefined); await new Promise((resolve) => setTimeout(resolve, 0)); }
@@ -1454,36 +1475,53 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       } else expect(waiting()).toEqual(["uncertain"]);
     });
 
-    it.each((["queued behind a turn", "typed at once"] as const).flatMap((sent) => HERDR.map((word) => ({ sent, ...word }))))(
-      "sends no Enter for a message $sent when the wakeup fires while its Enter's connection to herdr is being made ($herdr)", async ({ sent, told }) => {
+    /**
+     * Claude Code in front of the pane's shell, as a message for an agent alone is typed only into (#511). Its start and
+     * the session its own record names are stood in for: nothing of this PC's processes or of its Claude store is read.
+     */
+    const claudeInFront = (d: Awaited<ReturnType<typeof delivering>>) => {
+      d.on.front = { pid: 41001, name: "claude", argv: ["claude"] };
+      spies.push(spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000), spyOn(claudeStore, "claudeForegroundSession").mockResolvedValue(null));
+    };
+
+    it.each((["queued behind a turn", "typed at once"] as const).flatMap((sent) => HERDR.flatMap((word) => ([
+      { sent, ...word, only: false, whose: "a message", left: "submit_changed" },
+      { sent, ...word, only: true, whose: "a message for an agent alone", left: "pasted_not_sent" },
+    ] as const))))(
+      "sends no Enter for $whose $sent when the wakeup fires while its Enter's connection to herdr is being made ($herdr)", async ({ sent, told, only, left }) => {
         // Given the Enter written by herdr's own client, to a socket that stands in for herdr's.
         const d = await delivering("herdr's own client");
-        const { h, writes, submit, flush, waiting, results, steps } = d;
+        const { h, delivery, writes, client, submit, flush, waiting, results, steps } = d;
+        if (only) claudeInFront(d);
         // And a wakeup that fires once every check before the Enter found the queue free, with the connection asked for.
         const fired = { yet: false };
         d.on.paste = () => { delete d.on.paste; d.on.connect = () => { delete d.on.connect; fired.yet = true; wakes(h, told); }; };
-        if (sent === "typed at once") await submit(24, "last");
+        if (sent === "typed at once") await submit(24, "last", only);
         else {
           h.next();
           says(h, "working");
-          await submit(24, "last");
+          await submit(24, "last", only);
           turnEnds(h);
           says(h, "idle");
         }
         await flush();
         expect(fired.yet).toBe(true);
         // Then the hold is read once more once connected, right before the key's write: herdr is sent no key, and the
-        // paste stays, not confirmed.
+        // paste stays, not confirmed. A message for an agent alone is answered as any Enter refused it is: pasted, not
+        // sent, and kept for the person, never typed again by itself.
         expect(steps.slice(-3)).toEqual(["hold read now", "keys", "hold read now"]);
         expect(writes).toEqual(["paste \u001b[200~last\u001b[201~"]);
         if (sent === "typed at once") {
-          expect(results()).toMatchObject([{ id: 24, ok: false, code: "submit_changed" }]);
+          expect(results()).toMatchObject([{ id: 24, ok: false, code: left }]);
           expect(waiting()).toEqual([]);
-        } else expect(waiting()).toEqual(["uncertain"]);
+        } else {
+          expect(waiting()).toEqual(["uncertain"]);
+          expect(delivery.pending.list(client, h.pane.pane_id)[0]?.error?.code).toBe(left);
+        }
         // And with no wakeup that same client writes the Enter: a message sent once the turn rested goes through.
         if (sent === "typed at once") {
           rests(h, told);
-          await submit(25, "next");
+          await submit(25, "next", only);
           await flush();
           expect(writes.slice(1)).toEqual(["paste \u001b[200~next\u001b[201~", "keys Enter"]);
         }

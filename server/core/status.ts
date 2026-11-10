@@ -568,8 +568,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (replay && (omo.runs(paneId) || gjc.tracks(paneId) || letta.tracks(paneId) || !completions.replayed(paneId, raw, replay))) {
       // no status is reported after this replay, and its poll told the queue nothing (the pane was
       // settling): a self-resumed turn's hold that poll found begun or ended is told here (#3494).
-      // Only that: any other hold is told as before, by the next status or the next change
-      if (agent === "claude" && owns(paneId, "claude") && claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
+      // Only that: any other hold is told as before, by the next status or the next change. Only a
+      // Claude pane's poll, made above, changes what was told of that hold
+      if (claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
       return;
     }
     // Native OmO discovery owns the pane even when herdr names its provider child.
@@ -615,8 +616,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       try { void tracker.poll(paneId); } finally { settling = null; }
       // that poll told the queue nothing, as the pane settled. A self-resumed turn's hold it found begun or ended
       // (a fire, or the resumed turn's rest, written since the status event's own read; its time run out) is
-      // told now: no later poll finds it changed, and the status told above was read before it (#3494)
-      if (tracker === claudeAgents && claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
+      // told now: no later poll finds it changed, and the status told above was read before it (#3494).
+      // Only the Claude tracker's poll changes what was told of that hold
+      if (claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
       waits.status(paneId, status);
     } else waits.forget(paneId);
     broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));

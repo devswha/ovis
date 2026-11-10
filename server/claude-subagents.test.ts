@@ -1728,7 +1728,7 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
-    it("has no hold to read for a pane whose transcript is not found, or that is not Claude's any more", async () => {
+    it("has no hold to read for a pane whose transcript is not found", async () => {
       const s = session();
       s.prompt(1);
       rest(s, 2);
@@ -1744,10 +1744,25 @@ describe("ClaudeSubagentStatus", () => {
         found = true;
         await status.refresh([pane("p1", "claude", "s2")]);
         expect(status.loopHoldsNow("p1")).toBe(true);
-        // a pane that left Claude is read no more: what its last poll found runs out by its time
-        await status.refresh([pane("p1", "codex")]);
-        rest(s, 4);
+      } finally { status.stop(); }
+    });
+
+    it.each(["the pane left Claude", "the tracker stopped"] as const)("reads nothing once %s: what the pane's last poll found stands, for its time", async (gone) => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status } = await tracked(s);
+      try {
+        fire(s, 3);
         expect(status.loopHoldsNow("p1")).toBe(true);
+        if (gone === "the pane left Claude") await status.refresh([pane("p1", "codex")]); else status.stop();
+        // the resumed turn's rest is written, and no read made for the hold opens the transcript
+        rest(s, 4);
+        const opened = spyOn(detailIo, "openSync");
+        try {
+          expect(status.loopHoldsNow("p1")).toBe(true);
+          expect(opened).not.toHaveBeenCalled();
+        } finally { opened.mockRestore(); }
       } finally { status.stop(); }
     });
 
@@ -1818,6 +1833,27 @@ describe("ClaudeSubagentStatus", () => {
         rest(s, 6);
         status.poll();
         expect(status.loopHolds("p1")).toBe(false);
+      } finally { status.stop(); }
+    });
+
+    it("ends no hold on a rest that tells no time: the resumed turn holds to a rest that does", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status, told } = await tracked(s);
+      try {
+        fire(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        // a turn_duration entry with no timestamp is no rest the transcript's turns go by, and none for the hold
+        s.parent({ type: "system", subtype: "turn_duration", isSidechain: false });
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+        expect(status.loopHoldsNow("p1")).toBe(true);
+        rest(s, 4);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        expect(told).toEqual([false, true, false]);
       } finally { status.stop(); }
     });
 
