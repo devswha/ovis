@@ -183,29 +183,32 @@ export interface AskingDevice { readonly label: string; readonly digits: string;
 /**
  * The question a terminal asks about a device that wants in: its six digits, to compare with that device's screen,
  * and what to type. The answer that approves carries the request's own digits (`answerOf`), so it names the request
- * it is for.
+ * it is for. `whole`: its last three digits are another request's too, so they name neither, and all six are asked for.
  */
-export function approvalPrompt(device: AskingDevice): string {
+export function approvalPrompt(device: AskingDevice, whole = false): string {
   const what = device.intent === "account" ? "join your account" : "pair with this PC";
   // digits that are not six digits approve nothing (`answerOf`): the question does not ask for them
   if (!SIX_DIGITS.test(device.digits)) return `${plainLabel(device.label)} wants to ${what}, but its request came without six digits to compare, so it cannot be approved here. Press Enter to decline: `;
-  return `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${device.digits.slice(0, 3)} ${device.digits.slice(3)}. Type ${device.digits.slice(3)} to approve, or press Enter to decline: `;
+  const shows = `${plainLabel(device.label)} wants to ${what}. Approve it only if its screen shows ${device.digits.slice(0, 3)} ${device.digits.slice(3)}.`;
+  return whole ? `${shows} Another request's digits end in ${device.digits.slice(3)} too, so type all six (${device.digits}) to approve, or press Enter to decline: `
+    : `${shows} Type ${device.digits.slice(3)} to approve, or press Enter to decline: `;
 }
 
 /**
  * What a line typed at the prompt of the request that shows `digits` answers. Only those six digits approve it, with
  * or without the space between the halves, or the last three: a line begun for another request, or typed ahead of
- * any, does not carry this one's digits. Only an empty line (Enter by itself) declines it. Anything else is no answer
+ * any, does not carry this one's digits. With `whole`, only all six do: the last three are another request's too
+ * (once in a thousand pairs), and a line typed for that one would carry them. Only an empty line (Enter by itself) declines it. Anything else is no answer
  * (null), a `y` typed out of habit and a mistyped digit among them: a decline ends the request for good, so it is not
  * read into a line that was not one, and the question is asked again. A request whose digits are not six digits is
  * approved by nothing (a bare Enter must never match digits that are missing).
  */
-export function answerOf(line: string, digits: string): "approve" | "decline" | null {
+export function answerOf(line: string, digits: string, whole = false): "approve" | "decline" | null {
   // NFKC first: an input method left in its wide mode types the digits full-width (２２２), and they are the same digits
   const typed = line.normalize("NFKC").replace(/\s/g, "");
   if (typed === "") return "decline";
   if (!SIX_DIGITS.test(digits)) return null;
-  return typed === digits || typed === digits.slice(3) ? "approve" : null;
+  return typed === digits || (!whole && typed === digits.slice(3)) ? "approve" : null;
 }
 
 /** The next answer, or the abort: Ctrl+C at a prompt stops at once rather than after the next line. */
@@ -292,7 +295,10 @@ function asking(input: AnswerInput) {
   const now = input.now ?? Date.now;
   const terminal = input.terminal === true;
   // the request asked about: one at a time. `shownAt`: when its prompt, with its digits, first was on the screen
-  let open: { readonly id: string; readonly label: string; readonly digits: string; readonly prompt: string; shownAt: number | null } | null = null;
+  // `whole`: only all six of its digits approve it
+  let open: { readonly id: string; readonly label: string; readonly digits: string; readonly whole: boolean; readonly prompt: string; shownAt: number | null } | null = null;
+  // the digits of every request asked about in this run, by its id
+  const seen = new Map<string, string>();
   // what the request asked about is answered with: by a line that came after its prompt was shown
   let reply: "approve" | "decline" | null = null;
   // the cursor stands after the prompt: what is said next starts on a line of its own
@@ -323,9 +329,9 @@ function asking(input: AnswerInput) {
         if (line.at - open.shownAt >= DWELL_MS) {
           // a second line at one prompt: the first is the answer
           if (reply !== null) continue;
-          reply = answerOf(line.text, open.digits);
+          reply = answerOf(line.text, open.digits, open.whole);
           // neither the digits nor Enter by itself: it declines nothing, and the question is asked again
-          if (reply === null) dropped = `${SIX_DIGITS.test(open.digits) ? "only the digits shown approve a request" : "this request cannot be approved here"}, and only Enter by itself declines it. Answer again.`;
+          if (reply === null) dropped = `${!SIX_DIGITS.test(open.digits) ? "this request cannot be approved here" : open.whole ? "only all six digits shown approve this request" : "only the digits shown approve a request"}, and only Enter by itself declines it. Answer again.`;
           continue;
         }
         // one that came too soon does not stand in the way of the answer typed after it
@@ -354,9 +360,16 @@ function asking(input: AnswerInput) {
         say("The terminal's input ended (Ctrl+D): no request can be answered here any more, so each is declined as it shows. Run this again to answer them.\n");
       }
     },
-    /** Asks about a request from now on; its prompt goes out with `show`. */
-    ask(device: WaitingDevice): void {
-      open = { id: device.id, label: plainLabel(device.label), digits: device.digits, prompt: approvalPrompt(device), shownAt: null };
+    /**
+     * Asks about a request from now on; its prompt goes out with `show`. `waiting`: the requests that wait now. When
+     * another of them, or one asked about earlier in this run, shows the same last three digits, a line typed for
+     * that one would carry them: this one then asks for all six, and only all six approve it.
+     */
+    ask(device: WaitingDevice, waiting: readonly WaitingDevice[]): void {
+      const others = [...waiting.filter((other) => other.id !== device.id).map((other) => other.digits), ...[...seen].filter(([id]) => id !== device.id).map(([, digits]) => digits)];
+      const whole = SIX_DIGITS.test(device.digits) && others.some((digits) => SIX_DIGITS.test(digits) && digits.slice(3) === device.digits.slice(3));
+      seen.set(device.id, device.digits);
+      open = { id: device.id, label: plainLabel(device.label), digits: device.digits, whole, prompt: approvalPrompt(device, whole), shownAt: null };
       reply = null;
     },
     /** The request asked about ran out, was answered elsewhere, or the server restarted: its prompt ends, and so does a line typed for it. */
@@ -417,7 +430,7 @@ export async function approveWaiting(pairings: readonly WaitingDevice[], options
   const { out, signal } = options;
   const desk = asking(options);
   for (const pairing of pairings) {
-    desk.ask(pairing);
+    desk.ask(pairing, pairings);
     for (;;) {
       desk.look();
       const answer = desk.answer();
@@ -753,7 +766,7 @@ async function linkToAccount(options: LinkOptions, api: Api, forced: DeviceProvi
         const next = desk.open === null ? pairings.find((pairing) => !asked.has(pairing.id)) : undefined;
         if (next !== undefined) {
           asked.add(next.id);
-          desk.ask(next);
+          desk.ask(next, pairings);
         }
         const joined = await status();
         if (joined.account !== null && joined.account !== signedIn) return await elsewhere(joined.account);

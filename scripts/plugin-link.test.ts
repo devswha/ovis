@@ -779,8 +779,8 @@ describe("ovis link, on the PC itself", () => {
       said: (said, _type, answer) => {
         // Enter after p1 went: the line held at its prompt comes while nothing is asked
         if (said.includes("Phone p1 is no longer waiting")) answer("222");
-        // p2's answer is then the first line typed at its prompt
-        if (said.includes("Phone p2 wants")) answer("222");
+        // p2's answer is then the first line typed at its prompt: all six, as p1 showed the same digits
+        if (said.includes("Phone p2 wants")) answer("111222");
       },
       joined: (decisions) => decisions.length > 0,
     });
@@ -936,6 +936,87 @@ describe("ovis link, on the PC itself", () => {
       "That line answered nothing: only the digits shown approve a ",
     ]);
     expect(again.decisions).toEqual([{ id: "p2", decision: "decline" }]);
+  });
+
+  // Digits are uniform, so two requests end in the same three once in a thousand pairs: the last three then name neither
+  describe("a request whose last three digits another request shares", () => {
+    const request = (id: string) => ({ digits: id === "p1" ? "111456" : id === "p2" ? "222456" : "333789" });
+    const short = (id: string, digits: string) => `Phone ${id} wants to join your account. Approve it only if its screen shows ${digits.slice(0, 3)} ${digits.slice(3)}. Type ${digits.slice(3)} to approve, or press Enter to decline: `;
+    const whole = (id: string, digits: string) => `Phone ${id} wants to join your account. Approve it only if its screen shows ${digits.slice(0, 3)} ${digits.slice(3)}. Another request's digits end in ${digits.slice(3)} too, so type all six (${digits}) to approve, or press Enter to decline: `;
+    const SIX_ONLY = "That line answered nothing: only all six digits shown approve this request, and only Enter by itself declines it. Answer again.\n";
+    const prompts = (out: string[]) => out.filter((said) => said.includes("Enter to decline"));
+
+    it("is approved only by all six when the other one was asked about before it in this run: its last three, typed again, approve nothing", async () => {
+      for (const [then, decision] of [["222456", "approve"], ["222 456", "approve"], ["111456", null], ["", "decline"]] as const) {
+        let asked = 0;
+        const { out, decisions } = await prompting({
+          request,
+          // p1 is answered; p2 comes after it
+          pending: (_polls, decisions) => decisions.length === 0 ? ["p1"] : decisions.length === 1 ? ["p2"] : [],
+          said: (said, _type, answer) => {
+            if (said.includes("Phone p1 wants")) answer("456");
+            // the three digits that approved p1, typed once more; then all six, p1's six, or Enter
+            if (said.includes("Phone p2 wants") && ++asked <= 2) answer(asked === 1 ? "456" : then);
+          },
+          joined: (decisions) => decisions.length > 1,
+        });
+        expect(prompts(out).slice(0, 3)).toEqual([short("p1", "111456"), whole("p2", "222456"), whole("p2", "222456")]);
+        expect(out.filter((said) => said === SIX_ONLY)).toHaveLength(decision === null ? 2 : 1);
+        expect([then, decisions]).toEqual([then, [{ id: "p1", decision: "approve" }, ...decision === null ? [] : [{ id: "p2", decision }]]]);
+      }
+    }, 30_000);
+
+    it("is approved only by all six when the other one went away unanswered: the line held at that one is dropped, and the same line typed again approves nothing", async () => {
+      let asked = 0;
+      const { code, out, decisions } = await prompting({
+        request,
+        // p1 for three polls; p2 in the very look that drops p1
+        pending: (polls, decisions) => decisions.length > 0 ? [] : polls <= 3 ? ["p1"] : ["p2"],
+        // p1's answer comes with the Enter pressed at p2's prompt, and is typed again; then p2's own six
+        said: (said, _type, answer) => { if (said.includes("Phone p2 wants") && ++asked <= 3) answer(asked <= 2 ? "456" : "222456"); },
+        joined: (decisions) => decisions.length > 0,
+      });
+      expect(code).toBe(0);
+      expect(prompts(out)).toEqual([short("p1", "111456"), whole("p2", "222456"), whole("p2", "222456"), whole("p2", "222456")]);
+      expect(out.filter((said) => said.includes("That line answered nothing")).map((said) => said.trim())).toEqual([
+        "That line answered nothing: a request went away while it may have been typed. Answer again for the request shown now.",
+        SIX_ONLY.trim(),
+      ]);
+      expect(decisions).toEqual([{ id: "p2", decision: "approve" }]);
+    });
+
+    it("is approved only by all six when the other one waits beside it now, and so is that one", async () => {
+      const { code, out, decisions } = await prompting({
+        request,
+        pending: (_polls, decisions) => ["p1", "p2"].filter((id) => !decisions.some((decision) => decision.id === id)),
+        said: (said, _type, answer) => {
+          if (said === whole("p1", "111456")) answer("111 456");
+          if (said === whole("p2", "222456")) answer("222456");
+        },
+        joined: (decisions) => decisions.length > 1,
+      });
+      expect(code).toBe(0);
+      expect(prompts(out)).toEqual([whole("p1", "111456"), whole("p2", "222456")]);
+      expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "approve" }]);
+    });
+
+    it("keeps to its last three when no other request shares them, and when it is the same request asked again", async () => {
+      let asked = 0;
+      const { code, out, decisions } = await prompting({
+        request,
+        // p3 (333 789) is answered, then p1; p1's first answer does not reach the server, so it is asked again
+        pending: (_polls, decisions) => decisions.length === 0 ? ["p3"] : decisions.length === 1 ? ["p1"] : [],
+        said: (said, _type, answer) => {
+          if (said.includes("Phone p3 wants")) answer("789");
+          if (said.includes("Phone p1 wants") && ++asked <= 3) answer("456");
+        },
+        decide: (attempt) => { if (attempt === 2) throw new TypeError("timed out"); },
+        joined: (decisions) => decisions.length > 1,
+      });
+      expect(code).toBe(0);
+      expect(new Set(prompts(out))).toEqual(new Set([short("p3", "333789"), short("p1", "111456")]));
+      expect(decisions).toEqual([{ id: "p3", decision: "approve" }, { id: "p1", decision: "approve" }]);
+    });
   });
 
   it("approves nothing for a request whose digits are not six digits: a bare Enter never matches what is missing, and nothing but Enter answers it", async () => {
@@ -1136,9 +1217,10 @@ describe("ovis link, on the PC itself", () => {
       // p1 and p2 wait together: p2's prompt shows in the look that sends p1's answer
       pending: (_polls, decisions) => decisions.length === 0 ? ["p1", "p2"] : ["p2"],
       said: (said, type, answer) => {
-        if (said.includes("Phone p1 wants")) answer("222");
+        // all six: the two show the same digits here
+        if (said.includes("Phone p1 wants")) answer("111222");
         // the digits and Enter once more, a moment after the first: p2's were not compared
-        if (said.includes("Phone p2 wants") && !again) { again = true; type("222"); }
+        if (said.includes("Phone p2 wants") && !again) { again = true; type("111222"); }
       },
     });
     // p2 was asked about, again under the notice, and never answered
@@ -1152,7 +1234,7 @@ describe("ovis link, on the PC itself", () => {
     const { code, out, decisions } = await prompting({
       // p1 runs out after three polls; p2 comes minutes later
       pending: (polls, decisions) => polls <= 3 ? ["p1"] : polls <= 200 || decisions.length > 0 ? [] : ["p2"],
-      said: (said, _type, answer) => { if (said.includes("Phone p2 wants")) answer("222"); },
+      said: (said, _type, answer) => { if (said.includes("Phone p2 wants")) answer("111222"); },
       joined: (decisions) => decisions.length > 0,
     });
     expect(code).toBe(0);
@@ -1520,7 +1602,7 @@ describe("pair --approve, asked as ovis add asks", () => {
     const { code, out, text, decisions } = await approving({
       pairings: [waiting("p1", "111222"), waiting("p2", "111222")],
       said: (said, type, answer) => {
-        if (said.includes("Phone p1 wants")) answer("222");
+        if (said.includes("Phone p1 wants")) answer("111222");
         // the same digits and Enter once more, as p2's prompt comes on the screen; then nothing but Enter
         if (said.includes("Phone p2 wants")) { if (++asked === 1) type("111222"); else answer(""); }
       },
@@ -1529,6 +1611,28 @@ describe("pair --approve, asked as ovis add asks", () => {
     expect(text).toContain("That line answered nothing: it came as the request showed, too soon to have compared its digits.");
     expect(out.filter((said) => said.includes("Enter to decline")).map((said) => said.slice(0, 8))).toEqual(["Phone p1", "Phone p2", "Phone p2"]);
     expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "decline" }]);
+  });
+
+  it("asks for all six digits of each request whose last three another waiting request shares", async () => {
+    let asked = 0;
+    const { code, out, decisions } = await approving({
+      pairings: [waiting("p1", "111456"), waiting("p2", "222456"), waiting("p3", "333789")],
+      said: (said, _type, answer) => {
+        if (said.includes("Phone p1 wants")) answer("111456");
+        // the last three, which name neither; then all six
+        if (said.includes("Phone p2 wants")) answer(++asked === 1 ? "456" : "222 456");
+        if (said.includes("Phone p3 wants")) answer("789");
+      },
+    });
+    expect(code).toBe(0);
+    expect(out.filter((said) => said.includes("Enter to decline"))).toEqual([
+      "Phone p1 wants to pair with this PC. Approve it only if its screen shows 111 456. Another request's digits end in 456 too, so type all six (111456) to approve, or press Enter to decline: ",
+      "Phone p2 wants to pair with this PC. Approve it only if its screen shows 222 456. Another request's digits end in 456 too, so type all six (222456) to approve, or press Enter to decline: ",
+      "Phone p2 wants to pair with this PC. Approve it only if its screen shows 222 456. Another request's digits end in 456 too, so type all six (222456) to approve, or press Enter to decline: ",
+      "Phone p3 wants to pair with this PC. Approve it only if its screen shows 333 789. Type 789 to approve, or press Enter to decline: ",
+    ]);
+    expect(out).toContain("That line answered nothing: only all six digits shown approve this request, and only Enter by itself declines it. Answer again.\n");
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }, { id: "p2", decision: "approve" }, { id: "p3", decision: "approve" }]);
   });
 
   it("declines every request when its input is not a terminal, whatever was piped in, without reading it", async () => {
