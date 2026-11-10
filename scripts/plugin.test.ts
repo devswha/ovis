@@ -852,9 +852,10 @@ describe("pair --approve", () => {
     const bin = join(scratch, "bin");
     const env: Record<string, string | undefined> = { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}`, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state"), PORT: String(server.port) };
     for (const key of ["HERDR_PLUGIN_CONFIG_DIR", "HOST", "OVIS_TOKEN", "OVIS_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"]) delete env[key];
-    // util-linux takes the command as one string, BSD (macOS) as arguments after the file it records to
-    const command = platform() === "darwin" ? ["script", "-q", "/dev/null", "bun", "scripts/plugin.ts", "pair", "--approve"] : ["script", "-qfec", "bun scripts/plugin.ts pair --approve", "/dev/null"];
-    const child = Bun.spawn(command, { cwd: ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    // util-linux takes the command as one string, BSD (macOS) as arguments after the file it records to. Behind cat:
+    // Bun hands a child a socket for stdin, which macOS's script refuses (tcgetattr), and cat gives it a pipe
+    const command = platform() === "darwin" ? "script -q /dev/null bun scripts/plugin.ts pair --approve" : "script -qfec 'bun scripts/plugin.ts pair --approve' /dev/null";
+    const child = Bun.spawn(["sh", "-c", `cat | ${command}`], { cwd: ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     let screen = "";
     const reading = (async () => { for await (const chunk of child.stdout) screen += Buffer.from(chunk).toString(); })();
     const shows = async (text: string): Promise<void> => {
@@ -882,6 +883,8 @@ describe("pair --approve", () => {
       child.stdin.end();
       expect(await child.exited).toBe(0);
     } finally {
+      // the end of the input ends cat, and with it the terminal and the command on it
+      try { child.stdin.end(); } catch { /* ended above */ }
       child.kill();
       await reading.catch(() => undefined);
       await server.stop(true);
