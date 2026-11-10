@@ -26,6 +26,12 @@ import { keyboardControl } from "./keyboardControl.ts";
 
 const viewport = window.visualViewport;
 const root = document.documentElement;
+// What the device says it is. iPadOS reports "MacIntel" with touch points unless the mobile site was asked
+// for, and so does an iPhone showing the desktop site, so an iPad is also told by its screen (the smallest
+// is 744 points on its short side; page zoom and the window's size leave the screen's own size alone).
+const ios = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const ipad = (/iPad/.test(navigator.platform) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1))
+  && Math.min(window.screen.width, window.screen.height) >= 744;
 
 /**
  * Focus starts it, and is not sufficient: dismissal and hardware keyboards leave the
@@ -59,43 +65,54 @@ const unobstructedHeights = new Map<number, { large: number; height: number }>()
 const typing = keyboardTypingField;
 // An iPad home-screen app with a hardware keyboard (iPadOS 26, Magic Keyboard) reports a visual viewport
 // shrunk for a single frame on every keystroke and whole again on the next. Applied at once, that frame
-// collapsed the shell to a keyboard-sized height and the page flashed on each key. A shrink is read again
-// a moment later and applied only where it lasted; a viewport growing back is applied at once, so a
-// keyboard going away never waits.
-// Shrinking is measured against the height applied last. A viewport that only stays short of the large
-// one is not shrinking (a Safari tab with its toolbars showing, an iPad home-screen app under its status
-// bar), so nothing waits there, the first sync of a page included. Without a keyboard it must also be
-// short of the large viewport: where the keyboard resizes the layout itself (Chrome), all three shrink
-// together and that is applied at once, as before.
-// The wait starts at the first shrinking event and the ones after it leave it running: a keyboard that
-// opens under a stream of viewport events is applied 40 ms after its first event, then every 40 ms while
-// it still opens, not 40 ms after its last event.
+// collapsed the shell to a keyboard-sized height and the page flashed on each key. Such a dip is read
+// again a moment later and applied only where it lasted.
+// Only that dip waits: on an iPad, with no keyboard counted yet, a visual viewport shorter than the one
+// applied last while the window is as it was (the same width and the same large viewport). Everything
+// else is applied in its own event, as it always was: a phone's keyboard (an iPhone's, and Android's,
+// where Chrome shrinks the layout too), a keyboard that is up and grows, a viewport growing back (a
+// keyboard going away never waits), a rotation, a window made smaller, and the first sync of a page.
+// The wait starts at the first event of a dip and the ones after it leave it running, so a keyboard that
+// opens under a stream of viewport events counts 40 ms after its first event, not after its last. A field
+// that had the focus when the dip began still counts when the wait ends: by then a tap may have moved
+// the focus to a button, or the field may be unmounted, with the keyboard still on screen.
 const SHRINK_SETTLE_MS = 40;
 let shrinkTimer: number | undefined;
-let appliedHeight: number | undefined;
-const syncKeyboard = (): void => {
+let shrinkFocused = false;
+let applied: { width: number; height: number; large: number } | undefined;
+const typingFocused = (): boolean => touch.matches && typing(document.activeElement);
+const pinPage = (): void => {
   if (document.querySelector(".app") !== null) window.scrollTo(0, 0);
+};
+const syncKeyboard = (): void => {
   const height = viewport?.height ?? window.innerHeight;
-  const shrinking = !!viewport && appliedHeight !== undefined && height < appliedHeight - 1
-    && (root.hasAttribute("data-keyboard") || height < largeViewport.getBoundingClientRect().height - 1);
-  if (!shrinking) {
+  const dip = ipad && !!viewport && applied !== undefined && !root.hasAttribute("data-keyboard")
+    && window.innerWidth === applied.width && Math.abs(largeViewport.getBoundingClientRect().height - applied.large) < 1
+    && height < applied.height - 1;
+  if (!dip) {
     window.clearTimeout(shrinkTimer);
     shrinkTimer = undefined;
-    applyKeyboard();
+    shrinkFocused = false;
+    applyKeyboard(false);
     return;
   }
+  // iOS scrolls the page to reveal the focused field: it stays in place while the dip waits
+  pinPage();
+  shrinkFocused ||= typingFocused();
   shrinkTimer ??= window.setTimeout(() => {
+    const held = shrinkFocused;
     shrinkTimer = undefined;
-    applyKeyboard();
+    shrinkFocused = false;
+    applyKeyboard(held);
   }, SHRINK_SETTLE_MS);
 };
-const applyKeyboard = (): void => {
+const applyKeyboard = (held: boolean): void => {
   const width = window.innerWidth;
   const height = viewport?.height ?? window.innerHeight;
-  appliedHeight = height;
   const large = largeViewport.getBoundingClientRect().height;
+  applied = { width, height, large };
   const remembered = unobstructedHeights.get(width);
-  const focused = touch.matches && typing(document.activeElement);
+  const focused = held || typingFocused();
   const keyboardActive = focused || root.hasAttribute("data-keyboard");
   const reference = keyboardViewportReference(height, large, window.innerHeight, remembered, keyboardActive);
   const visible = keyboardActive && ((keyboard?.boundingRect.height ?? 0) > 0
@@ -133,19 +150,21 @@ const applyKeyboard = (): void => {
       root.style.setProperty("--app-height", `${Math.round(height)}px`);
     else root.style.removeProperty("--app-height");
   }
+  pinPage();
 };
 // iOS Safari zooms the page into a field whose text is under 16px when it gets the focus. Fields draw at
 // the interface size (styles.css .input/.select), like the labels beside them; on iOS the press that
-// precedes the focus arms the field to --fs-input, and the field keeps it while it has the focus. A press
-// on a field's label arms the field the label focuses. A field focused by a handler (a press on Find in
-// diff or Rename tab focuses a field it did not touch) is armed as it takes the focus.
+// precedes the focus arms a text field to --fs-input, and the field keeps it while it has the focus. A
+// press on a field's label arms the field the label focuses. A field focused by a handler (a press on
+// Find in diff or Rename tab focuses a field it did not touch) is armed as it takes the focus.
+// A native select is armed only as it takes the focus: its box follows its text, so armed by the press it
+// would widen under the finger, could push its row's label onto another line and move away from the tap.
 // Only a control Safari zooms into is armed: a text field, a textarea or a native select that can take the
 // focus. A button drawn as a select (the agent picker) opens a menu, never zooms and may not even take the
 // focus, so a press must not resize its label; a disabled field is not focused by its label either.
-// A press that does not give its field the focus leaves nothing armed: one the browser cancels (a scroll),
-// one that ends in a click a handler kept from focusing, and one that never ends in a click, which the
-// next press clears.
-const ios = /iP(hone|ad|od)/.test(navigator.platform) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+// Nothing stays armed without the focus: a press the browser cancels (a scroll), one that ends in a click
+// a handler kept from focusing, one that never ends in a click (the next press clears it), and a field
+// that lost the focus by being disabled or hidden, with a blur or, where the browser sends none, without.
 if (ios) {
   const field = (target: EventTarget | null): HTMLElement | null => {
     if (!(target instanceof Element)) return null;
@@ -154,13 +173,18 @@ if (ios) {
       && control.matches("input, textarea, select") && !control.matches(":disabled") ? control : null;
   };
   let pressed: HTMLElement | null = null;
+  const disarm = (keep: Element | null): void => {
+    for (const armed of document.querySelectorAll("[data-armed]"))
+      if (armed !== document.activeElement && armed !== keep) armed.removeAttribute("data-armed");
+  };
   const release = (): void => {
-    if (pressed && document.activeElement !== pressed) pressed.removeAttribute("data-armed");
     pressed = null;
+    disarm(null);
   };
   document.addEventListener("pointerdown", (event) => {
     release();
-    pressed = field(event.target);
+    const target = field(event.target);
+    pressed = target instanceof HTMLSelectElement ? null : target;
     pressed?.setAttribute("data-armed", "");
   }, true);
   document.addEventListener("pointercancel", release, true);
@@ -168,8 +192,14 @@ if (ios) {
   document.addEventListener("click", () => {
     if (pressed) window.setTimeout(release, 0);
   }, true);
-  document.addEventListener("focusin", (event) => field(event.target)?.setAttribute("data-armed", ""), true);
-  document.addEventListener("focusout", (event) => field(event.target)?.removeAttribute("data-armed"), true);
+  document.addEventListener("focusin", (event) => {
+    disarm(pressed);
+    field(event.target)?.setAttribute("data-armed", "");
+  }, true);
+  // unfiltered: a field disabled while it had the focus is no longer one `field` accepts
+  document.addEventListener("focusout", (event) => {
+    if (event.target instanceof Element) event.target.removeAttribute("data-armed");
+  }, true);
 }
 // iPadOS 26 draws a windowed app's controls (close, minimize, full screen) over the page's top-left
 // corner, where the header's first button sits, and no safe area or titlebar-area value reports them.

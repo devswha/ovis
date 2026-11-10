@@ -11,8 +11,10 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 
 async function checkState(page: Page, visible: boolean, height: number, inset: number, correction = false): Promise<void> {
-  // lib/viewport.ts applies a shrinking visual viewport only once it lasted SHRINK_SETTLE_MS: the page's clock runs past it
-  await page.clock.runFor(50);
+  // The page's clock is paused: this lets only the timers already due run (the zero timer a blur leaves), so the
+  // state read is the one the event itself left. A wait that should not be there (lib/viewport.ts holds only an
+  // iPad's shrink without a keyboard) shows as a stale state; a case that must wait runs the clock itself.
+  await page.clock.runFor(1);
   const state = await page.evaluate((visible) => {
     const composer = document.querySelector(".composer")!;
     const root = document.documentElement;
@@ -64,16 +66,24 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
 let browser: Browser | undefined;
 try {
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  for (const scenario of ["mobile", "split-view", "desktop", "virtual-keyboard", "standalone", "standalone-full", "browser-short"] as const) {
+  for (const scenario of ["mobile", "split-view", "desktop", "virtual-keyboard", "standalone", "standalone-full", "browser-short", "ipad"] as const) {
     const mobile = scenario !== "desktop";
-    const context = await browser.newContext({ viewport: mobile ? { width: 393, height: 852 } : { width: 1280, height: 800 }, isMobile: mobile, hasTouch: mobile });
+    // "ipad" is an iPad home-screen app in landscape: the platform and the portrait-valued screen iPadOS reports
+    const context = await browser.newContext(scenario === "ipad"
+      ? { viewport: { width: 1180, height: 820 }, screen: { width: 820, height: 1180 }, isMobile: true, hasTouch: true }
+      : { viewport: mobile ? { width: 393, height: 852 } : { width: 1280, height: 800 }, isMobile: mobile, hasTouch: mobile });
     try {
       await context.addInitScript(({ mobile, virtualKeyboard, scenario }) => {
         // Init scripts run before the viewport meta tag is parsed. Playwright's
         // emulated screen, unlike innerHeight at that point, has the requested size.
-        const initialHeight = window.screen.height;
+        const ipad = scenario === "ipad";
+        if (ipad) {
+          Object.defineProperty(Navigator.prototype, "platform", { configurable: true, get: () => "MacIntel" });
+          Object.defineProperty(Navigator.prototype, "maxTouchPoints", { configurable: true, get: () => 5 });
+        }
+        const initialHeight = ipad ? 820 : window.screen.height;
         const fake = {
-          height: initialHeight - (mobile ? (window.screen.width > initialHeight ? 21 : 59) : 0), layout: initialHeight, large: scenario === "standalone" || scenario === "browser-short" ? 793 : initialHeight,
+          height: ipad ? 796 : initialHeight - (mobile ? (window.screen.width > initialHeight ? 21 : 59) : 0), layout: initialHeight, large: scenario === "standalone" || scenario === "browser-short" ? 793 : initialHeight,
           scale: 1, viewport: new EventTarget(), keyboard: new EventTarget(), keyboardHeight: 0,
         };
         Object.assign(window, { viewportFixture: fake });
@@ -84,12 +94,12 @@ try {
         Object.defineProperty(window, "innerHeight", { configurable: true, get: () => fake.layout });
         const originalMatchMedia = window.matchMedia.bind(window);
         window.matchMedia = (query) => query === "(display-mode: standalone)"
-          ? ({ matches: scenario.startsWith("standalone") } as MediaQueryList) : originalMatchMedia(query);
+          ? ({ matches: scenario.startsWith("standalone") || ipad } as MediaQueryList) : originalMatchMedia(query);
         const nativeRect = HTMLElement.prototype.getBoundingClientRect;
         HTMLElement.prototype.getBoundingClientRect = function () {
           // Fake only the module's rulers, never app layout.
           if (this.style.height === "100lvh") return new DOMRect(0, 0, 0, fake.large);
-          if (this.style.height === "env(safe-area-inset-top, 0px)") return new DOMRect(0, 0, 0, mobile ? 59 : 0);
+          if (this.style.height === "env(safe-area-inset-top, 0px)") return new DOMRect(0, 0, 0, ipad ? 24 : mobile ? 59 : 0);
           return nativeRect.call(this);
         };
         if (virtualKeyboard) {
@@ -103,9 +113,12 @@ try {
       page.on("pageerror", (error) => errors.push(error.message));
       await page.goto(`http://127.0.0.1:${server.port}/?inset=${mobile ? 34 : 0}${scenario === "standalone" || scenario === "browser-short" ? "&short" : ""}`);
       // an installed clock still runs in real time: paused, only runFor moves it, so a slow runner cannot let the
-      // shrink wait run out between two steps
+      // shrink wait run out between two steps, and nothing can land late unseen
       await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
-      await checkState(page, false, mobile ? scenario === "standalone" ? 852 : scenario === "browser-short" ? 793 : 852 : 800, mobile ? 34 : 0, scenario === "standalone");
+      // at rest: 100dvh, a phone home-screen app's status-bar correction, or the iPad's shell fitted under its status bar
+      const rest = scenario === "ipad" ? 796 : scenario === "browser-short" ? 793 : mobile ? 852 : 800;
+      const corrected = scenario === "standalone" || scenario === "ipad";
+      await checkState(page, false, rest, mobile ? 34 : 0, corrected);
       if (scenario === "standalone") {
         const bounds = await page.evaluate(() => {
           const composer = document.querySelector(".composer")!;
@@ -118,31 +131,57 @@ try {
         assert.deepEqual(bounds, { corrected: 852, uncorrected: 793, padding: 18 }, "status inset is added exactly once with home-indicator clearance");
       }
       await page.getByRole("textbox", { name: "Message", exact: true }).focus();
-      await checkState(page, false, mobile ? scenario === "standalone" ? 852 : scenario === "browser-short" ? 793 : 852 : 800, mobile ? 34 : 0, scenario === "standalone"); // hardware keyboard / focus without soft keyboard
-      if (scenario === "mobile") {
-        // a hardware keyboard's one-frame shrink on each key (iPadOS 26) is not applied in its frame, and gone by the next
-        await geometry(page, 472, 852, 852);
-        assert.equal(await page.evaluate(() => document.documentElement.hasAttribute("data-keyboard")), false, "a shrink waits before it counts");
-        await geometry(page, 793, 852, 852);
-        await checkState(page, false, 852, 34);
-        // a keyboard opening under a stream of viewport events (one a frame) is followed while it opens: the wait
-        // starts at the first shrinking event, and the ones after it do not start it again
+      await checkState(page, false, rest, mobile ? 34 : 0, corrected); // hardware keyboard / focus without soft keyboard
+      if (scenario === "ipad") {
+        const composer = page.getByRole("textbox", { name: "Message", exact: true });
+        const mark = () => page.evaluate(() => ({ keyboard: document.documentElement.hasAttribute("data-keyboard"), published: document.documentElement.style.getPropertyValue("--app-height") }));
+        // a hardware keyboard's one-frame shrink on each key (iPadOS 26) is not applied in its frame and is gone by the
+        // next: nothing lands late either
+        await geometry(page, 420, 820, 820);
+        assert.deepEqual(await mark(), { keyboard: false, published: "796px" }, "iPad: a shrink waits before it counts");
+        await geometry(page, 796, 820, 820);
+        await checkState(page, false, 796, 34, true);
+        await page.clock.runFor(50);
+        await checkState(page, false, 796, 34, true);
+        // an on-screen keyboard that comes in one event counts once it lasted; up, it is followed in each event
+        await geometry(page, 366, 820, 820);
+        assert.deepEqual(await mark(), { keyboard: false, published: "796px" }, "iPad: the keyboard's shrink waits too");
+        await page.clock.runFor(50);
+        await checkState(page, true, 366, 34);
+        await geometry(page, 300, 820, 820);
+        await checkState(page, true, 300, 34);
+        await geometry(page, 796, 820, 820, "scroll");
+        await checkState(page, false, 796, 34, true);
+        // a keyboard opening under a stream of viewport events (one a frame): the wait starts at the first shrinking
+        // event and the ones after it do not start it again, so the keyboard counts while it still opens, and from
+        // then on the shell is at the viewport's height in every frame
         for (let frame = 1; frame <= 12; frame += 1) {
-          await geometry(page, 793 - frame * 20, 852, 852);
+          await geometry(page, 796 - frame * 20, 820, 820);
           await page.clock.runFor(16);
         }
-        const opening = await page.evaluate(() => ({
-          keyboard: document.documentElement.hasAttribute("data-keyboard"),
-          published: Number.parseFloat(document.documentElement.style.getPropertyValue("--app-height")),
-        }));
-        assert.equal(opening.keyboard, true, "a keyboard opening under a stream of viewport events counts while it opens");
-        assert.ok(opening.published >= 553 && opening.published <= 633, `the shell follows the opening keyboard (${opening.published}px over a 553px viewport)`);
-        await geometry(page, 472, 852, 852);
-        await checkState(page, true, 472, 34);
-        await geometry(page, 793, 852, 852, "scroll");
-        await checkState(page, false, 852, 34);
-      }
-      if (scenario === "split-view") {
+        assert.deepEqual(await mark(), { keyboard: true, published: "556px" }, "iPad: a keyboard opening under a stream of viewport events counts while it opens");
+        await geometry(page, 796, 820, 820, "scroll");
+        await checkState(page, false, 796, 34, true);
+        // the field loses the focus while the shrink waits (a tap on a button, a composer unmounted under the keyboard):
+        // the keyboard is still up and still counts, as it did when the shrink was applied in its event
+        await geometry(page, 366, 820, 820);
+        await composer.blur();
+        await page.clock.runFor(50);
+        await checkState(page, true, 366, 34);
+        await geometry(page, 796, 820, 820, "scroll");
+        await checkState(page, false, 796, 34, true);
+        await composer.focus();
+        // a window made smaller is not a keyboard: its large viewport shrinks with it, and the shell follows in that event
+        await geometry(page, 676, 700, 700);
+        await checkState(page, false, 676, 34, true);
+        // nor is a rotation, which changes the width
+        await page.setViewportSize({ width: 820, height: 1180 });
+        await geometry(page, 1156, 1180, 1180, "orientationchange");
+        await checkState(page, false, 1156, 34, true);
+        await page.setViewportSize({ width: 1180, height: 820 });
+        await geometry(page, 796, 820, 820, "orientationchange");
+        await checkState(page, false, 796, 34, true);
+      } else if (scenario === "split-view") {
         await page.setViewportSize({ width: 393, height: 1000 });
         await geometry(page, 976, 1000, 1000);
         await checkState(page, false, 1000, 34);
@@ -159,13 +198,22 @@ try {
         await page.getByRole("textbox", { name: "Message", exact: true }).focus();
         await checkState(page, false, 600, 34); // blur/refocus must not revive stale height
       } else if (scenario === "mobile") {
+        // a phone's keyboard is applied in the event that reports it: only an iPad's shrink waits
         await geometry(page, 472, 852, 852);
         await checkState(page, true, 472, 34);
+        await geometry(page, 400, 852, 852); // the keyboard grows while it is up (a suggestion bar)
+        await checkState(page, true, 400, 34);
         await geometry(page, 793, 852, 852, "scroll"); // native dismissal, focus remains
         assert.equal(await page.getByRole("textbox", { name: "Message", exact: true }).evaluate((el) => document.activeElement === el), true);
         await checkState(page, false, 852, 34);
         await geometry(page, 472, 472, 472); // resizes-content: both viewports and CSS units shrink
         await checkState(page, true, 472, 34);
+        await geometry(page, 793, 852, 852);
+        await checkState(page, false, 852, 34);
+        // resizes-content as Chrome 133 reports it with Gboard up (lib/viewport.test.ts): the visual and the layout
+        // viewport shrink to 477 while the lvh ruler stays above them, at 533
+        await geometry(page, 477, 477, 533);
+        await checkState(page, true, 477, 34);
         await geometry(page, 793, 852, 852);
         await checkState(page, false, 852, 34);
         await geometry(page, 400, 852, 852, "resize", 2); // pinch zoom is not a keyboard
@@ -254,15 +302,16 @@ try {
   // Page zoom scales the layout (125% of an 1180x820 screen lays out 944x656) and leaves the screen's own size, so
   // the iPad is told by its screen. Each case reads the shell right after the load, with no clock: the first sync
   // of a page never waits for a shrink
-  const ipad = { width: 1180, height: 820 };
+  const landscape = { width: 1180, height: 820 };
+  const ipad = { width: 820, height: 1180 }; // iOS reports the screen as it is in portrait, whichever way it is held
   for (const [name, size, screen, visual, scale, pinched, standalone, fits] of [
-    ["iPad landscape", ipad, ipad, 796, 1, false, true, true],
+    ["iPad landscape", landscape, ipad, 796, 1, false, true, true],
     ["iPad landscape at 85% page zoom", { width: 1388, height: 965 }, ipad, 936, 0.85, false, true, true],
     ["iPad landscape at 125% page zoom", { width: 944, height: 656 }, ipad, 637, 1.25, false, true, true],
     ["iPad landscape in a 600px window", { width: 600, height: 700 }, ipad, 676, 1, false, true, true],
-    ["iPad landscape pinched", ipad, ipad, 796, 2, true, true, false],
-    ["iPad landscape, keyboard-sized gap", ipad, ipad, 500, 1, false, true, false],
-    ["iPad landscape Safari tab", ipad, ipad, 796, 1, false, false, false],
+    ["iPad landscape pinched", landscape, ipad, 796, 2, true, true, false],
+    ["iPad landscape, keyboard-sized gap", landscape, ipad, 500, 1, false, true, false],
+    ["iPad landscape Safari tab", landscape, ipad, 796, 1, false, false, false],
     ["phone landscape", { width: 852, height: 393 }, { width: 852, height: 393 }, 372, 1, false, true, false],
   ] as const) {
     const context = await browser.newContext({ viewport: size, screen, isMobile: true, hasTouch: true });
@@ -301,15 +350,23 @@ try {
       });
       const page = await context.newPage();
       await page.goto(`http://127.0.0.1:${server.port}/`);
-      await page.evaluate((token) => document.querySelector(".app")!.insertAdjacentHTML("afterbegin", `<input class="input" aria-label="Field"><select class="select" aria-label="Choice"><option>a</option></select><span class="fixture-label" style="font-size: var(${token})">Label</span>`), width < 641 ? "--fs-md" : "--fs-sm");
+      await page.evaluate((token) => document.querySelector(".app")!.insertAdjacentHTML("afterbegin", `<input class="input" aria-label="Field"><span style="display: inline-flex"><select class="select" aria-label="Choice"><option>Comfortable spacing</option></select></span><span class="fixture-label" style="font-size: var(${token})">Label</span>`), width < 641 ? "--fs-md" : "--fs-sm");
       const size = (selector: string) => page.locator(selector).evaluate((el) => getComputedStyle(el).fontSize);
       const body = await size(".fixture-label");
       const where = `${ios ? "iOS" : "desktop"} ${width}px`;
       for (const selector of ['.input[aria-label="Field"]', ".select"]) {
         assert.equal(await size(selector), body, `${where} ${selector}: the interface size at rest`);
+        const box = () => page.locator(selector).evaluate((el) => { const rect = el.getBoundingClientRect(); return [rect.x, rect.y, rect.width, rect.height]; });
+        const resting = await box();
         await page.locator(selector).dispatchEvent("pointerdown");
+        // the press arms a text field, whose box does not follow its text. A select's box does: armed by the press it
+        // would widen under the finger and could move away from it, so a select is armed only once it has the focus
+        const select = selector === ".select";
+        assert.equal(await size(selector), ios && !select ? "16px" : body, `${where} ${selector}: ${ios && !select ? "16px from the press itself" : "a press leaves the size"}`);
+        if (select) assert.deepEqual(await box(), resting, `${where} ${selector}: a press leaves the select's box where it is`);
         await page.locator(selector).focus();
-        assert.equal(await size(selector), ios ? "16px" : body, `${where} ${selector}: ${ios ? "16px from the press" : "the interface size when focused"}`);
+        assert.equal(await size(selector), ios ? "16px" : body, `${where} ${selector}: ${ios ? "16px with the focus" : "the interface size when focused"}`);
+        if (select && ios) assert.ok((await box())[2]! > resting[2]!, `${where} ${selector}: an armed select is wider than at rest, which is why the press does not arm it`);
         await page.locator(selector).blur();
         assert.equal(await size(selector), body, `${where} ${selector}: the interface size again after the blur`);
       }
@@ -356,6 +413,22 @@ try {
       await page.locator("#fixture-refused").dispatchEvent("pointerdown");
       await page.locator("#fixture-find").dispatchEvent("pointerdown");
       assert.equal(await size("#fixture-refused"), body, `${where}: the next press clears a field an earlier press left armed`);
+      // a field disabled while it has the focus (a form that is sending) does not stay armed: its blur disarms it
+      // though it is disabled by then, and where the browser drops the focus without a blur, the next press does
+      await page.locator("#fixture-dir").focus();
+      assert.equal(await size("#fixture-dir"), ios ? "16px" : body, `${where}: ${ios ? "16px with the focus" : "a focused field keeps the interface size"}`);
+      await page.locator("#fixture-dir").evaluate((el: HTMLInputElement) => {
+        el.disabled = true;
+        el.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+        el.disabled = false;
+      });
+      assert.equal(await size("#fixture-dir"), body, `${where}: the blur of a field disabled while focused disarms it`);
+      await page.locator("#fixture-dir").blur();
+      if (ios) {
+        await page.locator("#fixture-dir").evaluate((el) => el.setAttribute("data-armed", "")); // as a dropped focus leaves it
+        await page.locator("#fixture-find").dispatchEvent("pointerdown");
+        assert.equal(await size("#fixture-dir"), body, `${where}: the next press disarms a field that lost the focus without a blur`);
+      }
     } finally { await context.close(); }
   }
   // an interface size over 16px: the press keeps the field at the interface size instead of shrinking it to 16px
@@ -450,5 +523,5 @@ try {
       assert.equal((await header()).marked, true, `${name}: a window again is marked again`);
     } finally { await context.close(); }
   }
-  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, one-frame shrink, iPad landscape home-screen shell, field size on iOS, iPad window controls");
+  console.log("PASS mobile viewport: same-width split view, dismissal without blur, hardware keyboard, dual viewport resize, orientation, standalone, safe area, desktop, zoom, page zoom, xterm, keyboard geometry, a phone keyboard in its own event, an iPad's one-frame shrink, iPad landscape home-screen shell, field size on iOS, iPad window controls");
 } finally { await browser?.close(); server.stop(); }
