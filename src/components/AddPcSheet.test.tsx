@@ -103,6 +103,9 @@ describe("the Add-a-PC sheet", () => {
     expect(addPcSteps("new", "start", null)).toEqual(["done", "running", "todo", "todo"]);
     expect(addPcSteps("new", "compare", null)).toEqual(["done", "running", "todo", "todo"]);
     expect(addPcSteps("new", "approving", null)).toEqual(["done", "done", "running", "todo"]);
+    // the relay's refusal comes after the digits were confirmed: the typed number was right
+    expect(addPcSteps("new", "failed", "new-devices-refused")).toEqual(addPcSteps("new", "failed", "pair-declined"));
+    expect(addPcSteps("join", "failed", "new-devices-refused")).toEqual(addPcSteps("join", "failed", "pair-declined"));
     expect(addPcSteps("new", "ready", null)).toEqual(["done", "done", "done", "done"]);
     expect(addPcSteps("join", "start", null)).toEqual(["current", "todo", "todo", "todo"]);
     expect(addPcSteps("join", "connecting", null)).toEqual(["running", "todo", "todo", "todo"]);

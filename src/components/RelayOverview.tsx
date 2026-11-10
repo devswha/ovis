@@ -1,7 +1,7 @@
 import "./RelayOverview.css";
 
 import { AlertCircle, ChevronRight, Monitor } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { MIN_SERVER_VERSION } from "../../shared/relay-mux.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
@@ -25,7 +25,7 @@ import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 export const ATTENTION_LIMIT = 3;
 export const SKELETON_ROWS = 4;
 export const LOADING_SPINNER_MS = 1_000;
-/** How long Check again stays busy after a click: the account's list is asked for at once, and a second click waits this long. */
+/** The least Check again stays busy after a click, so a read that lands at once still shows it ran; it stays busy past this until the read it asked for has landed. */
 export const CHECK_AGAIN_BUSY_MS = 1_000;
 
 /** Ready and Needs you omit unchecked pairings. Needs you includes Offline as a note. */
@@ -49,7 +49,8 @@ export interface RelayOverviewProps {
   readonly onFilter?: (filter: DashboardFilter) => void;
   readonly onOpenRelay?: (origin?: string) => void;
   readonly onRetryError?: () => void;
-  readonly onRefreshAccount?: () => void;
+  /** Reads the account's PCs again. A promise it returns settles when that read has landed: Check again stays busy until then. */
+  readonly onRefreshAccount?: () => void | Promise<void>;
   readonly onAddPc?: () => void;
   readonly onPairByQr?: () => void;
   readonly onOpenSheet?: (pc: MyPc, mode: "new" | "join") => void;
@@ -120,9 +121,10 @@ export const WINDOWS_INSTALLER_COMMAND = "irm https://ovis.sh/install.ps1 | iex"
 /** How long Copy reads Copied after a copy that worked. */
 export const COPIED_MS = 1_600;
 
-/** One installer line with its Copy button: the first step of an account that has no PC yet. */
-function InstallCommand({ command, action }: { readonly command: string; readonly action: string }) {
+/** One installer line under the system it is for, with its Copy button: the first step of an account that has no PC yet. */
+function InstallCommand({ os, command, action }: { readonly os: string; readonly command: string; readonly action: string }) {
   const t = useT();
+  const osId = useId();
   const preRef = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number | null>(null);
@@ -137,10 +139,14 @@ function InstallCommand({ command, action }: { readonly command: string; readonl
     });
   };
   return (
-    <div className="relay-overview-empty-command-row">
-      <pre ref={preRef} className="relay-overview-empty-command"><code>{command}</code></pre>
-      <button type="button" className="btn" data-action={action} onClick={copy}>{t(copied ? "Copied" : "Copy")}</button>
-    </div>
+    <>
+      <span id={osId} className="relay-overview-empty-os">{os}</span>
+      <div className="relay-overview-empty-command-row">
+        <pre ref={preRef} className="relay-overview-empty-command"><code>{command}</code></pre>
+        {/* two Copy buttons on one screen: each is described by the system its line is for */}
+        <button type="button" className="btn" data-action={action} aria-describedby={osId} onClick={copy}>{t(copied ? "Copied" : "Copy")}</button>
+      </div>
+    </>
   );
 }
 
@@ -148,13 +154,17 @@ export function RelayOverview(props: RelayOverviewProps) {
   const { pcs, mode = "account", defaultRelay, meLabel, provider, error = null, pcStatus, targetVersion = MIN_SERVER_VERSION, onOpenRelay, onAddPc, onPairByQr, children } = props;
   const currentFilter = props.activeFilter ?? props.filter;
   const selectFilter = props.onSelectFilter ?? props.onFilter;
-  const retryError = props.onRetryError ?? props.onRefreshAccount;
+  const refreshAccount = props.onRefreshAccount;
+  const retryError = props.onRetryError ?? (refreshAccount ? (): void => { void refreshAccount(); } : undefined);
   const t = useT();
   const now = props.now ?? Date.now();
   const loading = pcs === null;
   const [showSpinner, setShowSpinner] = useState(false);
   const [checking, setChecking] = useState(false);
   const checkTimer = useRef<number | null>(null);
+  // what a Check again still waits for: its least busy time, and the read it asked for
+  const checkWaits = useRef<{ timer: boolean; read: boolean }>({ timer: false, read: false });
+  const mounted = useRef(false);
   const announcedWait = useAnnouncedText(loading ? t("Loading your PCs…") : null);
 
   useEffect(() => {
@@ -163,17 +173,29 @@ export function RelayOverview(props: RelayOverviewProps) {
     return () => window.clearTimeout(timer);
   }, [loading]);
 
-  useEffect(() => () => { if (checkTimer.current !== null) window.clearTimeout(checkTimer.current); }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; if (checkTimer.current !== null) window.clearTimeout(checkTimer.current); };
+  }, []);
 
-  const refreshAccount = props.onRefreshAccount;
   const checkAgain = (): void => {
     if (checking || !refreshAccount) return;
+    const waits = { timer: true, read: true };
+    checkWaits.current = waits;
+    // a later Check again has its own waits: an earlier one's late answer ends nothing of it
+    const landed = (part: "timer" | "read"): void => {
+      waits[part] = false;
+      if (checkWaits.current === waits && !waits.timer && !waits.read && mounted.current) setChecking(false);
+    };
     setChecking(true);
-    checkTimer.current = window.setTimeout(() => { checkTimer.current = null; setChecking(false); }, CHECK_AGAIN_BUSY_MS);
-    refreshAccount();
+    checkTimer.current = window.setTimeout(() => { checkTimer.current = null; landed("timer"); }, CHECK_AGAIN_BUSY_MS);
+    let read: void | Promise<void>;
+    try { read = refreshAccount(); } catch { read = undefined; }
+    void Promise.resolve(read).then(() => landed("read"), () => landed("read"));
   };
-  // only a signed-in dashboard says how to add a PC: without an account there is no list a PC could join
-  const providerName = mode === "account" && provider !== undefined ? PROVIDER_NAMES[provider] : null;
+  // only a signed-in dashboard says how to add a PC: without an account there is no list a PC could join. A list that
+  // could not be read is not known to be empty: under that banner nobody is told to install Ovis and add a PC again
+  const providerName = mode === "account" && provider !== undefined && error === null ? PROVIDER_NAMES[provider] : null;
   // a PC's own page signs in through a device flow, which Apple has none of: such an account is not told to sign in there with Apple
   const pcCanSignIn = provider !== undefined && (DEVICE_PROVIDERS as readonly string[]).includes(provider);
 
@@ -231,19 +253,18 @@ export function RelayOverview(props: RelayOverviewProps) {
           <Monitor className="relay-overview-empty-icon" aria-hidden="true" />
           <h2 className="relay-overview-empty-title">{t("No PCs yet")}</h2>
           {providerName === null ? (
-            <p className="relay-overview-empty-copy">{t("Sign in on a PC, or scan the QR code it shows, to see it here.")}</p>
+            // the banner above already says the list could not be read: the heading stands alone under it
+            error === null && <p className="relay-overview-empty-copy">{t("Sign in on a PC, or scan the QR code it shows, to see it here.")}</p>
           ) : (
             <>
               <ol className="relay-overview-empty-steps" data-empty-steps="">
                 <li>
                   <span>{t("Install Ovis on the PC.")}</span>
-                  <span className="relay-overview-empty-os">{t("On macOS or Linux:")}</span>
-                  <InstallCommand command={INSTALLER_COMMAND} action="copy-install" />
-                  <span className="relay-overview-empty-os">{t("On Windows, in PowerShell:")}</span>
-                  <InstallCommand command={WINDOWS_INSTALLER_COMMAND} action="copy-install-windows" />
+                  <InstallCommand os={t("On macOS or Linux:")} command={INSTALLER_COMMAND} action="copy-install" />
+                  <InstallCommand os={t("On Windows, in PowerShell:")} command={WINDOWS_INSTALLER_COMMAND} action="copy-install-windows" />
                 </li>
                 <li>{pcCanSignIn
-                  ? t("On that PC, open Settings → Devices and PCs → Account and sign in with {provider}.", { provider: providerName })
+                  ? t("On that PC, open Settings → Devices and PCs → Account and sign in with the same {provider} account as on this device.", { provider: providerName })
                   : t("On that PC, open Settings → Devices and PCs → Account and sign in with a GitHub or Google sign-in that is linked to this account.")}</li>
                 <li>{t("Choose Add this PC to my account there. It then shows here with Add.")}</li>
               </ol>
@@ -253,7 +274,8 @@ export function RelayOverview(props: RelayOverviewProps) {
             </>
           )}
           <div className="relay-overview-empty-actions">
-            {providerName !== null && refreshAccount && <button type="button" className="btn" data-action="check-again" disabled={checking} aria-busy={checking ? true : undefined} onClick={checkAgain}>{t("Check again")}</button>}
+            {/* aria-disabled, not disabled: a press keeps the focus it had instead of dropping it to the page */}
+            {providerName !== null && refreshAccount && <button type="button" className="btn relay-overview-check-again" data-action="check-again" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={checkAgain}>{t(checking ? "Checking…" : "Check again")}</button>}
             {onAddPc && <button type="button" className="btn btn-primary" data-action="add-pc" onClick={onAddPc}>{t("Add a PC")}</button>}
             {onPairByQr && <button type="button" className="btn btn-ghost" data-action="pair-qr" onClick={onPairByQr}>{t("Pair with a QR or code")}</button>}
           </div>

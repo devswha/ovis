@@ -397,8 +397,9 @@ export class RelayTransport implements Transport {
             endOthers(direct);
             resolve(channel);
           }, (error: unknown) => {
-            // only a refusal by the PC itself, after Noise proved it is the PC, is final
-            if (!settled && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError)))) { settled = true; endOthers(); reject(error); }
+            // only a refusal by the PC itself, after Noise proved it is the PC, is final: the relay's own refusal of a
+            // new device is no word of a direct carrier's
+            if (!settled && (this.stopped || (isFatalRelayError(error) && !(error instanceof DirectCarrierUnusableError) && !(error instanceof RelayNewSessionsRefusedError)))) { settled = true; endOthers(); reject(error); }
           }).finally(async () => {
             clearTimeout(timer);
             // a close that never comes holds the place no longer than the budget

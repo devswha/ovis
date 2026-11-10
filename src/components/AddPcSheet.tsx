@@ -34,7 +34,8 @@ export function addPcPhase(pc: MyPc, state: RelayShellState): AddPcPhase {
 
 function activeStepIndex(mode: "new" | "join", phase: AddPcPhase, failure: RelayFailure | null): number {
   if (phase === "ready") return 3;
-  if (phase === "approving" || (phase === "failed" && failure === "pair-declined")) return 2;
+  // the relay turns a new device away only once both people confirmed the digits: the steps before it went right
+  if (phase === "approving" || (phase === "failed" && (failure === "pair-declined" || failure === "new-devices-refused"))) return 2;
   if (mode === "new" || phase === "compare" || phase === "wrong") return 1;
   return 0;
 }
