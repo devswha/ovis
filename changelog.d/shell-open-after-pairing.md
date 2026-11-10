@@ -7,5 +7,11 @@
   question now reads "Add {name} to your account?", says that every device of your account will
   be able to open it, and shows the PC's ID.
 - A pairing link's question is asked again when what it said stopped being true before you
-  pressed its button (you signed in or out in another tab, or the PC left your account), so a
-  pairing never does more to your account than the screen said.
+  pressed its button (you signed in or out in another tab, signed in as another account, or the
+  PC left your account), so a pairing never does more to your account than the screen said.
+  While signed in, the question waits for your account's list of PCs instead of guessing, for at
+  most 8 seconds when the account service does not answer, and Not now stops a pairing whose
+  button was already pressed.
+- A pairing whose question said this device gets a key of its own no longer adds the PC to an
+  account you signed in to meanwhile when the page reloads for a newer version before the PC
+  opens. Opening the PC later while signed in adds it to your account, as before.

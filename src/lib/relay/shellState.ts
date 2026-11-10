@@ -18,7 +18,7 @@ import { decodeOffer } from "../../../shared/relay-offer.ts";
 import type { UpdateStep } from "../../../shared/update.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import type { MyPc } from "../account/myPcs.ts";
-import type { AccountProvider } from "../account/store.ts";
+import type { AccountProvider, AccountSession } from "../account/store.ts";
 import { inNativeApp } from "../nativeApp.ts";
 import { serverIdOfPath } from "../shellMode.ts";
 import { RelayAdmissionTimeoutError, RelayUnreachableError, UnsafeRelayDestinationError } from "./channel.ts";
@@ -244,6 +244,8 @@ export interface Attempt {
   accountEnrollment?: boolean;
   /** the confirm before this pairing said the device gets a key of its own: it uses no account key and joins no account, whoever signed in since */
   accountless?: boolean;
+  /** the sign-in the confirm before this pairing was drawn for: the pairing uses its account key and joins its account, and no other's */
+  signIn?: AccountSession;
   retryEnrollment?: boolean;
   /** this attempt already tried the key of a link whose answer was lost */
   retriedPending?: boolean;
@@ -289,6 +291,23 @@ export function takeConfirmedPc(): string | null {
   try {
     const serverId = sessionStorage.getItem("ovis-confirmed-pc");
     sessionStorage.removeItem("ovis-confirmed-pc");
+    return serverId;
+  } catch { return null; }
+}
+
+/**
+ * The PC whose pairing was confirmed as one with a key of this device's own, kept for the load that follows: a reload
+ * before the app opened (for a newer shell) starts from the saved pairing, which does not say what was confirmed.
+ * Only the PC ID, in this tab, and consumed by the next load whatever it opens.
+ */
+export function keepDeviceOnlyPc(serverId: string | null): void {
+  try { if (serverId === null) sessionStorage.removeItem("ovis-device-only-pc"); else sessionStorage.setItem("ovis-device-only-pc", serverId); }
+  catch { /* the choice cannot cross the load: the reloaded page opens the PC as a saved one */ }
+}
+export function takeDeviceOnlyPc(): string | null {
+  try {
+    const serverId = sessionStorage.getItem("ovis-device-only-pc");
+    sessionStorage.removeItem("ovis-device-only-pc");
     return serverId;
   } catch { return null; }
 }

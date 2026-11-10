@@ -8,7 +8,7 @@ import { RelayShell, type RelayShellProps } from "../../components/RelayShell.ts
 import { memoryAccountStore } from "../account/store.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
-import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
+import { ACCOUNT_READ_WAIT_MS, mountRelayShell, type RelayShellMount } from "./shell.tsx";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
 import { MuxProtocolError, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
 
@@ -295,7 +295,281 @@ describe("the hosted shell's front page", () => {
     expect(prepared).toHaveLength(1);
     expect(prepared[0]?.accountKey).toBeUndefined();
     expect(accountRequests).toBe(0);
+    // the pairing's own page opened the PC: nothing is kept for a later load
+    expect(browser.sessionStore.has("ovis-device-only-pc")).toBe(false);
     opened.close();
+  });
+
+  it("keeps a pairing confirmed with a key of the device's own out of an account signed in meanwhile when the page reloads for a newer shell", async () => {
+    browser.setVisibility("hidden");
+    // the tab's reload memory (updateFlow.ts) is window.sessionStorage
+    (window as unknown as { sessionStorage: Storage }).sessionStorage = sessionStorage;
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };
+    const accountStore = memoryAccountStore();
+    const session = { service: SERVICE, account: "acct-test", provider: "github" as const, access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 };
+    const devices: RelayDevice[] = [];
+    const store = deviceStore(devices);
+    const prepared: RelayTransportOptions[] = [];
+    const transports: RelayTransport[] = [];
+    let accountRequests = 0, apps = 0, reloads = 0;
+    // a PC newer than the shell: its first admission reloads the page before the app opens
+    class Newer extends RelayTransport {
+      override get server() { return { version: "1.1.0", relayProtocol: RELAY_PROTOCOL, features: ["account"] }; }
+      override async renew() {}
+      override async fetch(): Promise<Response> { accountRequests++; return Response.json({}); }
+    }
+    const page = (entryUrl: string, over: Partial<RelayShellMount> = {}) => mountRelayShell(mountFor({
+      entryUrl, store, navigate() {}, shellVersion: "1.0.0", reload: async () => { reloads++; },
+      accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => { accountRequests++; return Response.json({ pcs: [] }); },
+      renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+      open: async (_offer, options = {}) => {
+        prepared.push(options);
+        if (devices.length === 0) devices.push({ ...offer, device_id: "12".repeat(8), private_key: {} as CryptoKey, public_spki: "device-key", label: "Test phone" });
+        const opened = new Newer(offer); transports.push(opened); return opened;
+      },
+      ...over,
+    }));
+    await page(encodeOffer(offer, "https://app.ovis.sh"), {
+      // the sign-in lands after the press's own read, the moment the pairing begins (the memory store sets at once)
+      createRoot: () => ({ render(element: ReactElement) { rendered.push(element); if (shellProps(element).state.kind === "connecting") void accountStore.set("session", session); }, unmount() {} }),
+    });
+    await until(() => last().state.kind === "confirm" && !("account" in last().state), "the signed-out confirm");
+    last().onPair();
+    await until(() => reloads === 1, "the reload for the newer shell");
+    expect(apps).toBe(0);
+    expect(await accountStore.get("session")).toEqual(session);
+    // the reloaded page opens the PC from its saved pairing, signed in by now: it is still the pairing that was confirmed
+    await page(`https://app.ovis.sh/s/${offer.server_id}/`);
+    await until(() => apps === 1, "the app");
+    await drain();
+    expect(reloads).toBe(1);
+    expect(prepared).toHaveLength(2);
+    expect(prepared[0]?.accountKey).toBeUndefined();
+    expect(prepared[1]?.accountKey).toBeUndefined();
+    expect(accountRequests).toBe(0);
+    // a later load of the PC is no part of that pairing: it acts as whoever is signed in then
+    await page(`https://app.ovis.sh/s/${offer.server_id}/`);
+    await until(() => apps === 2, "the app, on a later load");
+    expect(prepared[2]?.accountKey).toBeDefined();
+    for (const transport of transports) transport.close();
+  });
+
+  describe("a Pair press is held to the confirm it was made on", () => {
+    const sessionOf = (who: string) => ({ service: SERVICE, account: `acct-${who}`, provider: "github" as const, access_token: who, refresh_token: `refresh-${who}`, expires_at: Date.now() + 3_600_000, sign_in_id: `sign-in-${who}` });
+    const bearerOf = (input: Request | string | URL, init?: RequestInit): string => new Headers(input instanceof Request ? input.headers : init?.headers).get("authorization") ?? "";
+    const variant = () => { const { state } = last(); return state.kind === "confirm" ? state.account : state.kind; };
+    const listing = (offer: { server_id: string }) => [{ server_id: offer.server_id, label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP }];
+
+    it("pairs nothing when Not now is pressed while the press reads the sign-in again", async () => {
+      browser.setVisibility("hidden");
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const held = Promise.withResolvers<Response>();
+      const paths: string[] = [];
+      let reads = 0, attempts = 0;
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate: (path) => { paths.push(path); },
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => ++reads === 1 ? Response.json({ pcs: [] }) : held.promise,
+        open: async () => { attempts++; throw new MuxProtocolError("auth_failed", "fixture declined"); },
+      }));
+      await until(() => variant() === "unlisted", "the confirm");
+      last().onPair();
+      await until(() => reads === 2, "the press's read");
+      expect(variant()).toBe("checking");
+      last().onCancel();
+      expect(paths).toEqual(["/"]);
+      held.resolve(Response.json({ pcs: [] }));
+      await drain();
+      expect(attempts).toBe(0);
+      expect(rendered.map((element) => shellProps(element).state.kind)).not.toContain("connecting");
+    });
+
+    it("asks again when another tab signed in as another account since the confirm was drawn, though neither lists the PC", async () => {
+      browser.setVisibility("hidden");
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const read: string[] = [];
+      const prepared: RelayTransportOptions[] = [];
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async (input, init) => { read.push(bearerOf(input, init)); return Response.json({ pcs: [] }); },
+        open: async (_offer, options = {}) => { prepared.push(options); throw new MuxProtocolError("auth_failed", "fixture declined"); },
+      }));
+      await until(() => variant() === "unlisted", "the confirm for the first account");
+      await accountStore.set("session", sessionOf("b"));
+      last().onPair();
+      await until(() => read.includes("Bearer b") && variant() === "unlisted", "the confirm asked again for the second account");
+      await drain();
+      expect(prepared).toHaveLength(0);
+      // asked about the account now signed in: that is confirmed
+      last().onPair();
+      await until(() => prepared.length === 1, "the pairing");
+      expect(prepared[0]?.accountKey).toBeDefined();
+    });
+
+    it("reads the directory of a sign-in that took the place of the one a press was reading, and asks again", async () => {
+      browser.setVisibility("hidden");
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const held = Promise.withResolvers<Response>();
+      const read: string[] = [];
+      let attempts = 0;
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+        accountStore, accountService: SERVICE, accountProviders: ["github"],
+        accountFetch: async (input, init) => { const bearer = bearerOf(input, init); read.push(bearer); return bearer === "Bearer b" ? Response.json({ pcs: listing(offer) }) : read.length === 1 ? Response.json({ pcs: [] }) : held.promise; },
+        open: async () => { attempts++; throw new MuxProtocolError("auth_failed", "fixture declined"); },
+      }));
+      await until(() => variant() === "unlisted", "the confirm for the first account");
+      last().onPair();
+      await until(() => read.length === 2, "the press's read");
+      await accountStore.set("session", sessionOf("b"));
+      held.resolve(Response.json({ pcs: [] }));
+      // the second account lists the PC, which only its own directory says
+      await until(() => variant() === "listed", "the confirm for the second account");
+      expect(read).toEqual(["Bearer a", "Bearer a", "Bearer b"]);
+      await drain();
+      expect(attempts).toBe(0);
+    });
+
+    it("pairs nothing, and asks again, when the sign-in changes between the press's read and the pairing", async () => {
+      browser.setVisibility("hidden");
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      let attempts = 0, switched = false;
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+        // the other sign-in lands the moment the pairing begins, after the press's own read (the memory store sets at once)
+        createRoot: () => ({ render(element: ReactElement) { rendered.push(element); if (!switched && shellProps(element).state.kind === "connecting") { switched = true; void accountStore.set("session", sessionOf("b")); } }, unmount() {} }),
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs: [] }),
+        open: async () => { attempts++; throw new MuxProtocolError("auth_failed", "fixture declined"); },
+      }));
+      await until(() => variant() === "unlisted", "the confirm");
+      last().onPair();
+      await until(() => switched && variant() === "unlisted", "the confirm asked again");
+      await drain();
+      expect(attempts).toBe(0);
+      last().onPair();
+      await until(() => attempts === 1, "the pairing, confirmed for the sign-in stored now");
+    });
+
+    it("opens a PC this page paired again with the key it holds, and no account, once the sign-in the confirm named is gone", async () => {
+      browser.setVisibility("hidden");
+      const { code: _code, ...pc } = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const offer = { ...pc, code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const key = await accountStore.key();
+      const devices: RelayDevice[] = [];
+      const prepared: RelayTransportOptions[] = [];
+      const transports: RelayTransport[] = [];
+      const putPcs: string[] = [];
+      let apps = 0;
+      class Admitted extends RelayTransport {
+        override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: ["account"] }; }
+        override async renew() {}
+        override async fetch(path: string): Promise<Response> {
+          if (path === "/api/account/status") return Response.json({ account: "acct-a", unlinked: [], removals: [], enrolling: false });
+          if (path === "/api/account/introduction") return Response.json({ pcs: [] });
+          throw new TypeError(`Unexpected PC request: ${path}`);
+        }
+      }
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore(devices), navigate() {}, shellVersion: "1.0.0",
+        accountStore, accountService: SERVICE, accountProviders: ["github"],
+        accountFetch: async (input, init) => { if ((init?.method ?? (input instanceof Request ? input.method : "GET")) === "PUT") putPcs.push(bearerOf(input, init)); return Response.json({ pcs: [] }); },
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+        open: async (_offer, options = {}) => {
+          prepared.push(options);
+          if (devices.length === 0) devices.push({ ...pc, device_id: "12".repeat(8), private_key: key.private_key, public_spki: key.public_spki, label: "Test phone" });
+          const opened = new Admitted(pc); transports.push(opened); return opened;
+        },
+      }));
+      await until(() => variant() === "unlisted", "the confirm");
+      last().onPair();
+      await until(() => (devices[0] as { account_enrollment?: { state: string } } | undefined)?.account_enrollment?.state === "complete", "the enrollment");
+      expect(apps).toBe(1);
+      const listed = putPcs.length;
+      // another tab signs in as another account, and the PC then turns this page's session away
+      await accountStore.set("session", sessionOf("b"));
+      prepared.find((options) => options.onFatal)!.onFatal!(new Error("the session ended"));
+      await until(() => last().state.kind === "failed", "the reason");
+      last().onRetry();
+      await until(() => apps === 2, "the PC, opened again");
+      await drain();
+      expect(prepared.at(-1)?.accountKey).toBeUndefined();
+      expect(putPcs).toHaveLength(listed);
+      expect(putPcs).not.toContain("Bearer b");
+      for (const transport of transports) transport.close();
+    });
+
+    it("stops saying checking, and still pairs, when the account service never answers", async () => {
+      jest.useFakeTimers();
+      browser.setVisibility("hidden");
+      const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const prepared: RelayTransportOptions[] = [];
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: () => new Promise<Response>(() => {}),
+        open: async (_offer, options = {}) => { prepared.push(options); throw new MuxProtocolError("auth_failed", "fixture declined"); },
+      }));
+      await drain();
+      expect(variant()).toBe("checking");
+      // the directory was not answered in time: it says nothing, so the PC counts as one the pairing adds
+      jest.advanceTimersByTime(ACCOUNT_READ_WAIT_MS);
+      await until(() => variant() === "unlisted", "the confirm without the directory");
+      last().onPair();
+      await drain();
+      expect(variant()).toBe("checking");
+      expect(prepared).toHaveLength(0);
+      // the press's read is not waited for either: the sign-in on this device is still the one the confirm named
+      jest.advanceTimersByTime(ACCOUNT_READ_WAIT_MS);
+      await until(() => prepared.length === 1, "the pairing");
+      expect(prepared[0]?.accountKey).toBeDefined();
+    });
+
+    it("signs a fresh account pairing in again before the app opens, so the enrollment behind it ends no terminal", async () => {
+      browser.setVisibility("hidden");
+      const { code: _code, ...pc } = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC", code: "123456" };
+      const offer = { ...pc, code: "123456" };
+      const accountStore = memoryAccountStore();
+      await accountStore.set("session", sessionOf("a"));
+      const key = await accountStore.key();
+      const devices: RelayDevice[] = [{ ...pc, device_id: null, private_key: key.private_key, public_spki: "own-key", label: "Test phone" }];
+      const renewedAt: number[] = [];
+      const transports: RelayTransport[] = [];
+      let apps = 0;
+      class Admitted extends RelayTransport {
+        override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: ["account"] }; }
+        override async renew() { renewedAt.push(apps); }
+        override async fetch(path: string): Promise<Response> {
+          if (path === "/api/account/status") return Response.json({ account: "acct-a", unlinked: [], removals: [], enrolling: false });
+          if (path === "/api/account/introduction") return Response.json({ pcs: [] });
+          throw new TypeError(`Unexpected PC request: ${path}`);
+        }
+      }
+      await mountRelayShell(mountFor({
+        entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore(devices), navigate() {}, shellVersion: "1.0.0",
+        accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs: [] }),
+        renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+        open: async () => {
+          devices[0] = { ...devices[0]!, device_id: "12".repeat(8), public_spki: key.public_spki };
+          const opened = new Admitted(pc); transports.push(opened); return opened;
+        },
+      }));
+      await until(() => variant() === "unlisted", "the confirm");
+      last().onPair();
+      await until(() => (devices[0] as { account_enrollment?: { state: string } }).account_enrollment?.state === "complete", "the enrollment");
+      expect(apps).toBe(1);
+      expect(renewedAt).toEqual([0]);
+      for (const transport of transports) transport.close();
+    });
   });
 
   it("says on the confirm whether the pairing adds the PC to the account: nothing confirmable until the sign-in is read, then by the directory", async () => {
@@ -310,10 +584,14 @@ describe("the hosted shell's front page", () => {
       await mountRelayShell(mountFor({ entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: () => directory.promise }));
       return () => directory.resolve(Response.json({ pcs }));
     };
-    // the directory not read yet: the PC counts as one the pairing adds
+    // the directory not read yet: whether the pairing adds the PC is not known, so nothing is asked and a press does nothing
     const answer = await signedInMount([{ server_id: offer.server_id, label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP }]);
     expect(shellProps(rendered[0]!).state).toMatchObject({ kind: "confirm", account: "checking" });
-    await until(() => confirm().account === "unlisted", "the sign-in");
+    await drain();
+    expect(confirm().account).toBe("checking");
+    last().onPair();
+    await drain();
+    expect(confirm().account).toBe("checking");
     answer();
     await until(() => confirm().account === "listed", "the directory");
     // a directory that could not be read lists nothing
@@ -322,11 +600,10 @@ describe("the hosted shell's front page", () => {
     const accountStore = memoryAccountStore();
     await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
     await mountRelayShell(mountFor({ entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: () => failing.promise }));
-    await until(() => confirm().account === "unlisted", "the sign-in");
-    const count = rendered.length;
+    await drain();
+    expect(confirm().account).toBe("checking");
     failing.reject(new TypeError("offline"));
-    await until(() => rendered.length > count, "the failed read");
-    expect(confirm().account).toBe("unlisted");
+    await until(() => confirm().account === "unlisted", "the failed read");
     // accounts on, nobody signed in: the device's own key, as before
     await signedInMount([], false);
     expect(shellProps(rendered[0]!).state).toMatchObject({ kind: "confirm", account: "checking" });

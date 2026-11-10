@@ -18,7 +18,8 @@ import { AccountService } from "../account/service.ts";
 import { myPcs } from "../account/myPcs.ts";
 import { SettingsProvider } from "../settings.ts";
 import { setCurrentLanguage, translate } from "../i18n.ts";
-import { createAccountController } from "./accountController.ts";
+import { ConsentChangedError, createAccountController } from "./accountController.ts";
+import { offerOf } from "./shellState.ts";
 import { enrollmentOf, type RelayDevice, type RelayDeviceStore } from "./device.ts";
 import { dashboardModel, dashboardPcs } from "./dashboard.ts";
 import { createShellTestPage } from "./shell.test.tsx";
@@ -405,6 +406,32 @@ describe("account enrollment ownership", () => {
     expect(outcome).toEqual({ state: "complete", admitted: 2 });
     expect(Date.now() - began).toBe(60_000);
     expect(run.introductions()).toBe(21);
+  });
+
+  it("adds nothing to the account of a sign-in other than the one the pairing was confirmed for", async () => {
+    const run = await fixture("unused");
+    const { first, later } = await laterSignIn(run);
+    await run.accountStore.set("session", later);
+    const signal = new AbortController().signal;
+    const { name: _name, ...offer } = offerOf(run.original);
+    // the confirm named the first sign-in's account: no account key goes to the PC under the one stored now
+    await expect(run.controller.prepare({ ...offer, code: "123456" }, signal, first)).rejects.toBeInstanceOf(ConsentChangedError);
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: first })).toBe("local");
+    // and a confirm that said "a key of its own" joins no account at all
+    expect(await run.controller.prepare({ ...offer, code: "123456" }, signal, null)).toEqual({});
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: null })).toBe("local");
+    expect(run.putPcs).toEqual([]);
+    expect(enrollmentOf((await run.store.get(run.original.server_id))!)).toBeUndefined();
+    // the sign-in the confirm named, still stored: the pairing goes on
+    expect((await run.controller.prepare({ ...offer, code: "123456" }, signal, later)).accountKey).toBeDefined();
+    expect(await run.controller.enroll(await run.open(), run.original.server_id, true, false, { consent: later })).toEqual({ state: "complete", admitted: 2 });
+  });
+
+  it("does not renew a fresh pairing's session that already signed in with the key it keeps", async () => {
+    const run = await fixture("unused", { holdRenewal: true });
+    // a renewal here is never answered: an enrollment that asked for one would not settle
+    const outcome = await Promise.race([run.controller.enroll(await run.open(), run.original.server_id, true, false, { proven: true }), run.renewalRequested.promise.then(() => "renewed" as const)]);
+    expect(outcome).toEqual({ state: "complete", admitted: 2 });
   });
 
   it("reports no admitted devices when directory peers cannot be read", async () => {
