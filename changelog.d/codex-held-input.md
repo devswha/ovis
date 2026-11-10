@@ -5,6 +5,8 @@
   which could save a model as the default for every new session. It is refused before anything is
   typed and stays in the message box. A queued message refused so is tried again as soon as the pane
   redraws, instead of waiting up to a minute after the list closes.
+  ([#3103](https://github.com/devswha/ovis/pull/3103) by @nocstah)
 - Codex at Ultra reasoning effort, which draws its composer as `»`: the still-open notice arms, a
   fresh pane opens as an empty chat with its model and effort, and its first answer is matched to
   the conversation instead of leaving the chat unavailable.
+  ([#3103](https://github.com/devswha/ovis/pull/3103) by @nocstah)
