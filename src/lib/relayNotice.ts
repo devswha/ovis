@@ -89,7 +89,9 @@ export function relayNoticeOf(health: Pick<HealthInfo, "auth" | "relay" | "secur
   // the relay's pass is the PC owner's business: a relay driver, a Portal visitor (whatever signed it in:
   // Portal itself, the token or a paired device), a watch-only session or whoever an open server (no
   // token, nothing paired) let in from its network can act on none of it; the PC itself is "local"
-  // there. This turns away the ways in it names and no other: the demo's answer names none
+  // there. This turns away the ways in it names and no other: the demo's answer names none. An open
+  // server's visitor is turned away a second time here: a relay that is on has closed that way in
+  // already (server/relay/service.ts start), so such a visitor reads the relay as off
   const via = health.auth?.via;
   const ingress = health.security?.observed_ingress;
   if (health.auth?.role === "watch" || via === "open" || via === "portal" || via === "relay" || ingress === "portal" || ingress === "relay") return null;
