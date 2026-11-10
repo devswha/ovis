@@ -136,6 +136,18 @@ describe("useRepositoryWorkspaces", () => {
     expect(worktreesStartHere("pc", unmarked("w2"), "a")).toBe(false);
   });
 
+  it("shows a workspace a snapshot names twice once, and settles", async () => {
+    const twice = { ...snapshot, workspaces: [unmarked("w1"), unmarked("w1"), unmarked("w2")] } as unknown as SessionSnapshot;
+    await act(async () => { renderer = create(<Reader online roster={twice} />); });
+    expect(asked()).toEqual(["w1", "w2"]);
+    // the set drawn stays the same object while its ids do: a longer list of the same ids is no other set
+    await answerAll();
+    expect([...shown].sort()).toEqual(["w1", "w2"]);
+    const renders = drawn.length;
+    await act(async () => { renderer!.update(<Reader online roster={twice} />); });
+    expect(drawn.length).toBe(renders + 1);
+  });
+
   it("does not ask a failed question again when the workspaces only change places", async () => {
     await act(async () => { renderer = create(<Reader online />); });
     await answer("w2");

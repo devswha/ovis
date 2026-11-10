@@ -104,8 +104,9 @@ export function useRepositoryWorkspaces({ machineId, snapshot, online, watching,
   offered: boolean;
   listWorktrees: (workspace: string) => Promise<unknown>;
 }): { repositoryWorkspaces: ReadonlySet<string>; notCheckout: (workspaceId: string) => void } {
-  // sorted: the same workspaces in another order are the same set, and nothing is asked for it again
-  const unmarked = (snapshot?.workspaces ?? []).filter((workspace) => !workspace.worktree).map((workspace) => workspace.workspace_id).sort().join("\n");
+  // sorted: the same workspaces in another order are the same set, and nothing is asked for it again.
+  // Each id once: the set drawn is compared with this list by its length
+  const unmarked = [...new Set((snapshot?.workspaces ?? []).filter((workspace) => !workspace.worktree).map((workspace) => workspace.workspace_id))].sort().join("\n");
   const asked = !online || unmarked === "" || watching || !offered ? null : unmarked;
   const lifetime = snapshot?.herdr_lifetime;
   // read as each render runs, not from a copy an effect refreshes: the render that first has another
