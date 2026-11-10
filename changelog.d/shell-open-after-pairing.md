@@ -6,3 +6,6 @@
 - When you are signed in and open a pairing link for a PC your account does not list, the
   question now reads "Add {name} to your account?", says that every device of your account will
   be able to open it, and shows the PC's ID.
+- A pairing link's question is asked again when what it said stopped being true before you
+  pressed its button (you signed in or out in another tab, or the PC left your account), so a
+  pairing never does more to your account than the screen said.

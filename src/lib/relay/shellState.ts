@@ -242,6 +242,8 @@ export interface Attempt {
   /** this attempt paired just now without a code: a member may have approved it, and only then does an introduction follow */
   introducible?: boolean;
   accountEnrollment?: boolean;
+  /** the confirm before this pairing said the device gets a key of its own: it uses no account key and joins no account, whoever signed in since */
+  accountless?: boolean;
   retryEnrollment?: boolean;
   /** this attempt already tried the key of a link whose answer was lost */
   retriedPending?: boolean;

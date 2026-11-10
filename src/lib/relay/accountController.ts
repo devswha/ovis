@@ -56,8 +56,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let reading: { readonly epoch: number; readonly read: Promise<void> } | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const changed = async (): Promise<void> => { await view.changed(); armRefresh(); };
-  const refresh = async (initial = false): Promise<void> => {
-    if (reading?.epoch === generation || leaving || accountService === null || (!initial && (!view.active() || accountView?.kind !== "signed-in"))) return;
+  const refresh = async (initial = false, forced = false): Promise<void> => {
+    if (reading?.epoch === generation || leaving || accountService === null || (!initial && !forced && (!view.active() || accountView?.kind !== "signed-in"))) return;
     const epoch = generation;
     let current = accountView;
     const live = (): boolean => epoch === generation;
@@ -125,6 +125,14 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     reading = { epoch, read };
     await read;
     if (replaced) await refresh(initial);
+  };
+  /**
+   * The sign-in and its directory, read again now whatever screen is up: for a consent about to be acted on, which
+   * no timer keeps fresh (the confirm is not the front page). A sign-in still finishing is left to its own read.
+   */
+  const reread = async (): Promise<void> => {
+    while (reading !== undefined) await reading.read.catch(() => undefined);
+    if (accountView?.kind !== "signing-in") await refresh(accountView?.kind !== "signed-in", true);
   };
   const armRefresh = (): void => {
     const wanted = view.active() && accountView?.kind === "signed-in" && document.visibilityState === "visible";
@@ -194,8 +202,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     }
     await refresh(true);
   };
-  const prepare = async (offer: RelayOffer, signal: AbortSignal) => {
-    const session = accountService !== null ? await account.session() : undefined;
+  /** `useAccount` false: the person confirmed a pairing with a key of this device's own, so no sign-in is read for it. */
+  const prepare = async (offer: RelayOffer, signal: AbortSignal, useAccount = true) => {
+    const session = accountService !== null && useAccount ? await account.session() : undefined;
     const key = session !== undefined ? await accountStore.key() : undefined;
     signal.throwIfAborted();
     let intent: "pc" | "account" = "pc";
@@ -367,5 +376,5 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     }
   };
 
-  return { get state() { return accountView; }, get directory() { return directory; }, enabled: accountService !== null, providers, load, refresh, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
+  return { get state() { return accountView; }, get directory() { return directory; }, enabled: accountService !== null, providers, load, refresh, reread, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
 }

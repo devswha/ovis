@@ -181,6 +181,123 @@ describe("the hosted shell's front page", () => {
       await until(() => attempts === 1, "the pairing");
     });
 
+  // the confirm is the consent: what it said is what the pairing does to the account, whatever changed since it was drawn
+  it("asks again, and pairs nothing, when a Pair press finds a sign-in stored after the confirm was drawn", async () => {
+    browser.setVisibility("hidden");
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };
+    const accountStore = memoryAccountStore();
+    const prepared: RelayTransportOptions[] = [];
+    await mountRelayShell(mountFor({
+      entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+      accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs: [] }),
+      open: async (_offer, options = {}) => { prepared.push(options); throw new MuxProtocolError("auth_failed", "fixture declined"); },
+    }));
+    await until(() => last().state.kind === "confirm" && !("account" in last().state), "the signed-out confirm");
+    // another tab signs in; nothing redraws a confirm that is not the front page
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+    await drain();
+    expect(last().state).toEqual({ kind: "confirm", offer });
+    last().onPair();
+    // nothing more can be confirmed while the sign-in is read again, and a second press starts nothing
+    expect(last().state).toEqual({ kind: "confirm", offer, account: "checking" });
+    last().onPair();
+    await until(() => last().state.kind === "confirm" && (last().state as { account?: string }).account === "unlisted", "the confirm asked again");
+    await drain();
+    expect(prepared).toHaveLength(0);
+    // the screen now says the PC joins the account: that is confirmed, and the pairing carries the account's key
+    last().onPair();
+    await until(() => prepared.length === 1, "the pairing");
+    expect(prepared[0]?.accountKey).toBeDefined();
+  });
+
+  it("asks again when the PC left the account's directory since the confirm said it was listed", async () => {
+    browser.setVisibility("hidden");
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
+    let pcs: unknown[] = [{ server_id: offer.server_id, label: "Desk PC", added_at: new Date().toISOString(), last_seen_at: null, public_key: null, relay: AP }];
+    let attempts = 0;
+    await mountRelayShell(mountFor({
+      entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store: deviceStore([]), navigate() {},
+      accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => Response.json({ pcs }),
+      open: async () => { attempts++; throw new MuxProtocolError("auth_failed", "fixture declined"); },
+    }));
+    const variant = () => { const { state } = last(); return state.kind === "confirm" ? state.account : state.kind; };
+    await until(() => variant() === "listed", "the listed confirm");
+    pcs = [];
+    last().onPair();
+    await until(() => variant() === "unlisted", "the confirm asked again");
+    await drain();
+    expect(attempts).toBe(0);
+    last().onPair();
+    await until(() => attempts === 1, "the pairing");
+  });
+
+  it("lets nothing be confirmed on a link pasted while a sign-in's return is still finishing, then asks as the signed-in device", async () => {
+    browser.setVisibility("hidden");
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("pending", { "state-1": { service: SERVICE, provider: "github", state: "state-1", verifier: "verifier-123", redirect_uri: "https://app.ovis.sh/", started_at: Date.now() } });
+    const token = Promise.withResolvers<Response>();
+    let exchanging = false, attempts = 0;
+    const mounted = mountRelayShell(mountFor({
+      entryUrl: "https://app.ovis.sh/#code=good-code&state=state-1", store: deviceStore([]), navigate() {},
+      accountStore, accountService: SERVICE, accountProviders: ["github"],
+      accountFetch: async (input) => { if (new URL(String(input)).pathname === "/v1/pcs") return Response.json({ pcs: [] }); exchanging = true; return token.promise; },
+      open: async () => { attempts++; throw new MuxProtocolError("auth_failed", "fixture declined"); },
+    }));
+    await until(() => exchanging, "the token exchange");
+    const link = new URL(encodeOffer(offer, "https://app.ovis.sh"));
+    Object.assign(window.location, { href: link.href, hash: link.hash });
+    window.dispatchEvent(new Event("hashchange"));
+    await drain();
+    expect(last().state).toEqual({ kind: "confirm", offer, account: "checking" });
+    last().onPair();
+    await drain();
+    expect(attempts).toBe(0);
+    token.resolve(Response.json({ access_token: "access", refresh_token: "refresh", expires_in: 3600, account: "acct-test", provider: "github" }));
+    await until(() => { const { state } = last(); return state.kind === "confirm" && state.account === "unlisted"; }, "the signed-in confirm");
+    expect(attempts).toBe(0);
+    await mounted;
+  });
+
+  it("pairs with a key of the device's own, and adds nothing to an account, when the confirm said so and a sign-in lands after the press", async () => {
+    browser.setVisibility("hidden");
+    const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };
+    const accountStore = memoryAccountStore();
+    const session = { service: SERVICE, account: "acct-test", provider: "github" as const, access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 };
+    const devices: RelayDevice[] = [];
+    const store = deviceStore(devices);
+    const prepared: RelayTransportOptions[] = [];
+    let accountRequests = 0, apps = 0;
+    class Admitted extends RelayTransport {
+      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: ["account"] }; }
+      override async fetch(): Promise<Response> { accountRequests++; return Response.json({}); }
+    }
+    const opened = new Admitted(offer);
+    await mountRelayShell(mountFor({
+      entryUrl: encodeOffer(offer, "https://app.ovis.sh"), store, navigate() {}, shellVersion: "1.0.0",
+      // the sign-in lands after the press's own read, the moment the pairing begins (the memory store sets at once)
+      createRoot: () => ({ render(element: ReactElement) { rendered.push(element); if (shellProps(element).state.kind === "connecting") void accountStore.set("session", session); }, unmount() {} }),
+      accountStore, accountService: SERVICE, accountProviders: ["github"], accountFetch: async () => { accountRequests++; return Response.json({ pcs: [] }); },
+      renderApp: () => { apps++; return { render() {}, unmount() {} }; }, pendingPush: { get: async () => undefined, clear: async () => {} },
+      open: async (_offer, options = {}) => {
+        prepared.push(options);
+        devices.push({ ...offer, device_id: "12".repeat(8), private_key: {} as CryptoKey, public_spki: "device-key", label: "Test phone" });
+        return opened;
+      },
+    }));
+    await until(() => last().state.kind === "confirm" && !("account" in last().state), "the signed-out confirm");
+    last().onPair();
+    await until(() => apps === 1, "the app");
+    await drain();
+    expect(await accountStore.get("session")).toEqual(session);
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0]?.accountKey).toBeUndefined();
+    expect(accountRequests).toBe(0);
+    opened.close();
+  });
+
   it("says on the confirm whether the pairing adds the PC to the account: nothing confirmable until the sign-in is read, then by the directory", async () => {
     browser.setVisibility("hidden");
     const offer = { v: 1 as const, ...keyFor(), relay: AP, name: "Desk PC" };

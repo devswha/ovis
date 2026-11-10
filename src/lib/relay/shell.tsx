@@ -65,18 +65,22 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   const frontUp = (): boolean => app === null && (sheetJoin !== null || shown === null || shown.kind === "list" || shown.kind === "empty");
   // the confirm says what the pairing does to the account, so it waits for the sign-in to be read once
   let accountRead = false;
+  // a Pair press reads the sign-in and its directory again before it pairs: nothing more can be confirmed meanwhile
+  let confirming = false;
   const accountChanged = async (): Promise<void> => {
-    accountRead = true;
+    // a sign-in still finishing has not been read: its answer decides what the confirm says
+    if (account.state?.kind !== "signing-in") accountRead = true;
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     else if (frontUp()) { if (sheetJoin && shown) show(shown); else await showFront(); }
   };
   const account = createAccountController(mount, { active: frontUp, changed: accountChanged, outdated: () => new Set([...observedVersions()].filter(([, value]) => value.outdated).map(([id]) => id)) });
   accountRead = !account.enabled;
   // a directory not read yet lists nothing: the PC then counts as one this pairing adds to the account
-  const confirmOf = (offer: RelayOffer): RelayShellState => ({
+  const confirmOf = (offer: RelayOffer): Extract<RelayShellState, { kind: "confirm" }> => ({
     kind: "confirm", offer,
-    ...(!accountRead ? { account: "checking" as const } : account.state?.kind !== "signed-in" ? {}
-      : { account: account.directory.some((pc) => pc.server_id === offer.server_id) ? "listed" as const : "unlisted" as const }),
+    ...(!accountRead || confirming || account.state?.kind === "signing-in" ? { account: "checking" as const } : account.state?.kind !== "signed-in" ? {}
+      // a directory whose last read failed says nothing about now
+      : { account: account.state.error === null && account.directory.some((pc) => pc.server_id === offer.server_id) ? "listed" as const : "unlisted" as const }),
   });
   const sweep = createPcSweep(store, { active: frontUp, redraw: () => { if (shown) show(shown); } }, { ...(mount.checkPc ? { probe: mount.checkPc } : {}), ...(directSocket ? { directSocket } : {}) });
   const toFront = (): void => {
@@ -93,7 +97,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     shown = state;
     shell ??= (mount.createRoot ?? createRoot)(mount.container);
     shell.render(createElement(StrictMode, null, createElement(SettingsProvider, null, createElement(RelayShell, {
-      state, scoped, iosTab, pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onCheckPc: (serverId: string) => void sweep.checkOne(serverId), onPair: pair, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
+      state, scoped, iosTab, pcStatus: new Map(sweep.status), onCheckPcs: () => void sweep.check(), onCheckPc: (serverId: string) => void sweep.checkOne(serverId), onPair: confirmed, onRetry: retry, onCancel: cancel, onBack: toFront, onForget: forget,
       onForgetPc: async (serverId: string) => { account.cancelEnrollment(serverId); await forgetSavedPc(serverId, store); await account.refresh(); if (frontUp()) await showFront(); },
       onUpdate: updates.update, onMatch: match, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc, defaultRelay: GLOBAL_RELAY, meLabel: label,
       directoryRelays: account.directory, sheetJoin, continuedAccount: sheetJoin ? account.state : null, observedVersions: observedVersions(),
@@ -158,7 +162,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     show({ kind: "connecting", name: attempt.offer.name ?? null });
     let opened: RelayTransport;
     try {
-      const prepared = await account.prepare(attempt.offer, controller.signal);
+      const prepared = await account.prepare(attempt.offer, controller.signal, attempt.accountless !== true);
       attempt.accountEnrollment = prepared.accountKey !== undefined;
       opened = await open(attempt.offer, {
         store, label, signal: controller.signal,
@@ -193,7 +197,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // the update screen included) signs with the saved device key instead of pairing again
     const { code, ...saved } = attempt.offer;
     const fresh = !attempt.paired || attempt.fresh === true;
-    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}) };
+    const enrolled: Attempt = { offer: saved, code: false, paired: true, accountEnrollment: attempt.accountEnrollment === true, retryEnrollment: attempt.retryEnrollment === true, ...(fresh ? { fresh: true, introducible: attempt.paired ? attempt.introducible === true : !attempt.code } : {}), ...(attempt.accountless ? { accountless: true } : {}) };
     last = enrolled;
     if (code !== undefined && entry.offer !== null) entry = { ...entry, offer: null };
     transport = opened;
@@ -210,6 +214,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   };
   const openPc = (): void => { if (app === null && shown?.kind === "ready" && transport && last) enterApp(transport, last); };
   const enroll = (opened: RelayTransport, attempt: Attempt): void => {
+    // the confirm said this device gets a key of its own: a sign-in stored since then adds nothing to its account here
+    if (attempt.accountless) return;
     enrolling.add(opened);
     void account.enroll(opened, attempt.offer.server_id, attempt.fresh === true, attempt.fresh === true && attempt.introducible === true).then((enrollment) => {
       if (app === null && last === attempt && shown?.kind === "ready") show({ ...shown, enrollment });
@@ -228,9 +234,31 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       enroll(opened, attempt);
     },
   }, store);
-  const pair = (): void => {
+  const pair = (accountless = false): void => {
     if (entry.offer === null || shown?.kind !== "confirm") return;
-    void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false, codeless: entry.offer.code === undefined, typed: typedJoin(entry.offer.server_id) });
+    void connect({ offer: entry.offer, code: entry.offer.code !== undefined, paired: false, codeless: entry.offer.code === undefined, typed: typedJoin(entry.offer.server_id), ...(accountless ? { accountless: true } : {}) });
+  };
+  /**
+   * The confirm's button. What was confirmed is what the screen said: the sign-in and its directory are read again,
+   * and a pairing that would now do something else to the account (another tab signed in or out, the PC left the
+   * directory) is asked about again instead of made. A confirm that said "a key of its own" pairs without the account.
+   */
+  const confirmed = (): void => {
+    const asked = shown, offer = entry.offer;
+    if (offer === null || asked?.kind !== "confirm" || asked.account === "checking") return;
+    // the Add-a-PC sheet's confirm has wording of its own, kept fresh by the front page's reads; with no account there is nothing to read
+    if (sheetJoin !== null || !account.enabled) { pair(); return; }
+    confirming = true;
+    show(confirmOf(offer));
+    void account.reread().catch((error: unknown) => console.warn("Ovis: the sign-in could not be read again", error instanceof Error ? error.name : error)).then(() => {
+      confirming = false;
+      if (app !== null || shown?.kind !== "confirm") return;
+      // another link took this one's place meanwhile: it is asked about, and not paired with
+      const now = confirmOf(shown.offer);
+      show(now);
+      if (entry.offer !== offer || now.offer !== offer || now.account !== asked.account) return;
+      pair(asked.account === undefined);
+    });
   };
   const cancelAttempt = (): void => { comparison = null; last = null; opening?.abort(); opening = null; updates.cancel(); if (transport && !enrolling.has(transport)) transport.close(); transport = null; };
   const retry = (): void => {

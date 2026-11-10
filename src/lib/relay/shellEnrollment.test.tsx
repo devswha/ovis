@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
 import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ACCOUNT_FEATURE, RELAY_PROTOCOL } from "../../../shared/relay-mux.ts";
@@ -26,11 +26,12 @@ describe("account pairing completion", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   const transports: RelayTransport[] = [];
   beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
-  afterEach(() => { for (const transport of transports.splice(0)) transport.close(); setTransport(nativeTransport); browser.dispose(); });
+  afterEach(() => { jest.useRealTimers(); for (const transport of transports.splice(0)) transport.close(); setTransport(nativeTransport); browser.dispose(); });
 
-  async function pairing(introduction?: () => Response) {
+  /** `code`: a link with a pairing code, opened by navigation (no sheet). `outdatedFirst`: the PC answers once as a version too old, and Try again reaches it updated. */
+  async function pairing(introduction?: () => Response, options: { readonly code?: string; readonly outdatedFirst?: boolean } = {}) {
     const identity = generateKeyPair();
-    const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.ovis.sh", name: "Desk" };
+    const offer = { v: 1 as const, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.ovis.sh", name: "Desk", ...(options.code === undefined ? {} : { code: options.code }) };
     const accountStore = memoryAccountStore();
     await accountStore.set("session", { service: "https://account.ovis.sh", account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
     const key = await accountStore.key();
@@ -40,12 +41,13 @@ describe("account pairing completion", () => {
       update: async (id, change) => { const device = change(devices.get(id)); devices.set(id, device); return device; },
     };
     const enrollment = Promise.withResolvers<Response>();
-    let enrolls = 0, linked = false, apps = 0;
+    let enrolls = 0, linked = false, apps = 0, opens = 0;
     let response = enrollment.promise;
     class Admitted extends RelayTransport {
       closed = false;
       override close() { this.closed = true; super.close(); }
-      override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
+      readonly version = options.outdatedFirst && opens++ === 0 ? "0.1.0" : "1.0.0";
+      override get server() { return { version: this.version, relayProtocol: RELAY_PROTOCOL, features: [ACCOUNT_FEATURE] }; }
       override async renew() {}
       override async fetch(path: string) {
         if (this.closed) throw new TypeError("Enrollment connection was closed");
@@ -67,7 +69,7 @@ describe("account pairing completion", () => {
       render(node.props.children);
     };
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
-    browser.sessionStore.set("ovis-add-pc-sheet", JSON.stringify({ mode: "new", server_id: offer.server_id }));
+    if (options.code === undefined) browser.sessionStore.set("ovis-add-pc-sheet", JSON.stringify({ mode: "new", server_id: offer.server_id }));
     const mountAt = (entryUrl: string) => mountRelayShell({
       container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore,
       accountService: "https://account.ovis.sh", accountFetch: async () => Response.json({ pcs: [] }),
@@ -76,7 +78,12 @@ describe("account pairing completion", () => {
       open: async () => { const opened = new Admitted(offer); transports.push(opened); return opened; },
     });
     await mountAt(encodeOffer(offer, "https://app.ovis.sh"));
+    await until(() => { const state = current().state; return state.kind === "confirm" && state.account !== "checking"; });
     current().onPair();
+    if (options.outdatedFirst) {
+      await until(() => { const state = current().state; return state.kind === "outdated" && state.update.phase === "manual"; });
+      current().onRetry();
+    }
     await until(() => enrolls > 0);
     const rows = async () => myPcs([], await store.list(), { now: Date.now(), accountKey: key.public_spki, account: "acct-test" });
     const dashboard = async () => dashboardPcs(await rows(), await store.list());
@@ -138,6 +145,27 @@ describe("account pairing completion", () => {
     expect(run.apps()).toBe(1);
     run.current().onOpenPc?.();
     expect(run.apps()).toBe(2);
+  });
+
+  // how the shell tells the account side whether an introduction can come: only a member's approval of a pairing made
+  // without a code hands one over, so only that pairing is kept looking for it
+  it.each([
+    ["a sheet join without a code keeps looking for a minute", {}, 21],
+    ["a link with a code looks once", { code: "123456" }, 1],
+    ["a join without a code still keeps looking after the outdated PC's Try again", { outdatedFirst: true }, 21],
+  ] as const)("looks for the introduction as the pairing was made: %s", async (_what, options, reads) => {
+    let introductions = 0;
+    const run = await pairing(() => { introductions++; return Response.json({ pcs: [] }); }, options);
+    jest.useFakeTimers();
+    run.enrollment.resolve(Response.json({ results: [] }));
+    // the enrollment signs and reads between its waits, which no faked clock runs: each turn lets that work land
+    for (let turn = 0; (await run.rows())[0]?.enrollment === "pending" && turn < 5_000; turn++) {
+      if (introductions > 0 && jest.getTimerCount() > 0) jest.advanceTimersByTime(3_000);
+      await crypto.subtle.digest("SHA-256", new Uint8Array(1));
+    }
+    expect((await run.rows())[0]?.enrollment).toBe("complete");
+    expect(introductions).toBe(reads);
+    expect(run.apps()).toBe(1);
   });
 
   it("tells a failed dashboard row to Open it to try again, and that Open retries the enrollment", async () => {
