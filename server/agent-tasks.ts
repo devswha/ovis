@@ -143,13 +143,11 @@ export interface AgentTaskDeps {
 }
 
 /**
- * Whether herdr reports for `pane` the session `known` was looked up by. A grok session is found by
- * the id herdr reports, so another id is another session's file; an agy one is found by the pane's
- * process, whatever the pane says of a session.
+ * The session id a lookup of `pane` asks by, null when none. A grok session is found by the id herdr
+ * reports, so another id is another session's file; an agy one is found by the pane's process,
+ * whatever the pane says of a session.
  */
-function sameSession(known: HerdrPane, pane: HerdrPane): boolean {
-  return pane.agent !== "grok" || known.agent_session?.value === pane.agent_session?.value;
-}
+const sessionOf = (pane: HerdrPane): string | null => pane.agent === "grok" ? pane.agent_session?.value ?? null : null;
 
 export class AgentTaskStatus {
   private readonly panes = new Map<string, Tracked>();
@@ -209,16 +207,21 @@ export class AgentTaskStatus {
    * at once: a turn that ends on a task is held only once its session is known. So one that asks
    * while a lookup is under way is asked for again should that lookup fail: it began before the status.
    */
-  async track(pane: HerdrPane, spaced = false): Promise<void> {
-    const agent = pane.agent;
+  async track(reported: HerdrPane, spaced = false): Promise<void> {
+    const agent = reported.agent;
     if (!isTaskAgent(agent)) return;
-    const known = this.panes.get(pane.pane_id);
+    const known = this.panes.get(reported.pane_id);
+    // herdr naming no session for a grok pane names no other one: the session known for it stands, and
+    // the pane is asked for by that one (as herdr reports it, with no id, it is never found)
+    const pane = agent === "grok" && reported.agent_session == null && known?.agent === agent ? { ...reported, agent_session: known.pane.agent_session } : reported;
+    const session = sessionOf(pane);
     // a session that is known stands for RESOLVE_MS, and for RETRY_MS after a lookup that failed, whoever
     // asks; another agent there is looked up now, and so is another session herdr reports for it
-    const recent = known === undefined ? spaced && this.failedLately(pane.pane_id, agent) : known.agent === agent && sameSession(known.pane, pane) && !this.stale(pane.pane_id);
+    const recent = known === undefined ? spaced && this.failedLately(pane.pane_id, agent) : known.agent === agent && sessionOf(known.pane) === session && !this.stale(pane.pane_id);
     if (recent) return;
     if (this.resolving.has(pane.pane_id)) {
-      if (!spaced) this.asked.set(pane.pane_id, pane);
+      // as herdr reported it: what is known of the pane then says how it is asked for
+      if (!spaced) this.asked.set(pane.pane_id, reported);
       return;
     }
     this.resolving.add(pane.pane_id);
@@ -235,8 +238,9 @@ export class AgentTaskStatus {
       // dropped on the second in a row, and at once when it is another agent's or another session's:
       // what the pane holds was never that one's
       const again = this.failed.get(pane.pane_id)?.agent === agent;
-      if (current !== undefined && (again || current.agent !== agent || !sameSession(current.pane, pane))) this.letGo(pane.pane_id);
-      // kept, the pane is asked for again by the poll, as herdr reports it now
+      if (current !== undefined && (again || current.agent !== agent || sessionOf(current.pane) !== session)) this.letGo(pane.pane_id);
+      // kept, the pane is asked for again by the poll, as herdr reports it now (by the session known for
+      // it, where herdr names none)
       else if (current !== undefined) current.pane = { ...pane, agent };
       // a status's lookup of a pane with no session is not remembered: the snapshot after a turn's end
       // asks too, as its finish alert may be due before RETRY_MS is over
