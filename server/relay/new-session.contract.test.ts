@@ -1,23 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBunRelay } from "../../relay/bun.ts";
 import { passPolicy } from "../../relay/pass.ts";
-import { openClientSecureChannel } from "../../shared/relay-e2ee.ts";
 import type { Transport } from "../../shared/relay-e2ee.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
-import { MuxEngine } from "../../shared/relay-mux-engine.ts";
-import type { SessionFrame } from "../../shared/relay-mux-engine.ts";
-import { decodeFrame, FrameType } from "../../shared/relay-mux.ts";
-import type { SessionError } from "../../shared/relay-mux.ts";
 import { RELAY_NEW_SESSIONS_CLOSE, RELAY_NEW_SESSIONS_REFUSED, signRelayPass } from "../../shared/relay-pass.ts";
 import { proofKey, serverChallenge, verifyServerProof } from "../../shared/relay-server-proof.ts";
 import { createServer } from "../index.ts";
+import { loadRelayIdentity } from "./identity.ts";
 import { RelayService } from "./service.ts";
-import { relayClock } from "./session.ts";
-import { bounded, deferred } from "./test-helpers.ts";
+import { bounded, deferred, relayPhone } from "./test-helpers.ts";
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -57,9 +52,17 @@ async function fixture(mode: Mode, newSessions: boolean | undefined, enforceAt =
     challenges.delete(body["challenge_id"] ?? "");
     if (!expected || !verifyServerProof(body["proof"], expected)) return Response.json({ error: { code: "proof_invalid" } }, { status: 401 });
     if (body["account"] !== "acct_1") return Response.json({ error: { code: "not_listed" } }, { status: 403 });
-    const options = signing.newSessions === undefined ? {} : { newSessions: signing.newSessions };
-    return Response.json({ pass: await signRelayPass(pair.privateKey, KID, body["server_id"]!, Math.floor(Date.now() / 1000) + issued++, undefined, options), expires_in: 172_800, refresh_in: 43_200 });
+    return Response.json({ pass: await sign(body["server_id"]!), expires_in: 172_800, refresh_in: 43_200 });
   };
+  const sign = (serverId: string) => signRelayPass(pair.privateKey, KID, serverId, Math.floor(Date.now() / 1000) + issued++, undefined,
+    signing.newSessions === undefined ? {} : { newSessions: signing.newSessions });
+  // The PC starts on a pass it saved, as after a restart: its control socket carries it from the start. With none, an
+  // enforcing relay refuses that socket and the PC asks twice; whether the second pass then goes out as a renewal is a
+  // matter of timing, and the relay takes one renewal a minute, so a test's own renewal would wait for it
+  const identity = loadRelayIdentity(stateDir);
+  mkdirSync(join(stateDir, "relay"), { recursive: true });
+  writeFileSync(join(stateDir, "relay", "pass.json"), JSON.stringify({ pass: await sign(identity.server_id), server_id: identity.server_id,
+    service: "https://account.test", expires_at: Date.now() + (172_800 - 300) * 1000, refresh_at: Date.now() + 43_200_000 }), { mode: 0o600 });
   /** what the PC sent on its control sockets after the proof, and who waits for one of them */
   const sentOnControl: string[] = [];
   const awaited: { check: (frame: string) => boolean; resolve: () => void }[] = [];
@@ -86,8 +89,11 @@ async function fixture(mode: Mode, newSessions: boolean | undefined, enforceAt =
     }
     return socket;
   };
+  /** how far ahead of the real clock the PC's pass keeper reads the time (ms): it stops sending a pass 5 minutes before it runs out */
+  const passTime = { ahead: 0 };
+  const passClock = { now: () => Date.now() + passTime.ahead, setTimeout: (callback: () => void, ms: number) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); } };
   // the retry after a lost control socket comes at its soonest (0.8 s), with no jitter
-  const service = new RelayService({ stateDir, relay: origin, regionalRelays: [], connect, random: () => 0, accountService: "https://account.test", accountFetch, ovisRelays: [origin], pairCodeRelay: origin });
+  const service = new RelayService({ stateDir, relay: origin, regionalRelays: [], connect, random: () => 0, accountService: "https://account.test", accountFetch, ovisRelays: [origin], pairCodeRelay: origin, passClock });
   const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", tailscaleOwner: null, sidecar: false, relay: service });
   cleanup.push(async () => { await service.shutdown(); app.stop(); });
   const base = `http://127.0.0.1:${app.port}`;
@@ -105,7 +111,7 @@ async function fixture(mode: Mode, newSessions: boolean | undefined, enforceAt =
   expect((await fetch(`${base}/api/relay/start`, { method: "POST", headers: { origin: base, "x-herdr-update": "1" } })).status).toBe(200);
   await bounded(synced.promise);
   return {
-    relayPort: relay.port, app, service, sentOnControl, syncs, signing, controls, sent,
+    relayPort: relay.port, app, service, sentOnControl, syncs, signing, controls, sent, passTime,
     get synced() { return bounded(synced.promise); },
     expectSync() { synced = deferred<void>(); },
     newSessionFrames: () => sentOnControl.filter((frame) => frame.includes('"new_session"')),
@@ -130,11 +136,14 @@ async function fixture(mode: Mode, newSessions: boolean | undefined, enforceAt =
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
+const deviceKeys = () => crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+
 /**
- * A phone on the relay: the protected handshake and HELLO, then PAIR with `code`, or AUTH as `device`, or nothing
- * (`squat`). Each promise settles only when that thing happens.
+ * A phone on the relay: the protected handshake and HELLO, then PAIR with `code` (as a device holding `keys`, new
+ * ones when not given), or AUTH as `device`, or nothing yet (`squat`: `pair` sends the PAIR later). Each promise
+ * settles only when that thing happens.
  */
-async function phone(f: Fixture, offer: RelayOffer, step: { code: string } | { device: { id: string; keys: CryptoKeyPair } } | "squat") {
+async function phone(f: Fixture, offer: RelayOffer, step: { code: string; keys?: CryptoKeyPair } | { device: { id: string; keys: CryptoKeyPair } } | "squat") {
   const socket = new WebSocket(`ws://127.0.0.1:${f.relayPort}/v1/ws?server_id=${offer.server_id}&role=client&v=1`);
   socket.binaryType = "arraybuffer";
   const assigned = deferred<string>();
@@ -157,51 +166,20 @@ async function phone(f: Fixture, offer: RelayOffer, step: { code: string } | { d
   socket.onerror = () => transport.onerror?.(new Error("Test client connection failed"));
   cleanup.push(() => socket.close());
   const connectionId = await bounded(assigned.promise);
-  const welcome = deferred<Extract<SessionFrame, { type: typeof FrameType.WELCOME }>>();
-  const admitted = deferred<{ device_id: string }>();
-  const error = deferred<SessionError>();
-  let mux: MuxEngine | undefined;
-  const channel = await bounded(openClientSecureChannel(transport, {
-    daemonPublicKeyB64: offer.server_public_key,
-    events: {
-      onmessage: (data) => {
-        if (typeof data === "string") throw new Error("Unencrypted application message");
-        const frame = decodeFrame(new Uint8Array(data));
-        if (frame.type === FrameType.SESSION_ERROR) error.resolve(frame.payload.code);
-        mux?.receive(new Uint8Array(data));
-      },
-      onclose: () => mux?.carrierLost(),
-    },
-  }));
-  mux = new MuxEngine({
-    role: "client", clock: relayClock, send: (bytes) => channel.send(bytes.slice().buffer),
-    close: (code) => channel.close(code), outboundWireByteLength: (bytes) => channel.outboundWireByteLength(bytes.slice().buffer),
-    routingOverhead: 0, maxWireMessageBytes: 64 * 1024,
-    onSession: (frame) => {
-      if (frame.type === FrameType.WELCOME) welcome.resolve(frame);
-      if (frame.type === FrameType.AUTH_OK) { mux?.authenticate(frame.payload.device_id); admitted.resolve(frame.payload); }
-    },
-  });
-  const engine = mux;
-  engine.sendSession({ type: FrameType.HELLO, flags: 0, stream_id: 0, payload: { protocol: "ovis-mux", versions: [1], features: [], required_features: [] } });
-  const greeting = (await bounded(welcome.promise)).payload;
-  const keys = typeof step === "object" && "device" in step ? step.device.keys
-    : await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
-  if (typeof step === "object" && "code" in step) {
-    engine.sendSession({ type: FrameType.PAIR, flags: 0, stream_id: 0,
-      payload: { code: step.code, label: "New phone", public_key: Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url") } });
-  } else if (typeof step === "object") {
-    const signature = Buffer.from(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, keys.privateKey,
-      Buffer.concat([Buffer.from("ovis-relay-auth/1"), Buffer.from(greeting.nonce, "base64url"), Buffer.from(offer.server_id)]))).toString("base64url");
-    engine.sendSession({ type: FrameType.AUTH, flags: 0, stream_id: 0, payload: { scheme: "device-key", device_id: step.device.id, signature } });
-  }
+  const client = await relayPhone(transport, offer.server_public_key);
+  const keys = typeof step === "object" && "device" in step ? step.device.keys : typeof step === "object" && step.keys ? step.keys : await deviceKeys();
+  if (typeof step === "object" && "code" in step) await client.pair(step.code, keys);
+  else if (typeof step === "object") await client.auth(step.device, offer.server_id);
   return {
     connectionId, keys, fromRelay, socket,
-    closed: bounded(closed.promise), error: bounded(error.promise),
-    admitted: bounded(admitted.promise).then((principal) => ({ id: principal.device_id, keys })),
+    get closed() { return bounded(closed.promise); },
+    get error() { return bounded(client.error); },
+    get admitted() { return bounded(client.admitted).then((principal) => ({ id: principal.device_id, keys })); },
+    /** Sends the PAIR a squatting phone held back. */
+    pair: (code: string) => client.pair(code, keys),
     /** Whichever comes first: admission, a session error, or the socket's close. */
     outcome: () => bounded(Promise.race([
-      admitted.promise.then(() => "admitted" as const), error.promise, closed.promise.then((event) => event.code),
+      client.admitted.then(() => "admitted" as const), client.error, closed.promise.then((event) => event.code),
     ])),
   };
 }
@@ -245,6 +223,45 @@ test("a device this PC knows signs in and stays, and a session already open stay
   expect(f.newSessionFrames()).toEqual([JSON.stringify({ type: "new_session", connection_id: stranger.connectionId })]);
   expect(known.socket.readyState).toBe(WebSocket.OPEN);
   expect(again.socket.readyState).toBe(WebSocket.OPEN);
+});
+
+test("a phone this PC knows that pairs again with the key it saved is not named: it gets in, as a second device of that key", async () => {
+  // new sessions are allowed at first, so the phone pairs
+  const f = await fixture("enforce", true);
+  const first = await f.offer();
+  const known = await phone(f, first, { code: first.code ?? "" });
+  await known.admitted;
+  await f.renew(false);
+  const before = deviceCount(f);
+  // it opens the PC's pairing QR again (or forgot the PC and pairs again with the key its account gave it): PAIR, not AUTH
+  const offer = await f.offer();
+  const again = await phone(f, offer, { code: offer.code ?? "", keys: known.keys });
+  expect(await again.outcome()).toBe("admitted");
+  expect(deviceCount(f)).toBe(before + 1);
+  // a phone with a key new to this PC is still refused, and it alone was named
+  const next = await f.offer();
+  const stranger = await phone(f, next, { code: next.code ?? "" });
+  expect((await stranger.closed).code).toBe(RELAY_NEW_SESSIONS_CLOSE);
+  expect(f.newSessionFrames()).toEqual([JSON.stringify({ type: "new_session", connection_id: stranger.connectionId })]);
+});
+
+test("a phone that finishes pairing after the PC stopped sending its pass, while the relay still honors it, is refused all the same", async () => {
+  const f = await fixture("enforce", false);
+  const offer = await f.offer();
+  const before = deviceCount(f);
+  // on its data socket, greeted, before the pass's last minutes
+  const p = await phone(f, offer, "squat");
+  // no renewal came for two days: 5 minutes before its pass runs out the PC has none to send any more, and the relay
+  // holds the PC to that pass until 5 minutes after
+  f.passTime.ahead = (172_800 - 300) * 1000;
+  expect(f.service.status().pass).toMatchObject({ state: "unavailable", enforced: true, new_sessions: false });
+  await p.pair(offer.code ?? "");
+  expect(await p.closed).toEqual({ code: RELAY_NEW_SESSIONS_CLOSE, reason: RELAY_NEW_SESSIONS_REFUSED });
+  expect(f.newSessionFrames()).toEqual([JSON.stringify({ type: "new_session", connection_id: p.connectionId })]);
+  expect(deviceCount(f)).toBe(before);
+  // once the relay honors the pass no longer, the PC holds itself to nothing (the relay closes its sockets then)
+  f.passTime.ahead += 600_000;
+  expect(f.service.status().pass?.new_sessions).toBeUndefined();
 });
 
 test("a client that only knows the server_id learns nothing of the limit: a wrong code fails as ever and nothing is named", async () => {
