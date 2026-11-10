@@ -1246,26 +1246,60 @@ function lastFinishedAnswer(rollout: string): string | null {
 const TURN_RECORDS = ['"task_started"', '"turn_started"', '"task_complete"', '"turn_complete"', '"turn_aborted"', '"user_message"', '"agent_message"', '"item_completed"', '"assistant"'];
 
 /**
- * Whether a rollout's read ends inside a turn: one begun (task_started, or what an older Codex records of one: a
- * prompt, an answer) and not ended since (task_complete, turn_aborted). Its screen may show an answer the rollout
- * does not hold yet: Codex writes one only once it is complete (turnAfter). A thread that was only started, with no
- * turn, is not under way: a turn its screen shows finished was recorded begun long before.
+ * The turn a rollout's read ends inside: one begun (task_started, or what an older Codex records of one: a prompt,
+ * an answer) and not ended since (task_complete, turn_aborted), as the line that began it (`mark`) and the prompts
+ * it records since, in order (each once: Codex writes a prompt as an event and as an item). Null when the read ends
+ * outside a turn. A thread that was only started, with no turn, has none: a turn its screen shows finished was
+ * recorded begun long before.
  */
-function turnUnderWay(rollout: string): boolean {
-  let open = false;
+function openTurn(rollout: string): { mark: string; prompts: string[] } | null {
+  let open: { mark: string; prompts: string[] } | null = null;
   for (const line of rollout.split("\n")) {
     if (!TURN_RECORDS.some((marker) => line.includes(marker))) continue;
     try {
       const entry = JSON.parse(line) as { type?: unknown; payload?: Record<string, unknown> };
       const payload = entry.payload ?? {};
       const type = payload["type"];
-      if (entry.type === "event_msg" && (type === "task_complete" || type === "turn_complete" || type === "turn_aborted")) open = false;
+      const item = payload["item"] as { type?: unknown; content?: unknown } | undefined;
+      if (entry.type === "event_msg" && (type === "task_complete" || type === "turn_complete" || type === "turn_aborted")) open = null;
       else if (entry.type === "event_msg" && (type === "task_started" || type === "turn_started" || type === "user_message" || type === "agent_message"
-        || type === "item_completed" && (payload["item"] as { type?: unknown } | undefined)?.type === "UserMessage")
-        || entry.type === "response_item" && type === "message" && payload["role"] === "assistant" && payload["channel"] !== "analysis") open = true;
+        || type === "item_completed" && item?.type === "UserMessage")
+        || entry.type === "response_item" && type === "message" && payload["role"] === "assistant" && payload["channel"] !== "analysis") {
+        open ??= { mark: line, prompts: [] };
+        const prompt = entry.type !== "event_msg" ? null : type === "user_message" && typeof payload["message"] === "string" ? payload["message"]
+          : type === "item_completed" && Array.isArray(item?.content) ? item.content.map((part: { text?: unknown }) => typeof part?.text === "string" ? part.text : "").join("") : null;
+        if (prompt !== null && prompt !== open.prompts.at(-1)) open.prompts.push(prompt);
+      }
     } catch { /* a record cut by the tail read */ }
   }
   return open;
+}
+
+/**
+ * Whether a rollout's read ends inside a turn (openTurn). Its screen may show an answer the rollout does not hold
+ * yet: Codex writes one only once it is complete (turnAfter).
+ */
+const turnUnderWay = (rollout: string): boolean => openTurn(rollout) !== null;
+
+/**
+ * The turn a screen shows under way, since its last header: Codex's status row (STATUS_ROW) is the last row at the
+ * start of a line above the composer. With the prompt that turn was last sent, as drawn (`asked`: the last "›"
+ * row above the status row, with the rows it wraps onto), null when that row has scrolled off. Null when the
+ * screen shows no turn under way.
+ */
+function workingTurn(screen: string): { asked: string | null } | null {
+  const lines = screen.slice(Math.max(0, screen.lastIndexOf("OpenAI Codex (v"))).split("\n").map((line) => line.replace(/\r$/, ""));
+  let composer = lines.length - 1;
+  while (composer >= 0 && !lines[composer]!.startsWith("›")) composer--;
+  let status = composer - 1;
+  while (status >= 0 && /^(?:\s|$)/.test(lines[status]!)) status--;
+  if (status < 0 || !STATUS_ROW.test(lines[status]!.trimEnd())) return null;
+  let prompt = status - 1;
+  while (prompt >= 0 && !lines[prompt]!.startsWith("›")) prompt--;
+  if (prompt < 0) return { asked: null };
+  let end = prompt + 1;
+  while (end < status && /^\s+\S/.test(lines[end]!)) end++;
+  return { asked: lines.slice(prompt, end).join("\n").slice(1) };
 }
 
 /**
@@ -2686,10 +2720,30 @@ async function loadedConversation(screen: string, weighed: readonly string[], ho
  * The rollout each pane's Codex was last matched to on screen, the processes that were running it, and
  * when; `titled` when it was the conversation only the title offered, which then holds only while the
  * title still names it (the picker may have opened another since); `lastTurn` when only its last turn
- * tied it (lastTurnConversation), which then holds only while the pane still shows the screen that proved
- * it or that conversation's next turn runs (codexTranscriptPath), and serves no background reader.
+ * tied it (lastTurnConversation), which then counts only in a lookup whose screen says so again (the screen
+ * that proved it, or that conversation's next turn at work: atWorkOn, with `seen` the turn the pane was
+ * seen at work on), and serves no background reader.
  */
-const boundRollouts = new Map<string, { processes: string; path: string; at: number; titled?: boolean; lastTurn?: boolean }>();
+const boundRollouts = new Map<string, { processes: string; path: string; at: number; titled?: boolean; lastTurn?: boolean; seen?: string }>();
+
+/**
+ * Whether a pane is at work on the turn a conversation's read ends inside: its screen shows a turn under way
+ * (workingTurn) and the prompt on screen is the one that turn last records, character for character but for
+ * where the screen wrapped it. Once that prompt has scrolled off (a tool's output), only for the turn the pane
+ * was already seen at work on (`seen`). What a binding the last turn alone made holds on, when its screen is no
+ * longer the one that proved it: a resume in the same TUI opens another conversation without a new thread, and
+ * that conversation's turn may run meanwhile, in another TUI of the thread.
+ */
+function atWorkOn(binding: { seen?: string }, screen: string, rollout: string): boolean {
+  const open = openTurn(rollout);
+  const working = workingTurn(screen);
+  if (open === null || working === null) return false;
+  if (working.asked === null) return binding.seen === open.mark;
+  const asked = open.prompts.at(-1);
+  if (asked === undefined || !completedRowsMatch(asked, working.asked)) return false;
+  binding.seen = open.mark;
+  return true;
+}
 
 /**
  * What each pane's screen showed when its binding was last proven by a match (matchCodexTranscript), under which processes and to which rollout: the /new guard in
@@ -3566,14 +3620,15 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     if (boundRollouts.size > 64) boundRollouts.delete(boundRollouts.keys().next().value!);
     return matched;
   }
-  // A binding the last turn alone made holds only while the pane still shows the very screen that proved it, or
-  // while that conversation's next turn runs. After that, a screen that proves nothing ends it: a resume in the
-  // same TUI opens another conversation without a new thread, which nothing below would tell (a long answer's
-  // binding has always been kept through that; this one is not, as short conversations never were)
+  // A binding the last turn alone made counts only while the pane still shows the very screen that proved it, or
+  // is at work on that conversation's next turn (atWorkOn). Any other screen that proves nothing leaves it out of
+  // this lookup: a resume in the same TUI opens another conversation without a new thread, which nothing below
+  // would tell (a long answer's binding has always been kept through that; this one is not, as short
+  // conversations never were). It stays remembered for a later screen that says so again
   if (boundHere?.lastTurn === true && !standing) {
-    const bound = boundHere.path;
-    if (!candidates.some((candidate) => candidate.path === bound && turnUnderWay(candidate.text))) {
-      boundRollouts.delete(paneId);
+    const bound = boundHere;
+    const read = candidates.find((candidate) => candidate.path === bound.path);
+    if (screen === null || read === undefined || !atWorkOn(bound, screen.text, read.text)) {
       boundHere = undefined;
       boundNewer = [];
     }

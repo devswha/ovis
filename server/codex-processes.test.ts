@@ -3031,6 +3031,78 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     expect(got).toEqual([path, null, null]);
   });
 
+  /** A turn begun and not ended, as the rollout records it: the prompt, as an event and as an item. */
+  const begun = (id: string, prompt: string): string => `${turn(id, prompt, "", false).slice(0, 2).map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+  /** A pane at work: `rows` above, the prompt it was sent (null: scrolled off), Codex's status row, the composer. */
+  const working = (rows: readonly string[], prompt: string | null): string => [...rows, ...(prompt === null ? [] : ["", `› ${prompt}`]), "", "• Working (12s • esc to interrupt)", "",
+    "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"].join("\n");
+  const idleComposer = ["", "", "", "› Ask Codex to do anything", "", "  GPT-6-Luna low · /tmp/proj", "  ← for agents · ? for shortcuts"];
+
+  // that conversation's turn runs while the pane shows another one (the adversarial review's second pass, HR1)
+  for (const mode of ["after its own next turn began", "in another TUI of the thread"] as const) {
+    it(`leaves what a short turn tied once the pane shows another conversation, though the first one's turn runs (${mode})`, async () => {
+      foreground = live;
+      writeRollout(path, thread, turn("t1", asked, "ok"));
+      const items = Array.from({ length: 50 }, (_, at) => `- **step ${at}** checks region ${at} and reports its checksum`);
+      const fileB = folderThread(otherThread, turn("b1", "List the fifty rollout steps.", items.join("\n")));
+      screen = footed([`› ${asked}`], ["• ok"]);
+      const got = [await resolve()];
+      // A's next turn begins
+      appendFileSync(path, begun("t2", "Now run the whole suite"));
+      if (mode === "after its own next turn began") {
+        screen = working([`› ${asked}`, "", "", "• ok", "", "  Worked for 1s • 7:05 PM"], "Now run the whole suite");
+        got.push(await resolve());
+      }
+      // the pane now shows B (no thread is made, same process): replayed, its last turn footed, the composer idle
+      const replayed = [...items.slice(-30).map((item) => `  ${item.replaceAll("**", "")}`), "", "  Worked for 9s • Nov 9 at 7:05 PM"];
+      screen = [...replayed, ...idleComposer].join("\n");
+      got.push(await resolve());
+      // then B at work, under B's own prompt
+      appendFileSync(fileB, begun("b2", "And which step is the slowest?"));
+      screen = working(replayed.slice(-12), "And which step is the slowest?");
+      got.push(await resolve());
+      expect(got).toEqual(mode === "after its own next turn began" ? [path, path, null, null] : [path, null, null]);
+    });
+  }
+
+  it("keeps what a short turn tied through its next turn once the prompt has scrolled off, only for a turn it was seen at work on", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    const got = [await resolve()];
+    // the turn begins, its prompt on screen
+    appendFileSync(path, begun("t2", "Now run the whole suite"));
+    screen = working(["  Worked for 1s • 7:05 PM"], "Now run the whole suite");
+    got.push(await resolve());
+    // a tool's output pushes the prompt off the screen
+    const output = working(["• Ran bun test ./server", ...Array.from({ length: 30 }, (_, at) => `  ${at === 0 ? "└" : " "} server/file-${at}.test.ts: 12 pass`)], null);
+    screen = output;
+    got.push(await resolve());
+    // the turn ends on an answer no path reads; the next one is first seen with its prompt already off the screen
+    const unread = "- **every** file passes\n- **nothing** was skipped";
+    appendFileSync(path, `${[{ type: "event_msg", payload: { type: "agent_message", message: unread } }, { type: "event_msg", payload: { type: "task_complete", turn_id: "t2", last_agent_message: unread } }].map((entry) => JSON.stringify(entry)).join("\n")}\n${begun("t3", "And once more")}`);
+    got.push(await resolve());
+    expect(got).toEqual([path, path, path, null]);
+  });
+
+  it("answers nothing for a lookup that sees the next prompt before the rollout records the turn, and holds once it does", async () => {
+    foreground = live;
+    writeRollout(path, thread, turn("t1", asked, "ok"));
+    screen = footed([`› ${asked}`], ["• ok"]);
+    const got = [await resolve()];
+    screen = working(["  Worked for 1s • 7:05 PM"], "Now run the whole suite");
+    got.push(await resolve());
+    appendFileSync(path, begun("t2", "Now run the whole suite"));
+    got.push(await resolve());
+    // a prompt at work that this conversation's open turn does not record is another conversation's
+    screen = working(["  Worked for 1s • 7:05 PM"], "Now run the whole suite, twice");
+    got.push(await resolve());
+    // and a screen with no turn at work proves nothing, whatever the rollout says
+    screen = [`› Now run the whole suite`, "", "■ Conversation interrupted - tell the model what to do differently.", ...idleComposer].join("\n");
+    got.push(await resolve());
+    expect(got).toEqual([path, null, path, null, null]);
+  });
+
   heldIt("follows the TUI from what a short turn tied to a loaded conversation of another folder (the adversarial review's F3b)", async () => {
     foreground = live;
     writeRollout(path, thread, turn("t1", asked, "ok"));
