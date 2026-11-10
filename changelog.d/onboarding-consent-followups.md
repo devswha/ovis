@@ -6,3 +6,7 @@
   first reads which PC answers, from a request that opens nothing: an address that now answers for
   another PC no longer gets a pairing window opened on it, and is no longer said to be the PC
   that was added.
+- The PC's approval prompt is entered on the prompt itself by Shift+Tab too, not on its buttons, and
+  a key cannot press Approve for a second after the focus came into the prompt. Its guards now count
+  to when a key or a click was made, so one already on its way when the prompt arrived or moved
+  approves nothing on a busy page.
