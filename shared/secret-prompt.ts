@@ -32,11 +32,12 @@ const SECRET_PROMPT = new RegExp(`^(?:${[
   /(?:repeat|verify|confirm) password/,
 ].map((prompt) => prompt.source).join("|")}):$`, "i");
 
-// a yes/no choice is no secret: `y/n` in brackets, with more options or not (`[Y/n]`, `(y/n/q)`), or as a word of
-// its own after a space. Not inside a name: the letters around a path's slash (`/home/andy/notes/key`), two of its
-// folders (`/home/y/n/key`), a repository (`team-y/n-tools.git`), or the start of a wrapped row, which is tested
-// before the rows above it are joined (`…/compan` then `y/n-prod:`)
-const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|\sy\s*\/\s*n(?=\s|:|$)/i;
+// a yes/no choice is no secret: `y/n` in brackets, with more options or not (`[Y/n]`, `(y/n/q)`), or as the last
+// thing before a space, the colon or the line's end, after a space or a mark (` y/n:`, `,y/n:`, `-y/n:`). Not inside
+// a name: the letters around a path's slash (`/home/andy/notes/key`), two of its folders (`/home/y/n/key`), a
+// repository (`team-y/n-tools.git`), or the start of a wrapped row, which is tested before the rows above it are
+// joined (`…/compan` then `y/n-prod:`)
+const ASKS_CHOICE = /\?|[([]\s*y\s*\/\s*n|[^a-z0-9/]y\s*\/\s*n(?=\s|:|$)/i;
 
 // Both as a server without the `secret-prompts-2` feature has them: it answers `invalid_secret` to a
 // masked input for any other prompt, so a page sends such a server one only for these (ws.ts sendSecret).
@@ -94,7 +95,14 @@ export function looksLikeKey(text: string): boolean {
     && (!run.includes("/") || run.length === 40) && (/\d/.test(run) || run.length >= 40));
 }
 
-/** A secret is one line of literal keystrokes; never allow terminal controls. */
-export function validSecret(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f-\x9f]/.test(value);
+// where no passphrase is an answer: ssh-keygen says so when it asks for a new one, and asks for the same again
+const TAKES_NONE = /\(empty for no passphrase\):$|^enter same passphrase again:$/i;
+
+/**
+ * A secret is one line of literal keystrokes; never allow terminal controls. An empty one is an answer only to a
+ * `prompt` that takes none (Enter alone): anywhere else it is a field sent by mistake.
+ */
+export function validSecret(value: unknown, prompt?: string): value is string {
+  return typeof value === "string" && (value.length > 0 || (prompt !== undefined && TAKES_NONE.test(prompt)))
+    && value.length <= 4096 && !/[\x00-\x1f\x7f-\x9f]/.test(value);
 }

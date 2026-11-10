@@ -71,6 +71,9 @@ it("recognizes git's HTTPS password, a passphrase asked by ssh-add or ssh-keygen
     "Password for alice (y/N):",
     "Password for alice y / n:",
     "Password for alice, y/n:",
+    // after a dash or a comma, with no space
+    "Password for alice -y/n:",
+    "Enter passphrase for key,y/n:",
     // with a third option too
     "Password for alice (y/n/q):",
     "Enter passphrase for key [Y/n/skip]:",
@@ -94,6 +97,12 @@ it("reads only the prompts an earlier server takes when asked to, and each of th
 it("rejects multiline and terminal-control secrets while preserving spaces and Unicode", () => {
   expect(validSecret("  한글🔒  ")).toBe(true);
   for (const value of [null, "", "x".repeat(4097), "one\ntwo", "one\rtwo", "\u001b[200~", "\u0003", "\u007f", "\u009b"]) expect(validSecret(value)).toBe(false);
+  // no passphrase is an answer where ssh-keygen offers it, and where it asks for the same again
+  for (const prompt of ["Enter passphrase (empty for no passphrase):", 'Enter passphrase for "/home/alice/.ssh/id_ed25519" (empty for no passphrase):', "Enter new passphrase (empty for no passphrase):", "Enter same passphrase again:"]) {
+    expect(validSecret("", prompt)).toBe(true);
+    expect(validSecret("one\ntwo", prompt)).toBe(false);
+  }
+  for (const prompt of ["Password:", "Enter old passphrase:", "Password for 'https://alice@github.com':", "Enter passphrase for /home/alice/.ssh/id_ed25519:"]) expect(validSecret("", prompt)).toBe(false);
 });
 
 it("joins only right-edge continuations of a narrow prompt", () => {
