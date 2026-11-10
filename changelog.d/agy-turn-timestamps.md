@@ -1,3 +1,3 @@
 ### Fixed
-- Fixed Agy background-task wakeups merging into a single assistant turn and chat reply footers
-  showing the turn start timestamp instead of the reply completion timestamp.
+- An Agy reply that a background task, timer or subagent wakes after it finished is a turn of its
+  own, with its own times, instead of joining the reply before it.

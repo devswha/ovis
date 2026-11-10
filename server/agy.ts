@@ -204,7 +204,7 @@ function agyScan(path: string, fd: number): Index {
       // a planner response with tools continues work; its tool-free answer ends it.
       // Reasoning is exported after the planner finishes, so it cannot prove Thinking.
       const activity = value.status !== "DONE" ? undefined
-        : value.type === "USER_INPUT" || value.type === "SYSTEM_MESSAGE" ? "working"
+        : value.type === "USER_INPUT" ? "working"
         : value.type === "PLANNER_RESPONSE"
           ? (Array.isArray(value.tool_calls) && value.tool_calls.length > 0) || typeof value.content !== "string" || !value.content.trim() ? "working" : "idle"
           : undefined;
@@ -364,13 +364,16 @@ export function parseAgyTranscript(text: string, path?: string): ConversationTur
       idle = (!Array.isArray(value.tool_calls) || value.tool_calls.length === 0) && content.trim().length > 0;
     }
     const previous = turns.at(-1);
-    if (previous?.role === "assistant" && !woken) {
+    // a wake opens its turn with the planner's first step. A tool result that comes before it (or with no planner step
+    // after the notice at all) belongs to the reply that asked for it, and does not move that reply's end
+    const opens = woken && value.type === "PLANNER_RESPONSE";
+    if (previous?.role === "assistant" && !opens) {
       previous.parts.push(...parts);
-      if (!idle || value.type === "PLANNER_RESPONSE") previous.end_ts = ts ?? undefined;
+      if (!woken && (!idle || value.type === "PLANNER_RESPONSE")) previous.end_ts = ts ?? undefined;
     } else {
       turns.push({ role: "assistant", ts, end_ts: ts ?? undefined, parts });
+      woken = false;
     }
-    woken = false;
   }
   return turns;
 }

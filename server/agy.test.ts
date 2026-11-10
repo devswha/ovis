@@ -235,6 +235,23 @@ it("keeps the recorded skill invocation without its expanded metadata", () => {
   ]);
 });
 
+it("keeps a tool result that follows a wake notice with no planner step in the reply that asked for it", () => {
+  const step = (step_index: number, type: string, created_at: string, content = "", extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ step_index, type, status: "DONE", created_at, content, ...extra });
+  const turns = parseAgyTranscript([
+    step(0, "USER_INPUT", "2026-11-09T11:36:17Z", "Run it"),
+    step(1, "PLANNER_RESPONSE", "2026-11-09T11:36:25Z", "Done."),
+    // a hook's injected notice: no planner step answers it
+    step(2, "SYSTEM_MESSAGE", "2026-11-09T11:39:00Z", "<SYSTEM_MESSAGE>note</SYSTEM_MESSAGE>"),
+    step(3, "GENERIC", "2026-11-09T11:40:00Z", "late tool output"),
+  ].join("\n"));
+  expect(turns.map(({ role, end_ts, parts }) => ({ role, end_ts, kinds: parts.map((part) => part.kind) }))).toEqual([
+    { role: "user", end_ts: undefined, kinds: ["text"] },
+    // no wordless third turn, and the reply still ends when it was said
+    { role: "assistant", end_ts: "2026-11-09T11:36:25Z", kinds: ["text", "tool"] },
+  ]);
+});
+
 it("keeps raw input when it is not a complete recognized envelope", () => {
   const content = "<USER_REQUEST>\n/probe-skill hello\n</USER_REQUEST>\n<OTHER>raw</OTHER>";
   const turns = parseAgyTranscript(JSON.stringify({ step_index: 0, type: "USER_INPUT", status: "DONE", content }));
