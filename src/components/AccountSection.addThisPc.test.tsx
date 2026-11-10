@@ -5,7 +5,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
-import type { AccountService } from "../lib/account/service.ts";
+import { SignedOutError, type AccountService } from "../lib/account/service.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 import { ADDED_POLL_MS, AddThisPc, ANSWER_MS, REOPEN_MS, WAITING_MS } from "./AccountSection.tsx";
@@ -41,12 +41,27 @@ describe("AddThisPc", () => {
   let page: { hidden: boolean; events: EventTarget };
   let tab: Map<string, string>;
   let restore: (() => void)[];
-  const service = (): AccountService => ({
-    listPcs: async () => [],
-    putPc: async () => { directory.push("putPc"); },
-    deletePc: async () => { directory.push("deletePc"); },
-    session: async () => signedIn === null ? undefined : { account: signedIn },
-  }) as unknown as AccountService;
+  /** every PC put in a directory, as `<account>/<server id>` */
+  let puts: string[];
+  /** what the next reads of the directory and of the stored sign-in wait for (null: nothing) */
+  let held: { listPcs: Promise<void> | null; session: Promise<void> | null };
+  /** the account service; `bound` is the account of the one sign-in it acts for (forSignIn), which refuses once another is stored */
+  const service = (bound?: string): AccountService => {
+    const mine = (): void => { if (bound !== undefined && signedIn !== bound) throw new SignedOutError(); };
+    return {
+      listPcs: async () => { mine(); await held.listPcs; return []; },
+      putPc: async (id: string) => { mine(); directory.push("putPc"); puts.push(`${signedIn}/${id}`); },
+      deletePc: async () => { mine(); directory.push("deletePc"); },
+      session: async () => { await held.session; return signedIn === null ? undefined : { account: signedIn }; },
+      forSignIn: (session: { account: string }) => service(session.account),
+    } as unknown as AccountService;
+  };
+  /** holds what is read through `held` until the function returned is called */
+  const hold = (what: "listPcs" | "session"): (() => void) => {
+    let release!: () => void;
+    held[what] = new Promise<void>((done) => { release = done; });
+    return () => { held[what] = null; release(); };
+  };
 
   beforeEach(() => {
     renderers = [];
@@ -54,6 +69,8 @@ describe("AddThisPc", () => {
     signedIn = ACCOUNT;
     asked = [];
     directory = [];
+    puts = [];
+    held = { listPcs: null, session: null };
     tab = new Map();
     page = { hidden: false, events: new EventTarget() };
     for (const name of globals) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -101,12 +118,13 @@ describe("AddThisPc", () => {
     saved.clear();
   });
 
+  const unbound = (): AccountService => service();
   /** lets the answers on their way arrive and the screen draw them */
   const settle = async (): Promise<void> => { await act(async () => { for (let turn = 0; turn < 200; turn++) await Promise.resolve(); }); };
   const advance = async (ms: number): Promise<void> => { act(() => { jest.advanceTimersByTime(ms); }); await settle(); };
   const mount = async (): Promise<ReactTestRenderer> => {
     let renderer!: ReactTestRenderer;
-    act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service }) })); });
+    act(() => { renderer = create(createElement(SettingsProvider, { children: createElement(AddThisPc, { service: unbound }) })); });
     renderers.push(renderer);
     await settle();
     return renderer;
@@ -598,6 +616,133 @@ describe("AddThisPc", () => {
     await press(other, "Add this PC to my account");
     expect(other.toJSON()).toBeNull();
     expect(directory.length).toBe(listed);
+  });
+
+  test("a sign-in that changes while the PC is being listed again is never written to", async () => {
+    const renderer = await waitingFrom();
+    const release = hold("listPcs");
+    await advance(RELIST_MS);
+    // another tab signed out and in as someone else while the directory was being read
+    signedIn = "acct_someone_else";
+    release();
+    await settle();
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    // the next reopen finds the other sign-in and ends the wait
+    await advance(REOPEN_MS);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("an address that answers for another PC under a hidden page is not listed in its place", async () => {
+    const renderer = await waitingFrom();
+    show(true);
+    pc.offer = offerOf(otherKey, "laptop");
+    await advance(RELIST_MS);
+    expect(puts).toEqual([`${ACCOUNT}/${SERVER}`]);
+    expect(directory).toEqual(["putPc"]);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("a second copy that was still reading the sign-in when the first stopped the wait does not take it up", async () => {
+    const welcome = await waitingFrom();
+    const release = hold("session");
+    const settings = await mount();
+    await press(welcome, "Stop waiting");
+    const opened = links();
+    release();
+    await settle();
+    expect(buttons(settings)).toEqual(["Add this PC to my account"]);
+    await advance(2 * REOPEN_MS);
+    expect(links()).toBe(opened);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("Stop waiting while the PC is being listed again writes nothing to the directory", async () => {
+    const renderer = await waitingFrom();
+    const release = hold("listPcs");
+    await advance(RELIST_MS);
+    await press(renderer, "Stop waiting");
+    release();
+    await settle();
+    expect(directory).toEqual(["putPc"]);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("Stop waiting in the other copy while this one lists the PC again writes nothing either", async () => {
+    tab.set(MARKER, kept(8 * 60_000));
+    const welcome = await mount();
+    const settings = await mount();
+    const release = hold("listPcs");
+    await advance(60_000);
+    await press(settings, "Stop waiting");
+    release();
+    await settle();
+    await advance(ADDED_POLL_MS);
+    expect(directory).toEqual([]);
+    expect(buttons(welcome)).toEqual(["Add this PC to my account"]);
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("a copy showing the button takes up the wait begun in the other copy, and goes on with it when that one closes", async () => {
+    // the guide's path: its copy is mounted first and says the relay is off; the press is made in Settings' copy
+    const welcome = await mount();
+    pc.linkError = { status: 409, code: "relay_off" };
+    await press(welcome, "Add this PC to my account");
+    pc.linkError = null;
+    const settings = await mount();
+    await press(settings, "Add this PC to my account");
+    expect(buttons(welcome)).toEqual(["Stop waiting"]);
+    expect(directory).toEqual(["putPc"]);
+    act(() => { settings.unmount(); });
+    renderers = renderers.filter((renderer) => renderer !== settings);
+    const opened = links();
+    await advance(REOPEN_MS);
+    expect(links()).toBe(opened + 1);
+    pc.account = ACCOUNT;
+    await advance(ADDED_POLL_MS);
+    expect(words(welcome)).toContain("This PC is in your account. Your other devices can open it now.");
+    expect(tab.has(MARKER)).toBe(false);
+  });
+
+  test("a copy showing the button does not take up a wait begun under another sign-in than the one stored", async () => {
+    const welcome = await mount();
+    tab.set(MARKER, kept(0, 0, { account: "acct_someone_else" }));
+    const { keepAddPcWaiting, readAddPcWaiting } = await import("../lib/account/addThisPc.ts");
+    act(() => { keepAddPcWaiting(readAddPcWaiting()); });
+    await settle();
+    expect(buttons(welcome)).toEqual(["Add this PC to my account"]);
+  });
+
+  test("a copy whose wait the other copy replaced with a new one goes on with the new one", async () => {
+    const welcome = await waitingFrom();
+    const settings = await mount();
+    await press(settings, "Stop waiting");
+    await advance(1_000);
+    await press(settings, "Add this PC to my account");
+    await advance(ADDED_POLL_MS);
+    expect(buttons(welcome)).toEqual(["Stop waiting"]);
+    await press(welcome, "Stop waiting");
+    await advance(ADDED_POLL_MS);
+    expect(buttons(settings)).toEqual(["Add this PC to my account"]);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("two copies waiting on one wait list the PC again once, not once each", async () => {
+    await waitingFrom();
+    const settings = await mount();
+    await advance(RELIST_MS);
+    expect(directory).toEqual(["putPc", "putPc"]);
+    expect(JSON.parse(tab.get(MARKER)!).listedAt).toBe(at + RELIST_MS);
+    // the copy that did not list goes on from the shared listing: once more nine minutes later, and alone when the other closed
+    await advance(RELIST_MS);
+    expect(directory).toEqual(["putPc", "putPc", "putPc"]);
+    act(() => { settings.unmount(); });
+    renderers = renderers.filter((renderer) => renderer !== settings);
+    await advance(RELIST_MS);
+    expect(directory).toEqual(["putPc", "putPc", "putPc", "putPc"]);
   });
 
   test("works without a tab storage, only not resumed", async () => {

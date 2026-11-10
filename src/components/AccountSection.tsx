@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { keepAddPcWaiting, listThisPc, pagePc, readAddPcWaiting, reopenAddWindow, thisPcMembership, type AddPcWaiting } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, readAddPcWaiting, reopenAddWindow, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
 import { ApiError } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
@@ -132,13 +132,17 @@ function resumable(kept: AddPcWaiting, now: number): boolean {
   return kept.until > now && kept.until <= now + WAITING_MS && (pc === null || pc === kept.serverId);
 }
 
+/** The listing two copies of the screen that wait on one wait (`until`) share, while it is on its way: the PC is listed once for both. */
+let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc> } | null = null;
+
 /**
  * This PC, signed in and in no account yet: listed in the account with one tap, then it waits for a
  * device already in the account to add it, which the owner approves here (docs/account.md, "Adding a PC").
  * While it waits it keeps its pairing window open, for thirty minutes a press, and says when a device added it.
  * A reloaded tab takes the wait up again only on the same PC under the same account; nothing else is
  * listed or opened without a press. Two copies of this screen may be mounted at once (Settings over the
- * welcome): they share the wait their tab keeps, and one that stops it stops the other.
+ * welcome): they share the wait their tab keeps, whichever of them began it, one that stops it stops the
+ * other, and the PC is listed again once for both.
  */
 export function AddThisPc({ relayAbove = true, service }: {
   /** Settings has the relay's switch above; the welcome does not */
@@ -178,10 +182,14 @@ export function AddThisPc({ relayAbove = true, service }: {
           if (kept.account === account && session?.account === account) setState({ kind: "done", account, enrolling });
           return;
         }
+        // read again: while the sign-in was read, another copy of this screen may have stopped the wait, or begun one in its place
+        const now = readAddPcWaiting();
+        const running = now !== null && resumable(now, Date.now()) ? now : null;
+        if (running === null) { setState({ kind: "offer" }); return; }
         // only the account the press was made under goes on waiting: another sign-in, or none, starts from the offer
-        if (session === undefined || session.account !== kept.account) { keepAddPcWaiting(null); setState({ kind: "offer" }); return; }
+        if (session === undefined || session.account !== running.account) { keepAddPcWaiting(null); setState({ kind: "offer" }); return; }
         // the screen was waiting when its tab reloaded: it goes on, within the thirty minutes of its press
-        setState({ kind: "waiting", name: kept.name, until: kept.until, mark: kept, resumed: true });
+        setState({ kind: "waiting", name: running.name, until: running.until, mark: running, resumed: true });
       }).catch((error: unknown) => {
         console.warn("Ovis: this PC's account could not be read", error instanceof Error ? error.name : error);
         const stored = readAddPcWaiting();
@@ -195,6 +203,26 @@ export function AddThisPc({ relayAbove = true, service }: {
     read();
     return () => { live = false; if (again !== null) clearTimeout(again); };
   }, [accountService]);
+  /** the wait this copy's own press keeps: it is told of it like every copy, and begins it itself */
+  const pressed = useRef<number | null>(null);
+  // a copy that shows the button takes up the wait another copy of this screen begins (Settings over the welcome):
+  // closing that one then leaves this one waiting, and saying when the PC was added
+  const idle = state.kind === "offer" || state.kind === "expired" || state.kind === "error";
+  useEffect(() => {
+    if (!idle) return;
+    let live = true;
+    const off = onAddPcWaiting((kept) => {
+      if (kept === null || kept.until === pressed.current || !resumable(kept, Date.now())) return;
+      accountService().session().then((session) => {
+        const now = readAddPcWaiting();
+        // only under the sign-in the wait was begun in, and only while it is still the wait the tab keeps
+        if (!live || session?.account !== kept.account || now === null || now.until !== kept.until) return;
+        // the copy that began it opened the window itself
+        setState((current) => current.kind === "offer" || current.kind === "expired" || current.kind === "error" ? { kind: "waiting", name: now.name, until: now.until, mark: now, resumed: false } : current);
+      }, warned("Ovis: the account's sign-in could not be read"));
+    });
+    return () => { live = false; off(); };
+  }, [idle, accountService]);
   // one object from the press (or the reload) until the wait ends: what it keeps for a reload changes in the effect alone
   const begun = state.kind === "waiting" ? state : null;
   useEffect(() => {
@@ -208,7 +236,13 @@ export function AddThisPc({ relayAbove = true, service }: {
     const withdrawn = (): boolean => shared && readAddPcWaiting()?.until !== until;
     /** Forgets this wait, never one another copy began since. */
     const forget = (): void => { const now = readAddPcWaiting(); if (now === null || now.until === until) keepAddPcWaiting(null); };
-    const left = (): void => setState({ kind: "offer" });
+    /** This wait ended in another copy: the offer again, or the wait that copy began in its place, under the same account. */
+    const left = (): void => {
+      const now = readAddPcWaiting();
+      setState(now !== null && now.until !== until && now.account === mark?.account && resumable(now, Date.now())
+        ? { kind: "waiting", name: now.name, until: now.until, mark: now, resumed: false }
+        : { kind: "offer" });
+    };
     const stopped = (): void => { forget(); left(); };
     const expired = (): boolean => {
       if (Date.now() < until) return false;
@@ -252,6 +286,8 @@ export function AddThisPc({ relayAbove = true, service }: {
       })()).catch(warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
     };
     let relisting: ReturnType<typeof setTimeout> | null = null;
+    /** How long until the PC is next due to be listed: `RELIST_MS` after it was last listed, by this copy or another. */
+    const due = (): number => Math.min(RELIST_MS, Math.max(0, (mark?.listedAt ?? Date.now()) + RELIST_MS - Date.now()));
     /**
      * Lists the PC anew when its entry is about to leave the account's devices (which also opens the window),
      * `RELIST_MS` after it was last listed; a listing that failed is tried again as soon as the window is.
@@ -260,6 +296,9 @@ export function AddThisPc({ relayAbove = true, service }: {
     const relist = (): void => {
       relisting = null;
       if (expired()) return;
+      /** the listing this attempt began, which the other copy on this wait joins rather than listing too */
+      let mine: typeof relistOnItsWay = null;
+      let over = false;
       within(2 * REOPEN_MS, (async (): Promise<boolean> => {
         const { account, enrolling } = await thisPcMembership();
         if (!live) return true;
@@ -267,23 +306,47 @@ export function AddThisPc({ relayAbove = true, service }: {
         if (withdrawn()) { left(); return true; }
         // listed only under the account the press was made in: another sign-in since then ends the wait
         if (!await stillSignedIn()) { if (live) stopped(); return true; }
+        // this attempt got no answer in time and the next one is due: nothing is listed late
+        if (!live || over) return true;
+        if (withdrawn()) { left(); return true; }
+        // the other copy that waits on this wait listed the PC since: the next listing is due from then
+        const kept = shared ? readAddPcWaiting() : null;
+        if (mark !== null && kept !== null && kept.until === until && kept.listedAt > mark.listedAt) { mark = kept; return true; }
+        // listed for this wait alone: nothing is written for another PC, under another sign-in, or once the wait
+        // was stopped (here or in another copy) while the listing was on its way
+        const wait = mark === null ? undefined : { serverId: mark.serverId, account: mark.account, running: (): boolean => live && !withdrawn() };
+        const flying = shared && relistOnItsWay?.until === until ? relistOnItsWay : null;
+        const listed = flying?.listed ?? listThisPc(accountService(), { relistMs: RELIST_MS, for: wait });
+        if (shared && flying === null) relistOnItsWay = mine = { until, listed };
+        await listed;
         if (!live) return true;
-        const listed = await listThisPc(accountService(), { relistMs: RELIST_MS });
-        if (!live) return true;
-        if (mark !== null && (listed.serverId !== mark.serverId || listed.account !== mark.account)) { stopped(); return true; }
         // another copy stopped the wait while the PC was being listed: what it forgot is not kept again
         if (withdrawn()) { left(); return true; }
         if (mark !== null) { mark = { ...mark, listedAt: Date.now() }; keepAddPcWaiting(mark); }
         return true;
       })()).catch((error: unknown) => {
+        if (error instanceof AddPcWaitOver) {
+          if (!live) return true;
+          // the address answers for another PC now, or the tab is signed in to another account: the wait is not this one's
+          if (error.why !== "ended") { stopped(); return true; }
+          if (withdrawn()) { left(); return true; }
+          // the copy that was listing for both was closed on the way: this one lists with the next reopen
+          return false;
+        }
         console.warn("Ovis: this PC was not listed in the account again", error instanceof Error ? error.name : error);
         return false;
-      }).then((ok) => { if (live && relisting === null) relisting = setTimeout(relist, ok ? RELIST_MS : REOPEN_MS); });
+      }).then((ok) => {
+        // over with this attempt, also one that got no answer in time: the next attempt lists for itself
+        over = true;
+        if (mine !== null && relistOnItsWay === mine) relistOnItsWay = null;
+        // a wait that just ended (its effect is about to be left) has no listing due: never at once
+        if (live && relisting === null) relisting = setTimeout(relist, ok ? due() || RELIST_MS : REOPEN_MS);
+      });
     };
     const shown = (): void => { if (!pageHidden()) { reopen(); ask(); } };
     const timers = [setInterval(reopen, REOPEN_MS), setInterval(ask, ADDED_POLL_MS)];
     // a reloaded tab's listing is as old as before the reload: the next one is due from then, at once when that has passed
-    relisting = setTimeout(relist, Math.min(RELIST_MS, Math.max(0, (mark?.listedAt ?? Date.now()) + RELIST_MS - Date.now())));
+    relisting = setTimeout(relist, due());
     // a hidden page's timers run late or not at all: the end of the thirty minutes has a timer of its own
     const end = setTimeout(expired, Math.max(0, until - Date.now()));
     document.addEventListener("visibilitychange", shown);
@@ -324,6 +387,7 @@ export function AddThisPc({ relayAbove = true, service }: {
       const { name, serverId, account } = await listThisPc(accountService(), { relistMs: RELIST_MS });
       const now = Date.now();
       const mark = account === null ? null : { name, until: now + WAITING_MS, serverId, account, listedAt: now };
+      pressed.current = mark?.until ?? null;
       keepAddPcWaiting(mark);
       return { kind: "waiting", name, until: now + WAITING_MS, mark, resumed: false };
     })().then(setState, (error: unknown) => {
