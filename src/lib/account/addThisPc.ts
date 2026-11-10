@@ -165,7 +165,7 @@ export class AddPcWaitOver extends Error {
 export interface ListedFor {
   readonly serverId: string;
   readonly account: string;
-  /** asked right before every write to the directory: false once the wait was stopped or replaced */
+  /** asked before the window is asked for, once it opened, and right before every write to the directory: false once the wait was stopped or replaced */
   readonly running: () => boolean;
 }
 
@@ -199,12 +199,15 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   const as = options.as;
   // asked before the window: one is never opened on another PC than the wait's
   if (wait !== undefined && !await pcAnswers(wait.serverId)) throw new AddPcWaitOver("pc");
+  // stopped while that was asked: no window is asked for after Stop waiting closed it
+  if (wait !== undefined && !wait.running()) throw new AddPcWaitOver("ended");
   const offer = decodeOffer((await openAddWindow()).url);
   if (offer === null) throw new Error("This PC's pairing link did not parse");
   as?.reached?.("opened");
   if (wait !== undefined && offer.server_id !== wait.serverId) throw new AddPcWaitOver("pc");
   // given up while the window was being opened: nothing more is read or written for it
-  if (as !== undefined && !as.running()) throw new AddPcWaitOver("ended");
+  // (a stopped wait's listing is over at once, so whoever began it closes the late window without waiting for the directory)
+  if ((as !== undefined && !as.running()) || (wait !== undefined && !wait.running())) throw new AddPcWaitOver("ended");
   const session = await service.session();
   if (wait !== undefined && session?.account !== wait.account) throw new AddPcWaitOver("sign-in");
   if (as !== undefined && session?.account !== as.account) throw new AddPcWaitOver("sign-in");

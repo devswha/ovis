@@ -1473,6 +1473,28 @@ describe("AddThisPc", () => {
     expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
   });
 
+  test("Stop waiting while a listing asks for the window closes the window it opens late, also when the account's directory never answers", async () => {
+    const renderer = await waitingFrom();
+    // under a hidden page only the listing asks for the window, not the reopening
+    show(true);
+    await advance(RELIST_MS - 1);
+    const release = hold("link");
+    await advance(1);
+    expect(links()).toBe(2);
+    await press(renderer, "Stop waiting");
+    expect(closes()).toBe(1);
+    // the request reaches the PC after the close and opens a window nobody waits on, and the directory gives no answer
+    hold("listPcs");
+    release();
+    await settle();
+    await advance(2 * REOPEN_MS);
+    expect(links()).toBe(2);
+    expect(closes()).toBe(2);
+    expect(asked.at(-1)!.path).toBe("/api/relay/link/close");
+    expect(directory).toEqual(["putPc"]);
+    expect(buttons(renderer)).toEqual(["Add this PC to my account"]);
+  });
+
   test("a wait begun right after Stop waiting asks for its window only once that close was answered", async () => {
     const renderer = await waitingFrom();
     const release = hold("close");

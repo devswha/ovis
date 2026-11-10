@@ -355,7 +355,11 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
      * A reopen or a listing of this wait reached the PC after Stop waiting closed its window (here, or in another
      * copy), and opened it again for nobody: closed once more, unless the person began another wait meanwhile.
      */
-    const closeLate = (): void => { if ((stops.current !== stopsThen || withdrawn()) && starts.current === startsThen && !waitKept()) closeWindow(); };
+    const closeLate = (): boolean => {
+      if (!((stops.current !== stopsThen || withdrawn()) && starts.current === startsThen && !waitKept())) return false;
+      closeWindow();
+      return true;
+    };
     const expired = (): boolean => {
       if (Date.now() < until) return false;
       forget();
@@ -418,6 +422,9 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
       /** the listing this attempt began, which the other copy on this wait joins rather than listing too */
       let mine: typeof relistOnItsWay = null;
       let over = false;
+      /** this attempt asked the PC for its window, and has not closed one it opened late yet */
+      let asked = false;
+      const closeAsked = (): void => { if (asked && closeLate()) asked = false; };
       within(2 * REOPEN_MS, (async (): Promise<boolean> => {
         const { account, enrolling } = await thisPcMembership();
         if (!live) return true;
@@ -435,10 +442,12 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
         // was stopped (here or in another copy) while the listing was on its way
         const wait = mark === null ? undefined : { serverId: mark.serverId, account: mark.account, running: (): boolean => live && !withdrawn() };
         const flying = shared && relistOnItsWay?.until === until ? relistOnItsWay : null;
+        asked = flying === null;
         const listed = flying?.listed ?? listThisPc(accountService(), { relistMs: RELIST_MS, for: wait });
         // its request for the window may reach the PC only after this attempt was given up for getting no answer in
-        // time, and after Stop waiting closed the window: closed once more when the listing itself is over
-        if (flying === null) void listed.then(closeLate, closeLate);
+        // time, and after Stop waiting closed the window: closed once more when the listing itself is over, and
+        // when the attempt is (a listing whose directory never answers is never over)
+        if (flying === null) void listed.then(closeAsked, closeAsked);
         if (shared && flying === null) relistOnItsWay = mine = { until, listed };
         await listed;
         if (!live) return true;
@@ -460,6 +469,7 @@ export function AddThisPc({ relayAbove = true, service, signedInHere }: {
       }).then((ok) => {
         // over with this attempt, also one that got no answer in time: the next attempt lists for itself
         over = true;
+        closeAsked();
         if (mine !== null && relistOnItsWay === mine) relistOnItsWay = null;
         // a wait that just ended (its effect is about to be left) has no listing due: never at once
         if (live && relisting === null) relisting = setTimeout(relist, ok ? due() || RELIST_MS : REOPEN_MS);

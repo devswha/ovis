@@ -136,6 +136,27 @@ test("a listing for a wait writes nothing for another PC, under another account,
   } finally { pc.restore(); }
 });
 
+test("a listing for a wait that was stopped opens no window, and reads nothing once a window on its way has opened", async () => {
+  const signedIn = { account: "acct_1" as string | null };
+  const pc = listing(signedIn);
+  let sessions = 0;
+  const session = pc.service.session.bind(pc.service);
+  pc.service.session = async () => { sessions++; return await session(); };
+  const why = async (running: () => boolean): Promise<unknown> =>
+    listThisPc(pc.service, { relistMs: 540_000, for: { serverId: pc.serverId, account: "acct_1", running } }).then(() => "listed", (error: unknown) => error instanceof AddPcWaitOver ? error.why : error);
+  try {
+    // stopped while the PC was asked which one it is: no window is asked for after Stop waiting
+    expect(await why(() => false)).toBe("ended");
+    expect(pc.asked).toEqual(["/api/health"]);
+    // stopped while the window was being opened: over at once, before any read that may never be answered
+    pc.asked.length = 0;
+    expect(await why(() => !pc.asked.includes("/api/relay/link"))).toBe("ended");
+    expect(pc.asked).toEqual(["/api/health", "/api/relay/link"]);
+    expect(sessions).toBe(0);
+    expect(pc.calls).toEqual([]);
+  } finally { pc.restore(); }
+});
+
 test("a wait kept or forgotten is told to whoever listens, until they stop", () => {
   const heard: (string | null)[] = [];
   const off = onAddPcWaiting((waiting) => heard.push(waiting?.name ?? null));
