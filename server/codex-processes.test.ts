@@ -2934,9 +2934,9 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
   });
 
   // the merge pass's review of #3582: a lookup that cannot bind ran every scan again, every 2 s
-  for (const refused of ["a scrolled answer beside a turn under way", "a short answer two conversations ended on"] as const) {
+  for (const refused of ["a scrolled answer beside a turn under way", "a short answer two conversations ended on", "a short answer that ties the pane"] as const) {
     it(`scans no rollout again for a lookup whose screen and rollouts stand as they were (${refused})`, async () => {
-      // B: a long conversation of the folder that keeps this pane's last turn from binding, lookup after lookup
+      // B: a long conversation of the folder, weighed on every lookup (in the first two it keeps this pane's last turn from tying it)
       const rows = 400;
       const unrelated = Array.from({ length: rows / 4 }, (_, at) => [`Unrelated prompt number ${at}`, `unrelated reply number ${at}`] as const);
       let fileB: string;
@@ -2947,10 +2947,11 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
         screen = scrolled();
       } else {
         finishedRollout(path, thread, [["thanks", "You're welcome!"]]);
-        fileB = conversationB([...unrelated, ["thanks", "You're welcome!"]]);
+        fileB = conversationB(refused === "a short answer that ties the pane" ? unrelated : [...unrelated, ["thanks", "You're welcome!"]]);
         screen = [...header(), "› thanks", "", "", "• You're welcome!", "", footer, ...idle].join("\n");
       }
-      foreground = fresh(refused === "a scrolled answer beside a turn under way" ? 2147483532 : 2147483533);
+      const found = refused === "a short answer that ties the pane" ? path : null;
+      foreground = fresh(2147483532 + ["a scrolled answer beside a turn under way", "a short answer two conversations ended on", "a short answer that ties the pane"].indexOf(refused));
       const parse = spyOn(JSON, "parse");
       try {
         const parsed = async () => { const from = parse.mock.calls.length; const found = await resolve(); return [found, parse.mock.calls.length - from] as const; };
@@ -2959,8 +2960,8 @@ describe("a Codex pane whose last answer the screen never shows whole binds only
         // one record more in B: its read is no longer the one the last lookup weighed
         appendFileSync(fileB, `${JSON.stringify({ type: "event_msg", payload: { type: "token_count", info: `${Math.random()}` } })}\n`);
         const [third, changed] = await parsed();
-        expect([first, second, third]).toEqual([null, null, null]);
-        // the lookup that stands on the last one's refusal leaves B's rows unread by the last turn's scans
+        expect([first, second, third]).toEqual([found, found, found]);
+        // the lookup that stands on the last one's answer leaves B's rows unread by the last turn's scans
         expect(changed - unchanged).toBeGreaterThan(rows / 4);
       } finally { parse.mockRestore(); }
     });
@@ -3398,10 +3399,29 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
         screen = footed(["› Is the build green?", blank, "  Answer in one word."], [`• ${reply}`]);
         expect([reply, blank, await resolve()]).toEqual([reply, blank, null]);
       }
-      // B's finish lands, the screen as it was: a short answer both ended on stays open, a long one is B's alone
+      // B's finish lands, the screen as it was: both ended on that answer, and the prompt shown may be either's
+      // (A's, with something Codex drew under it; or B's two paragraphs)
       appendFileSync(path, `${JSON.stringify({ type: "event_msg", payload: { type: "task_complete", turn_id: "b1", last_agent_message: reply } })}\n`);
-      expect([reply, await resolve()]).toEqual([reply, index === 0 ? null : path]);
+      expect([reply, await resolve()]).toEqual([reply, null]);
     }
+  });
+
+  // the adversarial review of that rework (PC1): rows under a prompt may be its own, or what the assistant printed first
+  it("takes no conversation asked the prompt shown with the rows under it while the pane's own was asked the prompt alone", async () => {
+    foreground = live;
+    const question = "Is this loop off by one?";
+    const code = "for index in range(1, len(items)):\n    total += items[index]";
+    const said = "Yes: the loop skips the first item, because the range starts at one, so the total misses whatever sits at index zero of the list.";
+    // the pane's own: asked the question alone; its assistant printed the code as a message of its own (no bullet), then answered
+    const asked = turn("x1", question, said);
+    writeRollout(path, thread, [...asked.slice(0, 2), { type: "event_msg", payload: { type: "agent_message", message: `\`\`\`python\n${code}\n\`\`\`` } }, ...asked.slice(2)]);
+    screen = footed([`› ${question}`, "", ...code.split("\n").map((line) => `  ${line}`)], [`• ${said}`]);
+    // alone, it is the pane's: its prompt is the first reading of the rows shown
+    expect(await resolve()).toBe(path);
+    // another conversation asked the question with that code pasted under it, and ended on the same answer
+    folderThread(otherThread, turn("a1", `${question}\n\n${code}`, said));
+    foreground = [{ pid: 2147483618, argv: ["/usr/bin/codex"] }];
+    expect(await resolve()).toBeNull();
   });
 
   it("binds a short answer to a prompt of two paragraphs", async () => {
@@ -3410,6 +3430,41 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     screen = footed(["› Is the build green?", "", "  Answer in one word."], ["• Yes."]);
     expect(await resolve()).toBe(path);
   });
+
+  // the adversarial review of the kept answer: it is the answer to one question, and the question changes with any read
+  for (const change of ["grows", "is replaced by a file of the same size", "is rewritten in place to the same size"] as const) {
+    heldIt(`weighs a tied pane again once a loaded conversation of another folder ${change} and ends on the exchange shown`, async () => {
+      foreground = live;
+      writeRollout(path, thread, turn("t1", asked, "ok"));
+      const loadedThread = `01a16b22-7e1f-7072-8897-d5e46a0d5f6${["grows", "is replaced by a file of the same size", "is rewritten in place to the same size"].indexOf(change)}`;
+      const lines = (records: RolloutRecord[]) => `${records.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+      const file = elsewhereThread(loadedThread, [...turn("z0", "Name the capital of France in one word, and say nothing else at all, not even a full stop after it, please.", "Paris."),
+        { type: "event_msg", payload: { type: "token_count", pad: "x".repeat(600) } }]);
+      await loaded(loadedThread);
+      screen = footed([`› ${asked}`], ["• ok"]);
+      const got = [await resolve(), await resolve()];
+      // that conversation now ends on the exchange this pane shows: a resume through the picker may have put it here
+      const same = lines(turn("z1", asked, "ok"));
+      if (change === "grows") appendFileSync(file, same);
+      else {
+        const before = fs.readFileSync(file, "utf8");
+        const kept = before.slice(0, before.indexOf("\n", before.indexOf("task_complete")) + 1);
+        const room = Buffer.byteLength(before) - Buffer.byteLength(kept) - Buffer.byteLength(same) - Buffer.byteLength(lines([{ type: "event_msg", payload: { type: "token_count", pad: "" } }]));
+        const text = `${kept}${lines([{ type: "event_msg", payload: { type: "token_count", pad: "x".repeat(room) } }])}${same}`;
+        expect(Buffer.byteLength(text)).toBe(Buffer.byteLength(before));
+        if (change === "is rewritten in place to the same size") {
+          writeFileSync(file, text);
+          const later = new Date(Date.now() + 10_000);
+          utimesSync(file, later, later);
+        } else {
+          writeFileSync(`${file}.new`, text);
+          fs.renameSync(`${file}.new`, file);
+        }
+      }
+      got.push(await resolve());
+      expect(got).toEqual([path, path, null]);
+    });
+  }
 
   it("takes neither conversation for either of two panes that answered the same short text to the same prompt", async () => {
     foreground = live;
