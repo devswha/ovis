@@ -9,6 +9,7 @@ import type { HeaderList, SessionError } from "../../shared/relay-mux.ts";
 import type { PairingIntent } from "../../shared/machines.ts";
 import { PairingRateLimitedError, type DeviceMatch } from "../devices.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
+import { UNKNOWN_DEVICE_WAIT_MS } from "../account/mailbox.ts";
 import { handleRequest } from "../dispatch.ts";
 import type { RequestServices, ServerContext } from "../dispatch.ts";
 import type { EventStreamBudget } from "../machine-api.ts";
@@ -274,6 +275,7 @@ export class RelaySession {
         this.state = "verifying";
         const devices = this.options.services.devices;
         if (this.options.services.serveOnly) { this.close("auth_failed"); return; }
+        if (frame.type === FrameType.AUTH && !await this.awaitUnknownDevice(frame.payload.device_id)) return;
         this.keyProven = frame.type === FrameType.AUTH;
         const device = frame.type === FrameType.AUTH
           ? await devices.matchRelay(frame.payload.device_id, this.nonce, frame.payload.signature, this.options.serverId)
@@ -400,6 +402,21 @@ export class RelaySession {
     if (!await accountMailbox.admitted(key) || !allowed()) return false;
     // counted only once admitted, so refused strangers cannot spend the PC's joins
     return relay.approvals.takeAccountJoin();
+  }
+
+  /**
+   * A sign-in naming a device this PC has no row for, on a PC in an account: a member may have added
+   * the device on another PC a moment ago, so the PC reads its mailbox first (at most once a minute and
+   * for at most 5 seconds, server/account/mailbox.ts), and the sign-in is then checked as ever: a device
+   * still unknown is refused exactly as one no pull was made for. False when the session ended meanwhile.
+   */
+  private async awaitUnknownDevice(deviceId: string): Promise<boolean> {
+    const { devices, accountMailbox } = this.options.services;
+    if (devices.has(deviceId) || devices.account() === null) return true;
+    // the pull may take a while: the signature's own deadline starts after it
+    this.mux.extendSetup(UNKNOWN_DEVICE_WAIT_MS + 10_000);
+    await accountMailbox.pullForUnknownDevice();
+    return this.mux.active;
   }
 
   /** Which failure count this session's comparison spends (server/devices.ts PairingPath). */

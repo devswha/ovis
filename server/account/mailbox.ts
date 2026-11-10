@@ -21,6 +21,10 @@ export const MAILBOX_PULL_MS = 5 * 60_000;
 export const ADMISSION_TTL_MS = 10 * 60_000;
 /** The least time between two pulls a join that missed asks for. */
 const ASKED_PULL_MS = 10_000;
+/** The least time between two pulls that sign-ins by a device this PC does not know ask for. */
+export const UNKNOWN_DEVICE_PULL_MS = 60_000;
+/** How long such a sign-in waits for the pull at most; the pull itself goes on. */
+export const UNKNOWN_DEVICE_WAIT_MS = 5_000;
 
 function scope(account: string, serverId: string, key: string): string {
   return `${account}\0${serverId}\0${key}`;
@@ -98,6 +102,7 @@ export class AccountMailbox {
   /** The admissions the last pull saw, by account, PC and waiting device's key (`scope`): when each was made. */
   private admissions = new Map<string, number>();
   private lastAskedPull = Number.NEGATIVE_INFINITY;
+  private lastUnknownDevicePull = Number.NEGATIVE_INFINITY;
   /** When a pull last read the mailbox to its end without an error, and for which account and relay identity (`scope`). */
   private drainedAt: number | null = null;
   private drainedScope: string | null = null;
@@ -182,6 +187,28 @@ export class AccountMailbox {
       await this.pull();
     }
     return fresh();
+  }
+
+  /**
+   * A device this PC has no row for signed in: a member may have added it on another PC a moment ago,
+   * and its signed add then waits in the mailbox (docs/account.md, "Account service API"). On a PC in
+   * an account this joins the pull under way or starts one, at most once a minute on a count of its
+   * own, so sign-ins nobody can check yet cannot make the PC call the service at will, and waits for
+   * it at most `waitMs`. What the pull finds is checked and applied like any other record; the caller
+   * looks the device up again. Never throws.
+   */
+  async pullForUnknownDevice(waitMs = UNKNOWN_DEVICE_WAIT_MS): Promise<void> {
+    if (this.options.devices.account() === null) return;
+    let pull = this.pulling;
+    if (!pull) {
+      if (Date.now() - this.lastUnknownDevicePull < UNKNOWN_DEVICE_PULL_MS) return;
+      this.lastUnknownDevicePull = Date.now();
+      pull = this.pull();
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); });
+    try { await Promise.race([pull.then(() => undefined, () => undefined), late]); }
+    finally { clearTimeout(timer); }
   }
 
   /**
