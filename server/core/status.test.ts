@@ -522,6 +522,35 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
     expect(h.pending.next(id)).not.toBeNull();
   });
 
+  it("goes by herdr's word when herdr told the resumed turn a moment before Claude wrote its fire", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    // Given herdr reading the resumed turn before the fire reaches the transcript.
+    handlers.onStatus(id, "working", "claude");
+    fires(h.path); h.poll();
+    queue(h);
+    expect(h.last().status).toBe("working");
+    expect(h.pending.next(id)).toBeNull();
+    // When that turn is interrupted, which writes no rest, and herdr says the pane does no work.
+    handlers.onStatus(id, "idle", "claude");
+    // Then the fire, whose turn herdr told, holds nothing: the message goes at once.
+    expect(h.status.queueHeld(id)).toBe(false);
+    expect(h.pending.next(id)).not.toBeNull();
+  });
+
+  it("holds the queue when herdr took its working word back before the fire was written", async () => {
+    const h = await rested();
+    const id = h.pane.pane_id;
+    // Given a working word of herdr's with no turn behind it, taken back at once.
+    handlers.onStatus(id, "working", "claude");
+    handlers.onStatus(id, "idle", "claude");
+    // When the wakeup fires next: that word told nothing of the turn it resumes.
+    fires(h.path); h.poll();
+    queue(h);
+    expect(h.status.queueHeld(id)).toBe(true);
+    expect(h.pending.next(id)).toBeNull();
+  });
+
   it("holds the queue from the snapshot a send reads the pane with, before the timer's poll", async () => {
     const h = await rested();
     const id = h.pane.pane_id;

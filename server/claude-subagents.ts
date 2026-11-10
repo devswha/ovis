@@ -1453,6 +1453,8 @@ interface Tracked {
   turns?: Turns;
   /** the transcript's size when herdr's event last said the pane does no work: a turn herdr tells after it began past it */
   quiet?: { path: string; id: string; size: number };
+  /** herdr's last word on the pane said it works (busy), with no word since that it does no work (quiet) */
+  works?: boolean;
   /** every observed agent, whose own file can end or resume its turn */
   watch: string[];
 }
@@ -1503,8 +1505,8 @@ export const LOOP_HOLD_MS = 60_000;
 /**
  * The latest `/loop` fire the pane took account of (`fire`, its byte boundary), and since when it
  * holds the queue (`since`). null: it holds nothing, as it was found written at the transcript's
- * first read (history: nothing says its turn still runs), or herdr told a turn after it (the queue
- * goes by herdr's status from there), or a rest was written past it.
+ * first read (history: nothing says its turn still runs), or herdr told its turn or one after it
+ * (the queue goes by herdr's status from there), or a rest was written past it.
  */
 interface Loop { fire: number; since: number | null }
 
@@ -1607,6 +1609,7 @@ export class ClaudeSubagentStatus {
     if (source === "herdr" && tracked) {
       if (tracked.quiet && tracked.quiet.path === tracked.path) signal.quiet = { id: tracked.quiet.id, size: tracked.quiet.size };
       delete tracked.quiet;
+      tracked.works = true;
     }
     const turns = tracked?.path != null && tracked.live && tracked.turns?.path === tracked.path ? tracked.turns : undefined;
     const size = turns ? plain(turns.path) : null;
@@ -1633,6 +1636,7 @@ export class ClaudeSubagentStatus {
   quiet(paneId: string, event: boolean): void {
     const tracked = this.panes.get(paneId);
     if (!tracked) return;
+    tracked.works = false;
     // a chat send's is the transcript's to release: Claude may write its prompt late (a slow
     // UserPromptSubmit hook) while its title shows no work
     if (tracked.turns && tracked.turns.herdr.held.length > 0) {
@@ -1722,8 +1726,9 @@ export class ClaudeSubagentStatus {
     // another process's transcript: what it holds is that process's, and a rest in it ends no turn of this one
     if (reset && found) this.deferred.set(pane.pane_id, [...this.deferred.get(pane.pane_id) ?? [], { source: "herdr", at: this.now() }]);
     // the count it had goes on from here: another session with none says so at the next poll
-    // so does what was told of a /loop fire's hold: one that ran out meanwhile is told at the next poll, as no status event may be
-    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, looping: current?.looping, restedOnWork: sameLife && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
+    // so does what was told of a /loop fire's hold: one that ran out meanwhile is told at the next poll, as no status event may be;
+    // and herdr's last word, which is of the pane
+    this.panes.set(pane.pane_id, { read: same && !reset ? current.read : ++taskReadSequence, key, path: found?.path ?? (same ? current.path : null), startedAt: found ? found.startedAt : same ? current.startedAt : null, pid: found ? found.pid ?? null : same ? current.pid : null, at: this.now(), pidAt: this.now(), live: true, running: current?.running ?? 0, turnRunning: current?.turnRunning ?? 0, promptAt: current?.promptAt ?? null, resting: current?.resting ?? false, looping: current?.looping, works: current?.works, restedOnWork: sameLife && !reset ? current.restedOnWork : false, turns: reset ? undefined : current?.turns, sig: null, watch: same && !found ? current.watch : [], reset });
   }
 
   private observeSession(pane: HerdrPane): void {
@@ -1788,9 +1793,11 @@ export class ClaudeSubagentStatus {
         else {
           const turns = this.turnsOf(paneId, tracked.path, parent);
           settle(turns, parent, this.now());
-          // a /loop fire written since the read before holds the queue from now; a rest written past it ends that
+          // a /loop fire written since the read before holds the queue from now; a rest written past it ends that.
+          // Not one whose turn herdr told a moment before Claude wrote it (its working, matched above to
+          // the turn the fire began, and not taken back since): the queue goes by herdr's status already
           if (parent.loopAt === null) turns.loop.since = null;
-          else if (parent.loopAt > turns.loop.fire) turns.loop = { fire: parent.loopAt, since: this.now() };
+          else if (parent.loopAt > turns.loop.fire) turns.loop = { fire: parent.loopAt, since: tracked.works === true && turns.herdr.turn >= parent.loopAt ? null : this.now() };
           // a turn seen at rest is history: a later signal with nothing to place it is not its own
           const latest = turnAt(parent);
           if (resting && latest !== null) turns.retired = Math.max(turns.retired, latest);

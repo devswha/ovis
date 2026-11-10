@@ -1240,6 +1240,29 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
+    it("holds nothing on a fire whose turn herdr told a moment before it was written, unless herdr took that word back", async () => {
+      const s = session();
+      s.prompt(1);
+      rest(s, 2);
+      const { status } = await tracked(s);
+      try {
+        // herdr reads the resumed turn before Claude's write of the fire reaches the transcript
+        status.quiet("p1", true);
+        status.busy("p1", "herdr");
+        fire(s, 3);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(false);
+        rest(s, 4);
+        status.poll();
+        // a working word with no turn behind it, taken back before the next fire, told nothing of that fire's turn
+        status.busy("p1", "herdr");
+        status.quiet("p1", true);
+        fire(s, 5);
+        status.poll();
+        expect(status.loopHolds("p1")).toBe(true);
+      } finally { status.stop(); }
+    });
+
     it("hands the queue over to herdr's status once herdr says the pane works, not to a send of the chat's", async () => {
       const s = session();
       s.prompt(1);
