@@ -214,7 +214,7 @@ describe("the Add-a-PC sheet", () => {
     expect(all()).not.toContain("Work MacBook");
     // a join is never approved on the PC and has no link to open again: the refusal names the device that approves
     expect(text(renderer!.root.findByProps({ className: "add-pc-problem" }))).toBe("No device of your account approved this one");
-    expect(all()).toContain("Nobody picked the number within 90 seconds, or it was denied. Open desk2 in Ovis on a device that already uses it, keep it open, then try again.");
+    expect(all()).toContain("Nobody picked the number within 90 seconds, or it was denied. Open desk2 in Ovis on a device that already uses it, keep it open, then try again. If it keeps failing, pair this device with a QR or code from desk2.");
     expect(all()).not.toContain("Open the link again");
     expect(renderer!.root.findAll((instance) => instance.type === "button").map(text)).toEqual(["Close", "Try again"]);
     await click("Try again");
@@ -226,17 +226,17 @@ describe("the Add-a-PC sheet", () => {
     const buttons = () => renderer!.root.findAll((instance) => instance.type === "button").map(text);
     const problem = () => text(renderer!.root.findByProps({ className: "add-pc-problem" }));
     const expired = pcOf({ added_at: new Date(Date.now() - 15 * 60_000).toISOString() });
-    // a new PC that stopped waiting: its window lapsed or Ovis restarted there, and the PC is where it starts again
+    // a new PC that is no longer waiting: its Account screen on the PC is where the wait starts again
     await mount(props("new", pcOf(), { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
-    expect(problem()).toBe("desk2 stopped waiting to be added");
-    expect(all()).toContain("Its add window closed, or Ovis restarted there. On desk2, open Settings → Devices and PCs → Account and choose Add this PC to my account again, then try again here. If it still refuses, wait a few minutes: it pauses after too many tries.");
+    expect(problem()).toBe("desk2 is no longer waiting to be added");
+    expect(all()).toContain("On desk2, open Settings → Devices and PCs → Account and keep that screen open (choose Keep waiting or Add this PC to my account if it shows one), then try again here. If it still refuses, wait a few minutes: it pauses after too many tries.");
     expect(all()).not.toContain("Copy a new link");
     expect(buttons()).toEqual(["Close", "Try again"]);
     await click("Try again");
     expect(calls.retries).toBe(1);
     // the same words whatever the row's age: a new PC has no member to ask
     await update(props("new", expired, { kind: "failed", failure: "pair-unavailable", name: "desk2", detail: null, server_id: SERVER_ID }));
-    expect(problem()).toBe("desk2 stopped waiting to be added");
+    expect(problem()).toBe("desk2 is no longer waiting to be added");
     expect(all()).not.toContain("account member");
     // a new PC that declined, or was not approved in time, is approved on the PC itself
     await update(props("new", pcOf(), { kind: "failed", failure: "pair-declined", name: "desk2", detail: null, server_id: SERVER_ID }));
