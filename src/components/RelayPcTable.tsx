@@ -78,7 +78,7 @@ export function RelayPcTable({
     if (row.state === "needs-update") return t("Update Ovis on it");
     if (listedRow(row) && row.state === "needs-approval") {
       if (freshIds.has(row.server_id) && row.added_at !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((Date.parse(row.added_at) + 10 * 60_000 - now) / 60_000)) });
-      if (phone && row.added_at !== null && row.join !== undefined) return askToJoinReason(t);
+      if (phone) return askToJoinReason(row, t);
     }
     return null;
   };
@@ -94,8 +94,8 @@ export function RelayPcTable({
   /** The state word beside the dot; on a Join row whose 10-minute window closed, the title adds why (the Attention caption and Details say it in full, while the table cell stays one line). */
   const stateWord = (row: DashboardRow, updating: boolean): ReactNode => {
     const word = stateHeadline(row, updating);
-    const title = !updating && row.state === "needs-approval" && !freshIds.has(row.server_id) && row.added_at !== null && row.join !== undefined
-      ? `${word} · ${askToJoinReason(t)}` : word;
+    const reason = !updating && row.state === "needs-approval" && !freshIds.has(row.server_id) ? askToJoinReason(row, t) : null;
+    const title = reason !== null ? `${word} · ${reason}` : word;
     return <span className="relay-pc-state-word" title={title}>{word}</span>;
   };
 

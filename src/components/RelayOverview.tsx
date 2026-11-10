@@ -81,7 +81,7 @@ export function attentionReasonText(
   switch (pc.state) {
     case "needs-approval":
       if (expiresAt !== null) return t("new · {n} min left", { n: Math.max(1, Math.ceil((expiresAt - options.now) / 60_000)) });
-      return pc.added_at !== null ? askToJoinReason(t) : t("Needs approval");
+      return askToJoinReason(pc, t) ?? t("Needs approval");
     case "needs-update":
       return t("update to {version}", { version: options.targetVersion });
     case "offline": {

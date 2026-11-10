@@ -7,7 +7,7 @@ export const DASHBOARD_ZH: Record<string, string> = {
   "Type the number {name} shows on its own screen, then approve there.": "输入 {name} 自己屏幕上显示的数字，然后在那台电脑上批准。",
   "Ask to join": "请求加入",
   "On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here with Add.": "在电脑上打开“设置 → 设备和电脑 → 账户”并登录，然后选择“将此电脑添加到我的账号”。之后它会显示在这里，并带有“添加”。",
-  "Ask to join · a device of your account connected to it approves": "请求加入 · 由你账户中已连接到它的设备批准",
+  "Join · a device of your account connected to it approves": "加入 · 由你账户中已连接到它的设备批准",
   "A device of your account that is connected to {name} approves this one.": "由你账户中已连接到 {name} 的设备批准此设备。",
   "First open {name} in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.": "请先在已经使用这台电脑的设备（例如手机）上用 Ovis 打开 {name} 并保持打开，然后选择“请求加入”。",
   "A new number is shown on {name} because the previous number changed.": "之前的数字已更改，{name} 上显示了新数字。",

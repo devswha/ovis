@@ -7,7 +7,7 @@ export const DASHBOARD_KO: Record<string, string> = {
   "Type the number {name} shows on its own screen, then approve there.": "{name} 화면에 나온 숫자를 입력한 뒤 그 PC에서 승인하세요.",
   "Ask to join": "참여 요청",
   "On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here with Add.": "PC에서 설정 → 기기와 PC → 계정을 열어 로그인한 뒤 ‘이 PC를 내 계정에 추가’를 고르세요. 그러면 여기에 ‘추가’와 함께 나타납니다.",
-  "Ask to join · a device of your account connected to it approves": "참여 요청 · 그 PC에 연결된 내 계정의 기기가 승인합니다",
+  "Join · a device of your account connected to it approves": "참여 · 그 PC에 연결된 내 계정의 기기가 승인합니다",
   "A device of your account that is connected to {name} approves this one.": "{name}에 연결된 내 계정의 기기가 이 기기를 승인합니다.",
   "First open {name} in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.": "먼저 이 PC를 이미 쓰는 기기(예: 휴대폰)의 Ovis에서 {name} 화면을 열어 두세요. 그런 다음 ‘참여 요청’을 고르세요.",
   "A new number is shown on {name} because the previous number changed.": "이전 숫자가 바뀌어 {name} 화면에 새 숫자가 표시됩니다.",

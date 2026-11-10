@@ -7,7 +7,7 @@ export const DASHBOARD_JA: Record<string, string> = {
   "Type the number {name} shows on its own screen, then approve there.": "{name} 自身の画面に表示された番号を入力し、その PC で承認します。",
   "Ask to join": "参加を申請",
   "On the PC, open Settings → Devices and PCs → Account, sign in, then choose Add this PC to my account. It then shows here with Add.": "PC で「設定 → デバイスと PC → アカウント」を開いてサインインし、「このPCをアカウントに追加」を選びます。すると、ここに「追加」付きで表示されます。",
-  "Ask to join · a device of your account connected to it approves": "参加を申請 · その PC に接続しているアカウントのデバイスが承認します",
+  "Join · a device of your account connected to it approves": "参加 · その PC に接続しているアカウントのデバイスが承認します",
   "A device of your account that is connected to {name} approves this one.": "{name} に接続しているアカウントのデバイスが、このデバイスを承認します。",
   "First open {name} in Ovis on a device that already uses it (your phone, for example) and keep it open. Then choose Ask to join.": "まず、この PC をすでに使っているデバイス(スマートフォンなど)の Ovis で {name} を開いたままにします。それから「参加を申請」を選びます。",
   "A new number is shown on {name} because the previous number changed.": "前の番号が変わったため、{name} に新しい番号が表示されています。",

@@ -101,9 +101,7 @@ export function RelayPcDetails({
       : pc.state === "needs-approval"
         ? fresh
           ? t("{name} is new in your account. Type the number it shows on its own screen to add it.", { name: pc.name })
-          : pc.join !== undefined && pc.added_at !== null
-            ? askToJoinReason(t)
-            : t("{name} has not approved this device yet.", { name: pc.name })
+          : askToJoinReason(pc, t) ?? t("{name} has not approved this device yet.", { name: pc.name })
         : null;
 
   const probeLine = formatProbeLine(pc.check, t) ?? t("Not checked");
