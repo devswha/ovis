@@ -293,7 +293,7 @@ describe("AgentTaskStatus", () => {
     expect(status.countOf("p1")).toBe(1);
   });
 
-  it("asks again by itself for a pane whose lookup failed, whatever it holds, as herdr reported the pane by then", async () => {
+  it("asks again by itself for a pane whose lookup failed, whatever it holds", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
     roots.push(root);
     const path = join(root, "updates.jsonl");
@@ -311,8 +311,8 @@ describe("AgentTaskStatus", () => {
     // a command is held to the hold's limit, so the poll does not look its pane up: a snapshot does
     found = null;
     now += 30_000;
-    await status.refresh([session("two")]);
-    expect(asked).toEqual(["one", "two"]);
+    await status.refresh([session("one")]);
+    expect(asked).toEqual(["one", "one"]);
     expect(status.countOf("p1")).toBe(1);
     // no snapshot or status may follow for a while, and the miss is not left to wait for one
     now += 9_999;
@@ -323,8 +323,7 @@ describe("AgentTaskStatus", () => {
     now += 1;
     status.poll();
     await looked();
-    // a grok session is found by the id herdr reports: the one of the lookup that failed, not of the last that found it
-    expect(asked).toEqual(["one", "two", "two"]);
+    expect(asked).toEqual(["one", "one", "one"]);
     // found, the miss is forgotten and the poll leaves the pane to the snapshots again
     now += 19 * 60_000;
     status.poll();
@@ -332,7 +331,7 @@ describe("AgentTaskStatus", () => {
     expect(asked).toHaveLength(3);
     // so a failure long after is a first one, and only the one the poll asks next lets the pane go
     found = null;
-    await status.refresh([session("two")]);
+    await status.refresh([session("one")]);
     expect(asked).toHaveLength(4);
     expect(told).toHaveLength(1);
     now += 10_000;
@@ -341,6 +340,60 @@ describe("AgentTaskStatus", () => {
     expect(asked).toHaveLength(5);
     expect(told.at(-1)).toEqual(count(0, 0, null));
     expect(status.countOf("p1")).toBe(0);
+  });
+
+  it("takes the grok session herdr reports next at once: what the pane held was the session before's", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const file = (name: string, tasks: [string, string, number][]) => {
+      const path = join(root, name);
+      writeFileSync(path, `${JSON.stringify(grok.prompt(0))}\n${JSON.stringify(grok.tasks(1, tasks))}\n`);
+      return { path, started: null, owner: null };
+    };
+    const session = (value: string): HerdrPane => ({ ...pane("grok"), agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value } } as HerdrPane);
+    // each session's file is found by its id, as Grok keeps the files of earlier sessions open
+    const stores: Record<string, { path: string; started: null; owner: null } | null> = { one: file("one.jsonl", [["watch", "running", 1]]), two: file("two.jsonl", [["build", "running", 1], ["serve", "running", 1]]) };
+    let busy = false;
+    const asked: (string | undefined)[] = [];
+    const told: TaskCount[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async (looked) => { asked.push(looked.agent_session?.value); return busy ? null : stores[looked.agent_session?.value ?? ""] ?? null; }, onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => now });
+    const looked = lookups(status);
+    await status.track(session("one"));
+    expect(status.countOf("p1")).toBe(1);
+    // one lookup of that session fails, herdr being busy: its count stands
+    busy = true;
+    now += 30_000;
+    await status.refresh([session("one")]);
+    expect(asked).toEqual(["one", "one"]);
+    expect(status.countOf("p1")).toBe(1);
+    // a second later herdr reports another session there: it is looked up now, inside the miss's
+    // interval, and by its own id, not held off nor asked for by the id before
+    busy = false;
+    now += 1000;
+    await status.refresh([session("two")]);
+    expect(asked).toEqual(["one", "one", "two"]);
+    expect(status.countOf("p1")).toBe(2);
+    // nor does the poll ask for the session before any more
+    now += 10_000;
+    status.poll();
+    await looked();
+    expect(asked).toHaveLength(3);
+    // with no miss before it either: the session known is not kept for RESOLVE_MS against herdr's newer word
+    now += 1000;
+    await status.refresh([session("one")]);
+    expect(asked).toEqual(["one", "one", "two", "one"]);
+    expect(status.countOf("p1")).toBe(1);
+    // and a lookup of the newer session that fails lets the one before's count go at once: it is not that session's
+    busy = true;
+    now += 1000;
+    await status.refresh([session("two")]);
+    expect(asked).toHaveLength(5);
+    expect(status.countOf("p1")).toBe(0);
+    expect(told.at(-1)).toEqual(count(0, 0, null));
+    // then asked for as any session that was not found
+    await status.refresh([session("two")]);
+    expect(asked).toHaveLength(5);
   });
 
   it("lets a pane go at once when the lookup that failed is another agent's there", async () => {
