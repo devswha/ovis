@@ -62,6 +62,13 @@ describe("AgentTaskStatus", () => {
   const roots: string[] = [];
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
   const pane = (agent: string | null): HerdrPane => ({ pane_id: "p1", agent } as HerdrPane);
+  /** Waits for the lookups begun since it was last called: a poll does not wait for the one it begins. */
+  function lookups(status: AgentTaskStatus): () => Promise<void> {
+    const begun: Promise<void>[] = [];
+    const track = status.track.bind(status);
+    status.track = (...args: Parameters<AgentTaskStatus["track"]>) => { const done = track(...args); begun.push(done); return done; };
+    return async () => { await Promise.all(begun.splice(0)); };
+  }
 
   it("reads a session's file on from where it stopped, starts again on another session, and lets a pane go", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
@@ -168,44 +175,139 @@ describe("AgentTaskStatus", () => {
     expect(status.countOf("p1")).toBe(0);
   });
 
-  it("drops a pane's tasks and timers once its session cannot be looked up, and looks a timer's pane up again by itself", async () => {
+  it("drops a timer's pane once its session cannot be looked up twice in a row, looking it up again by itself", async () => {
     const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
     roots.push(root);
     const path = join(root, "a.jsonl");
     writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1, "Timer: 2h, Prompt: x"))}\n`);
-    let found: { path: string; started: null; owner: string } | null = { path, started: null, owner: "1:boot:100" };
-    let lookups = 0;
+    const live = { path, started: null, owner: "1:boot:100" };
+    let found: typeof live | null = live;
+    let asked = 0;
     const told: TaskCount[] = [];
-    let dropped = Promise.withResolvers<void>();
     let now = T0 + 2 * 60_000;
-    const status = new AgentTaskStatus({
-      resolve: async () => { lookups += 1; return found; },
-      onChange: (_, c) => { told.push(c); if (c.running === 0) dropped.resolve(); },
-      onReset: () => undefined,
-      now: () => now,
-    });
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return found; }, onChange: (_, c) => told.push(c), onReset: () => undefined, now: () => now });
+    const looked = lookups(status);
     await status.track(pane("agy"));
     expect(told).toEqual([count(1, 1, T0, false)]);
-    // the agy process is gone (or its session unreadable): its timer will not fire, so nothing of it is held
+    // the agy process is gone (or its session unreadable): its timer will not fire. A pane at rest on a
+    // timer gets no event that would look it up: the poll does, once its lookup is old
     found = null;
-    now += 30_000;
-    await status.track(pane("agy"));
-    expect(told.at(-1)).toEqual(count(0, 0, null));
-    expect(status.countOf("p1")).toBe(0);
-    // a pane at rest on a timer gets no event that would look it up: the poll does, once its lookup is old
-    found = { path, started: null, owner: "1:boot:100" };
-    await status.track(pane("agy"));
+    now += 29_999;
+    status.poll();
+    expect(asked).toBe(1);
+    now += 1;
+    status.poll();
+    await looked();
+    expect(asked).toBe(2);
+    // one lookup that failed drops nothing, and the polls that follow do not ask again at once
+    expect(told).toHaveLength(1);
     expect(status.countOf("p1")).toBe(1);
-    dropped = Promise.withResolvers<void>();
-    found = null;
+    now += 9_999;
     status.poll();
-    expect(lookups).toBe(3);
-    now += 30_000;
+    await looked();
+    expect(asked).toBe(2);
+    // the next one fails too, 40 s after the last that found it: nothing of the pane is held
+    now += 1;
     status.poll();
-    await dropped.promise;
-    expect(lookups).toBe(4);
+    await looked();
+    expect(asked).toBe(3);
     expect(told.at(-1)).toEqual(count(0, 0, null));
     expect(status.countOf("p1")).toBe(0);
+    // let go, the pane is asked for again as any whose session was not found, and held again once it is
+    found = live;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(3);
+    now += 10_000;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(4);
+    expect(told.at(-1)).toEqual(count(1, 1, T0, false));
+  });
+
+  it("keeps what a pane holds through one lookup that failed, and takes a miss after a good lookup for a first one", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1, "Timer: 2h, Prompt: x"))}\n`);
+    const live = { path, started: null, owner: "1:boot:100" };
+    let found: typeof live | null = live;
+    let asked = 0;
+    const told: TaskCount[] = [];
+    const resets: string[] = [];
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return found; }, onChange: (_, c) => told.push(c), onReset: (id) => resets.push(id), now: () => now });
+    await status.track(pane("agy"));
+    expect(told).toEqual([count(1, 1, T0, false)]);
+    // herdr was busy, or a process read timed out: the timer's process still runs, and its hold stands
+    found = null;
+    now += 30_000;
+    await status.track(pane("agy"));
+    expect(asked).toBe(2);
+    expect(told).toHaveLength(1);
+    expect(status.countOf("p1")).toBe(1);
+    // nobody asks again for ten seconds: a second failure in the same moment would tolerate nothing
+    expect(status.stale("p1")).toBe(false);
+    await status.track(pane("agy"));
+    await status.refresh([pane("agy")]);
+    status.poll();
+    expect(asked).toBe(2);
+    // found again as the same session: nothing was dropped or reset, and the miss is forgotten
+    found = live;
+    now += 10_000;
+    expect(status.stale("p1")).toBe(true);
+    await status.track(pane("agy"));
+    expect(asked).toBe(3);
+    found = null;
+    now += 30_000;
+    await status.track(pane("agy"));
+    expect(asked).toBe(4);
+    expect(told).toHaveLength(1);
+    expect(resets).toEqual([]);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("asks for a session that was not found only each ten seconds over the snapshots, and at once for a status of the pane", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-tasks-"));
+    roots.push(root);
+    const path = join(root, "a.jsonl");
+    writeFileSync(path, `${JSON.stringify(agy.prompt(0))}\n${JSON.stringify(agy.start(3, 1))}\n`);
+    let found: { path: string; started: null; owner: null } | null = null;
+    let asked = 0;
+    let now = T0 + 2 * 60_000;
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return found; }, onChange: () => undefined, onReset: () => undefined, now: () => now });
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(1);
+    // every snapshot comes here, and each lookup is a herdr call and process reads
+    await status.refresh([pane("agy")]);
+    now += 9_999;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(1);
+    now += 1;
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(2);
+    // a turn that ends within those ten seconds is held on its task only once its session is known:
+    // the status that ends it looks the pane up now (server/core/status.ts)
+    found = { path, started: null, owner: null };
+    expect(status.stale("p1")).toBe(true);
+    await status.track(pane("agy"));
+    expect(asked).toBe(3);
+    expect(status.countOf("p1")).toBe(1);
+  });
+
+  it("forgets a lookup that failed once the pane ended or runs another agent", async () => {
+    let asked = 0;
+    const status = new AgentTaskStatus({ resolve: async () => { asked += 1; return null; }, onChange: () => undefined, onReset: () => undefined, now: () => T0 });
+    await status.refresh([pane("agy")]);
+    await status.refresh([pane("agy")]);
+    expect(asked).toBe(1);
+    // grok there now is another session to find
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(2);
+    await status.refresh([pane("claude")]);
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(3);
+    status.forget("p1");
+    await status.refresh([pane("grok")]);
+    expect(asked).toBe(4);
   });
 });
 
