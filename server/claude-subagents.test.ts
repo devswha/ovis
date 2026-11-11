@@ -1355,6 +1355,44 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
+    it("ends a hold a minute after the poll that finds the clock set back to before it began, and one set back by less a minute after it began by the clock as it is", async () => {
+      // [how far into the hold the clock goes back, by how much, how long the hold then stands from the poll that finds it so]
+      const steps: [number, number, number][] = [
+        // to before the hold began, by less than its time: it holds from that poll, for LOOP_HOLD_MS and no longer
+        [10_000, 30_000, LOOP_HOLD_MS],
+        [59_000, 59_001, LOOP_HOLD_MS],
+        // by less than its age: nothing tells a clock set back from one that was not, so the hold stands for what the
+        // clock as it is now leaves of its time. Never longer than LOOP_HOLD_MS past that poll, and told when it ends
+        [50_000, 40_000, LOOP_HOLD_MS - 10_000],
+        [59_000, 58_000, LOOP_HOLD_MS - 1000],
+      ];
+      for (const [into, back, left] of steps) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        let now = NOW;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          fire(s, 3);
+          status.poll();
+          now += into;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // the clock is set back with the hold standing, and its turn writes no rest
+          now -= back;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          now += left - 1;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          now += 1;
+          expect(status.loopHolds("p1")).toBe(false);
+          status.poll();
+          expect(told).toEqual([false, true, false]);
+        } finally { status.stop(); }
+      }
+    });
+
     it("brings no hold back when this PC's clock is set back after the hold ran out its time", async () => {
       // the pane's files as the polls after the hold find them: read again at each poll, or quiet since before the
       // hold ended, when a poll that finds them as they were reads nothing
