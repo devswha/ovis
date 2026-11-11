@@ -64,7 +64,7 @@ const BASE: Record<string, string> = {
   "To change how you sign in, sign in again with {provider} on its own sign-in page first.": "サインイン方法を変更するには、先に {provider} 自身のサインインページでもう一度サインインしてください。",
   "Delete your Ovis account and everything the account service keeps for it.": "Ovis アカウントと、アカウントサービスが保存している情報をすべて削除します。",
   "To delete your account, sign in again with {provider} first.": "アカウントを削除するには、先に {provider} でもう一度サインインしてください。",
-  "To delete your account, sign in again with {provider} on its own sign-in page first.": "アカウントを削除するには、先に {provider} 自身のサインインページでもう一度サインインしてください。",
+  "To delete your account, use the Ovis phone app, the desktop app or app.ovis.sh.": "アカウントを削除するには、Ovis のスマートフォンアプリ、デスクトップアプリ、または app.ovis.sh を使ってください。",
   "Delete account": "アカウントを削除",
   "Delete account for good?": "アカウントを完全に削除しますか？",
   "This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.": "Ovis アカウントを完全に削除します。サインイン方法、PC の一覧、プランも消え、元に戻せません。PC にペアリング済みのデバイスは、各 PC で取り消すまでそのまま残ります。自動更新中のサブスクリプションは、先に解約してください。",

@@ -636,7 +636,7 @@ is for its own account, and ends the one it had (`POST /v1/signout`).
 
 | request | body | answer |
 |---|---|---|
-| `DELETE /v1/account` | | `204`: the account and everything the service keeps under it are gone. 403 `reauth_required` unless this sign-in was made in the last 10 minutes; 409 `subscription_active` while a subscription still renews; 502 `billing_failed` when the payment provider did not answer |
+| `DELETE /v1/account` | | `204`: the account and everything the service keeps under it are gone. 403 `reauth_required` unless this sign-in was made in the last 10 minutes; 403 `web_sign_in_required` for a sign-in made with a device code or on the link page (a code can be typed for someone else's PC, so such a sign-in never ends the account), its refreshes included; 409 `subscription_active` while a subscription still renews; 502 `billing_failed` when the payment provider did not answer |
 
 The service erases, in one write, the account's sign-in methods, every sign-in of it (with its push
 subscription), its PC directory, the records and admissions still waiting for its PCs, its relay
@@ -653,12 +653,15 @@ another account only once its rows of the deleted one are revoked there.
 
 The client (`src/lib/account/deleteAccount.ts`) deletes for the sign-in the person acted on, never
 one stored meanwhile, then forgets that sign-in and its account key; a pairing keeps its own copy
-of the key. Both places that show the account offer it, behind a second press on the same button
-that says what goes and what stays: **Settings → Devices and PCs → Account** on a PC's page and in
-the desktop app, and **Devices → Account** in the hosted shell and the phone apps. On
-`reauth_required` the PC's page and the desktop app sign in again and repeat the delete; the phone
-apps sign in again in place with the same method and delete only when that is the same account; a
-browser on the hosted shell is told to sign out and in again.
+of the key. It is offered behind a second press on the same button that says what goes and what
+stays, wherever the sign-in is one the service lets delete: **Settings → Devices and PCs → Account**
+in the desktop app, and **Devices → Account** in the hosted shell and the phone apps. A PC's own page
+in a browser signs in with a device code or the link page, so its Account section offers no delete
+and names those places instead. On `reauth_required` the desktop app signs in again and repeats the
+delete; the phone apps sign in again in place with the same method and delete only when that is the
+same account; a browser on the hosted shell is told to sign out and in again. A sign-in again is
+stored only in the place of the sign-in being deleted, while that delete is still on: a sign-out or
+another sign-in made meanwhile ends it.
 
 The client makes `state` (at least 128 bits) and `code_verifier` (32 random bytes, base64url) fresh
 for each sign-in, keeps them with that sign-in only, and drops a callback whose `state` is missing or

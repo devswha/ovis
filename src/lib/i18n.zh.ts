@@ -66,7 +66,7 @@ const BASE: Record<string, string> = {
   "To change how you sign in, sign in again with {provider} on its own sign-in page first.": "要更改登录方式，请先在 {provider} 自己的登录页面上重新登录。",
   "Delete your Ovis account and everything the account service keeps for it.": "删除你的 Ovis 账户以及账户服务为其保存的全部信息。",
   "To delete your account, sign in again with {provider} first.": "要删除账户，请先用 {provider} 重新登录。",
-  "To delete your account, sign in again with {provider} on its own sign-in page first.": "要删除账户，请先在 {provider} 自己的登录页面重新登录。",
+  "To delete your account, use the Ovis phone app, the desktop app or app.ovis.sh.": "要删除账户，请使用 Ovis 手机应用、桌面应用或 app.ovis.sh。",
   "Delete account": "删除账户",
   "Delete account for good?": "永久删除账户？",
   "This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.": "这会永久删除你的 Ovis 账户：登录方式、PC 列表和套餐都会一并删除，且无法恢复。已与 PC 配对的设备会保留，直到你在各台 PC 上撤销。仍在自动续订的订阅需要先取消。",

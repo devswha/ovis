@@ -8,14 +8,17 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 import { AccountSection } from "./AccountSection.tsx";
 
-// Settings → Account → Delete account on a PC's own page (docs/account.md, "Deleting the account"): the
-// same button asks before it deletes, and the service's refusals are said in the person's words.
+// Settings → Account → Delete account (docs/account.md, "Deleting the account"). In the desktop app, which signs in
+// by redirect, the same button asks before it deletes, and the service's refusals are said in the person's words. On a
+// PC's own page in a browser, whose sign-in is a device code or the link page, the service refuses any delete
+// (web_sign_in_required): the section says where to delete instead.
 const SERVICE = "https://account.ovis.example";
 const ACCOUNT = "acct_one";
 /** who the next sign-in in this section turns out to be */
 let signsInAs = ACCOUNT;
-/** with which provider the link page signs in */
-let signsInWith: "github" | "google" = "github";
+/** the desktop app around the page (its sign-in bridge); false: a PC's own page in a browser */
+let desktop = true;
+const SIGN_IN = "Continue with GitHub";
 /** runs as the service answers a delete, before this page sees the answer */
 let onDelete: (() => Promise<void>) | null = null;
 
@@ -31,7 +34,7 @@ describe("deleting the account from Settings", () => {
     ahead = 0;
     userCode = null;
     signsInAs = ACCOUNT;
-    signsInWith = "github";
+    desktop = true;
     onDelete = null;
     fake = new FakeAccountService(() => Date.now() + ahead);
     fake.offerLinkPage(["github", "google"]);
@@ -42,7 +45,17 @@ describe("deleting the account from Settings", () => {
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", maxTouchPoints: 0 } });
     Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: "/", origin: "https://workstation.example.ts.net" } });
     const tab = new Map<string, string>();
+    // the desktop app's sign-in: the system browser at the provider, back to its loopback server with the code
+    const bridge = {
+      service: SERVICE, providers: ["github"],
+      start: async () => "http://127.0.0.1:4321/callback",
+      open: async (url: string) => {
+        fake.signInAs("github", signsInAs);
+        return new URL((await fake.fetch(url)).headers.get("location") ?? "").search;
+      },
+    };
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      get ovisAccount() { return desktop ? bridge : undefined; },
       isSecureContext: true,
       location: { href: "https://workstation.example.ts.net/" },
       sessionStorage: { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => { tab.set(key, value); }, removeItem: (key: string) => { tab.delete(key); } },
@@ -65,7 +78,7 @@ describe("deleting the account from Settings", () => {
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }
       // the code is approved as this page's first poll comes in, on the link page and on a provider's own device page
-      if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, signsInWith); fake.approveDevice(userCode, signsInAs); userCode = null; }
+      if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, "github"); fake.approveDevice(userCode, signsInAs); userCode = null; }
       const answer = await fake.fetch(input, init);
       if (url.pathname === "/v1/account" && onDelete !== null) await onDelete();
       if (!url.pathname.startsWith("/v1/signin/") || !answer.ok) return answer;
@@ -105,8 +118,8 @@ describe("deleting the account from Settings", () => {
   };
   const signedIn = async (): Promise<void> => {
     await act(async () => { renderer = create(<SettingsProvider><AccountSection /></SettingsProvider>); });
-    await until(() => buttons().includes("Sign in"));
-    await press("Sign in");
+    await until(() => buttons().includes(SIGN_IN));
+    await press(SIGN_IN);
     await until(() => buttons().includes("Delete account"));
   };
 
@@ -124,7 +137,7 @@ describe("deleting the account from Settings", () => {
     await until(() => shown().includes("Your account was deleted."));
     expect(fake.deleted(ACCOUNT)).toBe(true);
     expect(await indexedAccountStore.get("session")).toBeUndefined();
-    expect(buttons()).toContain("Sign in");
+    expect(buttons()).toContain(SIGN_IN);
     expect(buttons()).not.toContain("Delete account");
   });
 
@@ -133,7 +146,7 @@ describe("deleting the account from Settings", () => {
     ahead = 11 * 60_000;
     await press("Delete account");
     await press("Delete account for good?");
-    await until(() => shown().includes("To delete your account, sign in again with GitHub on its own sign-in page first."));
+    await until(() => shown().includes("To delete your account, sign in again with GitHub first."));
     expect(fake.deleted(ACCOUNT)).toBe(false);
     await press("Sign in again");
     await until(() => shown().includes("Your account was deleted."));
@@ -159,8 +172,8 @@ describe("deleting the account from Settings", () => {
     await signedIn();
     await press("Delete account");
     await press("Sign out of GitHub");
-    await until(() => buttons().includes("Sign in"));
-    await press("Sign in");
+    await until(() => buttons().includes(SIGN_IN));
+    await press(SIGN_IN);
     await until(() => buttons().includes("Delete account"));
     expect(buttons()).not.toContain("Delete account for good?");
     expect(shown()).not.toContain("for good");
@@ -173,9 +186,9 @@ describe("deleting the account from Settings", () => {
     await press("Delete account for good?");
     await until(() => shown().includes("To delete your account, sign in again"));
     await press("Sign out of GitHub");
-    await until(() => buttons().includes("Sign in"));
+    await until(() => buttons().includes(SIGN_IN));
     signsInAs = "acct_two";
-    await press("Sign in");
+    await press(SIGN_IN);
     await until(() => buttons().includes("Delete account"));
     expect(buttons()).not.toContain("Sign in again");
     expect(shown()).not.toContain("To delete your account, sign in again");
@@ -189,8 +202,8 @@ describe("deleting the account from Settings", () => {
     await press("Delete account");
     await press("Delete account for good?");
     // settled: signed out, or the other sign-in read after the delete and shown
-    await until(() => fake.deleted(ACCOUNT) && (buttons().includes("Sign in") || (fake.requests.slice(fake.requests.indexOf("DELETE /v1/account") + 1).some((line) => line.startsWith("GET ")) && buttons().includes("Delete account"))));
-    expect(buttons()).not.toContain("Sign in");
+    await until(() => fake.deleted(ACCOUNT) && (buttons().includes(SIGN_IN) || (fake.requests.slice(fake.requests.indexOf("DELETE /v1/account") + 1).some((line) => line.startsWith("GET ")) && buttons().includes("Delete account"))));
+    expect(buttons()).not.toContain(SIGN_IN);
     expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
   });
 
@@ -211,20 +224,15 @@ describe("deleting the account from Settings", () => {
     expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
   });
 
-  it("signs in again on the link page for a provider the service offers only there, then deletes", async () => {
-    // Google through the link page alone: no device flow of its own
-    fake.offer(["github", "google"], ["github"]);
-    fake.offerLinkPage(["github", "google"]);
-    signsInWith = "google";
-    await signedIn();
-    ahead = 11 * 60_000;
-    await press("Delete account");
-    await press("Delete account for good?");
-    await until(() => shown().includes("To delete your account, sign in again"));
-    await press("Sign in again");
-    await until(() => shown().includes("Your account was deleted."));
-    expect(fake.deleted(ACCOUNT)).toBe(true);
-    expect(fake.requests).not.toContain("POST /v1/signin/google/device");
+  it("says on a PC's own page in a browser where to delete, and offers no delete the service would refuse", async () => {
+    desktop = false;
+    await act(async () => { renderer = create(<SettingsProvider><AccountSection /></SettingsProvider>); });
+    await until(() => buttons().includes("Sign in"));
+    await press("Sign in");
+    await until(() => buttons().includes("Sign out of GitHub"));
+    expect(shown()).toContain("To delete your account, use the Ovis phone app, the desktop app or app.ovis.sh.");
+    expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "delete-account")).toHaveLength(0);
+    expect(fake.requests).not.toContain("DELETE /v1/account");
   });
 
   it("holds Delete account while the delete is out: no second question, one DELETE, and the deleted notice", async () => {
