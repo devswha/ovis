@@ -5,7 +5,7 @@
  * on the Windows runners of reusable CI and the remote-bundle workflow (#271).
  */
 import { expect, it, spyOn } from "bun:test";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, watch, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,7 +18,7 @@ import { Database } from "bun:sqlite";
 import { codexRolloutPath, directoryKey, sameDirectory, storedCwdCondition } from "./codex.ts";
 import { gjcSessionFile, storeRelative } from "./gjc-runtime.ts";
 import { descendantArgv, windowsProcessTable } from "./windows-processes.ts";
-import { windowsHost } from "./remote-host.ts";
+import { windowsBridgeFiles, windowsHost } from "./remote-host.ts";
 import type { SshConnection } from "./ssh.ts";
 import { psQuote } from "./powershell.ts";
 import { powershellNativeArgs, shellCommandLine } from "./shell-agent.ts";
@@ -241,6 +241,49 @@ it.skipIf(!onWindows)("recognizes Windows Agy executable names and full paths re
   expect(isAgyProcessName("c:\\PROGRAMS\\ANTIGRAVITY\\AGY.EXE")).toBe(true);
   expect(isAgyProcessName("C:\\Programs\\agyx.exe")).toBe(false);
 }, 30_000);
+
+for (const migrated of [false, true]) {
+  it.skipIf(!onWindows)(`writes the Windows bridge launcher and reads startup status with migration junction=${migrated}`, async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "ovis-registry-native-")));
+    const legacy = join(home, ".config", "herdr-web-ui");
+    const target = migrated ? join(home, "physical registry's folder") : legacy;
+    const registry = join(target, "bridges");
+    const session = migrated ? "web-qa" : undefined;
+    const files = windowsBridgeFiles(session);
+    const runPowerShell = async (script: string) => {
+      // Stub only process creation: the generated file operations run in Windows PowerShell.
+      const command = `cmd.exe /d /c "${join(registry, files.launcher)}"`;
+      const prefixed = `$env:USERPROFILE=${psQuote(home)}; function Invoke-CimMethod { param($ClassName, $MethodName, $Arguments); if ($Arguments.CommandLine -ne ${psQuote(command)}) { throw 'Launcher must use the physical registry path' }; @{ ReturnValue = 0 } }; ${script}`;
+      const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== "psmodulepath"));
+      const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(prefixed, "utf16le").toString("base64")], { stdout: "pipe", stderr: "pipe", env });
+      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      if (code !== 0) throw new Error(stderr);
+      return stdout.trim();
+    };
+    const ssh = { runPowerShell } as unknown as SshConnection;
+    try {
+      mkdirSync(registry, { recursive: true });
+      if (migrated) {
+        mkdirSync(join(home, ".config"));
+        symlinkSync(target, legacy, "junction");
+      }
+      writeFileSync(join(registry, files.status), "interactive_failed: stale attempt");
+      await windowsHost.start(ssh, {
+        session, herdrPath: "C:\\herdr.exe",
+        inspection: { platform: "win32-x64", home, herdrPath: "C:\\herdr.exe", expectedSocket: "C:\\herdr.sock", bundleReady: true, bundleOlder: false, descriptors: [], runtimeDir: "C:\\runtime", registryDir: registry },
+      });
+      const launcher = readFileSync(join(registry, files.launcher), "utf8");
+      expect(launcher.startsWith("@echo off\r\n")).toBe(true);
+      expect(launcher).toContain(`set "HERDR_REMOTE_SESSION=${session ?? ""}"`);
+      expect(existsSync(join(registry, files.status))).toBe(false);
+      writeFileSync(join(registry, files.status), "interactive_failed: this attempt");
+      expect(await windowsHost.startupNotice!(ssh, session)).toBe("this attempt");
+    } finally {
+      if (migrated && existsSync(legacy)) await runPowerShell(`[IO.Directory]::Delete(${psQuote(legacy)})`);
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 60_000);
+}
 
 it.skipIf(!onWindows)("installs with native tar when PATH shadows tar, and preserves the runtime after bad extraction", async () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-bundle-native-")));

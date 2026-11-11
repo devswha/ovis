@@ -252,7 +252,13 @@ export function windowsBridgeFiles(session?: string): { log: string; launcher: s
 }
 
 const WINDOWS_BUNDLE = `${WINDOWS_BUNDLE_BASE}\\remote-v${REMOTE_BUNDLE_VERSION}`;
-const WINDOWS_REGISTRY = "$env:USERPROFILE\\.config\\herdr-web-ui\\bridges";
+// Windows PowerShell's .NET file APIs can reject the migration junction as an untrusted mount point.
+const WINDOWS_REGISTRY = `$(
+  $registryRoot = "$env:USERPROFILE\\.config\\herdr-web-ui"
+  $registryItem = Get-Item -LiteralPath $registryRoot -Force -ErrorAction SilentlyContinue
+  if ($registryItem.LinkType -eq 'Junction') { $registryRoot = @($registryItem.Target)[0] }
+  Join-Path $registryRoot 'bridges'
+)`;
 // a script's exit code follows its last statement: a listing of a registry not there yet must
 // not count as a failure, so the directory is checked first
 const WINDOWS_DESCRIPTORS = `if (Test-Path ${WINDOWS_REGISTRY}) { Get-ChildItem ${WINDOWS_REGISTRY} -Filter *.json | ForEach-Object { Write-Output (Get-Content $_.FullName -Raw) } }; Write-Output ''`;
