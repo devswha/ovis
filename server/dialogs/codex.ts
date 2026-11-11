@@ -339,9 +339,11 @@ export function codexOwnScreenOpen(screen: string): boolean {
   const rows = screen.replace(ANSI_RE, "").split(/\r?\n/).map((row) => row.trimEnd());
   const filled = rows.map((row, at) => ({ text: row.trim(), at })).filter(({ text }) => text !== "");
   if (filled.length === 0) return false;
-  if (CODEX_HISTORY_SEARCH_RE.test(filled.at(-1)!.text)) return true;
-  if (CODEX_TRANSCRIPT_RE.test(filled.at(-1)!.text)) return true;
-  if (filled.at(-1)!.text === "Browsing" && rows.every((row) => row.length <= CODEX_TRANSCRIPT_LABEL_COLUMNS)) return true;
+  const end = filled.at(-1)!;
+  if (CODEX_HISTORY_SEARCH_RE.test(end.text)) return true;
+  const browsing = CODEX_TRANSCRIPT_RE.test(end.text) || (end.text === "Browsing" && rows.every((row) => row.length <= CODEX_TRANSCRIPT_LABEL_COLUMNS));
+  // not the end of a status line that a narrow pane cut at a `·`: a thread or a folder may be named like that footer
+  if (browsing && !/·$/.test(rows[end.at - 1] ?? "")) return true;
   const marked = findLastIndex(rows, (row) => /^[›»](?:\s|$)/.test(row));
   const tail = filled.filter(({ at }) => at > marked).slice(-CODEX_FOOTER_ROWS);
   // the sentence a view ends with instead of a footer, as one row or wrapped onto two, the first of them no status

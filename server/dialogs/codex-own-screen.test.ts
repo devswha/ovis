@@ -134,6 +134,9 @@ describe("codexOwnScreenOpen", () => {
       // and one a narrow pane cut at its `·` goes on in the next row, which is no footer of its own
       "a status line wrapped before such a name": under("› Ask Codex to do anything", "  GPT-6-Astra ultra · /fixture ·", "  esc cancel"),
       "a status line wrapped before a name that leaves nothing": under("› Ask Codex to do anything", "  GPT-6-Astra ultra · /fixture ·", "  enter save"),
+      // a thread named like the prompt browser's footer, or like its label alone, is the status line's end too
+      "a status line wrapped before a name like the prompt browser's footer": under("› Ask Codex to do anything", "  GPT-6-Astra ultra · /fixture ·", "  Browsing · esc back"),
+      "a narrow status line wrapped before the prompt browser's label": ["› hi", "  GPT-6 ·", "  main ·", "  Browsing"].join("\n"),
       "an empty screen": "",
       "a shell prompt": "user@host:~/proj$ ",
     })) expect(codexOwnScreenOpen(screen), name).toBeFalse();
