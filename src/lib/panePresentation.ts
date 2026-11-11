@@ -8,16 +8,36 @@ export const PANE_COVER_SELECTOR = '[role="dialog"],[role="alertdialog"],[aria-m
 
 type ConversationProof = { source: ConversationResponse["source"] | undefined; history_id?: string; turns: readonly ConversationTurn[] };
 
-function finalAnswer(conversation: ConversationProof): ConversationTurn | undefined {
+/** These Claude notices and an OmO goal's wait do not start another model turn. Runtime wakes and real prompts do. */
+const passive = (turn: ConversationTurn | undefined): boolean => turn?.role === "user" && turn.parts.length > 0
+  && turn.parts.every((part) => part.kind === "goal_wait" || part.kind === "notice" && (part.source === "informational" || part.source === "local-command"));
+const compaction = (turn: ConversationTurn | undefined): boolean => turn?.role === "user" && turn.parts.length > 0 && turn.parts.every((part) => part.kind === "compact");
+/** `/compact`, with or without its instructions, as Claude Code records the command typed */
+const compactCommand = (turn: ConversationTurn | undefined): boolean => turn?.role === "user" && turn.parts.length === 1
+  && turn.parts[0]!.kind === "text" && /^\/compact(?:\s|$)/u.test(turn.parts[0]!.text.trim());
+
+/**
+ * Where the newest final answer is, past what starts no model turn after it: the notices above, and a compaction the user
+ * asked for, its `/compact` and its summary (#3675). A compaction no command asked for (Claude Code compacts by itself,
+ * at work or at rest) is not passed: nothing ties it to a finish.
+ */
+function finalAnswerIndex(conversation: ConversationProof): number {
   let index = conversation.turns.length - 1;
-  // These Claude notices, a compaction's summary (#3675) and an OmO goal's wait do not start another model turn.
-  // Runtime wakes and real prompts do.
   while (index >= 0) {
     const turn = conversation.turns[index];
-    if (turn?.role !== "user" || turn.parts.length === 0 || !turn.parts.every((part) => part.kind === "goal_wait" || part.kind === "compact" ||
-      part.kind === "notice" && (part.source === "informational" || part.source === "local-command"))) break;
-    index--;
+    if (passive(turn)) { index--; continue; }
+    if (compaction(turn)) {
+      let before = index - 1;
+      while (before >= 0 && passive(conversation.turns[before])) before--;
+      if (compactCommand(conversation.turns[before])) { index = before - 1; continue; }
+    }
+    break;
   }
+  return index;
+}
+
+function finalAnswer(conversation: ConversationProof): ConversationTurn | undefined {
+  const index = finalAnswerIndex(conversation);
   const turn = conversation.turns[index];
   const last = turn?.parts.at(-1);
   return turn?.role === "assistant" && last?.kind === "text" && last.phase === "final_answer" && last.text.trim().length > 0 ? turn : undefined;

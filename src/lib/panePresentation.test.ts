@@ -46,7 +46,10 @@ it("looks past a compaction's summary and its notices to the answer before them 
   const answered = { source: "claude-transcript", history_id: "session", turns: [
     { role: "assistant", ts: "2026-10-19T00:00:00Z", end_ts: "2026-10-19T00:00:05Z", parts: [{ kind: "text", text: "Finished", phase: "final_answer" }] },
   ] } satisfies Parameters<typeof conversationFinishPresented>[0];
+  // as server/claude-transcript.ts parses what Claude Code records for /compact typed at rest (server/core/status.test.ts):
+  // the command, then the summary; the command's echo and output lines are dropped
   const compacted = { ...answered, turns: [...answered.turns,
+    { role: "user", ts: "2026-10-19T00:59:57Z", parts: [{ kind: "text", text: "/compact" }] },
     { role: "user", ts: "2026-10-19T01:00:00Z", parts: [{ kind: "compact", text: "Summary of the earlier session" }] },
     { role: "user", ts: "2026-10-19T01:00:01Z", parts: [{ kind: "notice", text: "Compacted", source: "informational" }] },
     { role: "user", ts: "2026-10-19T02:00:00Z", parts: [{ kind: "notice", text: "Updated", source: "local-command" }] },
@@ -72,6 +75,7 @@ it("looks past a compaction's summary and its notices to the answer before them 
   // a second /compact in a row is the next finish's, proved by its own compaction
   const twice = new ConversationFinishEvidence();
   const again = { ...compacted, turns: [...compacted.turns,
+    { role: "user", ts: "2026-10-19T03:59:50Z", parts: [{ kind: "text", text: "/compact keep the test list" }] },
     { role: "user", ts: "2026-10-19T04:00:00Z", parts: [{ kind: "compact", text: "Summary of the summary" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(twice.accept("compact-twice", 40, answered)).toBe(true);
   expect(twice.accept("compact-twice", 41, compacted)).toBe(true);
@@ -93,6 +97,15 @@ it("looks past a compaction's summary and its notices to the answer before them 
     { role: "user", ts: "2026-10-19T03:00:00Z", parts: [{ kind: "text", text: "Next request" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(prompted)).toBe(false);
   expect(new ConversationFinishEvidence().accept("compact-prompted", 40, prompted)).toBe(false);
+  // a compaction no /compact asked for (Claude Code's own, at work or at rest) proves no finish: it may come with none
+  const idle = { ...answered, turns: [...answered.turns,
+    { role: "user", ts: "2026-10-19T01:00:00Z", parts: [{ kind: "compact", text: "Summary of the earlier session" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
+  expect(conversationFinishPresented(idle)).toBe(false);
+  const unattributed = new ConversationFinishEvidence();
+  expect(unattributed.accept("compact-idle", 40, answered)).toBe(true);
+  expect(unattributed.accept("compact-idle", 41, idle)).toBe(false);
+  // a command whose compaction is not written yet is no compaction either
+  expect(conversationFinishPresented({ ...answered, turns: [...answered.turns, compacted.turns[1]!] })).toBe(false);
 });
 
 it("binds a completed answer to one finish and rejects unchanged new-finish responses", () => {
