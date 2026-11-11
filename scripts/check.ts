@@ -535,7 +535,13 @@ export const DESK_WAIT_MS = 2 * TICKET_LOOKUP_MS;
  * once, and none is waited on past TICKET_LOOKUP_MS, however it keeps talking.
  */
 function askTicket(port: number, dir?: string): Promise<(SlotHolder & { queuedAt: number }) | null> {
-  if (dir !== undefined) return Promise.resolve(ticketOf(port, fileSaid(dir, port) ?? ""));
+  if (dir !== undefined) {
+    // A held file is a waiting run, whatever it says: its holder writes its ticket only after it took
+    // the lock, and a run that read the file in between must not take the slot ahead of it. It ranks
+    // first, and the run asks again on its next round, when the ticket is there.
+    const said = fileSaid(dir, port);
+    return Promise.resolve(said === null ? null : ticketOf(port, said) ?? { port, heldBy: Number.NaN, queuedAt: Number.NEGATIVE_INFINITY });
+  }
   return new Promise((resolve) => {
     let said = "";
     const client = connect(port, "127.0.0.1");
@@ -968,11 +974,21 @@ export async function acquireWaiting(
   }
 }
 
+/**
+ * What another run wrote, made one line of text that says nothing to the CI log: any job may write in
+ * the slots' shared files, and a line break there would let it start a line of a workflow command in
+ * another job's log. Control characters are written as escapes.
+ */
+const printable = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]/g, (char) => `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`);
+
 /** One line per holder for a refusal. */
 export function describeHolders(holders: readonly SlotHolder[]): string {
-  return holders.map((holder) => Number.isNaN(holder.heldBy)
-    ? `port ${holder.port}: something that is no check run`
-    : `port ${holder.port}: pid ${holder.heldBy}${holder.checkout ? ` in ${holder.checkout}` : ""}${holder.queuedAt === undefined ? "" : `, waiting since ${new Date(holder.queuedAt).toISOString()}`}`).join("; ");
+  return holders.map((holder) => {
+    if (Number.isNaN(holder.heldBy)) return holder.queuedAt === undefined ? `port ${holder.port}: something that is no check run` : `port ${holder.port}: a run taking its place in line`;
+    const since = holder.queuedAt === undefined ? null : new Date(holder.queuedAt);
+    const waiting = since === null ? "" : Number.isNaN(since.getTime()) ? ", waiting since a time it cannot say" : `, waiting since ${since.toISOString()}`;
+    return `port ${holder.port}: pid ${holder.heldBy}${holder.checkout ? ` in ${printable(holder.checkout)}` : ""}${waiting}`;
+  }).join("; ");
 }
 
 export async function main(groupSeams: GroupSeams & {

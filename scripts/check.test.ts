@@ -1353,6 +1353,49 @@ describe.skipIf(process.platform !== "linux")("slots in a directory (CHECK_SLOTS
     }
   });
 
+  it.skipIf(!Bun.which("flock"))("counts a held ticket file its run has not written yet as a run ahead in line", async () => {
+    const { dir, base } = slotFiles();
+    const port = ticketPorts(base, 1, 3)[0]!;
+    // a waiting run between taking its ticket's lock and writing in it: the file is held and empty
+    const taking = Bun.spawn(["flock", "--exclusive", "--no-fork", join(dir, String(port)), "sh", "-c", "echo TAKEN; exec sleep 120"], { stdout: "pipe" });
+    try {
+      const reader = taking.stdout.getReader();
+      let said = "";
+      while (!said.includes("TAKEN")) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("flock ended before it held the file");
+        said += new TextDecoder().decode(value);
+      }
+      // every slot is free, and still a newer run does not go ahead of it
+      const refused = await acquire({ slots: 1, scan: 3, base, pid: 222, checkout: "/b", dir });
+      expect(refused).toEqual({ refused: "busy", holders: [{ port, heldBy: Number.NaN, queuedAt: Number.NEGATIVE_INFINITY }] });
+      expect(describeHolders((refused as { holders: Parameters<typeof describeHolders>[0] }).holders)).toBe(`port ${port}: a run taking its place in line`);
+    } finally {
+      taking.kill("SIGKILL");
+      await taking.exited;
+    }
+    const next = await acquire({ slots: 1, scan: 3, base, pid: 222, checkout: "/b", dir });
+    expect(next).toMatchObject({ port: base });
+    release(next);
+  });
+
+  it("names a holder in one line of text, whatever another job wrote in a file it holds", async () => {
+    const { dir, base } = slotFiles();
+    const [first, second] = ticketPorts(base, 1, 3);
+    // any job may write in a file another run holds: a line break would start a workflow command in this job's log
+    const forged = holdFile(dir, first!, "ticket\n1000\n1\nfirst\n::add-mask::VISIBLE\nx\u001b[2K");
+    // and a time no date can hold
+    const late = holdFile(dir, second!, "ticket\n99999999999999999999\n2\n/late");
+    try {
+      const refused = await acquire({ slots: 1, scan: 3, base, pid: 222, checkout: "/b", dir });
+      const told = describeHolders((refused as { holders: Parameters<typeof describeHolders>[0] }).holders);
+      expect(told).toBe(`port ${first}: pid 1 in first\\x0a::add-mask::VISIBLE\\x0ax\\x1b[2K, waiting since 1970-01-01T00:00:01.000Z; port ${second}: pid 2 in /late, waiting since a time it cannot say`);
+    } finally {
+      forged!.release();
+      late!.release();
+    }
+  });
+
   it("waits in the directory's queue for a held slot's file, and takes it once its holder lets go", async () => {
     const { dir, base } = slotFiles();
     const holder = await lock(base, 111, "/a", dir);
