@@ -57,24 +57,44 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
   const [failure, setFailure] = useState<{ server_id: string; message: string } | null>(null);
   const own = machines.find((machine) => machine.kind === "local")?.server_id;
   const added = (serverId: string): Machine | undefined => machines.find((machine) => machine.kind !== "local" && (machine.relay?.server_id ?? machine.server_id) === serverId);
+  // the list as last read, and which of its PCs were asked whether they would pair: an answer for an older one is dropped
+  const listed = useRef({ asked: new Set<string>() });
   useEffect(() => {
     let live = true;
-    account.current!.list().then(async (listed) => {
-      if (!live || listed === null) return;
-      const others = listed.filter((pc) => pc.server_id !== own);
-      setPcs(others);
-      // a PC already in this app opens with Connect: only the others are asked whether they would pair
-      const asked = others.filter((pc) => added(pc.server_id) === undefined);
-      if (asked.length === 0) return;
-      const { pcs: checked } = await checkAccountPcs(asked);
-      if (live) setStates(new Map(checked.map((pc) => [pc.server_id, pc.state])));
+    account.current!.list().then((read) => {
+      if (!live || read === null) return;
+      listed.current = { asked: new Set() };
+      setPcs(read.filter((pc) => pc.server_id !== own));
     }).catch((error: unknown) => {
       console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
-      // no list rather than rows that say Checking… for good (a window this PC will not answer, owner_only)
       if (live) setPcs(null);
     });
     return () => { live = false; };
   }, [own]);
+  // a PC already in this app opens with Connect: only the others are asked whether they would pair, each on its own so a
+  // PC slow to answer (offline) holds no other row on Checking…, and one is asked once another window removed it
+  useEffect(() => {
+    if (pcs === null) return;
+    const round = listed.current;
+    for (const pc of pcs) {
+      if (added(pc.server_id) !== undefined || round.asked.has(pc.server_id)) continue;
+      round.asked.add(pc.server_id);
+      checkAccountPcs([pc]).then(({ pcs: [checked] }) => {
+        if (listed.current === round && checked !== undefined) setStates((current) => new Map(current).set(checked.server_id, checked.state));
+      }, (error: unknown) => {
+        if (listed.current !== round) return;
+        // an entry this PC cannot use (its relay not a wss: origin, its ID not its key's) leaves only its own row; anything
+        // else (a window this PC will not answer, owner_only) leaves no list rather than rows that say Checking… for good
+        if (error instanceof ApiError && error.code === "account_pc_invalid") setPcs((current) => current?.filter((entry) => entry.server_id !== pc.server_id) ?? null);
+        else {
+          console.warn("Ovis: the account's PCs could not be checked", error instanceof Error ? error.name : error);
+          setPcs(null);
+        }
+      });
+    }
+  }, [pcs, machines]);
+  // closing the sheet drops answers still on their way
+  useEffect(() => () => { listed.current = { asked: new Set() }; }, []);
   // closing the sheet cancels a comparison under way: that PC's server ends it, and nothing is kept
   const running = useRef<AbortController | null>(null);
   useEffect(() => () => running.current?.abort(), []);

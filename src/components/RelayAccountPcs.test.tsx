@@ -27,12 +27,17 @@ describe("the account's PCs in the relay tab", () => {
   let admitted: [string, string, string][];
   let source: AccountPcsSource;
   let refuseCheck: boolean;
+  /** PCs whose entry this PC's server refuses (account_pc_invalid), and PCs whose answer waits until released */
+  let invalid: Set<string>;
+  let slow: Map<string, { promise: Promise<void> }>;
 
   beforeEach(() => {
     requests = [];
     admitted = [];
     pairLines = undefined;
     refuseCheck = false;
+    invalid = new Set();
+    slow = new Map();
     source = { list: async () => [OWN, DESK, LAB, OLD, AWAY], admit: async (...args) => { admitted.push(args); } };
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
@@ -50,10 +55,14 @@ describe("the account's PCs in the relay tab", () => {
       const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
       requests.push({ path, body, signal: init?.signal ?? null });
       if (path === "/api/machines/relay/account/check" && refuseCheck) return Response.json({ error: { code: "owner_only", message: "no" } }, { status: 403 });
-      if (path === "/api/machines/relay/account/check") return Response.json({ pcs: [
-        { server_id: DESK.server_id, state: "ready" }, { server_id: LAB.server_id, state: "ready" },
-        { server_id: OLD.server_id, state: "outdated" }, { server_id: AWAY.server_id, state: "offline" },
-      ] });
+      if (path === "/api/machines/relay/account/check") {
+        const asked = (body as { pcs: AccountPcEntry[] }).pcs;
+        // the server refuses the whole batch for one entry it cannot use, and answers once every PC in it did
+        if (asked.some((entry) => invalid.has(entry.server_id))) return Response.json({ error: { code: "account_pc_invalid", message: "no" } }, { status: 400 });
+        for (const entry of asked) await slow.get(entry.server_id)?.promise;
+        const states: Record<string, string> = { [DESK.server_id]: "ready", [LAB.server_id]: "ready", [OLD.server_id]: "outdated", [AWAY.server_id]: "offline" };
+        return Response.json({ pcs: asked.map((entry) => ({ server_id: entry.server_id, state: states[entry.server_id] })) });
+      }
       if (path === "/api/machines/relay/account/start") return Response.json({ ticket: "ticket-1", key: "a-key", label: "Ovis on here" });
       if (path === "/api/machines/relay/account/pair") return new Response(new ReadableStream<Uint8Array>({ start: (controller) => { pairLines = controller; } }));
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
@@ -79,8 +88,9 @@ describe("the account's PCs in the relay tab", () => {
   ]);
   const button = (label: string) => renderer!.root.find((node) => node.type === "button" && (node.props["aria-label"] ?? text(node)) === label);
   const line = async (value: unknown) => { await act(async () => { pairLines!.enqueue(new TextEncoder().encode(`${JSON.stringify(value)}\n`)); }); };
-  const mount = async (onConnect: (machine: Machine) => void = () => {}) => {
-    await act(async () => { renderer = create(<SettingsProvider><RelayAccountPcs machines={[local, lab]} onConnectMachine={onConnect} source={source} /></SettingsProvider>); });
+  const tree = (machines: readonly Machine[], onConnect: (machine: Machine) => void) => <SettingsProvider><RelayAccountPcs machines={machines} onConnectMachine={onConnect} source={source} /></SettingsProvider>;
+  const mount = async (onConnect: (machine: Machine) => void = () => {}, machines: readonly Machine[] = [local, lab]) => {
+    await act(async () => { renderer = create(tree(machines, onConnect)); });
   };
 
   it("lists the account's other PCs as the SSH tab does: Connect, Add, or why not, never this PC", async () => {
@@ -90,7 +100,7 @@ describe("the account's PCs in the relay tab", () => {
       ["Desk", "Online", "Add"], ["Lab", "In this app", "Connect"], ["Old box", "Update Ovis on that PC", ""], ["Away", "Offline", ""],
     ]);
     // the PC already in the list is not asked whether it would pair
-    expect(requests.find((request) => request.path.endsWith("/check"))?.body).toEqual({ pcs: [DESK, OLD, AWAY] });
+    expect(requests.filter((request) => request.path.endsWith("/check")).map((request) => request.body)).toEqual([{ pcs: [DESK] }, { pcs: [OLD] }, { pcs: [AWAY] }]);
     await act(async () => { button("Connect").props.onClick(); });
     expect(connected).toEqual([lab]);
   });
@@ -134,6 +144,31 @@ describe("the account's PCs in the relay tab", () => {
     refuseCheck = true;
     await mount();
     expect(renderer!.toJSON()).toBeNull();
+  });
+
+  it("leaves out only a PC whose entry this PC cannot use", async () => {
+    invalid.add(OLD.server_id);
+    await mount();
+    expect(rows()).toEqual([["Desk", "Online", "Add"], ["Lab", "In this app", "Connect"], ["Away", "Offline", ""]]);
+  });
+
+  it("shows each PC's state as it comes: one slow to answer holds no other row on Checking…", async () => {
+    let release = () => {};
+    slow.set(AWAY.server_id, { promise: new Promise<void>((resolve) => { release = resolve; }) });
+    await mount();
+    expect(rows()).toEqual([
+      ["Desk", "Online", "Add"], ["Lab", "In this app", "Connect"], ["Old box", "Update Ovis on that PC", ""], ["Away", "Checking…", ""],
+    ]);
+    await act(async () => { release(); });
+    expect(rows()[3]).toEqual(["Away", "Offline", ""]);
+  });
+
+  it("asks about a PC once another window removed it from this app", async () => {
+    await mount();
+    expect(rows()[1]).toEqual(["Lab", "In this app", "Connect"]);
+    await act(async () => { renderer!.update(tree([local], () => {})); });
+    expect(rows()[1]).toEqual(["Lab", "Online", "Add"]);
+    expect(requests.filter((request) => request.path.endsWith("/check")).map((request) => request.body)).toContainEqual({ pcs: [LAB] });
   });
 
   it("shows nothing when this page is not signed in", async () => {
