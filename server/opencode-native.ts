@@ -256,6 +256,11 @@ export function openCodeNativeState(): { stream: boolean; panes: string[] } {
   return { stream: stream !== null, panes: [...verifiedPanes.keys()] };
 }
 
+/** Whether a process with this pid exists (a signal-0 probe: refused means it exists under another user). */
+function running(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
 /** The OpenCode process a verified pane was last verified with, as herdr named it in front; null when unknown. */
 export function openCodePanePid(paneId: string): number | null {
   return verifiedPanes.get(paneId)?.pid ?? null;
@@ -308,9 +313,14 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   // a read that named no process keeps the pid known, and an older verification ending after a newer
   // one does not put its older pid back
   const earlier = verifiedPanes.get(paneId);
-  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid ?? pid : pid ?? earlier?.pid ?? null;
+  // A read that named no process keeps the earlier pid only while that process still runs: one that quit leaves no
+  // pid, so a new OpenCode stopped before any read saw it is still looked for (stoppedAgentJob walks without one)
+  const kept = earlier?.pid != null && running(earlier.pid) ? earlier.pid : null;
+  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid ?? pid : pid ?? kept;
+  // the latest start a committed pid came from: an older verification ending later never lowers it
+  const started = Math.max(verification.started, earlier?.started ?? 0);
   verifiedPanes.delete(paneId);
-  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid: known, started: verification.started });
+  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid: known, started });
   // a pane closed without an exit frame ends only if its collector tracks it
   for (const [track, { handed }] of paneTrackers) handOver(track, handed, paneId);
   scheduleRecheck();

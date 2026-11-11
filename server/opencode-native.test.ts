@@ -364,13 +364,24 @@ describe("the pid a verified pane keeps", () => {
     } finally { closeOpenCodeNative(); fake.server.stop(true); }
   });
 
-  it("stays the one known when a re-verification reads no process", async () => {
+  it("stays the one known when a re-verification reads no process, while that process runs", async () => {
     const fake = fresh("pid-kept");
     try {
-      await verifiedWith("p_kp", [foreground(4242)]);
-      expect(openCodePanePid("p_kp")).toBe(4242);
+      // this test's own process stands in for an OpenCode still running
+      await verifiedWith("p_kp", [foreground(process.pid)]);
       await verifiedWith("p_kp", [foreground(undefined)]);
-      expect(openCodePanePid("p_kp")).toBe(4242);
+      expect(openCodePanePid("p_kp")).toBe(process.pid);
+    } finally { closeOpenCodeNative(); fake.server.stop(true); }
+  });
+
+  it("is unknown when a re-verification reads no process and the one known has quit", async () => {
+    const fake = fresh("pid-quit");
+    const quit = Bun.spawn(["true"]);
+    await quit.exited;
+    try {
+      await verifiedWith("p_qt", [foreground(quit.pid)]);
+      await verifiedWith("p_qt", [foreground(undefined)]);
+      expect(openCodePanePid("p_qt")).toBeNull();
     } finally { closeOpenCodeNative(); fake.server.stop(true); }
   });
 
@@ -395,6 +406,33 @@ describe("the pid a verified pane keeps", () => {
       expect(await older).not.toBeNull();
       // then the pane keeps the newer pid.
       expect(openCodePanePid("p_or")).toBe(5151);
+    } finally { rpc.mockRestore(); closeOpenCodeNative(); fake.server.stop(true); }
+  });
+
+  it("is the newest verification's when two older ones end after it, in any order", async () => {
+    const fake = fresh("pid-three");
+    const asked = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const roots = [Promise.withResolvers<unknown>(), Promise.withResolvers<unknown>()];
+    let calls = 0;
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async () => {
+      const call = calls++;
+      if (call < 2) { asked[call]!.resolve(); return roots[call]!.promise; }
+      return foreground(7373);
+    }) as never);
+    try {
+      // Given A and B held at their process reads, in that order,
+      const a = openCodePaneService(opencodePane("p_th", "ses_th"));
+      await within(asked[0]!.promise, "A's process read");
+      const b = openCodePaneService(opencodePane("p_th", "ses_th"));
+      await within(asked[1]!.promise, "B's process read");
+      // when C, begun last, finishes first, then A, then B,
+      expect(await openCodePaneService(opencodePane("p_th", "ses_th"))).not.toBeNull();
+      roots[0]!.resolve(foreground(7171));
+      expect(await a).not.toBeNull();
+      roots[1]!.resolve(foreground(7272));
+      expect(await b).not.toBeNull();
+      // then the pane keeps C's pid.
+      expect(openCodePanePid("p_th")).toBe(7373);
     } finally { rpc.mockRestore(); closeOpenCodeNative(); fake.server.stop(true); }
   });
 });
