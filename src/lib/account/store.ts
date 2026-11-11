@@ -102,9 +102,10 @@ export interface AccountStore {
   updateMany<N extends Exclude<Name, "key">>(names: readonly N[], change: (current: Many<N>) => Many<N>): Promise<void>;
   /**
    * Forgets the key, the sign-in and every record but `leaving`, in one transaction: a new key is made
-   * on next use, which no PC knows. A sign-in `keep` accepts stays (one made after a leave began).
+   * on next use, which no PC knows. A sign-in `keep` accepts stays (one made after a leave began). With `only`,
+   * nothing is cleared unless it accepts the sign-in stored then (read in the same transaction).
    */
-  clear(keep?: (session: AccountSession) => boolean): Promise<void>;
+  clear(keep?: (session: AccountSession) => boolean, only?: (session: AccountSession | undefined) => boolean): Promise<void>;
 }
 
 async function newKey(): Promise<AccountKey> {
@@ -134,9 +135,10 @@ export function memoryAccountStore(): AccountStore {
         if (next[name] === undefined) records.delete(name); else records.set(name, next[name]);
       }
     },
-    async clear(keep) {
+    async clear(keep, only) {
       const leaving = records.get("leaving");
       const session = records.get("session") as AccountSession | undefined;
+      if (only !== undefined && !only(session)) return;
       records.clear();
       if (leaving !== undefined) records.set("leaving", leaving);
       if (session !== undefined && keep?.(session) === true) records.set("session", session);
@@ -239,12 +241,13 @@ export const indexedAccountStore: AccountStore = {
       return () => undefined;
     });
   },
-  clear(keep) {
+  clear(keep, only) {
     return transact("readwrite", (store) => {
       const leaving: IDBRequest<Records["leaving"] | undefined> = store.get("leaving");
       const session: IDBRequest<AccountSession | undefined> = store.get("session");
       // requests run in order: both reads are done when the second answers
       session.onsuccess = () => {
+        if (only !== undefined && !only(session.result)) return;
         store.clear();
         if (leaving.result !== undefined) store.put(leaving.result, "leaving");
         if (session.result !== undefined && keep?.(session.result) === true) store.put(session.result, "session");

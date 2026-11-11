@@ -238,10 +238,11 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     if (deleting || leaving) return;
     deleting = true;
     const epoch = ++generation;
-    // the sign-in the person deletes from, read before anything waits: one made meanwhile is never deleted (deleteAccount.ts)
-    const from = account.session();
+    // the sign-in the signed-in view on screen speaks of, not the one stored now: one another tab stored meanwhile is
+    // never deleted (deleteAccount.ts), and the view then reads it
+    const from = accountView?.kind === "signed-in" ? shownFor : undefined;
     for (const serverId of running.values()) cancelEnrollment(serverId);
-    void from.then(async (session) => {
+    void Promise.resolve(from).then(async (session) => {
       if (session === undefined) throw new SignedOutError();
       try { await deleteAccountOf({ service: account, accountStore, session }); }
       catch (error) {

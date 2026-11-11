@@ -79,6 +79,25 @@ describe("deleting the account", () => {
     expect((await store.key()).public_spki).toBe(key);
   });
 
+  it("keeps the key of a sign-in that took the deleted one's place while the delete was out", async () => {
+    const { fake, store, session } = await signedIn();
+    const elsewhere = memoryAccountStore();
+    fake.signInAs("github", "acct_2");
+    const next = await signIn(fake, "github", elsewhere);
+    const key = await store.key();
+    // another tab signs in to acct_2 in this store while the service answers the delete
+    const fetch: typeof fake.fetch = async (input, init) => {
+      const answer = await fake.fetch(input, init);
+      if (new Request(input, init).method === "DELETE") await store.set("session", next);
+      return answer;
+    };
+    const service = new AccountService({ store, fetch, lock: memoryLock() });
+    await deleteAccount({ service, accountStore: store, session });
+    expect(fake.deleted(session.account)).toBe(true);
+    expect((await store.get("session"))?.account).toBe("acct_2");
+    expect((await store.key()).public_spki).toBe(key.public_spki);
+  });
+
   it("never deletes or forgets a sign-in made meanwhile", async () => {
     const { fake, store, session, service } = await signedIn();
     await service.signOut();

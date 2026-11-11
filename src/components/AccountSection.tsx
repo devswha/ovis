@@ -791,8 +791,11 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   const [unreachable, setUnreachable] = useState(false);
   /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
   const [reauth, setReauth] = useState<{ action: "add" | "remove" | "delete"; provider: AccountProvider } | null>(null);
-  /** Delete account was pressed once: the same button now asks, and says what goes */
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  /**
+   * Delete account was pressed once, for this sign-in: the same button now asks, says what goes, and its second press
+   * deletes this sign-in's account alone. A sign-out, a sign-in or another account shown drops the question.
+   */
+  const [deleteAsked, setDeleteAsked] = useState<AccountSession | null>(null);
   const deviceSignIn = useRef<AbortController | null>(null);
   /**
    * The sign-in that just finished on this screen, whether the button pressed for it said it adds this PC, and
@@ -973,6 +976,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
    * and Add this PC offers its button.
    */
   const signIn = (provider: AccountProvider, addsPc = false): void => {
+    setDeleteAsked(null);
     if (bridge !== null) setView({ kind: "signing-in" });
     runSignIn(provider)?.then((session) => {
       // this sign-in, and no other, is the one that just finished here (AddThisPc): it adds the PC without a
@@ -1037,7 +1041,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
       switch (action) {
         case "add": addMethod(provider); return;
         case "remove": removeMethod(provider); return;
-        case "delete": deleteNow(); return;
+        case "delete": deleteNow(session); return;
         default: action satisfies never;
       }
     }, async (error: unknown) => {
@@ -1048,20 +1052,25 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     });
   };
 
+  /** The first press of Delete account: asks, for the sign-in stored now, when that is the account this section shows. */
+  const askDelete = (): void => {
+    setReauth(null);
+    void new AccountService({ store: indexedAccountStore }).session().then((session) => {
+      // another tab signed out, or in as someone else: the section reads what is stored now instead of asking
+      if (session === undefined || view.kind !== "signed-in" || session.account !== view.account) { void load(); return; }
+      setDeleteAsked(session);
+    }, (error: unknown) => console.warn("Ovis: the sign-in could not be read", error instanceof Error ? error.name : error));
+  };
+
   /**
-   * Deletes the account this section shows (lib/account/deleteAccount.ts): the sign-in read here is the one
-   * deleted, so one made meanwhile (another tab) is never touched. The service wants a sign-in from the last
-   * ten minutes, as for a change to the ways in.
+   * Deletes the account of `session`, the sign-in the question was asked for or a sign-in again to its account
+   * (lib/account/deleteAccount.ts): one stored meanwhile (another tab) is never touched, and the section then reads
+   * it. The service wants a sign-in from the last ten minutes, as for a change to the ways in.
    */
-  const deleteNow = (): void => {
-    setConfirmingDelete(false);
+  const deleteNow = (session: AccountSession): void => {
+    setDeleteAsked(null);
     const service = new AccountService({ store: indexedAccountStore });
-    let deleting: AccountSession | undefined;
-    void service.session().then((session) => {
-      if (session === undefined) throw new SignedOutError();
-      deleting = session;
-      return deleteAccount({ service, accountStore: indexedAccountStore, session }).then(() => session);
-    }).then((session) => {
+    void deleteAccount({ service, accountStore: indexedAccountStore, session }).then(() => {
       cancelDeviceSignIn();
       // a PC that waited to be added under the deleted account waits no longer
       keepAddPcWaiting(null);
@@ -1073,7 +1082,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
       console.warn("Ovis: the account was not deleted", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
       // the sign-in ended meanwhile, or another took its place: the section reads what is stored now
       if (error instanceof SignedOutError) { void load(); return; }
-      if (needsReauth(error) && deleting !== undefined) { setReauth({ action: "delete", provider: deleting.provider }); return; }
+      if (needsReauth(error)) { setReauth({ action: "delete", provider: session.provider }); return; }
       const message = error instanceof AccountServiceError && error.code === "subscription_active"
         ? t("Cancel your subscription first, then delete the account.") : t("The account could not be deleted. Try again.");
       setView((current) => current.kind === "signed-in" ? { ...current, error: message } : current);
@@ -1081,6 +1090,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   };
 
   const signOut = (): void => {
+    setDeleteAsked(null);
     cancelDeviceSignIn();
     // a PC that waited to be added under this sign-in waits no longer under the next one
     keepAddPcWaiting(null);
@@ -1090,6 +1100,9 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
       .catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error))
       .finally(() => setView({ kind: "signed-out", error: null }));
   };
+
+  /** the question Delete account asked, while the account it was asked for is the one shown */
+  const asked = view.kind === "signed-in" && deleteAsked?.account === view.account ? deleteAsked : null;
 
   const signInParts = (
     <>
@@ -1218,12 +1231,12 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
           {/* last, and the same button asks before it deletes: what goes and what stays is said before the second press */}
           <SettingsRow label={t("Delete account")}
-            description={confirmingDelete
+            description={asked !== null
               ? <span role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</span>
               : t("Delete your Ovis account and everything the account service keeps for it.")}>
-            <button type="button" className={confirmingDelete ? "btn btn-danger" : "btn"} data-action="delete-account" data-confirm={confirmingDelete ? "delete-account" : undefined}
-              onClick={() => { if (confirmingDelete) deleteNow(); else { setReauth(null); setConfirmingDelete(true); } }}>{confirmingDelete ? t("Delete account for good?") : t("Delete account")}</button>
-            {confirmingDelete && <button type="button" className="btn btn-ghost" onClick={() => setConfirmingDelete(false)}>{t("Cancel")}</button>}
+            <button type="button" className={asked !== null ? "btn btn-danger" : "btn"} data-action="delete-account" data-confirm={asked !== null ? "delete-account" : undefined}
+              onClick={() => { if (asked !== null) deleteNow(asked); else askDelete(); }}>{asked !== null ? t("Delete account for good?") : t("Delete account")}</button>
+            {asked !== null && <button type="button" className="btn btn-ghost" onClick={() => setDeleteAsked(null)}>{t("Cancel")}</button>}
           </SettingsRow>
           {reauth?.action === "delete" && (
             <div className="settings-item account-reauth" role="alert">

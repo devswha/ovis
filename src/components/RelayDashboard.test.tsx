@@ -547,6 +547,27 @@ describe("RelayDashboard frame and routes", () => {
     expect(deleted).toBe(1);
   });
 
+  it("drops an asked Delete account when another sign-in is shown, so its second press never reaches that one", async () => {
+    let deleted = 0;
+    const shown = (signedInAs: string) => baseProps({ signedInAs, onDeleteAccount: () => { deleted += 1; } });
+    await mount(shown("sign-in-one"));
+    await navigateHash("#devices");
+    const button = () => renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "delete-account");
+    await act(async () => { button().props.onClick(); });
+    expect(textOf(button())).toBe("Delete account for good?");
+    await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayDashboard, shown("sign-in-two")) })); });
+    expect(textOf(button())).toBe("Delete account");
+    await act(async () => { button().props.onClick(); });
+    expect(deleted).toBe(0);
+  });
+
+  it("says on Devices why a delete was refused", async () => {
+    await mount(baseProps({ error: "Cancel your subscription first, then delete the account.", onDeleteAccount: () => {} }));
+    await navigateHash("#devices");
+    const alert = renderer!.root.findAll((n) => n.props.role === "alert" && textOf(n).includes("Cancel your subscription first"));
+    expect(alert.length).toBeGreaterThan(0);
+  });
+
   it("offers no Delete account without an account", async () => {
     await mount(baseProps({ account: null, onDeleteAccount: () => {} }));
     await navigateHash("#devices");

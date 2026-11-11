@@ -130,6 +130,32 @@ describe("deleting the account from Settings", () => {
     expect(fake.deleted(ACCOUNT)).toBe(true);
   });
 
+  it("deletes only the account it asked about: another tab's sign-in to another account meanwhile is left alone", async () => {
+    await signedIn();
+    await press("Delete account");
+    const mine = (await indexedAccountStore.get("session"))!;
+    await indexedAccountStore.set("session", { ...mine, account: "acct_two", access_token: fake.issueToken("acct_two"), refresh_token: "rt-two", sign_in_id: "another-sign-in" });
+    const before = fake.requests.length;
+    await press("Delete account for good?");
+    // the next call this section makes: the delete itself, or the read of what is stored now
+    await until(() => fake.requests.length > before);
+    expect(fake.requests.slice(before)).not.toContain("DELETE /v1/account");
+    expect(fake.deleted("acct_two")).toBe(false);
+    expect(fake.deleted(ACCOUNT)).toBe(false);
+    expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
+  });
+
+  it("drops the question when the person signs out, so the next sign-in starts unarmed", async () => {
+    await signedIn();
+    await press("Delete account");
+    await press("Sign out of GitHub");
+    await until(() => buttons().includes("Sign in"));
+    await press("Sign in");
+    await until(() => buttons().includes("Delete account"));
+    expect(buttons()).not.toContain("Delete account for good?");
+    expect(shown()).not.toContain("for good");
+  });
+
   it("says to cancel a subscription that still renews, and keeps the account", async () => {
     await signedIn();
     fake.subscribe(ACCOUNT);
