@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readdir, rmdir, stat } from "node:fs/promises";
-import { connect as tcpConnect, createServer, type Socket } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import type { FileSink, Subprocess } from "bun";
@@ -125,17 +125,6 @@ function gitInstallPath(): string | null {
 const UNKNOWN_HOST = /No \S+ host key is known for /;
 /** what a forward of the account's own SSH config would add next to ours */
 const CONFIG_FORWARD = /^(localforward|remoteforward|dynamicforward) /m;
-
-/** Whether something accepts connections on this loopback port yet. */
-function listening(port: number): Promise<boolean> {
-  const { promise, resolve } = Promise.withResolvers<boolean>();
-  const socket = tcpConnect({ host: "127.0.0.1", port });
-  const done = (open: boolean) => { socket.destroy(); resolve(open); };
-  socket.once("connect", () => done(true));
-  socket.once("error", () => done(false));
-  socket.setTimeout(1000, () => done(false));
-  return promise;
-}
 
 /**
  * What ssh said last, for the setup dialog: some messages ask the user to act while ssh keeps
@@ -444,23 +433,43 @@ export class SshConnection {
     if (CONFIG_FORWARD.test(await this.exec([this.client.ssh, "-G", ...this.options(false), this.target.destination]))) {
       throw new Error(`The SSH config for ${this.target.destination} sets LocalForward, RemoteForward or DynamicForward, which the web UI on Windows cannot switch off. Use a host alias without them.`);
     }
-    const proc = Bun.spawn([...this.direct(undefined, false), "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`, this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
+    const proc = Bun.spawn([...this.direct(undefined, false), "-v", "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`, this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
     this.tunnels.add(proc);
-    const stderr = new Response(proc.stderr).text();
     void proc.exited.then(() => {
       this.tunnels.delete(proc);
       if (this.closed) return;
       this.broken = true;
       this.onExit?.();
     });
-    // ssh opens the local port only once it authenticated and the forward stands
-    const until = Date.now() + 25_000;
-    while (!(await listening(port))) {
+    // Something listening on the port proves nothing: another process on this PC may have taken it
+    // after it was found free, before ssh's own bind, and a request sent there would hand it the
+    // bridge's token. ssh enters its session only once its forwards are bound, and with
+    // ExitOnForwardFailure it exits instead when the port is taken. (Its "Local forwarding
+    // listening" comes before the bind.) The rest of its stderr is drained and only its own
+    // words, not the debug lines, are kept for an error.
+    const ready = Promise.withResolvers<void>();
+    void (async () => {
+      const decoder = new TextDecoder();
+      let partial = "";
+      let said = "";
+      for await (const chunk of proc.stderr) {
+        const lines = (partial + decoder.decode(chunk, { stream: true })).split("\n");
+        partial = lines.pop()!.slice(-4096);
+        for (const line of lines) {
+          if (line.startsWith("debug1: Entering interactive session.")) ready.resolve();
+          else if (!line.startsWith("debug")) said = (said + line.replace(/\r$/, "") + "\n").slice(-8192);
+        }
+      }
+      ready.reject(new Error(said.trim() || "SSH port forward failed"));
+    })().catch((error: unknown) => ready.reject(error));
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; proc.kill(); }, 25_000);
+    try { await ready.promise; }
+    catch (error) {
       if (this.closed) throw new Error("Connection cancelled");
-      if (proc.exitCode !== null || proc.signalCode !== null) throw new Error((await stderr).trim() || "SSH port forward failed");
-      if (Date.now() > until) { proc.kill(); throw new Error("SSH port forward timed out"); }
-      await Bun.sleep(100);
-    }
+      if (timedOut) throw new Error("SSH port forward timed out");
+      throw error;
+    } finally { clearTimeout(timer); }
   }
   private async exec(args: string[], input?: Uint8Array | StreamInput, timeout = 30_000, maxOutput?: number): Promise<string> {
     const stream = input !== undefined && !(input instanceof Uint8Array) ? input : undefined;
