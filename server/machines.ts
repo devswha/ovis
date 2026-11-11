@@ -52,7 +52,10 @@ const ACCOUNT_PC_MS = 10 * 60_000;
 const ACCOUNT_PC_ANSWER_MS = 10_000;
 
 /** Why another PC of the account was not added (docs/account.md, "Adding a PC of your account"); `message` is shown. */
-export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "refused" | "declined" | "cancelled";
+export type AccountPcFailure = "invalid" | "added" | "self" | "outdated" | "offline" | "gone" | "busy" | "refused" | "declined" | "cancelled";
+
+/** A key this PC made for another PC of the account (startAccountPc), in memory only, and its comparison while one runs. */
+type HeldAccountPc = { offer: RelayOffer; key: RelayPcKey; id: string; name: string; at: number; running?: { comparison: AbortController; done: Promise<void> } };
 export class AccountPcError extends Error {
   constructor(readonly failure: AccountPcFailure, message: string, options?: ErrorOptions) {
     super(message, options);
@@ -453,10 +456,13 @@ export class MachineManager {
    */
   private foundByCode = new Map<string, { offer: RelayOffer; at: number }>();
   /**
-   * Keys made for other PCs of the account (startAccountPc), by a random ticket only the asking window gets, held in
-   * memory until that PC admits one (pairAccountPc) or ACCOUNT_PC_MS passes: a key that is not admitted is never written.
+   * Keys made for other PCs of the account (startAccountPc), one per PC by its `server_id`, held in memory until that PC
+   * admits it (pairAccountPc) or ACCOUNT_PC_MS passes since it was made: a key that is not admitted is never written. An
+   * Add after a cancelled or refused comparison asks with the same key, whose admission that PC may have read already.
    */
-  private accountPcs = new Map<string, { offer: RelayOffer; key: RelayPcKey; id: string; name: string; at: number }>();
+  private accountPcs = new Map<string, HeldAccountPc>();
+  /** the random tickets only the asking window gets, each good for one comparison of the key it names */
+  private accountPcTickets = new Map<string, HeldAccountPc>();
   /** this server's own relay ID, where it has one: the local PC's `server_id` */
   private serverId?: () => string | undefined;
   /** other PCs of this PC's Tailscale login, added through the relay with one tap (server/tailnet-pcs.ts) */
@@ -2692,34 +2698,50 @@ export class MachineManager {
     if (support === "offline") throw new AccountPcError("offline", "That PC is not on the relay now.");
     if (this.stopped) throw new Error("Server stopping");
     const now = this.now();
-    for (const [ticket, held] of this.accountPcs) if (now - held.at > ACCOUNT_PC_MS) this.accountPcs.delete(ticket);
-    // a few at once at most; the oldest gives way
-    if (this.accountPcs.size >= 8) this.accountPcs.delete(this.accountPcs.keys().next().value!);
-    const id = randomUUID();
+    for (const [serverId, held] of this.accountPcs) if (now - held.at > ACCOUNT_PC_MS && !held.running) this.accountPcs.delete(serverId);
+    for (const [ticket, held] of this.accountPcTickets) if (this.accountPcs.get(held.offer.server_id) !== held) this.accountPcTickets.delete(ticket);
+    let held = this.accountPcs.get(offer.server_id);
+    if (held === undefined) {
+      // a few PCs at once at most; the oldest gives way
+      if (this.accountPcs.size >= 8) this.accountPcs.delete(this.accountPcs.keys().next().value!);
+      const id = randomUUID();
+      // written only once that PC admits it (RelayPcKey), and only while its comparison runs or the PC it added is this
+      // PC's (a later sign-in on a better route writes it again)
+      const key = await RelayPcKey.create(this.relayKeyPath(id), offer, () => !this.stopped && (this.pairing.has(id) || this.machines.has(id)));
+      if (this.stopped) throw new Error("Server stopping");
+      held = this.accountPcs.get(offer.server_id) ?? { offer, key, id, name, at: now };
+      this.accountPcs.set(offer.server_id, held);
+    }
     const ticket = randomBytes(32).toString("base64url");
-    // written only once that PC admits it (RelayPcKey), and only while this attempt's comparison runs or the PC it added
-    // is this PC's (a later sign-in on a better route writes it again)
-    const key = await RelayPcKey.create(this.relayKeyPath(id), offer, () => !this.stopped && (this.pairing.has(ticket) || this.machines.has(id)));
-    const [device] = await key.list();
-    this.accountPcs.set(ticket, { offer, key, id, name, at: now });
+    if (this.accountPcTickets.size >= 32) this.accountPcTickets.delete(this.accountPcTickets.keys().next().value!);
+    this.accountPcTickets.set(ticket, held);
+    const [device] = await held.key.list();
     return { ticket, key: device!.public_spki, label: device!.label };
   }
-  /** tickets whose comparison runs now (pairAccountPc): only their key may be written */
+  /** the held keys (by id) whose comparison runs now (pairAccountPc): only those may be written */
   private readonly pairing = new Set<string>();
 
   /**
    * Add a connection → Ovis relay → Add, once the page posted its admission: compares digits with that PC through
    * the relay, as another PC of the account vouched for (PAIR_INTENT_VOUCHED), `onDigits` told them for the page to
    * show, and adds it as addRelay does once a member of the account approved it there. `signal` ends the comparison,
-   * and nothing is kept: no key, no PC. One comparison per ticket.
+   * and nothing is written: no key, no PC (the key stays in memory for the next Add of that PC). One comparison per
+   * ticket, and one at a time per key.
    */
   async pairAccountPc(ticket: unknown, onDigits: (digits: string) => void, signal: AbortSignal): Promise<Machine> {
     if (this.stopped) throw new Error("Server stopping");
-    const held = typeof ticket === "string" ? this.accountPcs.get(ticket) : undefined;
-    if (held === undefined || this.now() - held.at > ACCOUNT_PC_MS) throw new AccountPcError("gone", "That request ran out. Press Add again.");
-    this.accountPcs.delete(ticket as string);
+    const held = typeof ticket === "string" ? this.accountPcTickets.get(ticket) : undefined;
+    if (held !== undefined) this.accountPcTickets.delete(ticket as string);
+    if (held === undefined || this.accountPcs.get(held.offer.server_id) !== held || this.now() - held.at > ACCOUNT_PC_MS) throw new AccountPcError("gone", "That request ran out. Press Add again.");
     const { offer, key, id, name } = held;
     const serverId = offer.server_id;
+    // one comparison per key at a time: another window's that runs on is not asked twice; one cancelled is let end first
+    if (held.running !== undefined) {
+      if (!held.running.comparison.signal.aborted) throw new AccountPcError("busy", "That PC is being added in another window.");
+      await held.running.done;
+      if (held.running !== undefined) throw new AccountPcError("busy", "That PC is being added in another window.");
+    }
+    if (this.stopped) throw new Error("Server stopping");
     if (this.relayServerIds().has(serverId)) throw new AccountPcError("added", "That PC is already added.");
     const keyPath = this.relayKeyPath(id);
     const runtime = this.runtime({
@@ -2733,13 +2755,17 @@ export class MachineManager {
     if (signal.aborted) cancel();
     let shown = false;
     let tunnel: RelayPcTunnel;
-    this.pairing.add(ticket as string);
+    let ended = (): void => {};
+    held.running = { comparison, done: new Promise<void>((resolve) => { ended = resolve; }) };
+    this.pairing.add(id);
     try {
       tunnel = await openRelayPcTunnel(offer, key, { ...this.tunnelOptions(runtime, runtime.generation), pairing: {
         compare: async (digits) => { shown = true; onDigits(digits); }, signal: comparison.signal,
       } });
     } catch (error) {
       removeRelayPcKey(keyPath);
+      // a key that PC admitted is not asked with again
+      if (key.paired && this.accountPcs.get(serverId) === held) this.accountPcs.delete(serverId);
       if (comparison.signal.aborted) throw new AccountPcError("cancelled", "Cancelled. Nothing was added.", { cause: error });
       if (error instanceof RelayPcOutdated) throw new AccountPcError("outdated", error.message, { cause: error });
       // the PC refused before any digits (no admission it could see, no member to approve) or after them (declined, a
@@ -2748,9 +2774,13 @@ export class MachineManager {
       if (error instanceof RelayPcRefused) throw new AccountPcError("refused", "That PC did not take the request. Check that it is in your account, then try again.", { cause: error });
       throw new AccountPcError("offline", `That PC could not be reached through the relay: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     } finally {
-      this.pairing.delete(ticket as string);
+      this.pairing.delete(id);
       signal.removeEventListener("abort", cancel);
+      held.running = undefined;
+      ended();
     }
+    // the key is the added PC's now (or removed with it, should adding it fail): the next Add of that PC makes another
+    if (this.accountPcs.get(serverId) === held) this.accountPcs.delete(serverId);
     return this.adoptRelayPc(runtime, tunnel, keyPath);
   }
 

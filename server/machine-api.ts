@@ -26,7 +26,7 @@ const MOVE_FROM_PAGE = "A move must come from this app's own page";
 
 /** POST /api/machines/relay/account/*: the status each refusal answers, as `account_pc_<failure>`. */
 const ACCOUNT_PC_STATUS: Record<AccountPcFailure, number> = {
-  invalid: 400, added: 409, self: 409, outdated: 409, offline: 502, gone: 410, refused: 403, declined: 403, cancelled: 499,
+  invalid: 400, added: 409, self: 409, outdated: 409, offline: 502, gone: 410, busy: 409, refused: 403, declined: 403, cancelled: 499,
 };
 
 /** POST /api/machines/relay/code: why a typed code found no PC, as `typed_code_<failure>` (the app words each one). */

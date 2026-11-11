@@ -241,6 +241,51 @@ it("cancelling while it waits ends the comparison on B and keeps nothing on A", 
   expect((await lines(await post(aBase, "pair", { ticket: started.body.ticket }))()).error?.code).toBe("account_pc_gone");
 }, 60_000);
 
+it("adds a PC on an Add right after a cancelled one: the key that PC was asked for, still admitted there, is asked for again", async () => {
+  const { aBase, aState, b, pc, approver, admit } = await accountPcs();
+  const first = await start(aBase, pc);
+  await admit(first.body.key);
+  const prompted = remotePrompt(b);
+  const abort = new AbortController();
+  const cancelled = lines(await post(aBase, "pair", { ticket: first.body.ticket }, abort.signal));
+  await cancelled();
+  await prompted;
+  const withdrawn = remotePrompt(b, (list) => list.length === 0);
+  abort.abort();
+  await withdrawn;
+  // at once: well within the 10 s that PC waits between two reads of the account's admissions
+  const again = await start(aBase, pc);
+  expect(again.status).toBe(200);
+  expect((await admit(again.body.key)).status).toBe(200);
+  const member = await approver();
+  const promptedAgain = remotePrompt(b);
+  const next = lines(await post(aBase, "pair", { ticket: again.body.ticket }));
+  const { digits, error } = await next();
+  expect(error).toBeUndefined();
+  const [request] = await promptedAgain;
+  expect(await member.decide(request!.id, "approve", digits)).toBe(200);
+  const { machine } = await next();
+  expect(machine).toMatchObject({ kind: "relay", relay: { server_id: pc.server_id } });
+  // the same key, under a ticket of its own: the first ticket was spent on the cancelled comparison
+  expect(again.body.key).toBe(first.body.key);
+  expect(again.body.ticket).not.toBe(first.body.ticket);
+  expect(relayKeys(aState)).toEqual([`${machine!.id}.json`]);
+}, 60_000);
+
+it("asks a PC once when two windows add it together: the second is told it is being added", async () => {
+  const { aBase, b, pc, admit } = await accountPcs();
+  const one = await start(aBase, pc);
+  const two = await start(aBase, pc);
+  await admit(one.body.key);
+  await admit(two.body.key);
+  const prompted = remotePrompt(b);
+  const first = lines(await post(aBase, "pair", { ticket: one.body.ticket }));
+  expect((await first()).digits).toMatch(/^\d{6}$/);
+  await prompted;
+  expect((await lines(await post(aBase, "pair", { ticket: two.body.ticket }))()).error?.code).toBe("account_pc_busy");
+  expect(b.context.services.relay.approvals.remoteList()).toHaveLength(1);
+}, 60_000);
+
 /** Every PC's sessions from here on read HELLO as an older Ovis does, knowing no pair-intent-pc-vouched; the frames they were sent. */
 function olderB(): number[] {
   const admit = Object.getOwnPropertyDescriptor(RelaySession.prototype, "admit")!.value as (this: RelaySession, frame: SessionFrame) => Promise<void>;
@@ -302,7 +347,7 @@ it("takes a ticket for ten minutes only", async () => {
 it("writes the key it made for a PC only while that PC's comparison runs, or once that PC is added", async () => {
   const { a, aBase, aState, pc } = await accountPcs();
   const started = await start(aBase, pc);
-  const held = (a.context.services.core.machines as unknown as { accountPcs: Map<string, { key: RelayPcKey }> }).accountPcs.get(started.body.ticket)!;
+  const held = (a.context.services.core.machines as unknown as { accountPcTickets: Map<string, { key: RelayPcKey }> }).accountPcTickets.get(started.body.ticket)!;
   // admitted, as far as the key can tell, by no comparison of this PC's: it must not reach the disk
   await expect(held.key.update(pc.server_id, (current) => ({ ...(current ?? { server_id: pc.server_id, server_public_key: pc.server_public_key, relay: pc.relay, label: "x", public_spki: started.body.key, private_key: undefined as unknown as CryptoKey, device_id: null }), device_id: "0011223344556677" }))).rejects.toThrow("removed");
   expect(relayKeys(aState)).toEqual([]);

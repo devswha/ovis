@@ -444,7 +444,9 @@ does the relay work, and the page only vouches for it:
    must derive from `server_public_key`, its relay a `wss:` origin, not A itself, not already added),
    asks the PC as `check` does (409 `account_pc_outdated` for an older one: nothing is posted or
    sent to pair), and makes the P-256 key A would hold for B, in memory only. It answers
-   `{ "ticket", "key", "label" }`.
+   `{ "ticket", "key", "label" }`. Until B admits that key, or for 10 minutes from when it was made,
+   another Add of B gets the same key under a new ticket: after a cancelled or declined comparison B
+   already read its admission, and B reads the account's admissions at most once every 10 seconds.
 3. The page posts an admission naming that `key` at B (`POST /v1/admissions`, as a signed-in device
    that joins does): the account service has seen a device signed in to this account ask.
 4. `POST /api/machines/relay/account/pair` `{ "ticket" }` compares digits with B through the relay
@@ -453,7 +455,8 @@ does the relay work, and the page only vouches for it:
    `{ "machine" }` once B admitted A and A saved it as `POST /api/machines/relay` does, or
    `{ "error": { "code", "message" } }`. Closing the request (Cancel, closing the sheet) ends the
    comparison on B and keeps nothing: the key is written only on B's `AUTH_OK`. A ticket is good for
-   one comparison, for 10 minutes. A cancel that lands in the moment between B's `AUTH_OK` and A
+   one comparison, for 10 minutes, and one comparison runs per key: another window's Add of B while
+   one runs gets 409 `account_pc_busy`, so B is asked once. A cancel that lands in the moment between B's `AUTH_OK` and A
    saving the PC leaves B a row for a key A dropped: nobody can sign in with it, B lists it as
    "Ovis on <host>" (announced as every admission is), and **Revoke** on B removes it.
 
