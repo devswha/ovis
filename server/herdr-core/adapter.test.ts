@@ -1031,6 +1031,12 @@ describe("herdr-core adapter, new and closed terminals", () => {
     expect(runs.map((run) => run["env"])).toEqual([terminalEnv, { ...terminalEnv, GH_TOKEN: "asked" }]);
   });
 
+  it("sends hc no env at all when there is none to give, as on Windows", async () => {
+    const { socket, runs } = await living([terminal("t1")], {}, { terminalEnv: {} });
+    await workspaceCreate({ cwd: "/work/web", label: "web" }, socket);
+    expect(runs[0]).not.toHaveProperty("env");
+  });
+
   it("starts a new workspace as a kept shell labeled with a space and tab of its own, named as asked", async () => {
     const { socket, runs } = await living([terminal("t1")]);
     const created = await workspaceCreate({ cwd: "/work/web", label: "web" }, socket);

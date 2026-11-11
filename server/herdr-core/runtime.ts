@@ -155,6 +155,8 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
     throw new Error(`OVIS_RUNTIME=herdr-core is served on Linux, macOS and Windows, not ${platform}`);
   }
+  // read while hc is looked for: both run a login shell; another machine's terminals are not this PC's user's, and keep that machine's own
+  const reading = hcMachine() === null ? terminalEnv() : Promise.resolve({});
   // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one
   const refused: string[] = [];
   const core = await find((bin, reason) => { refused.push(`${bin}: ${reason}`); });
@@ -171,8 +173,7 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   const unix = platform !== "win32";
   if (unix && statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
   if (unix) chmodSync(stateDir, 0o700);
-  // another machine's terminals are not this PC's user's: they keep that machine's own
-  terminalEnvironment = hcMachine() === null ? await terminalEnv() : {};
+  terminalEnvironment = await reading;
   const hc = coreConnection();
   // on Windows the pipe is named after the folder itself: a junction or a short (8.3) spelling of it names the same pipe
   const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels),

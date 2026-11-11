@@ -52,8 +52,13 @@ const LOGIN_PATH_END = "__OVIS_LOGIN_PATH_END__";
 const LOGIN_PATH_SCRIPT = `printf '\\n%s\\n' ${LOGIN_PATH_START}; printenv PATH; printf '%s\\n' ${LOGIN_PATH_END}`;
 const LOGIN_ENV_START = "__OVIS_LOGIN_ENV__";
 const LOGIN_ENV_END = "__OVIS_LOGIN_ENV_END__";
-/** The same for the whole environment: `env` is a program, so fish runs it as any shell does. */
-const LOGIN_ENV_SCRIPT = `printf '\\n%s\\n' ${LOGIN_ENV_START}; env; printf '%s\\n' ${LOGIN_ENV_END}`;
+/**
+ * The same for the whole environment, printed as JSON by this server's own runtime: `env` prints one
+ * `NAME=value` per line, which a value holding a newline or an exported bash function
+ * (`BASH_FUNC_f%%=() {…`) cannot be read back from. Single quotes read the same in fish.
+ */
+const loginEnvScript = (runtime: string): string =>
+  `printf '\\n%s\\n' ${LOGIN_ENV_START}; '${runtime}' -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
 
 /** The user's login shell as an absolute executable: $SHELL, else the account's; null when neither is one. */
 export function loginShell(env: Record<string, string | undefined> = process.env): string | null {
@@ -73,21 +78,17 @@ export function parseLoginPath(output: string): string | null {
 }
 
 /**
- * The variables `env` printed between the markers of the probe's own output. A line that starts no
- * `NAME=` continues the value before it (a value holding a newline).
+ * The variables the probe printed as JSON between its markers, those named as a shell variable can
+ * be (an exported bash function's `BASH_FUNC_f%%` is not one); null when there is no such object.
  */
 export function parseLoginEnv(output: string): Record<string, string> | null {
-  const lines = output.split("\n");
-  const start = lines.lastIndexOf(LOGIN_ENV_START);
-  const end = lines.lastIndexOf(LOGIN_ENV_END);
+  const start = output.lastIndexOf(`\n${LOGIN_ENV_START}\n`);
+  const end = output.lastIndexOf(`\n${LOGIN_ENV_END}\n`);
   if (start === -1 || end < start) return null;
-  const env: Record<string, string> = {};
-  let last: string | null = null;
-  for (const line of lines.slice(start + 1, end)) {
-    const named = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(line);
-    if (named) { last = named[1]!; env[last] = line.slice(named[0].length); } else if (last !== null) env[last] += `\n${line}`;
-  }
-  return env;
+  let parsed: unknown;
+  try { parsed = JSON.parse(output.slice(start + LOGIN_ENV_START.length + 2, end)); } catch { return null; }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+  return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry[0])));
 }
 
 /** The login shell's PATH, or why it gave none. */
@@ -115,8 +116,9 @@ export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
 }
 
 /** The environment the user's login shell sets up, or why it gave none; run as loginPathProbe runs. */
-export function loginEnvProbe(options: LoginShellOptions): (signal: AbortSignal) => Promise<{ value: Record<string, string> } | { value: null; reason: string }> {
-  return loginShellProbe({ maxBytes: 256 * 1024, ...options }, LOGIN_ENV_SCRIPT, parseLoginEnv, "environment");
+export function loginEnvProbe(options: LoginShellOptions, runtime: string = process.execPath): (signal: AbortSignal) => Promise<{ value: Record<string, string> } | { value: null; reason: string }> {
+  if (runtime.includes("'")) return async () => ({ value: null, reason: `${runtime} cannot be quoted for the login shell` });
+  return loginShellProbe({ maxBytes: 256 * 1024, ...options }, loginEnvScript(runtime), parseLoginEnv, "environment");
 }
 
 interface LoginShellOptions { shell: string; env?: Record<string, string | undefined>; timeoutMs?: number; maxBytes?: number; graceMs?: number }

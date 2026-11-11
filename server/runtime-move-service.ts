@@ -144,10 +144,9 @@ export function herdrSource(holdsPending: (paneId: string) => boolean, inputEmpt
 export async function coreDestination(stateDir: string, id: string): Promise<MoveDestination & { close: () => void }> {
   // the core the server reaches once it serves herdr-core: the hc startRuntime finds, run in hcEnv (runtime.ts)
   const env = hcEnv() ?? process.env;
-  const found = await findHc();
-  if (found === null) throw new Error("no herdr-core found");
   // the panes it makes are new shells: the user's login environment, not the one of whatever started the core
-  const terminalEnv = await userTerminalEnv(env);
+  const [found, terminalEnv] = await Promise.all([findHc(), userTerminalEnv(env)]);
+  if (found === null) throw new Error("no herdr-core found");
   const hc = new HcConnection(() => spawnHcConnect(found.bin, coreStartEnv(env, terminalEnv)));
   const socket = join(stateDir, `move-${id.slice(0, 8)}.sock`);
   const adapter = await startHerdrCoreAdapter(hc, socket, undefined, { terminalEnv });

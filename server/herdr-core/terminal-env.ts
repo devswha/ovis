@@ -14,10 +14,18 @@ const SESSION_ENV = /^(?:HOME|USER|LOGNAME|SHELL|PATH|LANG|LC_[A-Z_]+|TZ|TMPDIR|
 /** The shell's own bookkeeping, and what places a process in a terminal or core: never the user's setting. */
 const NOT_SETTINGS = /^(?:PWD|OLDPWD|SHLVL|_|TERM|COLORTERM|HC_.*|HERDR_.*)$/;
 
+/**
+ * What names the probe's own session, process or tty rather than a setting: a profile that runs
+ * `eval $(ssh-agent)` names an agent of the probe's (holding no key), `GPG_TTY` reads "not a tty".
+ * Each pane keeps the core's own, as before.
+ */
+const SESSION_BOUND = /^(?:SSH_AUTH_SOCK|SSH_AGENT_PID|SSH_TTY|SSH_CONNECTION|SSH_CLIENT|GPG_TTY|GPG_AGENT_INFO|TTY|DBUS_SESSION_BUS_ADDRESS|DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_RUNTIME_DIR|XDG_SESSION_.*|XDG_VTNR|TMUX|TMUX_PANE|STY|WINDOWID)$/;
+
 /** Where hc finds its core: a connect that starts one keeps this server's, whatever the profile says. */
 const CORE_PLACE = /^(?:HOME|HC_.*|XDG_.*)$/;
 
-const COLOUR: Env = { TERM: "xterm-256color", COLORTERM: "truecolor" };
+/** Ovis's terminal view draws 24-bit colour; an inherited NO_COLOR is set empty (hc cannot drop it), which turns it off. */
+const COLOUR: Env = { TERM: "xterm-256color", COLORTERM: "truecolor", NO_COLOR: "" };
 
 /**
  * The environment of each terminal Ovis starts on herdr-core, given over whatever the core's own
@@ -27,32 +35,44 @@ const COLOUR: Env = { TERM: "xterm-256color", COLORTERM: "truecolor" };
  * stay otherwise, and hc cannot drop a variable. With no login environment, only the colour; on
  * Windows nothing (no login shell, and a console takes no TERM).
  */
-export async function loginTerminalEnv(options: { env?: Record<string, string | undefined>; shell?: string | null; timeoutMs?: number } = {}): Promise<Env> {
+export async function loginTerminalEnv(options: TerminalEnvOptions = {}): Promise<Env> {
+  return (await readTerminalEnv(options)).env;
+}
+
+type TerminalEnvOptions = { env?: Record<string, string | undefined>; shell?: string | null; timeoutMs?: number };
+
+/** loginTerminalEnv, and whether the login shell answered (a miss is worth asking again) */
+async function readTerminalEnv(options: TerminalEnvOptions): Promise<{ env: Env; answered: boolean }> {
   const source = options.env ?? process.env;
   const shell = options.shell === undefined ? loginShell(source) : options.shell;
-  if (process.platform === "win32") return {};
-  if (shell === null) return { ...COLOUR };
+  if (process.platform === "win32") return { env: {}, answered: true };
+  if (shell === null) return { env: { ...COLOUR }, answered: true };
   const base = Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined && SESSION_ENV.test(entry[0])));
   const login = await loginEnvProbe({ shell, env: { ...base, ...COLOUR }, timeoutMs: options.timeoutMs ?? 3000 })(new AbortController().signal);
   if (login.value === null) {
     console.warn(`[herdr-core] terminals start without the login shell's environment: ${login.reason}`);
-    return { ...COLOUR };
+    return { env: { ...COLOUR }, answered: false };
   }
-  const kept = Object.entries(login.value).filter(([name]) => !NOT_SETTINGS.test(name) && !SERVER_ENV.test(name));
-  return { ...Object.fromEntries(kept), NO_COLOR: login.value["NO_COLOR"] ?? "", ...COLOUR };
+  const kept = Object.entries(login.value).filter(([name]) => !NOT_SETTINGS.test(name) && !SESSION_BOUND.test(name) && !SERVER_ENV.test(name));
+  return { env: { ...Object.fromEntries(kept), ...COLOUR, NO_COLOR: login.value["NO_COLOR"] ?? "" }, answered: true };
 }
 
-const read = new Map<string, Promise<Env>>();
+const read = new Map<string, Env>();
 
-/** loginTerminalEnv for `env` (this process's), read once per user and shell. */
-export function userTerminalEnv(env: Record<string, string | undefined> = process.env): Promise<Env> {
+/** loginTerminalEnv for `env` (this process's), kept per user and shell once it was read; one that failed is asked again next time. */
+export async function userTerminalEnv(env: Record<string, string | undefined> = process.env): Promise<Env> {
   const key = `${env["HOME"] ?? ""}\0${env["SHELL"] ?? ""}`;
-  let found = read.get(key);
-  if (!found) { found = loginTerminalEnv({ env }); read.set(key, found); }
-  return found;
+  const kept = read.get(key);
+  if (kept) return kept;
+  const found = await readTerminalEnv({ env });
+  if (found.answered) read.set(key, found.env);
+  return found.env;
 }
 
-/** What `hc connect` runs in: `base` with the terminal environment over it, a core it starts found where `base` says. */
+/**
+ * What `hc connect` runs in: `base` with the terminal environment over it, a core it starts found
+ * where `base` says: HOME, HC_* and XDG_* are base's alone, also where base has none.
+ */
 export function coreStartEnv(base: Record<string, string | undefined>, terminal: Env): Record<string, string | undefined> {
-  return { ...base, ...terminal, ...Object.fromEntries(Object.entries(base).filter(([name]) => CORE_PLACE.test(name))) };
+  return { ...base, ...Object.fromEntries(Object.entries(terminal).filter(([name]) => !CORE_PLACE.test(name))) };
 }
