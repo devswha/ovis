@@ -743,8 +743,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             if (row.withdrawn?.()) throw new HerdrError("pending_discarded", "This message was discarded while it waited for omp; nothing was typed");
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
           }, options, { strict: true, waiting: () => { waitedForOmp = true; row.waiting?.(true); } });
-          // omp takes input: with nothing typed meanwhile its start is over, and what comes after goes as before
-          if (!typedSinceStart(paneId)) forgetOmpStart(paneId);
+          // omp takes input: with nothing typed meanwhile, or once it reported and this send's own Enter submits its box
+          // as its sender chose, its start is over, and what comes after goes as before
+          if (waited.agent_session?.source === "herdr:omp" || !typedSinceStart(paneId)) forgetOmpStart(paneId);
           if (waited !== context.pane) {
             mark = pending.mark(paneId);
             context = await pendingContext(owner, paneId, lease, identity);
@@ -1039,7 +1040,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   function typedWhileOmpStarted(paneId: string): boolean {
     const start = ompStarts.get(paneId);
     if (!start) return false;
-    if (Date.now() >= start.until) { forgetOmpStart(paneId); return false; }
+    // past its end, a wait still on for it reads the typing at its next look (typedSinceStart), and holds for it
+    if (Date.now() >= start.until) {
+      if (ompWaits.has(paneId) && typedSinceStart(paneId)) return true;
+      forgetOmpStart(paneId);
+      return false;
+    }
     return typedSinceStart(paneId);
   }
   /** typedWhileOmpStarted, also past the start's end: a wait that runs to that end still holds for what was typed before it */
