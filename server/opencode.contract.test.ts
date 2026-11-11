@@ -1011,7 +1011,16 @@ process.stdin.on("data", (chunk) => {
     // and that first reader is handed its text. A server that read opencode.json would be handed it at once,
     // so nothing here waits on the FIFO and no time is counted: who got the text is the proof.
     const text = crypto.randomUUID();
-    const writer = Bun.spawn(["sh", "-c", 'printf %s "$2" > "$1"', "sh", fifo, text]);
+    const writer = Bun.spawn(["sh", "-c", 'echo ready; printf %s "$2" > "$1"', "sh", fifo, text], { stdout: "pipe" });
+    // It waits there before anything below asks the server: it says so, and then sleeps in its open (where
+    // the system tells a process's state). A read made before it waited would find no writer and go unseen.
+    expect(new TextDecoder().decode((await writer.stdout.getReader().read()).value)).toBe("ready\n");
+    for (const until = Date.now() + 5_000; existsSync(`/proc/${writer.pid}/stat`);) {
+      const stat = readFileSync(`/proc/${writer.pid}/stat`, "utf8");
+      if (stat.charAt(stat.lastIndexOf(") ") + 2) === "S") break;
+      if (Date.now() > until) throw new Error("the FIFO's writer never waited in its open");
+      await new Promise((resolve) => setImmediate(resolve));
+    }
     const { ws, frame } = await socket();
     const before = typed().length;
     try {
