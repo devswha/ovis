@@ -3,6 +3,8 @@
  * Run after both builds, with FFMPEG pointing at ffmpeg and an isolated HERDR_TEST_SESSION.
  * Reuses the shell QA's Pages host and WebSocket bridge. All waits name an event; the browser
  * clock is frozen, so a readiness check cannot accidentally win by letting a timer elapse.
+ * The browser lane (scripts/ci-browser.sh) runs it as an entry of its own; relay-e2e-regression.ts
+ * calls `relayMediaQa` only with another server tree (RELAY_E2E_SERVER_DIR, --skew).
  */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
@@ -26,7 +28,7 @@ import { loadPagesSite, pagesResponse } from "./pages-static.ts";
 import { relayBrowserSocket, relayServerTree } from "./relay-browser-bridge.ts";
 import type { RelayServerTree } from "./relay-browser-bridge.ts";
 
-/** Todo 17's two-PC resource proof, against `tree`'s server (relay-e2e-regression.ts runs it too). */
+/** Todo 17's two-PC resource proof, against `tree`'s server (relay-e2e-regression.ts runs it against another server tree). */
 export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
   const { createServer, RelayService } = tree;
   const repo = join(import.meta.dir, "..");
@@ -258,14 +260,11 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     const offer = decodeOffer(p.service.offer().url);
     assert.ok(offer);
     await navigate(page, encodeOffer({ ...offer, name: p.name }, origin));
-    await page.getByRole("button", { name: "Pair", exact: true }).click({ force: true });
-    // a first pairing stops at Ready: nothing opens until Open PC (lib/relay/shell.tsx)
-    const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
-    await ready.waitFor();
-    assert.equal(await page.locator(".app").count(), 0, "Ready is shown before the app");
+    // an admitted pairing enters the app by itself, with no Ready checkpoint before it (lib/relay/shell.tsx)
     const paired = page.waitForEvent("framenavigated", { predicate: (frame) => frame === page.mainFrame() && !frame.url().includes("#offer=") });
-    await Promise.all([paired, ready.getByRole("button", { name: "Open PC" }).click()]);
+    await Promise.all([paired, page.getByRole("button", { name: "Pair", exact: true }).click({ force: true })]);
     await page.locator(".app").waitFor();
+    assert.equal(await page.locator('[role=dialog][data-add-pc-phase="ready"]').count(), 0, "no Ready checkpoint after a pairing");
     return page;
   }
   async function controlled(page: Page): Promise<void> {
@@ -283,6 +282,22 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
     await page.goto("about:blank");
     await navigate(page, origin + readerHref(machine, path, `/s/${p.id}/`, "relay"));
     await page.locator(".file-reader").waitFor();
+  }
+  /**
+   * A page over the relay is drawn without its scripts first: the render host puts it in a frame of its own that
+   * runs none, and nothing in it has run. The press runs it in the render host itself.
+   */
+  async function runPageScripts(page: Page, heading: string): Promise<void> {
+    const host = page.locator("iframe.file-viewer-page");
+    await host.waitFor();
+    assert.equal(await host.getAttribute("data-page-scripts"), "off");
+    const still = page.frameLocator("iframe.file-viewer-page").locator("iframe");
+    await still.waitFor();
+    assert.equal(await still.getAttribute("sandbox"), "", "the page's own frame allows no script");
+    assert.ok((await still.getAttribute("srcdoc") ?? "").includes(heading), "and holds the page");
+    assert.equal(await page.evaluate(() => (window as Window & { isolationResults?: unknown[] }).isolationResults?.length ?? 0), 0, "no script of the page ran before the press");
+    await page.getByRole("button", { name: "Run scripts", exact: true }).click();
+    await page.locator('iframe.file-viewer-page[data-page-scripts="on"]').waitFor();
   }
   async function image(page: Page): Promise<void> {
     const picture = page.locator("img.file-viewer-media[src]");
@@ -422,6 +437,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       note(`${p.name}: attachment image decoded`);
       await pdf(page, p);
       await read(page, p, "page.html");
+      await runPageScripts(page, `${p.name} rendered`);
       isolated(await isolation(page));
       assert.equal(await page.frameLocator("iframe.file-viewer-page").locator("body").getAttribute("data-ran"), "1");
       assert.equal(await page.frameLocator("iframe.file-viewer-page").locator("h1").textContent(), `${p.name} rendered`);
@@ -459,6 +475,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       };
       await check(async (page) => {
         await read(page, first, "page.html");
+        await runPageScripts(page, `${first.name} rendered`);
         isolated(await isolation(page));
       });
       await check(async (page) => {
@@ -474,7 +491,7 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
         await page.evaluate((html) => {
           const frame = document.createElement("iframe");
           frame.sandbox.add("allow-scripts");
-          frame.onload = () => { frame.onload = null; frame.contentWindow?.postMessage({ type: "ovis-render", html }, "*"); };
+          frame.onload = () => { frame.onload = null; frame.contentWindow?.postMessage({ type: "ovis-render", html, scripts: true }, "*"); };
           frame.src = `${location.pathname}~render`;
           document.body.append(frame);
         }, `<!doctype html><body>${svg}</body>`);
@@ -589,6 +606,8 @@ export async function relayMediaQa(tree: RelayServerTree): Promise<void> {
       const opened = await mediaPage(ctx);
       assert.ok(href);
       await navigate(opened, href);
+      // the reader is the same viewer: the page's scripts wait for the press there too
+      await runPageScripts(opened, `${first.name} rendered`);
       isolated(await isolation(opened));
       note("copy link: installed blob-mode file viewer copied a stable reader URL; a new tab opened it with its own channel");
       await closeContext(ctx);

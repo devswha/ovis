@@ -68,6 +68,8 @@ export class PendingInputs<Owner, Lease> {
   /** how many status events each pane has had: orders a snapshot read against them (mark, observe) */
   private readonly events = new Map<string, number>();
   private readonly gates = new Map<string, TurnGate>();
+  /** what each pane's queued messages wait for besides their turn (waitingFor) */
+  private readonly waits = new Map<string, NonNullable<PendingMessage["waiting"]>>();
   private readonly closed = new Map<Owner, number>();
   /** sends on their way when their pane moved (`move`) */
   private readonly movedInFlight = new WeakSet<PendingRecord<Owner, Lease>>();
@@ -81,7 +83,14 @@ export class PendingInputs<Owner, Lease> {
     private readonly newId: () => string = () => crypto.randomUUID(),
     /** an owner that may hold MAX_PENDING_PER_PANE messages in each pane rather than MAX_PENDING_PER_OWNER in all */
     private readonly perPane: (owner: Owner) => boolean = () => false,
-  ) {}
+    elapsed?: () => number,
+  ) {
+    // How long a record is kept (a resend's, a withdrawal's, a closed owner's) runs on a clock that only moves
+    // forward: the PC's clock set forward must not end a guard early, and set back must not stretch it. A caller
+    // that gives a clock of its own (a test) times both by it.
+    this.elapsed = elapsed ?? (now === Date.now ? () => performance.now() : now);
+  }
+  private readonly elapsed: () => number;
 
   /**
    * Cross-connection held copies share one outcome; never evict an in-flight send.
@@ -116,7 +125,7 @@ export class PendingInputs<Owner, Lease> {
     const entry: { id: string; paneId: string; fingerprint: string; settledAt: number | null; uncertain: boolean; reply: Promise<HeldCopyReply> } = {
       id, paneId, fingerprint, settledAt: null, uncertain: false,
       reply: Promise.resolve().then(task).then((reply) => {
-        entry.uncertain = !reply.ok && ambiguous(reply.code ?? ""); entry.settledAt = this.now();
+        entry.uncertain = !reply.ok && ambiguous(reply.code ?? ""); entry.settledAt = this.elapsed();
         const item = this.records.get(id);
         // the pane's ID now: a move while the copy was on its way took the entry and the record along
         const paneId = entry.paneId;
@@ -131,7 +140,7 @@ export class PendingInputs<Owner, Lease> {
           this.publish(item.owner, paneId);
         }
         return reply;
-      }, (error) => { entry.settledAt = this.now(); throw error; }),
+      }, (error) => { entry.settledAt = this.elapsed(); throw error; }),
     };
     this.resends.set(key, entry);
     return entry.reply;
@@ -139,19 +148,46 @@ export class PendingInputs<Owner, Lease> {
 
   private expireResends(): void {
     for (const [key, entry] of this.resends) {
-      if (entry.settledAt !== null && !(entry.uncertain && this.records.has(entry.id)) && this.now() - entry.settledAt >= CLOSED_RETENTION_MS) this.resends.delete(key);
+      if (entry.settledAt !== null && !(entry.uncertain && this.records.has(entry.id)) && this.elapsed() - entry.settledAt >= CLOSED_RETENTION_MS) this.resends.delete(key);
     }
   }
 
   list(owner: Owner, paneId: string): PendingMessage[] {
-    return [...this.records.values()].filter((item) => item.owner === owner && item.paneId === paneId).map((item) => ({ ...item.message, ...(item.message.error ? { error: { ...item.message.error } } : {}) }));
+    const waiting = this.waits.get(paneId);
+    return [...this.records.values()].filter((item) => item.owner === owner && item.paneId === paneId).map((item) => ({ ...item.message, ...(item.message.error ? { error: { ...item.message.error } } : {}),
+      ...(waiting !== undefined && item.message.state === "queued" ? { waiting } : {}) }));
+  }
+
+  /** Says what the pane's queued messages wait for besides their turn, or (undefined) that they wait for it no more, to each owner of one. */
+  waitingFor(paneId: string, waiting: PendingMessage["waiting"]): void {
+    if (this.waits.get(paneId) === waiting) return;
+    if (waiting === undefined) this.waits.delete(paneId); else this.waits.set(paneId, waiting);
+    for (const owner of new Set([...this.records.values()].filter((item) => item.paneId === paneId && item.message.state === "queued").map((item) => item.owner))) this.publish(owner, paneId);
+  }
+
+  /** Says what a message on its way waits for, or (undefined) that it waits for it no more. */
+  sendingWaitsFor(item: PendingRecord<Owner, Lease>, waiting: PendingMessage["waiting"]): void {
+    if (this.records.get(item.message.id) !== item || item.message.waiting === waiting) return;
+    if (waiting === undefined) delete item.message.waiting; else item.message.waiting = waiting;
+    this.publish(item.owner, item.paneId);
+  }
+
+  /** Every queued message of the pane held for an explicit send, with why; one on its way is left to its send's own end. */
+  holdQueued(paneId: string, fault: Fault): void {
+    const owners = new Set<Owner>();
+    for (const item of this.records.values()) {
+      if (item.paneId !== paneId || item.inFlight || item.message.state !== "queued") continue;
+      item.message.state = "held"; item.message.error = fault;
+      owners.add(item.owner);
+    }
+    for (const owner of owners) this.publish(owner, paneId);
   }
 
   private publish(owner: Owner, paneId: string, removed?: Removed[]): void { this.changed(owner, paneId, this.list(owner, paneId), removed); }
 
   private finish(item: PendingRecord<Owner, Lease>, outcome: Removed["outcome"]): void {
     this.records.delete(item.message.id);
-    this.removed.set(item.message.id, { owner: item.owner, paneId: item.paneId, outcome, at: this.now() });
+    this.removed.set(item.message.id, { owner: item.owner, paneId: item.paneId, outcome, at: this.elapsed() });
     this.publish(item.owner, item.paneId, [{ id: item.message.id, outcome }]);
   }
 
@@ -179,7 +215,7 @@ export class PendingInputs<Owner, Lease> {
     // an accepted message can never run out of room or evict a recent withdrawal.
     for (const [id, receipt] of this.removed) {
       if (this.records.size + this.removed.size < MAX_PENDING_DISPOSITIONS) break;
-      if (this.now() - receipt.at >= CLOSED_RETENTION_MS) this.removed.delete(id);
+      if (this.elapsed() - receipt.at >= CLOSED_RETENTION_MS) this.removed.delete(id);
     }
     if (this.records.size + this.removed.size >= MAX_PENDING_DISPOSITIONS) {
       throw new PendingInputError("pending_limit", "Too many recent pending-message outcomes are retained; try again later");
@@ -290,7 +326,7 @@ export class PendingInputs<Owner, Lease> {
   }
 
   /** The pane ended: its held messages stay with their owners, its status and turn gate go. */
-  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); }
+  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.waits.delete(paneId); }
 
   private apply(paneId: string, status: AgentStatus): void {
     this.statuses.set(paneId, status);
@@ -369,7 +405,13 @@ export class PendingInputs<Owner, Lease> {
     for (const owner of owners) { this.publish(owner, from); this.publish(owner, to); }
   }
 
-  close(owner: Owner): void { this.hold(owner); this.closed.set(owner, this.now()); }
+  close(owner: Owner): void {
+    // a message held already is told again as its connection ends, so the close keeps its held receipt too
+    const held = new Set([...this.records.values()].filter((item) => item.owner === owner && item.message.state === "held" && !item.inFlight).map((item) => item.paneId));
+    this.hold(owner);
+    for (const pane of held) this.publish(owner, pane);
+    this.closed.set(owner, this.elapsed());
+  }
 
   expire(): void {
     this.expireResends();
@@ -379,7 +421,7 @@ export class PendingInputs<Owner, Lease> {
         this.gates.delete(paneId);
       }
     }
-    for (const [owner, closedAt] of this.closed) if (this.now() - closedAt >= CLOSED_RETENTION_MS) {
+    for (const [owner, closedAt] of this.closed) if (this.elapsed() - closedAt >= CLOSED_RETENTION_MS) {
       for (const [id, item] of this.records) if (item.owner === owner && !item.inFlight) {
         if (item.message.state === "uncertain") this.finish(item, "dismissed");
         else this.records.delete(id);

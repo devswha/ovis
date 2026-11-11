@@ -13,7 +13,7 @@ import type { WebSocketHandler } from "bun";
 import type { SessionSnapshot } from "../../shared/protocol.ts";
 import type { DeviceStore } from "../devices.ts";
 import { ping } from "../herdr/client.ts";
-import { servingCore } from "../herdr-core/runtime.ts";
+import { capabilities } from "../runtime/capabilities.ts";
 import type { PreferenceStore } from "../preferences.ts";
 import { type OmpLookups, OpenCodePromptState, shownPromptText } from "../prompt.ts";
 import { attachableIdentity, sidecarAvailable } from "../pty/sidecar.ts";
@@ -77,11 +77,11 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
   let stopped = false;
   const { attachments, conversations, reconcileOutput, closeAttachment, paneMoved, detachClaimed, dropClaims, sight, poke, drainOutput, terminalFrames } = createTerminalRegistry({ options, clients, stopped: () => stopped, terminalAttach, holdFor, heldRetry, retryFor, relookupFor, holdPending: (owner, paneId) => holdPending(owner, paneId), holdPendingPane: (paneId, fault) => holdPendingPane(paneId, fault), attached: (client, paneId) => attached(client, paneId), transcriptChanged: (paneId) => reconcilePiDeliveries(paneId), inputReady: (paneId) => drainPending(paneId), end: (client, reason) => end(client, reason) });
 
-  const { serialize, settleAfterTyping, lastTyped, inputFrames } = createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight, poke, terminalAttach, terminalAttachKnown: () => terminalAttachKnown, mayType: (client) => mayType(client), authorizeSocket: (client) => authorizeSocket(client) });
+  const { serialize, settleAfterTyping, lastTyped, typedInto, inputFrames } = createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight, poke, terminalAttach, terminalAttachKnown: () => terminalAttachKnown, mayType: (client) => mayType(client), authorizeSocket: (client) => authorizeSocket(client) });
 
   const submitText = createSubmitText({ options, lastTyped, attachments, terminalAttach, SUBMIT_DEADLINE_MS, TYPED_SETTLE_MS, DRAFT_CLEAR_WAIT_MS, DRAFT_CLEAR_POLL_MS, SUBMIT_DELAY_MS });
 
-  const { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries } = createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, submitText, authorizeSocket: (client) => authorizeSocket(client), clientSnapshot: () => clientSnapshot(), omo: { sessionOf: (paneId) => omo.sessionOf(paneId) }, queueHeld: (paneId) => queueHeld(paneId), SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS });
+  const { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, attached, closeConnection, reconcilePiDeliveries } = createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, typedInto, submitText, authorizeSocket: (client) => authorizeSocket(client), clientSnapshot: () => clientSnapshot(), omo: { sessionOf: (paneId) => omo.sessionOf(paneId) }, queueHeld: (paneId, fresh) => queueHeld(paneId, fresh), SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS });
 
   // the watches read OpenCode's forms and omp's sessions into a state of their own: the route's entries, drafts and
   // lookups are its answers' (the route's drafts are only read, for the step an answer moved its card to)
@@ -95,7 +95,7 @@ export function createCore({ options, devices, preferences, usage, usageLogin, b
     // the messages first: the old ID's terminal closing holds what it still leases
     paneMoved: (from, to) => { movePendingPane(from, to); paneMoved(from, to); } });
   const socketHandlers = createSocket({
-    clients, present, stopped: () => stopped, admit, setRole, watchable: () => !servingCore(), terminalHistory: () => servingCore(), watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime: currentHerdrLifetime, browserSnapshot, countVisit, drainOutput,
+    clients, present, stopped: () => stopped, admit, setRole, watchable: () => capabilities().attach === "pty-cli", terminalHistory: () => capabilities().attach !== "pty-cli", watchPane, unwatchPane, end, holdPending, attachments, clientSnapshot, herdrLifetime: currentHerdrLifetime, browserSnapshot, countVisit, drainOutput,
     // each frame type by name, with the handler of the module that owns it: anything else on a frame object never
     // becomes a frame a client can send, and a type named twice fails the build instead of replacing a handler
     frames: {

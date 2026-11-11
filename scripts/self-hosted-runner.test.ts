@@ -1,9 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_LOCK_PORT, MAX_RUNS_LIMIT, applyHostLimits, maxRuns, ticketPorts } from "./check.ts";
 
 const script = fileURLToPath(new URL("./self-hosted-runner/run.sh", import.meta.url));
 const jobStarted = fileURLToPath(new URL("./self-hosted-runner/job-started.sh", import.meta.url));
@@ -48,7 +49,7 @@ function runRunner(options: {
   dockerExitCode?: number;
   failedSlot?: number;
   /** "present" writes a host env file and passes it, "missing" passes a path that does not exist */
-  envFile?: "present" | "missing" | "bare" | "secret" | "nul";
+  envFile?: "present" | "missing" | "bare" | "secret" | "nul" | "twice" | "shards";
   /** a grep on PATH that fails with a read error (exit 2), as on a file that passes -r but cannot be read */
   grepReadError?: boolean;
   /** more launcher arguments, after --count */
@@ -70,6 +71,10 @@ function runRunner(options: {
   defaultBranch?: string;
   /** branches the mirror holds; main's commit and lock are commitSha and lockBlob, any other branch's otherCommit and otherLock */
   branches?: string[];
+  /** the check slots: "no-volume" fails the volume's creation, "fail" every making of the files, "fail-later" every one after the launcher's first; "started-elsewhere" has another slot's loop start the keeper in the same moment */
+  slots?: "no-volume" | "fail" | "fail-later" | "started-elsewhere";
+  /** the slots' docker networks: "present" has them there already, "fail" fails their creation */
+  networks?: "present" | "fail";
 } = {}) {
   const { tempDir, args, env, logPath, envFile } = prepareRunner(options);
   try {
@@ -158,18 +163,50 @@ esac
     // one line per call: the Bun cache build's script spans several
     writeFileSync(join(binDir, "docker"), `#!/bin/sh
 printf 'docker %s\\n' "$(printf '%s' "$*" | tr '\\n' ' ')" >> "$RUNNER_TEST_LOG"
+for last; do :; done
 case "$1" in
   image) exit 0 ;;
-  # a slot's container an earlier launcher left running, while this file exists
-  # (its State.Running is the file's content: true while it runs its job, false once it stopped)
-  container) [ "$2" = inspect ] && [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && [ -e "$RUNNER_TEST_SLOT_HELD" ] && { cat "$RUNNER_TEST_SLOT_HELD"; exit 0; }; exit 1 ;;
+  # the check slots: their volume, and the making of their files in the keeper (the launcher's own
+  # first, then one before each runner)
+  volume) [ "\${RUNNER_TEST_SLOTS:-}" = no-volume ] && exit 1; exit 0 ;;
+  exec)
+    # docker refuses a container that does not run
+    [ -e "$RUNNER_TEST_LOG.keeper" ] || exit 1
+    echo made >> "$RUNNER_TEST_LOG.slots"
+    case "\${RUNNER_TEST_SLOTS:-}" in fail) exit 1 ;; fail-later) [ "$(wc -l < "$RUNNER_TEST_LOG.slots")" -gt 1 ] && exit 1 ;; esac
+    exit 0 ;;
+  # a slot's docker network: there once made, or from the start
+  network)
+    case "$2" in
+      inspect) [ "\${RUNNER_TEST_NETWORKS:-}" = present ] || [ -e "$RUNNER_TEST_LOG.network-$last" ] ;;
+      create) [ "\${RUNNER_TEST_NETWORKS:-}" = fail ] && exit 1; : > "$RUNNER_TEST_LOG.network-$last" ;;
+    esac
+    exit $? ;;
+  container)
+    [ "$2" = inspect ] || exit 1
+    # the check slots' keeper: running once started. One that another slot's loop is starting holds
+    # the name and runs only at the third look.
+    case "$last" in *-check-slots)
+      [ -e "$RUNNER_TEST_LOG.keeper" ] && { echo true; exit 0; }
+      [ -e "$RUNNER_TEST_LOG.keeper-looks" ] || exit 1
+      echo look >> "$RUNNER_TEST_LOG.keeper-looks"
+      [ "$(wc -l < "$RUNNER_TEST_LOG.keeper-looks")" -ge 3 ] || { echo false; exit 0; }
+      : > "$RUNNER_TEST_LOG.keeper"; echo true; exit 0 ;;
+    esac
+    # a slot's container an earlier launcher left running, while this file exists
+    # (its State.Running is the file's content: true while it runs its job, false once it stopped)
+    [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && [ -e "$RUNNER_TEST_SLOT_HELD" ] && { cat "$RUNNER_TEST_SLOT_HELD"; exit 0; }; exit 1 ;;
   # removing slot 1's own container (the launcher's other docker rm calls name the Bun cache build's)
-  rm) for last; do :; done; case "$last" in *-1) [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && rm -f "$RUNNER_TEST_SLOT_HELD" ;; esac; exit 0 ;;
+  rm) case "$last" in *-1) [ -n "\${RUNNER_TEST_SLOT_HELD:-}" ] && rm -f "$RUNNER_TEST_SLOT_HELD" ;; esac; exit 0 ;;
   run)
     # docker's own refusal of a CPU list the host does not have
     case " $* " in *" --cpuset-cpus 0-500 "*) echo "docker: Requested CPUs are not available" >&2; exit 125 ;; esac
-    # the launcher's check of its CPU list, and the shared network namespace container: neither reads a token
-    case " $* " in *" --entrypoint true "*|*" -d "*) exit 0 ;; esac
+    # the launcher's check of its CPU list, and the check slots' keeper: neither reads a token
+    case " $* " in
+      *" --entrypoint true "*) exit 0 ;;
+      # started-elsewhere: the name is taken by a keeper another slot's loop is starting
+      *" -d "*) [ "\${RUNNER_TEST_SLOTS:-}" = started-elsewhere ] && { : > "$RUNNER_TEST_LOG.keeper-looks"; exit 125; }; : > "$RUNNER_TEST_LOG.keeper"; exit 0 ;;
+    esac
     shift
     name=""
     while [ "$#" -gt 0 ]; do
@@ -255,11 +292,19 @@ case "$1" in
 esac
 exit 0
 `);
+    // The launcher's wait before every container of a slot is logged and not sat out; every other
+    // sleep of the launcher is the system's own.
+    const sleep = spawnSync("bash", ["-c", "command -v sleep"], { encoding: "utf8" }).stdout.trim();
+    writeFileSync(join(binDir, "sleep"), `#!/bin/sh
+if [ "$*" = 2 ]; then printf 'sleep 2\\n' >> "$RUNNER_TEST_LOG"; exit 0; fi
+exec "${sleep}" "$@"
+`);
+    chmodSync(join(binDir, "sleep"), 0o755);
     chmodSync(join(binDir, "gh"), 0o755);
     chmodSync(join(binDir, "docker"), 0o755);
     chmodSync(join(binDir, "git"), 0o755);
     // a sleep named by its path in this run's directory, so a test can find one left running
-    copyFileSync(spawnSync("bash", ["-c", "command -v sleep"], { encoding: "utf8" }).stdout.trim(), join(binDir, "hang-sleep"));
+    copyFileSync(sleep, join(binDir, "hang-sleep"));
     chmodSync(join(binDir, "hang-sleep"), 0o755);
     // FIFOs: the test waits for the hang, and the gh stub for the test, by blocking on them, not polling
     if (options.hang) spawnSync("mkfifo", [join(tempDir, "hung"), join(tempDir, "token-gate")]);
@@ -268,6 +313,8 @@ exit 0
     if (options.envFile === "bare") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=6\nGH_TOKEN\n");
     if (options.envFile === "secret") writeFileSync(envFile, "# P620\nCHECK_HOST_MAX_RUNS=6\nGH_TOKEN=ghp_synthetic_secret\n");
     if (options.envFile === "nul") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=6\nCHECK_HOST_TEST_SHARDS=6\u0000\n");
+    if (options.envFile === "twice") writeFileSync(envFile, "CHECK_HOST_MAX_RUNS=3\nCHECK_HOST_TEST_SHARDS=6\nCHECK_HOST_MAX_RUNS=5\n");
+    if (options.envFile === "shards") writeFileSync(envFile, "CHECK_HOST_TEST_SHARDS=6\n");
     if (options.grepReadError) {
       writeFileSync(join(binDir, "grep"), "#!/bin/sh\necho 'grep: read error' >&2\nexit 2\n");
       chmodSync(join(binDir, "grep"), 0o755);
@@ -293,6 +340,8 @@ exit 0
       ...(options.hang === "build" ? { RUNNER_TEST_HANG_BUILD: "1" } : {}),
       ...(options.hang === "ls-remote" ? { RUNNER_TEST_HANG_LSREMOTE: "1" } : {}),
       ...(options.stubborn ? { RUNNER_TEST_STUBBORN: options.stubborn === "helper" ? "helper" : "1" } : {}),
+      ...(options.slots ? { RUNNER_TEST_SLOTS: options.slots } : {}),
+      ...(options.networks ? { RUNNER_TEST_NETWORKS: options.networks } : {}),
       RUNNER_TEST_DEFAULT_BRANCH: options.defaultBranch ?? "main",
       RUNNER_TEST_BRANCHES: (options.branches ?? ["main"]).join(" "),
       XDG_CACHE_HOME: options.cacheHome ?? join(tempDir, "cache"),
@@ -354,7 +403,7 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     for (const run of runs) expect(run).toContain("--ulimit core=0");
   });
 
-  it("hands a host env file to every runner container, never to the network namespace one", () => {
+  it("hands a host env file to every runner container, never to the check slots' keeper", () => {
     const { result, calls, envFile } = runRunner({ count: 2, envFile: "present" });
     expect(result.status).toBe(0);
     const lines = calls.split("\n");
@@ -392,7 +441,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const mode = (path: string) => spawnSync("stat", ["-c", "%a", path], { encoding: "utf8" }).stdout.trim();
       const first = join(outboxes, `herdr-ci-${host}-1`);
       expect([mode(join(root, "entries")), mode(join(root, "used")), mode(first)]).toEqual(["755", "755", "1777"]);
-      expect(runRunner().calls).not.toContain("build-cache");
+      // what the launcher hands a runner for the cache, not the words: the temp directory's own name may hold them
+      expect(runRunner().calls).not.toMatch(/:\/build-cache|OVIS_BUILD_CACHE_|build-cache-locks/);
       // what an earlier job left in a directory of its outbox, the host user cannot delete: a container as the runners' user does
       mkdirSync(join(first, "junk"), { recursive: true });
       writeFileSync(join(first, "junk/blob"), "x");
@@ -400,6 +450,19 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       const again = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
       expect(again.calls.split("\n").filter((call) => call.includes(`-v ${first}:/outbox `) && call.includes("--user 1001:1001"))).toHaveLength(1);
       expect(again.calls.split("\n").filter((call) => call.includes(`--cap-add DAC_OVERRIDE --user 0:0 -v ${outboxes}/.taken:/taken `)).length).toBeGreaterThanOrEqual(1);
+      // an outbox that cannot be emptied (here: one this user may not write) still holds the earlier job's claim:
+      // its runner starts without the build cache, so nothing reads that claim as the new job's
+      writeFileSync(join(first, `${"a".repeat(64)}.claim`), "7 1\n");
+      chmodSync(first, 0o555);
+      try {
+        const kept = runRunner({ stateHome, args: ["--build-cache", join(home, "shm")] });
+        expect(kept.result.stderr).toContain("its build cache outbox could not be emptied: starting it without the build cache");
+        const started = kept.calls.split("\n").filter((call) => call.includes(`--name herdr-ci-${host}-1 `));
+        expect(started).toHaveLength(1);
+        expect(started[0]).not.toMatch(/:\/build-cache|OVIS_BUILD_CACHE_|build-cache-locks/);
+      } finally {
+        chmodSync(first, 0o1777);
+      }
       for (const mb of ["0", "00", "0000"]) expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-mb", mb] }).result.status).toBe(2);
       expect(runRunner({ args: ["--build-cache", join(home, "shm"), "--build-cache-writer", "a b"] }).result.status).toBe(2);
     } finally {
@@ -411,8 +474,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     const { result, calls } = runRunner({ count: 2, args: ["--cpuset-cpus", "0-95"] });
     expect(result.status).toBe(0);
     const runs = calls.split("\n").filter((call) => call.startsWith("docker run "));
-    // the network namespace container (the stub never reports it running, so each runner starts it again) and both runners, each pinned
-    expect(runs.filter((call) => call.startsWith("docker run --cpuset-cpus 0-95 -d ")).length).toBeGreaterThanOrEqual(1);
+    // the check slots' keeper and both runners, each pinned
+    expect(runs.filter((call) => call.startsWith("docker run --cpuset-cpus 0-95 -d "))).toHaveLength(1);
     expect(runs.filter((call) => runnerRun.test(call))).toHaveLength(2);
     for (const call of runs) expect(call).toContain("--cpuset-cpus 0-95 ");
     expect(runRunner().calls).not.toContain("--cpuset-cpus");
@@ -439,9 +502,14 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
       expect(calls()).toMatch(/docker container inspect .*herdr-ci-\S+-1/);
       expect(calls()).not.toContain("registration-token");
       expect(calls().split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+      // the two seconds before a container count from the end of the one before: not yet
+      expect(calls()).not.toContain("sleep 2");
       rmSync(held);
       expect(await Promise.race([child.exited, Bun.sleep(LOADED_BOUND_MS).then(() => "still running")])).toBe(0);
-      expect(calls().split("\n").filter((call) => runnerRun.test(call))).toHaveLength(1);
+      const lines = calls().split("\n");
+      expect(lines.filter((call) => runnerRun.test(call))).toHaveLength(1);
+      expect(lines.indexOf("sleep 2")).toBeGreaterThan(lines.findLastIndex((call) => /docker container inspect .*herdr-ci-\S+-1$/.test(call)));
+      expect(lines.indexOf("sleep 2")).toBeLessThan(lines.findIndex((call) => runnerRun.test(call)));
     } finally {
       child.kill("SIGKILL");
       await child.exited;
@@ -535,25 +603,170 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
     expect(calls.split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
   });
 
-  it("starts every runner in one shared network namespace, never the host's, and stops it last", () => {
+  it("gives every slot a docker network of its own, never the host's or another container's, and removes them at its stop", () => {
     const { result, calls } = runRunner({ count: 2 });
     expect(result.status).toBe(0);
     const lines = calls.split("\n");
-    const namespace = lines.findIndex((call) => /^docker run -d .*--entrypoint sleep .* infinity$/.test(call));
-    expect(namespace).toBeGreaterThanOrEqual(0);
-    const name = lines[namespace]!.match(/--name (\S+)/)![1]!;
-    expect(name).toMatch(/^herdr-ci-.+-net$/);
-    expect(lines[namespace]).toContain("--cap-drop ALL");
-    expect(lines[namespace]).not.toContain("--network");
     const runners = lines.map((call, index) => ({ call, index })).filter(({ call }) => runnerRun.test(call));
     expect(runners).toHaveLength(2);
-    for (const { call, index } of runners) {
-      expect(index).toBeGreaterThan(namespace);
-      expect(call).toContain(`--network container:${name}`);
-      expect(call).not.toContain("--network host");
+    const networks = runners.map(({ call, index }) => {
+      const network = `${call.match(/--name (\S+)/)![1]!}-net`;
+      // its own, and no other: not the host's, not another container's namespace
+      expect(call.match(/--network \S+/g)).toEqual([`--network ${network}`]);
+      // made before its runner starts, as a bridge network of docker's
+      const made = lines.indexOf(`docker network create --driver bridge ${network}`);
+      expect(made).toBeGreaterThanOrEqual(0);
+      expect(made).toBeLessThan(index);
+      return network;
+    });
+    expect(new Set(networks).size).toBe(2);
+    // removed once every runner container has stopped
+    const lastStop = Math.max(...lines.map((call, index) => (/^docker stop -t 30 herdr-ci-\S+-\d+$/.test(call) ? index : -1)));
+    for (const network of networks) expect(lines.indexOf(`docker network rm ${network}`)).toBeGreaterThan(lastStop);
+    // a network that is there is used as it is
+    const again = runRunner({ count: 2, networks: "present" });
+    expect(again.result.status).toBe(0);
+    expect(again.calls).not.toContain("docker network create");
+    expect(again.calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(2);
+  });
+
+  it("starts no runner, and asks for no token, in a slot whose network cannot be made", () => {
+    const { result, calls } = runRunner({ networks: "fail" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/\[herdr-ci-\S+-1\] could not make the docker network herdr-ci-\S+-1-net; retrying in 30s/);
+    expect(calls).not.toContain("registration-token");
+    expect(calls.split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+  });
+
+  it("keeps check.ts's slots as lock files in a volume every runner mounts, made by a keeper with no network and no capability, and stops it last", () => {
+    const { result, calls } = runRunner({ count: 2 });
+    expect(result.status).toBe(0);
+    const lines = calls.split("\n");
+    const host = spawnSync("hostname", ["-s"], { encoding: "utf8" }).stdout.trim();
+    const slots = `herdr-ci-${host}-check-slots`;
+    // RAM, small, and root's directory: a job cannot remove or replace a file in it
+    const volume = lines.indexOf(`docker volume create --driver local --opt type=tmpfs --opt device=tmpfs --opt o=size=1m,mode=0755,uid=0,gid=0 ${slots}`);
+    expect(volume).toBeGreaterThanOrEqual(0);
+    // one keeper, started once: what holds the name without running is removed first
+    const keepers = lines.map((call, index) => ({ call, index })).filter(({ call }) => call.startsWith("docker run -d "));
+    expect(keepers.map(({ call }) => call)).toEqual([`docker run -d --rm --name ${slots} --network none --security-opt no-new-privileges --cap-drop ALL --user 0:0 -v ${slots}:/check-slots --entrypoint sleep herdr-ci-runner:local infinity`]);
+    const removed = lines.indexOf(`docker rm ${slots}`);
+    expect(removed).toBeGreaterThan(volume);
+    expect(removed).toBeLessThan(keepers[0]!.index);
+    // the files: one for every port a run of check.ts would listen on, made in a directory that is root's alone
+    const ports = Array.from({ length: ticketPorts(DEFAULT_LOCK_PORT, MAX_RUNS_LIMIT, MAX_RUNS_LIMIT).at(-1)! - DEFAULT_LOCK_PORT + 1 }, (_, index) => DEFAULT_LOCK_PORT + index);
+    const made = lines.map((call, index) => ({ call, index })).filter(({ call }) => call.startsWith(`docker exec ${slots} sh -c `));
+    for (const { call } of made) {
+      // in RAM (docker makes a plain volume on disk for a container that names one that is not there), and root's alone
+      expect(call).toContain('cd /check-slots && [ "$(stat -c %u:%a .)" = 0:755 ] && [ "$(stat -f -c %T .)" = tmpfs ] || exit 1');
+      expect(call).toContain('for file; do : >> "$file" || exit 1; done; chmod 0666 "$@"');
+      expect(call.endsWith(` sh ${ports.join(" ")}`)).toBe(true);
     }
-    const stopped = lines.findIndex((call) => call.startsWith(`docker stop`) && call.endsWith(` ${name}`));
-    expect(stopped).toBeGreaterThan(Math.max(...lines.map((call, index) => (call.startsWith("docker stop") && !call.endsWith(` ${name}`) ? index : -1))));
+    // by the launcher before anything else of a slot, and again before each runner
+    expect(made).toHaveLength(3);
+    expect(made[0]!.index).toBeGreaterThan(keepers[0]!.index);
+    expect(made[0]!.index).toBeLessThan(lines.findIndex((call) => call.includes("registration-token")));
+    const runners = lines.map((call, index) => ({ call, index })).filter(({ call }) => runnerRun.test(call));
+    expect(runners).toHaveLength(2);
+    for (const { call } of runners) {
+      expect(call).toContain(` -v ${slots}:/check-slots `);
+      expect(call).toContain(" -e CHECK_SLOTS_DIR=/check-slots ");
+    }
+    expect(Math.max(...made.map(({ index }) => index))).toBeLessThan(Math.max(...runners.map(({ index }) => index)));
+    // stopped after every runner and every network of a slot
+    const stopped = lines.indexOf(`docker stop -t 5 ${slots}`);
+    expect(stopped).toBeGreaterThan(Math.max(...lines.map((call, index) => (/^docker (stop -t 30|network rm) /.test(call) ? index : -1))));
+    // and after it, what a launcher from before left when it was killed: the container whose network namespace its runners shared
+    expect(lines.indexOf(`docker stop -t 5 herdr-ci-${host}-net`)).toBeGreaterThan(stopped);
+  });
+
+  it("starts nothing when the check slots cannot be set up, and no runner once their files cannot be made", () => {
+    for (const slots of ["no-volume", "fail"] as const) {
+      const { result, calls } = runRunner({ count: 2, slots });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("cannot set up the check slots");
+      expect(calls).not.toContain("registration-token");
+      expect(calls).not.toMatch(/docker network (inspect|create)/);
+      expect(calls.split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+      // no keeper is started for a volume that is not there, and one that was started is not left behind
+      expect(calls.split("\n").filter((call) => call.startsWith("docker run -d "))).toHaveLength(slots === "no-volume" ? 0 : 1);
+      expect(calls).toMatch(/docker rm -f herdr-ci-\S+-check-slots\n/);
+    }
+    // the files gone later (the keeper killed, say): the slot starts no runner and asks for no token
+    const { result, calls } = runRunner({ slots: "fail-later" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/\[herdr-ci-\S+-1\] could not make the check slots in herdr-ci-\S+-check-slots; retrying in 30s/);
+    expect(calls).not.toContain("registration-token");
+    expect(calls).not.toMatch(/docker network (inspect|create)/);
+    expect(calls.split("\n").filter((call) => runnerRun.test(call))).toEqual([]);
+  });
+
+  it("makes the check slots' files in the keeper another slot's loop started in the same moment, once it runs", () => {
+    // Slot loops that find no keeper all start one. This launcher's own start fails on the name, and
+    // the keeper that holds it does not run yet at the first two looks: docker refuses to make the
+    // files in it until it does.
+    const { result, calls } = runRunner({ slots: "started-elsewhere" });
+    expect(result.status).toBe(0);
+    const lines = calls.split("\n");
+    // the files are made in it only once it runs: no making was tried before, which would have stopped the launcher
+    const looks = lines.map((call, index) => (/^docker container inspect .*-check-slots$/.test(call) ? index : -1)).filter((index) => index >= 0);
+    const made = lines.findIndex((call) => call.startsWith("docker exec "));
+    expect(looks.filter((index) => index < made)).toHaveLength(4);
+    expect(lines.filter((call) => call.startsWith("docker exec "))).toHaveLength(2);
+    expect(lines.filter((call) => call.startsWith("docker run -d "))).toHaveLength(1);
+    expect(lines.filter((call) => runnerRun.test(call))).toHaveLength(1);
+  });
+
+  it("names the host's run limit for a check.ts that takes its slots in the volume, and leaves one from before a limit it stops on", () => {
+    const limits = (envFile?: "present" | "twice" | "shards") => {
+      const { result, calls } = runRunner(envFile ? { envFile } : {});
+      expect(result.status).toBe(0);
+      const call = calls.split("\n").find((line) => runnerRun.test(line))!;
+      return { call, limit: / -e CHECK_SLOTS_MAX_RUNS=(\S+) /.exec(call)?.[1], sentence: / -e CHECK_HOST_MAX_RUNS=(.+?) (?:-e CHECK_SLOTS_MAX_RUNS=|--env-file |herdr-ci-runner:local$)/.exec(call)?.[1] };
+    };
+    // the file's CHECK_HOST_MAX_RUNS, the last one as docker itself takes a file's
+    expect(limits("present").limit).toBe("6");
+    expect(limits("twice").limit).toBe("5");
+    // a host that names none leaves the workflow's: the variable is not handed on, not even empty
+    expect(limits("shards").call).not.toContain("CHECK_SLOTS_MAX_RUNS");
+    expect(limits().call).not.toContain("CHECK_SLOTS_MAX_RUNS");
+    for (const { call, sentence } of [limits("present"), limits()]) {
+      // on the command line, where it outranks the file's own line
+      expect(sentence).toBeDefined();
+      expect(sentence).toContain("/check-slots");
+      expect(call).toContain(" -e CHECK_SLOTS_DIR=/check-slots ");
+      // what a check.ts from before does with it: it takes it for its run limit, and stops
+      const before: Record<string, string | undefined> = { CHECK_MAX_RUNS: "6", CHECK_HOST_MAX_RUNS: sentence };
+      applyHostLimits(before);
+      expect(() => maxRuns(before, 32)).toThrow(`not "${sentence}"`);
+    }
+  });
+
+  it("waits two seconds before every container of a slot, the first after its start included", () => {
+    // One slot: its calls are logged in the order its loop makes them. (Two slots' loops run side by
+    // side, and the stand-in sleep cannot say whose wait it is.)
+    const { result, calls } = runRunner();
+    expect(result.status).toBe(0);
+    const lines = calls.split("\n");
+    const waits = lines.map((call, index) => (call === "sleep 2" ? index : -1)).filter((index) => index >= 0);
+    expect(waits).toHaveLength(1);
+    // after the look for a container left in the slot's name, and before anything is made, asked or
+    // started for its own: the check slots' files (the launcher's own making of them came before
+    // the slot's loop), the network, the token, the runner
+    expect(waits[0]).toBeGreaterThan(lines.findLastIndex((call) => /^docker container inspect .*herdr-ci-\S+-1$/.test(call)));
+    const first = Math.min(
+      lines.findLastIndex((call) => call.startsWith("docker exec ")),
+      lines.findIndex((call) => call.startsWith("docker network ")),
+      lines.findIndex((call) => call.includes("registration-token")),
+      lines.findIndex((call) => runnerRun.test(call)),
+    );
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(waits[0]).toBeLessThan(first);
+    // and one wait for each slot's container
+    const two = runRunner({ count: 2 });
+    expect(two.result.status).toBe(0);
+    expect(two.calls.split("\n").filter((call) => call === "sleep 2")).toHaveLength(2);
+    expect(two.calls.split("\n").filter((call) => runnerRun.test(call))).toHaveLength(2);
   });
 
   it("registers the reserved slots with their own labels and every other slot with --labels", () => {
@@ -609,7 +822,8 @@ describe.skipIf(process.platform === "win32")("self-hosted runner launcher", () 
         expect(fetched).toBeGreaterThanOrEqual(0);
         expect(call).toContain(`-v ${cacheDir}:/cache:ro `);
         expect(call).toContain("-e GIT_ALTERNATE_OBJECT_DIRECTORIES=/cache/git/repo.git/objects ");
-        expect(call.match(/-v \S+/g)).toEqual([`-v ${cacheDir}:/cache:ro`]);
+        // no other mount of the host's: the check slots are a docker volume
+        expect(call.match(/-v \S+/g)).toEqual([expect.stringMatching(/^-v herdr-ci-\S+-check-slots:\/check-slots$/), `-v ${cacheDir}:/cache:ro`]);
         expect(call).toContain("--security-opt no-new-privileges --cap-drop ALL --pids-limit 8192 ");
         expect(call).toEndWith(" herdr-ci-runner:local");
       }
@@ -881,8 +1095,21 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
   const key = "a".repeat(64);
   const slot = "herdr-ci-host-3";
 
-  /** A job's outbox holding one build, promoted against a GitHub that answers as `github` says. */
-  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean } = {}, build: "files" | "link" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
+  /**
+   * A job's outbox holding one build, promoted against a GitHub that answers as `github` says. The
+   * slot's container registered runner 31, and the run's job started on it ten seconds after the
+   * container did. `jobStarted` starts the job that many seconds after the container instead (a
+   * negative number: before it, as an earlier container's job), `runnerId` puts it on another
+   * runner, `registered` names the runner registered under the slot's name now (null: none), and
+   * `container` says what docker answers for the slot: nothing at all, one that never started, one
+   * that has stopped, one that started after the build was left in the outbox, or another
+   * container by the time GitHub has answered about the jobs. `older` has the system say that the
+   * claim, or the build, was last changed one millisecond before the container started. `linked`
+   * gives files a second name (a hard link): "marker" the claim and the build, as restore markers,
+   * which the promoter removes, in an outbox whose container started just after they were written;
+   * "claim" or "tar" that file alone, under a name nothing removes.
+   */
+  function promote(github: { event?: string; branch?: string; headRepo?: string; actor?: string; author?: string; prSha?: string; runner?: string; status?: string; fail?: boolean; runnerId?: number; jobStarted?: number; registered?: number | null; container?: "none" | "created" | "stopped" | "younger" | "changes"; older?: "claim" | "tar"; linked?: "marker" | "claim" | "tar" } = {}, build: "files" | "link" | "sealed" = "files", writer = "devswha", junkSlot: false | "claim" | "tar" = false, used = false, claim = "7 1\n", extraClaims = 0, ownManifest = false, later: string[] = [], slotHeldOffUntilNow = false, thenGithub?: typeof github) {
     const dir = mkdtempSync(join(tmpdir(), "herdr-build-cache-promote-test-"));
     try {
       const bin = join(dir, "bin");
@@ -896,7 +1123,14 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
       writeFileSync(join(dist, "assets/a.js"), "a");
       if (build === "link") symlinkSync("/etc/hostname", join(dist, "leak"));
       if (ownManifest) writeFileSync(join(dist, ".manifest"), "the app's own");
+      // a directory nothing can be removed from as it is, beside a file nobody may read
+      if (build === "sealed") chmodSync(join(dist, "assets"), 0o555);
       spawnSync("tar", ["-cf", join(outbox, `${key}.tar`), "-C", dist, "."]);
+      if (build === "sealed") {
+        writeFileSync(join(dir, "secret"), "s");
+        spawnSync("tar", ["--mode=0000", "-rf", join(outbox, `${key}.tar`), "-C", dir, "./secret"]);
+        chmodSync(join(dist, "assets"), 0o755);
+      }
       writeFileSync(join(outbox, `${key}.claim`), claim);
       // more claims in the same outbox: a job flooding the launcher's GitHub quota
       for (let i = 0; i < extraClaims; i++) {
@@ -914,17 +1148,38 @@ describe.skipIf(process.platform === "win32")("build cache promotion", () => {
         chmodSync(join(junk, "x"), 0o000);
         writeFileSync(join(outboxes, "herdr-ci-host-1", `${"b".repeat(64)}.claim`), "7 1\n");
       }
-      // a restore's use of an entry another run left, and a used marker that is a link
+      // a restore's use of an entry in another run's directory, and a used marker that is a link
       if (used) {
-        mkdirSync(join(root, "entries", "c".repeat(64)));
+        mkdirSync(join(root, "entries", "3", "c".repeat(64)), { recursive: true });
         writeFileSync(join(outbox, `used-${"c".repeat(64)}`), "");
         symlinkSync("/etc/hostname", join(outbox, `used-${"d".repeat(64)}`));
       }
       const sha = "5".repeat(40);
       const answer = (github: NonNullable<Parameters<typeof promote>[0]>) => {
       if (github.fail) writeFileSync(join(dir, "fail"), ""); else rmSync(join(dir, "fail"), { force: true });
+      // what docker names as the slot's container, and whether it is another once GitHub was asked about the jobs
+      // When the slot's container started. The build above was written just now: the fixed day is before
+      // it, an hour from now after it, and with "marker" it started 20 ms after the claim was written.
+      let started = Date.UTC(2026, 10, 10, 12, 0, 0) + 123;
+      if (github.container === "younger") started = Date.now() + 3_600_000;
+      if (github.linked === "marker") for (const [index, file] of [`${key}.claim`, `${key}.tar`].entries()) linkSync(join(outbox, file), join(outbox, `used-${String(index + 1).repeat(64)}`));
+      else if (github.linked) linkSync(join(outbox, `${key}.${github.linked}`), join(outbox, "spare"));
+      if (github.linked === "marker") {
+        started = Math.ceil(statSync(join(outbox, `${key}.claim`)).ctimeMs) + 20;
+        // the pass comes after that start: the system's time for a file is only as fine as its clock's tick
+        while (Date.now() < started + 20);
+      }
+      // as `docker container inspect -f '{{.Id}} {{.State.Running}} {{.State.StartedAt}}'` prints it
+      if (github.container === "none") rmSync(join(dir, "container"), { force: true });
+      else if (github.container === "created") writeFileSync(join(dir, "container"), "c1 false 0001-01-01T00:00:00Z\n");
+      else writeFileSync(join(dir, "container"), `c1 ${github.container !== "stopped"} ${new Date(started).toISOString()}\n`);
+      if (github.container === "changes") writeFileSync(join(dir, "next-container"), `c2 true ${new Date(started + 30_000).toISOString()}\n`); else rmSync(join(dir, "next-container"), { force: true });
+      if (github.older) writeFileSync(join(dir, "older"), `${github.older} ${((started - 1) / 1000).toFixed(3)}\n`); else rmSync(join(dir, "older"), { force: true });
+      const registered = github.registered === undefined ? 31 : github.registered;
+      const jobStarted = new Date(Math.floor(started / 1000) * 1000 + (github.jobStarted ?? 10) * 1000).toISOString().replace(/\.\d+Z$/, "Z");
       const answers: Record<string, unknown> = {
-        jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress" }] },
+        jobs: { jobs: [{ runner_name: github.runner ?? slot, status: github.status ?? "in_progress", runner_id: github.runnerId ?? 31, started_at: jobStarted }] },
+        runners: { runners: [{ name: "herdr-ci-host-9", id: 9 }, ...(registered === null ? [] : [{ name: slot, id: registered }])] },
         run: { event: github.event ?? "pull_request", head_branch: github.branch ?? "feature", head_sha: sha, head_repository: { full_name: github.headRepo ?? "owner/repo" }, triggering_actor: { login: github.actor ?? "devswha" }, pull_requests: [{ number: 5 }] },
         pull: { user: { login: github.author ?? "devswha" }, head: { sha: github.prSha ?? sha } },
       };
@@ -936,7 +1191,11 @@ echo "$2" >> "\${0%/bin/gh}/gh.log"
 # GitHub failing for a moment
 [ -e "\${0%/bin/gh}/fail" ] && exit 1
 case "$2" in
-  repos/owner/repo/actions/runs/7/attempts/[12]/jobs*) cat "\${0%/bin/gh}/jobs.json" ;;
+  repos/owner/repo/actions/runs/7/attempts/[12]/jobs*)
+    cat "\${0%/bin/gh}/jobs.json"
+    # the slot's job ended and its next container started while GitHub answered
+    if [ -e "\${0%/bin/gh}/next-container" ]; then mv "\${0%/bin/gh}/next-container" "\${0%/bin/gh}/container"; fi ;;
+  repos/owner/repo/actions/runners) cat "\${0%/bin/gh}/runners.json" ;;
   repos/owner/repo/actions/runs/7) cat "\${0%/bin/gh}/run.json" ;;
   repos/owner/repo/pulls/5) cat "\${0%/bin/gh}/pull.json" ;;
   repos/owner/repo) echo main ;;
@@ -945,6 +1204,21 @@ case "$2" in
 esac
 `);
       chmodSync(join(bin, "gh"), 0o755);
+      // docker container inspect <slot>: the slot's container, when it has one
+      writeFileSync(join(bin, "docker"), `#!/bin/sh
+[ "$1 $2" = "container inspect" ] && [ -f "\${0%/bin/docker}/container" ] || { echo "Error: No such container" >&2; exit 1; }
+cat "\${0%/bin/docker}/container"
+`);
+      chmodSync(join(bin, "docker"), 0o755);
+      // stat -c %.3Z <file>: when the file was last changed, which the test says for the claim or the build; the system's stat otherwise
+      writeFileSync(join(bin, "stat"), `#!/bin/sh
+if [ "$1 $2" = "-c %.3Z" ] && [ -f "\${0%/bin/stat}/older" ]; then
+  read -r which at < "\${0%/bin/stat}/older"
+  case "$3" in *."$which") echo "$at"; exit 0 ;; esac
+fi
+PATH="\${PATH#*:}" exec stat "$@"
+`);
+      chmodSync(join(bin, "stat"), 0o755);
       const pass = () => spawnSync("bash", [promoteScript, "owner/repo", root, outboxes, writer, "2048", ...(junkSlot ? ["herdr-ci-host-1"] : []), slot], { encoding: "utf8", env: { ...process.env, PATH: [bin, process.env.PATH].join(delimiter) } });
       const result = pass();
       // later passes, each after the job claimed again (the claim's run and attempt), each for another build
@@ -962,12 +1236,17 @@ esac
         }
         pass();
       });
-      const entry = join(root, "entries", key);
+      // an entry is filed under the run GitHub confirmed for the claim: 7 in every claim taken in here
+      const entry = join(root, "entries", "7", key);
+      const runs = readdirSync(join(root, "entries"));
       return {
         status: result.status,
         stderr: result.stderr,
         outbox: readdirSync(outbox),
-        entries: readdirSync(join(root, "entries")),
+        /** what entries/ holds itself: a directory per run with an entry */
+        runs,
+        /** every entry, as `<run id>/<key>` */
+        entries: runs.flatMap((run) => readdirSync(join(root, "entries", run)).map((name) => `${run}/${name}`)),
         manifest: existsSync(join(entry, ".manifest")) ? readFileSync(join(entry, ".manifest"), "utf8") : null,
         used: existsSync(join(root, "used")) ? readdirSync(join(root, "used")) : [],
         ghCalls: existsSync(join(dir, "gh.log")) ? readFileSync(join(dir, "gh.log"), "utf8").split("\n").filter(Boolean) : [],
@@ -984,7 +1263,7 @@ esac
   it("takes in the build of a pull request the writer opened and pushed, with the manifest readers check", () => {
     const run = promote();
     expect(run.status).toBe(0);
-    expect(run.entries).toEqual([key]);
+    expect(run.entries).toEqual([`7/${key}`]);
     expect(run.manifest).toBe(`${sha("a")}  ./assets/a.js\n${sha("<p>")}  ./index.html\n`);
     expect(run.outbox).toEqual([`judged-${key}`]);
   });
@@ -992,13 +1271,13 @@ esac
   it("goes on to the other slots past a slot whose outbox holds a directory named like a claim", () => {
     const run = promote({}, "files", "devswha", "claim");
     expect(run.status).toBe(0);
-    expect(run.entries).toEqual([key]);
+    expect(run.entries).toEqual([`7/${key}`]);
   });
 
   it("goes on taking in trusted builds past a tar this user cannot delete", () => {
     const run = promote({}, "files", "devswha", "tar");
     expect(run.status).toBe(0);
-    expect(run.entries).toEqual([key]);
+    expect(run.entries).toEqual([`7/${key}`]);
   });
 
   it("stamps an entry's use from a restore's marker in the host's own directory, and drops the marker", () => {
@@ -1017,7 +1296,7 @@ esac
 
   it("asks GitHub about a refused run once: its claims after that are refused without a call", () => {
     const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n", "7 1\n", "7 1\n"]);
-    expect(run.entries).toEqual([]);
+    expect(run.runs).toEqual([]);
     expect(run.callsBefore[0]).toBeGreaterThan(0);
     expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
     expect(run.outbox.filter((name) => !name.startsWith("judged-"))).toEqual([]);
@@ -1025,7 +1304,7 @@ esac
 
   it("holds off a slot whose claim was refused, whatever run its next claims name", () => {
     const run = promote({ author: "someone" }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n", "9 1\n", "7 2\n"]);
-    expect(run.entries).toEqual([]);
+    expect(run.runs).toEqual([]);
     expect(run.ghCalls).toHaveLength(run.callsBefore[0]!);
   });
 
@@ -1067,11 +1346,11 @@ esac
   });
 
   it("refuses a build holding a file named like the manifest", () => {
-    expect(promote({}, "files", "devswha", false, false, "7 1\n", 0, true).entries).toEqual([]);
+    expect(promote({}, "files", "devswha", false, false, "7 1\n", 0, true).runs).toEqual([]);
   });
 
   it("takes in the build of a push to the default branch", () => {
-    expect(promote({ event: "push", branch: "main", actor: "someone" }).entries).toEqual([key]);
+    expect(promote({ event: "push", branch: "main", actor: "someone" }).entries).toEqual([`7/${key}`]);
   });
 
   it("never takes in a build from a job it cannot trust, and deletes it", () => {
@@ -1091,8 +1370,95 @@ esac
     ];
     for (const run of refused) {
       expect(run.status).toBe(0);
-      expect(run.entries).toEqual([]);
+      // no entry, and no directory left for the run either
+      expect(run.runs).toEqual([]);
       expect(run.outbox).toEqual([`judged-${key}`]);
     }
+  });
+
+  it("takes in a build only while the container whose job wrote its claim is still the slot's", () => {
+    // the slot's job ended and its next container started while GitHub answered: its word is about that one's job
+    const moved = promote({ container: "changes" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(moved.stderr).toContain("the container that built it is no longer the slot's");
+    expect(moved.callsBefore[0]).toBeGreaterThan(0);
+    // the next container's own claim is taken in: the slot was not held off
+    expect(moved.entries).toEqual([`7/${"0".padStart(64, "f")}`]);
+    // a slot without a running container: nothing GitHub says could be about the claim's job, so it is not asked
+    for (const container of ["none", "created", "stopped"] as const) {
+      const none = promote({ container });
+      expect(none.status).toBe(0);
+      expect(none.runs).toEqual([]);
+      expect(none.ghCalls).toEqual([]);
+      expect(none.outbox).toEqual([`judged-${key}`]);
+    }
+  });
+
+  it("refuses a build an earlier job left in the outbox, which the slot's container did not write", () => {
+    // the launcher could not empty the outbox before it started this container: the claim names a run this container's job is of
+    const left = promote({ container: "younger" }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(left.stderr).toContain("written before the slot's container started");
+    // GitHub was not asked about it, and the slot is not held off: the container's own build, written after it started, is taken in
+    expect(left.callsBefore[0]).toBe(0);
+    expect(left.entries).toEqual([`7/${"0".padStart(64, "f")}`]);
+    expect(left.outbox.sort()).toEqual([`judged-${"0".padStart(64, "f")}`, `judged-${key}`].sort());
+    // by the claim's time and by the build's, each to the millisecond (the container started at 12:00:00.123)
+    for (const older of ["claim", "tar"] as const) {
+      const one = promote({ older });
+      expect(one.stderr).toContain("written before the slot's container started");
+      expect(one.runs).toEqual([]);
+      expect(one.ghCalls).toEqual([]);
+    }
+  });
+
+  it("is not told a leftover is new by a second name of it: removing one changes the file's time", () => {
+    // the earlier job gave its claim and its build a second name each, as restore markers, which the promoter removes
+    const marked = promote({ linked: "marker" });
+    expect(marked.status).toBe(0);
+    expect(marked.runs).toEqual([]);
+    expect(marked.ghCalls).toEqual([]);
+    expect(marked.outbox).toEqual([`judged-${key}`]);
+    // and a claim or a build with a second name is not taken at all, whenever it was written
+    for (const linked of ["claim", "tar"] as const) {
+      const spare = promote({ linked });
+      expect(spare.runs).toEqual([]);
+      expect(spare.ghCalls).toEqual([]);
+      expect(spare.outbox.sort()).toEqual([`judged-${key}`, "spare"]);
+    }
+  });
+
+  it("refuses a claim naming the run of a killed container's job, which GitHub still lists as running on the runner the next container took over", () => {
+    // the container before was killed 13.5 minutes ago with its job running; this one registered over its
+    // runner and kept the id (config.sh --replace), so the name, the status and the runner all fit
+    const dead = promote({ jobStarted: -810 }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"]);
+    expect(dead.stderr).toContain("started before the slot's container did");
+    expect(dead.runs).toEqual([]);
+    // the claim is at fault, so its slot is held off: the next claim costs no call
+    expect(dead.callsBefore[0]).toBe(1);
+    expect(dead.ghCalls).toHaveLength(1);
+    // to the second: run.sh waits two before a slot's next container, so a job even one second older than
+    // this container is the one before's, and one that started in the container's own second is its own
+    expect(promote({ jobStarted: -2 }).runs).toEqual([]);
+    expect(promote({ jobStarted: -1 }).runs).toEqual([]);
+    expect(promote({ jobStarted: 0 }).entries).toEqual([`7/${key}`]);
+  });
+
+  it("refuses a claim naming a run whose job under the slot's name is on another runner than the one registered now", () => {
+    // a job of an earlier registration, which GitHub still lists as running
+    const stale = promote({ runnerId: 30 }, "files", "devswha", false, false, "7 1\n", 0, false, ["8 1\n"]);
+    expect(stale.runs).toEqual([]);
+    // the claim is at fault, so its slot is held off: the next claim costs no call
+    expect(stale.callsBefore[0]).toBe(2);
+    expect(stale.ghCalls).toHaveLength(2);
+    // no runner under the name any more (the job ended while GitHub was asked): refused, and the slot is not held off
+    const ended = promote({ registered: null }, "files", "devswha", false, false, "7 1\n", 0, false, ["7 1\n"], false, {});
+    expect(ended.stderr).toContain("no runner is registered as");
+    expect(ended.entries).toEqual([`7/${"0".padStart(64, "f")}`]);
+  });
+
+  it("leaves nothing in the cache of a refused build whose directories cannot be emptied as they are", () => {
+    const run = promote({}, "sealed");
+    expect(run.status).toBe(0);
+    expect(run.runs).toEqual([]);
+    expect(run.outbox).toEqual([`judged-${key}`]);
   });
 });

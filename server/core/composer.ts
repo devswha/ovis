@@ -4,6 +4,7 @@
  * itself (createSubmitText), handed the state it reads. Pending delivery and the immediate send
  * share them.
  */
+import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import { stripVTControlCharacters } from "node:util";
 import type { HerdrPane } from "../../shared/protocol.ts";
 import { displayWidth, secretPrompt } from "../../shared/secret-prompt.ts";
@@ -18,6 +19,7 @@ import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
 import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputBoxContent, claudeInputDraft, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
 import { registry } from "../dialogs/registry.ts";
+import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "../dialogs/claude.ts";
 import { type PendingIdentity, PendingInputError } from "../pending-input.ts";
 import { startOpenCodeWatch, openCodeSkillsToType, skillsNotAttached } from "../opencode-native.ts";
@@ -94,10 +96,10 @@ export const closeBackslash = (agent: string | null, text: string): string =>
   agent === "claude" ? text.replace(/\\(\u001b\[201~)?$/, "\\ $1") : text;
 
 /** How long after its process starts an omp that has not reported is waited for: from cold it takes up to about 20 s. */
-const OMP_STARTUP_MS = 30_000;
+export const OMP_STARTUP_MS = 30_000;
 
-/** Between the looks at an omp still starting (untilOmpReported). */
-const OMP_REPORT_POLL_MS = 250;
+/** Between the looks at an omp still starting (untilOmpReported, and the queue's own wait in pending.ts). */
+export const OMP_REPORT_POLL_MS = 250;
 
 /**
  * omp (18.12.3) draws its input box before it takes an Enter: it connects its submit handler only once
@@ -107,16 +109,23 @@ const OMP_REPORT_POLL_MS = 250;
  * send waits for the report (at most OMP_STARTUP_MS after the process started) and then sends once:
  * nothing is pressed after a send. An omp without the integration (nothing would report it), one that has
  * run longer, or one whose start is unknown is sent to at once, as before.
+ *
+ * Every send waits so. The immediate one, and a queued one a person sends (pending.ts dispatchPendingText),
+ * wait here, as part of the send; one the queue sends by itself waits for the same report before it is
+ * taken up (pending.ts waitForOmp). The pane it returns is `pane` itself when nothing was waited for, and
+ * a later read of it after a wait: what the caller read before that wait is older than the report.
  */
-async function untilOmpReported(paneId: string, pane: HerdrPane, inTime: () => void, pollMs: number, startupMs: number): Promise<HerdrPane> {
+export async function untilOmpReported(paneId: string, pane: HerdrPane, inTime: () => void, options: { ompReportPollMs?: number; ompStartupMs?: number },
+  /** `strict`: a look at omp's process that herdr does not answer fails the send (startingOmp); `waiting`: called once, when a wait begins */
+  { strict = false, waiting }: { strict?: boolean; waiting?: () => void } = {}): Promise<HerdrPane> {
+  const pollMs = options.ompReportPollMs ?? OMP_REPORT_POLL_MS, startupMs = options.ompStartupMs ?? OMP_STARTUP_MS;
   if (pane.agent_session?.source === "herdr:omp") return pane;
-  const omp = await ompProcess(paneId);
+  const starting = await startingOmp(paneId, pane, startupMs, strict);
   inTime();
-  const pid = omp?.pid ?? null;
-  const started = omp?.integrated ? processStartedAt(omp.pid) : null;
-  if (started === null || Date.now() >= started + startupMs) return pane;
+  if (starting === null) return pane;
+  waiting?.();
   let reported = false;
-  while (Date.now() < started + startupMs) {
+  while (Date.now() < starting.until) {
     await Bun.sleep(pollMs);
     inTime();
     pane = await paneGet(paneId);
@@ -126,15 +135,34 @@ async function untilOmpReported(paneId: string, pane: HerdrPane, inTime: () => v
   }
   // reported or out of time, a pane restarted into another omp meanwhile is not the one the message waited for
   // (a lookup that finds no omp proves nothing: the look above already found the pane's agent still omp)
-  const now = (await ompProcess(paneId))?.pid ?? null;
-  if (now !== null && now !== pid) throw new HerdrError("pending_target_changed", "The omp this message waited for was replaced while it started; nothing was sent");
+  const now = (await ompProcess(paneId).catch(() => null))?.pid ?? null;
+  if (now !== null && now !== starting.pid) throw new HerdrError("pending_target_changed", "The omp this message waited for was replaced while it started; nothing was sent");
   if (!reported) console.warn(`[omp] ${paneId}: herdr's omp integration reported no session within ${startupMs / 1000} s of omp starting; sending anyway`);
   return pane;
 }
 
-/** The pane's omp process, and whether it loads herdr's omp integration (ompLoadsIntegration); null with none. */
+/**
+ * The omp a send to this pane waits for (untilOmpReported): one that started moments ago with herdr's
+ * integration and has not reported its session, with when its start is given up on. null for any other.
+ * A look at its process that herdr does not answer says nothing either way. The immediate send takes it for
+ * no omp starting and sends, as it always did; `strict` (the queue) fails on it: not known is not ready, and
+ * a message typed into an omp that does not take input yet is one its row says was sent.
+ */
+async function startingOmp(paneId: string, pane: HerdrPane, startupMs: number, strict: boolean): Promise<{ pid: number; until: number } | null> {
+  if (pane.agent_session?.source === "herdr:omp") return null;
+  const omp = await ompProcess(paneId).catch((error: unknown) => { if (strict) throw error; return null; });
+  const started = omp?.integrated ? processStartedAt(omp.pid) : null;
+  return omp === null || started === null || Date.now() >= started + startupMs ? null : { pid: omp.pid, until: started + startupMs };
+}
+
+/** Until when a queued send to this pane would wait for its omp now (untilOmpReported); null when it would go at once. Fails when herdr does not say. */
+export async function ompStartingUntil(paneId: string, pane: HerdrPane, options: { ompStartupMs?: number }): Promise<number | null> {
+  return (await startingOmp(paneId, pane, options.ompStartupMs ?? OMP_STARTUP_MS, true))?.until ?? null;
+}
+
+/** The pane's omp process, and whether it loads herdr's omp integration (ompLoadsIntegration); null with none. Fails as herdr's answer does. */
 async function ompProcess(paneId: string): Promise<{ pid: number; integrated: boolean } | null> {
-  const info = await paneProcessInfo(paneId).catch(() => undefined);
+  const info = await paneProcessInfo(paneId);
   for (const candidate of info?.foreground_processes ?? []) {
     const argv = Array.isArray(candidate.argv) ? candidate.argv.map(String) : [];
     if (typeof candidate.pid !== "number" || !isOmpProcess(argv)) continue;
@@ -176,8 +204,11 @@ export const pendingIdentity = (pane: HerdrPane): PendingIdentity => ({
 });
 
 export const pendingText = (text: string): string => {
-  const normalized = text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
-  if (!normalized.trim() || normalized.length > 20_000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(normalized)) {
+  const written = withoutTrailingBreaks(text);
+  // a CRLF is read as one character, so a message of more than twice the limit cannot fit: its megabytes are not
+  // rewritten to be measured
+  const normalized = written.length > 2 * 20_000 ? written : written.replace(/\r\n?/g, "\n");
+  if (normalized.length > 20_000 || !normalized.trim() || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(normalized)) {
     throw new HerdrError("invalid_submit_text", "A pending chat message must be nonempty text, at most 20000 characters, without terminal control characters");
   }
   return normalized;
@@ -196,13 +227,16 @@ const MAX_TYPED_SUBMIT_CHARS = 32_768;
  * commands. `typed`: the terminal's input line, whose cap is the longer one.
  */
 export function submitFraming(text: string, payload: string, typed: boolean): { text: string; payload: string } {
-  const message = text.replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
+  const written = withoutTrailingBreaks(text);
   const limit = typed ? MAX_TYPED_SUBMIT_CHARS : MAX_CHAT_SUBMIT_CHARS;
+  const refusal = (): HerdrError => new HerdrError("invalid_submit_text", `A message must be at most ${limit} characters, without terminal control characters or paste markers, and sent as the composer shapes it; nothing was typed`);
+  // a CRLF is read as one character, so a message of more than twice the limit cannot fit: its megabytes are not
+  // rewritten twice to be measured
+  if (written.length > 2 * limit) throw refusal();
+  const message = written.replace(/\r\n?/g, "\n");
   const body = message.replace(/\n/g, "\r");
   if (message.length > limit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(message)
-    || (payload !== body && payload !== `\u001b[200~${body}\u001b[201~`)) {
-    throw new HerdrError("invalid_submit_text", `A message must be at most ${limit} characters, without terminal control characters or paste markers, and sent as the composer shapes it; nothing was typed`);
-  }
+    || (payload !== body && payload !== `\u001b[200~${body}\u001b[201~`)) throw refusal();
   return { text: message, payload };
 }
 
@@ -228,6 +262,20 @@ export async function freeHermesInput(paneId: string, identity?: PendingIdentity
     throw new InputDraftError(null, identity, null, HERMES_INPUT_DRAFT_MESSAGE);
   }
   return live;
+}
+
+/**
+ * Codex's screen as every chat send reads it last, right before herdr is written to. herdr reports Codex at rest
+ * with one of its own screens up (a list such as `/model` or `/permissions`, `/rename`'s field, the `/diff` pager:
+ * dialogs/codex.ts codexOwnScreenOpen), so agent.prompt would paste the message there and its Enter would take the
+ * row under the cursor. While one is on screen the send is refused as for a menu herdr does report, and the message
+ * stays where it was written. herdr cannot compare and write in one step: a screen that opens during this read's
+ * answer or herdr's write is not seen.
+ */
+export async function freeCodexInput(paneId: string): Promise<void> {
+  if (codexOwnScreenOpen((await paneRead({ paneId, source: "detection", format: "text" })).text)) {
+    throw new HerdrError("agent_blocked", CODEX_OWN_SCREEN_MESSAGE);
+  }
 }
 
 /**
@@ -520,7 +568,7 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
         sentText = sent;
         payload = switched === text ? closeBackslash(agent, payload) : sent;
         if (pane && agent === "omp") {
-          pane = await untilOmpReported(paneId, pane, inTime, options.ompReportPollMs ?? OMP_REPORT_POLL_MS, options.ompStartupMs ?? OMP_STARTUP_MS);
+          pane = await untilOmpReported(paneId, pane, inTime, options);
           // the last look waited on herdr: the device may have lost its access meanwhile
           inTime();
         }
@@ -605,6 +653,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             throw new HerdrError("submit_partial", "Part of the message was typed into OpenCode's input, but sending was not confirmed. Your chat text stayed here. Check the terminal before sending again.");
           }
         }
+        // the last read before herdr is written to: one of Codex's own screens gets no paste and no Enter
+        if (agent === "codex") await freeCodexInput(paneId);
         const watch = pane ? startOpenCodeWatch(pane, command, options.openCodeStateDir) : null;
         try {
           inTime();

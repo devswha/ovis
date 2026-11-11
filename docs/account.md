@@ -119,7 +119,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 
 - **Approval on the PC itself:** a driving window opened directly on the PC (not a Portal visitor,
   not an open LAN window), or `bun scripts/plugin.ts pair --approve` in the PC's terminal, which
-  shows the digits and asks y/n.
+  shows the digits and asks for them: typing them (or their last three) approves, Enter by itself
+  declines, and anything else is asked again.
 - **Remote approval:** a client connected through the relay with drive access whose row is an
   account member. It must **pick the new device's digits out of three** (two decoys the PC chose at
   random) before it can approve. A tap without looking picks right one time in three, and a wrong
@@ -128,6 +129,24 @@ One rule for every way in: a pairing code, comparing digits, and joining through
   directly on the PC (any window there with drive access, as before), or by a drive account member
   through the relay (`403 account_required` for any other relay device, `read_only` for a watch
   device). A PC in no account keeps letting any driving relay device start one, as before.
+- **A pairing code ends with the device that holds it.** A paired device holds a code it started
+  (`POST /api/devices/pair/start`, through the relay or at the PC's own address) or was handed
+  (`POST /api/relay/offer`, `POST /api/relay/code`). Revoking that device, on the PC or by an
+  account `remove`, ends the code and the typed code bound to it: whoever the device passed the
+  code to cannot pair after it is gone. A device revoked while its request for a code is on its
+  way starts none and is handed none (`401 unauthorized`). A code the PC itself started is held
+  by no device.
+- **A code the PC's own terminal prints admits whoever scans it**, with no approval on the PC:
+  `bun scripts/plugin.ts add` ends in one QR code, and a signed-in device that scans it links
+  itself as the PC's first member, so the PC joins that device's account. The code is therefore
+  made only by that command, shown only on a terminal and cleared from it (`--print` writes it
+  as plain lines that stay, wherever the output goes), kept for 30 minutes at most, and the
+  command says afterwards which account the PC joined and by which of that account's devices.
+  Any other device the code let in is named and removed unless the person types keep, and when
+  the PC ended in another account than the one the command signed in to, every device that came
+  since the code was shown is removed ([A PC with no screen](relay.md#a-pc-with-no-screen)).
+  `add --approve` keeps the approval in the terminal: no code, and the adding device's digits
+  are compared there.
 - **Every admission is announced** on every device connected to the PC: the new device's name and who
   approved it.
 
@@ -334,16 +353,68 @@ How a person adds a PC to the account in the apps (WhatsApp's linked devices and
 Tailnet Lock follow the same idea: an existing device approves once, and the server only carries
 messages):
 
-1. On the new PC, Settings → Devices and PCs → Account: sign in, then **Add this PC to my account**.
-   The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens
-   a pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. What that window takes is decided on
+1. On the new PC, Settings → Devices and PCs → Account (or the first-run welcome): press
+   **Sign in and add this PC**. A PC in no account is added by that sign-in, in the same step: the
+   PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens a
+   pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. The PC is
+   added only by a press of a button that says so. The link page's one button reads
+   **Sign in and add this PC** only where the sign-in does add it (a PC in no account, its relay
+   on, a browser that drives it), else **Sign in**; its words follow the relay (read again every
+   few seconds while the page shows), and what the button said at the press decides: a
+   press of **Sign in** adds nothing, also when the relay was turned on since. A provider's own
+   button (**Continue with GitHub**, on a service without the link page) and the desktop app's
+   sign-in say nothing of adding, so they add nothing either. Such a sign-in gets the offer,
+   **Add this PC to my account**, which lists and opens the window on a press. Only the sign-in
+   that just finished on that screen adds the PC, once, within a minute of it, and only under its
+   own account: the listing writes nothing when another sign-in, or none, is stored by the time it
+   reads the stored one (another tab signed out and in), and the screen then shows the button. A
+   listing that gets no answer within a minute is given up the same way, and so is one whose
+   screen is closed meanwhile: nothing more is written for it, the PC is not told the account, and
+   the window it opened is closed (`POST /api/relay/link/close`) unless a wait is kept or the
+   person pressed the button since. An entry already sent to the directory when the screen gave
+   up cannot be taken back: the screen then says the PC may not have been listed, and the button
+   lists it again. A sign-in that was already there when the screen opened lists nothing by itself
+   and gets the offer; so does a sign-in again for the same account, one that ended before the PC
+   answered, and one whose PC answered only after the minute. The sign-in never turns the relay
+   on: with the relay off it lists nothing and offers **Turn on the relay and add this PC**, one
+   press for both, which lists under that sign-in only. A device that only watches this PC
+   (`role: watch`) can list nothing: its sign-in adds nothing and it is shown no button; while
+   what this browser may do cannot be read, nothing is listed without a press. A browser the PC
+   refuses its account (`owner_only`: in only through an open device gate, or a Portal visitor) is
+   offered none of this.
+   What the window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
-   once the PC has members. The screen keeps the window open while it waits.
+   once the PC has members. The screen keeps the window open while it waits: it asks for the link again
+   every 30 seconds while its page shows (that call writes nothing to the directory) and lists the PC anew
+   every nine minutes, for 30 minutes a press or sign-in, then offers **Keep waiting**; **Stop waiting**
+   ends it sooner and closes the window on the PC at once (`POST /api/relay/link/close`; an Ovis from
+   before that route lets it run out), and once more when a reopen or listing that was on its way
+   opens it again after that. A wait that ran out by itself does not close the window
+   already open: it closes by itself, up to ten minutes later. A reloaded tab
+   goes on waiting only for the same PC under the same sign-in. Once a device added the PC the screen says
+   so, and that the account's other devices can open it only when the PC's status no longer says `enrolling`.
+   The window is kept
+   across a restart of the PC's server (an update) for the rest of its ten minutes, local-only as it
+   was opened, and is closed by `POST /api/relay/link/close`, **Revoke all**,
+   **Reset relay identity** or turning the relay off.
+   A close declines the comparisons the PC was showing and one whose digits arrive after it, and is
+   written to disk (as is a window that ran out). A close does not reach an Add-this-PC screen that
+   is still waiting on the PC: that screen asks for its window again at its next reopen, which is an
+   act of the PC's own page, so **Stop waiting** on it (or leaving that screen) is what ends the wait.
+   A comparison approved before a close makes no device when the other side confirms after it.
+   The PC has one pairing window: **Stop waiting**, and the close of a window a given-up listing
+   opened, also end a code-less phone link opened meanwhile from **Add a connection**, and turn
+   down a phone that was comparing digits through it: that link is asked for again before a phone
+   can use it.
 2. On any device already in the account, the dashboard lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the
    person then **types the six digits the new PC shows** (not a tap: the directory's name is
-   anyone's), and approves on the PC.
+   anyone's), and approves on the PC. The PC's prompt says so (**… wants to add this PC to your
+   account. Type 123 456 on …, or check that … shows the same number, then press Approve here**)
+   instead of only asking to compare digits, since that device shows none: the request carries
+   `local_only: true` in `relay-pairings`. The mark follows the PC's add-me window, not the asking
+   device, so a phone that opens an ordinary link meanwhile gets the same words and compares.
 3. The device is then the PC's first member: it links, and enrolls the PC
    ([Enrolling a PC](#enrolling-a-pc)), so the account's other devices are let in and introduced.
 
@@ -444,6 +515,12 @@ is what authenticates the PC.
 - `GET /api/devices` adds `account`, `account_key` (the member's `relay_public_key`, which is public)
   and `added_by` to account members' rows, for a caller with drive access only; a watching device
   sees none of them.
+- `DELETE /api/devices/{id}` with the header `x-ovis-unless-account: {account}` removes the device
+  only while it is no member of that account, and answers `409 account_member` when it is; the
+  check and the removal are one step. `ovis add` removes a device its code let in this way, so one
+  that linked itself to the account that signed in since the list was read stays. Membership is
+  what the row says, which for an account's first member on a PC is that device's own claim
+  ([What this does not protect against](#what-this-does-not-protect-against)).
 
 ## Account service API
 
@@ -590,6 +667,15 @@ Clients:
 | `POST /v1/admissions` | `{ "server_id", "label", "key", "os"? }` | `{ "id" }`: the signed-in device says it waits at that PC with its account key (`key`); rings the account's other clients (push), and reaches that PC's mailbox for 10 minutes |
 | `POST /v1/signout` | | `204`: ends this sign-in's tokens |
 
+`DELETE /v1/pcs/{server_id}` is no lasting removal for a PC in use: a member device lists the PC
+again on its next connection to it (`enrollOwned`), and so does the PC's own waiting Add this PC
+screen. A PC the directory does not list gets no [relay pass](relay.md#relay-pass) (`not_listed`)
+and none of the account's later records. So the apps offer it only in a PC's own Settings →
+Devices and PCs, as **Remove from list**, and only for a PC the directory has not heard from for
+two days (`unusedPc` in [`src/components/AccountPcs.tsx`](../src/components/AccountPcs.tsx): its
+`last_seen_at`, or its `added_at` when it never pulled), with a confirm that says it revokes
+nothing and that the PC is listed again if it is used again.
+
 Push (the doorbell), per signed-in device:
 
 | request | body | answer |
@@ -624,7 +710,14 @@ directory, so mailboxes are kept per PC **and account**: the PC asks only for it
 only in that account's directory. `ack` is the highest `seq` the PC processed, whatever the
 outcome, refused included (or `null`); the service deletes those records before answering, and
 deletes any record after 30 days. The PC pulls when it starts and every five minutes while it
-belongs to an account.
+belongs to an account. It also pulls when a sign-in fails, since a member may have added that
+device on another PC a moment ago, and then checks the sign-in once more. Such sign-ins start at
+most one pull a minute (a pull that could not read the mailbox lets the next start 10 seconds after
+it began), and each waits at most five seconds for it. A sign-in that still fails is refused with
+the same `auth_failed`, so a device whose add reached the mailbox after that pull, or after another
+failed sign-in spent it, is let in up to a minute later. An unknown id and a signature that does
+not hold take the same way, so the delay does not tell which ids have a row; it does tell a PC in
+an account (the refusal may wait for the pull) from one in none (it never does).
 
 The `account` role keeps the two proofs apart: the relay verifies `control` and `data` only, so an
 answer the PC gave the account service is no use to the relay, and a relay's challenge passed on by
@@ -697,6 +790,19 @@ with "continue only if you started this on your own PC".
   holds for a sign-in made in a browser on a PC's own address: that page's script is the PC's, so a
   compromised PC can use the sign-in kept there. Its account key is linked to no PC (a browser
   paired with a code holds a cookie), so its signatures admit nobody.
+- **A device that names an account it does not hold.** An account's first member on a PC links
+  itself: its `link` is signed by the device's own key and names the account (rule 4), and the
+  account service holds no device keys to check that against (rule 7). So `ovis add`, which takes
+  a device whose row names the signed-in account as that account's, cannot tell the owner's phone
+  from a changed client that pairs with the code and names that account's id. The id is no
+  secret on the PC: a device with drive access can read it there. Such a device is not asked
+  about, and the command ends well, naming it as the device that added the PC. What still shows
+  it: every admission is announced on every device connected to the PC, and the command prints
+  the device's name.
+- **A code a driving device has the PC itself start.** A device that drives (one the QR code of
+  `ovis add` let in, say) can have the PC start a pairing code through its loopback address from
+  a terminal pane, as the PC's own user: that code is held by no device, so it survives the
+  device's removal.
 - **Someone who gets a person to type their device code at GitHub** (device-code phishing, true of
   every RFC 8628 sign-in) gets a sign-in to that person's account: they can list, rename and remove
   its PCs in the directory, fill mailboxes, post admissions and spend the ring budget. They still

@@ -277,6 +277,46 @@ describe("the hosted shell's front page", () => {
     expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
   });
 
+  it("reads once more for a Check again asked while a read is out, since that read may predate the PC just added, and settles only then", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const added = [{ server_id: desk.server_id, label: "Desk PC", added_at: new Date(now - 60_000).toISOString(), last_seen_at: new Date(now - 1_000).toISOString(), public_key: null, relay: AP }];
+    let reads = 0;
+    /** the background read that left before the PC was added: it answers an empty account, late */
+    const early = Promise.withResolvers<void>();
+    const accountFetch = async (input: Request | string | URL): Promise<Response> => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname !== "/v1/pcs") throw new Error(`unexpected request ${url.pathname}`);
+      const read = ++reads;
+      if (read === 2) await early.promise;
+      return { status: 200, ok: true, json: async () => ({ pcs: read >= 3 ? added : [] }) } as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: now + 3_600_000 });
+    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => reads === 1 && rendered.length > 0 && account().pcs?.length === 0, "the empty account drawn");
+
+    visible("visible");
+    await until(() => reads === 2, "the background read out");
+    // the PC is added now; Check again, pressed twice (the banner's Try again calls the same), asks while that read is out
+    let settled = 0;
+    for (let press = 0; press < 2; press++) void Promise.resolve(last().onRefreshAccount?.()).then(() => { settled += 1; });
+    await drain();
+    expect([reads, settled]).toEqual([2, 0]);
+
+    early.resolve();
+    await until(() => settled === 2, "both asks settled");
+    // one read more for both asks, begun after them, and its answer is on screen by the time they settle
+    expect(reads).toBe(3);
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["Desk PC"]);
+
+    // with no read out, every ask reads at once: none is answered by an earlier ask's finished read
+    for (const want of [4, 5]) {
+      await last().onRefreshAccount?.();
+      expect(reads).toBe(want);
+    }
+  });
+
   it("keeps a code being typed when the first read lands under it", async () => {
     let answer: () => void = () => {};
     const held = new Promise<void>((resolve) => { answer = resolve; });
@@ -333,11 +373,11 @@ describe("the hosted shell's front page", () => {
     await inner.set("session", sessionOf("acct-a", "github"));
     // another tab stores account B's sign-in right after the page read account A's
     let reads = 0;
-    const accountStore: typeof inner = { ...inner, get: (async (name: Parameters<typeof inner.get>[0]) => {
-      const value = await inner.get(name);
+    // (a session is read through the store's update: service.ts, session)
+    const accountStore: typeof inner = { ...inner, update: (async (name: Parameters<typeof inner.update>[0], change: Parameters<typeof inner.update>[1]) => {
+      await inner.update(name, change);
       if (name === "session" && ++reads === 1) await inner.set("session", sessionOf("acct-b", "google"));
-      return value;
-    }) as typeof inner.get };
+    }) as typeof inner.update };
 
     await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
     await until(() => rendered.length > 0 && account().pcs !== null, "the first list drawn");
@@ -346,6 +386,65 @@ describe("the hosted shell's front page", () => {
     expect(account().provider).toBe("google");
     expect(rows()).toBe(1);
     expect(asked.every((bearer) => bearer.endsWith("acct-b"))).toBe(true);
+  });
+
+  it("drops a directory answer that lands after another tab stored another sign-in, and reads as that one", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const sessionOf = (account: string, provider: "github" | "google") => ({ service: SERVICE, account, provider, access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: now + 3_600_000, sign_in_id: `id-${account}` });
+    const row = (label: string) => ({ server_id: desk.server_id, label, added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: null, public_key: null, relay: AP });
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    let asked = 0;
+    const accountFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const forB = (new Headers(init?.headers).get("authorization") ?? "").endsWith("acct-b");
+      asked += 1;
+      if (!forB) await held;
+      return ({ status: 200, ok: true, json: async () => ({ pcs: [row(forB ? "B's PC" : "A's PC")] }) }) as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", sessionOf("acct-a", "github"));
+
+    const mounted = mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => asked === 1, "account A's directory asked");
+    // another tab signs in as B while A's answer is on its way
+    await accountStore.set("session", sessionOf("acct-b", "google"));
+    answer();
+    await mounted;
+    await until(() => rendered.length > 0 && account().pcs !== null, "a list drawn");
+    expect(account().provider).toBe("google");
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["B's PC"]);
+  });
+
+  it("keeps none of an account's rows once another sign-in took its place, even when that one's read fails", async () => {
+    const desk = keyFor();
+    const now = Date.now();
+    const sessionOf = (account: string, provider: "github" | "google") => ({ service: SERVICE, account, provider, access_token: `access-${account}`, refresh_token: `refresh-${account}`, expires_at: now + 3_600_000, sign_in_id: `id-${account}` });
+    let answer: () => void = () => {};
+    const held = new Promise<void>((resolve) => { answer = resolve; });
+    let asked = 0;
+    const accountFetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      asked += 1;
+      // account B's directory cannot be read
+      if ((new Headers(init?.headers).get("authorization") ?? "").endsWith("acct-b")) return ({ status: 503, ok: false, json: async () => ({}) }) as unknown as Response;
+      if (asked === 2) await held;
+      return ({ status: 200, ok: true, json: async () => ({ pcs: [{ server_id: desk.server_id, label: "A's PC", added_at: new Date(now - 86_400_000).toISOString(), last_seen_at: null, public_key: null, relay: AP }] }) }) as unknown as Response;
+    };
+    const accountStore = memoryAccountStore();
+    await accountStore.set("session", sessionOf("acct-a", "github"));
+
+    await mountRelayShell(mountFor({ accountService: SERVICE, accountProviders: ["github", "google"], accountStore, accountFetch, store: deviceStore([]) }));
+    await until(() => rendered.length > 0 && account().pcs !== null, "account A's list drawn");
+    expect(account().pcs!.map((pc) => pc.name)).toEqual(["A's PC"]);
+
+    // a second read of A is on its way when another tab signs in as B
+    visible("visible");
+    await until(() => asked === 2, "the second read asked");
+    await accountStore.set("session", sessionOf("acct-b", "google"));
+    answer();
+    await until(() => asked >= 3 && account().provider === "google" && account().error !== null, "account B's failed read drawn");
+    // no skeleton under the error: the list is this device's own paired PCs, none here
+    expect(account().pcs).toEqual([]);
   });
 
   it("starts one read when two reasons to read again land in the same moment", async () => {

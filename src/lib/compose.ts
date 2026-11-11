@@ -9,6 +9,7 @@
  * Pure logic, DOM-free, so the policy is unit-testable (see compose.test.ts).
  */
 
+import { withoutTrailingBreaks } from "../../shared/launch-rules.ts";
 import type { AgentStatus, CommandForm, ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { knownStatus, STATUS_WORD } from "./status.ts";
@@ -36,7 +37,7 @@ export function composerMessage(text: string): string {
     const from = kept.length - PASTE_START.length;
     if (from >= 0 && kept[from] === "\u001b" && (kept.slice(from).join("") === PASTE_START || kept.slice(from).join("") === PASTE_END)) kept.length = from;
   }
-  return kept.join("").replace(/[\r\n]+$/, "").replace(/\r\n?/g, "\n");
+  return withoutTrailingBreaks(kept.join("")).replace(/\r\n?/g, "\n");
 }
 
 /** The text a composer message types, without its submit (HerdrSocket.submit adds the Enter). */
@@ -178,6 +179,7 @@ export function submitNote(code: string, message: string, agent?: string | null)
   if (code === "first_message_unattended") return t("Not sent: the page that started this agent left before it was ready. Send it now or discard it.");
   if (code === "first_message_launch_ended") return t("Not sent: the agent started for this message has ended. Review the message before sending it.");
   if (code === "pending_target_changed") return t("Not sent: the pane's terminal or agent session changed. Review the message before sending it again.");
+  if (code === "typed_while_waiting") return t("Not sent: something was typed in the terminal while omp was starting. Check its input line there, then send this message.");
   if (code === "disconnected" || code === "timeout") return t("Not confirmed: the pane did not confirm this message. Check the terminal before sending it again.");
   return t("Not sent: {message}", { message });
 }

@@ -10,11 +10,14 @@
  * `connect` seam, the browser's through Playwright's WebSocket routing (relay-browser-bridge.ts).
  * Every page runs on a frozen clock; a deadline is reached by advancing it, never by waiting.
  *
- * After its own journey (pairing, terminal, roster, reload, the relay lost mid-session, storage,
- * network, revoke) it runs relay-shell-browser-qa.ts (the shell's states, push per PC and its
+ * Its own journey is pairing, terminal, roster, reload, the relay lost mid-session, storage,
+ * network and revoke. Against this checkout's server that is the whole run: the browser lane
+ * (scripts/ci-browser.sh) runs relay-shell-browser-qa.ts (the shell's states, push per PC and its
  * rotation, version skew) and relay-media-browser-qa.ts (both PCs' files and media, a remote PC,
- * isolation in worker and blob mode, MP4 seek and Range), all against the same server tree. The
- * media part encodes its video with FFMPEG (default `ffmpeg`; CI: scripts/ci-ffmpeg.sh).
+ * isolation in worker and blob mode, MP4 seek and Range) as entries of their own. Against another
+ * server tree (the two commands below that name one) it runs both after its journey, on that tree,
+ * so one command still checks an older server from end to end. The media part encodes its video
+ * with FFMPEG (default `ffmpeg`; CI: scripts/ci-ffmpeg.sh).
  *
  *   bun scripts/relay-e2e-regression.ts                  this checkout's shell against this checkout's server
  *   RELAY_E2E_SERVER_DIR=<tree> bun scripts/relay-e2e-regression.ts
@@ -28,7 +31,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { $ } from "bun";
 import { chromium } from "playwright-core";
 import type { Browser, BrowserContext, Page } from "playwright-core";
@@ -214,12 +217,9 @@ async function main(): Promise<void> {
     await page.getByRole("heading", { name: `Pair with ${offer.name}?` }).waitFor();
     assert.ok(!page.url().includes("#offer"), "the offer left the address before the question");
     await page.getByRole("button", { name: "Pair", exact: true }).click();
-    // a first pairing stops at Ready: nothing opens until Open PC (lib/relay/shell.tsx)
-    const ready = page.locator('[role=dialog][data-add-pc-phase="ready"]');
-    await ready.waitFor();
-    assert.equal(await page.locator(".app").count(), 0, "Ready is shown before the app");
-    await ready.getByRole("button", { name: "Open PC" }).click();
+    // an admitted pairing enters the app by itself, with no Ready checkpoint before it (lib/relay/shell.tsx)
     await inApp(page);
+    assert.equal(await page.locator('[role=dialog][data-add-pc-phase="ready"]').count(), 0, "no Ready checkpoint after a pairing");
   }
   /** The phone's saved record for a PC, or null. */
   const saved = (page: Page, serverId: string): Promise<{ device_id: string; extractable: boolean } | null> => page.evaluate(async (serverId) => {
@@ -269,9 +269,13 @@ async function main(): Promise<void> {
     note(`paired: ${deskScope}#offer=… -> confirm -> app; device ${deskDevice.device_id} enrolled via the relay, key not extractable`);
 
     await page.locator(`.workspace-group[data-workspace=${JSON.stringify(workspace.workspace.workspace_id)}] .workspace-select`).first().click();
-    const screen = page.locator(`.terminal-stack[data-pane-owner=${JSON.stringify(pane)}] .xterm-screen`);
+    const stack = page.locator(`.terminal-stack[data-pane-owner=${JSON.stringify(pane)}]`);
+    const screen = stack.locator(".xterm-screen");
     await screen.waitFor({ state: "attached" });
-    const live = async (): Promise<boolean> => await page.locator(".terminal-banner-warning").count() === 0 && (await terminalText(page, pane)).trim() !== "";
+    // this pane's banners only: the pane the app opened by itself at load (herdr's focused one, lib/useSelection.ts)
+    // stays mounted behind it with its own (components/PaneCanvas.tsx), and on the test session every script's
+    // server shares, another server may hold that pane's attach, which says nothing of this pane's
+    const live = async (): Promise<boolean> => await stack.locator(".terminal-banner-warning").count() === 0 && (await terminalText(page, pane)).trim() !== "";
     await frames(page, "the pane's terminal attached and drew its prompt", live);
     await screen.click();
     await page.keyboard.type("echo relay-ok");
@@ -393,9 +397,14 @@ async function main(): Promise<void> {
   // with no window open (relay-shell-browser-qa.ts), then both PCs' files and media: image, chat
   // attachment, PDF, rendered page and SVG escape attempts in worker and blob mode, a 30 MiB MP4 sought
   // to 80% with its Range at the right PC only, and a remote PC behind PC 1 (relay-media-browser-qa.ts).
-  note("relay e2e: shell states, push and its rotation");
-  await relayShellQa(tree);
-  note("relay e2e: files, media and isolation of two PCs");
-  await relayMediaQa(tree);
+  // Only against another server tree (RELAY_E2E_SERVER_DIR, --skew): for this checkout's server the
+  // browser lane runs both files as entries of their own, and here they would run a second time.
+  // (A whole lane run with RELAY_E2E_SERVER_DIR set does run them twice: those entries read it too.)
+  if (resolve(tree.dir) !== resolve(repo)) {
+    note("relay e2e: shell states, push and its rotation");
+    await relayShellQa(tree);
+    note("relay e2e: files, media and isolation of two PCs");
+    await relayMediaQa(tree);
+  }
   console.log("PASS relay end to end");
 }
