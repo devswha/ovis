@@ -1025,14 +1025,14 @@ describe("herdr-core adapter, new and closed terminals", () => {
   it("starts each shell in the user's terminal environment, under what the call asks for", async () => {
     // regression: the move's panes had only the env of whatever started the core, an agent's NO_COLOR included
     const terminalEnv = { NO_COLOR: "", GH_TOKEN: "from-profile", TERM: "xterm-256color" };
-    const { socket, runs } = await living([terminal("t1")], {}, { terminalEnv });
+    const { socket, runs } = await living([terminal("t1")], {}, { terminalEnv: async () => terminalEnv });
     await workspaceCreate({ cwd: "/work/web", label: "web" }, socket);
     await herdrRpc("workspace.create", { cwd: "/work/api", env: { GH_TOKEN: "asked" } }, socket);
     expect(runs.map((run) => run["env"])).toEqual([terminalEnv, { ...terminalEnv, GH_TOKEN: "asked" }]);
   });
 
   it("sends hc no env at all when there is none to give, as on Windows", async () => {
-    const { socket, runs } = await living([terminal("t1")], {}, { terminalEnv: {} });
+    const { socket, runs } = await living([terminal("t1")], {}, { terminalEnv: async () => ({}) });
     await workspaceCreate({ cwd: "/work/web", label: "web" }, socket);
     expect(runs[0]).not.toHaveProperty("env");
   });

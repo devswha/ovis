@@ -114,7 +114,7 @@ export interface AdapterOptions {
   /** this PC's process table, read afresh within `timeoutMs` each time; a test stands in for it */
   processTable?: (timeoutMs: number) => Promise<ProcessRow[]>;
   /** what every shell the adapter starts runs in, over the core's own and under a call's `env` (terminal-env.ts) */
-  terminalEnv?: Record<string, string>;
+  terminalEnv?: () => Promise<Record<string, string>>;
 }
 
 /** The sessions a terminal named that it keeps as candidates, the newest last. */
@@ -620,7 +620,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
    */
   const startShell = async (params: Record<string, unknown>, labels: Record<string, string>) => {
     const asked = isRecord(params["env"]) ? Object.fromEntries(Object.entries(params["env"]).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : undefined;
-    const given = { ...options.terminalEnv, ...asked };
+    const given = { ...await options.terminalEnv?.(), ...asked };
     const env = Object.keys(given).length > 0 ? given : undefined;
     // a terminal a client starts has had nothing finish yet (herdr-app docs/labels.md)
     const record = await hc.call("terminal.run", { keep: true, labels: { [SEEN_LABEL]: "0", ...labels }, ...(typeof params["cwd"] === "string" ? { cwd: params["cwd"] } : {}), ...(env ? { env } : {}) });

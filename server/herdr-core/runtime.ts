@@ -3,7 +3,7 @@ import { startHerdrCoreAdapter, type HerdrCoreAdapter } from "./adapter.ts";
 import { HcConnection, spawnHcConnect } from "./connection.ts";
 import { MachineScopedConnection } from "./machine-scope.ts";
 import { SeenMarker } from "./seen-label.ts";
-import { coreStartEnv, userTerminalEnv } from "./terminal-env.ts";
+import { coreStartEnv, terminalEnvFor, userTerminalEnv } from "./terminal-env.ts";
 import { existsSync } from "node:fs";
 import { coreSocket, findHc, type FoundHc } from "./discovery.ts";
 import { adapterAddress } from "./pipe.ts";
@@ -156,13 +156,17 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
     throw new Error(`OVIS_RUNTIME=herdr-core is served on Linux, macOS and Windows, not ${platform}`);
   }
   // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one.
-  // The terminals' environment is read meanwhile (both run a login shell) and awaited either way, so no
-  // read outlives a start that gives up; another machine's terminals are not this PC's user's, and keep that machine's own
+  // The terminals' environment is read meanwhile (both run a login shell) and settled either way, a search
+  // that throws included, so no read outlives a start that gives up; another machine's terminals are not
+  // this PC's user's, and keep that machine's own
   const refused: string[] = [];
-  const [core, terminals] = await Promise.all([
+  const [looked, read] = await Promise.allSettled([
     find((bin, reason) => { refused.push(`${bin}: ${reason}`); }),
     hcMachine() === null ? terminalEnv() : Promise.resolve({}),
   ]);
+  if (looked.status === "rejected") throw looked.reason;
+  if (read.status === "rejected") throw read.reason;
+  const [core, terminals] = [looked.value, read.value];
   if (core === null) {
     // the message is what the server logs as it gives up: each refused hc is named there, once
     const passedOver = refused.length === 0 ? "" : ` Passed over as another account could change them: ${refused.join("; ")}. Make the folder yours alone (\`chmod g-w <folder>\`) or set OVIS_HC_BIN to the hc you trust.`;
@@ -181,7 +185,7 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   // on Windows the pipe is named after the folder itself: a junction or a short (8.3) spelling of it names the same pipe
   const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels),
     // another machine's OpenCode keeps its sessions there: none of its panes is bound to one here
-    hcMachine() !== null ? { otherMachine: true } : { opencodeTitled: (title) => opencodeSessionsTitled(opencodeDatabasePath(), title), terminalEnv: terminalEnvironment });
+    hcMachine() !== null ? { otherMachine: true } : { opencodeTitled: (title) => opencodeSessionsTitled(opencodeDatabasePath(), title), terminalEnv: terminalEnvFor(hc, terminalEnvironment, hcEnv() ?? process.env) });
   if (unix) chmodSync(adapter.socketPath, 0o600);
   if (herdrSocketBefore === null || process.env["HERDR_SOCKET"] !== adapterSocket) herdrSocketBefore = { HERDR_SOCKET: process.env["HERDR_SOCKET"] };
   adapterSocket = adapter.socketPath;

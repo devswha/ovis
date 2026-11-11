@@ -10,7 +10,7 @@ import { freeAgentName } from "./agent-name.ts";
 import { agentPrompt, agentStart, HerdrError, layoutSetSplitRatio, paneGet, paneProcessInfo, paneRename, paneSendKeys, paneSplitForMove, sessionSnapshot, tabCreate, tabRename, workspaceCreate } from "./herdr/client.ts";
 import { MOVE_LABEL, startHerdrCoreAdapter } from "./herdr-core/adapter.ts";
 import { HcConnection, spawnHcConnect } from "./herdr-core/connection.ts";
-import { coreStartEnv, userTerminalEnv } from "./herdr-core/terminal-env.ts";
+import { coreStartEnv, terminalEnvFor, userTerminalEnv } from "./herdr-core/terminal-env.ts";
 import { findHc } from "./herdr-core/discovery.ts";
 import { hcEnv } from "./herdr-core/runtime.ts";
 import { LAYOUT_DOC } from "./herdr-core/snapshot.ts";
@@ -149,7 +149,7 @@ export async function coreDestination(stateDir: string, id: string): Promise<Mov
   if (found === null) throw new Error("no herdr-core found");
   const hc = new HcConnection(() => spawnHcConnect(found.bin, coreStartEnv(env, terminalEnv)));
   const socket = join(stateDir, `move-${id.slice(0, 8)}.sock`);
-  const adapter = await startHerdrCoreAdapter(hc, socket, undefined, { terminalEnv });
+  const adapter = await startHerdrCoreAdapter(hc, socket, undefined, { terminalEnv: terminalEnvFor(hc, terminalEnv, env) });
   if (process.platform !== "win32") chmodSync(socket, 0o600);
   return {
     appArranged: async () => { const doc = await hc.call("doc.get", { name: LAYOUT_DOC }); return doc.value !== null && doc.value !== undefined; },

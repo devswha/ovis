@@ -116,6 +116,11 @@ it.skipIf(platform === "win32")("starts nothing, and runs no other hc, when none
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   process.env["OVIS_RUNTIME"] = "herdr-core";
   await expect(startRuntime(join(dir, "state"), async () => null, noLogin)).rejects.toThrow(/no herdr-core found/);
+  // a search that throws leaves no read of the terminals' environment running behind it
+  let read = false;
+  const reading = async () => { await new Promise((resolve) => setTimeout(resolve, 0)); read = true; return {}; };
+  await expect(startRuntime(join(dir, "state"), async () => { throw new Error("search failed"); }, reading)).rejects.toThrow("search failed");
+  expect(read).toBeTrue();
   expect(existsSync(join(dir, "state"))).toBe(false);
 });
 

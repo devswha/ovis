@@ -2,7 +2,7 @@ import { afterAll, expect, it } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { coreStartEnv, loginTerminalEnv, userTerminalEnv } from "./terminal-env.ts";
+import { coreEnvironment, coreStartEnv, forCore, loginTerminalEnv, terminalEnvFor, userTerminalEnv } from "./terminal-env.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "ovis-terminal-env-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -24,8 +24,8 @@ const fromAgent = (home: string) => ({
 it.skipIf(win)("gives a terminal the login shell's environment in colour, without the agent's or Ovis's own variables", async () => {
   // regression: a core an agent's shell started gave every pane its NO_COLOR, and none of the tokens the profile exports
   const env = await loginTerminalEnv({ env: fromAgent(homeWith("export GH_TOKEN=from-profile\n")), shell: "/bin/sh" });
-  expect(env).toMatchObject({ GH_TOKEN: "from-profile", TERM: "xterm-256color", COLORTERM: "truecolor", NO_COLOR: "" });
-  for (const name of ["SSH_AUTH_SOCK", "AGENT_SESSION_VAR", "PORT", "OVIS_TOKEN", "HERDR_PANE_ID", "HC_TERMINAL_ID", "PWD", "OLDPWD", "SHLVL", "_"]) expect(env).not.toHaveProperty(name);
+  expect(env).toMatchObject({ GH_TOKEN: "from-profile", TERM: "xterm-256color", COLORTERM: "truecolor" });
+  for (const name of ["NO_COLOR", "SSH_AUTH_SOCK", "AGENT_SESSION_VAR", "PORT", "OVIS_TOKEN", "HERDR_PANE_ID", "HC_TERMINAL_ID", "PWD", "OLDPWD", "SHLVL", "_"]) expect(env).not.toHaveProperty(name);
 });
 
 it.skipIf(win)("keeps NO_COLOR when the user's own login sets it", async () => {
@@ -33,16 +33,50 @@ it.skipIf(win)("keeps NO_COLOR when the user's own login sets it", async () => {
   expect(env["NO_COLOR"]).toBe("yes");
 });
 
-it.skipIf(win)("still asks for colour, and turns an inherited NO_COLOR off, when the login shell gives nothing", async () => {
-  expect(await loginTerminalEnv({ env: fromAgent(homeWith("exit 3\n")), shell: "/bin/sh" })).toEqual({ TERM: "xterm-256color", COLORTERM: "truecolor", NO_COLOR: "" });
+it.skipIf(win)("still asks for colour when the login shell gives nothing", async () => {
+  expect(await loginTerminalEnv({ env: fromAgent(homeWith("exit 3\n")), shell: "/bin/sh" })).toEqual({ TERM: "xterm-256color", COLORTERM: "truecolor" });
+});
+
+it("turns NO_COLOR off only on a core that has one, and keeps the core's PATH folders after the login's", () => {
+  // regression: NO_COLOR="" in every pane turned colour off where only the name is asked (consola, colorette, kleur),
+  // and a login PATH replaced a running core's, losing its /core/tools
+  const terminal = { PATH: "/login/bin:/usr/bin", GH_TOKEN: "t" };
+  expect(forCore(terminal, { PATH: "/usr/bin:/core/tools" })).toEqual({ PATH: "/login/bin:/usr/bin:/core/tools", GH_TOKEN: "t" });
+  expect(forCore(terminal, { NO_COLOR: "1" })).toEqual({ ...terminal, NO_COLOR: "" });
+  // the user's own NO_COLOR stands
+  expect(forCore({ NO_COLOR: "yes" }, { NO_COLOR: "1" })).toEqual({ NO_COLOR: "yes" });
+  // no PATH from the login: the core's own stays, untouched
+  expect(forCore({ GH_TOKEN: "t" }, { PATH: "/core/tools" })).toEqual({ GH_TOKEN: "t" });
+});
+
+it.skipIf(process.platform !== "linux")("fits the terminals to the running core's own environment, else to the one that starts it", async () => {
+  // the running core stands in as a process started with an environment of its own, read from /proc
+  const core = Bun.spawn(["/bin/sh", "-c", "read _"], { env: { PATH: "/usr/bin:/core/tools", NO_COLOR: "1" }, stdin: "pipe" });
+  try {
+    const running = { call: async () => ({ pid: core.pid }) } as never;
+    expect(await coreEnvironment(running)).toMatchObject({ PATH: "/usr/bin:/core/tools", NO_COLOR: "1" });
+    expect(await terminalEnvFor(running, { PATH: "/login" }, { PATH: "/starter" })()).toEqual({ PATH: "/login:/usr/bin:/core/tools", NO_COLOR: "" });
+  } finally { core.kill(); await core.exited; }
+  const unreadable = { call: async () => { throw new Error("no core"); } } as never;
+  expect(await terminalEnvFor(unreadable, { PATH: "/login" }, { PATH: "/starter", NO_COLOR: "1" })()).toEqual({ PATH: "/login:/starter", NO_COLOR: "" });
+});
+
+it.skipIf(win)("reads a zsh user's settings where ZDOTDIR says", async () => {
+  // regression: ZDOTDIR was not passed to the login shell, so $ZDOTDIR/.zprofile was never read
+  const zdot = mkdtempSync(join(dir, "zdot-"));
+  writeFileSync(join(zdot, ".zprofile"), "export GH_TOKEN=from-zprofile\n");
+  const env = await loginTerminalEnv({ env: { ...fromAgent(homeWith("")), ZDOTDIR: zdot }, shell: standInShell('. "$ZDOTDIR/.zprofile"') });
+  expect(env["GH_TOKEN"]).toBe("from-zprofile");
+  expect(env).not.toHaveProperty("ZDOTDIR");
 });
 
 it.skipIf(win)("reads an exported bash function and a value holding newlines as what they are", async () => {
   // regression: read line by line, the function's body went into PATH and a value's `API_TOKEN=…` line became a variable
-  const home = homeWith("greet() { echo hi; }\nexport -f greet\nexport MULTI='first\nAPI_TOKEN=inside-a-value'\n");
+  // the profile changes PATH itself, so it is sent whatever the host's /etc/profile does
+  const home = homeWith("greet() { echo hi; }\nexport -f greet\nexport MULTI='first\nAPI_TOKEN=inside-a-value'\nexport PATH=\"/fn-test:$PATH\"\n");
   const env = await loginTerminalEnv({ env: { ...fromAgent(home), SHELL: "/bin/bash" }, shell: "/bin/bash" });
   expect(env["MULTI"]).toBe("first\nAPI_TOKEN=inside-a-value");
-  expect(env["PATH"]).toStartWith("/usr/bin:/bin");
+  expect(env["PATH"]).toStartWith("/fn-test:");
   expect(env["PATH"]).not.toContain("\n");
   expect(env).not.toHaveProperty("API_TOKEN");
   expect(Object.keys(env).filter((name) => name.includes("greet"))).toEqual([]);
@@ -98,5 +132,5 @@ it("starts a core in the terminal environment, found where the server's own vari
   const server = { HOME: "/home/u", HC_SESSION: "s", HC_SOCKET: "/r/hc.sock", XDG_RUNTIME_DIR: "/r", XDG_STATE_HOME: "/st", NO_COLOR: "1", PATH: "/a" };
   // the profile's XDG_CONFIG_HOME, which the server has none of, would point hc at another core's settings (hc then defaults it from HOME)
   const terminal = { HOME: "/elsewhere", XDG_RUNTIME_DIR: "/x", XDG_STATE_HOME: "/y", XDG_CONFIG_HOME: "/z", HC_SESSION: "other", NO_COLOR: "", PATH: "/b", GH_TOKEN: "from-profile" };
-  expect(coreStartEnv(server, terminal)).toEqual({ ...server, NO_COLOR: "", PATH: "/b", GH_TOKEN: "from-profile" });
+  expect(coreStartEnv(server, terminal)).toEqual({ ...server, NO_COLOR: "", PATH: "/b:/a", GH_TOKEN: "from-profile" });
 });
