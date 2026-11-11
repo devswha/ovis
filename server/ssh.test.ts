@@ -56,15 +56,21 @@ fi
 if [ -n "$tunnel" ]; then
   [ -z "$forward" ] && exec sleep 30
   port=$(printf '%s' "$forward" | cut -d: -f2)
+  rport=$(printf '%s' "$forward" | cut -d: -f4)
+  # a ProxyJump's ssh gets -v too, shares stderr and enters its own session in the jump host first
+  [ -n "$verbose" ] && [ -n "$FAKE_JUMP" ] && printf 'debug1: Entering interactive session.\r\n' >&2
   [ -n "$FAKE_AUTH_GATE" ] && read -r _ < "$FAKE_AUTH_GATE"
-  # what OpenSSH 10.2 says: the first line comes before its bind, the last once its forwards stand
+  # what OpenSSH 10.2 says: the first lines come before its bind, the last once its forwards stand;
+  # with LogVerbose each debug line carries its source location after the level
   exec "$FAKE_BUN" -e "
 const say = (line) => require('node:fs').writeSync(2, line + '\r\n');
-if ('$verbose') say('debug1: Local forwarding listening on 127.0.0.1 port $port.');
+const debug = (where, message) => say('debug1: ' + ('$FAKE_LOG_VERBOSE' ? where + ' ' : '') + message);
+if ('$verbose') debug('ssh.c:2015 ssh_init_forwarding():', 'Local connections to 127.0.0.1:$port forwarded to remote address 127.0.0.1:$rport');
+if ('$verbose') debug('channels.c:3810 channel_setup_fwd_listener_tcpip():', 'Local forwarding listening on 127.0.0.1 port $port.');
 let opened = 0;
 try { Bun.listen({ hostname: '127.0.0.1', port: $port, socket: { open() { if (++opened === Number(process.env.FAKE_TUNNEL_ENDS_AT)) process.exit(0); }, data() {} } }); }
 catch { say('bind [127.0.0.1]:$port: Address already in use'); say('channel_setup_fwd_listener_tcpip: cannot listen to port: $port'); say('Could not request local forwarding.'); process.exit(255); }
-if ('$verbose') say('debug1: Entering interactive session.');
+if ('$verbose') debug('clientloop.c:1470 client_loop():', 'Entering interactive session.');
 "
 fi
 [ "$last" = "exit" ] && exit 0
@@ -89,7 +95,7 @@ for (const line of readFileSync(process.argv.at(-1), "utf8").trim().split("\n"))
 }' "$file"
 `;
 
-const FAKE_KEYS = ["FAKE_DIR", "FAKE_BUN", "FAKE_PASSPHRASE", "FAKE_PROMPT", "FAKE_HOSTKEY_LINE", "FAKE_INTRUDER", "FAKE_CONFIG_FORWARD", "FAKE_TUNNEL_ENDS_AT", "FAKE_FLOOD", "FAKE_AUTH_GATE"];
+const FAKE_KEYS = ["FAKE_DIR", "FAKE_BUN", "FAKE_PASSPHRASE", "FAKE_PROMPT", "FAKE_HOSTKEY_LINE", "FAKE_INTRUDER", "FAKE_CONFIG_FORWARD", "FAKE_TUNNEL_ENDS_AT", "FAKE_FLOOD", "FAKE_AUTH_GATE", "FAKE_JUMP", "FAKE_LOG_VERBOSE"];
 
 describe.skipIf(process.platform === "win32")("SSH without connection sharing", () => {
   const cleanups: (() => void)[] = [];
@@ -242,9 +248,9 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
   });
 
   describe("forwards", () => {
-    it("opens the loopback port, and its ending ends the connection", async () => {
+    for (const [how, extra] of [["", {}], [" behind a ProxyJump", { FAKE_JUMP: "1" }], [" with LogVerbose", { FAKE_LOG_VERBOSE: "1" }]] as const) it(`opens the loopback port, and its ending ends the connection${how}`, async () => {
       // the tunnel ends at its first connection: forward() waits for ssh's word, never connecting itself
-      const { ssh, ask } = fixture({ FAKE_TUNNEL_ENDS_AT: "1" });
+      const { ssh, ask } = fixture({ FAKE_TUNNEL_ENDS_AT: "1", ...extra });
       await ssh.start(ask("unused"));
       const ended = Promise.withResolvers<void>();
       ssh.onExit = () => ended.resolve();
@@ -260,8 +266,9 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
 
     // freePort() closes the port it found before ssh binds it, and another process on this PC may
     // take it in between: the bridge's token must never reach that process.
-    it("never hands the bridge token to a process that took the port before ssh bound it", async () => {
-      const { root, ssh, ask } = fixture();
+    // a ProxyJump's ssh enters its own session before this ssh has even authenticated
+    for (const [how, extra] of [["", {}], [", behind a ProxyJump", { FAKE_JUMP: "1" }], [", with LogVerbose", { FAKE_LOG_VERBOSE: "1" }]] as const) it(`never hands the bridge token to a process that took the port before ssh bound it${how}`, async () => {
+      const { root, ssh, ask } = fixture({ ...extra });
       await ssh.start(ask("unused"));
       const gate = join(root, "auth");
       await Bun.$`mkfifo ${gate}`;

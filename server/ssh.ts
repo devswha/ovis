@@ -445,25 +445,33 @@ export class SshConnection {
     // after it was found free, before ssh's own bind, and a request sent there would hand it the
     // bridge's token. ssh enters its session only once its forwards are bound, and with
     // ExitOnForwardFailure it exits instead when the port is taken. (Its "Local forwarding
-    // listening" comes before the bind.) The rest of its stderr is drained and only its own
-    // words, not the debug lines, are kept for an error.
+    // listening" comes before the bind.) Only this ssh's own "Entering interactive session" counts:
+    // the one that follows its line naming this forward. A ProxyJump's ssh gets -v too, shares this
+    // stderr and enters its own session once it is in the jump host, before this ssh has even
+    // authenticated, and names no forward. A LogVerbose config puts a source location after the
+    // level, so the messages are looked for anywhere in a debug line. The rest of stderr is drained
+    // and only ssh's own words, not the debug lines, are kept for an error.
+    const own = `Local connections to 127.0.0.1:${port} forwarded to remote address 127.0.0.1:${remotePort}`;
     const ready = Promise.withResolvers<void>();
     void (async () => {
       const decoder = new TextDecoder();
       let partial = "";
       let said = "";
+      let named = false;
       for await (const chunk of proc.stderr) {
         const lines = (partial + decoder.decode(chunk, { stream: true })).split("\n");
         partial = lines.pop()!.slice(-4096);
         for (const line of lines) {
-          if (line.startsWith("debug1: Entering interactive session.")) ready.resolve();
-          else if (!line.startsWith("debug")) said = (said + line.replace(/\r$/, "") + "\n").slice(-8192);
+          if (!/^debug\d: /u.test(line)) said = (said + line.replace(/\r$/, "") + "\n").slice(-8192);
+          else if (line.includes(own)) named = true;
+          else if (named && line.includes("Entering interactive session.")) ready.resolve();
         }
       }
       ready.reject(new Error(said.trim() || "SSH port forward failed"));
     })().catch((error: unknown) => ready.reject(error));
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; proc.kill(); }, 25_000);
+    // a ProxyCommand child that outlives the kill can hold stderr open: the timeout does not wait for it
+    const timer = setTimeout(() => { timedOut = true; proc.kill(); ready.reject(new Error("SSH port forward timed out")); }, 25_000);
     try { await ready.promise; }
     catch (error) {
       if (this.closed) throw new Error("Connection cancelled");
