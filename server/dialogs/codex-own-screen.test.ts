@@ -83,6 +83,15 @@ describe("codexOwnScreenOpen", () => {
       "  reverse-i-search: fix",
       // the transcript's pager, as 0.167 drew it with `[tui] fullscreen_transcript = false` (seen, not recorded)
       "^space select\n ↑/↓ to scroll · pgup/pgdn to page · home/end to jump\n q close · f3 find · esc browse prompts",
+      // its prompt browser (esc in that pager), where Enter rewinds the conversation: its footer begins with a word, and a
+      // narrower pane shortens it to one row instead of wrapping it, as 0.167.0 and 0.167.1 drew it at 100, 80, 60, 50,
+      // 40 and 30 columns (seen, not recorded)
+      "Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ^t details · ↵ rewind · esc back",
+      "Browsing · ↑↓/jk scroll · ←→/hl prompts · ^t details · ↵ rewind · esc back",
+      "Browsing · ↑↓/jk ←→/hl · ^t details · ↵ rewind · esc back",
+      "Browsing · ↑↓/jk ←→/hl · ↵ rewind · esc",
+      "Browsing · ↵ rewind · esc back",
+      "Browsing · esc back",
     ]) expect(codexOwnScreenOpen(under("  Some list", "› 1. First", "  2. Second", footer)), footer).toBeTrue();
   });
 
@@ -107,6 +116,7 @@ describe("codexOwnScreenOpen", () => {
         "  esc again to edit previous message   ctrl + c to exit", "  ctrl + t to view transcript"),
       "under an answer that quotes a list's footer": under("• Run /model. You will see:", "  enter select · esc back", "", COMPOSER),
       "with a draft that quotes one": under("› the footer said", "  enter select · esc back", "  GPT-6-Astra default fast · main"),
+      "with a draft of the prompt browser's footer": under("› Browsing · ↵ rewind · esc back", "  GPT-6-Astra default fast · main"),
       // a thread or a folder named like a key hint is an item of the status line, beside the model
       "a status line naming a thread like a hint": under("› Ask Codex to do anything", "  GPT-6-Astra default · main · esc back"),
       // and one a narrow pane cut at its `·` goes on in the next row, which is no footer of its own
