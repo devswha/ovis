@@ -55,9 +55,11 @@ import { RuntimeMove } from "./RuntimeMove.tsx";
 import { SignOutRow } from "./SignOutRow.tsx";
 import { failureText, openOwnOffer, RelayDirectRow, statusText } from "./RelayPanel.tsx";
 import { AccountSection, accountServiceHere, type AccountState } from "./AccountSection.tsx";
-import { listedPcStateText } from "./AccountPcs.tsx";
+import { AccountPcRows, NoAccountPcHint, removePcFromAccount } from "./AccountPcs.tsx";
 import { STATE_WORD } from "./MachineSidebar.tsx";
 import { pcAccountStatus } from "../lib/account/join.ts";
+import { AccountService } from "../lib/account/service.ts";
+import { indexedAccountStore } from "../lib/account/store.ts";
 import { apiFetch } from "../lib/api-request-id.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { ConnectPhoneDialog, relayOffered } from "./ConnectPhoneDialog.tsx";
@@ -1339,7 +1341,7 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   // a reset relay identity is a new ID for this PC: My devices reads it again
   const [identityResets, setIdentityResets] = useState(0);
   // the account as AccountSection reads it: signed in or not, and the account's PCs for the list
-  const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null, reachable: true });
+  const [account, setAccount] = useState<AccountState>({ signedIn: false, account: null, pcs: null, provider: null, noPcs: false, reachable: true });
   // the relay tab's QR code let a device in after it came down (lib/accountQrWatch.ts): Add a connection opens again
   // to say so, where its relay tab can
   const tellsQrNotice = accountService !== null && account.reachable && relayOffered(relay) && !relayReadOnly;
@@ -1362,11 +1364,8 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const joinBySignIn = account.account !== null && pcAccount === account.account && relay.status?.phase === "online";
   const openAccount = useCallback(() => {
     setConnecting(false);
-    // the account's own group, at the top of this page: Add this PC is there
+    // the account's own group, at the top of this page: the sign-in and Add this PC are there
     const group = document.querySelector<HTMLElement>('.settings-dialog [data-section="account"]');
-    // the account waits in More settings: opened first, so the sign-in shows
-    const fold = group?.closest("details");
-    if (fold) fold.open = true;
     group?.scrollIntoView({ block: "start" });
     group?.querySelector<HTMLElement>("button")?.focus();
   }, []);
@@ -1376,12 +1375,16 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
   const selfRelay = touchPhone && relayOffered(relay) && relay.status?.phase === "online" && !relayReadOnly ? <UseRelayHere /> : null;
   return (
     <>
+      {/* the account first: the sign-in the relay depends on is not left in More settings */}
+      <AccountSection onAccount={setAccount} recheck={accountChecks} />
+
       {/* what is connected to this PC: its name atop one list of the other PCs, phones and browsers, the one in use first */}
       <SettingsGroup section="devices">
         <div className="settings-item my-devices">
-          <MyPcRows machines={machines} accountPcs={account.pcs} watching={auth?.role === "watch"} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} selfAction={setDevicesCheck}>
+          <MyPcRows machines={machines} account={account.account} accountPcs={account.pcs} onAccountChanged={readAccountAgain} watching={auth?.role === "watch"} relayKey={`${relay.status?.phase ?? ""}:${identityResets}`} selfAction={setDevicesCheck}>
             <DevicesPanel onDevicePaired={closeConnectOnPair} auth={auth} onRevokedAll={onRevokedAll} kindOf={(label) => deviceKind(label, t)} currentAction={selfRelay} more={devicesMore} checkSlot={devicesCheck} />
           </MyPcRows>
+          {account.noPcs && account.provider !== null && <NoAccountPcHint provider={account.provider} />}
         </div>
         {/* how anything else gets connected: one button, its sheet picks the way; a search finds it as a row by every way it holds */}
         {searching ? (
@@ -1423,7 +1426,6 @@ function DevicesPage({ auth, security, onSignOut, onRevokedAll, machines, pcSett
           </SettingsGroup>
         )}
 
-        <AccountSection onAccount={setAccount} recheck={accountChecks} />
         <SettingsGroup title={t("Devices and access")} section="devices-more">
           {/* in the hosted shell too (a phone reaching this PC through the relay or directly), there without the switch */}
           {(relayOffered(relay) || inRelayShell()) && <RelayDirectRow relay={relay} readOnly={relayReadOnly || inRelayShell()} />}
@@ -1529,7 +1531,11 @@ const removablePc = (machine: Machine): boolean => machine.state !== "connected"
  * (a reset in another window) is read again too. Removing a PC stays
  * in the sidebar's PC menu, which moves the selection off it first and knows the PCs herdr manages.
  */
-function MyPcRows({ machines, accountPcs, relayKey, watching, selfAction, children }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string;
+function MyPcRows({ machines, account, accountPcs, onAccountChanged, relayKey, watching, selfAction, children }: { machines: readonly Machine[]; accountPcs: readonly MyPc[] | null; relayKey: string;
+  /** the account whose PCs these are; null signed out */
+  account: string | null;
+  /** a PC was taken out of the account: its list is read again */
+  onAccountChanged: () => void;
   /** a watching device: the server refuses it the removal, so it is not offered */
   watching: boolean;
   /** takes the end of this PC's own row, where the device list puts its Check now */
@@ -1578,14 +1584,8 @@ function MyPcRows({ machines, accountPcs, relayKey, watching, selfAction, childr
           )}
         </li>
       ))}
-      {fromAccount.map((pc) => (
-        <li key={pc.server_id} className={pc.state === "paired" || pc.state === "needs-approval" ? "devices-row" : "devices-row is-away"} data-pc-state={pc.state}>
-          <div className="devices-name">
-            <span className="settings-label">{pc.name}<span className="devices-kind">PC</span></span>
-            <span className="settings-description">{listedPcStateText(pc, t)}</span>
-          </div>
-        </li>
-      ))}
+      {account !== null && <AccountPcRows pcs={fromAccount} watching={watching} onRemoved={onAccountChanged}
+        remove={(serverId) => removePcFromAccount(new AccountService({ store: indexedAccountStore }), account, serverId)} />}
     </ul>
     {removing !== null && <ConfirmDialog title={t("Remove PC {name}?", { name: removing.name })} body={t(removing.kind === "relay" ? "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC." : "Removes this registration. Remote sessions keep running.")} confirmLabel={t("Remove PC")}
       onConfirm={async () => { await machineRequest(`/${encodeURIComponent(removing.id)}`, "DELETE"); setRemoving(null); }} onClose={() => setRemoving(null)} />}
