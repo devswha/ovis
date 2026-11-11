@@ -416,7 +416,8 @@ export const windowsHost: RemoteHost = {
       // clears it only once it has loaded, after the manager's first status read
       `Remove-Item -LiteralPath "$dir\\${files.status}" -Force -ErrorAction SilentlyContinue`,
       // not Start-Process: that child belongs to the SSH session's job and dies with it
-      `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "cmd.exe /d /c \`"$dir\\${files.launcher}\`""; CurrentDirectory = $env:USERPROFILE }`,
+      // Keep the resolved path out of cmd's command line: even quoted %NAME% would expand.
+      `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${psQuote(`cmd.exe /d /c ".\\${files.launcher}"`)}; CurrentDirectory = $dir }`,
       "if ($r.ReturnValue -ne 0) { throw \"Could not start the bridge (Win32_Process.Create returned $($r.ReturnValue))\" }",
     ].join("\n"));
   },

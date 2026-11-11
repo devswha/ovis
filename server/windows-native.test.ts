@@ -246,19 +246,18 @@ for (const migrated of [false, true]) {
   it.skipIf(!onWindows)(`writes the Windows bridge launcher and reads startup status with migration junction=${migrated}`, async () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), "ovis-registry-native-")));
     const legacy = join(home, ".config", "herdr-web-ui");
-    const target = migrated ? join(home, "physical registry's folder") : legacy;
+    const target = migrated ? join(home, "physical %TEMP% registry's folder") : legacy;
     const registry = join(target, "bridges");
     const session = migrated ? "web-qa" : undefined;
     const files = windowsBridgeFiles(session);
     const runPowerShell = async (script: string) => {
-      // Stub only process creation: the generated file operations run in Windows PowerShell.
-      const command = `cmd.exe /d /c "${join(registry, files.launcher)}"`;
-      const prefixed = `$env:USERPROFILE=${psQuote(home)}; function Invoke-CimMethod { param($ClassName, $MethodName, $Arguments); if ($Arguments.CommandLine -ne ${psQuote(command)}) { throw 'Launcher must use the physical registry path' }; @{ ReturnValue = 0 } }; ${script}`;
+      const wait = script.includes("Invoke-CimMethod") ? "; Wait-Process -Id $r.ProcessId -Timeout 15 -ErrorAction SilentlyContinue" : "";
+      const prefixed = `[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false; $env:USERPROFILE=${psQuote(home)}; $env:APPDATA=${psQuote(home)}; $env:LOCALAPPDATA=${psQuote(home)}; $env:XDG_CONFIG_HOME=''; ${script}${wait}`;
       const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== "psmodulepath"));
       const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(prefixed, "utf16le").toString("base64")], { stdout: "pipe", stderr: "pipe", env });
       const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
       if (code !== 0) throw new Error(stderr);
-      return stdout.trim();
+      return stdout.replaceAll("\r\n", "\n").trim();
     };
     const ssh = { runPowerShell } as unknown as SshConnection;
     try {
@@ -267,11 +266,15 @@ for (const migrated of [false, true]) {
         mkdirSync(join(home, ".config"));
         symlinkSync(target, legacy, "junction");
       }
+      const inspection = await windowsHost.inspect(ssh, session);
+      expect(inspection.registryDir).toBe(join(legacy, "bridges"));
+      mkdirSync(join(inspection.runtimeDir, "bin"), { recursive: true });
+      mkdirSync(join(inspection.runtimeDir, "server"));
+      copyFileSync(process.execPath, join(inspection.runtimeDir, "bin", "bun.exe"));
+      writeFileSync(join(inspection.runtimeDir, "server", "remote-entry.ts"), `await Bun.write(${JSON.stringify(join(home, "started.json"))}, JSON.stringify({ session: process.env.HERDR_REMOTE_SESSION ?? "" }));`);
       writeFileSync(join(registry, files.status), "interactive_failed: stale attempt");
-      await windowsHost.start(ssh, {
-        session, herdrPath: "C:\\herdr.exe",
-        inspection: { platform: "win32-x64", home, herdrPath: "C:\\herdr.exe", expectedSocket: "C:\\herdr.sock", bundleReady: true, bundleOlder: false, descriptors: [], runtimeDir: "C:\\runtime", registryDir: registry },
-      });
+      await windowsHost.start(ssh, { session, herdrPath: "C:\\herdr.exe", inspection });
+      expect(JSON.parse(readFileSync(join(home, "started.json"), "utf8"))).toEqual({ session: session ?? "" });
       const launcher = readFileSync(join(registry, files.launcher), "utf8");
       expect(launcher.startsWith("@echo off\r\n")).toBe(true);
       expect(launcher).toContain(`set "HERDR_REMOTE_SESSION=${session ?? ""}"`);
@@ -280,7 +283,7 @@ for (const migrated of [false, true]) {
       expect(await windowsHost.startupNotice!(ssh, session)).toBe("this attempt");
     } finally {
       if (migrated && existsSync(legacy)) await runPowerShell(`[IO.Directory]::Delete(${psQuote(legacy)})`);
-      rmSync(home, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }
   }, 60_000);
 }
