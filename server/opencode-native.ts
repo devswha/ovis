@@ -256,11 +256,6 @@ export function openCodeNativeState(): { stream: boolean; panes: string[] } {
   return { stream: stream !== null, panes: [...verifiedPanes.keys()] };
 }
 
-/** Whether a process with this pid exists (a signal-0 probe: refused means it exists under another user). */
-function running(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
-}
-
 /** The OpenCode process a verified pane was last verified with, as herdr named it in front; null when unknown. */
 export function openCodePanePid(paneId: string): number | null {
   return verifiedPanes.get(paneId)?.pid ?? null;
@@ -313,10 +308,9 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   // a read that named no process keeps the pid known, and an older verification ending after a newer
   // one does not put its older pid back
   const earlier = verifiedPanes.get(paneId);
-  // A read that named no process keeps the earlier pid only while that process still runs: one that quit leaves no
-  // pid, so a new OpenCode stopped before any read saw it is still looked for (stoppedAgentJob walks without one)
-  const kept = earlier?.pid != null && running(earlier.pid) ? earlier.pid : null;
-  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid ?? pid : pid ?? kept;
+  // An older verification ending after a newer one leaves the newer one's pid, even none: a read that names no process
+  // clears it, so a new OpenCode stopped before any read saw it is still looked for (stoppedAgentJob walks without one)
+  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid : pid;
   // the latest start a committed pid came from: an older verification ending later never lowers it
   const started = Math.max(verification.started, earlier?.started ?? 0);
   verifiedPanes.delete(paneId);

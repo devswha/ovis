@@ -51,7 +51,7 @@ light_job_names='["Detect changes","herdr-core live contract","Integration and b
 # the whole run hosted, where it depends on the Ubuntu mirror the self-hosted image does not need.
 # Only a whole answer is printed: pages a failed attempt got before failing would be counted twice.
 # A refusal (HTTP 4xx: the token or the path) would answer the same again, so only a server error or
-# no answer is asked again; each attempt has a minute, inside Detect changes' limit.
+# no answer is asked again; each attempt has a minute (a read that hangs every time costs up to three).
 api() {
   local out errors
   errors=$(mktemp)

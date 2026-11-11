@@ -364,25 +364,38 @@ describe("the pid a verified pane keeps", () => {
     } finally { closeOpenCodeNative(); fake.server.stop(true); }
   });
 
-  it("stays the one known when a re-verification reads no process, while that process runs", async () => {
-    const fake = fresh("pid-kept");
+  it("is unknown once a re-verification reads no process", async () => {
+    const fake = fresh("pid-cleared");
     try {
-      // this test's own process stands in for an OpenCode still running
-      await verifiedWith("p_kp", [foreground(process.pid)]);
-      await verifiedWith("p_kp", [foreground(undefined)]);
-      expect(openCodePanePid("p_kp")).toBe(process.pid);
+      // a pane read with nothing in front holds no job of its own: a new OpenCode stopped before any read is walked for
+      await verifiedWith("p_cl", [foreground(process.pid)]);
+      await verifiedWith("p_cl", [foreground(undefined)]);
+      expect(openCodePanePid("p_cl")).toBeNull();
     } finally { closeOpenCodeNative(); fake.server.stop(true); }
   });
 
-  it("is unknown when a re-verification reads no process and the one known has quit", async () => {
-    const fake = fresh("pid-quit");
-    const quit = Bun.spawn(["true"]);
-    await quit.exited;
+  it("stays unknown when a newer verification read no process and an older one ends after it", async () => {
+    const fake = fresh("pid-empty-newer");
+    const olderAsked = Promise.withResolvers<void>();
+    const olderRoots = Promise.withResolvers<unknown>();
+    let calls = 0;
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async () => {
+      calls += 1;
+      if (calls === 1) { olderAsked.resolve(); return olderRoots.promise; }
+      return foreground(undefined);
+    }) as never);
     try {
-      await verifiedWith("p_qt", [foreground(quit.pid)]);
-      await verifiedWith("p_qt", [foreground(undefined)]);
-      expect(openCodePanePid("p_qt")).toBeNull();
-    } finally { closeOpenCodeNative(); fake.server.stop(true); }
+      // Given an older verification held at its process read,
+      const older = openCodePaneService(opencodePane("p_en", "ses_en"));
+      await within(olderAsked.promise, "the older verification's process read");
+      // when a newer one finishes first having read no process,
+      expect(await openCodePaneService(opencodePane("p_en", "ses_en"))).not.toBeNull();
+      // and the older one then ends with a process it read before,
+      olderRoots.resolve(foreground(process.pid));
+      expect(await older).not.toBeNull();
+      // then the pane keeps the newer reading: no pid.
+      expect(openCodePanePid("p_en")).toBeNull();
+    } finally { rpc.mockRestore(); closeOpenCodeNative(); fake.server.stop(true); }
   });
 
   it("is the newer verification's when an older one ends after it", async () => {
