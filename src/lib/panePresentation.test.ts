@@ -97,13 +97,21 @@ it("looks past a compaction's summary and its notices to the answer before them 
     { role: "user", ts: "2026-10-19T03:00:00Z", parts: [{ kind: "text", text: "Next request" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(prompted)).toBe(false);
   expect(new ConversationFinishEvidence().accept("compact-prompted", 40, prompted)).toBe(false);
-  // a compaction no /compact asked for (Claude Code's own, at work or at rest) proves no finish: it may come with none
+  // a compaction no /compact asked for (Claude Code's own; at rest it keeps the finish id, server/core/status.test.ts)
+  // leaves the answer before it presented and proving its own finish, and proves no finish of its own
   const idle = { ...answered, turns: [...answered.turns,
     { role: "user", ts: "2026-10-19T01:00:00Z", parts: [{ kind: "compact", text: "Summary of the earlier session" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
-  expect(conversationFinishPresented(idle)).toBe(false);
+  expect(conversationFinishPresented(idle)).toBe(true);
+  expect(new ConversationFinishEvidence().accept("compact-idle-fresh", 40, idle)).toBe(true);
   const unattributed = new ConversationFinishEvidence();
   expect(unattributed.accept("compact-idle", 40, answered)).toBe(true);
+  expect(unattributed.accept("compact-idle", 40, idle)).toBe(true);
   expect(unattributed.accept("compact-idle", 41, idle)).toBe(false);
+  // nor does it count as the earlier compaction a later /compact's proof may follow: only the commanded one proves 41
+  const idleThenCommanded = { ...idle, turns: [...idle.turns, ...compacted.turns.slice(1)] } satisfies Parameters<typeof conversationFinishPresented>[0];
+  const sequence = new ConversationFinishEvidence();
+  expect(sequence.accept("compact-idle-then", 40, idle)).toBe(true);
+  expect(sequence.accept("compact-idle-then", 41, idleThenCommanded)).toBe(true);
   // a command whose compaction is not written yet is no compaction either
   expect(conversationFinishPresented({ ...answered, turns: [...answered.turns, compacted.turns[1]!] })).toBe(false);
 });

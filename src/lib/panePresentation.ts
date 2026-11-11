@@ -16,21 +16,24 @@ const compaction = (turn: ConversationTurn | undefined): boolean => turn?.role =
 const compactCommand = (turn: ConversationTurn | undefined): boolean => turn?.role === "user" && turn.parts.length === 1
   && turn.parts[0]!.kind === "text" && /^\/compact(?:\s|$)/u.test(turn.parts[0]!.text.trim());
 
+/** A compaction the user asked for: its summary right after a `/compact`, with only notices between them. */
+function commanded(conversation: ConversationProof, index: number): number | null {
+  let before = index - 1;
+  while (before >= 0 && passive(conversation.turns[before])) before--;
+  return compactCommand(conversation.turns[before]) ? before : null;
+}
+
 /**
- * Where the newest final answer is, past what starts no model turn after it: the notices above, and a compaction the user
- * asked for, its `/compact` and its summary (#3675). A compaction no command asked for (Claude Code compacts by itself,
- * at work or at rest) is not passed: nothing ties it to a finish.
+ * Where the newest final answer is, past what starts no model turn after it: the notices above, a compaction the user
+ * asked for (its `/compact` and its summary, #3675), and one Claude Code ran by itself (at rest it leaves the finish as
+ * it was). Only the first proves a finish of its own (compactionsAfter).
  */
 function finalAnswerIndex(conversation: ConversationProof): number {
   let index = conversation.turns.length - 1;
   while (index >= 0) {
     const turn = conversation.turns[index];
     if (passive(turn)) { index--; continue; }
-    if (compaction(turn)) {
-      let before = index - 1;
-      while (before >= 0 && passive(conversation.turns[before])) before--;
-      if (compactCommand(conversation.turns[before])) { index = before - 1; continue; }
-    }
+    if (compaction(turn)) { index = (commanded(conversation, index) ?? index) - 1; continue; }
     break;
   }
   return index;
@@ -48,9 +51,10 @@ export function conversationFinishPresented(conversation: ConversationProof): bo
   return finalAnswer(conversation) !== undefined;
 }
 
-/** The compactions after the newest final answer, oldest first. */
+/** The compactions a command asked for after the newest final answer, oldest first: one Claude Code ran by itself proves no finish. */
 function compactionsAfter(conversation: ConversationProof, turn: ConversationTurn): ConversationTurn[] {
-  return conversation.turns.slice(conversation.turns.indexOf(turn) + 1).filter((later) => later.parts.some((part) => part.kind === "compact"));
+  const from = conversation.turns.indexOf(turn) + 1;
+  return conversation.turns.flatMap((later, index) => index >= from && compaction(later) && commanded(conversation, index) !== null ? [later] : []);
 }
 
 /** `compaction`: the one after the answer that dates the proof, by its place among them; the last by default, -1 for none. */
