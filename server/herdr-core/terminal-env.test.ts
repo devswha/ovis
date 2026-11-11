@@ -51,10 +51,11 @@ it("turns NO_COLOR off only on a core that has one, and keeps the core's PATH fo
 
 it.skipIf(process.platform !== "linux")("fits the terminals to the running core's own environment, else to the one that starts it", async () => {
   // the running core stands in as a process started with an environment of its own, read from /proc
-  const core = Bun.spawn(["/bin/sh", "-c", "echo up; read _"], { env: { PATH: "/usr/bin:/core/tools", NO_COLOR: "1" }, stdin: "pipe", stdout: "pipe" });
-  // its environment is its own once it runs: read only after it says so
-  await core.stdout.getReader().read();
+  const core = Bun.spawn(["/bin/sh", "-c", "echo started; read _"], { env: { PATH: "/usr/bin:/core/tools", NO_COLOR: "1" }, stdin: "pipe", stdout: "pipe" });
   try {
+    // a pid is known before its program runs, and until then /proc shows the test's own environment; a real core
+    // has answered by the time it is read, so this one is read once it has said something too
+    await core.stdout.getReader().read();
     const running = { call: async () => ({ pid: core.pid, holder: null, holders: [] }) } as never;
     expect(await coreEnvironment(running)).toMatchObject({ PATH: "/usr/bin:/core/tools", NO_COLOR: "1" });
     expect(await terminalEnvFor(running, { PATH: "/login" }, { PATH: "/starter" })()).toEqual({ PATH: "/login:/usr/bin:/core/tools", NO_COLOR: "" });
