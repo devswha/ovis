@@ -91,3 +91,57 @@ it("Clear it and send still sends different text when the named draft is already
   await submit()(paneId, "chat message", "chat message", Date.now(), false, () => {}, "named draft", confirmation);
   expect(writes()).toEqual([{ method: "agent.prompt", params: { target: paneId, text: "chat message" } }]);
 });
+
+it.each([
+  "[Pasted text #1 +12 lines]",
+  "[Pasted text #1]",
+  "[Image #1]",
+])("refuses folded placeholder %s with box null and refuses Send anyway without writes", async (placeholder) => {
+  screen = box(placeholder);
+  const first: unknown = await submit()(paneId, "follow-up", "follow-up", Date.now()).catch((error: unknown) => error);
+  expect(first).toBeInstanceOf(InputDraftError);
+  if (!(first instanceof InputDraftError)) throw new Error("expected a draft refusal");
+  expect(first.draft).toBeNull();
+  expect(first.box).toBeNull();
+  expect(writes()).toEqual([]);
+
+  const forced: unknown = await submit()(
+    paneId,
+    "follow-up",
+    "follow-up",
+    Date.now(),
+    false,
+    () => {},
+    undefined,
+    { draft: null, identity: { agent: "claude", terminalId: paneId, session: null }, box: placeholder },
+    true,
+  ).catch((error: unknown) => error);
+  expect(forced).toBeInstanceOf(InputDraftError);
+  if (!(forced instanceof InputDraftError)) throw new Error("expected Send anyway refusal");
+  expect(forced.box).toBeNull();
+  expect(writes()).toEqual([]);
+});
+
+it("still offers and executes Send anyway over visible non-clearable box text like ! ls", async () => {
+  screen = ["─".repeat(60), "! ls", "─".repeat(60)].join("\r\n");
+  const first: unknown = await submit()(paneId, "follow-up", "follow-up", Date.now()).catch((error: unknown) => error);
+  expect(first).toBeInstanceOf(InputDraftError);
+  if (!(first instanceof InputDraftError)) throw new Error("expected a draft refusal");
+  expect(first.draft).toBeNull();
+  expect(first.box).toBe("! ls");
+  expect(writes()).toEqual([]);
+
+  await submit()(
+    paneId,
+    "follow-up",
+    "follow-up",
+    Date.now(),
+    false,
+    () => {},
+    undefined,
+    { draft: null, identity: { agent: "claude", terminalId: paneId, session: null }, box: "! ls" },
+    true,
+  );
+  expect(writes()).toEqual([{ method: "agent.prompt", params: { target: paneId, text: "follow-up" } }]);
+});
+

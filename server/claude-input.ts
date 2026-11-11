@@ -240,6 +240,17 @@ export function claudeInputBoxContent(live: string): string | null {
 }
 
 /**
+ * The input box a refusal may offer to send over anyway: claudeInputBoxContent when the whole box
+ * is shown on screen, or null when a `[Pasted text #N` / `[Image #N` placeholder stands for hidden
+ * folded content that `Send anyway` would append onto.
+ */
+export function claudeSendAnywayBox(live: string): string | null {
+  const content = claudeInputBoxContent(live);
+  if (content === null || /\[(?:Pasted text #\d+|Image #\d+)/.test(content)) return null;
+  return content;
+}
+
+/**
  * Whether Claude Code's rewind dialog is open: the screen ends in its panel and Claude's own input box
  * is not drawn under it (the dialog takes its place in every recorded state). A reply that draws the
  * panel has the box under it, and must not hold the pane's sends; rules above the panel (an earlier

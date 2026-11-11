@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText } from "./prompt.ts";
+import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, claudeSendAnywayBox, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
@@ -7842,3 +7842,23 @@ describe("a prompt watch's read", () => {
     expect(await shownPromptText(pane, [pane], { openCodeState: new OpenCodePromptState(), ompLookups: new Map() })).toBeUndefined();
   });
 });
+
+describe("claudeSendAnywayBox", () => {
+  const claudeBox = (draft: string) => ["─".repeat(60), `❯ ${draft}`, "─".repeat(60)].join("\r\n");
+
+  test.each([
+    "[Pasted text #1 +12 lines]",
+    "[Pasted text #2]",
+    "[Image #1]",
+    "prefix [Pasted text #3 +4 lines] suffix",
+  ])("withholds Send anyway when the box holds folded placeholder %s", (draft) => {
+    expect(claudeSendAnywayBox(claudeBox(draft))).toBeNull();
+  });
+
+  test("keeps Send anyway for visible plain box content", () => {
+    const bashBox = ["─".repeat(60), "! ls", "─".repeat(60)].join("\r\n");
+    expect(claudeSendAnywayBox(bashBox)).toBe("! ls");
+    expect(claudeSendAnywayBox(claudeBox("plain draft"))).toBe("❯ plain draft");
+  });
+});
+
