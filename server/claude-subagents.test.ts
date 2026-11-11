@@ -1375,7 +1375,10 @@ describe("ClaudeSubagentStatus", () => {
         try {
           fire(s, 3);
           status.poll();
-          now += into;
+          // a poll that finds the clock gone on moves nothing, half a second into the hold or later
+          now += 500;
+          status.poll();
+          now += into - 500;
           status.poll();
           expect(status.loopHolds("p1")).toBe(true);
           // the clock is set back with the hold standing, and its turn writes no rest
