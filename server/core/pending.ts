@@ -743,6 +743,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             if (row.withdrawn?.()) throw new HerdrError("pending_discarded", "This message was discarded while it waited for omp; nothing was typed");
             if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
           }, options, { strict: true, waiting: () => { waitedForOmp = true; row.waiting?.(true); } });
+          // omp takes input: with nothing typed meanwhile its start is over, and what comes after goes as before
+          if (!typedSinceStart(paneId)) forgetOmpStart(paneId);
           if (waited !== context.pane) {
             mark = pending.mark(paneId);
             context = await pendingContext(owner, paneId, lease, identity);
@@ -1038,7 +1040,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const start = ompStarts.get(paneId);
     if (!start) return false;
     if (Date.now() >= start.until) { forgetOmpStart(paneId); return false; }
-    return typedCount(paneId) !== start.typed;
+    return typedSinceStart(paneId);
+  }
+  /** typedWhileOmpStarted, also past the start's end: a wait that runs to that end still holds for what was typed before it */
+  function typedSinceStart(paneId: string): boolean {
+    const start = ompStarts.get(paneId);
+    return start !== undefined && typedCount(paneId) !== start.typed;
   }
   function forgetOmpStart(paneId: string): void {
     ompStarts.delete(paneId);
@@ -1069,6 +1076,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const since = ompUnknown.get(paneId) ?? Date.now();
       if (Date.now() - since >= (options.ompStartupMs ?? OMP_STARTUP_MS)) { ompUnknown.delete(paneId); return false; }
       ompUnknown.set(paneId, since);
+      // what is typed from now on counts for the wait that follows once herdr answers: omp may be starting
+      if (!ompStarts.has(paneId)) ompStarts.set(paneId, { typed: typedCount(paneId), until: since + (options.ompStartupMs ?? OMP_STARTUP_MS) });
       waitForOmp(paneId, null);
       return true;
     }
@@ -1106,7 +1115,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       pending.waitingFor(paneId, "omp_starting");
     }
     const typedMeanwhile = (): boolean => {
-      if (!typedWhileOmpStarted(paneId)) return false;
+      if (!typedSinceStart(paneId)) return false;
       pending.holdQueued(paneId, TYPED_WHILE_WAITING);
       return true;
     };
@@ -1114,7 +1123,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       for (;;) {
         await Bun.sleep(options.ompReportPollMs ?? OMP_REPORT_POLL_MS);
         // nothing waits to go by itself any more: herdr is not asked again about this run of unanswered looks either
-        if (pending.next(paneId) === null) { ompUnknown.delete(paneId); return; }
+        if (pending.next(paneId) === null) {
+          ompUnknown.delete(paneId);
+          // and with nothing typed, nothing is kept of the start for what comes after: that is sent as before
+          if (!typedSinceStart(paneId)) forgetOmpStart(paneId);
+          return;
+        }
         if (typedMeanwhile() || until === null) return;
         if (Date.now() >= until) {
           console.warn(`[omp] ${paneId}: herdr's omp integration reported no session while omp started; sending anyway`);

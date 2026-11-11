@@ -675,6 +675,65 @@ it("holds a first message with herdr's own word once herdr has not said for half
   void warn;
 });
 
+it.each(["steer", "discard"] as const)("holds nothing typed after a first message left the queue by its %s while omp started with nothing typed", async (action) => {
+  const d = omp();
+  const message = await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  d.hooks.look = () => { d.hooks.look = undefined; d.report(); };
+  await d.delivery.pendingFrames["pending-action"](d.owner as never, { type: "pending-action", id: 9, pane_id: "p", pending_id: message.id, action } as never);
+  await d.settled();
+  await d.eventually("the queue's wait", () => d.listed().length === 0);
+  // omp took input: typing into it now is its ordinary use, and a chat message goes at once as on main
+  await d.type();
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 5, pane_id: "p", text: "second words", payload: "second words", delivery: "immediate" } as never);
+  await d.settled();
+  expect(d.result("submit-result", 5)?.["pending"]).toBeUndefined();
+  expect(d.calls.at(-1)).toBe("immediate");
+});
+
+it("holds nothing typed after a first message held from the start went by its Send now once omp took input", async () => {
+  const d = omp();
+  // no page to type it: held at once, and the queue never waits for omp
+  const message = await d.delivery.queueFirstMessage("p", "first words", "omp", null, OMP) as unknown as Row;
+  await d.rest();
+  expect(d.listed()[0]?.state).toBe("held");
+  d.hooks.look = () => { d.hooks.look = undefined; d.report(); };
+  await d.delivery.pendingFrames["pending-action"](d.owner as never, { type: "pending-action", id: 9, pane_id: "p", pending_id: message.id, action: "steer" } as never);
+  await d.settled();
+  expect(d.result("pending-result", 9)).toMatchObject({ ok: true });
+  await d.type();
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 5, pane_id: "p", text: "second words", payload: "second words", delivery: "immediate" } as never);
+  await d.settled();
+  expect(d.result("submit-result", 5)?.["pending"]).toBeUndefined();
+  expect(d.calls.at(-1)).toBe("immediate");
+});
+
+it("holds a first message for what was typed just before omp's start is given up on, at the wait's look past it", async () => {
+  const d = omp();
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  await d.type();
+  d.advance(30_001);
+  await d.eventually("the hold or the send", () => d.listed()[0]?.state === "held" || d.calls.includes("Enter"));
+  expect(d.typed()).toEqual(["typed in the terminal"]);
+  expect(d.listed()[0]).toMatchObject({ state: "held", error: { code: "typed_while_waiting" } });
+});
+
+it("holds a queued message for what was typed while herdr did not say whether its omp is starting", async () => {
+  const d = omp();
+  d.pane["agent_status"] = "working";
+  expect(await d.ways["a queue request typed at once"]()).toMatchObject({ ok: true, pending: { state: "queued" } });
+  d.pane["agent_status"] = "idle";
+  d.herdrNow.silent = true;
+  await d.rest();
+  await d.type();
+  d.herdrNow.silent = false;
+  d.hooks.look = (looks) => { if (looks === 2) d.report(); };
+  await d.eventually("the hold or the send", () => d.listed()[0]?.state === "held" || d.calls.includes("Enter"));
+  expect(d.typed()).toEqual(["typed in the terminal"]);
+  expect(d.listed()[0]).toMatchObject({ state: "held", error: { code: "typed_while_waiting" } });
+});
+
 it("holds a new pane's first message when its terminal was typed into before the pane first came to rest", async () => {
   const d = omp();
   // typed while herdr still read the pane as unknown, before any wait: the message was already queued for this omp
