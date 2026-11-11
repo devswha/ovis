@@ -618,6 +618,7 @@ final class PCStore {
         return first != null && first.equals(normalizedOrigin(b));
     }
 
+    /** origin() of an http(s) address with the scheme's default port (443, 80) dropped, or null. */
     private static String normalizedOrigin(String text) {
         String origin = origin(text);
         if (origin == null) return null;

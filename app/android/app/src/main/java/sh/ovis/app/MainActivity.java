@@ -102,10 +102,11 @@ public class MainActivity extends BridgeActivity {
             config = new CapConfig.Builder(this)
                 .setServerUrl(origin)
                 .setStartPath(PCStore.startPath(PCStore.pendingStart, pc))
-                // No allowNavigation: the PC's own links (its host and scheme, any port) stay in the
-                // WebView already, and Capacitor turns each entry into another bridge origin rule
-                // (https://host, or a host starting with "http" as is: invalid, which again drops the
-                // bridge's origin check). Other links go to the browser.
+                // No allowNavigation: the PC's own pages stay in the WebView already, and Capacitor
+                // turns each entry into another bridge origin rule (https://host, or a host starting
+                // with "http" as is: invalid, which again drops the bridge's origin check). Links to
+                // any other origin, another port on the PC's host included, go to the browser
+                // (shouldOverrideUrlLoading below).
                 .setErrorPath("error.html")
                 .setBackgroundColor("#12100e")
                 .setWebContentsDebuggingEnabled(debuggable)
