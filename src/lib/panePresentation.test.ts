@@ -60,6 +60,15 @@ it("looks past a compaction's summary and its notices to the answer before them 
   expect(seen.accept("compact-seen", 41, compacted)).toBe(true);
   // and the same compaction proves no finish after it
   expect(seen.accept("compact-seen", 42, structuredClone(compacted))).toBe(false);
+  // a finish after the compaction's, before its own turn is in the transcript, is not the compaction's to prove
+  const skipped = new ConversationFinishEvidence();
+  expect(skipped.accept("compact-skipped", 40, answered)).toBe(true);
+  expect(skipped.accept("compact-skipped", 42, compacted)).toBe(false);
+  // nor when the answer seen at the last finish is another one
+  const other = new ConversationFinishEvidence();
+  const older = { ...answered, turns: [{ ...answered.turns[0]!, ts: "2026-10-18T00:00:00Z", end_ts: "2026-10-18T00:00:05Z", parts: [{ kind: "text" as const, text: "Older", phase: "final_answer" as const }] }] };
+  expect(other.accept("compact-other", 40, older)).toBe(true);
+  expect(other.accept("compact-other", 41, compacted)).toBe(false);
   const prompted = { ...compacted, turns: [...compacted.turns,
     { role: "user", ts: "2026-10-19T03:00:00Z", parts: [{ kind: "text", text: "Next request" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(prompted)).toBe(false);

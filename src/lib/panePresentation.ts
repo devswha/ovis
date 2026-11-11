@@ -28,12 +28,13 @@ export function conversationFinishPresented(conversation: ConversationProof): bo
   return finalAnswer(conversation) !== undefined;
 }
 
-function answerIdentity(conversation: ConversationProof): string | undefined {
+function answerIdentity(conversation: ConversationProof, withCompaction = true): string | undefined {
   const turn = finalAnswer(conversation);
   if (!turn) return undefined;
   // A compaction after the answer (Claude Code's /compact) is a finish of its own: the proof is dated from it, so the
   // finish it brings is not refused as the answer's earlier one (#3675)
-  const compacted = conversation.turns.slice(conversation.turns.indexOf(turn) + 1).filter((later) => later.parts.some((part) => part.kind === "compact")).at(-1);
+  const compacted = !withCompaction ? undefined
+    : conversation.turns.slice(conversation.turns.indexOf(turn) + 1).filter((later) => later.parts.some((part) => part.kind === "compact")).at(-1);
   // Do not date a finish from later tool-result decoration or a trailing informational notice.
   return JSON.stringify([conversation.source, conversation.history_id, compacted?.ts ?? turn.end_ts ?? turn.ts, turnRevision({
     role: turn.role, ts: turn.ts, parts: [...turn.parts.filter((part) => part.kind === "text" && part.phase === "final_answer"),
@@ -84,6 +85,10 @@ export class ConversationFinishEvidence {
         return typeof started === "string" && started !== "" && previous !== undefined && previous.identity === current?.identity;
       }
       if (answer === known.answer) return false;
+      // a proof that rests on a compaction proves only the finish right after the one its answer was seen at, the
+      // compaction's own: a later finish may be another task's, whose turn is not in this transcript yet (#3675)
+      const answered = answerIdentity(conversation, false);
+      if (answer !== answered && (known.answer !== answered || id !== known.id + 1)) return false;
       if (known.answer !== undefined) {
         if (!previous || !current || current.identity === previous.identity || current.time <= previous.time) return false;
       }
