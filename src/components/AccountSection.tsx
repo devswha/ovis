@@ -804,6 +804,8 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
    * sign-in again, the delete after it, what is drawn) goes on only while it is still this one.
    */
   const deletion = useRef<Deletion | null>(null);
+  /** the delete whose request is out: Delete account is held (disabled and busy) until it answers */
+  const [deleteOut, setDeleteOut] = useState<Deletion | null>(null);
   /** the sign-in-again prompt, while it is for the account shown: a delete's prompt never carries over to another account */
   const reauthShown = reauth !== null && (reauth.action !== "delete" || (view.kind === "signed-in" && reauth.deletion.session.account === view.account)) ? reauth : null;
   const deviceSignIn = useRef<AbortController | null>(null);
@@ -973,6 +975,13 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
    * link page, where the person picks GitHub or Google; a sign-in again for this same account passes
    * false, so it stays with the provider the account signed in with.
    */
+  /**
+   * A sign-in again to delete goes through the link page when the service offers `provider` there and not through its own
+   * device flow (`device_page` alone): the same-account check after it keeps another account from being deleted.
+   */
+  const deleteViaLinkPage = (provider: AccountProvider): boolean =>
+    bridge === null && linkPage && (offer?.page as readonly AccountProvider[] | undefined ?? []).includes(provider) && !(offer?.device as readonly AccountProvider[] | undefined ?? []).includes(provider);
+
   /** `store`: where the sign-in is kept; a sign-in again to delete holds it back (deleteAccount.ts, holdingSessionStore) */
   const runSignIn = (provider: AccountProvider, viaLinkPage = linkPage, store: AccountStore = indexedAccountStore): Promise<AccountSession> | null => {
     if (bridge !== null) return desktopSignIn(provider, bridge, store);
@@ -1050,11 +1059,11 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     setReauth(null);
     // a sign-in again for the same account is none that adds the PC: one left untaken does not outlive it either
     signedInHere.current = null;
-    runSignIn(current, false, resumed === null ? indexedAccountStore : holdingSessionStore(indexedAccountStore))?.then(async (session) => {
+    runSignIn(current, resumed !== null && deleteViaLinkPage(current), resumed === null ? indexedAccountStore : holdingSessionStore(indexedAccountStore))?.then(async (session) => {
       if (resumed !== null) {
         // kept only in the place of the sign-in the delete was asked for, while it is still on and still stored: a sign-out
         // or another sign-in made meanwhile (here or in another tab) stays, and nothing is deleted
-        const goesOn = deletion.current === resumed && session.account === resumed.session.account && await installSignInAgain(indexedAccountStore, resumed.session, session);
+        const goesOn = deletion.current === resumed && session.account === resumed.session.account && await installSignInAgain(indexedAccountStore, resumed.session, session, () => deletion.current === resumed);
         if (deletion.current === resumed && !goesOn) deletion.current = null;
         await load();
         if (goesOn && deletion.current === resumed) runDelete(resumed, session);
@@ -1078,6 +1087,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
 
   /** The first press of Delete account: asks, for the sign-in stored now, when that is the account this section shows. */
   const askDelete = (): void => {
+    if (deleteOut !== null) return;
     setReauth(null);
     void new AccountService({ store: indexedAccountStore }).session().then((session) => {
       // another tab signed out, or in as someone else: the section reads what is stored now instead of asking
@@ -1093,6 +1103,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
    */
   /** The confirming press: one delete, for the sign-in the question was asked for. */
   const confirmDelete = (asked: AccountSession): void => {
+    if (deleteOut !== null) return;
     const mine: Deletion = { session: asked };
     deletion.current = mine;
     runDelete(mine, asked);
@@ -1101,8 +1112,11 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   /** One step of `mine`: deletes with `session` (its own sign-in, or a sign-in again to its account), while it is still on. */
   const runDelete = (mine: Deletion, session: AccountSession): void => {
     setDeleteAsked(null);
+    setDeleteOut(mine);
     const service = new AccountService({ store: indexedAccountStore });
-    void deleteAccount({ service, accountStore: indexedAccountStore, session }).then(() => {
+    void deleteAccount({ service, accountStore: indexedAccountStore, session }).finally(() => {
+      setDeleteOut((out) => out === mine ? null : out);
+    }).then(() => {
       // called off by a sign-out or a sign-in meanwhile: what that began is left be
       if (deletion.current !== mine) return;
       deletion.current = null;
@@ -1279,15 +1293,17 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
               ? <span role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</span>
               : t("Delete your Ovis account and everything the account service keeps for it.")}>
             <button type="button" className={asked !== null ? "btn btn-danger" : "btn"} data-action="delete-account" data-confirm={asked !== null ? "delete-account" : undefined}
+              disabled={deleteOut !== null} aria-busy={deleteOut !== null ? "true" : undefined}
               onClick={() => { if (asked !== null) confirmDelete(asked); else askDelete(); }}>{asked !== null ? t("Delete account for good?") : t("Delete account")}</button>
             {asked !== null && <button type="button" className="btn btn-ghost" onClick={() => setDeleteAsked(null)}>{t("Cancel")}</button>}
           </SettingsRow>
           {reauthShown?.action === "delete" && (
             <div className="settings-item account-reauth" role="alert">
               <p className="settings-description">{bridge === null
+                && !deleteViaLinkPage(view.provider)
                 ? t("To delete your account, sign in again with {provider} on its own sign-in page first.", { provider: PROVIDER_NAMES[view.provider] })
                 : t("To delete your account, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
-              {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
+              {(bridge !== null || isDeviceProvider(view.provider) || deleteViaLinkPage(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
             </div>
           )}
           {view.error !== null && <p className="settings-condition" role="alert">{view.error}</p>}

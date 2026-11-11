@@ -264,7 +264,9 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         const again = await nativeSignIn(session.provider, { store: holdingSessionStore(accountStore), service: accountService });
         if (!current()) throw error;
         if (again.account !== session.account) throw new AnotherAccountError();
-        if (!await installSignInAgain(accountStore, session, again)) throw new SignedOutError();
+        if (!await installSignInAgain(accountStore, session, again, current)) throw new SignedOutError();
+        // a sign-out that landed as the store answered: it ends the sign-in just stored, and no delete follows
+        if (!current()) throw error;
         await deleteAccountOf({ service: account, accountStore, session: again });
       }
     }).then(async () => {
@@ -285,6 +287,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       console.warn("Ovis: the account was not deleted", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
       // the sign-in ended meanwhile, or a sign-in again landed in another account: read what is stored now
       if (error instanceof SignedOutError || error instanceof AnotherAccountError) await refresh(true);
+      // a sign-out or a sign-in while that read was out: what it drew stays
+      if (!current()) return;
       // a sign-in that ended or was replaced deleted nothing, and the page now shown is not the one asked about: no
       // failure is drawn on it to try again
       // said on Devices alone, where Delete account was pressed: the directory's own failure keeps `error`

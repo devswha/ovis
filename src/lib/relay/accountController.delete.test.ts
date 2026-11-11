@@ -175,6 +175,31 @@ describe("deleting the account from the hosted shell", () => {
       expect(accountView()).toMatchObject({ kind: "signed-out", error: null });
     });
 
+    it("calls the delete off when the person signs out while the sign-in again is being stored", async () => {
+      let now = Date.now();
+      const { fake, accountStore } = await signedInShell(() => now, "apple");
+      now += 11 * 60_000;
+      // the first write of the sign-in after the sheet answered waits until the test lets it go
+      let armed = false;
+      const reached = Promise.withResolvers<void>();
+      const gate = Promise.withResolvers<void>();
+      const update = accountStore.update.bind(accountStore);
+      accountStore.update = (async (name, change) => {
+        if (name === "session" && armed) { armed = false; reached.resolve(); await gate.promise; }
+        return update(name, change);
+      }) as typeof accountStore.update;
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }], nativePromise: async () => ({ idToken: "apple-id-token" }) } });
+      globalThis.fetch = Object.assign(async () => { armed = true; return Response.json({ access_token: fake.issueToken(ACCOUNT), refresh_token: "refresh-again", expires_in: 3600, account: ACCOUNT, provider: "apple" }); }, { preconnect: savedFetch.preconnect });
+      const done = last().onDeleteAccount?.() as Promise<void> | undefined;
+      await reached.promise;
+      last().onSignOut?.();
+      gate.resolve();
+      await done;
+      expect(fake.requests.filter((line) => line === "DELETE /v1/account")).toHaveLength(1);
+      expect(fake.deleted(ACCOUNT)).toBe(false);
+      expect((await accountStore.get("session"))?.refresh_token).not.toBe("refresh-again");
+    });
+
     it("deletes nothing when the sign-in again lands in another account", async () => {
       let now = Date.now();
       const { fake } = await signedInShell(() => now, "apple");

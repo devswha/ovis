@@ -30,11 +30,14 @@ export function holdingSessionStore(store: AccountStore): AccountStore {
   return { ...store, set: (async (name, value) => { if (name !== "session") await store.set(name, value as never); }) as AccountStore["set"] };
 }
 
-/** Stores `again` in the place of `from`, in one update, only while `from` is the sign-in stored; whether it did. */
-export async function installSignInAgain(store: AccountStore, from: AccountSession, again: AccountSession): Promise<boolean> {
+/**
+ * Stores `again` in the place of `from`, in one update, only while `from` is the sign-in stored and `stillOn` (the
+ * delete it is for has not been called off), both asked inside that update; whether it did.
+ */
+export async function installSignInAgain(store: AccountStore, from: AccountSession, again: AccountSession, stillOn: () => boolean): Promise<boolean> {
   let installed = false;
   await store.update("session", (current) => {
-    if (current === undefined || !sameSignIn(current, from)) return current;
+    if (!stillOn() || current === undefined || !sameSignIn(current, from)) return current;
     installed = true;
     return again;
   });

@@ -14,6 +14,8 @@ const SERVICE = "https://account.ovis.example";
 const ACCOUNT = "acct_one";
 /** who the next sign-in in this section turns out to be */
 let signsInAs = ACCOUNT;
+/** with which provider the link page signs in */
+let signsInWith: "github" | "google" = "github";
 /** runs as the service answers a delete, before this page sees the answer */
 let onDelete: (() => Promise<void>) | null = null;
 
@@ -29,6 +31,7 @@ describe("deleting the account from Settings", () => {
     ahead = 0;
     userCode = null;
     signsInAs = ACCOUNT;
+    signsInWith = "github";
     onDelete = null;
     fake = new FakeAccountService(() => Date.now() + ahead);
     fake.offerLinkPage(["github", "google"]);
@@ -62,7 +65,7 @@ describe("deleting the account from Settings", () => {
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }
       // the code is approved as this page's first poll comes in, on the link page and on a provider's own device page
-      if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, "github"); fake.approveDevice(userCode, signsInAs); userCode = null; }
+      if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, signsInWith); fake.approveDevice(userCode, signsInAs); userCode = null; }
       const answer = await fake.fetch(input, init);
       if (url.pathname === "/v1/account" && onDelete !== null) await onDelete();
       if (!url.pathname.startsWith("/v1/signin/") || !answer.ok) return answer;
@@ -206,6 +209,40 @@ describe("deleting the account from Settings", () => {
     expect(fake.requests.slice(before)).not.toContain("DELETE /v1/account");
     expect(fake.deleted(ACCOUNT)).toBe(false);
     expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
+  });
+
+  it("signs in again on the link page for a provider the service offers only there, then deletes", async () => {
+    // Google through the link page alone: no device flow of its own
+    fake.offer(["github", "google"], ["github"]);
+    fake.offerLinkPage(["github", "google"]);
+    signsInWith = "google";
+    await signedIn();
+    ahead = 11 * 60_000;
+    await press("Delete account");
+    await press("Delete account for good?");
+    await until(() => shown().includes("To delete your account, sign in again"));
+    await press("Sign in again");
+    await until(() => shown().includes("Your account was deleted."));
+    expect(fake.deleted(ACCOUNT)).toBe(true);
+    expect(fake.requests).not.toContain("POST /v1/signin/google/device");
+  });
+
+  it("holds Delete account while the delete is out: no second question, one DELETE, and the deleted notice", async () => {
+    await signedIn();
+    const reached = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    onDelete = async () => { reached.resolve(); await gate.promise; };
+    await press("Delete account");
+    await press("Delete account for good?");
+    await act(async () => { await reached.promise; });
+    const button = renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "delete-account");
+    expect(button.props.disabled).toBe(true);
+    expect(button.props["aria-busy"]).toBe("true");
+    await act(async () => { (button.props as { onClick: () => void }).onClick(); });
+    expect(shown()).not.toContain("for good");
+    gate.resolve();
+    await until(() => shown().includes("Your account was deleted."));
+    expect(fake.requests.filter((line) => line === "DELETE /v1/account")).toHaveLength(1);
   });
 
   it("says to cancel a subscription that still renews, and keeps the account", async () => {
