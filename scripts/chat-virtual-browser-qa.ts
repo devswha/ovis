@@ -99,6 +99,21 @@ async function settleBottom(page: Page) {
     return node && node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
   });
 }
+/**
+ * The reader scrolls to the end until they are there. One jump from far up, with a row held (a selection or a
+ * focused button pins it), can land short: the rows it brings into view are measured after it, and on a phone's
+ * narrow rows the end then lay 6642 px further on, with nothing moving the view in the 15 s that followed (seen
+ * locally once in 18 runs, as in CI). A reader scrolls again from there, as this does each frame.
+ */
+async function readToBottom(page: Page) {
+  await page.waitForFunction(() => {
+    const node = document.querySelector(".chat-view");
+    if (!node) return false;
+    if (node.scrollHeight - node.clientHeight - node.scrollTop <= 1) return true;
+    node.scrollTop = node.scrollHeight;
+    return false;
+  }, undefined, { polling: "raf" });
+}
 /** Until the view and the transcript's height have not changed for 20 frames: where the view rests. */
 async function settled(page: Page): Promise<number> {
   return await page.evaluate(() => new Promise<number>((resolve) => {
@@ -831,8 +846,7 @@ try {
     });
     assert.ok(boundarySelection?.includes("ROW--40"));
     await page.waitForFunction(() => Number(document.querySelector(".chat-view")?.getAttribute("data-chat-pinned")) > 0);
-    await page.locator(".chat-view").evaluate((node) => { node.scrollTop = node.scrollHeight; });
-    await settleBottom(page);
+    await readToBottom(page);
     assert.equal(await page.evaluate(() => getSelection()?.toString()), boundarySelection, "selection with an endpoint outside a row survives scrolling");
     await page.evaluate(() => getSelection()?.removeAllRanges());
     await page.waitForFunction(() => document.querySelector(".chat-view")?.getAttribute("data-chat-pinned") === "0");
@@ -856,8 +870,7 @@ try {
     const focusButton = work.locator(".work-row-head");
     await focusButton.focus();
     await page.waitForFunction(() => document.querySelector(".chat-view")?.getAttribute("data-chat-pinned") === "1");
-    await page.locator(".chat-view").evaluate((node) => { node.scrollTop = node.scrollHeight; });
-    await settleBottom(page);
+    await readToBottom(page);
     assert.ok(await focusButton.evaluate((button) => button === document.activeElement), "offscreen focused button stays focused");
     await focusButton.evaluate((button) => button.blur());
     await page.waitForFunction(() => document.querySelector(".chat-view")?.getAttribute("data-chat-pinned") === "0");
