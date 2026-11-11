@@ -490,9 +490,9 @@ const SELF_RESUMED_RE = /"turnOrigin":"(?:scheduled|task_notification)"|"wakeupS
  * (a `queue-operation`) begins no turn by itself: with a turn at work it waits for that turn's rest,
  * or is taken into that turn (a `queued_command`), and neither holds. So that turn too holds nothing
  * until Claude has written this line, which it dates some tens of milliseconds after the task's end,
- * or after the rest of the turn the notice waited behind, and writes later than it dates it: read as
- * such lines reached their files, some 50 to 75 ms after their date in a pane at rest (eight of them)
- * and 133 ms after it at the rest of the turn before (one), so some 100 to 230 ms after that rest.
+ * or after the rest of the turn the notice waited behind, and writes later than it dates it: 50 to
+ * 190 ms later in the lines read as they reached their files, so up to a few tenths of a second
+ * after the task's end or that rest.
  */
 function selfResumed(parent: Parent, line: string, end: number): void {
   try {

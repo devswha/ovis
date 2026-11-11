@@ -1903,7 +1903,7 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         // That turn rests and the notice's turn begins at once, but herdr's idle word is heard before Claude has written
         // that turn's prompt: the check before the paste has no prompt to read, and the prompt is in the file for the
         // read before the Enter (written here during the paste). A known bound: nothing holds between that rest and
-        // the prompt's line, which is in the file some 100 to 230 ms after that rest.
+        // the prompt's line, which reaches the file up to a few tenths of a second after that rest.
         d.on.paste = () => { delete d.on.paste; noticeTurn(h.path); };
         turnEnds(h);
         h.herdrSays(h.pane);
