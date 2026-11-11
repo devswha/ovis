@@ -122,6 +122,7 @@ export function machineErrorText(words: string, translateIn: Translate): string 
     ["Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.", t("Ovis on this PC is running but not answering right now. Try it again in a moment, or start a new herdr here.")],
     ["The Ovis chosen on this PC serves herdr-core from a socket that is not this SSH account's own, so it was not used. Choose again, or start a new herdr here.", t("The Ovis chosen on this PC serves herdr-core from a socket that is not this SSH account's own, so it was not used. Choose again, or start a new herdr here.")],
     ["Choosing this PC's Ovis server over SSH requires Linux or macOS", t("Choosing this PC's Ovis server over SSH requires Linux or macOS")],
+    ["Choose this PC's Ovis server or a running herdr session.", t("Choose this PC's Ovis server or a running herdr session.")],
   ];
   return known.reduce((text, [english, local]) => text.replaceAll(english, local), words);
 }

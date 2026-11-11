@@ -173,6 +173,17 @@ try {
     await page.locator(".update-notice").getByText("Choose what QA remote connects to.", { exact: true }).waitFor();
     assert.equal(await page.locator(".update-notice").getByRole("button", { name: "Choose", exact: true }).count(), 1);
   }
+  // the Ovis chosen for it is gone and nothing else runs there: that is a failure, told as one on the card, its dot and
+  // the line under the header alike; only a fresh choice reads as a question
+  await page.setViewportSize({ width: 1280, height: 900 });
+  roster = [local, { ...offered, action_required: "choose_herdr", remote_ovis: null, target: { ...offered.target!, own_ovis: "/home/qa/.config/ovis/herdr-core.sock" },
+    error: "Start Ovis on that PC, or start a new herdr here", found_ovis: [], found_herdr_sessions: [] }];
+  await page.reload();
+  await card.getByText("Start Ovis on that PC, or start a new herdr here", { exact: true }).waitFor({ timeout: 10_000 });
+  assert.equal(await card.evaluate((element) => element.classList.contains("is-setup")), false, "a chosen Ovis that is gone is drawn as a failure");
+  const failedSection = page.locator(".machine-group").filter({ has: card });
+  assert.equal(await failedSection.locator(".machine-dot.is-error").count(), 1, "its dot says error too");
+  assert.equal(await page.locator(".update-notice").getByText("Choose what QA remote connects to.", { exact: true }).count(), 0, "the line under the header does not ask it as a fresh choice");
   assert.deepEqual(errors, []);
   console.log("PASS: an older PC's own Ovis is offered its own update on the card, shown updating under its own title, and otherwise named with why and where it answers; screenshots:", shots);
 } finally { await browser.close(); server.stop(true); }

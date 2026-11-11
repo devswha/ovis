@@ -3,12 +3,17 @@ import { useT } from "../lib/i18n.ts";
 
 export type HerdrChoice = Pick<SshTarget, "session" | "herdr_socket" | "start_new_herdr" | "own_ovis">;
 
+/** A fresh choice to make (this PC's Ovis or running herdr sessions were found), not what was chosen being gone or refused */
+export function asksChoice(sessions: readonly FoundHerdrSession[], ownOvis: readonly FoundOvis[], refused: boolean): boolean {
+  return ownOvis.length > 0 || !refused && sessions.length > 0;
+}
+
 /** The same choice on a saved PC's card and on a first setup that has no card yet. */
 /** `coreRefusal`: why the Ovis chosen for this PC could not be used (gone, or its socket refused), in the UI language */
 export function FoundHerdrChoices({ sessions, ownOvis = [], coreRefusal, busy, onChoose }: { sessions: FoundHerdrSession[]; ownOvis?: FoundOvis[]; coreRefusal?: string; busy: boolean; onChoose(choice: HerdrChoice): void }) {
   const t = useT();
   // a question is drawn as one (is-setup); only what was chosen and is gone or refused is drawn as a failure
-  const question = ownOvis.length > 0 || !coreRefusal && sessions.length > 0;
+  const question = asksChoice(sessions, ownOvis, !!coreRefusal);
   return <div className={`machine-action${question ? " is-setup" : ""}`} role="status">
     {/* the PC's own Ovis, where its sessions are, is the first and main answer; the herdr sessions running beside it,
         which it does not serve, follow under their own line, and starting a new herdr comes last */}
