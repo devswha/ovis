@@ -184,6 +184,16 @@ try {
   const failedSection = page.locator(".machine-group").filter({ has: card });
   assert.equal(await failedSection.locator(".machine-dot.is-error").count(), 1, "its dot says error too");
   assert.equal(await page.locator(".update-notice").getByText("Choose what QA remote connects to.", { exact: true }).count(), 0, "the line under the header does not ask it as a fresh choice");
+  // the session chosen for it stopped while another still runs there: still a failure, with why, though there is a choice
+  const gone = "The herdr session chosen for this PC is no longer running. Start it on that PC and reconnect, or choose again.";
+  roster = [local, { ...offered, action_required: "choose_herdr", remote_ovis: null, target: { ...offered.target!, herdr_socket: "/home/qa/.config/herdr/sessions/old/herdr.sock" },
+    error: gone, found_ovis: [], found_herdr_sessions: [{ session: "work", label: "work", socket_path: "/home/qa/.config/herdr/sessions/work/herdr.sock" }] }];
+  await page.reload();
+  await card.getByText(gone, { exact: true }).waitFor({ timeout: 10_000 });
+  assert.equal(await card.evaluate((element) => element.classList.contains("is-setup")), false, "a chosen session that stopped is drawn as a failure");
+  assert.equal(await failedSection.locator(".machine-dot.is-error").count(), 1, "its dot says error");
+  assert.equal(await page.locator(".update-notice").getByText("Choose what QA remote connects to.", { exact: true }).count(), 0);
+  await card.getByRole("button", { name: "Use work", exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log("PASS: an older PC's own Ovis is offered its own update on the card, shown updating under its own title, and otherwise named with why and where it answers; screenshots:", shots);
 } finally { await browser.close(); server.stop(true); }
