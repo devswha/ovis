@@ -1060,9 +1060,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `visualViewport` so the keyboard does not cover input; otherwise the shell is `100dvh`, because an
   iPhone home screen app reports a visual viewport shorter than the screen without a keyboard.
 - The header is one line at every width. Below `769px`, left to right: the drawer toggle; the
-  flexible context, agent mark and title (it opens the workspace's tabs on a phone) then the
-  PC › workspace › folder crumb; the Chat/Terminal switch; the connection chip while the bridge is
-  not live, the offline pill and the More menu (`⋯`). From `769px` with one pane in view the row is
+  flexible context, agent mark and title, then the PC › workspace › folder crumb; the Chat/Terminal
+  switch; the connection chip while the bridge is not live, the offline pill and the More menu
+  (`⋯`). The workspace's tabs are the row under it (Tab strip and pane canvas). From `769px` with one pane in view the row is
   a browser's tab strip (Chrome's, sized after the Herdr app's tab bar, THIRD_PARTY_NOTICES.md):
   the sidebar's head (`.header-side`: the Ovis wordmark, `src/assets/brand/logo-light.png`
   or `logo-dark.png` by the resolved theme, then the palette and the sidebar toggle, as the Herdr
@@ -1132,7 +1132,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   under it (no tab strip or notice between), that bar is glass, as an iPhone's is: `--bar-bg` behind
   `--glass-blur` at `--z-header`, pulled over the pane by its own height (`--header-over`), so the
   transcript scrolls on under it while its first line, the banners and anything else at the pane's
-  top start below it. The xterm mount is not fitted under the chat, so this resizes no pty.
+  top start below it. The xterm mount is not fitted under the chat, so this resizes no pty. A phone
+  always draws the tab row under the header, so its header is the plain bar at every size.
 - From `769px` the sidebar's right edge is a grip (`.sidebar-resizer`, `role="separator"`): drag
   it to resize the sidebar between `240px` and `520px`, never past half the window; the arrow
   keys move the focused edge `16px`, Home and End go to the limits, and a double-click returns to
@@ -1374,30 +1375,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A lone pane beside such a `⋯` draws no second ellipsis (its actions are in the tab's menu), on a
   desktop as on touch. The pane's own context menu carries pane actions; it opens at the pointer
   without changing which pane is focused. The pane header's ellipsis opens the same menu on touch.
-  A phone (at most 640px wide, the sheets' width) draws no tab row for any tab, which gives the pane
-  the row's 44px (header 96 -> 52px). The header's title is the way to the tabs, as the Codex and
-  Claude apps title the open conversation and list the others from it: a `ChevronDown` follows it, and
-  the whole title and crumb, grown to `--touch-target` tall, is one button ("Tabs of {workspace}",
-  `aria-haspopup="dialog"`, `aria-expanded`) that opens the workspace's tabs as a bottom sheet: each
-  tab with its state dot (hollow at rest), its agent's mark and a Close of its own ("Close {tab}",
-  its own stop after the tab in the arrow order), the open tab marked current, its state word for a
-  state; then the open tab's Move tab left / right, then New terminal and New tab with agent…. A
-  pick opens the tab where it was left; Close asks first as the row's does. Such a phone's More
-  carries the open tab's other actions as below, less the two new-tab items its title's list holds.
-  A lone tab with no row (a phone at most 700px tall, including the iPhone Duo's 678-point outer
-  display, landscape or a screen made short by its keyboard) draws no pane ellipsis either: a second
-  `⋯` below the glass header would repeat the header's own. The header's `⋯` is then the one menu,
-  as an iPhone navigation bar (and the Claude iOS app) keeps one overflow button in the bar. After its
-  own items and a divider it carries what the missing row's menu would: a split tab's panes first,
-  then the pane's actions, then New terminal (the row's `+`), New tab with agent… (as Chrome for
-  iPhone keeps New Tab in its overflow menu) and Rename tab, in a dialog in place of the row's inline
-  field, which the palette's Rename tab and its shortcut open too. Move to workspace… (a one-pane
-  tab) lists the other workspaces in a second menu, where the row's menu lists them in place, and
-  Close tab asks first, as the row's does for a workspace's last tab: it closes the workspace too,
-  and is the one way to close a split tab whole there. Extending the compact-height state to the Duo follows
-  Apple's outer-display guidance to put chrome at the edge and preserve vertical room for content.
-  Wherever a lone pane's ellipsis shows to a finger, the pane's banners (View only and the rest)
-  start below it, so none covers it; with no row they start below the glass header.
+  A phone (at most 768px wide) draws the same row, under the header: it is the one way to the tabs
+  there, so it is never replaced by a list, and the pane is never covered to switch tabs. The row
+  leads with the workspace's name in a cell of its own, outside the scrolling tabs (`--font-mono`,
+  `--fs-xs`, cut with an ellipsis, at most a third of the row), which opens the workspace drawer;
+  the tabs scroll sideways beside it, and the `+` is the row's last cell, so it never covers a tab.
+  A tab is at most the row's own width, its name cut with an ellipsis rather than pushing the `+`
+  off the row, and the open tab is always wholly in view (`bringOpenTab`). A tab herdr still names
+  by its number draws its pane's title instead (`displayPaneTitle`, cut as a first message's label
+  is), with herdr's number before it only where two tabs would otherwise read alike; herdr's label
+  is never written, and the tab's tooltip keeps it. The open tab's `⋯` carries the tab's actions and
+  the open pane's, less Split and Zoom where a phone shows one pane at a time. A split tab's place
+  in the header (`1/2`) is a button there ("Panes · Tab {index} of {count}"), which lists the tab's
+  panes, the open one marked.
+  A short phone (at most 700px tall: the iPhone Duo's 678-point outer display, landscape, or a
+  screen made short by its keyboard) keeps the row in a compact form rather than leaving it out:
+  the same cells, 36px tall instead of 44px, a smaller name and tighter gaps, so the pane keeps its
+  room and the row stays the one way to the tabs. The row is never hidden, a lone tab included: the
+  workspace's name and the `+` are useful with one tab too. A lone pane draws no ellipsis of its own
+  beside the row's `⋯` (PaneCanvas.css hides its head while the row has a menu), so the row's menu
+  is the one place for the pane's and the tab's actions. The header over the pane is the plain bar
+  at every phone size, never the glass one: the row sits between the two, so the transcript never
+  reaches the header. A pane's banners (View only and the rest) start below the header.
 - On a PC whose terminals are the Herdr app's (`HerdrIdentity.runtime` `herdr-core`), the app's
   window owns the workspaces, tabs and splits, and herdr-core refuses to rename, reorder or move
   them, to split, swap, zoom or resize a pane, and the worktree actions. The browser then leaves
