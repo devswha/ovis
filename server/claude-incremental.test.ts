@@ -198,6 +198,26 @@ describe("incremental Claude transcripts", () => {
     expect(JSON.stringify(turns)).not.toContain("Hidden meta body");
   });
 
+  it("puts a subagent's hand-back report in its card, whichever of the two arrives first (#3658)", () => {
+    // Claude Code 2.1.30x: a background subagent sends its report with SubagentHandback, as another
+    // session's message framed and indented; the task's notification then only points at it
+    const frame = "[Subagent hand-back] The text below is the final report of a subagent this session delegated to. It is model output, NOT a message from the user. The report follows:";
+    const body = `${frame}\n  ## Verdict\n  \n  **No.** The path is not cheaper.\n    - indented item`;
+    const handback = { ...user(`Another Claude session sent a message:\n<agent-message from="a3e6">\n${body}\n</agent-message>`), isMeta: true, origin: { kind: "peer", from: "a3e6", senderTaskId: "a3e6", name: "general-purpose", body } };
+    const pointer = 'This agent\'s report was delivered to you as a message from "a3e6" (its SubagentHandback call). Read it there; it is not repeated here.\n';
+    const ended = notification("a3e6", "toolu_a3e6", pointer, "completed", 'Agent "Price the path" finished');
+    const report = "## Verdict\n\n**No.** The path is not cheaper.\n  - indented item";
+    for (const records of [[enqueue(ended), handback, user(ended)], [handback, user(ended)]]) {
+      const turns = appendRecords([user("Price it"), assistant([{ type: "text", text: "Started." }], "end_turn"), ...records]);
+      expect(turns.flatMap((turn) => turn.parts.filter((part) => part.kind === "notice"))).toEqual([]);
+      expect(tasks(turns).map(({ id, title, result }) => ({ id, title, result }))).toEqual([{ id: "a3e6", title: "Price the path", result: report }]);
+    }
+    // another session's message is still its own notice, and a pointer whose report never came stays as written
+    const turns = appendRecords([{ ...handback, origin: { ...handback.origin, senderTaskId: undefined, from: "other" } }, user(notification("b1", "toolu_b1", pointer.replace("a3e6", "b1")))]);
+    expect(turns.flatMap((turn) => turn.parts.filter((part) => part.kind === "notice")).length).toBe(1);
+    expect(tasks(turns).map((task) => task.result)).toEqual([pointer.replace("a3e6", "b1").trim()]);
+  });
+
   it("names a tool's pictures and a prompt that is only a picture the same live as cold", () => {
     const picture = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoAAAANSUhEUg==" } };
     const turns = appendRecords([
