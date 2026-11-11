@@ -1557,7 +1557,8 @@ export const LOOP_HOLD_MS = 60_000;
 /**
  * The latest fire or self-resumed prompt the pane took account of (`fire`, its byte boundary:
  * Parent.loopAt), and since when it holds the queue (`since`). null: it holds nothing, as a rest
- * was written past it, or the transcript's first read found it written LOOP_HOLD_MS ago or longer
+ * was written past it, or a poll found its LOOP_HOLD_MS up (it holds no more, whatever this PC's
+ * clock says later), or the transcript's first read found it written LOOP_HOLD_MS ago or longer
  * (history: its turn may have been interrupted long ago). One found at any other boundary is another
  * one, wherever that stands: a transcript rewritten in place keeps no boundary of the read before.
  */
@@ -1645,6 +1646,8 @@ export class ClaudeSubagentStatus {
    * ends it: herdr reads the pane at rest until it reads the turn, and its working may be a late one for
    * the turn before, or heard while a delivery is at its last checks. So a resumed turn that is interrupted
    * and writes no rest holds the queue until that time is up, though herdr reads the pane at rest again.
+   * That time is this PC's clock's: a hold a poll found over holds no more, wherever the clock is set later;
+   * one that stands as the clock is set back ends LOOP_HOLD_MS past the next poll at the latest (poll).
    */
   loopHolds(paneId: string): boolean {
     const since = this.panes.get(paneId)?.turns?.loop.since ?? null;
@@ -1890,7 +1893,9 @@ export class ClaudeSubagentStatus {
           // since: it stands past that one, or anywhere in a transcript rewritten in place
           if (parent.loopAt === null) turns.loop.since = null;
           else if (parent.loopAt !== turns.loop.fire) turns.loop = { fire: parent.loopAt, since: turns === known ? this.now() : foundFiring(parent.loopTime, this.now()) };
-          // a clock set back while the hold stands would let it outlive its time: it holds from this read at the latest
+          // a clock set back to before the hold began would let it outlive its time: it holds from this read at the
+          // latest. One set back by less is not told from a clock that was not: the hold stands for what that clock
+          // leaves of its time, so no longer than LOOP_HOLD_MS past this read either way
           else if (turns.loop.since !== null && turns.loop.since > this.now()) turns.loop.since = this.now();
           // a turn seen at rest is history: a later signal with nothing to place it is not its own
           const latest = turnAt(parent);
@@ -1911,6 +1916,10 @@ export class ClaudeSubagentStatus {
       // a held queue let go of (a rest written past it) is told too, though the pane rested all along
       const holding = this.holdsQueue(paneId);
       const looping = this.loopHolds(paneId);
+      // a hold this poll finds over is over for good, by its rest or by its time. Left standing in the pane's turns,
+      // one whose time ran out would hold again once this PC's clock is set back, told to no one; and where the
+      // pane's files stay as they were (the read skipped above), no poll would say when that time was up again
+      if (!looping && tracked.turns) tracked.turns.loop.since = null;
       if (!tracked.reset && running === tracked.running && turnRunning === tracked.turnRunning && promptAt === tracked.promptAt && resting === tracked.resting && holding === (tracked.holding ?? false) && looping === (tracked.looping ?? false)) continue;
       tracked.holding = holding;
       tracked.looping = looping;

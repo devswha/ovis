@@ -1355,6 +1355,51 @@ describe("ClaudeSubagentStatus", () => {
       } finally { status.stop(); }
     });
 
+    it("brings no hold back when this PC's clock is set back after the hold ran out its time", async () => {
+      // the pane's files as the polls after the hold find them: read again at each poll, or quiet since before the
+      // hold ended, when a poll that finds them as they were reads nothing
+      for (const files of ["read at each poll", "quiet, and read by no later poll"] as const) {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        // quiet files are older than this clock by more than a second (a folder's change time is this PC's own)
+        let now = files === "read at each poll" ? NOW : Date.now() + 5000;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          fire(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // its turn writes no rest: the hold runs out its time, and the pane's poll says so
+          now += LOOP_HOLD_MS;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told).toEqual([false, true, false]);
+          now += 4000;
+          status.poll();
+          now += 6000;
+          status.poll();
+          // the clock is set back ten minutes, to before the hold began: by that clock its time is not up
+          now -= 10 * 60_000;
+          // the hold that ended stays ended. One that stood again would hold a queue that was told nothing, and where
+          // no poll reads the files no word would follow when its time was up a second time
+          expect(status.loopHolds("p1")).toBe(false);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          // nor later, as that clock comes to the hold's first minute again
+          now += 9 * 60_000 + 30_000;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(told).toEqual([false, true, false]);
+          // the next fire holds as any does
+          fire(s, 4);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          expect(told).toEqual([false, true, false, true]);
+        } finally { status.stop(); }
+      }
+    });
+
     it("lets go by itself, and says so, once no rest was written for LOOP_HOLD_MS", async () => {
       const s = session();
       s.prompt(1);
@@ -2018,6 +2063,34 @@ describe("ClaudeSubagentStatus", () => {
           answer(s, 4);
           status.poll();
           expect(status.loopHolds("p1")).toBe(false);
+        } finally { status.stop(); }
+      });
+
+      it("brings no hold back for a notice's turn that wrote no rest when this PC's clock is set back after its minute", async () => {
+        const s = session();
+        s.prompt(1);
+        rest(s, 2);
+        // the files are older than this clock by more than a second: a poll that finds them as they were reads nothing
+        let now = Date.now() + 5000;
+        const { status, told } = await tracked(s, () => now);
+        try {
+          notices(s, 3);
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(true);
+          // a session that writes no rest: the hold runs out its minute, and two polls follow
+          now += LOOP_HOLD_MS;
+          status.poll();
+          expect(told).toEqual([false, true, false]);
+          now += 4000;
+          status.poll();
+          now += 6000;
+          status.poll();
+          // the clock is set back ten minutes
+          now -= 10 * 60_000;
+          status.poll();
+          expect(status.loopHolds("p1")).toBe(false);
+          expect(status.loopHoldsNow("p1")).toBe(false);
+          expect(told).toEqual([false, true, false]);
         } finally { status.stop(); }
       });
 

@@ -1869,6 +1869,38 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         } finally { setSystemTime(); }
       });
 
+      it("sends a message at once to a pane whose notice turn's hold ran out, though this PC's clock was set back since", async () => {
+        const d = await delivering();
+        const { h, writes, submit, flush, waiting } = d;
+        const id = h.pane.pane_id;
+        // Given a notice's turn that wrote no rest: its hold ran out its minute, which the queue was told, and the
+        // polls since found the pane's files as they were and read nothing.
+        notices(h.path); h.poll();
+        expect(h.status.queueHeld(id, false)).toBe(true);
+        const from = Date.now();
+        try {
+          setSystemTime(from + 61_000);
+          h.poll();
+          expect(h.status.queueHeld(id, false)).toBe(false);
+          setSystemTime(from + 64_000);
+          h.poll();
+          setSystemTime(from + 70_000);
+          h.poll();
+          // When the clock is set back ten minutes, to before that hold began, and a message is sent to the pane
+          // herdr reads at rest.
+          setSystemTime(from + 70_000 - 10 * 60_000);
+          h.poll();
+          expect(h.status.queueHeld(id, false)).toBe(false);
+          expect(h.status.queueHeld(id, true)).toBe(false);
+          await submit(37, "after the clock went back");
+          await flush();
+          // Then it is typed at once: the hold that ended holds nothing again. One that did would keep the message
+          // waiting with no poll to read that its time was up, until herdr's next word on the pane.
+          expect(writes).toEqual(["paste \u001b[200~after the clock went back\u001b[201~", "keys Enter"]);
+          expect(waiting()).toEqual([]);
+        } finally { setSystemTime(); }
+      });
+
       it("leaves a paste uncommitted when the notice's turn begins between a queued message's paste and its Enter", async () => {
         const d = await delivering();
         const { h, writes, submit, flush, waiting } = d;
