@@ -508,11 +508,10 @@ interface ClaudeParseState {
   handbacks: Map<string, { report?: string; notice?: ConversationTurn; card?: OmoTaskResult }>;
 }
 
-/** a subagent's report as its card's result, cut as any other */
+/** a subagent's hand-back report as its card's result (claudeHandback reads only one a card holds whole) */
 function fillCard(card: OmoTaskResult, report: string): void {
-  card.result = report.slice(0, OMO_TASK_RESULT_MAX);
-  if (report.length > OMO_TASK_RESULT_MAX) card.result_cut = true;
-  else delete card.result_cut;
+  card.result = report;
+  delete card.result_cut;
 }
 
 function claudeParseState(options: ClaudeTranscriptOptions): ClaudeParseState {
