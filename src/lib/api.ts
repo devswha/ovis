@@ -10,7 +10,7 @@ import type { SystemReport } from "../../shared/system.ts";
 import type { MovePlanResponse, MoveStartRequest, MoveStopAllOffer, MoveStopAllRequest, MoveStopRequest } from "../../shared/runtime-move.ts";
 import type { EditableText, PaneDocuments, TextSaved, TextSaveRequest } from "../../shared/files.ts";
 import { parseSystemReport } from "./systemReport.ts";
-import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
+import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type HerdrRuntimeFacts, type Machine, type MachineRoster, type RuntimeName, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
   HerdrPane,
@@ -218,7 +218,7 @@ export function fetchHerdrUpdate(): Promise<HerdrUpdateStatus> {
 }
 
 /** Settings → About → Terminals: saves `runtime` and has the server start again on it (server/herdr-core/runtime-choice.ts). */
-export async function switchRuntime(runtime: "herdr" | "herdr-core"): Promise<void> {
+export async function switchRuntime(runtime: RuntimeName): Promise<void> {
   const url = "/api/runtime";
   const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ runtime }) });
   if (!response.ok) throw await errorFrom(url, response);
@@ -330,8 +330,12 @@ export function requestRelayDirect(on: boolean): Promise<RelayStatus> {
   return getJson<RelayStatus>("/api/relay/direct", { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ on }) });
 }
 
-export function requestRelayOffer(): Promise<RelayOffer> {
-  return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1" } });
+/**
+ * `noAccountOnly`: the offer is to put this PC in an account (the relay tab's QR code). The PC then makes it only while
+ * it is in no account, answers 409 `in_account` once it is in one, and ends the offer's code when it joins one.
+ */
+export function requestRelayOffer({ noAccountOnly = false }: { noAccountOnly?: boolean } = {}): Promise<RelayOffer> {
+  return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });
 }
 
 /** POST /api/relay/code: a code to type on the device being paired, good until `expires_at`; it replaces any showing. */
@@ -345,9 +349,9 @@ export function requestRelayCode(): Promise<RelayCode> {
   return getJson<RelayCode>("/api/relay/code", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
-/** POST /api/relay/code/cancel: takes the code showing off the relay. */
-export function cancelRelayCode(): Promise<{ readonly ok: true }> {
-  return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" } });
+/** POST /api/relay/code/cancel: takes the code showing off the relay. `keepalive`: the request outlives a page that is going. */
+export function cancelRelayCode(keepalive = false): Promise<{ readonly ok: true }> {
+  return getJson<{ readonly ok: true }>("/api/relay/code/cancel", { method: "POST", headers: { "x-herdr-update": "1" }, ...(keepalive ? { keepalive } : {}) });
 }
 
 /**
@@ -954,6 +958,15 @@ export async function startPairing(): Promise<PairingCode> {
   return (await sendJson("/api/devices/pair/start", "POST", {})).json();
 }
 
+/**
+ * POST /api/devices/pair/cancel { code }: takes that six-digit code back, and the typed relay code bound to it, when it
+ * is the one pending; `cancelled` is false when it was not (used up, expired, or replaced by a newer code).
+ * `keepalive`: the request outlives a page that is going (a reload, a closed tab).
+ */
+export async function endPairing(code: string, keepalive = false): Promise<{ readonly ok: true; readonly cancelled: boolean }> {
+  return (await sendJson("/api/devices/pair/cancel", "POST", { code }, keepalive)).json();
+}
+
 export async function renameDevice(id: string, label: string): Promise<PairedDevice> {
   return (await sendJson(`/api/devices/${encodeURIComponent(id)}`, "PATCH", { label })).json();
 }
@@ -1033,11 +1046,12 @@ export async function uploadPaneImage(paneId: string, image: Blob, machineId = "
   return ((await response.json()) as { path: string }).path;
 }
 
-async function sendJson(url: string, method: "POST" | "PATCH" | "PUT" | "DELETE", body: unknown): Promise<Response> {
+async function sendJson(url: string, method: "POST" | "PATCH" | "PUT" | "DELETE", body: unknown, keepalive = false): Promise<Response> {
   const response = await apiFetch(url, {
     method,
     headers: { "content-type": "application/json", "x-herdr-machine": "1" },
     body: JSON.stringify(body),
+    ...(keepalive ? { keepalive } : {}),
   });
   if (!response.ok) throw await errorFrom(url, response);
   return response;
