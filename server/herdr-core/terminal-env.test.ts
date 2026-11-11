@@ -92,6 +92,8 @@ it("reads the variables macOS's ps -wwE prints after the command line", () => {
   expect(envAfterCommand(command, command)).toEqual({});
   // another process's line: nothing to read
   expect(envAfterCommand(command, "/bin/zsh HOME=/x\n")).toBeNull();
+  // a value holding " PATH=" reads as a second PATH: which one is the core's cannot be told
+  expect(envAfterCommand(command, `${command} PATH=/core/bin OPTIONS=debug PATH=/other\n`)).toBeNull();
 });
 
 it.skipIf(win)("runs no bunfig.toml preload of the home folder it reads in", async () => {

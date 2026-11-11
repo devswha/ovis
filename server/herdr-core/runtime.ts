@@ -5,6 +5,7 @@ import { MachineScopedConnection } from "./machine-scope.ts";
 import { SeenMarker } from "./seen-label.ts";
 import { coreStartEnv, terminalEnvFor, userTerminalEnv } from "./terminal-env.ts";
 import { existsSync } from "node:fs";
+import { createConnection } from "node:net";
 import { coreSocket, findHc, type FoundHc } from "./discovery.ts";
 import { adapterAddress } from "./pipe.ts";
 import { opencodeDatabasePath, opencodeSessionsTitled } from "../opencode.ts";
@@ -114,6 +115,20 @@ export function coreSocketPath(): string {
   return coreSocket({ env: hcEnv() ?? process.env }).path;
 }
 
+/**
+ * Whether a core answers on `path`: a connect, not the file, decides, as a core that crashed or was
+ * killed leaves its socket file (on macOS in the state folder, also across a reboot).
+ */
+function coreAnswers(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = createConnection(path);
+    const done = (answers: boolean) => { probe.destroy(); resolve(answers); };
+    probe.setTimeout(1000, () => done(false));
+    probe.once("connect", () => done(true));
+    probe.once("error", () => done(false));
+  });
+}
+
 /** HERDR_SOCKET as this process had it before startRuntime pointed it at the adapter (null until then): a core `hc connect` starts hands its env to every pane */
 let herdrSocketBefore: { HERDR_SOCKET: string | undefined } | null = null;
 /** the adapter socket startRuntime last put in HERDR_SOCKET: a later start in this process finds it there, not the one from before */
@@ -183,10 +198,14 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   // a core this server's `hc connect` may start keeps the environment it is started in: wait for the read.
   // One already running has its own, and its terminals wait for the read themselves (terminalEnvFor), so
   // the server does not wait on a slow profile at its start
-  const coreRuns = existsSync(coreSocketPath());
-  if (!coreRuns) terminalEnvironment = await reading.catch(() => ({}));
+  const failed = (error: unknown): Record<string, string> => {
+    console.warn(`[herdr-core] terminals start without the login shell's environment: ${error instanceof Error ? error.message : String(error)}`);
+    return {};
+  };
+  const coreRuns = await coreAnswers(coreSocketPath());
+  if (!coreRuns) terminalEnvironment = await reading.catch(failed);
   const hc = coreConnection();
-  if (coreRuns) void reading.then((env) => { if (connection === hc) terminalEnvironment = env; }, () => undefined);
+  if (coreRuns) void reading.then((env) => { if (connection === hc) terminalEnvironment = env; }, failed);
   // on Windows the pipe is named after the folder itself: a junction or a short (8.3) spelling of it names the same pipe
   const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels),
     // another machine's OpenCode keeps its sessions there: none of its panes is bound to one here

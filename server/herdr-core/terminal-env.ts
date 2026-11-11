@@ -125,7 +125,8 @@ export async function processEnv(pid: number, platform: NodeJS.Platform = proces
 
 /**
  * The variables `ps -wwE` prints after a process's command line, the same line `ps -ww` prints
- * alone: each begins at a space followed by `NAME=`. A value holding such a space would be cut there.
+ * alone: each begins at a space followed by `NAME=`. A value holding such a space would be cut there:
+ * a name read twice says one was, and which is the real one cannot be told, so nothing is read.
  */
 export function envAfterCommand(command: string, withEnv: string): Env | null {
   const line = command.replace(/\n+$/, "");
@@ -133,7 +134,9 @@ export function envAfterCommand(command: string, withEnv: string): Env | null {
   if (line === "" || !all.startsWith(line)) return null;
   const rest = all.slice(line.length).replace(/^ /, "");
   if (rest === "") return {};
-  return Object.fromEntries(rest.split(/ (?=[A-Za-z_][A-Za-z0-9_]*=)/).map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)]));
+  const entries = rest.split(/ (?=[A-Za-z_][A-Za-z0-9_]*=)/).map((entry) => [entry.slice(0, entry.indexOf("=")), entry.slice(entry.indexOf("=") + 1)] as const);
+  const env = Object.fromEntries(entries);
+  return Object.keys(env).length === entries.length ? env : null;
 }
 
 /**
