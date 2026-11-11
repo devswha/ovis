@@ -98,7 +98,8 @@ export function forCore(terminal: Env, core: SourceEnv): Env {
 export async function coreEnvironment(hc: Pick<HcConnection, "call">, read: (pid: number) => Promise<Env | null> = processEnv, platform: NodeJS.Platform = process.platform): Promise<Env | null> {
   try {
     const status = await hc.call("server.status", {});
-    const pid = status.holder?.pid ?? status.holders[0]?.pid ?? (platform === "darwin" ? null : status.pid);
+    // only the current holder: one an update left draining has the old core's starter's environment
+    const pid = status.holder?.pid ?? status.holders.find((holder) => holder.current)?.pid ?? (platform === "darwin" ? null : status.pid);
     return pid === null ? null : await read(pid);
   } catch { return null; }
 }

@@ -172,8 +172,13 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   }
   // The terminals' environment is read while hc is looked for (both run a login shell); another machine's
   // terminals are not this PC's user's, and keep that machine's own. Every way out before the adapter waits
-  // for the read, so none outlives a start that gives up
-  const reading = hcMachine() === null ? terminalEnv() : Promise.resolve({});
+  // for the read, so none outlives a start that gives up. One that fails is handled at once (no unhandled
+  // rejection while hc is looked for): the terminals then start without it
+  const failed = (error: unknown): Record<string, string> => {
+    console.warn(`[herdr-core] terminals start without the login shell's environment: ${error instanceof Error ? error.message : String(error)}`);
+    return {};
+  };
+  const reading = hcMachine() === null ? terminalEnv().catch(failed) : Promise.resolve({});
   const unix = platform !== "win32";
   try {
     // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one
@@ -192,24 +197,20 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
     if (unix && statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
     if (unix) chmodSync(stateDir, 0o700);
   } catch (error) {
-    await reading.catch(() => undefined);
+    await reading;
     throw error;
   }
   // a core this server's `hc connect` may start keeps the environment it is started in: wait for the read.
   // One already running has its own, and its terminals wait for the read themselves (terminalEnvFor), so
   // the server does not wait on a slow profile at its start
-  const failed = (error: unknown): Record<string, string> => {
-    console.warn(`[herdr-core] terminals start without the login shell's environment: ${error instanceof Error ? error.message : String(error)}`);
-    return {};
-  };
   const coreRuns = await coreAnswers(coreSocketPath());
-  if (!coreRuns) terminalEnvironment = await reading.catch(failed);
+  if (!coreRuns) terminalEnvironment = await reading;
   const hc = coreConnection();
-  if (coreRuns) void reading.then((env) => { if (connection === hc) terminalEnvironment = env; }, failed);
+  if (coreRuns) void reading.then((env) => { if (connection === hc) terminalEnvironment = env; });
   // on Windows the pipe is named after the folder itself: a junction or a short (8.3) spelling of it names the same pipe
   const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels),
     // another machine's OpenCode keeps its sessions there: none of its panes is bound to one here
-    hcMachine() !== null ? { otherMachine: true } : { opencodeTitled: (title) => opencodeSessionsTitled(opencodeDatabasePath(), title), terminalEnv: terminalEnvFor(hc, reading.catch(() => ({})), hcEnv() ?? process.env) });
+    hcMachine() !== null ? { otherMachine: true } : { opencodeTitled: (title) => opencodeSessionsTitled(opencodeDatabasePath(), title), terminalEnv: terminalEnvFor(hc, reading, hcEnv() ?? process.env) });
   if (unix) chmodSync(adapter.socketPath, 0o600);
   if (herdrSocketBefore === null || process.env["HERDR_SOCKET"] !== adapterSocket) herdrSocketBefore = { HERDR_SOCKET: process.env["HERDR_SOCKET"] };
   adapterSocket = adapter.socketPath;

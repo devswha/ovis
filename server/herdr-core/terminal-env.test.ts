@@ -75,6 +75,11 @@ it("reads the environment the core's holder has, which starts its shells", async
   await coreEnvironment(fresh, async (pid) => { read.push(pid); return {}; }, "linux");
   expect(await coreEnvironment(fresh, async (pid) => { read.push(pid); return {}; }, "darwin")).toBeNull();
   expect(read).toEqual([11, 10]);
+  // after an update the old holder drains: no current one, and the old one's environment is not the new core's
+  const draining = { call: async () => ({ pid: 10, holder: null, holders: [{ pid: 12, current: false }] }) } as never;
+  await coreEnvironment(draining, async (pid) => { read.push(pid); return {}; }, "linux");
+  expect(await coreEnvironment(draining, async (pid) => { read.push(pid); return {}; }, "darwin")).toBeNull();
+  expect(read).toEqual([11, 10, 10]);
 });
 
 it("fits each terminal to the core as it is then, so a core restarted with another environment is read again", async () => {
