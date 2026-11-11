@@ -1,3 +1,4 @@
+import { statusLineThread } from "./codex.ts";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { appendFileSync, chmodSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -1814,5 +1815,33 @@ describe("a Codex turn that ended in an error", () => {
       appendFileSync(path, `${done}\n`);
       expect(await codexLastTurnEnd(path, 2048)).toBe("answered");
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("statusLineThread", () => {
+  const id = "01a1cb1a-6a92-7ac2-b3a4-c3d444d35f77";
+  const view = (status: string, composer = "› Ask Codex to do anything") => `• Ran a command\n  └ ${id}\n\n${composer}\n\n  ${status}\n  ← for agents · ? for shortcuts`;
+  it("takes a full UUID item below the last composer, with CRLF and a typed draft", () => {
+    expect(statusLineThread(view(`GPT-6.1-Sol medium · ${id} · /repo`))).toBe(id);
+    expect(statusLineThread(view(id.toUpperCase(), "› unsent text").replaceAll("\n", "\r\n"))).toBe(id);
+    expect(statusLineThread(view(`42% context left · ${id}`))).toBe(id);
+    expect(statusLineThread(view(id, "» Ask Codex to do anything"))).toBe(id);
+  });
+  it("reads the single-row footer drawn by Codex 0.167.1 in an 80-column terminal", () => {
+    for (const status of [`GPT-6.1-Sol default · ${id}`, `GPT-6.1-Sol default · ${id} · ← for agents`, id]) {
+      expect(statusLineThread(`› Ask Codex to do anything\n\n  ${status}`)).toBe(id);
+    }
+    expect(statusLineThread(`› a multiline draft\n  ${id}\n\n  GPT-6.1-Sol default · /repo`)).toBeNull();
+  });
+  it("ignores UUIDs in messages, tools, drafts, titles, and directory paths", () => {
+    for (const screen of [id, `• ${id}`, `• Ran echo ${id}`, `› ${id}`, view(`/repo/${id}`), view(`thread ${id}`)]) expect(statusLineThread(screen)).toBeNull();
+  });
+  it("rejects duplicate, conflicting, clipped, or wrapped IDs", () => {
+    for (const status of [`${id} · ${id}`, `${id} · 01a1cb1a-6aa8-74c2-a2d5-bfbb54e92bc4`, `${id.slice(0, 29)}...`, `${id.slice(0, 20)}\n  ${id.slice(20)}`]) expect(statusLineThread(view(status))).toBeNull();
+  });
+  it("does not take an earlier footer above the current composer or a modal below it", () => {
+    expect(statusLineThread(view(id) + "\n› Ask Codex to do anything\n\n  GPT-6.1-Sol medium · /repo\n  ? for shortcuts")).toBeNull();
+    expect(statusLineThread(view(id) + "\nChoose a model")).toBeNull();
+    expect(statusLineThread(view(id).replace("  ← for agents · ? for shortcuts", ""))).toBe(id);
   });
 });
