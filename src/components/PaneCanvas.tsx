@@ -461,7 +461,8 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
           {/* the corner closes, as a window's does: the menu's Close and its confirmation, offered where the menu offers it */}
           {zoomable && !offTab && !paneLocked(item.pane_id) && <button type="button" className="icon-button pane-frame-close" aria-label={t("Close pane")} title={t("Close pane")} disabled={watching}
             // Safari focuses no button a click pressed: focused here, it is the confirmation's opener, which Cancel and Escape hand back to
-            onClick={(event) => { event.currentTarget.focus({ preventScroll: true }); requestClose(item); }}><X aria-hidden="true" /></button>}
+            // a double click's second press may land on the neighbour that took this corner: only a first press closes
+            onClick={(event) => { if (event.detail > 1) return; event.currentTarget.focus({ preventScroll: true }); requestClose(item); }}><X aria-hidden="true" /></button>}
         </div>}
         <div className="pane-frame-body"><PaneCachedContext.Provider value={cell.cached && !cell.retained}><PaneWatchedContext.Provider value={cell.cached && !cell.retained && watchedTabs.has(item.tab_id)}><PanePresentedContext.Provider value={!offTab}><PaneShownContext.Provider value={!hidden}>{renderPane(item, active, alone === null && cells.length > 1)}</PaneShownContext.Provider></PanePresentedContext.Provider></PaneWatchedContext.Provider></PaneCachedContext.Provider></div>
       </section>;

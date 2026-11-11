@@ -200,7 +200,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
   const closeButtons = () => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "icon-button pane-frame-close");
   const headButtons = (id: string) => frameOf(id).findAll((node) => node.type === "button").map((button) => button.props.className as string);
   let pressedFocus = 0;
-  async function pressClose(drawn: SessionSnapshot, id: string): Promise<unknown[]> {
+  async function pressClose(drawn: SessionSnapshot, id: string, detail = 1): Promise<unknown[]> {
     await draw(TUI, drawn);
     pressedFocus = 0;
     const bodies: unknown[] = [];
@@ -209,7 +209,7 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
       return Response.json({});
     }, { preconnect: globalThis.fetch.preconnect }));
     try {
-      await act(async () => { closeButtons()[drawn.panes.findIndex((item) => item.pane_id === id)]!.props.onClick({ currentTarget: { focus: () => { pressedFocus++; } } }); });
+      await act(async () => { closeButtons()[drawn.panes.findIndex((item) => item.pane_id === id)]!.props.onClick({ detail, currentTarget: { focus: () => { pressedFocus++; } } }); });
     } finally {
       fetch.mockRestore();
     }
@@ -240,6 +240,11 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
       expect(pressedFocus).toBe(1);
       await act(async () => renderer?.unmount());
     }
+  });
+
+  it("closes nothing on a double click's second press, which may land on the neighbour that took the corner", async () => {
+    expect(await pressClose(snapshot, "p2", 2)).toEqual([]);
+    expect(asking()).toHaveLength(0);
   });
 
   it("shows a watching device the title's Close, which it cannot use", async () => {
