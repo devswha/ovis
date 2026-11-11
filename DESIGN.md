@@ -210,6 +210,29 @@ herdr mapping (`mapTheme`), including repairs the proposal tool already made, is
 `scripts/herdr-theme-overrides.ts` with its dE and reason; every entry passes AA on its
 committed hex.
 
+**Imported themes.** A theme can also come from a file the user imports in Settings → Appearance
+([docs/themes.md](docs/themes.md)): a name and the sixteen Base16 seeds of a dark side, a light
+side or both, and nothing else. No code or CSS is read from a file. The public contract is the
+seeds, not the roles above, so a role can be renamed, split or added without breaking a theme
+file. `src/lib/themeDerive.ts` derives every role, `--notice-tint`, herdr's `--indicator-*` state
+colours and a light row's ANSI colours from the seeds and holds them to
+`src/lib/themeContrast.ts`, the one list of floors `themes.contrast.test.ts` checks the built-in
+themes against: a colour under a floor keeps its hue and moves in lightness by the smallest step
+that clears it, and a surface the text could only be read on by moving far (more than dE 12 past
+reading on the background) moves toward the background instead. `--bg-hover`, the hovered and
+selected row and the terminal's selection, is never under 1.05:1 on `--bg`: one that would end
+there takes a 1.2:1 step off it instead, the built-in themes' median. Which side a block is filed
+under is told by the colours the file wrote (light text on a darker ground is dark), never by what
+the file calls it, and the row's mode by what they are once they read. A scheme that
+already reads is drawn as written.
+`settings.customThemes` holds the imported themes (12 at most) and the one chosen for each side,
+which is drawn in place of that side's `darkTheme` or `lightTheme`; those keep their value under
+it. The row is `data-palette="custom"` over the side's amber base block, with its colours set as
+custom properties on `<html>`, and a built-in row takes them off again. The design follows Warp's
+custom themes, a small file of colours the app draws its interface from; it differs in reading
+Base16, so the schemes that exist work as they are, and in checking contrast when a file is
+imported.
+
 `--bubble-border` is the edge of the chat's user bubble. It is `transparent` where `--bg-elevated`
 alone parts the bubble from `--bg`: dark amber and dark charcoal. It is `var(--border)`
 where the two surfaces sit close: every light theme (the `[data-theme="light"]` block sets it for
@@ -479,6 +502,44 @@ blocks of `src/styles.css`.
   size as a dim mono `--fs-xs` line; "Opening…" is a `role="status"` note that is in the document from
   the viewer's first render, clipped and empty (`.visually-hidden`, never `display: none`), and gets its
   words a frame later: a live region that appears together with its content is not announced.
+- A page's scripts wait for the person. The Page view draws an HTML file in a frame that allows no
+  script (`sandbox=""`): its HTML and CSS show, with the files the renderer put into it, and nothing
+  in it runs. One line above the frame says **Scripts in this page are off.** beside **Run scripts**
+  (`.file-viewer-scripts`, `--text-dim`, `--fs-sm`); the press loads the page again in a frame with
+  `allow-scripts`, and the line goes. The choice is that file's for as long as the viewer stays open,
+  also through Source and back. Another file, a viewer opened again and a reload start without
+  scripts: nothing is remembered. Over a relay the render host draws the script-less page in a frame
+  of its own inside it, under the same page policy, and writes the page into its own document only
+  once the scripts were asked for. **Open in a new tab** is a press of the same kind: on a direct
+  connection it opens the rendered page in a tab of its own, where its scripts run and no part of
+  the app is; over a relay it opens the reader, which is this viewer and starts without scripts.
+  The reason is what the page's sandbox was measured to hold, by probes that frame a page as the
+  viewer does (Chrome 156 and WebKit 26.6; the scripts are kept outside the tree, in
+  `~/.local/state/ovis-probes/page-sandbox/` on the maintainer's PC). A page's script reaches no
+  other host by a fetch, an image, a form, a popup or a navigation. It does reach one by WebRTC (a
+  STUN or TURN server of its choosing carries its data), in WebKit by a `preconnect` too; it can
+  move its frame to another port of the host name the browser used for the app; and it takes the
+  keyboard focus with `window.focus()`. The press closes none of that: a page whose scripts the
+  person runs can still do all of it, so the press is the person's decision about that file. A page
+  without scripts sent no request to any host in the same probes (a `preconnect` hint, a meta
+  refresh, an image, a stylesheet, a CSS background). One thing is left to it in WebKit: for a
+  `preconnect` hint WebKit opens a connection to the host the page names, with no request on it;
+  Chrome opens none, and a name lookup could not be watched in WebKit. Such a page reads nothing
+  and takes no key, so that connection tells the host that the file was opened and whatever its
+  author wrote into the host's name, nothing the person did.
+  Beside the pane (**Show beside the pane**) the app stays in reach while a page's scripts run, so
+  the page must not take its keys. Nothing on the frame stops a script from taking the focus
+  (`inert`, `tabindex` and a permissions policy were tried), the app sees neither a hover nor a
+  press inside a frame of another origin, and it cannot take the focus back while that frame is
+  there. So the focus is the page's only by the person's doing: the press on **Run scripts**, until
+  the app has the focus again; a press on the page; or Tab into it. While the app has the focus the
+  frame takes no pointer, so a press on the page comes to the viewer, which puts the focus in the
+  page: that press is not the page's, the next one is, and the wheel scrolls the page only once it
+  has the focus. A frame that has the focus otherwise took it. Its scripts are turned off again at
+  once, which is the one thing that gives the keys back, the focus returns to where it was, and the
+  line reads **This page took the keyboard, so its scripts are off again.** It is a `role="status"`
+  line that stays in the document, clipped and without words, while the scripts run, so those
+  words are announced. The popup needs none of this: it holds the focus itself while it is open.
 - A rendered page (Page) looks as before; what changed is where its files come from. The pictures,
   scripts and stylesheets it takes from its folder, and the videos it plays from this server, are
   read only from a descriptor whose opened file was shown to lie in the page's folder (or a folder
@@ -1192,7 +1253,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 ### Field (`.field`, `.input`, `.select`)
 - Stacked uppercase label, optional hint and `--bg-input` field. Desktop fields use `--fs-sm`;
   small-screen fields retain `--fs-input` to avoid focus zoom.
-- Focus names the edge with accent; errors use blocked/danger tokens and `role="alert"`. A failure
+- A focused field draws one line. On `:focus-visible` that is the shared offset ring (`--ring`,
+  `--ring-offset`) and the field's own border stays as it was: its resting colour, the ink of
+  `prefers-contrast: more`, or an invalid access-gate field's `--status-blocked`. It never turns
+  `--accent` under the ring: two accent lines, one inside the other, read as a drawing error. A
+  browser counts a text field as `:focus-visible` however it took the focus (a click, a tap, a
+  dialog's autofocus), and Chrome a select too, so the ring is what a field shows; the `--accent`
+  border is left for a focus the browser draws no ring for (`:focus:not(:focus-visible)`). The
+  terminal's input line, a reply comment's field and the prompt card's custom answer keep the same
+  rule, as Settings' fields and the access gate's already did (this app's own fields, not another
+  app's, are what it follows). A rename field in the sidebar (a workspace's, a PC's) draws the ring
+  inside its edge, over its border (`--ring-inset-offset`): the list clips what a row draws outside
+  it, and the first row's ring would lose its top. The composer and a queued message being edited
+  draw no ring: their own border names the focus. In forced colours the browser itself paints a
+  focused field's border and the ring in the system's highlight.
+- Errors use blocked/danger tokens and `role="alert"`. A failure
   leads with a plain sentence (`lib/userError.ts`); what the PC or the browser said follows on a
   second line in the interface face, selectable, never in the mono stack (which has no Hangul and
   would set Korean with letter-wide spaces).
@@ -1598,6 +1673,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   folder, the mark, the status cell, the menu and the fold count stay where they are, and the menu
   and rename still act on the workspace. The choice is shared with the other browsers of the server
   and applies at once.
+- An agent row is titled by what its agent is on, on One line and Two lines alike: the label the
+  user gave the pane, else (on One line) a tab the user named, else the agent's or the pane's own
+  title. The row's mark already says which agent it is, so an own title that says only that
+  ("Claude Code", "codex", in any case, with or without the glyph an agent puts before its terminal
+  title) gives way to the workspace the agent runs in, a worktree herdr named in its compact form
+  (`brave-valley` for `worktree-brave-valley-7fc6`; `agentRowTitle`, AgentSidebar.tsx): agents with
+  no task title are told apart by where they run, not listed as so many "Claude Code". The place
+  then says neither that workspace again (under the worktree's whole name either) nor the agent's
+  kind or product name beside its mark, so a two-line row with nothing else to place draws its
+  title alone, on the two-line height. A label the user gave the pane is never replaced, and a row
+  with no agent mark keeps its title. The title drawn is the one the row goes by everywhere else:
+  **Within a state** → **Name** sorts by it, and the helpers' line ("Helpers of …"), a helper's
+  "Started by …", the row's `⋯` and its menu's head say it. The tooltip keeps the agent's own title
+  under the drawn one, and a screen reader still hears the agent's kind before the row. Agents
+  under workspaces keeps the agent's own title: its row already hangs from its workspace. It follows
+  Conductor, which names a workspace by its branch, with the workspace's directory name as its
+  second name ([Workspaces and branches](https://www.conductor.build/docs/tips/workspaces-and-branches)):
+  where the work is, not which agent does it.
 - Appearance's **Agents order** is **Workspaces** by default: the Agents list in herdr's
   workspace, tab and pane order. **Activity** pins a blocked agent on top and orders the rest by
   their most recent state change (herdr's `state_change_seq`, read from the snapshot's `agents`),
@@ -1613,7 +1706,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   sections do; the Needs you heading takes `--status-blocked`. An empty group is left out, and
   the pinned card stays first. **Within a state** orders each group: **Longest wait** (the
   default; the oldest `state_change_seq` first, as herdr's agent view sorts with
-  `state_change_seq` ascending, #2015), **Recent** (the newest first) or **Name**. herdr's
+  `state_change_seq` ascending, #2015), **Recent** (the newest first) or **Name** (the title each
+  row draws). herdr's
   counters only compare within one PC, so Longest wait and Recent order each PC's rows in the
   PCs' list order; Name orders across PCs. An agent and its helpers stay together, in the
   group of the one of them that needs the reader most. The shared Agents order applies while
@@ -1882,28 +1976,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 
 ### PC load (`.machine-stats`)
-- Shown while Settings → Remote PCs → **PC load in the sidebar** is on, for this device only. Until
-  it is flipped it follows the roster: on while two or more PCs are connected, off for a lone PC,
-  whose load is not what tells PCs apart.
-- Under an expanded, connected PC's name and above its workspaces: one button holding three
-  meters in a row, each a label, the percent in `tabular-nums` and a 3px bar on a `--border-strong`
-  track (the plan meters' construction): **CPU**, **Memory** (without the file cache) and
-  **Disk** (the fullest of the disks that hold the root and home folder), and a caret at the end
-  that opens the numbers behind them: memory used and total, load average and core count, uptime
-  and a bar per disk. From 85% the percent and bar take `--status-blocked`, as the plan meters do
-  from 80%; amber stays chrome. The open or closed choice is kept per PC in this browser.
+- Shown while Settings → Devices and PCs → **PC load in the status bar** is on, for this device
+  only. It is on until it is turned off: the reading is one small ask every 5 s for the selected PC
+  while the page is visible, read from counters the kernel keeps anyway.
+- In the desktop status bar (a `.status-bar-text` item), as one line of plain text for the selected PC:
+  `CPU 4% · Memory 22% · Disk 50%`, memory without the file cache and the disk the fullest of
+  those that hold the root and home folder. It is text only: no bar, no colour at a high figure
+  and nothing to open. Selecting another PC shows that PC's load. A phone has no status bar and
+  shows none; the sidebar draws no load.
 - It is drawn only for a PC that can say: a PC whose bridge is from before `GET /api/system`
-  shows nothing, and so does one that has not answered yet. A figure the PC cannot measure
-  is a dash, never `0%`. The meters are drawn only; the button's label carries the numbers for a
-  screen reader ("Show system details for Work PC. CPU 4%, Memory 22%, Disk 50%").
-- Nothing is read for a PC that is folded, offline or in a hidden tab, nor while the sidebar, its
-  PCs list or a phone's drawer is closed. The next ask starts 5 s after the last one came back or
-  timed out, so a stuck PC never has more than one open, and a reading no ask has renewed for a
-  minute is dropped rather than shown as now. A herdr-core machine shows none: its server runs on
-  the PC that reaches it, which cannot read that machine's load.
-- Reference: no app listed in `src/AGENTS.md` shows a machine's load in its project list that I
-  know of (they assume one machine); this follows the app's own plan meters and PC group header,
-  and differs only in measuring a PC instead of a subscription. No code is borrowed.
+  shows nothing, and so does one that has not answered yet. A figure the PC cannot measure is
+  left out of the line, never shown as `0%`.
+- Nothing is read for a PC that is not selected, is offline or is in a hidden tab. The next ask
+  starts 5 s after the last one came back or timed out, so a stuck PC never has more than one
+  open, and a reading no ask has renewed for a minute is dropped rather than shown as now. A
+  herdr-core machine shows none: its server runs on the PC that reaches it, which cannot read
+  that machine's load.
+- Reference: no app listed in `src/AGENTS.md` shows a machine's load that I know of (they assume
+  one machine); this follows the app's own status bar text. No code is borrowed.
 
 ### New workspace dialog
 - Agent select comes from `GET /api/agents`; shell-only is always available. The bridge offers the
@@ -2579,6 +2669,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   below `420px` it leaves the header and the title's list marks the open tab.
 
 ### Chat turn (`.chat-turn`)
+- A complete Codex `visualize` reference on its own line of a chat answer is drawn as a small
+  card: the file's own name, the reference's title under it in `--text-dim`, and one button,
+  **Open preview**. The name is always the path's last part, never the title in its place; bidi
+  controls and other invisible format characters are taken out of both, and a long one is cut in
+  the middle so the file's type stays. The press opens the file in the file viewer, where an HTML
+  file is its Page view, as the person has the viewer set: its dialog, which holds the focus
+  while it is open, or with **Show beside the pane** its panel beside the pane, where the rest of
+  the app stays in reach. Either way the page is drawn without its scripts until the person
+  presses **Run scripts** there, and nothing of it stays once that viewer is closed. The card
+  itself looks nothing up and draws no frame. Each card's button names its file to a screen reader
+  (`aria-describedby`), since several cards carry the same words. A copied selection of a card is
+  the name and the title on two lines, as plain and as rich text, without the button's words.
+  Codex's `mode` is not read: every mode, also one this app has never seen, draws the same card.
+  An inline preview was left out on purpose. Measured in Chrome and WebKit, the Page renderer's
+  sandbox keeps a page's script from every other host by a fetch, a form, a popup or a navigation,
+  but not by WebRTC (a STUN or TURN server of its choosing; in WebKit a `preconnect` too), and the
+  script can take the keyboard focus from the app. A frame in the transcript would sit beside the
+  message box for as long as its row is drawn, and would run on a reference's word alone.
+  Every other Markdown (a prompt card, a task result, release notes, the file viewer's Preview of
+  a `.md`) keeps the reference as text. Invalid or streaming references and code examples remain
+  text. Indented under a list item, the card is drawn in that item and the list goes on after it.
+  A path that names a network share is no reference.
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
   scroll owner. The centered lane, exchange spacing and prompt portal stay separate from
   row lifetime. The list anchors prepends by a browser-local slot, never by a timestamp or
@@ -2962,7 +3074,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - In the composer's background-task list, a running task's row is a disclosure button (the row's
   padding and hover tint, a dim caret at its end, `aria-haspopup="dialog"`, `aria-expanded` while
   its detail is open; `--touch-target` tall under a finger). Ended rows stay plain: what ended has
-  the chat's task card.
+  the chat's task card. The list only reads, so a device that only watches keeps the chip, the
+  fold of ended tasks and these rows usable while its composer locks what writes (the message box,
+  attach, the microphone, the quick replies, Send and Stop).
 - It opens one `.modal` (a sheet on a phone, 640px on a desktop) over the list, which stays open
   under the scrim: the working-tint status glyph, the task's title over its dim `agent · model`
   line (selectable, a phone's sheet header included), **Refresh** and **Close** as icon buttons.
@@ -3329,20 +3443,75 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   not another attached typist. The bridge retains disconnected presentation receipts and exact
   consumed IDs for up to ten minutes, capped at 1024 each. An authorized, non-observing reattach
   with the same opaque browser resume ID and device can resume that receipt or receive its exact
-  consumed removal on the local machine only. Remote-machine relays strip the resume ID from every
-  attach because their shared bridge token carries no trusted origin-device namespace; remote
-  reconnection cannot resume presentation receipts. This conveys no input permission. The browser's saved, non-resendable
+  consumed removal. Through a remote PC's relay a controlling attach carries a resume ID scoped to
+  that server (the shared bridge token names no origin device, so the relay makes the ID its own),
+  and a watch-only attach carries none: that one resumes no presentation receipt, and neither does
+  a reconnection after this server restarted. This conveys no input permission. The browser's saved, non-resendable
   **transcript confirmation unavailable** copy remains after server restart or retention expiry;
   neither matching text nor an empty queue clears it. A changed terminal or session also makes
   confirmation unavailable. Ovis does not claim that Pi queued or consumed
   the message until the transcript proves it. Next-turn delivery and an explicit Send
-  now action claim the same server ID. Connection loss never resumes automatic input. Previously
-  held browser messages retain their explicit Send now/Discard recovery.
-  Any other follow-up's exact `sent` or `discarded` receipt is kept the same way (ten minutes, 1024,
-  same browser resume ID and device, local machine only) and replayed with `resumed: true` on its
-  browser's reattach, or to that browser's already attached successor when the Enter's reply comes
-  after the reload. It settles only that exact ID's saved copy: an uncertain copy, which ages out as
-  `dismissed`, stays unconfirmed, and nothing is typed again (#2421).
+  now action claim the same server ID. Connection loss never resumes automatic input. A message its
+  sender held on purpose (`delivery: "hold"`: Alt+Enter, or a follow-up with automatic sending off) stays
+  held, with **Send now** and **Discard**, through a lost connection, a reload, another tab and a restart
+  or update of the server: the bridge never sends it by itself, so its saved copy is held on its own word,
+  as before, and takes no receipt's end. The page knows it by the bridge holding it with no reason (every
+  hold the bridge makes by itself names one) and keeps that for the copy's life, also once a refused Send
+  now gave it a reason; a copy an older release saved held with no reason is one too, and a tab still on
+  an older bundle that saves the list without the mark does not take it from a page that has it. Only a
+  Send now that may have typed it makes it uncertain. Every other held copy (a queued follow-up held as its connection
+  closed, or one the bridge held for a reason of its own) offers **Send now** only on live proof: its own
+  live connection, or the bridge's held receipt for this browser within the receipt's window (below).
+  Saved (after a reload, in another tab, after the connection that held it ended), such a copy shows as
+  uncertain until a receipt proves it again, so it is never sent on the word of storage alone. Inside the
+  receipt's window a reload, another tab of the same browser and a remote PC on this version (its relay
+  scopes the browser's resume ID for a controlling attach) all get the receipt and show the copy held.
+  This is a deliberate change for the rest: past the ten minutes, after a restart or update of this
+  server or of the PC's own, on a remote PC that runs an older version, or through a watch-only attach
+  (which carries no resume ID), such a copy keeps only Copy and **Discard**.
+  Any other follow-up's exact `sent`, `discarded` or `held` receipt is kept the same way (ten minutes on
+  a clock that only moves forward, whatever the PC's clock is set to; at most 1024 held and discarded
+  ones; same browser resume ID and device). A `sent` one is never dropped before its ten minutes, and
+  neither is the note of a Send now that may have typed the copy, which answers every later resend of
+  it "not confirmed" and is told to no browser: a copy another tab still holds on a held receipt is
+  not typed again. That note also outlives its owner's record, which ages out as `dismissed` a minute
+  after its connection closed: a dismissed record ends a held receipt and nothing else. A pane herdr
+  moves under a new ID takes its receipts with it. A pane that ends takes its held receipts away:
+  herdr may give its ID to another pane, so no browser there is told the old pane's copy is held, and
+  a follow-up the bridge still holds for the pane that ended gets no held receipt when its connection
+  closes later. What was sent, or may have been, stays and only refuses. Receipts are replayed
+  with `resumed: true` on its
+  browser's reattach, or to that browser's already attached successor when the Enter's reply or the
+  hold comes after the reload. `sent` and `discarded` settle only that exact ID's saved copy, while
+  `held` recovers an untyped queued copy as **Held message — review and send** (**Send now** /
+  **Discard**): an uncertain copy, which ages out as `dismissed`, stays unconfirmed, and nothing is
+  typed again (#2421). `held` is kept only once the connection that queued the message is gone
+  (while it lives, it alone sends the copy), travels in the frame's own `held` field (clients that
+  predate it remove a copy for any resumed removal), and applies once, to the copy saved when it
+  comes: a later send of that copy, from any tab, is never offered again. Each held ID carries how long
+  the bridge still keeps its receipt (`held_ms`, 0 < ms <= ten minutes, else it proves nothing) and when
+  that ends on the PC's clock (`held_until`); the connection's `features` frame carries the PC's clock
+  (`server_time`). The ten minutes run from when the bridge held the copy as its connection closed, not
+  from the reconnect: a browser that returns after nine has one left. The page holds the copy until the
+  sooner of its arrival plus `held_ms` and `held_until`
+  on its own clock, on this page only (saved, the copy stays uncertain), then shows it uncertain again;
+  every read checks that time too, so a tab that slept or a Send now press past it sends nothing. What
+  is left of the proof runs on a clock that steps forward by the larger of what the device's clock and
+  `performance.now()` moved since it was last read (`proofNow`): a device clock set back does not
+  stretch a proof past the bridge's receipt, and a sleep the forward-only clock did not count still
+  ends it. The
+  proof also ends with the connection that brought it, and only with that one: a page that shows several
+  PCs keeps one PC's held copies when another PC's connection drops. A resend checks and claims the
+  receipt in the pane's serialized turn, by its original ID and for its own pane and browser only, so two
+  resends of one copy type it once. The claim is made before anything is typed and is itself among the
+  receipts (`sending`, told to no browser): while it stands, every resend of that ID, under any pane
+  ID, is answered `pending_busy` and types nothing. A turn is its pane ID's, so a pane herdr moves
+  while the text is on its way would otherwise let the other tab's copy, under the new ID, be typed
+  beside it. The move carries the claim, and the send's end is recorded under the ID the pane has
+  then: `sent`, the "not confirmed" note, or the held receipt back in place when nothing was typed.
+  A connection that may no longer resume when it closes (read-only, a
+  revoked device) leaves no held receipt; a send of its that ends after the close still leaves its `sent`
+  receipt for that browser's next connection.
 - Not connected, the one word `Reconnecting…` (`Connecting…` before this page's first connection to
   the PC's socket) is the placeholder while the box is empty and moves into the status content once
   there is a draft (`composerStatusHint`), on a phone too; it says no more (nothing is queued, and
@@ -3514,6 +3683,42 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   composer's refusal of a Claude box that may not be empty and t3code's composer banner stack;
   Warp and Zed give an interactive program the input until it exits, which this bridge only sees
   on the screen.
+- For Codex the bridge holds that line itself, whatever the page saw. herdr reports Codex at rest
+  while one of its own screens has the input: a list (`/model` and its levels, `/permissions`,
+  `/review`, `/theme`, `/resume`, `/experimental`), a field (`/rename`, the transcript's Find, the
+  search through earlier prompts), an editor (`/statusline`, `/keymap` and its view that waits for
+  a new key), the agents view, a pager (`/diff`, the transcript's where Codex draws one). The folder question reads blocked on a wide
+  pane, but at rest at 40 columns and unknown in its first seconds. `agent.prompt` would paste a
+  message into it: a list drops the paste, and the Enter that follows takes the row under the
+  cursor. On Codex 0.167 that Enter changed the permission mode, answered the folder question
+  with **Trust and continue**, and opened a model's levels, where `enter default · s session ·
+  esc back` saves the row for every new session. Every chat send to a Codex pane therefore reads the live screen
+  last, right before herdr is written to (the queued path in the read it already made for a masked
+  prompt), and is refused (`agent_blocked`, the note of a waiting menu) when the screen ends in a
+  footer of Codex's own. That is a row below the last `›` or `»` that begins with a key and what
+  it does (or `Type to …`), holds the item naming the key that leaves, whole (`esc back`,
+  `esc cancel`, `esc exit`, `esc save/close`, `q close`), by itself or with the rows a narrow pane
+  wrapped it onto, and has nothing but rows of keys under it; the search through earlier prompts
+  has no footer and is known by its `reverse-i-search:` row, and `/keymap`'s view that waits for a
+  key by the sentence it ends with (`Press the new key now. Esc cancels.`). A key the user
+  remapped is drawn as Codex draws it (`^q back`, `alt+x back`) and is read written with a hyphen
+  too (`ctrl-g`). The message stays in the box, **Send anyway** included. A queued one is held
+  with that reason (**Send now** / **Discard**), and with it, in the same step, every other
+  message queued for the pane: tried one by one, a later one would be typed ahead of it if the
+  screen closed between two tries. herdr says nothing when the screen closes, so queued again the
+  message would wait with no reason shown while Codex sits idle, and go out by itself at the next
+  status event, which may be the end of a turn started since. The row says it in the reader's
+  language, with the words of a menu waiting in the terminal. A prompt Codex asks (an approval, a
+  question: a card the chat reads) still queues the message again, as any menu herdr reports
+  does, since its end brings a status event, also when it comes up during the last checks before
+  the paste. Two cards are screens of the other kind: `/model`'s levels, a list the user opened,
+  and the folder question where herdr does not report it (blocked on a wide pane, at rest at 60
+  columns and under), whose answer brings no status event either. A held one stays held. The composer never ends that way: its
+  last rows are its status line, which begins with the model, and `← for agents · ? for
+  shortcuts`; with its shortcuts shown the last row is `? / esc close`, where no item starts at
+  `esc`, and the composer still takes what is typed. A screen whose footer names no such key is
+  not held. The terminal's own input line is not read: it stands in for the keyboard, and a key
+  typed there is the answer to the list.
 - The peek follows Warp's full-screen handoff of an interactive program
   ([Warp's agent workflow](https://docs.warp.dev/agents/)), where the program takes over the
   conversation's area and the conversation is back as it was when the program exits, and Zed's
@@ -4436,13 +4641,33 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   rule, with its repair narrowed to the faults re-subscribing mends. Dismissal follows the update
   notice's button and the PC-action notice's per-fault lifetime (`lib/machineNotice.ts`).
 
+### Desktop update line (`.update-notice.is-line`)
+- In the desktop app only (`lib/desktopUpdate.ts`): once the app has downloaded an update, one
+  line on the update notice's row, drawn as a release's line is. "Ovis X.Y.Z is ready.", a
+  `.btn-primary` **Restart to Update** and the update notice's dismiss button. The server such
+  an app carries offers no release of its own, so the release line never shares the row with it.
+- **Restart to Update** is the tray's item: it is disabled from the press until the app says it
+  keeps running (a .deb's password prompt cancelled). No confirmation: the terminals and agents
+  run in the core, which outlives the app, so a restart interrupts none of them.
+- The dismiss button closes the line for that version, in the app rather than in this page's
+  storage: later starts keep it closed, and the next version shows it again. The tray keeps
+  Restart to Update. The app's connection screen
+  (`app/electron/renderer/connect.html`) shows the same sentence and button under its steps,
+  also for a closed line.
+- Design: T3 Code's desktop update control, where the web client draws what the desktop shell
+  reports through its bridge and one press restarts and installs
+  ([`SidebarUpdatePill.tsx`](https://github.com/pingdotgg/t3code/blob/main/apps/web/src/components/sidebar/SidebarUpdatePill.tsx);
+  no code taken). It differs in place and in words: a sentence on the row where this app already
+  tells of a release, not an icon in the sidebar whose meaning is in its tooltip, and no
+  "running tasks will be interrupted" confirmation, since nothing here is.
+
 ### Setup guide (`.setup-*`)
 - Follows the Claude and Codex apps' first runs: one screen in the pane area, the sidebar left in
   place, nothing modal. It opens by itself once, on a fresh install only (no herdr workspace, no
   saved settings, no shared settings, no paired device); Settings opens it again. A watching device
   never sees it.
 - The welcome is centered: the app mark, "Is this your first time using Ovis?" and two big choice rows
-  (`--radius-xl` cards on `--bg-panel`, an accent border on hover).
+  (`--radius-xl` cards on `--bg-panel`, an accent border on hover; keyboard focus is the ring alone).
 - Then one screen in a 552px column, "Set up Ovis" and "Skip setup" over it, no progress bar. It first
   shows Ovis checking the PC (GET /api/agent-catalog): every coding agent in a two-column `--bg-panel`
   list, each line a spinner until the answer, then "Installed · v…" in `--status-done` or "Not
@@ -4576,11 +4801,26 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   ("Reachable now: {direct} direct · {relay} via relay · {none} no answer"). Then the attention list: PCs that
   need you, most urgent first, at most three rows of state dot, name, reason (or relay / last seen
   when the reason is shared) and action, with **View all N** above when more than three need you.
-  When the rows share one reason it's said once as a caption above them ("Add window closed · an
-  account member must approve") rather than on every row. Then the PC table (below), and last the
+  When the rows share one reason it's said once as a caption above them ("Join · a device of your
+  account connected to it approves") rather than on every row. Then the PC table (below), and last the
   **Connection map**, a 44 px disclosure row that opens `#relay` with "N relays · M PCs" on its right.
-  A first-time account gets one empty state instead of the strip: an icon, one title,
-  one line ("Sign in on a PC, or scan the QR code it shows, to see it here."), **Add a PC** and **Pair with a QR or code**.
+  A first-time account gets one empty state instead of the strip: an icon, one title ("No PCs yet"),
+  then three numbered steps read from the start edge: install Ovis on the PC (the macOS or Linux
+  line and the Windows PowerShell line, each a mono box with its own **Copy**, which wraps under the
+  box where the row has no room for both and is described by the system its line is for), sign in
+  there with the same provider account as on this device, and choose Add this PC to my account. A
+  dim line under them says which sign-in this is and that GitHub and Google are separate Ovis
+  accounts until linked; an Apple account, which a PC's page cannot sign in with, is told to use a
+  linked GitHub or Google sign-in or to pair with a QR or code. Then **Check again**, **Add a PC**
+  (the one primary) and **Pair with a QR or code**. Check again reads the account's PCs at once,
+  and once more after a read that was already out; while it reads (1 s at least) it says
+  "Checking…" and stays a button, `aria-disabled`, so a keyboard's focus is not dropped. Under
+  the banner of a list that could not be read there is only the title and the two pairing
+  buttons, with the banner's **Try again**: an unread list is not known to be empty. Without an
+  account the empty state keeps one line ("Sign in on a PC, or scan the QR code it shows, to see it
+  here.") and the two buttons. None of the apps this design looks at has an account that lists PCs
+  to add, so the steps follow this app's own pieces instead: the command box with Copy of the
+  manual-update screen, and the Agents page's Check again.
 - PCs table (RelayPcTable.tsx), filtered by All / Ready / Needs you / Offline with **Check now**
   beside the filters, `--table-row-h` (44 px) rows under a 36 px head, or a two-line `<ul>` list
   on phones (768 px and under) and narrow containers. Columns: **Name** (state dot and name),
@@ -4589,7 +4829,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Open it to try again." on a `paired` or `unchecked` row where **Open** retries setup, or "Account
   setup is incomplete." otherwise, and a dim subline for a fresh Add countdown "new · {n} min
   left", "Update Ovis on it", or this device's check result after **Check now**; on a phone row a
-  closed Add window also shows "Add window closed · an account member must approve", which is the
+  closed Add window also shows "Join · a device of your account connected to it approves", which is the
   state word's `title` in the table), **Relay** (how this device reaches a paired PC right now and
   the measured round trip: "Same network · 4 ms", "Tailscale · 18 ms", the answering relay host as
   a mono chip followed by " · 62 ms", or "Checking…" / "No answer" / "Not checked", or the assigned
@@ -4627,14 +4867,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   starts pairing at once on `/s/<id>/` (`start` -> `connecting` -> `compare`) without a second
   "Pair with {name}?" step; "Pair with {name}?" with **Pair** remains only for pairing links and QR
   codes opened from outside the dashboard (or when `sessionStorage` is blocked). **Add a
-  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs to add it to
-  your account, or pair with the QR code or pairing code it shows.") and leads to the QR and code
+  PC** with no PC says how one is added ("On the PC, open Settings → Devices and PCs → Account, sign
+  in, then choose Add this PC to my account. It then shows here with Add.") and leads to the QR and code
   modal sheet (`PairQrDialog`, over the scrimmed inert dashboard), whose QR and code screens name
   only the current path ("On the PC, open Settings → Devices and PCs → Add a connection → Ovis relay
   and scan the QR code." and "On the PC, open Settings → Devices and PCs → Add a connection → Ovis
   relay and type the code it shows."). The sheet drives the
-  shell's existing join, Pair, match and Cancel; failure stays in the sheet in the shell's own
-  words, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
+  shell's existing join, Pair, match and Cancel; failure stays in the sheet, in words of the sheet's
+  own flow where the cause differs from a pairing link's (a new PC that is no longer waiting says
+  to keep its Account screen open; a join nobody approved says to open the PC on a device that
+  already uses it, or to pair with a QR or code), each with **Try again**, and in the shell's own
+  words otherwise, except a new identity, which keeps the shell's screen with its ids and Forget. Ready shows
   at once when local pairing finishes ("{name} is ready to open on this device." with **Open PC**),
   without waiting on account enrollment. While account enrollment runs (`enrollment: "pending"`),
   `EnrollmentStatus` shows a spinner and "Adding it to your account…"; when enrollment finishes, it

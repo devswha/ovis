@@ -1,6 +1,6 @@
 /**
  * Korean for the keys only the files files use:
- * components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
+ * components/Visualization.tsx, components/FileViewer.tsx, components/FilesDialog.tsx, components/FileReader.tsx,
  * components/TextFileView.tsx, components/TextFileEditor.tsx, components/FilePathLink.tsx, components/FilePanelResizer.tsx,
  * components/HighlightedCode.tsx, components/RepoDiffViewer.tsx, components/RepoChanges.tsx,
  * components/RepoDiff.tsx, lib/repoDiff.ts, lib/diffLineNotes.ts, components/WebPanel.tsx,
@@ -14,6 +14,7 @@ export const FILES_KO: Record<string, string> = {
   "The PC could not read the file. Reopen it to try again.": "PC가 파일을 읽지 못했습니다. 다시 열어 보세요.",
   "The file request timed out. Reopen it to try again.": "파일 요청 시간이 초과됐습니다. 다시 열어 보세요.",
   "Too large to open on the phone - download on the PC": "휴대폰에서 열기에는 너무 큽니다. PC에서 다운로드하세요.",
+  "Open preview": "미리보기 열기",
   "Show source": "소스 보기",
   "Resize file panel": "파일 패널 너비 조절",
   "Show beside the pane": "창 옆에 표시",
@@ -28,6 +29,9 @@ export const FILES_KO: Record<string, string> = {
   "File copied": "파일 복사됨",
   "Close file": "파일 닫기",
   "No readable file at this path.": "이 경로에 읽을 수 있는 파일이 없습니다.",
+  "Scripts in this page are off.": "이 페이지의 스크립트는 꺼져 있습니다.",
+  "Run scripts": "스크립트 실행",
+  "This page took the keyboard, so its scripts are off again.": "이 페이지가 키보드 입력을 가져가서 스크립트를 다시 껐습니다.",
   "The file could not be opened.": "파일을 열 수 없습니다.",
   "Download it or open the raw file.": "파일을 내려받거나 원본 파일로 열어 보세요.",
   "This preview can't be shown.": "이 미리보기는 표시할 수 없습니다.",
