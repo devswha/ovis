@@ -701,6 +701,20 @@ them all in [CHANGELOG.md](https://github.com/devswha/ovis/blob/main/CHANGELOG.m
 - A link that opens New workspace with a WSL folder (`\\wsl$\…`, `\\wsl.localhost\…`) fills in that
   folder again, instead of leaving it out and showing another one.
   ([#3671](https://github.com/devswha/ovis/pull/3671))
+- On macOS, the first terminal Ovis opens on a herdr-core core that a coding agent started with
+  `herdr-core server start` is in colour too: it no longer keeps the agent's `NO_COLOR=1` (Claude
+  Code drew there without colour) while later terminals were already fixed.
+  ([#3688](https://github.com/devswha/ovis/pull/3688))
+- Ctrl+Backspace in the terminal deletes the word before the cursor instead of one character: it
+  sends Ctrl+W, in every program (in vim or nano Ctrl+W keeps its own meaning there). Input held
+  after a disconnect drops that word too. A pane drawn as a mirror (a Windows PC's) keeps Ctrl+H,
+  which Windows shells already read as the word erase.
+  ([#3686](https://github.com/devswha/ovis/pull/3686))
+- On Windows, Ovis no longer runs an `hc` it finds outside your profile folder while it looks for
+  herdr-core: not one on the PATH in a folder such as `C:\tools`, which every account on the PC
+  can write, nor one in Program Files, nor a bare `OVIS_HC_BIN=hc` found there. Set
+  `OVIS_HC_BIN` to the full path of an `hc` kept elsewhere.
+  ([#3687](https://github.com/devswha/ovis/pull/3687))
 
 ### Maintenance
 - The self-hosted runner's client-build cache keeps each build under the CI run whose job built it,
