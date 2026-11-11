@@ -312,6 +312,21 @@ it("resolves a foreground Codex launched from continues before herdr sets pane.a
   } finally { bound.mockRestore(); upper.mockRestore(); }
 });
 
+for (const remote of [["--remote", "ws://fixture.invalid:4500"], ["--remote=ws://fixture.invalid:4500"]]) {
+  it(`takes no local resume for an unlabelled pane whose Codex resumed the thread with ${remote[0]}`, async () => {
+    // Given an unlabelled pane resuming a thread on an app server elsewhere, whose id the local store also holds
+    unlabelled = true;
+    foreground = [{ pid: 2147483640, argv: ["/usr/bin/codex", "resume", thread, ...remote] }];
+    const pane = { pane_id: root, workspace_id: root, tab_id: root, terminal_id: root, agent_status: "working" as const, cwd: root, focused: false, revision: 0 };
+    // Then the command line alone does not make the local rollout the conversation shown, which is the server's
+    screen = "OpenAI Codex (v0.164.0)\n\n› ";
+    expect(await codexTranscriptPath(root, root, home, [pane])).toBeNull();
+    // and a screen showing the local rollout's long answer still does
+    screen = answer;
+    expect(await codexTranscriptPath(root, root, home, [pane])).toBe(path);
+  });
+}
+
 it("reads an unlabelled pane whose foreground process herdr reports with a null argv as a pane without Codex", async () => {
   // Given an unlabelled pane whose one foreground process herdr names with `argv: null` (its schema allows it), and
   // whose command line cannot be read either
@@ -3978,6 +3993,19 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
     startThread(newThread, [], 2);
     screen = redrawn;
     expect(await resolve()).toBeNull();
+  });
+
+  it("answers nothing for an unlabelled pane on its last turn alone, beside an unlabelled peer", async () => {
+    // Given a pane herdr has not labelled yet, showing a finished turn with a short answer, which only the footed
+    // turn ties to its conversation, and an unlabelled Codex peer in the same folder
+    unlabelled = true;
+    foreground = live;
+    foregrounds.set("peer", [{ pid: 2147483646, argv: ["/usr/bin/codex"] }]);
+    writeRollout(path, thread, turn("t1", shortPrompt, "ok"));
+    screen = finished(shortPrompt, "ok", "7:05 PM");
+    const pane = (pane_id: string) => ({ pane_id, workspace_id: root, tab_id: root, terminal_id: pane_id, agent_status: "working" as const, cwd: root, focused: false, revision: 0 });
+    // Then the peer, which no label shows as Codex, may be drawing that turn: nothing is guessed
+    expect(await codexTranscriptPath(root, root, home, [pane(root), pane("peer")])).toBeNull();
   });
 
   it("answers nothing once the second Codex was asked the prompt this pane shows: either conversation could draw that turn", async () => {

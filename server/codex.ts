@@ -3918,7 +3918,10 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // a nested pane's peers may carry no label either, so freshReportedThread cannot rule them out
   if (resumed === null && reported !== null && !agent.nestedTerminal && !agent.unlabelled
     && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
-  if (resumed !== null) return resumedNewer.length === 0 ? resumedPath : null;
+  // an unlabelled pane resuming on an app server elsewhere (--remote) shows that server's conversation, which this
+  // store may hold under the same id without being it: its command line alone is no proof there
+  if (resumed !== null) return resumedNewer.length === 0 && !(agent.unlabelled
+    && codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) ? resumedPath : null;
   // Other nested terminals, and the peers of an unlabelled pane, may have no agent labels either, so the weaker
   // exchange/peer heuristics cannot establish ownership. Only a substantial screen match (or its binding) can.
   if (agent.nestedTerminal || agent.unlabelled) return null;
