@@ -69,13 +69,20 @@ export function aggregateFailures(observations: readonly FailureObservation[]): 
 
 class GhError extends Error {}
 
-async function gh(args: string[]): Promise<string> {
-  const child = Bun.spawn(["gh", ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
-  ]);
-  if (code !== 0) throw new GhError(stderr.trim() || stdout.trim());
-  return stdout;
+/**
+ * One gh call, asked again up to twice on a server error (HTTP 5xx): one 502 among the hundreds of reads a day's scan
+ * makes would otherwise end the whole scan with nothing. A refusal (4xx) answers the same again and is not repeated.
+ */
+async function gh(args: string[], attempts = 3): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const child = Bun.spawn(["gh", ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+    ]);
+    if (code === 0) return stdout;
+    const message = stderr.trim() || stdout.trim();
+    if (attempt >= attempts || !/HTTP 5\d\d\b/.test(message)) throw new GhError(message);
+  }
 }
 
 async function pooled<T, R>(items: readonly T[], visit: (item: T) => Promise<R>): Promise<R[]> {
@@ -106,7 +113,14 @@ interface Job {
 
 /** Whether a job that passed says one of its scripts needed a second run (the lane's warning annotation). */
 async function flaggedFlaky(repo: string, job: Job): Promise<boolean> {
-  const pages: { title: string | null }[][] = JSON.parse(await gh(["api", `repos/${repo}/check-runs/${job.id}/annotations?per_page=100`, "--paginate", "--slurp"]));
+  let text: string;
+  try { text = await gh(["api", `repos/${repo}/check-runs/${job.id}/annotations?per_page=100`, "--paginate", "--slurp"]); }
+  catch (error) {
+    // annotations a server error keeps from us: its log is read instead, which says it as well
+    if (error instanceof GhError && /HTTP 5\d\d\b/.test(error.message)) return true;
+    throw error;
+  }
+  const pages: { title: string | null }[][] = JSON.parse(text);
   return pages.flat().some((annotation) => annotation.title?.startsWith("Flaky browser script") === true);
 }
 
@@ -156,7 +170,8 @@ async function main(): Promise<void> {
         log = await gh(args);
       }
     } catch (error) {
-      if (!(error instanceof GhError) || !/HTTP (404|410)\b/.test(error.message)) throw error;
+      // gone (404, 410), or a server error that outlasted gh()'s retries: this job is left out and counted, the scan goes on
+      if (!(error instanceof GhError) || !/HTTP (404|410|5\d\d)\b/.test(error.message)) throw error;
       stats.jobsSkipped++;
       return [];
     }
