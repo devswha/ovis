@@ -136,13 +136,21 @@ async function main(): Promise<void> {
     "api", `repos/${repo}/actions/workflows/ci.yml/runs?per_page=100&created=${encodeURIComponent(`>=${since}`)}`, "--paginate", "--slurp",
   ]));
   const runs = runPages.flatMap((page) => page.workflow_runs);
-  const stats = { runs: runs.length, jobs: 0, jobsSkipped: 0, jobsClean: 0, logsRead: 0 };
+  // runsUnread, logsUnread: a run's job list or a job's log that a server error kept from us, after gh()'s retries
+  const stats = { runs: runs.length, jobs: 0, jobsSkipped: 0, jobsClean: 0, logsRead: 0, runsUnread: 0, logsUnread: 0 };
   const groups = await pooled(runs, async (run) => {
     const jobs: { run: Run; job: Job }[] = [];
     for (let attempt = 1; attempt <= run.run_attempt; attempt++) {
-      const pages: { jobs: Job[] }[] = JSON.parse(await gh([
-        "api", `repos/${repo}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100`, "--paginate", "--slurp",
-      ]));
+      let text: string;
+      try {
+        text = await gh(["api", `repos/${repo}/actions/runs/${run.id}/attempts/${attempt}/jobs?per_page=100`, "--paginate", "--slurp"]);
+      } catch (error) {
+        // one run's job list a server error keeps from us is left out and counted, as a job's log is
+        if (!(error instanceof GhError) || !/HTTP 5\d\d\b/.test(error.message)) throw error;
+        stats.runsUnread++;
+        continue;
+      }
+      const pages: { jobs: Job[] }[] = JSON.parse(text);
       for (const job of pages.flatMap((page) => page.jobs)) {
         if (!job.name.startsWith("Browser regression")) continue;
         stats.jobs++;
@@ -172,7 +180,8 @@ async function main(): Promise<void> {
     } catch (error) {
       // gone (404, 410), or a server error that outlasted gh()'s retries: this job is left out and counted, the scan goes on
       if (!(error instanceof GhError) || !/HTTP (404|410|5\d\d)\b/.test(error.message)) throw error;
-      stats.jobsSkipped++;
+      if (/HTTP 5\d\d\b/.test(error.message)) stats.logsUnread++;
+      else stats.jobsSkipped++;
       return [];
     }
     if (!log.trim()) {
@@ -191,7 +200,12 @@ async function main(): Promise<void> {
   }
   console.log(`${stats.runs} CI runs since ${since}; browser jobs: ${stats.jobs}, of which ${stats.jobsClean} passed with no second run, ${stats.logsRead} had their log read and ${stats.jobsSkipped} were skipped (running, skipped or without a log).`);
   if (stats.jobs === 0) { console.log("Nothing was read."); return; }
-  if (rows.length === 0) { console.log("No browser script failed or needed a second run."); return; }
+  const unread = stats.runsUnread + stats.logsUnread;
+  if (unread > 0) console.log(`Not read for a server error: ${stats.runsUnread} run attempts' job lists and ${stats.logsUnread} job logs.`);
+  if (rows.length === 0) {
+    console.log(unread > 0 ? "No browser script failed or needed a second run in what could be read." : "No browser script failed or needed a second run.");
+    return;
+  }
   console.log("failed\tflaky\tscript\tsite\tmessage\tmost recent run\tbranch");
   for (const row of rows) console.log([row.failed, row.flaky, row.script, row.site ?? "-", row.message ?? "-", row.runId, row.branch].join("\t"));
 }
