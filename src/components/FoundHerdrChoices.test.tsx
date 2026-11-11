@@ -22,12 +22,14 @@ it("offers each running session and a separate explicit new-start choice", async
     ]} ownOvis={[{ socket_path: "/desktop/ovis/hc.sock", runtime: "herdr-core" }]} busy={false} onChoose={(choice) => choices.push(choice)} /></SettingsProvider>); });
     if (!view) throw new Error("card did not mount");
     const buttons = view.root.findAllByType("button");
-    expect(buttons.map((button) => button.children.join(""))).toEqual(["Use work", "Use Default session", "Use Ovis on this PC (herdr-core)", "Start a new herdr here"]);
+    // the PC's own Ovis, where its sessions are, comes first as the main button; the herdr sessions beside it after
+    expect(buttons.map((button) => button.children.join(""))).toEqual(["Use Ovis on this PC (herdr-core)", "Use work", "Use Default session", "Start a new herdr here"]);
+    expect(buttons.map((button) => button.props.className.split(" ").includes("btn-primary"))).toEqual([true, false, false, false]);
     await act(async () => { for (const button of buttons) button.props.onClick(); });
     expect(choices).toEqual([
+      { own_ovis: "/desktop/ovis/hc.sock", herdr_socket: undefined, start_new_herdr: undefined },
       { session: "work", herdr_socket: "/desktop/herdr/sessions/work/herdr.sock", start_new_herdr: undefined },
       { session: undefined, herdr_socket: "/desktop/herdr/herdr.sock", start_new_herdr: undefined },
-      { own_ovis: "/desktop/ovis/hc.sock", herdr_socket: undefined, start_new_herdr: undefined },
       { herdr_socket: undefined, start_new_herdr: true },
     ]);
     // the chosen Ovis could not be used: the heading is why (gone, or its socket refused), as the server said it

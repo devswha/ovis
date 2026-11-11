@@ -147,6 +147,32 @@ try {
   assert.equal(await card.locator(".machine-own-address code").textContent(), "home-server.example.ts.net");
   assert.equal(await card.getByRole("button", { name: "Copy address", exact: true }).count(), 0);
   await page.screenshot({ path: `${shots}/refused-link.png` });
+
+  // a PC that runs both its own Ovis and herdr sessions waits for a choice, as the server leaves it (server/machines.ts):
+  // a question, not a failure. Its own Ovis is the first, main answer, and nothing on the card says the connection failed
+  const choosing: Machine = { ...offered, action_required: "choose_herdr", remote_ovis: null, error: "Choose this PC's Ovis server or a running herdr session.",
+    found_ovis: [{ socket_path: "/home/qa/.config/ovis/herdr-core.sock", runtime: "herdr-core" }],
+    found_herdr_sessions: [{ session: "work", label: "work", socket_path: "/home/qa/.config/herdr/sessions/work/herdr.sock" }, { label: "Default session", socket_path: "/home/qa/.config/herdr/herdr.sock" }] };
+  for (const width of [1280, 390]) {
+    roster = [local, choosing];
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
+    await page.reload();
+    if (width === 390) await page.getByRole("button", { name: "Open workspace list", exact: true }).click({ timeout: 10_000 });
+    const answers = card.getByRole("button");
+    await answers.first().waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running"));
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: `${shots}/choose-${width}.png` });
+    assert.deepEqual(await answers.allTextContents(), ["Use Ovis on this PC (herdr-core)", "Use work", "Use Default session", "Start a new herdr here"]);
+    assert.equal(await answers.first().evaluate((button) => button.classList.contains("btn-primary")), true);
+    assert.equal(await card.evaluate((element) => element.classList.contains("is-setup")), true, "the choice is drawn as a question, not as an error");
+    const section = page.locator(".machine-group").filter({ has: card });
+    assert.equal(await section.locator(".machine-dot.is-error").count(), 0, "the PC's dot does not say error while it waits for a choice");
+    assert.equal(await section.locator(".machine-dot").getAttribute("title"), "Choose what to connect to");
+    // the line under the header asks the same question, not for a web access setup
+    await page.locator(".update-notice").getByText("Choose what QA remote connects to.", { exact: true }).waitFor();
+    assert.equal(await page.locator(".update-notice").getByRole("button", { name: "Choose", exact: true }).count(), 1);
+  }
   assert.deepEqual(errors, []);
   console.log("PASS: an older PC's own Ovis is offered its own update on the card, shown updating under its own title, and otherwise named with why and where it answers; screenshots:", shots);
 } finally { await browser.close(); server.stop(true); }
