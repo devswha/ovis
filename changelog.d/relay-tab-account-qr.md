@@ -11,6 +11,7 @@
   asked about, with "Not me: remove it" first, and the notice cannot be closed while one is
   unanswered. A notice that was not answered comes back the next time Devices and PCs is opened.
 - A PC that is already in an account shows no QR code there and makes no code for one: the tab
-  says which account the PC is in and to sign in to that account on the device, which is then
-  added by itself (a device new to the account is approved once on one already in it). A QR code
-  that is up when the PC joins an account is taken back and leaves the screen.
+  says which account the PC is in and to sign in to that account on the device and open the PC
+  there (a device the PC does not know yet is approved once, by picking its number on a device
+  that is already a member of the PC). A QR code that is up when the PC joins an account is taken
+  back and leaves the screen.

@@ -4061,8 +4061,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   code (`components/CompactPair.tsx`, started when the tab first opens) and Portal where the server
   offers it. **Ovis relay** is the account's: signed out one sentence and **Sign in to Ovis** (which
   opens the account's sign-in in More settings), signed in the relay's switch and **Open the
-  account** while this PC is in no account. Under either, behind a hairline, one part
-  (`.connect-account-qr`) that depends on the PC, not on the sign-in. On a PC in no account it is
+  account** while this PC is in no account. Under either, behind a hairline (none where nothing is
+  drawn above it), one part (`.connect-account-qr`) that depends on the PC, not on the sign-in. On a PC in no account it is
   **Add with a QR code**: one sentence and a neutral **Show the QR code**, which draws the relay's
   QR code alone (`--qr-size`, its countdown, **New code**; no code to type). The QR code gives way
   to a notice box (`.connect-account-qr-notice`: `--bg-elevated`, a hairline, `--radius-md`) that

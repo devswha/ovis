@@ -375,7 +375,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.deepEqual(await joined.getByRole("button").allInnerTexts(), ["Done", "Not me: revoke every device"], "the account is this browser's own: Done, then Not me");
     await joined.getByRole("button", { name: "Done", exact: true }).click();
     await accountQr.getByText("This PC is in your Ovis account (fixture).", { exact: true }).waitFor();
-    await accountQr.getByText("To add a device, sign in to this PC's account on it: it is then added to this PC by itself. A device new to the account is approved once, on a device already in it.", { exact: true }).waitFor();
+    await accountQr.getByText("To add a device, sign in to this PC's account on it and open this PC there. A device this PC does not know yet is approved once, by picking the matching number on a device that is already a member of this PC.", { exact: true }).waitFor();
     await accountQr.getByText("This PC shows a QR code only while it is in no account.", { exact: true }).waitFor();
     assert.equal(await accountQr.getAttribute("data-account"), "mine", "the part says the PC is in this browser's account");
     assert.equal(await accountQr.getByRole("button").count(), 0, "a PC that is in an account offers no QR code");

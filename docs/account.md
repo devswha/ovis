@@ -385,8 +385,9 @@ approved on the PC, and the PC itself needs no sign-in. Because the code admits 
 - The QR code is for a PC in no account. On a PC that is in one the tab has no button and no QR
   code, and asks the PC for no code: it says which account the PC is in (the one this browser is
   signed in to, another one, or one it cannot tell while signed out) and that a device is added
-  by signing in to that account on it, where a device new to the account is approved once by one
-  already in it. The page reads the PC's account as the tab opens and again at the press, and
+  by signing in to that account on it and opening the PC there. A device the PC does not know yet
+  is approved once, by a drive member of the PC picking its digits ([Introductions](#introductions)).
+  The page reads the PC's account as the tab opens and again at the press, and
   the PC itself refuses the code (`409 in_account`), so a page that read it a moment too early
   shows no QR code either: the refusal makes it look at the PC at once, and the notice below
   takes the QR code's place.

@@ -7,7 +7,7 @@ import { copyText } from "../lib/clipboard.ts";
 import { ApiError, cancelRelayCode, endPairing, requestRelayCode, requestRelayLink, requestRelayOffer, startPairing, type RelayCode, type RelayOffer } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
-import { announcePairingCode, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
+import { announcePairingCode, PAIRING_CODE_EVENT, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
 import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
 import { isTailnetCarrier } from "../../shared/relay-mux.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
@@ -93,7 +93,7 @@ export function RelayDirectRow({ relay, readOnly }: { relay: RelayState; readOnl
 
 // a code announced by a relay QR (announceFromRelay), not by the Devices group
 let relayAnnouncing = false;
-function announceFromRelay(code: PairingCode): void {
+function announceFromRelay(code: AnnouncedCode): void {
   relayAnnouncing = true;
   try { announcePairingCode(code); } finally { relayAnnouncing = false; }
 }
@@ -157,7 +157,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       shown.current = code ?? null;
       if (code !== undefined && (!silent || differs)) {
         announcing.current = true;
-        try { announceFromRelay({ code, expires_at: next.expires_at }); } finally { announcing.current = false; }
+        try { announceFromRelay({ code, expires_at: next.expires_at, ...(qrOnly ? { qrOnly: true } : {}) }); } finally { announcing.current = false; }
       }
     }, (reason: unknown) => {
       if (cancelled) return;

@@ -18,6 +18,7 @@ import { QrCode } from "./QrCode.tsx";
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, connectTabs, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
+const { announcePairingCode } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
 
 // Connect a phone on the phone itself: the QR codes wait behind Show QR code, a phone online with
@@ -177,6 +178,19 @@ describe("Connect a phone on a phone", () => {
     await act(async () => { await button("Show a code to type").props.onClick(); });
     for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
     expect(shown()).toEqual(["777 111"]);
+  });
+
+  it("never shows as digits the code of a QR code shown alone, and drops the code it showed, which that one replaced", async () => {
+    await mount(<CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce />);
+    const shown = () => renderer!.root.findAll((node) => node.type === "p" && typeof node.props.className === "string" && node.props.className.includes("devices-code")).map(text);
+    expect(shown()).toEqual(["482 913"]);
+    const expires_at = new Date(Date.now() + 600_000).toISOString();
+    await act(async () => { announcePairingCode({ code: "135790", expires_at, qrOnly: true }); });
+    expect(shown()).toEqual([]);
+    expect(qrCodes()).toHaveLength(0);
+    // a code another place started is still shown
+    await act(async () => { announcePairingCode({ code: "246801", expires_at }); });
+    expect(shown()).toEqual(["246 801"]);
   });
 
   it("pairs this phone through the relay in one tap: its own offer opens in this browser", async () => {
@@ -345,7 +359,7 @@ describe("the relay tab's QR code behind a press", () => {
   /** what each POST /api/relay/offer said it is for (x-ovis-no-account-only) */
   let offerMarks: (string | null)[];
   /** the PC's own answer to POST /api/relay/offer, when it is not an offer */
-  let offerAnswer: (() => Response) | null;
+  let offerAnswer: (() => Response | Promise<Response>) | null;
 
   const device = (extra: Partial<PairedDevice>): PairedDevice => ({ id: "a", label: "Laptop · Chrome", role: "drive", created_at: "2026-10-01T00:00:00Z", last_seen_at: null, current: false, ...extra });
   const phoneDevice = (extra: Partial<PairedDevice> = {}) => device({ id: "b", label: "iPhone · Safari", created_at: "2026-11-10T00:00:00Z", via_relay: true, ...extra });
@@ -502,10 +516,10 @@ describe("the relay tab's QR code behind a press", () => {
       await mount(options);
       expect(section().props["data-account"]).toBe(whose);
       expect(text(section())).toContain(heading);
-      expect(text(section())).toContain("To add a device, sign in to this PC's account on it: it is then added to this PC by itself.");
+      expect(text(section())).toContain("To add a device, sign in to this PC's account on it and open this PC there.");
       expect(text(section())).toContain("This PC shows a QR code only while it is in no account.");
       expect(text(section()).includes("This browser is not signed in, so it cannot tell whether that account is yours")).toBe(whose === "unknown");
-      expect(text(section()).includes("If that account is not yours, revoke every device in the device list")).toBe(whose === "other");
+      expect(text(section()).includes("If that account is not yours, revoke every device (More settings → Devices and access)")).toBe(whose === "other");
       expect(text(section())).not.toContain("Add with a QR code");
       // said once: the line main had above for this state is the section's now
       expect(text(renderer!.root)).not.toContain("On the new device, sign in to the same Ovis account.");
@@ -533,8 +547,11 @@ describe("the relay tab's QR code behind a press", () => {
     expect(renderer!.root.findAllByProps({ label: "Ovis relay", checked: false })).toHaveLength(1);
     expect(text(renderer!.root)).not.toContain("add this PC to your account");
     expect(renderer!.root.findAll((node) => node.type === "button" && text(node) === "Open the account")).toHaveLength(0);
+    // with the switch above it the part keeps its hairline; alone under the tabs it has none
+    expect(section().props["data-first"]).toBeUndefined();
     await update({ signedIn: true, joinBySignIn: true });
     expect(renderer!.root.findAllByProps({ label: "Ovis relay" })).toHaveLength(0);
+    expect(section().props["data-first"]).toBe(true);
   });
 
   it("a press on a PC that joined an account since the tab was drawn asks for no code, and says how a device is added", async () => {
@@ -569,6 +586,8 @@ describe("the relay tab's QR code behind a press", () => {
     // before the next look at the PC was due, and with no refusal left on screen beside it
     expect(count("/api/relay/offer")).toBe(1);
     expect(section().findAllByProps({ role: "alert" })).toHaveLength(0);
+    // it had no code: a typed code another place shows on the PC is left alone
+    expect(count("/api/relay/code/cancel")).toBe(0);
     await press("Done");
     expect(buttons()).toEqual([]);
     expect(text(section())).toContain("This PC is in your Ovis account (acct_0123456).");
@@ -709,7 +728,7 @@ describe("the relay tab's QR code behind a press", () => {
     expect(count("/api/devices/pair/cancel")).toBe(1);
   });
 
-  it("leaves another window's typed code alone when its own code was replaced, and ends the typed code itself on a PC that cannot end pairings", async () => {
+  it("never ends a typed code, which is another place's: not when its own code was replaced, not on a PC that cannot end pairings", async () => {
     await mount();
     await press("Show the QR code");
     // another window asked for a QR code meanwhile: this one's six-digit code is not the pending one any more
@@ -721,7 +740,20 @@ describe("the relay tab's QR code behind a press", () => {
     endsPairings = false;
     await press("Show a new code");
     await update({ active: false });
-    expect(count("/api/relay/code/cancel")).toBe(1);
+    expect(count("/api/relay/code/cancel")).toBe(0);
+  });
+
+  it("taken down before its offer came, ends nothing: no code was made for it yet", async () => {
+    await mount();
+    let answer: () => void = () => {};
+    offerAnswer = () => new Promise<Response>((resolve) => { answer = () => resolve(Response.json({ url: OFFER_URL, expires_at: new Date(Date.now() + 600_000).toISOString() })); });
+    await press("Show the QR code");
+    await update({ active: false });
+    await act(async () => { window.dispatchEvent(new Event("pagehide")); });
+    await flush();
+    expect([count("/api/relay/code/cancel"), count("/api/devices/pair/cancel")]).toEqual([0, 0]);
+    await act(async () => { answer(); });
+    await flush();
   });
 
   it("takes the QR code down and ends its code when the relay stops being online", async () => {
@@ -1300,6 +1332,17 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_POLL_MS * 2);
     expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
     expect(accountQrNoticeWaiting()).toBe(false);
+  });
+
+  it("says of each device how it came: one through the relay with the advice to sign in on it, one at this PC's own address apart", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice(), device({ id: "c", label: "Tablet · Chrome", created_at: "2026-11-10T00:00:00Z" })];
+    await advance(ACCOUNT_QR_POLL_MS);
+    await advance(ACCOUNT_QR_ALONE_MS);
+    const notice = text(renderer!.root.findByProps({ "data-testid": "connect-account-alone" }));
+    expect(notice).toContain("so this PC is in no account yet: iPhone · Safari.If that is your device, keep it and sign in on it to add this PC to your account.");
+    expect(notice).toContain("not through the relay: Tablet · Chrome.");
   });
 
   it("names as the adder only a member of the account: the newest that came since the press, else the account's newest", () => {

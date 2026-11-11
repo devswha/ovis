@@ -737,6 +737,19 @@ describe("a pairing code made only for a PC in no account", () => {
     expect(store.list(null).map((device) => device.label)).toEqual(["Laptop"]);
   });
 
+  it("pairs nobody on a PC in an account even when it is still pending there", async () => {
+    const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-guard-")));
+    const laptop = await paired(store, "Laptop");
+    const qr = store.pairingForNoAccount();
+    const pending: unknown = Reflect.get(store, "pending");
+    expect(store.linkAccountKey(laptop.id, laptop.key, laptop.key, "acct_1")).not.toBeNull();
+    // the end on join is one guard; the check at redeem is the other, should a code outlive the join
+    Reflect.set(store, "pending", pending);
+    expect(store.pairRelay(qr.code, "Stranger", (await relayKeys()).publicKeySpki)).toBeNull();
+    expect(store.activePairing()).toBeNull();
+    expect(store.list(null).map((device) => device.label)).toEqual(["Laptop"]);
+  });
+
   it("lets the device that scans it in, which then makes the PC its account's", async () => {
     const store = new DeviceStore(mkdtempSync(join(dir, "no-account-code-scanned-")));
     const key = (await relayKeys()).publicKeySpki;

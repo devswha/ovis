@@ -228,6 +228,17 @@
   border-top: var(--hairline) solid var(--border);
 }
 
+/* signed in, on a PC in an account whose relay is online: nothing is above it, so no hairline under the tabs, and
+   the sign-in's place holds only what a screen reader hears */
+.connect-account-qr[data-first] {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.connect-signin[data-bare] {
+  display: contents;
+}
+
 .connect-account-qr-notice {
   padding: var(--space-2) var(--space-3);
   border: var(--hairline) solid var(--border);

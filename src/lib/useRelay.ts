@@ -19,8 +19,13 @@ export function inRelayShell(): boolean {
  */
 export const PAIRING_CODE_EVENT = "ovis:pairing-code";
 
-export function announcePairingCode(code: PairingCode): void {
-  window.dispatchEvent(new CustomEvent<PairingCode>(PAIRING_CODE_EVENT, { detail: code }));
+/** `qrOnly`: the code of a QR code shown alone (RelayPairing `qrOnly`), which no place shows as digits */
+export interface AnnouncedCode extends PairingCode {
+  readonly qrOnly?: true;
+}
+
+export function announcePairingCode(code: AnnouncedCode): void {
+  window.dispatchEvent(new CustomEvent<AnnouncedCode>(PAIRING_CODE_EVENT, { detail: code }));
 }
 
 /**
