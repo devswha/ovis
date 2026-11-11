@@ -142,8 +142,8 @@ export function resetAccountQrWatch(): void {
  * `ended` settles once the code's end was asked of the PC: true when the PC answered, so a read begun after it that
  * finds no new device proves nobody got in, and the watch ends there. Otherwise (the request failed, or the code
  * was never known) it lasts as long as the code can (ACCOUNT_QR_LATE_MS).
- * `linger`: the devices that got in were kept (and count in `known`), so only the PC joining an account is left to
- * tell, and no read ends the watch early.
+ * `linger`: the devices that got in were kept (and count in `known`), so only the PC joining an account, or a device
+ * that came through the relay, is left to tell, and no read ends the watch early.
  */
 export function watchEndedAccountQr(known: AccountQrBaseline, ended: Promise<boolean>, linger = false): void {
   stopAccountQrWatch();
@@ -169,7 +169,11 @@ export function watchEndedAccountQr(known: AccountQrBaseline, ended: Promise<boo
     try {
       const [status, devices] = await Promise.all([pcAccountStatus(apiFetch), fetchDevices()]);
       if (!live) return;
-      const { due, checking } = accountQrFindings(devices, status.account, known, Date.now());
+      const found = accountQrFindings(devices, status.account, known, Date.now());
+      const { checking } = found;
+      // lingering, the code ended long ago: a device that paired at the PC's own address since then came by another
+      // code (Phones and devices), not by this QR code, and is nobody to ask about
+      const due = linger ? found.due.filter((stray) => stray.relay) : found.due;
       if (status.account !== null) {
         stop();
         publish({ kind: "joined", account: status.account, device: addedBy(devices, known.ids, status.account)?.label ?? null, strays: due, checking, known });

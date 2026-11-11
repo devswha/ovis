@@ -19,7 +19,7 @@ import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
-import { announcePairingCode, DEVICES_CHANGED_EVENT, inRelayShell, PAIRING_CODE_EVENT, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
+import { announcePairingCode, announceQrCodeEnded, DEVICES_CHANGED_EVENT, inRelayShell, PAIRING_CODE_EVENT, tellOtherWindowsQrCodeEnded, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
 import type { PairedDevice, PairingCode } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
@@ -452,7 +452,7 @@ export const ACCOUNT_QR_HIDDEN_MS = 60_000;
 async function endShownCode(code: string | null): Promise<boolean> {
   if (code === null) return true;
   try {
-    if ((await endPairing(code)).cancelled) announcePairingCode({ code, expires_at: new Date(0).toISOString(), qrOnly: true });
+    if ((await endPairing(code)).cancelled) announceQrCodeEnded(code);
     return true;
   } catch {
     // the six-digit code runs out by itself within ten minutes
@@ -674,6 +674,8 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pc
       if (ended) return;
       ended = true;
       ending.current = code === null ? Promise.resolve(true) : endPairing(code, true).then(() => true, () => false);
+      // the answer may never be read: another window still showing this code is told now, after the request went
+      if (code !== null) tellOtherWindowsQrCodeEnded(code);
       // a page kept for Back comes back without its QR code
       takeDown();
     };

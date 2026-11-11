@@ -150,6 +150,7 @@ export const DEVICES_JA: Record<string, string> = {
   "It opens Ovis on the phone and pairs it with this PC.": "スマートフォンで Ovis が開き、この PC とペアリングされます。",
   "This code expired.": "このコードは期限切れです。",
   "Getting a code…": "コードを取得しています…",
+  "The old code could not be ended, so it may still work until it runs out: {message} New code tries again.": "以前のコードを終了できなかったため、期限が切れるまでまだ使える可能性があります: {message} 新しいコードでもう一度試します。",
   "This is a paired device, reaching the PC through the Ovis relay.": "Ovis リレー経由で PC に接続しているペアリング済みデバイスです。",
   "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "このアドレスをすでに開けるスマートフォン向けです。同じ Wi-Fi、またはトンネルやプロキシ経由の場合です。",
   "Get a pairing code": "ペアリングコードを取得",

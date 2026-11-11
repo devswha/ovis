@@ -7,7 +7,7 @@ import { copyText } from "../lib/clipboard.ts";
 import { ApiError, cancelRelayCode, endPairing, requestRelayCode, requestRelayLink, requestRelayOffer, startPairing, type RelayCode, type RelayOffer } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
-import { announcePairingCode, PAIRING_CODE_EVENT, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
+import { announcePairingCode, PAIRING_CODE_EVENT, QR_CODE_ENDED_CHANNEL, tellOtherWindowsQrCodeEnded, type AnnouncedCode, type RelayState } from "../lib/useRelay.ts";
 import type { PairingCode, RelayStatus } from "../../shared/protocol.ts";
 import { isTailnetCarrier } from "../../shared/relay-mux.ts";
 import { decodeOffer } from "../../shared/relay-offer.ts";
@@ -173,6 +173,19 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
     return () => { cancelled = true; };
   }, [generation]);
 
+  // a window of this browser ended the code this QR code shows (they share the PC's one pending code): a new one
+  useEffect(() => {
+    if (!qrOnly || typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel(QR_CODE_ENDED_CHANNEL);
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      if (event.data !== shown.current) return;
+      shown.current = null;
+      setOffer(null);
+      again();
+    };
+    return () => channel.close();
+  }, [qrOnly]);
+
   useEffect(() => {
     const onCode = (event: Event) => {
       if (announcing.current) return;
@@ -217,11 +230,12 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false, o
       // the PC keeps this QR code's own code until it ends: ended here, the offer asked for next carries a new one.
       // No code is started the way the Devices group starts one, which the PC would make on a PC in an account too
       try {
-        if (shown.current !== null) await endPairing(shown.current);
+        const ended = shown.current;
+        if (ended !== null && (await endPairing(ended)).cancelled) tellOtherWindowsQrCodeEnded(ended);
         again();
       } catch (reason) {
         setOffer(null);
-        setFailure(failureText(reason));
+        setFailure(t("The old code could not be ended, so it may still work until it runs out: {message} New code tries again.", { message: failureText(reason) }));
         setState("failed");
       }
       return;

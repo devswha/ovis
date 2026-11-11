@@ -29,6 +29,26 @@ export function announcePairingCode(code: AnnouncedCode): void {
 }
 
 /**
+ * The relay tab's QR codes in this browser's other windows share the PC's one pending code (server/devices.ts
+ * `pairingForNoAccount`): one that ends it says so on this channel, with the code as the message, and one still
+ * showing that code asks for a new one (RelayPairing `qrOnly`).
+ */
+export const QR_CODE_ENDED_CHANNEL = "ovis:qr-code-ended";
+
+/** the code of a QR code shown alone ended: this window's places that show it, and other windows' QR codes, are told */
+export function announceQrCodeEnded(code: string): void {
+  announcePairingCode({ code, expires_at: new Date(0).toISOString(), qrOnly: true });
+  tellOtherWindowsQrCodeEnded(code);
+}
+
+export function tellOtherWindowsQrCodeEnded(code: string): void {
+  if (typeof BroadcastChannel === "undefined") return;
+  const channel = new BroadcastChannel(QR_CODE_ENDED_CHANNEL);
+  channel.postMessage(code);
+  channel.close();
+}
+
+/**
  * The PC's device list changed behind the app: the relay shell linked this client's pairing to the
  * account (relay/shell.tsx) and the session that signed in again is up, so a Devices panel read
  * before the link lists this client as no member yet and reads the list again.

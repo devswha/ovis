@@ -150,6 +150,7 @@ export const DEVICES_KO: Record<string, string> = {
   "It opens Ovis on the phone and pairs it with this PC.": "폰에서 Ovis가 열리고 이 PC와 페어링됩니다.",
   "This code expired.": "이 코드는 만료되었습니다.",
   "Getting a code…": "코드 받는 중…",
+  "The old code could not be ended, so it may still work until it runs out: {message} New code tries again.": "이전 코드를 끝내지 못해, 만료될 때까지 아직 쓰일 수 있습니다: {message} 새 코드를 누르면 다시 시도합니다.",
   "This is a paired device, reaching the PC through the Ovis relay.": "Ovis 릴레이를 통해 PC에 접속한 페어링된 기기입니다.",
   "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "이 주소를 이미 열 수 있는 폰용입니다. 같은 Wi-Fi에 있거나 터널이나 프록시를 거치는 경우입니다.",
   "Get a pairing code": "페어링 코드 받기",

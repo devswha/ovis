@@ -397,7 +397,11 @@ approved on the PC, and the PC itself needs no sign-in. Because the code admits 
   outlive the page), once the page was hidden for a minute, and 30 minutes after the press, by the
   clock, so a PC that slept does not keep it longer. **Show a new code** starts again. A browser
   that is killed, or loses the PC, sends nothing: the code then runs out by itself within its 10
-  minutes.
+  minutes. Two windows of one browser showing the QR code share its code: the one that ends it
+  tells the other (a `BroadcastChannel`), which asks for a new one. A **New code** that cannot end
+  the old code says that it may still work until it runs out.
+- After **Keep it** the page watches the PC for 10 minutes more, to tell a later join; a device
+  that pairs at the PC's own address meanwhile came by another code and is not asked about.
 - The QR code is shown alone. No code to type is made for it (`POST /api/relay/code` is not sent):
   a typed code would have the same power, putting the PC in the account of whoever types it at
   app.ovis.sh, and is far easier to read off a screen, a recording or a clipboard than a QR code

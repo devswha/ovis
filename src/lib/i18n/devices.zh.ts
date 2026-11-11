@@ -150,6 +150,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "It opens Ovis on the phone and pairs it with this PC.": "手机上会打开 Ovis 并与此 PC 配对。",
   "This code expired.": "此代码已过期。",
   "Getting a code…": "正在获取代码…",
+  "The old code could not be ended, so it may still work until it runs out: {message} New code tries again.": "无法结束旧的代码，它在过期前可能仍然有效：{message} 点击“新代码”会再试一次。",
   "This is a paired device, reaching the PC through the Ovis relay.": "这是通过 Ovis 中继访问 PC 的已配对设备。",
   "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "适用于已能打开此地址的手机：在同一 Wi-Fi 下，或经由隧道或代理。",
   "Get a pairing code": "获取配对码",

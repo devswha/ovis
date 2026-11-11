@@ -18,7 +18,7 @@ import { QrCode } from "./QrCode.tsx";
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { ACCOUNT_QR_HIDDEN_MS, ACCOUNT_QR_MAX_MS, CodeRoute, connectTabs, openingTab, RelayRoute, RelayTab, sameNameRelayDevice, SshTab } = await import("./ConnectPhoneDialog.tsx");
 const { ConfirmDialog } = await import("./ConfirmDialog.tsx");
-const { announcePairingCode } = await import("../lib/useRelay.ts");
+const { announcePairingCode, QR_CODE_ENDED_CHANNEL } = await import("../lib/useRelay.ts");
 const { ACCOUNT_QR_ALONE_MS, ACCOUNT_QR_LATE_MS, ACCOUNT_QR_POLL_MS, accountQrFindings, accountQrNoticeWaiting, addedBy, accountQrPending, resetAccountQrWatch, unvouched } = await import("../lib/accountQrWatch.ts");
 
 // Connect a phone on the phone itself: the QR codes wait behind Show QR code, a phone online with
@@ -618,6 +618,41 @@ describe("the relay tab's QR code behind a press", () => {
     expect(ended).toEqual([{ code: "482913" }]);
     expect(minted()).toEqual(["/api/relay/offer", "/api/relay/offer"]);
     expect(offerMarks).toEqual(["1", "1"]);
+    expect(qrCodes()).toHaveLength(1);
+  });
+
+  it("when New code cannot end the old code, says that it may still work and that New code tries again", async () => {
+    await mount();
+    await press("Show the QR code");
+    endsPairings = false;
+    await press("New code");
+    expect(qrCodes()).toHaveLength(0);
+    expect(text(section().findByProps({ role: "alert" }))).toMatch(/^The old code could not be ended, so it may still work until it runs out: .+ New code tries again\.$/);
+    endsPairings = true;
+    await press("New code");
+    expect(ended).toEqual([{ code: "482913" }]);
+    expect(qrCodes()).toHaveLength(1);
+  });
+
+  it("asks for a new code when another window of this browser ended the one it shows, and only then", async () => {
+    await mount();
+    await press("Show the QR code");
+    const offers = count("/api/relay/offer");
+    const tell = async (code: string) => {
+      const heard = new BroadcastChannel(QR_CODE_ENDED_CHANNEL);
+      const delivered = new Promise<void>((resolve) => { heard.onmessage = () => resolve(); });
+      const other = new BroadcastChannel(QR_CODE_ENDED_CHANNEL);
+      other.postMessage(code);
+      await act(async () => { await delivered; });
+      heard.close();
+      other.close();
+      await flush();
+    };
+    await tell("111111");
+    expect(count("/api/relay/offer")).toBe(offers);
+    await tell("482913");
+    expect(count("/api/relay/offer")).toBe(offers + 1);
+    expect(offerMarks.at(-1)).toBe("1");
     expect(qrCodes()).toHaveLength(1);
   });
 
@@ -1332,6 +1367,28 @@ describe("the relay tab's QR code behind a press", () => {
     await advance(ACCOUNT_QR_POLL_MS * 2);
     expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
     expect(accountQrNoticeWaiting()).toBe(false);
+  });
+
+  it("after Keep it, asks about no device that pairs later at this PC's own address: it came by another code", async () => {
+    await mount();
+    await press("Show the QR code");
+    devices = [...devices, phoneDevice()];
+    await advance(ACCOUNT_QR_POLL_MS);
+    await advance(ACCOUNT_QR_ALONE_MS);
+    await press("Keep it");
+    await advance(5 * 60_000);
+    // the owner's own phone, paired with the six-digit code from Phones and devices
+    devices = [...devices, device({ id: "p", label: "Pixel · Chrome", created_at: new Date().toISOString() })];
+    await advance(ACCOUNT_QR_POLL_MS);
+    expect(renderer!.root.findAllByProps({ "data-testid": "connect-account-alone" })).toHaveLength(0);
+    expect(buttons()).toEqual(["Show a new code"]);
+    // a later join is still told
+    pcAccount = ACCOUNT_ID;
+    devices = [devices[0]!, phoneDevice({ account: ACCOUNT_ID }), devices[2]!];
+    await advance(ACCOUNT_QR_POLL_MS);
+    const joined = text(renderer!.root.findByProps({ "data-testid": "connect-account-joined" }));
+    expect(joined).toContain("Added by iPhone · Safari.");
+    expect(joined).not.toContain("Pixel");
   });
 
   it("says of each device how it came: one through the relay with the advice to sign in on it, one at this PC's own address apart", async () => {
