@@ -149,7 +149,7 @@ it("adds a PC of the account once a member there picked the digits: a plain row 
   const [request] = await prompted;
   // asked of the account's members as "pair this PC", with the digits among three, never on B's own screen
   expect(request).toMatchObject({ intent: "pc", key: started.body.key, label: started.body.label });
-  expect(request!.choices).toContain(digits);
+  expect(request!.choices).toContain(digits!);
   expect(b.context.services.relay.approvals.list()).toEqual([]);
   expect(await member0.decide(request!.id, "approve", digits)).toBe(200);
   const { machine } = await next();
