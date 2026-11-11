@@ -107,11 +107,17 @@ async function settleBottom(page: Page) {
  */
 async function readToBottom(page: Page) {
   await page.waitForFunction(() => {
-    const node = document.querySelector(".chat-view");
+    const node = document.querySelector<HTMLElement>(".chat-view");
     if (!node) return false;
-    if (node.scrollHeight - node.clientHeight - node.scrollTop <= 1) return true;
-    node.scrollTop = node.scrollHeight;
-    return false;
+    // the rows a scroll brings in are measured a frame or more after it: the end counts once the view has stayed
+    // at it through ten frames in a row, not on the first frame that reads it there
+    const atEnd = node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
+    const qa = window as { qaAtEnd?: number };
+    if (!atEnd) { node.scrollTop = node.scrollHeight; qa.qaAtEnd = 0; return false; }
+    qa.qaAtEnd = (qa.qaAtEnd ?? 0) + 1;
+    if (qa.qaAtEnd < 10) return false;
+    qa.qaAtEnd = 0;
+    return true;
   }, undefined, { polling: "raf" });
 }
 /** Until the view and the transcript's height have not changed for 20 frames: where the view rests. */
