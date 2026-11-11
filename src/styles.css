@@ -2398,6 +2398,19 @@ button {
   font-weight: var(--fw-semibold);
 }
 
+/* a phone's lens button (components/LensToggle.tsx): its radius would cut a finger's target at its corners
+   (Chromium hit-tests the rounded box), so an empty, square layer over the same box keeps them, as the
+   switch's options do */
+.lens-toggle {
+  position: relative;
+}
+
+.lens-toggle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
 .header-text-button.is-icon {
   width: var(--bar-control-h);
   padding: 0;
