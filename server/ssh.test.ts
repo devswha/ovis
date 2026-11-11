@@ -8,7 +8,7 @@ import type { BridgeDescriptor } from "./bridge.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
-import { forwardSaysReady, refusalHint, SshConnection, sshClient, sweepSshDirs } from "./ssh.ts";
+import { forwardSaysReady, refusalHint, SshConnection, sshClient, sshVerboseLine, sweepSshDirs } from "./ssh.ts";
 import { posixHost, type HostInspection } from "./remote-host.ts";
 
 // The direct mode Windows uses (its OpenSSH has no connection sharing), run here against a
@@ -368,6 +368,25 @@ describe("which ssh says a forward is bound", () => {
     expect(forwardSaysReady({ git: false }, "win32")).toBe(false);
     expect(forwardSaysReady({}, "linux")).toBe(true);
     expect(forwardSaysReady({}, "darwin")).toBe(true);
+  });
+
+  // a failed forward's error is ssh's own words: the lines -v adds, prefixed or not, stay out of it
+  it("keeps ssh's own words and drops what -v adds", () => {
+    const stderr = [
+      "OpenSSH_10.0p2, OpenSSL 3.5.1 1 Jul 2025",
+      "debug1: Reading configuration data /etc/ssh/ssh_config",
+      "Authenticated to example.test ([192.0.2.7]:22) using \"publickey\".",
+      "bind [127.0.0.1]:41234: Address already in use",
+      "channel_setup_fwd_listener_tcpip: cannot listen to port: 41234",
+      "Could not request local forwarding.",
+      "Transferred: sent 2944, received 2792 bytes, in 0.1 seconds",
+      "Bytes per second: sent 29440.0, received 27920.0",
+    ];
+    expect(stderr.filter((line) => !sshVerboseLine(line))).toEqual([
+      "bind [127.0.0.1]:41234: Address already in use",
+      "channel_setup_fwd_listener_tcpip: cannot listen to port: 41234",
+      "Could not request local forwarding.",
+    ]);
   });
 });
 

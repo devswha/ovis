@@ -55,13 +55,13 @@ export interface SshClient {
 }
 
 /**
- * Which OpenSSH runs. `OVIS_SSH` names an ssh, with the sftp and ssh-keygen beside it. Windows
- * otherwise takes Git for Windows' build (installing Ovis there requires Git): the OpenSSH that
- * ships with Windows, started by a server that has no console, never exits once a remote command
- * wrote anything, so every connection hung until its timeout (Win32-OpenSSH#1427, #1470).
- * Git is looked for only where its installer puts it, never through PATH: the ssh runs with the
- * account's keys, and a folder on PATH may be one anybody can write to.
+ * A line ssh -v writes that is not ssh's word on what went wrong: its debug lines, and the few it writes
+ * unprefixed (its version banner, "Authenticated to", and the transfer totals it writes at exit).
  */
+export function sshVerboseLine(line: string): boolean {
+  return /^(?:debug\d: |OpenSSH_|Authenticated to |Transferred: sent |Bytes per second: )/u.test(line);
+}
+
 /**
  * Whether this ssh says on a pipe that a direct-mode forward is bound. Windows' own OpenSSH writes none
  * of its -v lines to a pipe (checked on Windows 11 with 9.5p2: a file or a console gets them, a pipe
@@ -72,6 +72,14 @@ export function forwardSaysReady(client: { git?: boolean }, platform: NodeJS.Pla
   return client.git === true || platform !== "win32";
 }
 
+/**
+ * Which OpenSSH runs. `OVIS_SSH` names an ssh, with the sftp and ssh-keygen beside it. Windows
+ * otherwise takes Git for Windows' build (installing Ovis there requires Git): the OpenSSH that
+ * ships with Windows, started by a server that has no console, never exits once a remote command
+ * wrote anything, so every connection hung until its timeout (Win32-OpenSSH#1427, #1470).
+ * Git is looked for only where its installer puts it, never through PATH: the ssh runs with the
+ * account's keys, and a folder on PATH may be one anybody can write to.
+ */
 export function sshClient({ env = process.env, platform = process.platform, exists = existsSync, which = (command: string) => Bun.which(command), registry = gitInstallPath }: {
   env?: Record<string, string | undefined>; platform?: NodeJS.Platform; exists?: (path: string) => boolean; which?: (command: string) => string | null; registry?: () => string | null;
 } = {}): SshClient {
@@ -498,7 +506,7 @@ export class SshConnection {
         const lines = (partial + decoder.decode(chunk, { stream: true })).split("\n");
         partial = lines.pop()!.slice(-4096);
         for (const line of lines) {
-          if (!/^debug\d: /u.test(line)) said = (said + line.replace(/\r$/, "") + "\n").slice(-8192);
+          if (!sshVerboseLine(line)) said = (said + line.replace(/\r$/, "") + "\n").slice(-8192);
           else if (line.includes(own)) named = true;
           else if (named && line.includes("Entering interactive session.")) ready.resolve();
         }
