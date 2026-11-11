@@ -2979,7 +2979,9 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
         return { ...foreground, argv: readFileSync(`/proc/${foreground.pid}/cmdline`, "utf8").split("\0") };
       } catch { return foreground; }
     })
-    .filter(({ argv = [] }) => {
+    .filter((foreground) => {
+      // herdr's `argv: null`, or one this read could not replace, names no executable
+      const argv: string[] = Array.isArray(foreground.argv) ? foreground.argv : [];
       const executable = argv[0] ?? "";
       // also a release binary named for its target, and any letter case of Windows' file names
       const codex = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
@@ -3879,10 +3881,10 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // scrolled off the screen, or one with a code block, whose fences Codex does not draw (#3262). The last finished
   // turn on screen may still tell, on less (lastTurnConversation): so only against every conversation this pane may
   // be running, each read (one left out of the 32, or whose rollout is gone, may be the one shown), and only one of
-  // this folder. Not for a nested pane, whose guard takes a substantial match alone, nor for a TUI of an app server
-  // elsewhere (--remote), whose conversation this store does not hold, nor while the command line resumed a thread
-  // the store cannot show (it may be the one on screen)
-  if (screen !== null && listed && candidates.length === paths.length && !agent.nestedTerminal && (resumed === null || resumedPath !== null)
+  // this folder. Not for a nested pane, whose guard takes a substantial match alone, nor for an unlabelled one, whose
+  // peers may carry no label either, nor for a TUI of an app server elsewhere (--remote), whose conversation this
+  // store does not hold, nor while the command line resumed a thread the store cannot show (it may be the one on screen)
+  if (screen !== null && listed && candidates.length === paths.length && !agent.nestedTerminal && !agent.unlabelled && (resumed === null || resumedPath !== null)
     && !codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) {
     const tied = await lastTurnConversation(paneId, processes, screen.text, candidates, resumedPath, folderRollouts, home);
     if (tied !== null) {
@@ -3917,9 +3919,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   if (resumed === null && reported !== null && !agent.nestedTerminal && !agent.unlabelled
     && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
   if (resumed !== null) return resumedNewer.length === 0 ? resumedPath : null;
-  // Other nested terminals may have no agent labels either, so the weaker exchange/peer
-  // heuristics cannot establish ownership. Only a substantial screen match (or its binding) can.
-  if (agent.nestedTerminal) return null;
+  // Other nested terminals, and the peers of an unlabelled pane, may have no agent labels either, so the weaker
+  // exchange/peer heuristics cannot establish ownership. Only a substantial screen match (or its binding) can.
+  if (agent.nestedTerminal || agent.unlabelled) return null;
   // Nothing ties this pane to a rollout at all: no resume, no match by a long answer for this
   // process, and so no /new to be unsure about (a session herdr names is only a candidate). Short
   // answers on screen may tell (#283). Never remembered as a binding: what it shows is read again

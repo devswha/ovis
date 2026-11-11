@@ -312,6 +312,18 @@ it("resolves a foreground Codex launched from continues before herdr sets pane.a
   } finally { bound.mockRestore(); upper.mockRestore(); }
 });
 
+it("reads an unlabelled pane whose foreground process herdr reports with a null argv as a pane without Codex", async () => {
+  // Given an unlabelled pane whose one foreground process herdr names with `argv: null` (its schema allows it), and
+  // whose command line cannot be read either
+  unlabelled = true;
+  const snapshot = { panes: [{ pane_id: root, cwd: root, agent_status: "unknown" }] } as SessionSnapshot;
+  // Then it is answered as a pane with no Codex in front, not with a crash
+  foreground = [{ pid: 2147483647, argv: [] }];
+  await expect(paneTranscript(root, home, snapshot)).rejects.toMatchObject({ message: "no_recognized_transcript" });
+  foreground = [{ pid: 2147483647, argv: null as unknown as string[] }];
+  await expect(paneTranscript(root, home, snapshot)).rejects.toMatchObject({ message: "no_recognized_transcript" });
+});
+
 it("takes no reported thread for an unlabelled pane while another unlabelled Codex pane may have begun it", async () => {
   // Given two unlabelled Codex panes in one folder, and the thread pane B began after both started, which the
   // shared daemon reported on pane A (the pane that started it); pane B has no report, and no screen shows anything
@@ -1801,6 +1813,18 @@ shortIt("keeps a peer sharing the selected native database through a symlink amb
   foregrounds.set("peer", [{ pid: peer.pid, argv: [join(root, "codex")] }]);
   peerScreens.set("peer", shortScreen);
   expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBeNull();
+});
+
+shortIt("takes no short answer for an unlabelled pane while an unlabelled peer on the same store shows it too", async () => {
+  // Given two Codex panes herdr has not labelled yet, in one folder on one store, both showing the same short exchange
+  await shortSession();
+  unlabelled = true;
+  const peer = await runningCodex(false, { ...process.env, CODEX_HOME: home });
+  foregrounds.set("peer", [{ pid: peer.pid, argv: [join(root, "codex")] }]);
+  peerScreens.set("peer", shortScreen);
+  const pane = (pane_id: string) => ({ pane_id, workspace_id: root, tab_id: root, terminal_id: pane_id, agent_status: "working" as const, cwd: root, focused: false, revision: 0 });
+  // Then the peer, which no label shows as Codex, may be the one that said it: nothing is guessed
+  expect(await codexTranscriptPath(root, root, home, [pane(root), pane("peer")])).toBeNull();
 });
 
 shortIt("compares the selected and actual databases through different Codex homes", async () => {
