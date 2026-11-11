@@ -73,9 +73,9 @@ describe("deleting the account from the hosted shell", () => {
     const { fake, accountStore } = await signedInShell(() => now);
     now += 11 * 60_000;
     last().onDeleteAccount?.();
-    await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.error !== null; }, "the refusal");
+    await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.deleteError !== undefined; }, "the refusal");
     expect(fake.deleted(ACCOUNT)).toBe(false);
-    expect(accountView()).toMatchObject({ kind: "signed-in", error: "To delete your account, sign out, sign in again, then delete it within ten minutes." });
+    expect(accountView()).toMatchObject({ kind: "signed-in", error: null, deleteError: "To delete your account, sign out, sign in again, then delete it within ten minutes." });
     expect(await accountStore.get("session")).toBeDefined();
   });
 
@@ -182,10 +182,10 @@ describe("deleting the account from the hosted shell", () => {
       const tokened = nativeSignInTo(fake, "acct-other");
       last().onDeleteAccount?.();
       await tokened;
-      await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.error !== null; }, "the refusal");
+      await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.deleteError !== undefined; }, "the refusal");
       expect(fake.deleted(ACCOUNT)).toBe(false);
       expect(fake.deleted("acct-other")).toBe(false);
-      expect(accountView()).toMatchObject({ error: "You signed in to another account. Nothing was deleted." });
+      expect(accountView()).toMatchObject({ error: null, deleteError: "You signed in to another account. Nothing was deleted." });
     });
   });
 
@@ -193,8 +193,8 @@ describe("deleting the account from the hosted shell", () => {
     const { fake } = await signedInShell();
     fake.subscribe(ACCOUNT);
     last().onDeleteAccount?.();
-    await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.error !== null; }, "the refusal");
+    await until(() => { const view = accountView(); return view?.kind === "signed-in" && view.deleteError !== undefined; }, "the refusal");
     expect(fake.deleted(ACCOUNT)).toBe(false);
-    expect(accountView()).toMatchObject({ kind: "signed-in", error: "Cancel your subscription first, then delete the account." });
+    expect(accountView()).toMatchObject({ kind: "signed-in", error: null, deleteError: "Cancel your subscription first, then delete the account." });
   });
 });

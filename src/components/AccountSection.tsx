@@ -11,7 +11,7 @@ import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNod
 
 import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
-import { deleteAccount } from "../lib/account/deleteAccount.ts";
+import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
 import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
@@ -19,7 +19,7 @@ import { AccountPcError, within } from "../lib/account/join.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
-import { indexedAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
+import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
 import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
@@ -949,7 +949,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   };
 
   /** A device sign-in on a PC's own page: shows the link page's or the provider's code until it is approved. */
-  const signInWithCode = (pcServiceOrigin: string, provider: DeviceSignInProvider): Promise<AccountSession> => {
+  const signInWithCode = (pcServiceOrigin: string, provider: DeviceSignInProvider, store: AccountStore = indexedAccountStore): Promise<AccountSession> => {
     cancelDeviceSignIn();
     const controller = new AbortController();
     deviceSignIn.current = controller;
@@ -959,8 +959,8 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
       const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
       const started = provider === "ovis"
         // the link page busy or down: the provider's own device page instead, GitHub's where the service has it
-        ? await startLinkPageSignIn({ service: pcServiceOrigin, store: indexedAccountStore, requester }, offer?.device[0] ?? "github")
-        : await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider, requester });
+        ? await startLinkPageSignIn({ service: pcServiceOrigin, store, requester }, offer?.device[0] ?? "github")
+        : await startDeviceSignIn({ service: pcServiceOrigin, store, provider, requester });
       controller.signal.throwIfAborted();
       startedProvider.current = started.provider;
       setView({ kind: "device-code", provider: started.provider, userCode: started.userCode, verificationUri: started.verificationUri, verificationUriComplete: started.verificationUriComplete });
@@ -973,11 +973,12 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
    * link page, where the person picks GitHub or Google; a sign-in again for this same account passes
    * false, so it stays with the provider the account signed in with.
    */
-  const runSignIn = (provider: AccountProvider, viaLinkPage = linkPage): Promise<AccountSession> | null => {
-    if (bridge !== null) return desktopSignIn(provider, bridge, indexedAccountStore);
+  /** `store`: where the sign-in is kept; a sign-in again to delete holds it back (deleteAccount.ts, holdingSessionStore) */
+  const runSignIn = (provider: AccountProvider, viaLinkPage = linkPage, store: AccountStore = indexedAccountStore): Promise<AccountSession> | null => {
+    if (bridge !== null) return desktopSignIn(provider, bridge, store);
     if (pcService === null) return null;
-    if (viaLinkPage) return signInWithCode(pcService, "ovis");
-    return isDeviceProvider(provider) ? signInWithCode(pcService, provider) : null;
+    if (viaLinkPage) return signInWithCode(pcService, "ovis", store);
+    return isDeviceProvider(provider) ? signInWithCode(pcService, provider, store) : null;
   };
 
   /**
@@ -1049,13 +1050,22 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     setReauth(null);
     // a sign-in again for the same account is none that adds the PC: one left untaken does not outlive it either
     signedInHere.current = null;
-    runSignIn(current, false)?.then(async (session) => {
+    runSignIn(current, false, resumed === null ? indexedAccountStore : holdingSessionStore(indexedAccountStore))?.then(async (session) => {
+      if (resumed !== null) {
+        // kept only in the place of the sign-in the delete was asked for, while it is still on and still stored: a sign-out
+        // or another sign-in made meanwhile (here or in another tab) stays, and nothing is deleted
+        const goesOn = deletion.current === resumed && session.account === resumed.session.account && await installSignInAgain(indexedAccountStore, resumed.session, session);
+        if (deletion.current === resumed && !goesOn) deletion.current = null;
+        await load();
+        if (goesOn && deletion.current === resumed) runDelete(resumed, session);
+        return;
+      }
       await load();
       if (session.account !== account) return;
       switch (action) {
         case "add": addMethod(provider); return;
         case "remove": removeMethod(provider); return;
-        case "delete": if (resumed !== null && deletion.current === resumed && session.account === resumed.session.account) runDelete(resumed, session); return;
+        case "delete": return;
         default: action satisfies never;
       }
     }, async (error: unknown) => {

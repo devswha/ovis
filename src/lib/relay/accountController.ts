@@ -9,9 +9,9 @@ import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
-import type { AccountProvider, AccountSession, AccountStore } from "../account/store.ts";
+import type { AccountProvider, AccountSession } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
-import { deleteAccount as deleteAccountOf } from "../account/deleteAccount.ts";
+import { deleteAccount as deleteAccountOf, holdingSessionStore, installSignInAgain } from "../account/deleteAccount.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
@@ -249,6 +249,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     // the sign-in the signed-in view on screen speaks of, not the one stored now: one another tab stored meanwhile is
     // never deleted (deleteAccount.ts), and the view then reads it
     const from = accountView?.kind === "signed-in" ? shownFor : undefined;
+    // a refusal of an earlier press is not this one's
+    if (accountView?.kind === "signed-in" && accountView.deleteError !== undefined) { const { deleteError: _earlier, ...rest } = accountView; accountView = rest; }
     return Promise.resolve(from).then(async (session) => {
       if (session === undefined) throw new SignedOutError();
       try { await deleteAccountOf({ service: account, accountStore, session }); }
@@ -259,13 +261,10 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
         if (stored === undefined || !sameSignIn(stored, session)) throw new SignedOutError();
         // the sheet's sign-in is not stored by the sheet: only below, once this delete is still on and its sign-in still
         // the one stored, so a sign-out or another sign-in while the sheet was open is neither undone nor deleted
-        const holding: AccountStore = { ...accountStore, set: (async (name: string, value: unknown) => { if (name !== "session") await accountStore.set(name as "pending", value as never); }) as AccountStore["set"] };
-        const again = await nativeSignIn(session.provider, { store: holding, service: accountService });
+        const again = await nativeSignIn(session.provider, { store: holdingSessionStore(accountStore), service: accountService });
         if (!current()) throw error;
         if (again.account !== session.account) throw new AnotherAccountError();
-        let signedInAgain = false;
-        await accountStore.update("session", (now) => { if (now === undefined || !sameSignIn(now, session)) return now; signedInAgain = true; return again; });
-        if (!signedInAgain) throw new SignedOutError();
+        if (!await installSignInAgain(accountStore, session, again)) throw new SignedOutError();
         await deleteAccountOf({ service: account, accountStore, session: again });
       }
     }).then(async () => {
@@ -288,7 +287,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       if (error instanceof SignedOutError || error instanceof AnotherAccountError) await refresh(true);
       // a sign-in that ended or was replaced deleted nothing, and the page now shown is not the one asked about: no
       // failure is drawn on it to try again
-      if (accountView?.kind === "signed-in" && !(error instanceof SignedOutError)) accountView = { ...accountView, error: deleteFailure(error) };
+      // said on Devices alone, where Delete account was pressed: the directory's own failure keeps `error`
+      if (accountView?.kind === "signed-in" && !(error instanceof SignedOutError)) accountView = { ...accountView, deleteError: deleteFailure(error) };
       await changed();
     }).finally(() => { if (deletion === mine) deletion = undefined; });
   };

@@ -561,11 +561,19 @@ describe("RelayDashboard frame and routes", () => {
     expect(deleted).toBe(0);
   });
 
-  it("says on Devices why a delete was refused", async () => {
-    await mount(baseProps({ error: "Cancel your subscription first, then delete the account.", onDeleteAccount: () => {} }));
+  it("says on Devices why a delete was refused, and there only", async () => {
+    await mount(baseProps({ deleteError: "Cancel your subscription first, then delete the account.", onDeleteAccount: () => {} }));
     await navigateHash("#devices");
     const alert = renderer!.root.findAll((n) => n.props.role === "alert" && textOf(n).includes("Cancel your subscription first"));
     expect(alert.length).toBeGreaterThan(0);
+    await navigateHash("#overview");
+    expect(textOf(renderer!.root)).not.toContain("Cancel your subscription first");
+  });
+
+  it("draws no directory failure under Delete account", async () => {
+    await mount(baseProps({ error: "The account service could not be reached.", onDeleteAccount: () => {} }));
+    await navigateHash("#devices");
+    expect(textOf(renderer!.root)).not.toContain("could not be reached");
   });
 
   it("offers no Delete account without an account", async () => {

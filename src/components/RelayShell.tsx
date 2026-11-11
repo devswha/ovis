@@ -194,6 +194,7 @@ export function RelayShell(props: RelayShellProps) {
         defaultRelay={defaultRelay}
         meLabel={meLabel ?? t("This device")}
         error={signedIn?.error ?? null}
+        {...(signedIn?.deleteError !== undefined ? { deleteError: signedIn.deleteError } : {})}
         {...(pcStatus ? { pcStatus } : {})}
         {...(observedVersions ? { observedVersions } : {})}
         {...(onCheckPcs ? { onCheckPcs } : {})}

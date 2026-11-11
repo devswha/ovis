@@ -16,5 +16,27 @@ export async function deleteAccount(options: { service: AccountService; accountS
   // the sign-in, the key and the records were the deleted account's: a later sign-in gets a new key (a kept pairing
   // holds its own copy). A sign-in that took its place while the delete was out keeps all of it, the session included,
   // and a sign-in another tab began (its `pending` state) is no account's: it stays to finish.
-  await options.accountStore.clear(undefined, { only: (current) => current !== undefined && sameSignIn(current, options.session), spare: ["pending"] });
+  // No sign-in stored at all is the deleted one ended meanwhile (another tab's request refused once the account was gone):
+  // its key and records are still the deleted account's, so they go too.
+  await options.accountStore.clear(undefined, { only: (current) => current === undefined || sameSignIn(current, options.session), spare: ["pending"] });
+}
+
+/**
+ * `store`, except that a sign-in is not stored through it: a sign-in again made to delete an account is held back
+ * until installSignInAgain finds the deleted one still stored, so it never replaces a sign-out or another sign-in
+ * made meanwhile.
+ */
+export function holdingSessionStore(store: AccountStore): AccountStore {
+  return { ...store, set: (async (name, value) => { if (name !== "session") await store.set(name, value as never); }) as AccountStore["set"] };
+}
+
+/** Stores `again` in the place of `from`, in one update, only while `from` is the sign-in stored; whether it did. */
+export async function installSignInAgain(store: AccountStore, from: AccountSession, again: AccountSession): Promise<boolean> {
+  let installed = false;
+  await store.update("session", (current) => {
+    if (current === undefined || !sameSignIn(current, from)) return current;
+    installed = true;
+    return again;
+  });
+  return installed;
 }

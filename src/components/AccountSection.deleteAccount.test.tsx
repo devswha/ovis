@@ -191,6 +191,23 @@ describe("deleting the account from Settings", () => {
     expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
   });
 
+  it("leaves another tab's sign-in stored after the refusal: the sign-in again neither replaces it nor deletes", async () => {
+    await signedIn();
+    ahead = 11 * 60_000;
+    await press("Delete account");
+    await press("Delete account for good?");
+    await until(() => shown().includes("To delete your account, sign in again"));
+    const mine = (await indexedAccountStore.get("session"))!;
+    await indexedAccountStore.set("session", { ...mine, account: "acct_two", access_token: fake.issueToken("acct_two"), refresh_token: "rt-two", sign_in_id: "another-sign-in" });
+    const before = fake.requests.length;
+    await press("Sign in again");
+    // settled: the sign-in again answered, and the section read what is stored after it
+    await until(() => fake.requests.slice(before).includes("POST /v1/token") && fake.requests.slice(fake.requests.lastIndexOf("POST /v1/token") + 1).some((line) => line.startsWith("GET ")));
+    expect(fake.requests.slice(before)).not.toContain("DELETE /v1/account");
+    expect(fake.deleted(ACCOUNT)).toBe(false);
+    expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
+  });
+
   it("says to cancel a subscription that still renews, and keeps the account", async () => {
     await signedIn();
     fake.subscribe(ACCOUNT);

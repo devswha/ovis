@@ -98,6 +98,20 @@ describe("deleting the account", () => {
     expect((await store.key()).public_spki).toBe(key.public_spki);
   });
 
+  it("forgets the deleted account's key when another tab's refused request ended the sign-in before the answer came", async () => {
+    const { store, session, fake } = await signedIn();
+    const key = (await store.key()).public_spki;
+    const fetch: typeof fake.fetch = async (input, init) => {
+      const answer = await fake.fetch(input, init);
+      if (new Request(input, init).method === "DELETE") await store.set("session", undefined);
+      return answer;
+    };
+    const service = new AccountService({ store, fetch, lock: memoryLock() });
+    await deleteAccount({ service, accountStore: store, session });
+    expect(fake.deleted(session.account)).toBe(true);
+    expect((await store.key()).public_spki).not.toBe(key);
+  });
+
   it("keeps a sign-in another tab began while the delete was out", async () => {
     const { store, session, fake } = await signedIn();
     const fetch: typeof fake.fetch = async (input, init) => {
