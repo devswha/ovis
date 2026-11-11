@@ -9,6 +9,9 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
 
 ## [0.5.3] - 2026-11-12
 
+These notes are long: Settings in an install of 0.5.2 or earlier shows only their start. Read
+them all in [CHANGELOG.md](https://github.com/devswha/ovis/blob/main/CHANGELOG.md#053---2026-11-12).
+
 ### Added
 - **Delete account**: in the phone apps and app.ovis.sh (Devices → Account) and in the desktop app
   (Settings → Devices and PCs → Account), **Delete account** erases your
@@ -122,8 +125,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   no screen in and adds it to your account. While it waits it reopens its approval window every 30
   seconds and waits for an Ovis server that restarts instead of ending the sign-in, so a restart no
   longer leaves the window closed for up to nine minutes. It stops by itself after 30 minutes, also
-  with a request left unanswered at its y/N question, and asks again about a request whose answer
-  did not reach the server.
+  with a request left unanswered, and asks again about a request whose answer did not reach the
+  server.
   ([#3539](https://github.com/devswha/ovis/pull/3539))
 - `ovis add` (also `login` and `link`) now ends in one QR code: after the sign-in, scan it with a
   device that is signed in to the same Ovis account (or type its code at app.ovis.sh) and the PC
@@ -241,8 +244,8 @@ between releases do not reach them. Remote-PC runtime bundles are versioned sepa
   comes: the terminal may still hold what was typed for that request, and the question is asked
   again.
   ([#3581](https://github.com/devswha/ovis/pull/3581))
-- `ovis add` run without a terminal (`yes | ovis add`, a pipe, a file, `ssh` without `-t`) approves
-  nothing, whenever its lines come: it says so, names the way out and declines every request. It
+- `ovis add --approve` run without a terminal (`yes | ovis add --approve`, a pipe, a file, `ssh`
+  without `-t`) approves nothing, whenever its lines come: it says so, names the way out and declines every request. It
   also says so when the terminal's input ends (Ctrl+D), and stops at once when reading the
   terminal fails.
   ([#3581](https://github.com/devswha/ovis/pull/3581))
