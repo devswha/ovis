@@ -17,14 +17,14 @@
  * pane after, so another session or process of the same kind gets none.
  * First messages live in memory: a restart of the bridge loses those not sent yet.
  */
-import { closeBackslash, closeMention, type createSubmitText, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, pendingFault, pendingIdentity, pendingText, submitFraming } from "./composer.ts";
+import { closeBackslash, closeMention, type createSubmitText, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
 import type { AttachmentView, TerminalSighting } from "./terminals.ts";
 import type { ClientMessage, HerdrPane, PendingMessage, PendingRemoval, SessionSnapshot } from "../../shared/protocol.ts";
 import { typingGuards } from "../input-guard.ts";
 import { claudeForegroundSession, isClaudeProcess } from "../claude-store.ts";
-import { HerdrError, paneProcessInfo, paneRead, paneSendKeys, paneSendText, type ProcessInfo } from "../herdr/client.ts";
+import { HerdrError, paneGet, paneProcessInfo, paneRead, paneSendKeys, paneSendText, type ProcessInfo } from "../herdr/client.ts";
 import { bindCommandProcess, claudeHeldIsGrey, codexQuestionsCollapsed, isClaudeHeld, heldCandidate, noteSubmitted, parseInteractivePrompt, piRunsCommand, piListsTemplate, prepareCommandSend, shownInputBox } from "../prompt.ts";
 import { registry } from "../dialogs/registry.ts";
 import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
@@ -137,7 +137,7 @@ const FIRST_MESSAGE_RECEIPTS = 8;
  * called through: only a frame or a turn calls them, after `createServer` has returned.
  */
 export function createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, submitText, authorizeSocket, clientSnapshot, omo, queueHeld = () => false, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS }: {
-  options: { pendingStartTimeoutMs?: number; piReceiptLimit?: number; submitDeadlineMs?: number; submitDelayMs?: number; openCodeStateDir?: string };
+  options: { pendingStartTimeoutMs?: number; piReceiptLimit?: number; submitDeadlineMs?: number; submitDelayMs?: number; ompReportPollMs?: number; ompStartupMs?: number; openCodeStateDir?: string };
   clients: Set<Client>;
   attachments: ReadonlyMap<string, AttachmentView>;
   sight: (client: Client, paneId: string) => TerminalSighting;
@@ -707,7 +707,33 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // fixed wait: herdr holds a lone ESC typed into the pty ~150ms, so a Stop tapped just before reaches the pane first
       if (typed < TYPED_SETTLE_MS) await Bun.sleep(TYPED_SETTLE_MS - typed);
       mark = pending.mark(paneId);
-      const context = await pendingContext(owner, paneId, lease, identity);
+      let context = await pendingContext(owner, paneId, lease, identity);
+      // omp draws its input box, and herdr shows it at rest, before it takes an Enter: typed then, the message stays in
+      // the box and never runs while its row says sent. A send a person makes (Send now, a queue request typed at once)
+      // waits here for the session herdr's omp integration reports, as the immediate send does (composer.ts
+      // untilOmpReported), within its own deadline and its sender's leave to type. What was read before a wait is read
+      // again: by the report the omp may be at work, changed or gone
+      let waitedForOmp = false;
+      if (context.identity.agent === "omp" && automatic) {
+        // one the queue makes by itself never waits here, with the pane's lane held and every key typed there behind
+        // it: it waited before it was taken up (awaitsOmp). Found starting after all (that look was not answered),
+        // it goes back to the queue, and the wait is taken up from here
+        const until = await ompStartingUntil(paneId, context.pane, options);
+        if (until !== null) {
+          waitForOmp(paneId, until);
+          throw new HerdrError("pending_wait", "omp is still starting; this message waits until it takes input");
+        }
+      } else if (context.identity.agent === "omp") {
+        const waited = await untilOmpReported(paneId, context.pane, () => {
+          authorizePending(owner, paneId, lease);
+          if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
+        }, options);
+        if (waited !== context.pane) {
+          waitedForOmp = true;
+          mark = pending.mark(paneId);
+          context = await pendingContext(owner, paneId, lease, identity);
+        }
+      }
       // a message for an agent alone (#511) is typed only as the immediate path would: never into no agent, and never
       // past Codex's collapsed question queue, as Codex may exit before the write
       if (agentOnly && !context.agentInFront) throw new HerdrError(AGENT_NOT_READY.code, AGENT_NOT_READY.message);
@@ -718,7 +744,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       piReservation = piTracked ? reservePiReceipt(owner, context.identity) : null;
       const receiptText = piTracked ? piReceiptText(context.identity, text) : undefined;
       const piTemplate = piTracked && piListsTemplate(context.pane, text);
-      if (automatic && (context.working || queueHeld(paneId, false))) {
+      // and a queue request typed at once: its pane was at rest before it waited for omp, which may be at work by its
+      // report (started with a prompt of its own). It then waits its turn, as one that arrived at the report would
+      if ((automatic || (queued && waitedForOmp)) && (context.working || queueHeld(paneId, false))) {
         pending.observe(paneId, "working", mark);
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
       }
@@ -946,9 +974,12 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const bound = await bindLaunched(item);
       if (bound === "wait") return;
       if (bound === "ended") { holdFor(item, LAUNCH_GONE); drainAgain.add(paneId); return; }
+      // an omp still starting is waited for with the message still queued: this runs again once it takes input
+      if (await awaitsOmp(item)) return;
       if (!pending.claim(item, true)) return;
       dispatched = true;
       await dispatchPending(item, true, arrivedAt, false, by);
+      takenWithPane(item, arrivedAt);
     }).catch((error) => console.warn("pending message:", pendingFault(error).code)).finally(() => {
       pendingDrains.delete(paneId);
       const again = drainAgain.delete(paneId);
@@ -956,6 +987,67 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     });
   }
   const drainAgain = new Set<string>();
+  /**
+   * A first message whose pane ended while it was on its way (since `since`) goes with the pane after all, once its
+   * send has ended. The pane's end could not take it then (holdPendingPane discards what is not on its way), and no
+   * connection's end expires a first message: left under the pane's id, it is what the next pane herdr gives that
+   * id shows, and takes that pane's own first message's place.
+   */
+  function takenWithPane(item: PendingItem, since: number): void {
+    // and no receipt of it is kept for the pane's id, as none is at the pane's end (holdPendingPane)
+    if (!isClient(item.owner) && (endedPanes.get(item.paneId) ?? -Infinity) >= since && pending.discard(item)) firstReceipts.delete(item.paneId);
+  }
+  /** the panes whose queue waits for an omp that is still starting (awaitsOmp) */
+  const ompWaits = new Set<string>();
+  /**
+   * Whether the pane's queue waits for its omp to take input, for a message the queue would send by itself. That
+   * wait is no part of a send (waitForOmp): the message stays queued, with nothing claimed and the pane's lane free,
+   * so what is typed into the pane meanwhile goes at once, a pane that ends takes the message with it, and Send now
+   * or Discard find it as it is.
+   */
+  async function awaitsOmp(item: PendingItem): Promise<boolean> {
+    const paneId = item.paneId;
+    if (ompWaits.has(paneId)) return true;
+    if (item.identity.agent !== "omp") return false;
+    const pane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
+    // what herdr names there now is no omp: the send's checks hold the message for it
+    if (!pane || pendingIdentity(pane).agent !== "omp") return false;
+    const until = await ompStartingUntil(paneId, pane, options);
+    if (until === null) return false;
+    waitForOmp(paneId, until);
+    return true;
+  }
+  /**
+   * Looks at the pane until its omp has reported its session (composer.ts untilOmpReported says why that is when omp
+   * takes input), is no omp any more, or `until`, when its start is given up on; then the pane's queue is drained
+   * again, and that drain's own checks say what becomes of the message. One wait per pane. It ends early once no
+   * message of the pane's waits to go by itself (it went by hand, is held, or omp is at work), and it outlives a look
+   * herdr does not answer: it is no send that could fail, and nothing else would drain the pane at the report.
+   */
+  function waitForOmp(paneId: string, until: number): void {
+    if (ompWaits.has(paneId)) return;
+    ompWaits.add(paneId);
+    void (async () => {
+      for (;;) {
+        await Bun.sleep(options.ompReportPollMs ?? OMP_REPORT_POLL_MS);
+        if (pending.next(paneId) === null) return;
+        if (Date.now() >= until) {
+          console.warn(`[omp] ${paneId}: herdr's omp integration reported no session while omp started; sending anyway`);
+          return;
+        }
+        try {
+          const pane = await paneGet(paneId);
+          if (pendingIdentity(pane).agent !== "omp" || pane.agent_session?.source === "herdr:omp") return;
+        } catch (error) {
+          if (pendingFault(error).code === "pane_not_found") return;
+        }
+      }
+    })().finally(() => {
+      ompWaits.delete(paneId);
+      // a drain running now read the pane while this wait was on: it runs once more
+      if (pendingDrains.has(paneId)) drainAgain.add(paneId); else drainPending(paneId);
+    });
+  }
   /**
    * A create request's first message for the pane's agent, queued as the request's own send: typed once
    * the agent is ready through `requester`, the id of the page connection that sent the request, while it
@@ -1516,6 +1608,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           // a pane's first message refused because what runs there is not what was launched for it, or that agent
           // ended: its card says so
           if (!dispatched && !isClient(item.owner) && (reply.code === TARGET_CHANGED.code || reply.code === LAUNCH_GONE.code)) pending.rehold(item, { code: reply.code, message: reply.message! });
+          takenWithPane(item, arrivedAt);
           return reply;
         });
         result(answer);

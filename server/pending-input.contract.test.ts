@@ -154,17 +154,21 @@ afterEach(async () => {
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-async function setup(label: string, agent = "claude", screen = "› Message\n", options: Parameters<typeof createServer>[0] = {}, replaceable: boolean | "launcher" = false, piTranscript?: string) {
+/** `ompStarting`: an omp that loads herdr's integration (by its own arguments) and has not reported its session, as one that does not take input yet */
+async function setup(label: string, agent = "claude", screen = "› Message\n", options: Parameters<typeof createServer>[0] = {}, replaceable: boolean | "launcher" = false, piTranscript?: string, ompStarting = false) {
   const id = ++next;
   const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>("workspace.create", { label: `ovis-test-pending-${label}`, cwd: root, focus: false });
   // registered before anything below can throw, so afterEach closes the workspace of a setup that failed
   const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
   const pane = created.root_pane.pane_id;
   let piSeq = 1;
+  /** herdr's omp integration reports the pane's session, as it does once omp takes input */
+  const ompReports = () => herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:omp", agent: "omp", seq: Date.now() * 1000,
+    agent_session_path: join(root, `${id}-omp-session.jsonl`), session_start_source: "startup" });
   const log = join(root, `${id}.jsonl`);
   const screenFile = join(root, `${id}.screen`);
   writeFileSync(screenFile, "");
-  const command = `'${join(root, agent)}' '${join(root, "record.cjs")}' '${log}' '${screen.replace(/\n/g, "\r\n")}' '${screenFile}'`;
+  const command = `'${join(root, agent)}' '${join(root, "record.cjs")}' '${log}' '${screen.replace(/\n/g, "\r\n")}' '${screenFile}'${ompStarting ? ` -e '${join(root, "herdr-omp-agent-state.ts")}'` : ""}`;
   // The shell immediately starts SESSION2 once SESSION1 exits, preserving terminal and lease.
   const replacementLog = join(root, `${id}-replacement.jsonl`);
   await herdrRpc("pane.send_text", { pane_id: pane, text: replaceable === "launcher"
@@ -181,6 +185,10 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
       await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent, state: "working" });
       await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:pi", agent, seq: piSeq++, agent_session_path: piTranscript, session_start_source: "startup" });
     } else await herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent, state: "working" });
+    // an omp with herdr's integration reports its session once it takes input, and a send waits for that
+    // (composer.ts untilOmpReported): this one is at work, so it has. Where the integration is installed
+    // (a PC with omp), the stand-in started moments ago would otherwise be waited for
+    if (agent === "omp" && !ompStarting) await ompReports();
   }
   const server = createServer({ ...options, port: 0, stateDir: join(root, `state-${id}`) });
   entry.stop = server.stop;
@@ -218,7 +226,7 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
   const removed = (id: string, outcome = "sent", reader = socket) => reader.wait((frame) => frame.type === "pending-messages" && frame.pane_id === pane
     && (outcome === "held" ? frame.held?.includes(id) : frame.removed?.some((entry: any) => entry.id === id && entry.outcome === outcome)));
   const another = async (attach = true, chat = false) => { const reader = new Socket(server.port); entry.sockets.push(reader); if (attach) await reader.attach(pane, chat); else await reader.wait((frame) => frame.type === "snapshot"); return reader; };
-  return { screenFile, pane, port: server.port, server, socket, bytes, waitBytes, state, showScreen, queue, removed, another, replacementLog };
+  return { screenFile, pane, port: server.port, server, socket, bytes, waitBytes, state, showScreen, queue, removed, another, replacementLog, ompReports };
 }
 
 describe("resumable follow-up receipts (#2421)", () => {
@@ -803,6 +811,25 @@ describe("connection-owned pending input", () => {
     // Then the terminal receives the same command the immediate path would send.
     expect(f.bytes()).toBe(`${paste(expected)}\r`);
   });
+
+  it("sends a queued message to an omp still starting only once omp reports its session, and types what the terminal sends meanwhile at once", async () => {
+    // omp draws its input box, and herdr shows it at rest, before it takes an Enter: typed then, the message stays in
+    // the box and never runs while its row says sent
+    const f = await setup("omp-starting", "omp", "", {}, false, undefined, true);
+    const message = await f.queue(1477, "queued words");
+    await f.state("idle");
+    // the queue waits for omp with nothing of the pane held: keys typed in the terminal go at once, ahead of the
+    // message, and the message is still not there a second round of the terminal later
+    f.socket.send({ type: "input", pane_id: f.pane, text: "x" });
+    await f.waitBytes("x");
+    f.socket.send({ type: "input", pane_id: f.pane, text: "y" });
+    await f.waitBytes("xy");
+    expect(f.bytes()).toBe("xy");
+    await f.ompReports();
+    await f.removed(message.id);
+    await f.waitBytes("\r");
+    expect(f.bytes()).toBe(`xy${paste("queued words")}\r`);
+  }, 30_000);
 
   it("holds a queued message when a hookless agent process is replaced in the same terminal (regression #540)", async () => {
     const f = await setup("process-replaced", "claude", "SESSION1", {}, true);
