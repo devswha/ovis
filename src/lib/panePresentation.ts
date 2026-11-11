@@ -10,10 +10,11 @@ type ConversationProof = { source: ConversationResponse["source"] | undefined; h
 
 function finalAnswer(conversation: ConversationProof): ConversationTurn | undefined {
   let index = conversation.turns.length - 1;
-  // These Claude notices, and an OmO goal's wait, do not start another model turn. Runtime wakes and real prompts do.
+  // These Claude notices, a compaction's summary (#3675) and an OmO goal's wait do not start another model turn.
+  // Runtime wakes and real prompts do.
   while (index >= 0) {
     const turn = conversation.turns[index];
-    if (turn?.role !== "user" || turn.parts.length === 0 || !turn.parts.every((part) => part.kind === "goal_wait" ||
+    if (turn?.role !== "user" || turn.parts.length === 0 || !turn.parts.every((part) => part.kind === "goal_wait" || part.kind === "compact" ||
       part.kind === "notice" && (part.source === "informational" || part.source === "local-command"))) break;
     index--;
   }
@@ -30,9 +31,13 @@ export function conversationFinishPresented(conversation: ConversationProof): bo
 function answerIdentity(conversation: ConversationProof): string | undefined {
   const turn = finalAnswer(conversation);
   if (!turn) return undefined;
+  // A compaction after the answer (Claude Code's /compact) is a finish of its own: the proof is dated from it, so the
+  // finish it brings is not refused as the answer's earlier one (#3675)
+  const compacted = conversation.turns.slice(conversation.turns.indexOf(turn) + 1).filter((later) => later.parts.some((part) => part.kind === "compact")).at(-1);
   // Do not date a finish from later tool-result decoration or a trailing informational notice.
-  return JSON.stringify([conversation.source, conversation.history_id, turn.end_ts ?? turn.ts, turnRevision({
-    role: turn.role, ts: turn.ts, parts: turn.parts.filter((part) => part.kind === "text" && part.phase === "final_answer"),
+  return JSON.stringify([conversation.source, conversation.history_id, compacted?.ts ?? turn.end_ts ?? turn.ts, turnRevision({
+    role: turn.role, ts: turn.ts, parts: [...turn.parts.filter((part) => part.kind === "text" && part.phase === "final_answer"),
+      ...compacted?.parts.filter((part) => part.kind === "compact") ?? []],
   })]);
 }
 
