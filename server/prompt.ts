@@ -1470,21 +1470,23 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       // waits for the next prompt (a working agent shows none), and a failed or slow read of it (a
       // herdr without ansi reads, a busy one) leaves the prompt answer as it is, on time. gjc's and
       // omp's box is read only at the bottom of the screen: a viewport scrolled into the history
-      // could end in an older frame of it. The snapshot's scroll is from before the read, so where
-      // the viewport is gets asked again after it (another device may have scrolled meanwhile); a
-      // look herdr does not answer proves nothing, and offers none.
+      // could end in an older frame of it. The snapshot's scroll is from before the read, so for a
+      // suggestion found there, where the viewport is gets asked again (another device may have
+      // scrolled meanwhile), within the same short deadline as the read; a look herdr does not
+      // answer in time proves nothing, and offers none.
       const parseSuggestion = Object.hasOwn(SUGGESTION_PARSERS, agent) ? SUGGESTION_PARSERS[agent]! : null;
       const scrolled = agent !== "claude" && (read.pane.scroll?.offset_from_bottom ?? 0) > 0;
-      const rows = prompt === null && parseSuggestion !== null && !scrolled && (status === "idle" || status === "done")
+      const box = prompt === null && parseSuggestion !== null && !scrolled && (status === "idle" || status === "done")
         ? await paneRead({ paneId, source: "visible", format: "ansi", timeoutMs: SUGGESTION_READ_MS })
           .then((read) => read.text, () => null)
         : null;
-      const box = rows === null || agent === "claude" ? rows
-        : await paneScrollInfo(paneId).then((scroll) => (scroll?.offset_from_bottom ?? 0) > 0 ? null : rows, () => null);
+      const found = box === null || parseSuggestion === null ? null : parseSuggestion(box);
+      const suggestion = found === null || agent === "claude" ? found
+        : await paneScrollInfo(paneId, undefined, SUGGESTION_READ_MS).then((scroll) => (scroll?.offset_from_bottom ?? 0) > 0 ? null : found, () => null);
       const outcomes = await commandOutcomes(paneId, read.pane, read.prompt, read.screen, readSendId, options.codexHome, read.snapshot);
       return jsonResponse({
         prompt,
-        suggestion: box === null || parseSuggestion === null ? null : parseSuggestion(box),
+        suggestion,
         restored: box === null || agent !== "claude" ? null : await restoredOnLiveScreen(paneId, box).catch(() => null),
         ...(outcomes.length ? { outcomes: watching ? outcomes.map(({ preview: _preview, result_text: _resultText, ...outcome }) => outcome) : outcomes } : {}),
       } satisfies PanePromptResponse);

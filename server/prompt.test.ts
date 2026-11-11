@@ -3124,9 +3124,10 @@ describe("gjc's and omp's suggestion on a prompt poll", () => {
   /**
    * a herdr with one pane of `agent`, scrolled `offset` rows into its history, whose screen shows the suggestion.
    * `after`: where the viewport is when the pane is asked about again, after its screen was read ("fail": herdr
-   * does not answer that look); as in the snapshot unless told.
+   * refuses that look; "stall": it never answers it); as in the snapshot unless told. `screen`: what the pane
+   * shows instead.
    */
-  async function suggestingHerdr(agent: string, status: string, offset: number | null, run: (reads: string[]) => Promise<void>, after: number | null | "fail" = offset): Promise<void> {
+  async function suggestingHerdr(agent: string, status: string, offset: number | null, run: (reads: string[]) => Promise<void>, after: number | null | "fail" | "stall" = offset, screen = SCREENS[agent]!): Promise<void> {
     const root = mkdtempSync(join(tmpdir(), "herdr-prompt-suggestion-"));
     const path = join(root, "herdr.sock");
     const reads: string[] = [];
@@ -3148,12 +3149,13 @@ describe("gjc's and omp's suggestion on a prompt poll", () => {
         }
         if (request.method === "pane.get") {
           reads.push("scroll");
+          if (after === "stall") return;
           if (after === "fail") return socket.end(`${JSON.stringify({ id: request.id, error: { code: "herdr_unavailable", message: "no answer" } })}\n`);
           return answer({ pane: { pane_id: "p_1", agent, agent_status: status, scroll: scrollAt(after) } });
         }
         if (request.method !== "pane.read") throw new Error(`unexpected fixture RPC: ${request.method}`);
         reads.push(request.params.format ?? "");
-        const text = request.params.format === "ansi" ? SCREENS[agent]! : SCREENS[agent]!.replace(ANSI_RE, "");
+        const text = request.params.format === "ansi" ? screen : screen.replace(ANSI_RE, "");
         answer({ read: { text } });
       });
     });
@@ -3173,6 +3175,25 @@ describe("gjc's and omp's suggestion on a prompt poll", () => {
     const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
     return (await (await handlePromptRequest(new Request(url), url))!.json());
   }
+
+  test("asks where the viewport is only for a suggestion it would offer: an empty box costs the poll nothing more", async () => {
+    const empty = ["Done.", "", `╭${"─".repeat(40)}╮`, `│ > ${" ".repeat(36)} │`, `╰${"─".repeat(40)}╯`, ""].join("\r\n");
+    await suggestingHerdr("gjc", "done", 0, async (reads) => {
+      expect(await poll()).toEqual({ prompt: null, suggestion: null, restored: null });
+      expect(reads.at(-1)).toBe("ansi");
+      expect(reads).not.toContain("scroll");
+    }, 0, empty);
+  });
+
+  test("answers without a suggestion once the look at the viewport is late, rather than waiting on herdr", async () => {
+    await suggestingHerdr("omp", "done", 0, async (reads) => {
+      const started = Date.now();
+      expect(await poll()).toEqual({ prompt: null, suggestion: null, restored: null });
+      expect(reads.slice(-2)).toEqual(["ansi", "scroll"]);
+      // the look has the suggestion read's own short deadline (SUGGESTION_READ_MS), not herdr's ten seconds
+      expect(Date.now() - started).toBeLessThan(2_500);
+    }, "stall");
+  }, 6_000);
 
   for (const agent of ["gjc", "omp"]) {
     test(`${agent}: the grey words in its empty box, and never a restored send`, async () => {
