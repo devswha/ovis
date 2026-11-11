@@ -58,7 +58,7 @@ const LOGIN_ENV_END = "__OVIS_LOGIN_ENV_END__";
  * (`BASH_FUNC_f%%=() {…`) cannot be read back from. Single quotes read the same in fish.
  */
 const loginEnvScript = (runtime: string): string =>
-  `printf '\\n%s\\n' ${LOGIN_ENV_START}; '${runtime}' -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
+  `printf '\\n%s\\n' ${LOGIN_ENV_START}; '${runtime}' --no-env-file -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
 
 /** The user's login shell as an absolute executable: $SHELL, else the account's; null when neither is one. */
 export function loginShell(env: Record<string, string | undefined> = process.env): string | null {
@@ -121,14 +121,15 @@ export function loginEnvProbe(options: LoginShellOptions, runtime: string = proc
   return loginShellProbe({ maxBytes: 256 * 1024, ...options }, loginEnvScript(runtime), parseLoginEnv, "environment");
 }
 
-interface LoginShellOptions { shell: string; env?: Record<string, string | undefined>; timeoutMs?: number; maxBytes?: number; graceMs?: number }
+/** `cwd`: where the shell starts (this process's folder when unset) */
+interface LoginShellOptions { shell: string; env?: Record<string, string | undefined>; cwd?: string; timeoutMs?: number; maxBytes?: number; graceMs?: number }
 
 function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (output: string) => T | null, what: string): (signal: AbortSignal) => Promise<{ value: T } | { value: null; reason: string }> {
-  const { shell, env = process.env, timeoutMs = 2000, maxBytes = 64 * 1024, graceMs = 500 } = options;
+  const { shell, env = process.env, cwd, timeoutMs = 2000, maxBytes = 64 * 1024, graceMs = 500 } = options;
   type Result = { value: T } | { value: null; reason: string };
   return (signal) => new Promise<Result>((resolve) => {
     if (signal.aborted) { resolve({ value: null, reason: "stopped" }); return; }
-    const child = spawn(shell, ["-l", "-c", script], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn(shell, ["-l", "-c", script], { env, ...(cwd ? { cwd } : {}), stdio: ["ignore", "pipe", "pipe"], detached: true });
     const chunks: Buffer[] = [];
     let bytes = 0;
     /** why the group was killed; set once */

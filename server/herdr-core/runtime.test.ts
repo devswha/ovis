@@ -115,7 +115,7 @@ it.skipIf(platform === "win32")("starts nothing, and runs no other hc, when none
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-none-"));
   cleanup = () => rmSync(dir, { recursive: true, force: true });
   process.env["OVIS_RUNTIME"] = "herdr-core";
-  await expect(startRuntime(join(dir, "state"), async () => null)).rejects.toThrow(/no herdr-core found/);
+  await expect(startRuntime(join(dir, "state"), async () => null, noLogin)).rejects.toThrow(/no herdr-core found/);
   expect(existsSync(join(dir, "state"))).toBe(false);
 });
 

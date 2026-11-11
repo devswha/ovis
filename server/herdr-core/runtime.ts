@@ -155,11 +155,14 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   if (platform !== "linux" && platform !== "darwin" && platform !== "win32") {
     throw new Error(`OVIS_RUNTIME=herdr-core is served on Linux, macOS and Windows, not ${platform}`);
   }
-  // read while hc is looked for: both run a login shell; another machine's terminals are not this PC's user's, and keep that machine's own
-  const reading = hcMachine() === null ? terminalEnv() : Promise.resolve({});
-  // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one
+  // before the first `hc connect`: the plugin's or a service's PATH may not hold hc, or hold another one.
+  // The terminals' environment is read meanwhile (both run a login shell) and awaited either way, so no
+  // read outlives a start that gives up; another machine's terminals are not this PC's user's, and keep that machine's own
   const refused: string[] = [];
-  const core = await find((bin, reason) => { refused.push(`${bin}: ${reason}`); });
+  const [core, terminals] = await Promise.all([
+    find((bin, reason) => { refused.push(`${bin}: ${reason}`); }),
+    hcMachine() === null ? terminalEnv() : Promise.resolve({}),
+  ]);
   if (core === null) {
     // the message is what the server logs as it gives up: each refused hc is named there, once
     const passedOver = refused.length === 0 ? "" : ` Passed over as another account could change them: ${refused.join("; ")}. Make the folder yours alone (\`chmod g-w <folder>\`) or set OVIS_HC_BIN to the hc you trust.`;
@@ -173,7 +176,7 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   const unix = platform !== "win32";
   if (unix && statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
   if (unix) chmodSync(stateDir, 0o700);
-  terminalEnvironment = await reading;
+  terminalEnvironment = terminals;
   const hc = coreConnection();
   // on Windows the pipe is named after the folder itself: a junction or a short (8.3) spelling of it names the same pipe
   const adapter = await startHerdrCoreAdapter(hc, adapterAddress(unix ? stateDir : realpathSync.native(stateDir), platform), (address, turn, labels) => coreSeenMarker().observe(address, turn, labels),

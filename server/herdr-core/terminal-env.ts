@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
 import { loginEnvProbe, loginShell } from "../shell-agent.ts";
 import { SERVER_ENV } from "./connection.ts";
 
@@ -48,18 +50,30 @@ async function readTerminalEnv(options: TerminalEnvOptions): Promise<{ env: Env;
   if (process.platform === "win32") return { env: {}, answered: true };
   if (shell === null) return { env: { ...COLOUR }, answered: true };
   const base = Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => entry[1] !== undefined && SESSION_ENV.test(entry[0])));
-  const login = await loginEnvProbe({ shell, env: { ...base, ...COLOUR }, timeoutMs: options.timeoutMs ?? 3000 })(new AbortController().signal);
+  // in the home folder, never this server's: a folder's .env or bunfig.toml is not the user's login
+  const login = await loginEnvProbe({ shell, env: { ...base, ...COLOUR }, cwd: homeFolder(base["HOME"]), timeoutMs: options.timeoutMs ?? 3000 })(new AbortController().signal);
   if (login.value === null) {
     console.warn(`[herdr-core] terminals start without the login shell's environment: ${login.reason}`);
     return { env: { ...COLOUR }, answered: false };
   }
-  const kept = Object.entries(login.value).filter(([name]) => !NOT_SETTINGS.test(name) && !SESSION_BOUND.test(name) && !SERVER_ENV.test(name));
+  // a value the login shell gave back as it was given (a service's bare PATH, say) is this server's, not the
+  // user's: a pane keeps the core's own there, as before
+  const kept = Object.entries(login.value).filter(([name, value]) => base[name] !== value && !NOT_SETTINGS.test(name) && !SESSION_BOUND.test(name) && !SERVER_ENV.test(name));
   return { env: { ...Object.fromEntries(kept), ...COLOUR, NO_COLOR: login.value["NO_COLOR"] ?? "" }, answered: true };
+}
+
+function homeFolder(home: string | undefined): string {
+  try { if (home && statSync(home).isDirectory()) return home; } catch { /* gone */ }
+  return homedir();
 }
 
 const read = new Map<string, Env>();
 
-/** loginTerminalEnv for `env` (this process's), kept per user and shell once it was read; one that failed is asked again next time. */
+/**
+ * loginTerminalEnv for `env` (this process's), kept per user and shell once it was read, for the
+ * server's life, as a core keeps its own: a token the profile changes reaches new panes after a
+ * restart. One that failed is asked again next time.
+ */
 export async function userTerminalEnv(env: Record<string, string | undefined> = process.env): Promise<Env> {
   const key = `${env["HOME"] ?? ""}\0${env["SHELL"] ?? ""}`;
   const kept = read.get(key);

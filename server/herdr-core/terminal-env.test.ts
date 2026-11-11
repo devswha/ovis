@@ -1,5 +1,5 @@
 import { afterAll, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { coreStartEnv, loginTerminalEnv, userTerminalEnv } from "./terminal-env.ts";
@@ -24,7 +24,7 @@ const fromAgent = (home: string) => ({
 it.skipIf(win)("gives a terminal the login shell's environment in colour, without the agent's or Ovis's own variables", async () => {
   // regression: a core an agent's shell started gave every pane its NO_COLOR, and none of the tokens the profile exports
   const env = await loginTerminalEnv({ env: fromAgent(homeWith("export GH_TOKEN=from-profile\n")), shell: "/bin/sh" });
-  expect(env).toMatchObject({ GH_TOKEN: "from-profile", TERM: "xterm-256color", COLORTERM: "truecolor", NO_COLOR: "", LANG: "C.UTF-8" });
+  expect(env).toMatchObject({ GH_TOKEN: "from-profile", TERM: "xterm-256color", COLORTERM: "truecolor", NO_COLOR: "" });
   for (const name of ["SSH_AUTH_SOCK", "AGENT_SESSION_VAR", "PORT", "OVIS_TOKEN", "HERDR_PANE_ID", "HC_TERMINAL_ID", "PWD", "OLDPWD", "SHLVL", "_"]) expect(env).not.toHaveProperty(name);
 });
 
@@ -54,6 +54,34 @@ it.skipIf(win)("keeps the probe's own agent, tty and session out of the panes", 
   const env = await loginTerminalEnv({ env: fromAgent(home), shell: "/bin/sh" });
   expect(env["GH_TOKEN"]).toBe("from-profile");
   for (const name of ["SSH_AUTH_SOCK", "SSH_AGENT_PID", "GPG_TTY", "DISPLAY"]) expect(env).not.toHaveProperty(name);
+});
+
+/** a login shell that reads no profile: what it prints is what it was given, but for `setup` */
+function standInShell(setup: string): string {
+  const shell = join(mkdtempSync(join(dir, "shell-")), "sh");
+  writeFileSync(shell, `#!/bin/sh\n${setup}\nexec /bin/sh -c "$3"\n`);
+  chmodSync(shell, 0o755);
+  return shell;
+}
+
+it.skipIf(win)("gives no value the login shell left as this server had it, so a pane keeps the core's own", async () => {
+  // regression: a service's bare PATH, given back unchanged, replaced the PATH of an already running core in every new pane
+  const env = fromAgent(homeWith(""));
+  const unchanged = await loginTerminalEnv({ env, shell: standInShell("") });
+  for (const name of ["PATH", "LANG", "HOME", "SHELL"]) expect(unchanged).not.toHaveProperty(name);
+  const changed = await loginTerminalEnv({ env, shell: standInShell("export PATH=/user/tools:$PATH LANG=ko_KR.UTF-8") });
+  expect(changed).toMatchObject({ PATH: "/user/tools:/usr/bin:/bin", LANG: "ko_KR.UTF-8" });
+});
+
+it.skipIf(win)("reads no .env of the folder this server runs in", async () => {
+  // regression: the probe's `bun -e` loaded the server folder's .env into what every pane got
+  const folder = mkdtempSync(join(dir, "checkout-"));
+  writeFileSync(join(folder, ".env"), "FROM_DOT_ENV=leaked\n");
+  const before = process.cwd();
+  process.chdir(folder);
+  try {
+    expect(await loginTerminalEnv({ env: fromAgent(homeWith("")), shell: standInShell("") })).not.toHaveProperty("FROM_DOT_ENV");
+  } finally { process.chdir(before); }
 });
 
 it.skipIf(win)("reads the login shell again after it gave nothing, and keeps what it gave once it did", async () => {
