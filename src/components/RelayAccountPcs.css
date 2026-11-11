@@ -11,6 +11,13 @@
   padding-block-end: var(--space-2);
 }
 
+/* on a phone the state goes under the name (ConnectPhoneDialog.css); with no source tag, the button keeps the row's end */
+@media (max-width: 480px) {
+  .relay-account-pc .connect-found-row > .btn {
+    margin-inline-start: auto;
+  }
+}
+
 .relay-account-digits {
   color: var(--text-strong);
   font-family: var(--font-mono);
