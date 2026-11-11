@@ -75,8 +75,10 @@ const EDITING = new Set(["Enter", "Tab", "Backspace", "Escape", "Delete", "Home"
 export function typeAheadKey(event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey">): TypeAheadItem | "hold" | null {
   const { key, ctrlKey: ctrl, metaKey: meta, altKey: alt, shiftKey: shift } = event;
   if (key === "Backspace") {
-    // Cmd+Backspace erases the line as the terminal's own does (useTerminalMount); Alt and Ctrl as xterm sends them
+    // Cmd+Backspace erases the line and Ctrl+Backspace the word, as the terminal's own do (useTerminalMount); Alt as
+    // xterm sends it
     if (meta) return ctrl || alt ? "hold" : { input: "\x15" };
+    if (ctrl && !alt) return { input: "\x17" };
     return { input: `${alt ? "\x1b" : ""}${ctrl ? "\b" : "\x7f"}` };
   }
   if (ctrl && !meta && !alt && !shift && /^[a-z]$/i.test(key)) {

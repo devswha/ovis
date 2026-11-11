@@ -1663,12 +1663,15 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         }
       });
       // Let xterm finish pending IME text before remapping the key's following data.
-      // Cmd+Backspace uses the terminal's Ctrl+U line-deletion shortcut on macOS.
+      // Cmd+Backspace uses the terminal's Ctrl+U line-deletion shortcut on macOS. Ctrl+Backspace erases the word
+      // before the cursor (Ctrl+W), as desktop terminals do, where xterm sends Ctrl+H, a one-character erase (#3415).
       let commandBackspace = false;
+      let controlBackspace = false;
       const onCommandBackspace = term.onKey(({ key, domEvent: event }) => {
-        commandBackspace = !term.options.disableStdin && isMac && key === "\x7f" && event.type === "keydown"
-          && event.key === "Backspace" && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
-          && !event.isComposing && event.keyCode !== 229;
+        const backspace = !term.options.disableStdin && event.type === "keydown" && event.key === "Backspace"
+          && !event.altKey && !event.shiftKey && !event.isComposing && event.keyCode !== 229;
+        commandBackspace = backspace && isMac && key === "\x7f" && event.metaKey && !event.ctrlKey;
+        controlBackspace = backspace && key === "\b" && event.ctrlKey && !event.metaKey;
       });
       // A paste is text, even when it happens to contain just one letter. xterm
       // handles the DOM paste synchronously after this capture-phase listener.
@@ -1762,7 +1765,9 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         enterAs = null;
         enterKey = null;
         if (commandBackspace && data === "\x7f") data = "\x15";
+        if (controlBackspace && data === "\b") data = "\x17";
         commandBackspace = false;
+        controlBackspace = false;
         const current = paneRef.current;
         // Hiding a cached pane blurs xterm, which may commit its pending IME text.
         // That abandoned input must reach neither the old PTY nor its held draft.
