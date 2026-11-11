@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readdir, rmdir, stat } from "node:fs/promises";
-import { createServer, type Socket } from "node:net";
+import { connect as tcpConnect, createServer, type Socket } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import type { FileSink, Subprocess } from "bun";
@@ -125,6 +125,17 @@ function gitInstallPath(): string | null {
 const UNKNOWN_HOST = /No \S+ host key is known for /;
 /** what a forward of the account's own SSH config would add next to ours */
 const CONFIG_FORWARD = /^(localforward|remoteforward|dynamicforward) /m;
+
+/** Whether something accepts connections on this loopback port yet. */
+function listening(port: number): Promise<boolean> {
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const socket = tcpConnect({ host: "127.0.0.1", port });
+  const done = (open: boolean) => { socket.destroy(); resolve(open); };
+  socket.once("connect", () => done(true));
+  socket.once("error", () => done(false));
+  socket.setTimeout(1000, () => done(false));
+  return promise;
+}
 
 /**
  * What ssh said last, for the setup dialog: some messages ask the user to act while ssh keeps
@@ -435,7 +446,11 @@ export class SshConnection {
     if (CONFIG_FORWARD.test(await this.exec([this.client.ssh, "-G", ...this.options(false), this.target.destination]))) {
       throw new Error(`The SSH config for ${this.target.destination} sets LocalForward, RemoteForward or DynamicForward, which the web UI on Windows cannot switch off. Use a host alias without them.`);
     }
-    const proc = Bun.spawn([...this.direct(undefined, false), "-v", "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`, this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
+    // Windows' own OpenSSH writes none of its -v lines to a pipe (checked on Windows 11 with 9.5p2: a file
+    // or a console gets them, a pipe nothing), so with it the forward is still taken from the first
+    // listener on the port, as before. Git for Windows' ssh, and OpenSSH elsewhere, say it on a pipe.
+    const told = this.client.git === true || !WINDOWS;
+    const proc = Bun.spawn([...this.direct(undefined, false), ...(told ? ["-v"] : []), "-N", "-T", "-o", "ExitOnForwardFailure=yes", "-L", `127.0.0.1:${port}:127.0.0.1:${remotePort}`, this.target.destination], { stdin: "ignore", stdout: "ignore", stderr: "pipe", env: this.askEnv() });
     this.tunnels.add(proc);
     void proc.exited.then(() => {
       this.tunnels.delete(proc);
@@ -443,6 +458,18 @@ export class SshConnection {
       this.broken = true;
       this.onExit?.();
     });
+    if (!told) {
+      const stderr = new Response(proc.stderr).text();
+      // ssh opens the local port only once it authenticated and the forward stands
+      const until = Date.now() + 25_000;
+      while (!(await listening(port))) {
+        if (this.closed) throw new Error("Connection cancelled");
+        if (proc.exitCode !== null || proc.signalCode !== null) throw new Error((await stderr).trim() || "SSH port forward failed");
+        if (Date.now() > until) { proc.kill(); throw new Error("SSH port forward timed out"); }
+        await Bun.sleep(100);
+      }
+      return;
+    }
     // Something listening on the port proves nothing: another process on this PC may have taken it
     // after it was found free, before ssh's own bind, and a request sent there would hand it the
     // bridge's token. ssh enters its session only once its forwards are bound, and with
