@@ -115,7 +115,7 @@ describe("deleting the account from the hosted shell", () => {
     expect(accountView()?.kind).toBe("signed-out");
   });
 
-  it("after a delete whose answer was lost, the next press finds the account gone: signed out, and its key forgotten", async () => {
+  it("after a delete whose answer was lost, the next press finds the sign-in gone: signed out, saying so, and the key kept", async () => {
     let deletes = 0;
     const { fake, accountStore } = await signedInShell(Date.now, "github", async () => {
       // the service erased the account, and the answer never came back
@@ -126,9 +126,10 @@ describe("deleting the account from the hosted shell", () => {
     expect(fake.deleted(ACCOUNT)).toBe(true);
     expect(accountView()).toMatchObject({ kind: "signed-in", deleteError: "The account could not be deleted. Try again." });
     await (last().onDeleteAccount?.() as Promise<void> | undefined);
-    expect(accountView()?.kind).toBe("signed-out");
+    expect(accountView()).toMatchObject({ kind: "signed-out", error: "Your sign-in ended. Sign in again to see every PC of your account." });
     expect(await accountStore.get("session")).toBeUndefined();
-    expect((await accountStore.key()).public_spki).not.toBe(key);
+    // a 401 is no proof the account went: the key stays rather than risk a live account's
+    expect((await accountStore.key()).public_spki).toBe(key);
   });
 
   it("keeps the key of an account that still exists: a delete that never left the device, then a sign-out in another tab", async () => {

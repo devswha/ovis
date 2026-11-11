@@ -135,19 +135,6 @@ export class SignedOutError extends Error {
   }
 }
 
-/** A delete of the account that went out and got no answer (the connection dropped): the service may have erased it. */
-export class DeleteUnansweredError extends Error {
-  constructor() { super("The account service did not answer the delete"); this.name = "DeleteUnansweredError"; }
-}
-
-/**
- * The service refused the delete's own sign-in (401, and no refresh took): most likely the account is already gone.
- * A sign-out found on this device, before any request, is a plain SignedOutError.
- */
-export class DeleteRefusedSignInError extends SignedOutError {
-  constructor() { super(); this.name = "DeleteRefusedSignInError"; }
-}
-
 /** The name an admission is shown and signed under when its own has nothing left once made plain. */
 export const UNNAMED_DEVICE = "Device";
 
@@ -434,18 +421,7 @@ export class AccountService {
    * sign-in made meanwhile is never the one deleted.
    */
   async deleteAccount(): Promise<void> {
-    // what became of the DELETE itself, apart from the token reads and refreshes around it
-    let refused = false;
-    const fetch = this.fetch;
-    const watched = new AccountService({ ...this.options, fetch: async (input, init) => {
-      if (init?.method !== "DELETE") return fetch(input, init);
-      let response: Response;
-      try { response = await fetch(input, init); } catch { throw new DeleteUnansweredError(); }
-      if (response.status === 401) refused = true;
-      return response;
-    } });
-    try { await watched.call("DELETE", "/v1/account"); }
-    catch (error) { throw error instanceof SignedOutError && refused ? new DeleteRefusedSignInError() : error; }
+    await this.call("DELETE", "/v1/account");
   }
 
   /** Leaves a signed record in the mailbox of each listed PC of the account (at most 32 at a time). */
