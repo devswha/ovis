@@ -2175,7 +2175,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `Minimize2`), then Close pane (`X`) in the corner, where a window closes: the order of a
   Windows or GNOME title bar, Maximize just left of Close. Close is the menu's Close pane, with its confirmation (the workspace's last
   pane, an agent `working` or `blocked`), and is drawn only where the menu offers it (not on a
-  locked agent's pane). `--space-2` more than the header's gap stands between the two, so a press
+  locked agent's pane); a watching device sees it disabled. A pane narrower than its header gives up
+  its title, then its ellipsis, never the corner's Close. `--space-2` more than the header's gap stands between the two, so a press
   meant for Zoom does not land on Close; each is a `--control-h` square, `--touch-target` under a
   coarse pointer. herdr's zoomed pane keeps that header, Unzoom and Close included.
   Shift+F10 in the terminal goes to the terminal program, not the app menu. A lone pane, and a

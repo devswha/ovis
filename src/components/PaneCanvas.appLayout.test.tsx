@@ -199,15 +199,17 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
 
   const closeButtons = () => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "icon-button pane-frame-close");
   const headButtons = (id: string) => frameOf(id).findAll((node) => node.type === "button").map((button) => button.props.className as string);
+  let pressedFocus = 0;
   async function pressClose(drawn: SessionSnapshot, id: string): Promise<unknown[]> {
     await draw(TUI, drawn);
+    pressedFocus = 0;
     const bodies: unknown[] = [];
     const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
       if (String(input).endsWith("/pane/close") && typeof init?.body === "string") bodies.push(JSON.parse(init.body));
       return Response.json({});
     }, { preconnect: globalThis.fetch.preconnect }));
     try {
-      await act(async () => { closeButtons()[drawn.panes.findIndex((item) => item.pane_id === id)]!.props.onClick(); });
+      await act(async () => { closeButtons()[drawn.panes.findIndex((item) => item.pane_id === id)]!.props.onClick({ currentTarget: { focus: () => { pressedFocus++; } } }); });
     } finally {
       fetch.mockRestore();
     }
@@ -234,8 +236,15 @@ describe("the pane canvas on a PC the Herdr app lays out", () => {
       const busy: SessionSnapshot = { ...snapshot, panes: [snapshot.panes[0]!, { ...snapshot.panes[1]!, agent_status }] };
       expect(await pressClose(busy, "p2")).toEqual([]);
       expect(asking()).toHaveLength(1);
+      // the pressed Close holds the focus before the confirmation opens, so Cancel hands it back there (Safari focuses no clicked button)
+      expect(pressedFocus).toBe(1);
       await act(async () => renderer?.unmount());
     }
+  });
+
+  it("shows a watching device the title's Close, which it cannot use", async () => {
+    await draw(TUI, snapshot, true);
+    expect(closeButtons().map((button) => button.props.disabled)).toEqual([true, true]);
   });
 
   it("offers no Close for a locked pinned agent, nor Close tab for the tab it is in (#2432)", async () => {

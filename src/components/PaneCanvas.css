@@ -27,6 +27,8 @@
   flex: none;
   display: flex;
   align-items: center;
+  /* a pane narrower than its buttons overflows them at the start, past the title: Close stays in the corner */
+  justify-content: flex-end;
   gap: var(--space-1);
   height: var(--control-h);
   padding-inline: var(--space-2);
