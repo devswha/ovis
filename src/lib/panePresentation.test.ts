@@ -69,6 +69,26 @@ it("looks past a compaction's summary and its notices to the answer before them 
   const older = { ...answered, turns: [{ ...answered.turns[0]!, ts: "2026-10-18T00:00:00Z", end_ts: "2026-10-18T00:00:05Z", parts: [{ kind: "text" as const, text: "Older", phase: "final_answer" as const }] }] };
   expect(other.accept("compact-other", 40, older)).toBe(true);
   expect(other.accept("compact-other", 41, compacted)).toBe(false);
+  // a second /compact in a row is the next finish's, proved by its own compaction
+  const twice = new ConversationFinishEvidence();
+  const again = { ...compacted, turns: [...compacted.turns,
+    { role: "user", ts: "2026-10-19T04:00:00Z", parts: [{ kind: "compact", text: "Summary of the summary" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
+  expect(twice.accept("compact-twice", 40, answered)).toBe(true);
+  expect(twice.accept("compact-twice", 41, compacted)).toBe(true);
+  expect(twice.accept("compact-twice", 42, again)).toBe(true);
+  expect(twice.accept("compact-twice", 43, structuredClone(again))).toBe(false);
+  // the finish was seen in the terminal view, which stores no answer: the compaction still proves the next one
+  const local = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => key === "compact-terminal" ? JSON.stringify({ id: 40, at: 1 }) : null,
+  } });
+  try {
+    expect(new ConversationFinishEvidence().accept("compact-terminal", 41, compacted)).toBe(true);
+    expect(new ConversationFinishEvidence().accept("compact-terminal", 42, compacted)).toBe(false);
+  } finally {
+    if (local) Object.defineProperty(globalThis, "localStorage", local);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
   const prompted = { ...compacted, turns: [...compacted.turns,
     { role: "user", ts: "2026-10-19T03:00:00Z", parts: [{ kind: "text", text: "Next request" }] }] } satisfies Parameters<typeof conversationFinishPresented>[0];
   expect(conversationFinishPresented(prompted)).toBe(false);
