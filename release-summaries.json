@@ -12,7 +12,7 @@
         "A split pane has a Close button in its top-right corner.",
         "The desktop app tells you as soon as an update is ready.",
         "The PC's CPU, memory and disk show in the status bar by default.",
-        "Passwords for git, ssh-add, doas and more get the masked field.",
+        "On a phone, the header is calmer, with one Chat/Terminal button.",
         "An HTML page in the file viewer runs scripts only when you ask."
       ],
       "fixed": [
@@ -20,7 +20,7 @@
         "Korean and other input-method typing keeps up in the terminal again.",
         "A chat message is no longer typed into one of Codex's own screens.",
         "Going to the end of a long chat no longer jumps back where you were.",
-        "Windows PCs reconnect over SSH after the state folder move."
+        "A Claude subagent's report shows in its task card in Chat again."
       ]
     },
     "ko": {
@@ -35,7 +35,7 @@
         "분할된 패널의 오른쪽 위에 닫기 버튼이 생겼어요.",
         "데스크톱 앱이 업데이트가 준비되는 대로 알려 줘요.",
         "PC의 CPU, 메모리, 디스크 사용량이 기본으로 상태 표시줄에 보여요.",
-        "git, ssh-add, doas 등의 비밀번호도 가려진 입력란으로 받아요.",
+        "휴대폰 헤더가 단순해지고, 채팅/터미널은 버튼 하나로 전환해요.",
         "파일 뷰어의 HTML 페이지는 원할 때만 스크립트를 실행해요."
       ],
       "fixed": [
@@ -43,7 +43,7 @@
         "한국어처럼 입력기로 빠르게 입력해도 터미널이 다시 잘 따라와요.",
         "채팅 메시지가 Codex 자체 화면에 잘못 입력되지 않아요.",
         "긴 채팅의 끝으로 가도 읽던 곳으로 되돌아가지 않아요.",
-        "Windows PC가 상태 폴더 이동 후에도 SSH로 다시 연결돼요."
+        "Claude 서브에이전트의 보고가 다시 채팅의 작업 카드에 보여요."
       ]
     },
     "ja": {
@@ -58,7 +58,7 @@
         "分割したペインの右上に閉じるボタンが付きました。",
         "デスクトップアプリは、更新の準備ができるとすぐに知らせます。",
         "PC の CPU、メモリ、ディスクが既定でステータスバーに出ます。",
-        "git、ssh-add、doas などのパスワードも伏せた入力欄で受け取ります。",
+        "スマホのヘッダーがすっきりし、チャット/ターミナルは 1 つのボタンで切り替えます。",
         "ファイルビューアの HTML ページは、頼んだときだけスクリプトを実行します。"
       ],
       "fixed": [
@@ -66,7 +66,7 @@
         "日本語などを入力メソッドで速く打っても、ターミナルが再び追いつきます。",
         "チャットのメッセージが Codex 自身の画面に入力されなくなりました。",
         "長いチャットの末尾に移っても、読んでいた位置に戻されなくなりました。",
-        "状態フォルダーの移行後も、Windows PC に SSH で再接続できます。"
+        "Claude のサブエージェントの報告が、再びチャットのタスクカードに出ます。"
       ]
     },
     "zh": {
@@ -81,7 +81,7 @@
         "分屏面板的右上角新增了关闭按钮。",
         "桌面应用会在更新准备好时立即通知你。",
         "电脑的 CPU、内存和磁盘默认显示在状态栏中。",
-        "git、ssh-add、doas 等的密码也改用遮蔽输入框。",
+        "手机标题栏更简洁，聊天/终端改为一个按钮切换。",
         "文件查看器中的 HTML 页面只在你要求时才运行脚本。"
       ],
       "fixed": [
@@ -89,7 +89,7 @@
         "用输入法快速输入中文等文字时，终端又能跟上了。",
         "聊天消息不再被输入到 Codex 自己的界面中。",
         "在长聊天中跳到末尾时，不再跳回原来阅读的位置。",
-        "状态文件夹迁移后，Windows 电脑可再次通过 SSH 连接。"
+        "Claude 子代理的报告再次显示在聊天的任务卡片中。"
       ]
     }
   },
