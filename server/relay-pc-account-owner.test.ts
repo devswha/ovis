@@ -65,22 +65,23 @@ function headersFor(kind: Kind): Record<string, string> {
     default: return origin;
   }
 }
-const BODIES = { check: { pcs: [] }, start: { pc: {} } } as const;
+const BODIES = { check: { pcs: [] }, start: { pc: {} }, pair: { ticket: "t" } } as const;
+const ROUTES = ["check", "start", "pair"] as const;
 const ask = async (kind: Kind, route: keyof typeof BODIES) => {
   const response = await handleRequest(new Request(`http://127.0.0.1/api/machines/relay/account/${route}`, { method: "POST", headers: headersFor(kind), body: JSON.stringify(BODIES[route]) }), contextFor(kind));
   if (!response) throw new Error("no answer");
   return response.status;
 };
 
-it("lets the owner's direct windows ask whether PCs of the account would pair, and start a pairing", async () => {
-  for (const kind of OWNERS) for (const route of ["check", "start"] as const) {
+it("lets the owner's direct windows ask whether PCs of the account would pair, start a pairing and compare its digits", async () => {
+  for (const kind of OWNERS) for (const route of ROUTES) {
     reached.length = 0;
     expect([kind, route, await ask(kind, route), reached]).toEqual([kind, route, 200, [route]]);
   }
 });
 
 it("never lets an open LAN window, a Portal visitor, a relay device or a watching device reach it", async () => {
-  for (const kind of OTHERS) for (const route of ["check", "start"] as const) {
+  for (const kind of OTHERS) for (const route of ROUTES) {
     reached.length = 0;
     expect([kind, route, await ask(kind, route), reached]).toEqual([kind, route, 403, []]);
   }

@@ -349,8 +349,9 @@ export class RelaySession {
         this.options.services.devices.assertRelayPairing(this.path);
         const asked = this.options.services.relay.approvals.ask(sas.label,
           pairDigits(this.sasBinding, sas.publicKey, phoneNonce, sas.pcNonce), sas.expiresAt,
-          // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it
-          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly });
+          // a PC vouched for is asked as "pair this PC": it joins this PC alone, and the approver's app signs nothing for it;
+          // marked vouched, so that app shows who is asking and checks the admission, as for an account join
+          { intent: this.intent === "account" ? "account" : "pc", key: sas.publicKey, deviceId: accountDeviceId(this.options.serverId, sas.publicKey), membersOnly: sas.membersOnly, localOnly: sas.localOnly, vouched: this.intent === "vouched" });
         if (!asked) { this.close("auth_failed"); return; }
         this.state = "pair-wait";
         sas.withdraw = asked.withdraw;

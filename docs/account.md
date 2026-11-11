@@ -153,7 +153,8 @@ One rule for every way in: a pairing code, comparing digits, and joining through
 `GET /api/relay/pairings` lists the waiting requests: with their `digits` on the PC itself, and with
 `choices` (three sets of digits, no `digits`) for an account member through the relay, which also
 hears of every change as `remote-pairings` on its event stream; each entry also carries `key`, the
-new device's P-256 key from its `PAIR_REQUEST`, bound by the commitment and the digits. That member
+new device's P-256 key from its `PAIR_REQUEST`, bound by the commitment and the digits, and
+`vouched: true` for another PC of the account ([Adding a PC of your account](#adding-a-pc-of-your-account)). That member
 answers with `POST /api/relay/pairing` `{ "id", "decision", "digits" }`; `digits` is required to
 approve, and a wrong pick answers 409 `wrong_digits` and ends the request. An approval answers
 `{ "ok": true, "device_id" }`: the id the new device's row takes once its person confirms too,
@@ -452,13 +453,15 @@ does the relay work, and the page only vouches for it:
    `{ "machine" }` once B admitted A and A saved it as `POST /api/machines/relay` does, or
    `{ "error": { "code", "message" } }`. Closing the request (Cancel, closing the sheet) ends the
    comparison on B and keeps nothing: the key is written only on B's `AUTH_OK`. A ticket is good for
-   one comparison, for 10 minutes.
+   one comparison, for 10 minutes. A cancel that lands in the moment between B's `AUTH_OK` and A
+   saving the PC leaves B a row for a key A dropped: nobody can sign in with it, B lists it as
+   "Ovis on <host>" (announced as every admission is), and **Revoke** on B removes it.
 
 These routes are A's owner's, from a window direct to A that drives it: a device on the relay, a
 Portal visitor and an open LAN window get 403 `owner_only`, a watching device `read_only`, so none
-of them can have A pair itself with a PC they name. A confirms its side of the comparison by itself:
-it reached B by B's own key, checked against B's id, so only B could answer; B's side is what the
-person checks.
+of them can have A pair itself with a PC they name. No person checks A's side of the comparison:
+A dials B by B's own key, checked against B's id, so a relay cannot stand in for B. B's side is the
+one a member checks, by picking the digits A's page shows.
 
 On B, `pair-intent-pc-vouched` is taken only under the gates of [joining through the
 account](#who-may-admit-a-device), whether or not B's pairing window is open: B belongs to an
@@ -466,8 +469,11 @@ account, its mailbox holds an admission at most 10 minutes old naming exactly th
 `PAIR_REQUEST`, and B has a drive account member to approve; it shares the 5 joins a minute.
 Anything else is refused before any prompt and not counted. The comparison is shown only to the
 account's members through the relay (`remote-pairings`, digits picked out of three), never to B's own
-windows, as **pair this PC** (`intent: "pc"`) naming A's server ("Ovis on <host>"), so the
-approver's app signs nothing for it: no `add`, no introduction. B's row is `added_by` the approver,
+windows, as **pair this PC** (`intent: "pc"`) naming A's server ("Ovis on <host>"), marked
+`vouched: true`, so the approver's app signs nothing for it (no `add`, no introduction) but still
+shows who is asking (Who is asking, from `GET /v1/admissions`) and approves only when the account
+service lists the admission for that key at B, as for an account join; signed out, it approves none.
+An approver from before the mark reads a plain request for B alone and signs nothing either. B's row is `added_by` the approver,
 with no `account`. Its failures (declined, a wrong pick, no answer in time) count on a path of their
 own. An older B selects no such intent: A says to update Ovis there and sends nothing more.
 

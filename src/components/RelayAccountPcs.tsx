@@ -70,7 +70,8 @@ export function RelayAccountPcs({ machines, onConnectMachine, source }: { machin
       if (live) setStates(new Map(checked.map((pc) => [pc.server_id, pc.state])));
     }).catch((error: unknown) => {
       console.warn("Ovis: the account's PCs could not be read", error instanceof Error ? error.name : error);
-      if (live) setPcs((current) => current ?? []);
+      // no list rather than rows that say Checking… for good (a window this PC will not answer, owner_only)
+      if (live) setPcs(null);
     });
     return () => { live = false; };
   }, [own]);

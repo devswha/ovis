@@ -652,6 +652,7 @@ test("a drive account member through the relay admits a device by picking its di
   const remote = (await remoteList(link)).body.pairings?.[0];
   expect(remote).toMatchObject({ id: request.id, label: "New phone", intent: "account" });
   expect(remote).not.toHaveProperty("digits");
+  expect(remote).not.toHaveProperty("vouched");
   expect(new Set(remote?.choices)).toEqual(new Set([digits, ...remote!.choices.filter((choice) => choice !== digits)]));
   expect(new Set(remote?.choices).size).toBe(3);
 
@@ -952,7 +953,7 @@ test("a PC vouched for waits for a member as 'pair this PC', and an approval mak
   const { p, digits } = await vouched(f, (key) => admit(key));
   const request = await prompt;
   // the approver's app is asked to pair this PC only, so it signs no add and introduces nothing
-  expect(request).toMatchObject({ label: "Mac app", intent: "pc", key: p.publicKey });
+  expect(request).toMatchObject({ label: "Mac app", intent: "pc", vouched: true, key: p.publicKey });
   expect(f.app.context.services.relay.approvals.list()).toEqual([]);
   expect(f.app.context.services.relay.approvals.decide(request.id, true)).toBe(false);
   expect((await post(link, "/api/relay/pairing", { id: request.id, decision: "approve", digits })).status).toBe(200);

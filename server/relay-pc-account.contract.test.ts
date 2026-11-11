@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "bun:test";
+import { afterEach, expect, it, spyOn } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +15,8 @@ import { readDeviceRegistry } from "./devices.ts";
 import { createServer } from "./index.ts";
 import { RelayService } from "./relay/service.ts";
 import { RelaySession } from "./relay/session.ts";
+import { rotateRelayIdentity } from "./relay/identity.ts";
+import type { RelayPcKey } from "./relay-pc.ts";
 import { bounded, deferred, relayConnection } from "./relay/test-helpers.ts";
 
 // Add a connection → Ovis relay → Add, between two real servers on a local relay (docs/account.md, "Adding a PC of
@@ -33,7 +35,7 @@ function stateDir(): string {
 const ACCOUNT = "acct_1";
 
 /** PC B in ACCOUNT (one drive member, its relay on), PC A, the local relay between them, and the account service. */
-async function accountPcs(options: { clock?: () => number } = {}) {
+async function accountPcs(options: { clock?: () => number; aIdentity?: boolean } = {}) {
   const relay = startBunRelay({ port: 0, limiters: {
     perAddress: { async limit() { return { success: true }; } },
     global: { async limit() { return { success: true }; } },
@@ -72,6 +74,7 @@ async function accountPcs(options: { clock?: () => number } = {}) {
   await service.fetch(new Request(`https://account.test/v1/pcs/${offer.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
     body: JSON.stringify({ label: "Desk", public_key: bytesToHex(importPublicKey(offer.server_public_key)), relay: offer.relay }) }));
   const aState = stateDir();
+  const aRelayIdentity = options.aIdentity ? rotateRelayIdentity(aState) : undefined;
   const a = createServer({ port: 0, hostname: "127.0.0.1", stateDir: aState, token: "", tailscaleOwner: null, sidecar: false, registerBridge: false, relayPcSocket: local });
   cleanup.push(() => a.stop());
   const aBase = `http://127.0.0.1:${a.port}`;
@@ -94,7 +97,7 @@ async function accountPcs(options: { clock?: () => number } = {}) {
     method: "POST", headers: { authorization: `Bearer ${token}` }, body: JSON.stringify({ server_id: serverId, label: "Ovis on A", key }),
   }));
   const pc = { server_id: offer.server_id, server_public_key: offer.server_public_key, relay: offer.relay, name: "Desk" };
-  return { a, aBase, aState, b, bState, member, service, pc, approver, admit };
+  return { a, aBase, aState, aRelayIdentity, b, bState, member, service, pc, approver, admit };
 }
 
 const machineHeaders = (base: string) => ({ origin: base, "x-herdr-machine": "1", "x-herdr-update": "1", "content-type": "application/json" });
@@ -148,7 +151,7 @@ it("adds a PC of the account once a member there picked the digits: a plain row 
   expect(digits).toMatch(/^\d{6}$/);
   const [request] = await prompted;
   // asked of the account's members as "pair this PC", with the digits among three, never on B's own screen
-  expect(request).toMatchObject({ intent: "pc", key: started.body.key, label: started.body.label });
+  expect(request).toMatchObject({ intent: "pc", vouched: true, key: started.body.key, label: started.body.label });
   expect(request!.choices).toContain(digits!);
   expect(b.context.services.relay.approvals.list()).toEqual([]);
   expect(await member0.decide(request!.id, "approve", digits)).toBe(200);
@@ -238,9 +241,8 @@ it("cancelling while it waits ends the comparison on B and keeps nothing on A", 
   expect((await lines(await post(aBase, "pair", { ticket: started.body.ticket }))()).error?.code).toBe("account_pc_gone");
 }, 60_000);
 
-it("reports an older PC as outdated and sends it nothing to pair", async () => {
-  const { aBase, aState, b, pc } = await accountPcs();
-  // an older B: its HELLO knows no such intent, so it selects pair-sas alone
+/** Every PC's sessions from here on read HELLO as an older Ovis does, knowing no pair-intent-pc-vouched; the frames they were sent. */
+function olderB(): number[] {
   const admit = Object.getOwnPropertyDescriptor(RelaySession.prototype, "admit")!.value as (this: RelaySession, frame: SessionFrame) => Promise<void>;
   const asked: number[] = [];
   Object.defineProperty(RelaySession.prototype, "admit", { configurable: true, writable: true, value(this: RelaySession, frame: SessionFrame) {
@@ -249,6 +251,12 @@ it("reports an older PC as outdated and sends it nothing to pair", async () => {
     return admit.call(this, { ...frame, payload: { ...frame.payload, features: frame.payload.features.filter((feature) => feature !== PAIR_INTENT_VOUCHED) } });
   } });
   cleanup.push(() => { Object.defineProperty(RelaySession.prototype, "admit", { configurable: true, writable: true, value: admit }); });
+  return asked;
+}
+
+it("reports an older PC as outdated and sends it nothing to pair", async () => {
+  const { aBase, aState, b, pc } = await accountPcs();
+  const asked = olderB();
   expect(await (await post(aBase, "check", { pcs: [pc] })).json()).toEqual({ pcs: [{ server_id: pc.server_id, state: "outdated" }] });
   const started = await start(aBase, pc);
   expect([started.status, started.body.error?.code]).toEqual([409, "account_pc_outdated"]);
@@ -262,4 +270,47 @@ it("refuses a PC whose ID is not the one its key gives, or whose relay is not a 
   const { aBase, pc } = await accountPcs();
   expect((await start(aBase, { ...pc, server_id: "0".repeat(32) })).body.error?.code).toBe("account_pc_invalid");
   expect((await post(aBase, "check", { pcs: [{ ...pc, relay: "https://relay.example" }] })).status).toBe(400);
+}, 60_000);
+
+it("sends nothing to pair to a PC that runs an older Ovis by the time it is asked, even after it took the start", async () => {
+  const { aBase, aState, b, pc, admit } = await accountPcs();
+  const started = await start(aBase, pc);
+  expect(started.status).toBe(200);
+  await admit(started.body.key);
+  const asked = olderB();
+  expect((await lines(await post(aBase, "pair", { ticket: started.body.ticket }))()).error?.code).toBe("account_pc_outdated");
+  expect(asked).toContain(FrameType.HELLO);
+  expect(asked).not.toContain(FrameType.PAIR_REQUEST);
+  expect(b.context.services.relay.approvals.list()).toEqual([]);
+  expect(b.context.services.relay.approvals.remoteList()).toEqual([]);
+  expect(relayKeys(aState)).toEqual([]);
+}, 60_000);
+
+it("takes a ticket for ten minutes only", async () => {
+  const { aBase, b, pc, admit } = await accountPcs();
+  const started = await start(aBase, pc);
+  await admit(started.body.key);
+  const now = performance.now.bind(performance);
+  const later = spyOn(performance, "now").mockImplementation(() => now() + 11 * 60_000);
+  let answer: Awaited<ReturnType<ReturnType<typeof lines>>>;
+  try { answer = await lines(await post(aBase, "pair", { ticket: started.body.ticket }))(); }
+  finally { later.mockRestore(); }
+  expect(answer.error?.code).toBe("account_pc_gone");
+  expect(b.context.services.relay.approvals.remoteList()).toEqual([]);
+}, 60_000);
+
+it("writes the key it made for a PC only while that PC's comparison runs, or once that PC is added", async () => {
+  const { a, aBase, aState, pc } = await accountPcs();
+  const started = await start(aBase, pc);
+  const held = (a.context.services.core.machines as unknown as { accountPcs: Map<string, { key: RelayPcKey }> }).accountPcs.get(started.body.ticket)!;
+  // admitted, as far as the key can tell, by no comparison of this PC's: it must not reach the disk
+  await expect(held.key.update(pc.server_id, (current) => ({ ...(current ?? { server_id: pc.server_id, server_public_key: pc.server_public_key, relay: pc.relay, label: "x", public_spki: started.body.key, private_key: undefined as unknown as CryptoKey, device_id: null }), device_id: "0011223344556677" }))).rejects.toThrow("removed");
+  expect(relayKeys(aState)).toEqual([]);
+}, 60_000);
+
+it("refuses to pair this PC with itself", async () => {
+  const { aBase, aRelayIdentity, pc } = await accountPcs({ aIdentity: true });
+  const self = { ...pc, server_id: aRelayIdentity!.server_id, server_public_key: aRelayIdentity!.public_key, name: "This PC" };
+  const started = await start(aBase, self);
+  expect([started.status, started.body.error?.code]).toEqual([409, "account_pc_self"]);
 }, 60_000);

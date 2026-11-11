@@ -26,11 +26,13 @@ describe("the account's PCs in the relay tab", () => {
   let pairLines: ReadableStreamDefaultController<Uint8Array> | undefined;
   let admitted: [string, string, string][];
   let source: AccountPcsSource;
+  let refuseCheck: boolean;
 
   beforeEach(() => {
     requests = [];
     admitted = [];
     pairLines = undefined;
+    refuseCheck = false;
     source = { list: async () => [OWN, DESK, LAB, OLD, AWAY], admit: async (...args) => { admitted.push(args); } };
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
@@ -47,6 +49,7 @@ describe("the account's PCs in the relay tab", () => {
       const path = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7318").pathname;
       const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
       requests.push({ path, body, signal: init?.signal ?? null });
+      if (path === "/api/machines/relay/account/check" && refuseCheck) return Response.json({ error: { code: "owner_only", message: "no" } }, { status: 403 });
       if (path === "/api/machines/relay/account/check") return Response.json({ pcs: [
         { server_id: DESK.server_id, state: "ready" }, { server_id: LAB.server_id, state: "ready" },
         { server_id: OLD.server_id, state: "outdated" }, { server_id: AWAY.server_id, state: "offline" },
@@ -125,6 +128,12 @@ describe("the account's PCs in the relay tab", () => {
     await act(async () => { renderer!.unmount(); });
     renderer = undefined;
     expect(signal.aborted).toBe(true);
+  });
+
+  it("shows no list, rather than rows checking for good, when this PC will not say whether they would pair", async () => {
+    refuseCheck = true;
+    await mount();
+    expect(renderer!.toJSON()).toBeNull();
   });
 
   it("shows nothing when this page is not signed in", async () => {
