@@ -313,7 +313,7 @@ it("resolves a foreground Codex launched from continues before herdr sets pane.a
 });
 
 for (const remote of [["--remote", "ws://fixture.invalid:4500"], ["--remote=ws://fixture.invalid:4500"]]) {
-  it(`takes no local resume for an unlabelled pane whose Codex resumed the thread with ${remote[0]}`, async () => {
+  it(`takes no local conversation for an unlabelled pane whose Codex resumed the thread with ${remote[0]}`, async () => {
     // Given an unlabelled pane resuming a thread on an app server elsewhere, whose id the local store also holds
     unlabelled = true;
     foreground = [{ pid: 2147483640, argv: ["/usr/bin/codex", "resume", thread, ...remote] }];
@@ -321,9 +321,9 @@ for (const remote of [["--remote", "ws://fixture.invalid:4500"], ["--remote=ws:/
     // Then the command line alone does not make the local rollout the conversation shown, which is the server's
     screen = "OpenAI Codex (v0.164.0)\n\n› ";
     expect(await codexTranscriptPath(root, root, home, [pane])).toBeNull();
-    // and a screen showing the local rollout's long answer still does
+    // nor does an answer the screen shows and the local rollout holds too: the server's conversation may go on differently
     screen = answer;
-    expect(await codexTranscriptPath(root, root, home, [pane])).toBe(path);
+    expect(await codexTranscriptPath(root, root, home, [pane])).toBeNull();
   });
 }
 

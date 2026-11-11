@@ -3763,6 +3763,9 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // no Codex process of the pane proven now: what its screen still shows (an earlier occupant's, or
   // a Codex gone since) ties it to no conversation, and the terminal stands in
   if (codexProcesses.length === 0) return null;
+  // an unlabelled pane on an app server elsewhere (--remote) shows that server's conversation: nothing this store
+  // holds is proof of it, by the id its command line resumed or by an answer both happen to hold
+  if (agent.unlabelled && codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;
   // `home` was chosen while no Codex process of the pane was seen (paneCodexHomePlaced): one seen now
   // must be known to write there (its environment says so), or what this store holds is not proof
   const first = codexProcesses[0];
@@ -3918,10 +3921,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // a nested pane's peers may carry no label either, so freshReportedThread cannot rule them out
   if (resumed === null && reported !== null && !agent.nestedTerminal && !agent.unlabelled
     && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
-  // an unlabelled pane resuming on an app server elsewhere (--remote) shows that server's conversation, which this
-  // store may hold under the same id without being it: its command line alone is no proof there
-  if (resumed !== null) return resumedNewer.length === 0 && !(agent.unlabelled
-    && codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) ? resumedPath : null;
+  if (resumed !== null) return resumedNewer.length === 0 ? resumedPath : null;
   // Other nested terminals, and the peers of an unlabelled pane, may have no agent labels either, so the weaker
   // exchange/peer heuristics cannot establish ownership. Only a substantial screen match (or its binding) can.
   if (agent.nestedTerminal || agent.unlabelled) return null;
