@@ -469,6 +469,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // puts no held receipt back when it ends as not typed. The follow-ups the bridge still holds for the pane get
       // no receipt later either (a connection that closes after its pane ended): endedPanes.
       ompUnknown.delete(paneId);
+      forgetOmpStart(paneId);
       endedPanes.delete(paneId);
       endedPanes.set(paneId, Date.now());
       if (endedPanes.size > PI_RESUME_LIMIT) endedPanes.delete(endedPanes.keys().next().value!);
@@ -489,6 +490,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const fault = { code: "pane_moved", message: "The pane moved to another workspace; review this message and send it again" };
     holdPendingPane(from, fault);
     pending.move(from, to, fault);
+    // what was known of the old ID's starting omp goes with it: its messages are held now, and sent by hand
+    forgetOmpStart(from);
+    ompUnknown.delete(from);
     const receipts = firstReceipts.get(from);
     firstReceipts.delete(from);
     if (receipts) firstReceipts.set(to, [...firstReceipts.get(to) ?? [], ...receipts].slice(-FIRST_MESSAGE_RECEIPTS));
@@ -1013,6 +1017,33 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   const ompWaits = new Set<string>();
   /** when herdr first did not say whether each pane's omp is starting (awaitsOmp) */
   const ompUnknown = new Map<string, number>();
+  /**
+   * The start of an omp that the pane's queue waits for: how much a person had typed into the pane when the queue
+   * first waited, and when that start is given up on. Kept from the first wait until omp takes input with nothing
+   * typed meanwhile, or until the start is given up on: longer than any one wait, since a message can join the queue
+   * after a wait has ended.
+   */
+  const ompStarts = new Map<string, { typed: number; until: number }>();
+  /** the lines sent from the terminal's input line to each pane while an omp start is remembered for it: typed by the submit handler here, not by the input lane */
+  const linesTyped = new Map<string, number>();
+  /** how much a person typed into the pane: through the input lane, and from the terminal's input line */
+  const typedCount = (paneId: string): number => typedInto(paneId) + (linesTyped.get(paneId) ?? 0);
+  /**
+   * Whether a person typed into the pane's terminal while its queue waited for the omp starting there. omp has no
+   * check of its input box as Claude and Hermes have, and before it takes input even a line's own Enter leaves the
+   * line in the box: pasted behind it, a message would be sent with those words as one. So from then until that
+   * start is over, no message goes to the pane unless a person sends it: what waits is held, and so is what comes.
+   */
+  function typedWhileOmpStarted(paneId: string): boolean {
+    const start = ompStarts.get(paneId);
+    if (!start) return false;
+    if (Date.now() >= start.until) { forgetOmpStart(paneId); return false; }
+    return typedCount(paneId) !== start.typed;
+  }
+  function forgetOmpStart(paneId: string): void {
+    ompStarts.delete(paneId);
+    linesTyped.delete(paneId);
+  }
   /** the messages on their way whose Discard came meanwhile: a send that waits for omp ends at its next look (dispatchPendingText) */
   const withdrawn = new WeakSet<PendingItem>();
   /**
@@ -1041,7 +1072,15 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       waitForOmp(paneId, null);
       return true;
     }
-    if (until === null) return false;
+    if (until === null) {
+      // omp takes input (or is no omp any more). Typed into meanwhile, also after the last wait had ended: what is
+      // queued is held and nothing is sent; with nothing typed, the start is over
+      if (typedWhileOmpStarted(paneId)) { pending.holdQueued(paneId, TYPED_WHILE_WAITING); return true; }
+      forgetOmpStart(paneId);
+      return false;
+    }
+    // typed into before this wait (a new pane's, since its first message was queued): held at once
+    if (typedWhileOmpStarted(paneId)) { pending.holdQueued(paneId, TYPED_WHILE_WAITING); return true; }
     waitForOmp(paneId, until);
     return true;
   }
@@ -1053,25 +1092,30 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * pane's waits to go by itself (it went by hand, is held, or omp is at work), and it outlives a look herdr does not
    * answer: it is no send that could fail, and nothing else would drain the pane at the report.
    *
-   * The pane's lane is free meanwhile, so a person can type into omp's input box, and omp has no check of that box
-   * as Claude and Hermes have: pasted after what was typed, the message and those words would be sent as one. So
-   * once anything was typed into the pane, the messages that wait are held for the person to send, with that reason.
+   * The pane's lane is free meanwhile, so a person can type into omp's input box: once anything was typed into the
+   * pane, the messages that wait are held for the person to send, with that reason (typedWhileOmpStarted).
    */
   function waitForOmp(paneId: string, until: number | null): void {
     if (ompWaits.has(paneId)) return;
     ompWaits.add(paneId);
-    const typedBefore = typedInto(paneId);
+    if (until !== null) {
+      // the start is remembered from the pane's first message, when it has one (queueFirstMessage); its end is known now
+      const start = ompStarts.get(paneId);
+      if (start) start.until = until; else ompStarts.set(paneId, { typed: typedCount(paneId), until });
+      // the pane shows omp at rest: the rows say what they wait for
+      pending.waitingFor(paneId, "omp_starting");
+    }
     const typedMeanwhile = (): boolean => {
-      if (typedInto(paneId) === typedBefore) return false;
+      if (!typedWhileOmpStarted(paneId)) return false;
       pending.holdQueued(paneId, TYPED_WHILE_WAITING);
       return true;
     };
-    // the pane shows omp at rest: the rows say what they wait for
-    if (until !== null) pending.waitingFor(paneId, "omp_starting");
     void (async () => {
       for (;;) {
         await Bun.sleep(options.ompReportPollMs ?? OMP_REPORT_POLL_MS);
-        if (pending.next(paneId) === null || typedMeanwhile() || until === null) return;
+        // nothing waits to go by itself any more: herdr is not asked again about this run of unanswered looks either
+        if (pending.next(paneId) === null) { ompUnknown.delete(paneId); return; }
+        if (typedMeanwhile() || until === null) return;
         if (Date.now() >= until) {
           console.warn(`[omp] ${paneId}: herdr's omp integration reported no session while omp started; sending anyway`);
           return;
@@ -1121,6 +1165,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const item = pending.enqueue(FIRST_MESSAGE_OWNER, paneId, nextFirstRequestId--, text, null,
         { agent: kind, terminalId: pane.terminal_id, ...sessions, ...launchedProcess });
       launchBound.add(item);
+      // an omp is waited for before this goes (awaitsOmp): what is typed into its pane from now on counts, also
+      // before the pane first comes to rest. When its start is given up on is read then; until then, half a minute
+      if (kind === "omp" && !ompStarts.has(paneId)) ompStarts.set(paneId, { typed: typedCount(paneId), until: Date.now() + (options.ompStartupMs ?? OMP_STARTUP_MS) });
       // this read learns as an event's would: an agent it sees in front under its kind is named before it can leave
       learn(item, identity, shellPid, processes, held);
       // no page to type it, or one that closed meanwhile: held before any drain could see it queued
@@ -1453,7 +1500,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
               // already waiting its turn here, this one takes its place behind it instead.
               // A held message is never typed by arriving after the turn: it waits for Send now.
               // Queued, it never clears a stopped send Claude put back in its box, as the drain does not (#2546).
-              if (message.delivery === "queue" && !pending.waiting(message.pane_id)) {
+              // not behind what was typed into the terminal while omp started: it is held below, with that reason
+              if (message.delivery === "queue" && !pending.waiting(message.pane_id) && !typedWhileOmpStarted(message.pane_id)) {
                 // before anything is typed: the message's turn is written after this on this PC's clock (src/lib/sentWaiting.ts)
                 const sendingAt = new Date().toISOString();
                 const typed = await dispatchPendingText(client, message.pane_id, text, lease!, context.identity, false, arrivedAt, undefined, false, message.id, agentOnly, true);
@@ -1467,6 +1515,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             if (!waited) pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
             // hold: kept for the owner's Send now, never sent by the turn's end
             const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold", agentOnly);
+            // read again after the awaits above: the typing may have come, and ended the wait, meanwhile
+            if (typedWhileOmpStarted(message.pane_id)) pending.holdQueued(message.pane_id, TYPED_WHILE_WAITING);
             return { ok: true, pending: item.message };
           }).catch((error): SubmitReply => ({ ok: false, ...pendingFault(error) })));
           const answer = await reply;
@@ -1495,15 +1545,22 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           if (attachments.get(message.pane_id)?.held) throw new HerdrError("attach_held", ATTACH_HELD_MESSAGE);
           // A chat message sent at once while the pane's queue waits for its omp to take input (a new workspace's first
           // message) would wait for the same report with the pane's lane held, and be typed ahead of what waits there.
-          // It takes its place behind it instead, as a queue request that finds a message waiting does. The terminal's
-          // input line is the keyboard and goes as typed; a saved copy's Send now is its sender's own choice of order
+          // It takes its place behind it instead, as a queue request that finds a message waiting does. And one sent
+          // after the terminal was typed into during that start would be pasted behind those words: it is accepted
+          // and held, as what waited was. The terminal's input line is the keyboard and goes as typed; a saved copy's
+          // Send now is its sender's own choice
           if (message.typed !== true && message.resend_id === undefined && message.clear_draft === undefined && message.send_anyway !== true
-            && ompWaits.has(message.pane_id) && pending.waiting(message.pane_id)) {
+            && ((ompWaits.has(message.pane_id) && pending.waiting(message.pane_id)) || typedWhileOmpStarted(message.pane_id))) {
             const lease = pendingLease(client, message.pane_id);
             const context = await pendingContext(client, message.pane_id, lease);
             behind = pending.enqueue(client, message.pane_id, message.id, pendingText(message.text), lease, context.identity, false, agentOnly).message;
+            // read after the await: the typing may have come, and ended the wait, while the pane was read
+            if (typedWhileOmpStarted(message.pane_id)) pending.holdQueued(message.pane_id, TYPED_WHILE_WAITING);
             return;
           }
+          // the terminal's input line is typed as the keyboard types, with no wait for omp: counted as a person's
+          // typing before anything of it can be written, so that what waits for a starting omp is held
+          if (message.typed === true && ompStarts.has(message.pane_id)) linesTyped.set(message.pane_id, (linesTyped.get(message.pane_id) ?? 0) + 1);
           // A terminal-line send is not an Ovis Chat receipt. For Chat, capture Pi independently of
           // status so an idle/done report during automatic compaction cannot make the bubble vanish.
           const current = message.typed === true ? null : await currentIdentity(message.pane_id);

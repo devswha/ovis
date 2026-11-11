@@ -1217,7 +1217,8 @@ export type ClientMessage =
    * when it arrives after the turn ended: it never goes on its own, only when the owner steers it.
    * Omission keeps the legacy immediate submission. Queued messages never resume after lease loss.
    * An immediate chat submit is accepted as a queued row (`pending` in its result) instead of typed while the
-   * pane's queue waits for its omp to take input: it goes behind what waits there.
+   * pane's queue waits for its omp to take input: it goes behind what waits there. Once the terminal was typed
+   * into during that start, it (and a queue request) is accepted as a held row instead, as what waited there is.
    * Queue request ids increase monotonically per connection; recent duplicates replay their
    * receipt, and retired ids are rejected rather than executed after history eviction.
    * `clear_draft`: an immediate chat message only, sent again over the `draft` its input_draft

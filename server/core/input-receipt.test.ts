@@ -65,6 +65,12 @@ it("counts what a person types into a pane, by any way, and not the terminal's o
   expect(live.typedInto("w:p1")).toBe(4);
   // each pane has its own count
   expect(live.typedInto("w:p2")).toBe(0);
+  // and a count is kept for the panes typed into last: one typed into again is not the first to go
+  const typeInto = (pane: string) => live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "a" });
+  for (let pane = 0; pane < 255; pane++) typeInto(`other:p${pane}`);
+  typeInto("w:p1");
+  typeInto("other:p255");
+  expect([live.typedInto("w:p1"), live.typedInto("other:p0")]).toEqual([5, 0]);
 });
 
 it("answers queued typing with an id only once herdr typed it, and a connection that ended before its turn gets nothing typed", async () => {

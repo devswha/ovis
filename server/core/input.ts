@@ -50,8 +50,11 @@ export function createInputLane({ TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, sight
    */
   const typedInto = new Map<string, number>();
   const personTyped = (paneId: string): void => {
-    typedInto.set(paneId, (typedInto.get(paneId) ?? 0) + 1);
-    // the latest panes typed into are kept: one out of them reads as never typed into, which no wait still on needs
+    const count = (typedInto.get(paneId) ?? 0) + 1;
+    // kept for the panes typed into last (set again, a key moves to the end): a wait is half a minute long, and
+    // its pane is not the 257th typed into since
+    typedInto.delete(paneId);
+    typedInto.set(paneId, count);
     if (typedInto.size > 256) typedInto.delete(typedInto.keys().next().value!);
   };
   /** panes whose last pty keystroke ended in an ESC, which herdr holds ~150ms: a key waits TYPED_SETTLE_MS there */
