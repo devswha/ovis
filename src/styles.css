@@ -2399,7 +2399,7 @@ button {
 }
 
 /* a phone's lens button (components/LensToggle.tsx): its radius would cut a finger's target at its corners
-   (Chromium hit-tests the rounded box), so an empty, square layer over the same box keeps them, as the
+   (Chromium hit-tests the rounded box), so an empty, square layer over its border box keeps them, as the
    switch's options do */
 .lens-toggle {
   position: relative;
@@ -2408,7 +2408,7 @@ button {
 .lens-toggle::before {
   content: "";
   position: absolute;
-  inset: 0;
+  inset: calc(-1 * var(--hairline));
 }
 
 .header-text-button.is-icon {
