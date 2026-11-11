@@ -102,7 +102,8 @@ export function webLikeHref(target: string): string | null {
  * word is a scheme's (`tel:123`), not a file's. The path is URL-encoded, as a `file:///` URI's is
  * (`/a%20b/%EC%95%B0.md`): it is decoded once, and kept as written when it is not valid encoding. Never a
  * network share (`//host/share/a.md`, `\\\\host\\share\\a.md`, `~///host/share/a.md`), as the Codex citation and the image readers
- * refuse one.
+ * refuse one, and as the server does for every path it is asked for (server/windows-share.ts). WSL's own files
+ * (`//wsl$/…`, `//wsl.localhost/…`) are the PC's and stay links.
  */
 export function markdownFileTarget(href: string): string | null {
   const value = href.trim();
@@ -121,7 +122,8 @@ export function markdownFileTarget(href: string): string | null {
   // too: the server reads what follows it against the home folder (file-view.ts resolveFilePath), where two
   // separators in front are a share again
   const share = /^(?:~\/)?[\\/]{2}/;
-  if (share.test(decoded) || share.test(path)) return null;
+  // but for WSL's own files, which Windows serves under these two names from the PC itself
+  if ((share.test(decoded) || share.test(path)) && !/^[\\/]{2}(?:wsl\$|wsl\.localhost)[\\/]/i.test(decoded)) return null;
   return decoded + target.slice(path.length);
 }
 

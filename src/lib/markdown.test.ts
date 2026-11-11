@@ -173,6 +173,14 @@ describe("inline markdown", () => {
     expect(markdownFileTarget("/srv/a.md")).toBe("/srv/a.md");
     expect(markdownFileTarget("~/notes//a.md")).toBe("~/notes//a.md");
     expect(markdownFileTarget("~//notes/a.md")).toBe("~//notes/a.md");
+    // WSL's files are this PC's own, under either of the names Windows gives them, and open as before
+    for (const [target, path] of [
+      ["//wsl$/Ubuntu/home/u/a.md", "//wsl$/Ubuntu/home/u/a.md"], ["//wsl.localhost/Ubuntu/home/u/a.md:12", "//wsl.localhost/Ubuntu/home/u/a.md:12"],
+      ["%5C%5Cwsl$%5CUbuntu%5Ca.md", "\\\\wsl$\\Ubuntu\\a.md"], ["//WSL.LOCALHOST/Ubuntu/a.md", "//WSL.LOCALHOST/Ubuntu/a.md"],
+    ] as const) expect(markdownFileTarget(target), target).toBe(path);
+    expect(markdownFileTarget("\\\\wsl$\\Ubuntu\\a.md")).toBe("\\\\wsl$\\Ubuntu\\a.md");
+    // no other host by a name like them
+    for (const target of ["//wsl$evil/share/a.md", "//wsl.localhost.example.com/share/a.md", "//wsl$@80/share/a.md", "//wsl$", "%5C%5Cwsl$evil%5Ca.md"]) expect(markdownFileTarget(target), target).toBeNull();
   });
 
   it("leaves the markdown after an unfinished Codex citation as markdown, and reads a brace inside a quoted path", () => {
