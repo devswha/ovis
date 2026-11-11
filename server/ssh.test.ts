@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,6 +59,8 @@ if [ -n "$tunnel" ]; then
   rport=$(printf '%s' "$forward" | cut -d: -f4)
   # a ProxyJump's ssh gets -v too, shares stderr and enters its own session in the jump host first
   [ -n "$verbose" ] && [ -n "$FAKE_JUMP" ] && printf 'debug1: Entering interactive session.\r\n' >&2
+  # a ProxyCommand child that outlives ssh and keeps its stderr open
+  [ -n "$FAKE_HOLD_STDERR" ] && { sleep 600 & echo $! > "$FAKE_DIR/holder.pid"; }
   [ -n "$FAKE_AUTH_GATE" ] && read -r _ < "$FAKE_AUTH_GATE"
   # what OpenSSH 10.2 says: the first lines come before its bind, the last once its forwards stand;
   # with LogVerbose each debug line carries its source location after the level
@@ -95,7 +97,7 @@ for (const line of readFileSync(process.argv.at(-1), "utf8").trim().split("\n"))
 }' "$file"
 `;
 
-const FAKE_KEYS = ["FAKE_DIR", "FAKE_BUN", "FAKE_PASSPHRASE", "FAKE_PROMPT", "FAKE_HOSTKEY_LINE", "FAKE_INTRUDER", "FAKE_CONFIG_FORWARD", "FAKE_TUNNEL_ENDS_AT", "FAKE_FLOOD", "FAKE_AUTH_GATE", "FAKE_JUMP", "FAKE_LOG_VERBOSE"];
+const FAKE_KEYS = ["FAKE_DIR", "FAKE_BUN", "FAKE_PASSPHRASE", "FAKE_PROMPT", "FAKE_HOSTKEY_LINE", "FAKE_INTRUDER", "FAKE_CONFIG_FORWARD", "FAKE_TUNNEL_ENDS_AT", "FAKE_FLOOD", "FAKE_AUTH_GATE", "FAKE_JUMP", "FAKE_LOG_VERBOSE", "FAKE_HOLD_STDERR"];
 
 describe.skipIf(process.platform === "win32")("SSH without connection sharing", () => {
   const cleanups: (() => void)[] = [];
@@ -266,6 +268,28 @@ describe.skipIf(process.platform === "win32")("SSH without connection sharing", 
 
     // freePort() closes the port it found before ssh binds it, and another process on this PC may
     // take it in between: the bridge's token must never reach that process.
+    it("ends a forward still waiting for ssh at once when the connection closes, though a child holds ssh's stderr", async () => {
+      const { root, ssh, ask } = fixture({ FAKE_HOLD_STDERR: "1" });
+      await ssh.start(ask("unused"));
+      const gate = join(root, "auth");
+      await Bun.$`mkfifo ${gate}`;
+      // ssh never gets past authentication: only the close can end the wait
+      process.env["FAKE_AUTH_GATE"] = gate;
+      const free = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+      const port = free.port;
+      free.stop(true);
+      cleanups.push(() => { try { process.kill(Number(readFileSync(join(root, "holder.pid"), "utf8"))); } catch {} });
+      // close once the tunnel's ssh runs and its stderr has a second holder, not while forward() still reads the config
+      const holding = Promise.withResolvers<void>();
+      const watcher = watch(root, (_event, name) => { if (name === "holder.pid") holding.resolve(); });
+      cleanups.push(() => watcher.close());
+      const forwarding = ssh.forward(port, 7317);
+      forwarding.catch(() => {});
+      await holding.promise;
+      ssh.close();
+      await expect(forwarding).rejects.toThrow("Connection cancelled");
+    }, 5_000);
+
     // a ProxyJump's ssh enters its own session before this ssh has even authenticated
     for (const [how, extra] of [["", {}], [", behind a ProxyJump", { FAKE_JUMP: "1" }], [", with LogVerbose", { FAKE_LOG_VERBOSE: "1" }]] as const) it(`never hands the bridge token to a process that took the port before ssh bound it${how}`, async () => {
       const { root, ssh, ask } = fixture({ ...extra });

@@ -177,6 +177,8 @@ export class SshConnection {
   private children = new Set<Subprocess>();
   /** direct mode's forwards; one ending is the connection ending */
   private tunnels = new Set<Subprocess>();
+  /** forwards still waiting for ssh's word: close() ends each at once, not when ssh's stderr closes */
+  private pending = new Set<(error: Error) => void>();
   private broken = false;
   private closed = false;
   private started = false;
@@ -470,14 +472,15 @@ export class SshConnection {
       ready.reject(new Error(said.trim() || "SSH port forward failed"));
     })().catch((error: unknown) => ready.reject(error));
     let timedOut = false;
-    // a ProxyCommand child that outlives the kill can hold stderr open: the timeout does not wait for it
+    // a ProxyCommand child that outlives the kill can hold stderr open: neither the timeout nor a close waits for it
     const timer = setTimeout(() => { timedOut = true; proc.kill(); ready.reject(new Error("SSH port forward timed out")); }, 25_000);
+    this.pending.add(ready.reject);
     try { await ready.promise; }
     catch (error) {
       if (this.closed) throw new Error("Connection cancelled");
       if (timedOut) throw new Error("SSH port forward timed out");
       throw error;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); this.pending.delete(ready.reject); }
   }
   private async exec(args: string[], input?: Uint8Array | StreamInput, timeout = 30_000, maxOutput?: number): Promise<string> {
     const stream = input !== undefined && !(input instanceof Uint8Array) ? input : undefined;
@@ -526,6 +529,7 @@ export class SshConnection {
     this.master?.kill();
     for (const child of this.children) child.kill();
     for (const tunnel of this.tunnels) tunnel.kill();
+    for (const reject of this.pending) reject(new Error("Connection cancelled"));
     for (const socket of this.askSockets) socket.destroy();
     this.askServer.close();
     this.typed.clear(); this.answers.clear();
