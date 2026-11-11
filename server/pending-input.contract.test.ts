@@ -812,23 +812,42 @@ describe("connection-owned pending input", () => {
     expect(f.bytes()).toBe(`${paste(expected)}\r`);
   });
 
-  it("sends a queued message to an omp still starting only once omp reports its session, and types what the terminal sends meanwhile at once", async () => {
+  it("sends a queued message to an omp still starting only once omp reports its session, and says meanwhile what it waits for", async () => {
     // omp draws its input box, and herdr shows it at rest, before it takes an Enter: typed then, the message stays in
     // the box and never runs while its row says sent
     const f = await setup("omp-starting", "omp", "", {}, false, undefined, true);
     const message = await f.queue(1477, "queued words");
     await f.state("idle");
-    // the queue waits for omp with nothing of the pane held: keys typed in the terminal go at once, ahead of the
-    // message, and the message is still not there a second round of the terminal later
-    f.socket.send({ type: "input", pane_id: f.pane, text: "x" });
-    await f.waitBytes("x");
-    f.socket.send({ type: "input", pane_id: f.pane, text: "y" });
-    await f.waitBytes("xy");
-    expect(f.bytes()).toBe("xy");
+    // the row is still queued at a pane at rest, and says why
+    await f.socket.event((frame) => frame.messages.some((row) => row.id === message.id && row.state === "queued" && row.waiting === "omp_starting"));
+    expect(f.bytes()).toBe("");
     await f.ompReports();
     await f.removed(message.id);
     await f.waitBytes("\r");
-    expect(f.bytes()).toBe(`xy${paste("queued words")}\r`);
+    expect(f.bytes()).toBe(`${paste("queued words")}\r`);
+  }, 30_000);
+
+  it("holds a message that waits for a starting omp once the terminal is typed into, and types those keys at once", async () => {
+    const f = await setup("omp-starting-typed", "omp", "", {}, false, undefined, true);
+    const message = await f.queue(1478, "queued words");
+    await f.state("idle");
+    await f.socket.event((frame) => frame.messages.some((row) => row.id === message.id && row.waiting === "omp_starting"));
+    // the queue waits with nothing of the pane held: a key typed in the terminal goes at once
+    f.socket.send({ type: "input", pane_id: f.pane, text: "x" });
+    await f.waitBytes("x");
+    // and the message is not pasted behind it, where omp's Enter would send both as one: it is held for its sender
+    const held = await f.socket.event((frame) => frame.messages.some((row) => row.id === message.id && row.state === "held"));
+    expect(held.messages.find((row) => row.id === message.id)).toMatchObject({ state: "held", error: { code: "typed_while_waiting" } });
+    await f.ompReports();
+    // omp takes input now, and the message still waits: a key typed after the report comes right behind the first
+    f.socket.send({ type: "input", pane_id: f.pane, text: "z" });
+    await f.waitBytes("z");
+    expect(f.bytes()).toBe("xz");
+    // sent by hand, it goes
+    f.socket.send({ type: "pending-action", id: 9, pane_id: f.pane, pending_id: message.id, action: "steer" });
+    expect(await f.socket.action(9)).toMatchObject({ ok: true });
+    await f.waitBytes("\r");
+    expect(f.bytes()).toBe(`xz${paste("queued words")}\r`);
   }, 30_000);
 
   it("holds a queued message when a hookless agent process is replaced in the same terminal (regression #540)", async () => {

@@ -12,6 +12,12 @@ describe("pending row status", () => {
     expect(pendingStatus({ state: "held", serverOwned: true, error: { code: "pending_lease_lost", message: "lost" } }, false)).toBe("Held message — review and send");
   });
 
+  it("says what a message waits for besides its turn, queued or on its way", () => {
+    // its pane shows omp at rest, and a row on its way would say Sending for up to half a minute
+    expect(pendingStatus({ state: "queued", serverOwned: true, waiting: "omp_starting" }, false)).toBe("Waiting for omp to start…");
+    expect(pendingStatus({ state: "sending", serverOwned: true, waiting: "omp_starting" }, true)).toBe("Waiting for omp to start…");
+  });
+
   it("keeps the other states' words", () => {
     expect(pendingStatus({ state: "queued", serverOwned: true }, false)).toBe("Next turn");
     expect(pendingStatus({ state: "queued", serverOwned: true }, true)).toBe("Sending…");

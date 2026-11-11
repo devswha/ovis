@@ -17,7 +17,7 @@
  * pane after, so another session or process of the same kind gets none.
  * First messages live in memory: a restart of the bridge loses those not sent yet.
  */
-import { closeBackslash, closeMention, type createSubmitText, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
+import { closeBackslash, closeMention, type createSubmitText, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, submitFraming, untilOmpReported } from "./composer.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
 import type { AttachmentView, TerminalSighting } from "./terminals.ts";
@@ -128,6 +128,8 @@ const agentRuns = (identity: PendingIdentity, recognized: boolean): boolean => i
 const TARGET_CHANGED = { code: "pending_target_changed", message: "The pane's terminal or agent session changed; review the message before sending it again" };
 /** a first message whose launched agent came up and left before it went: held for an explicit Send now or Discard */
 const LAUNCH_GONE = { code: "first_message_launch_ended", message: "The agent started for this message has ended; review the message before sending it" };
+/** why a message that waited for a starting omp is held: its paste would follow what was typed into omp's input box meanwhile, and its Enter send both */
+const TYPED_WHILE_WAITING = { code: "typed_while_waiting", message: "Something was typed in this terminal while omp was starting. Check its input line there, then send this message" };
 /** receipts of first messages kept per pane, so a connection that attaches later drops a stale copy */
 const FIRST_MESSAGE_RECEIPTS = 8;
 
@@ -136,13 +138,15 @@ const FIRST_MESSAGE_RECEIPTS = 8;
  * connections and the status hub, which are built after this (they take its store), so they are
  * called through: only a frame or a turn calls them, after `createServer` has returned.
  */
-export function createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, submitText, authorizeSocket, clientSnapshot, omo, queueHeld = () => false, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS }: {
+export function createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, typedInto = () => 0, submitText, authorizeSocket, clientSnapshot, omo, queueHeld = () => false, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS }: {
   options: { pendingStartTimeoutMs?: number; piReceiptLimit?: number; submitDeadlineMs?: number; submitDelayMs?: number; ompReportPollMs?: number; ompStartupMs?: number; openCodeStateDir?: string };
   clients: Set<Client>;
   attachments: ReadonlyMap<string, AttachmentView>;
   sight: (client: Client, paneId: string) => TerminalSighting;
   serialize: <T>(paneId: string, task: () => T | Promise<T>) => Promise<T>;
   lastTyped: ReadonlyMap<string, number>;
+  /** how many times a person's own input went to the pane (input.ts): a message that waits there asks whether any did meanwhile */
+  typedInto?: (paneId: string) => number;
   submitText: ReturnType<typeof createSubmitText>;
   authorizeSocket: (client: Client) => void;
   clientSnapshot: () => Promise<SessionSnapshot>;
@@ -464,6 +468,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // What was sent, or may have been, stays: it only refuses a resend. A Send now on its way keeps its claim, and
       // puts no held receipt back when it ends as not typed. The follow-ups the bridge still holds for the pane get
       // no receipt later either (a connection that closes after its pane ended): endedPanes.
+      ompUnknown.delete(paneId);
       endedPanes.delete(paneId);
       endedPanes.set(paneId, Date.now());
       if (endedPanes.size > PI_RESUME_LIMIT) endedPanes.delete(endedPanes.keys().next().value!);
@@ -693,7 +698,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
 
   async function dispatchPendingText(owner: Client, paneId: string, text: string, lease: PendingLease, identity: PendingIdentity,
     automatic: boolean, arrivedAt: number, committing: (working: boolean, restarting?: boolean) => void = () => {}, interruptWorkingCodex = false,
-    requestId = 0, agentOnly = false, queued = false): Promise<SubmitReply> {
+    requestId = 0, agentOnly = false, queued = false,
+    /** of the row this send is of: whether its Discard came while it was on its way, and its note while it waits */
+    row: { withdrawn?: () => boolean; waiting?: (waits: boolean) => void } = {}): Promise<SubmitReply> {
     let wrote = false;
     // a message for an agent alone pasted and then refused its Enter (#511): its text may sit in the input line, so it is
     // held for the user and never pasted again automatically
@@ -724,15 +731,19 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           throw new HerdrError("pending_wait", "omp is still starting; this message waits until it takes input");
         }
       } else if (context.identity.agent === "omp") {
-        const waited = await untilOmpReported(paneId, context.pane, () => {
-          authorizePending(owner, paneId, lease);
-          if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
-        }, options);
-        if (waited !== context.pane) {
-          waitedForOmp = true;
-          mark = pending.mark(paneId);
-          context = await pendingContext(owner, paneId, lease, identity);
-        }
+        try {
+          const waited = await untilOmpReported(paneId, context.pane, () => {
+            authorizePending(owner, paneId, lease);
+            // its Discard came while it waited: the pane's lane is this send's until it ends, so the Discard itself
+            // runs after it, and would otherwise answer for a message typed meanwhile
+            if (row.withdrawn?.()) throw new HerdrError("pending_discarded", "This message was discarded while it waited for omp; nothing was typed");
+            if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
+          }, options, { strict: true, waiting: () => { waitedForOmp = true; row.waiting?.(true); } });
+          if (waited !== context.pane) {
+            mark = pending.mark(paneId);
+            context = await pendingContext(owner, paneId, lease, identity);
+          }
+        } finally { if (waitedForOmp) row.waiting?.(false); }
       }
       // a message for an agent alone (#511) is typed only as the immediate path would: never into no agent, and never
       // past Codex's collapsed question queue, as Codex may exit before the write
@@ -926,7 +937,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       if (by === null) throw new HerdrError("input_not_ready", "No connection has the pane attached to type the message");
       const lease = item.lease ?? pendingLease(by, item.paneId);
       reply = await dispatchPendingText(by, item.paneId, item.message.text, lease, item.identity,
-        automatic, arrivedAt, (working, restarting) => pending.committing(item, working, restarting), interruptWorkingCodex, item.message.request_id, item.message.agent_only === true);
+        automatic, arrivedAt, (working, restarting) => pending.committing(item, working, restarting), interruptWorkingCodex, item.message.request_id, item.message.agent_only === true, false,
+        { withdrawn: () => withdrawn.has(item), waiting: (waits) => pending.sendingWaitsFor(item, waits ? "omp_starting" : undefined) });
     } catch (error) {
       reply = { ok: false, ...pendingFault(error) };
     }
@@ -999,6 +1011,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   }
   /** the panes whose queue waits for an omp that is still starting (awaitsOmp) */
   const ompWaits = new Set<string>();
+  /** when herdr first did not say whether each pane's omp is starting (awaitsOmp) */
+  const ompUnknown = new Map<string, number>();
+  /** the messages on their way whose Discard came meanwhile: a send that waits for omp ends at its next look (dispatchPendingText) */
+  const withdrawn = new WeakSet<PendingItem>();
   /**
    * Whether the pane's queue waits for its omp to take input, for a message the queue would send by itself. That
    * wait is no part of a send (waitForOmp): the message stays queued, with nothing claimed and the pane's lane free,
@@ -1009,10 +1025,22 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const paneId = item.paneId;
     if (ompWaits.has(paneId)) return true;
     if (item.identity.agent !== "omp") return false;
-    const pane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
-    // what herdr names there now is no omp: the send's checks hold the message for it
-    if (!pane || pendingIdentity(pane).agent !== "omp") return false;
-    const until = await ompStartingUntil(paneId, pane, options);
+    let until: number | null;
+    try {
+      const pane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
+      // what herdr names there now is no omp: the send's checks hold the message for it
+      until = !pane || pendingIdentity(pane).agent !== "omp" ? null : await ompStartingUntil(paneId, pane, options);
+      ompUnknown.delete(paneId);
+    } catch {
+      // herdr did not say whether omp is starting: not known is not ready, and left at that the message would stay
+      // queued with nothing to drain it. It is asked again a moment later, for as long as an omp could still be
+      // starting; after that the send's own look decides, and a failure there holds the message with its reason
+      const since = ompUnknown.get(paneId) ?? Date.now();
+      if (Date.now() - since >= (options.ompStartupMs ?? OMP_STARTUP_MS)) { ompUnknown.delete(paneId); return false; }
+      ompUnknown.set(paneId, since);
+      waitForOmp(paneId, null);
+      return true;
+    }
     if (until === null) return false;
     waitForOmp(paneId, until);
     return true;
@@ -1020,17 +1048,30 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   /**
    * Looks at the pane until its omp has reported its session (composer.ts untilOmpReported says why that is when omp
    * takes input), is no omp any more, or `until`, when its start is given up on; then the pane's queue is drained
-   * again, and that drain's own checks say what becomes of the message. One wait per pane. It ends early once no
-   * message of the pane's waits to go by itself (it went by hand, is held, or omp is at work), and it outlives a look
-   * herdr does not answer: it is no send that could fail, and nothing else would drain the pane at the report.
+   * again, and that drain's own checks say what becomes of the message. `until` null: herdr did not say whether omp
+   * is starting, and the drain asks again after one pause. One wait per pane. It ends early once no message of the
+   * pane's waits to go by itself (it went by hand, is held, or omp is at work), and it outlives a look herdr does not
+   * answer: it is no send that could fail, and nothing else would drain the pane at the report.
+   *
+   * The pane's lane is free meanwhile, so a person can type into omp's input box, and omp has no check of that box
+   * as Claude and Hermes have: pasted after what was typed, the message and those words would be sent as one. So
+   * once anything was typed into the pane, the messages that wait are held for the person to send, with that reason.
    */
-  function waitForOmp(paneId: string, until: number): void {
+  function waitForOmp(paneId: string, until: number | null): void {
     if (ompWaits.has(paneId)) return;
     ompWaits.add(paneId);
+    const typedBefore = typedInto(paneId);
+    const typedMeanwhile = (): boolean => {
+      if (typedInto(paneId) === typedBefore) return false;
+      pending.holdQueued(paneId, TYPED_WHILE_WAITING);
+      return true;
+    };
+    // the pane shows omp at rest: the rows say what they wait for
+    if (until !== null) pending.waitingFor(paneId, "omp_starting");
     void (async () => {
       for (;;) {
         await Bun.sleep(options.ompReportPollMs ?? OMP_REPORT_POLL_MS);
-        if (pending.next(paneId) === null) return;
+        if (pending.next(paneId) === null || typedMeanwhile() || until === null) return;
         if (Date.now() >= until) {
           console.warn(`[omp] ${paneId}: herdr's omp integration reported no session while omp started; sending anyway`);
           return;
@@ -1044,6 +1085,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       }
     })().finally(() => {
       ompWaits.delete(paneId);
+      // typed during the last look too
+      typedMeanwhile();
+      pending.waitingFor(paneId, undefined);
       // a drain running now read the pane while this wait was on: it runs once more
       if (pendingDrains.has(paneId)) drainAgain.add(paneId); else drainPending(paneId);
     });
@@ -1444,9 +1488,22 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
         // the PC's clock before this request types anything, for the browser's waiting copy (src/lib/sentWaiting.ts)
         let sendingAt: string | undefined;
+        /** this message as queued behind what waits for omp, rather than typed */
+        let behind: PendingMessage | undefined;
         const dispatch = async () => {
           // held while this waited its turn (the attach was refused after the check above)
           if (attachments.get(message.pane_id)?.held) throw new HerdrError("attach_held", ATTACH_HELD_MESSAGE);
+          // A chat message sent at once while the pane's queue waits for its omp to take input (a new workspace's first
+          // message) would wait for the same report with the pane's lane held, and be typed ahead of what waits there.
+          // It takes its place behind it instead, as a queue request that finds a message waiting does. The terminal's
+          // input line is the keyboard and goes as typed; a saved copy's Send now is its sender's own choice of order
+          if (message.typed !== true && message.resend_id === undefined && message.clear_draft === undefined && message.send_anyway !== true
+            && ompWaits.has(message.pane_id) && pending.waiting(message.pane_id)) {
+            const lease = pendingLease(client, message.pane_id);
+            const context = await pendingContext(client, message.pane_id, lease);
+            behind = pending.enqueue(client, message.pane_id, message.id, pendingText(message.text), lease, context.identity, false, agentOnly).message;
+            return;
+          }
           // A terminal-line send is not an Ovis Chat receipt. For Chat, capture Pi independently of
           // status so an idle/done report during automatic compaction cannot make the bubble vanish.
           const current = message.typed === true ? null : await currentIdentity(message.pane_id);
@@ -1533,7 +1590,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         }
         await serialize(message.pane_id, dispatch);
         if (message.clear_draft !== undefined || message.send_anyway) draftConfirmations.get(client)?.delete(message.pane_id);
-        result(true, undefined, undefined, undefined, undefined, undefined, false, sendingAt);
+        result(true, undefined, undefined, behind, undefined, undefined, false, sendingAt);
+        if (behind) drainPending(message.pane_id);
       } catch (error) {
         if (message.clear_draft !== undefined || message.send_anyway) draftConfirmations.get(client)?.delete(message.pane_id);
         // a refusal naming a draft confirms it for Clear it and send; one naming none, for Send anyway
@@ -1566,7 +1624,18 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       try {
         authorizeSocket(client);
         const lease = message.action === "steer" ? pendingLease(client, message.pane_id) : null;
+        let marked: PendingItem | undefined;
+        if (message.action === "discard") {
+          // on its way now: a send that waits for omp ends at its next look, with nothing typed, and this Discard then
+          // finds the message held. One past its wait is typed, and this answers with its receipt, as before
+          const sending = pending.get(client, message.pane_id, message.pending_id)
+            ?? (client.data.attached.has(message.pane_id) ? pending.get(FIRST_MESSAGE_OWNER, message.pane_id, message.pending_id) : undefined);
+          if (sending?.inFlight) { marked = sending; withdrawn.add(sending); }
+        }
         const answer = await serialize(message.pane_id, async (): Promise<SubmitReply> => {
+          // the mark was for the send ahead of this Discard, which has ended: a message this Discard cannot take
+          // (its copy is being sent again elsewhere) is not ended by it at a later Send now
+          if (marked) withdrawn.delete(marked);
           authorizeSocket(client);
           if (!clients.has(client) || connectionOf(client).closing) throw new HerdrError("disconnected", "This connection closed");
           // A typed Pi receipt is never sendable again. Once its transcript confirmation became
@@ -1609,6 +1678,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           // ended: its card says so
           if (!dispatched && !isClient(item.owner) && (reply.code === TARGET_CHANGED.code || reply.code === LAUNCH_GONE.code)) pending.rehold(item, { code: reply.code, message: reply.message! });
           takenWithPane(item, arrivedAt);
+          // its Discard came while it waited for omp: nothing was typed, and the message goes now, as discarded. This
+          // Send now is answered as settled (its receipt says how, as for a replayed one), and so is the Discard after it
+          if (reply.code === "pending_discarded" && withdrawn.has(item) && pending.discard(item)) return { ok: true };
           return reply;
         });
         result(answer);

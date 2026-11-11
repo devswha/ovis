@@ -4,10 +4,15 @@ import * as processStart from "../process-start.ts";
 import { connectionData } from "./connections.ts";
 import { createPendingDelivery, FIRST_MESSAGE_OWNER } from "./pending.ts";
 
-afterEach(() => mock.restore());
+/** each fixture's end: its pane ends, and with it any wait still on, before the next test's stand-ins are in place */
+const ends: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  for (const end of ends.splice(0)) await end();
+  mock.restore();
+});
 
 type Frame = { type: string; [key: string]: unknown };
-type Row = { id: string; state: string; error?: { code: string } };
+type Row = { id: string; state: string; text?: string; error?: { code: string }; waiting?: string };
 const SHELL = 41000, OMP = 41001;
 /** an omp that loads herdr's omp integration by its own arguments (ompLoadsIntegration): nothing is read from disk */
 const INTEGRATED = ["omp", "-e", "/opt/herdr/herdr-omp-agent-state.ts"];
@@ -26,8 +31,10 @@ function omp(setup: { startedAgo?: number; argv?: readonly string[]; reported?: 
   const pane: Record<string, unknown> = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "omp", agent_status: "idle", focused: false, revision: 0,
     ...(setup.reported ? { agent_session: SESSION } : {}) };
   /** called at each look of the wait and at each read of the pane's screen, with how many there were */
-  const hooks: { look?: (looks: number) => void; read?: (reads: number) => void; processes?: (asked: number) => boolean } = {};
-  let looks = 0, reads = 0, asked = 0, allowed = true, skew = 0;
+  const hooks: { look?: (looks: number) => void; read?: (reads: number) => void;
+    /** what herdr answers a read of the pane's processes: nothing ("fail"), no process ("empty"), or what runs there. `start`: the read is the look at omp's start */
+    processes?: (start: boolean) => "fail" | "empty" | undefined } = {};
+  let looks = 0, reads = 0, asked = 0, allowed = true, skew = 0, typedCount = 0;
   /** herdr answers no snapshot for now; the pane is gone from herdr */
   const herdrNow = { silent: false, paneGone: false };
   const realNow = Date.now.bind(Date);
@@ -36,12 +43,13 @@ function omp(setup: { startedAgo?: number; argv?: readonly string[]; reported?: 
   let started: number | undefined;
   spyOn(processStart, "processStartedAt").mockImplementation(() => started ??= Date.now() - (setup.startedAgo ?? 0));
   spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1000);
-  // `hooks.processes`: whether herdr fails to answer this read of the pane's processes, by how many were asked for
   spyOn(herdr, "paneProcessInfo").mockImplementation(async () => {
     asked += 1;
-    if (hooks.processes?.(asked)) throw new herdr.HerdrError("herdr_unavailable", "herdr did not answer");
+    // which read this is, by who asked: how many reads the queue's other checks make is theirs to change
+    const answer = hooks.processes?.((new Error().stack ?? "").includes("startingOmp"));
+    if (answer === "fail") throw new herdr.HerdrError("herdr_unavailable", "herdr did not answer");
     return { pane_id: "p", shell_pid: SHELL,
-      foreground_processes: pane["agent"] === "omp" ? [{ pid: OMP, name: "omp", argv: setup.argv ?? INTEGRATED }] : [{ pid: SHELL, name: "bash", argv: ["bash"] }] } as Awaited<ReturnType<typeof herdr.paneProcessInfo>>;
+      foreground_processes: answer === "empty" ? [] : pane["agent"] === "omp" ? [{ pid: OMP, name: "omp", argv: setup.argv ?? INTEGRATED }] : [{ pid: SHELL, name: "bash", argv: ["bash"] }] } as Awaited<ReturnType<typeof herdr.paneProcessInfo>>;
   });
   spyOn(herdr, "paneGet").mockImplementation(async () => {
     looks += 1; hooks.look?.(looks); calls.push("look");
@@ -61,7 +69,7 @@ function omp(setup: { startedAgo?: number; argv?: readonly string[]; reported?: 
   const delivery = createPendingDelivery({
     options: { submitDelayMs: 0, ompReportPollMs: 1 },
     clients, attachments: new Map(), sight: (() => ({ facts: () => facts, write: () => {} })), serialize,
-    lastTyped: new Map(), submitText: async () => { calls.push("immediate"); },
+    lastTyped: new Map(), typedInto: () => typedCount, submitText: async () => { calls.push("immediate"); },
     authorizeSocket: () => { if (!allowed) throw new herdr.HerdrError("read_only", "this device may only watch"); },
     clientSnapshot: async () => {
       if (herdrNow.silent) throw new herdr.HerdrError("herdr_unavailable", "herdr did not answer");
@@ -119,9 +127,12 @@ function omp(setup: { startedAgo?: number; argv?: readonly string[]; reported?: 
     },
   };
   const typed = () => calls.filter((call) => call !== "look");
+  /** a person types into the pane's terminal: counted by the input lane as it is written, in the pane's turn */
+  const type = () => serialize("p", () => { typedCount += 1; calls.push("typed in the terminal"); });
+  ends.push(async () => { paneEnds(); await settled(); });
   /** the pane ended, as the status hub tells the queue (status.ts paneGone) */
   const paneEnds = () => { delivery.holdPendingPane("p", GONE); delivery.pending.forget("p"); };
-  return { calls, typed, looks: () => looks, asked: () => asked, pane, facts, hooks, ways, first, listed, rest, settled, eventually, serialize, delivery, owner, result, paneEnds, clients, herdrNow,
+  return { calls, typed, looks: () => looks, asked: () => asked, pane, facts, hooks, ways, first, listed, rest, settled, eventually, serialize, delivery, owner, result, paneEnds, clients, herdrNow, type, frames,
     report: () => { pane["agent_session"] = SESSION; }, revoke: () => { allowed = false; }, advance: (ms: number) => { skew += ms; } };
 }
 type Way = "a queue request typed at once" | "Send now of a held message" | "a new pane's first message";
@@ -247,25 +258,61 @@ it("types a new pane's first message that waited for a starting omp only while t
 });
 
 // what the queue sends by itself waits for omp with nothing claimed: the pane and the message are as free as before it
-it("lets what is typed into the pane through while its first message waits for omp, ahead of that message", async () => {
+it("lets what is typed into the pane through while its first message waits for omp, and holds the message for it", async () => {
   const d = omp();
-  d.hooks.look = (looks) => {
-    // terminal typing, a key from the key bar, a prompt's answer: each takes its turn in the pane's lane
-    if (looks === 2) void d.serialize("p", () => { d.calls.push("typed in the terminal"); });
-    if (looks === 5) d.report();
-  };
-  await d.ways["a new pane's first message"]();
+  d.hooks.look = (looks) => { if (looks === 2) void d.type(); };
+  await d.ways["a new pane's first message"](() => d.listed()[0]?.state === "held");
+  // it went while the wait was still on, with the pane's lane free
+  expect(d.calls).toEqual(["look", "look", "typed in the terminal"]);
+  // and the message is not pasted behind it: what was typed may sit in omp's input box, which nothing here reads,
+  // and the message's Enter would send both as one. It waits for its sender, with that reason, and the wait is over
+  expect(d.listed().map((message) => [message.state, message.error?.code, message.waiting])).toEqual([["held", "typed_while_waiting", undefined]]);
+  d.report();
+  await d.rest();
+  expect(d.typed()).toEqual(["typed in the terminal"]);
+  // sent by hand, it goes
+  await d.delivery.pendingFrames["pending-action"](d.owner as never, { type: "pending-action", id: 9, pane_id: "p", pending_id: d.listed()[0]!.id, action: "steer" } as never);
+  await d.settled();
   expect(d.typed()).toEqual(["typed in the terminal", PASTE, "Enter"]);
-  // it went while the wait was still on, not once the message had gone
-  expect(d.calls.indexOf("typed in the terminal")).toBeLessThan(d.calls.lastIndexOf("look"));
 });
 
-it("shows a new pane's first message as queued, not as being sent, while it waits for omp", async () => {
+it("holds every message that waits behind a starting omp once something is typed there, and none when nothing is", async () => {
   const d = omp();
-  let shown: string[] | undefined;
-  d.hooks.look = (looks) => { if (looks === 2) shown = d.listed().map((message) => message.state); else if (looks === 3) d.report(); };
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  // another message joins the queue behind the first
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 4, pane_id: "p", text: "second words", payload: "unused", delivery: "queue" } as never);
+  await d.type();
+  // the first message is the bridge's to list and the second its connection's own
+  const rows = () => [...d.delivery.pending.list(FIRST_MESSAGE_OWNER, "p"), ...d.delivery.pending.list(d.owner as never, "p")];
+  await d.eventually("the hold", () => rows().every((message) => message.state === "held"));
+  expect(rows().map((message) => [message.text, message.error?.code])).toEqual([["first words", "typed_while_waiting"], ["second words", "typed_while_waiting"]]);
+  expect(d.typed()).toEqual(["typed in the terminal"]);
+});
+
+it("shows a new pane's first message as queued and waiting for omp, not as being sent, and takes the note away with the wait", async () => {
+  const d = omp();
+  let shown: Array<[string, string | undefined]> | undefined;
+  d.hooks.look = (looks) => { if (looks === 2) shown = d.listed().map((message) => [message.state, message.waiting]); else if (looks === 3) d.report(); };
   await d.ways["a new pane's first message"]();
-  expect(shown).toEqual(["queued"]);
+  expect(shown).toEqual([["queued", "omp_starting"]]);
+  // every row the page was told of after the wait is without it
+  const rows = d.frames.filter((frame) => frame.type === "pending-messages").map((frame) => (frame["messages"] as Row[]).map((message) => `${message.state}${message.waiting ? " waiting" : ""}`).join());
+  expect(rows).toEqual(["queued", "queued waiting", "queued", "sending", ""]);
+});
+
+it("says on the row of a Send now that it waits for omp, for as long as it does", async () => {
+  const d = omp();
+  d.hooks.look = (looks) => { if (looks === 3) d.report(); };
+  expect(await d.ways["Send now of a held message"]()).toMatchObject({ ok: true });
+  const rows = d.frames.filter((frame) => frame.type === "pending-messages").map((frame) => (frame["messages"] as Row[]).map((message) => `${message.state}${message.waiting ? " waiting" : ""}`).join());
+  expect(rows).toEqual(["held", "sending", "sending waiting", "sending", ""]);
+});
+
+it("says nothing of a wait on a row sent to an omp that takes input", async () => {
+  const d = omp({ reported: true });
+  await d.ways["a new pane's first message"]();
+  expect(d.frames.filter((frame) => frame.type === "pending-messages").flatMap((frame) => (frame["messages"] as Row[]).map((message) => message.waiting))).toEqual([undefined, undefined]);
 });
 
 it("takes a first message with its pane when the pane ends while the message waits for omp", async () => {
@@ -366,13 +413,11 @@ it("never holds the pane's lane for a send of the queue's own: one that finds om
     if (looks === 2) void d.serialize("p", () => { d.calls.push("typed in the terminal"); });
     if (looks === 5) d.report();
   };
+  // herdr lists no process in the pane at the queue's look at omp's start (omp is between two of its own), so the send
+  // is taken up as for an omp that takes input
   let missed = 0;
-  await d.ways["a new pane's first message"](undefined, () => {
-    // herdr does not answer the queue's look at omp's start (the fifth read of the pane's processes its drain makes,
-    // after the four that bind the message to what was launched), so the send is taken up as for an omp that takes input
-    const from = d.asked();
-    d.hooks.processes = (asked) => asked === from + 5 && ++missed > 0;
-  });
+  d.hooks.processes = (start) => start && missed === 0 && ++missed > 0 ? "empty" : undefined;
+  await d.ways["a new pane's first message"]();
   expect(missed).toBe(1);
   // the send found omp starting and gave the message back: what was typed in the terminal went ahead of it
   expect(d.typed()).toEqual(["typed in the terminal", PASTE, "Enter"]);
@@ -410,4 +455,122 @@ it("leaves nothing of a first message taken with its pane for the next pane of t
   d.clients.add(page);
   d.delivery.attached(page as never, "p");
   expect(told.filter((frame) => frame.type === "pending-messages" && ((frame["messages"] as unknown[]).length > 0 || frame["removed"] !== undefined))).toEqual([]);
+});
+
+// (the composer sends at once whenever the pane shows its agent at rest, as a starting omp is shown)
+it("queues a chat message sent at once behind a first message that waits for omp, and sends them in that order", async () => {
+  const d = omp();
+  await d.first();
+  await d.eventually("the wait for omp", () => d.looks() >= 2);
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 5, pane_id: "p", text: "second words", payload: "second words", delivery: "immediate" } as never);
+  await d.settled();
+  // accepted as a row of the queue, not typed: sent at once it would wait for the same report with the pane's lane
+  // held, and go ahead of the first message
+  expect(d.result("submit-result", 5)).toMatchObject({ ok: true, pending: { state: "queued", text: "second words" } });
+  expect(d.result("submit-result", 5)?.["typed_now"]).toBeUndefined();
+  expect(d.calls).not.toContain("immediate");
+  d.report();
+  await d.eventually("the first message's send", () => d.calls.includes("Enter"));
+  expect(d.typed()).toEqual([PASTE, "Enter"]);
+  // omp works on the first message, then rests: the second goes at that turn's end
+  d.pane["agent_status"] = "working"; d.delivery.pending.status("p", "working"); d.delivery.drainPending("p"); await d.settled();
+  d.pane["agent_status"] = "idle";
+  await d.rest();
+  expect(d.typed()).toEqual([PASTE, "Enter", "\u001b[200~second words\u001b[201~", "Enter"]);
+});
+
+it.each([
+  ["with no message waiting for omp", {}],
+  ["from the terminal's input line, which is the keyboard", { typed: true }],
+] as const)("sends a message sent at once as before %s", async (_case, extra) => {
+  const d = omp(Object.keys(extra).length === 0 ? { reported: true } : {});
+  if (Object.keys(extra).length > 0) { await d.first(); await d.eventually("the wait for omp", () => d.looks() >= 2); }
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 5, pane_id: "p", text: "second words", payload: "second words", delivery: "immediate", ...extra } as never);
+  await d.settled();
+  expect(d.result("submit-result", 5)).toMatchObject({ ok: true });
+  expect(d.result("submit-result", 5)?.["pending"]).toBeUndefined();
+  expect(d.calls).toContain("immediate");
+});
+
+it("types nothing of a Send now whose Discard comes while it waits for omp, and answers both truly", async () => {
+  const d = omp();
+  await d.delivery.pendingFrames.submit(d.owner as never, { type: "submit", id: 1, pane_id: "p", text: "first words", payload: "unused", delivery: "hold" } as never);
+  const held = d.result("submit-result", 1) as unknown as { pending: { id: string } };
+  let discard: Promise<void> | undefined;
+  d.hooks.look = (looks) => {
+    // the row shows as being sent, and its Discard is pressed; omp reports a moment later
+    if (looks === 2) discard = d.delivery.pendingFrames["pending-action"](d.owner as never, { type: "pending-action", id: 3, pane_id: "p", pending_id: held.pending.id, action: "discard" } as never);
+    if (looks === 4) d.report();
+  };
+  await d.delivery.pendingFrames["pending-action"](d.owner as never, { type: "pending-action", id: 2, pane_id: "p", pending_id: held.pending.id, action: "steer" } as never);
+  await discard;
+  await d.settled();
+  // the send ended at its next look: no third one, and nothing typed
+  expect(d.calls).toEqual(["look", "look"]);
+  // the message went as discarded, never as sent, and both actions are answered as settled
+  const removed = d.frames.filter((frame) => frame.type === "pending-messages").flatMap((frame) => (frame["removed"] as Array<{ outcome: string }> | undefined) ?? []).map((entry) => entry.outcome);
+  expect(removed.filter((outcome) => outcome === "sent")).toEqual([]);
+  expect(removed).toContain("discarded");
+  expect([d.result("pending-result", 2), d.result("pending-result", 3)]).toMatchObject([{ ok: true }, { ok: true }]);
+  expect(d.listed()).toEqual([]);
+});
+
+// herdr not answering whether omp is starting says nothing either way: not known is not "takes input"
+it("types nothing into an omp while herdr does not say whether it is starting, and sends the first message at its report", async () => {
+  const d = omp();
+  // the queue's look at omp's start is not answered, twice in a row; the third is
+  let failed = 0;
+  d.hooks.processes = (start) => start && failed < 2 && ++failed > 0 ? "fail" : undefined;
+  d.hooks.look = (looks) => { if (looks === 3) d.report(); };
+  await d.ways["a new pane's first message"]();
+  expect(failed).toBe(2);
+  expect(d.calls).toEqual(["look", "look", "look", PASTE, "Enter"]);
+});
+
+it("asks again a moment later when herdr's snapshot is not read for a queued message's look at omp's start", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const d = omp();
+  // a connection's own message, queued behind a turn; the turn ends
+  d.pane["agent_status"] = "working";
+  expect(await d.ways["a queue request typed at once"]()).toMatchObject({ ok: true, pending: { state: "queued" } });
+  d.pane["agent_status"] = "idle";
+  // herdr answers no snapshot for the drain's look at omp's start: left at that, the message would stay queued with
+  // nothing to drain it once herdr answers again
+  d.herdrNow.silent = true;
+  d.hooks.look = (looks) => { if (looks === 2) d.report(); };
+  await d.rest();
+  expect(d.typed()).toEqual([]);
+  d.herdrNow.silent = false;
+  await d.eventually("the message's send", () => d.calls.includes("Enter"));
+  expect(d.typed()).toEqual([PASTE, "Enter"]);
+  expect(warn.mock.calls).toEqual([]);
+});
+
+it.each(BY_HAND)("types nothing of %s when herdr does not say whether its omp is starting, and says so", async (way) => {
+  const d = omp();
+  // the send's own look at omp's start is not answered
+  let failed = 0;
+  d.hooks.processes = (start) => start && failed === 0 && ++failed > 0 ? "fail" : undefined;
+  const answer = await d.ways[way]();
+  expect(failed).toBe(1);
+  expect(answer).toMatchObject({ ok: false, code: "herdr_unavailable" });
+  expect(d.typed()).toEqual([]);
+});
+
+it("holds a first message with herdr's own word once herdr has not said for half a minute whether omp is starting", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  const d = omp();
+  // no look at omp's start is answered
+  let unanswered = 0;
+  d.hooks.processes = (start) => start && ++unanswered > 0 ? "fail" : undefined;
+  await d.first();
+  await d.eventually("a few looks that are not answered", () => unanswered >= 3);
+  // asked again and again, the message still queued and nothing typed
+  expect([d.typed(), d.listed().map((message) => message.state)]).toEqual([[], ["queued"]]);
+  // half a minute of that: an omp that was starting then takes input by now, so the send is taken up, and its own
+  // look, not answered either, holds the message with the reason rather than type it unseen
+  d.advance(30_001);
+  await d.eventually("the hold", () => d.listed()[0]?.state === "held");
+  expect([d.typed(), d.listed().map((message) => message.error?.code)]).toEqual([[], ["herdr_unavailable"]]);
+  void warn;
 });
