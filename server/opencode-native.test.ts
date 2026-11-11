@@ -10,7 +10,7 @@ import * as omo from "./omo.ts";
 import { omoSessionFolder } from "./omo.ts";
 import * as processStart from "./process-start.ts";
 import { paneProcessRoots } from "./conversation.ts";
-import { closeOpenCodeNative, openCodeNativeState, openCodePaneService, openCodeSkillsToType, openCodeVerificationCheckpoint, releaseOpenCodePane, skillsNotAttached, startOpenCodeWatch, trackVerifiedOpenCodePanes } from "./opencode-native.ts";
+import { closeOpenCodeNative, openCodeNativeState, openCodePanePid, openCodePaneService, openCodeSkillsToType, openCodeVerificationCheckpoint, releaseOpenCodePane, skillsNotAttached, startOpenCodeWatch, trackVerifiedOpenCodePanes } from "./opencode-native.ts";
 import { commandOutcome } from "./outcome.ts";
 import * as service from "./opencode-service.ts";
 import * as commands from "./commands.ts";
@@ -339,5 +339,62 @@ describe("collectors track the verified panes", () => {
       expect(await openCodePaneService(opencodePane("p_t1", "ses_t1"))).not.toBeNull();
       expect(second).toEqual(["p_t1", "p_t2", "p_t1"]);
     } finally { untrackFirst(); untrackSecond(); closeOpenCodeNative(); fake.server.stop(true); }
+  });
+});
+
+describe("the pid a verified pane keeps", () => {
+  const foreground = (pid: unknown) => ({ process_info: { foreground_processes: pid === undefined ? [] : [{ pid, argv: ["opencode"], cwd: "/" }] } });
+  const verifiedWith = async (paneId: string, answers: unknown[]): Promise<void> => {
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async () => answers.shift()) as never);
+    try { expect(await openCodePaneService(opencodePane(paneId, `ses_${paneId.replace("p_", "")}`))).not.toBeNull(); } finally { rpc.mockRestore(); }
+  };
+  const fresh = (name: string) => {
+    const fake = gatedService(join(root, name));
+    openCodeServiceOptions.stateDir = join(root, name);
+    forgetOpenCodeService();
+    closeOpenCodeNative();
+    return fake;
+  };
+
+  it("is unknown, not -1, when herdr names the process without a pid", async () => {
+    const fake = fresh("pid-unreported");
+    try {
+      await verifiedWith("p_np", [foreground("4242")]);
+      expect(openCodePanePid("p_np")).toBeNull();
+    } finally { closeOpenCodeNative(); fake.server.stop(true); }
+  });
+
+  it("stays the one known when a re-verification reads no process", async () => {
+    const fake = fresh("pid-kept");
+    try {
+      await verifiedWith("p_kp", [foreground(4242)]);
+      expect(openCodePanePid("p_kp")).toBe(4242);
+      await verifiedWith("p_kp", [foreground(undefined)]);
+      expect(openCodePanePid("p_kp")).toBe(4242);
+    } finally { closeOpenCodeNative(); fake.server.stop(true); }
+  });
+
+  it("is the newer verification's when an older one ends after it", async () => {
+    const fake = fresh("pid-order");
+    const olderAsked = Promise.withResolvers<void>();
+    const olderRoots = Promise.withResolvers<unknown>();
+    let calls = 0;
+    const rpc = spyOn(herdr, "herdrRpc").mockImplementation((async () => {
+      calls += 1;
+      if (calls === 1) { olderAsked.resolve(); return olderRoots.promise; }
+      return foreground(5151);
+    }) as never);
+    try {
+      // Given an older verification held at its process read,
+      const older = openCodePaneService(opencodePane("p_or", "ses_or"));
+      await within(olderAsked.promise, "the older verification's process read");
+      // when a newer one finishes first with the restarted process,
+      expect(await openCodePaneService(opencodePane("p_or", "ses_or"))).not.toBeNull();
+      // and the older one then ends with the process before it,
+      olderRoots.resolve(foreground(4242));
+      expect(await older).not.toBeNull();
+      // then the pane keeps the newer pid.
+      expect(openCodePanePid("p_or")).toBe(5151);
+    } finally { rpc.mockRestore(); closeOpenCodeNative(); fake.server.stop(true); }
   });
 });
