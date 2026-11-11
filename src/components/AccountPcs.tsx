@@ -2,7 +2,7 @@
 import "./RelayShell.css";
 import "./AccountPcs.css";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ChevronRight, Trash2 } from "lucide-react";
 
 import { GLOBAL_APP } from "../../shared/relay-regions.ts";
@@ -160,8 +160,29 @@ export function listedPcStateText(pc: MyPc, t: ReturnType<typeof useT>): string 
   return pc.state === "needs-approval" && !pc.paired ? t("In your account") : accountPcStateText(pc, t);
 }
 
-/** A PC's page in the hosted app, where any browser can open a PC of the account this app has not added. */
-export const hostedPcUrl = (serverId: string): string => `${GLOBAL_APP}${serverScopePath(encodeURIComponent(serverId))}`;
+/**
+ * The hosted app's front page, where a browser signed in to the account sees its PCs: it opens the
+ * ones it is paired with there and asks the others for an approval. A PC's own page links here and
+ * not to one PC's address (`/s/<id>/`): that address opens only in a browser already paired with
+ * that PC on the hosted app's origin, which this page cannot know, and shows any other browser a
+ * pairing screen that names no PC. Sign-in is offered on the global app only (docs/account.md).
+ */
+export const HOSTED_APP_URL = `${GLOBAL_APP}/`;
+
+/** How long the account must not have heard from a PC before its row offers Remove: the life of a relay pass (docs/relay.md, "Relay pass"). */
+export const UNUSED_AFTER_MS = 48 * 60 * 60_000;
+
+/**
+ * Whether the account has not heard from a listed PC for two days (its last mailbox pull, or its
+ * listing when it never pulled): only such a PC is offered for removal. One in use is listed again
+ * by the next device of the account that opens it (`enrollOwned` in accountController.ts) and by
+ * its own waiting Add this PC screen, so removing it would not last, and would cost it the relay
+ * meanwhile. A PC whose dates are missing or do not parse is not offered.
+ */
+export function unusedPc(pc: Pick<MyPc, "last_seen_at" | "added_at">, now: number): boolean {
+  const heard = Date.parse(pc.last_seen_at ?? pc.added_at ?? "");
+  return Number.isFinite(heard) && now - heard > UNUSED_AFTER_MS;
+}
 
 /**
  * Takes a PC out of `account`'s directory, as the sign-in whose list the page shows: when another
@@ -174,18 +195,24 @@ export async function removePcFromAccount(service: Pick<AccountService, "session
 }
 
 /**
- * The account's PCs this app has not added, as rows of a PC's own Settings list (`.devices-list`):
- * each opens in the hosted app, and can be taken out of the account (a PC that was reinstalled or
- * given away stays listed on every device otherwise). A watching device gets neither.
+ * The account's PCs this app has not added, as rows of a PC's own Settings list (`.devices-list`),
+ * and under them one link to the hosted app, where a browser opens them (`HOSTED_APP_URL`).
+ * A PC the account has not heard from for two days (`unusedPc`: reinstalled, given away, never
+ * enrolled) can be taken off the list; the confirm says that this revokes nothing and that the PC
+ * is listed again if it is used again. A watching device is offered no removal.
  * `remove` takes the PC out of the account's directory; `onRemoved` then reads the list again, also
  * when the removal was refused because the sign-in ended (the page then shows who is signed in now).
  */
-export function AccountPcRows({ pcs, watching, remove, onRemoved }: {
+export function AccountPcRows({ pcs, watching, remove, onRemoved, now = Date.now() }: {
   readonly pcs: readonly MyPc[]; readonly watching: boolean;
   readonly remove: (serverId: string) => Promise<void>; readonly onRemoved: () => void;
+  /** the time the rows are drawn at; the clock's when left out */
+  readonly now?: number;
 }) {
   const t = useT();
   const [removing, setRemoving] = useState<MyPc | null>(null);
+  /** the list's group, which takes the focus once a removed row is gone with its button */
+  const group = useRef<HTMLElement | null>(null);
   return (
     <>
       {pcs.map((pc) => (
@@ -194,29 +221,37 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved }: {
             <span className="settings-label">{pc.name}<span className="devices-kind">PC</span></span>
             <span className="settings-description">{listedPcStateText(pc, t)}</span>
           </div>
-          {!watching && (
+          {!watching && unusedPc(pc, now) && (
             <div className="devices-actions">
-              <a className="btn" href={hostedPcUrl(pc.server_id)} target="_blank" rel="noreferrer">{t("Open in browser")}</a>
-              <button type="button" className="icon-button" aria-label={t("Remove {name} from your account", { name: pc.name })} title={t("Remove {name} from your account", { name: pc.name })} onClick={() => setRemoving(pc)}><Trash2 aria-hidden="true" /></button>
+              <button type="button" className="icon-button" aria-label={t("Remove {name} from the list", { name: pc.name })} title={t("Remove {name} from the list", { name: pc.name })}
+                onClick={(event) => { group.current = event.currentTarget.closest<HTMLElement>("[data-section]"); setRemoving(pc); }}><Trash2 aria-hidden="true" /></button>
             </div>
           )}
         </li>
       ))}
+      {pcs.length > 0 && (
+        <li className="devices-row account-pcs-open">
+          <span className="settings-description">{t("To open a PC of your account in a browser, sign in to this account at app.ovis.sh.")}</span>
+          <a className="btn" href={HOSTED_APP_URL} target="_blank" rel="noreferrer">{t("Open app.ovis.sh")}</a>
+        </li>
+      )}
       {removing !== null && (
-        <ConfirmDialog title={t("Remove {name} from your account?", { name: removing.name })}
-          body={t("Removes {name} from your account's list on every device. Devices already paired with it keep working until they are revoked on that PC. Where the Ovis relay needs an account for a PC, {name} leaves the relay within two days.", { name: removing.name })}
-          confirmLabel={t("Remove from account")} onClose={() => setRemoving(null)}
+        <ConfirmDialog title={t("Remove {name} from the list?", { name: removing.name })}
+          body={t("Takes {name} off your account's list of PCs on every device. It revokes nothing: devices paired with {name} keep their access, and a device you later remove from your account is not removed from it. If {name} is used again, it comes back on the list when a device of your account opens it. Until then it cannot use the Ovis relay where the relay needs an account.", { name: removing.name })}
+          confirmLabel={t("Remove from list")} onClose={() => setRemoving(null)}
           onConfirm={async () => {
             try { await remove(removing.server_id); } catch (error) {
               console.warn("Ovis: the PC was not removed from the account", error instanceof Error ? error.name : error);
               // the sign-in ended or another took its place (revoked elsewhere, another tab): no retry can succeed, and
               // these rows are no longer this browser's account. The page reads the stored sign-in again and says so.
-              if (error instanceof SignedOutError) { setRemoving(null); onRemoved(); return; }
+              if (error instanceof SignedOutError) { setRemoving(null); onRemoved(); group.current?.focus(); return; }
               // the dialog shows what it is thrown: the service's own words say nothing a person can act on
               throw new Error(t("{name} could not be removed. Try again.", { name: removing.name }));
             }
             setRemoving(null);
             onRemoved();
+            // the row and its button go with the list read again: the focus would drop to the page
+            group.current?.focus();
           }} />
       )}
     </>
@@ -226,7 +261,7 @@ export function AccountPcRows({ pcs, watching, remove, onRemoved }: {
 /** Signed in, and the account lists no PC: says so, and why a PC added under another sign-in is not here. */
 export function NoAccountPcHint({ provider }: { readonly provider: AccountProvider }) {
   const t = useT();
-  return <p className="settings-hint account-no-pc" role="note">{t("No PC in this account yet. Signed in with {provider}: GitHub and Google are separate Ovis accounts until you link them.", { provider: PROVIDER_NAMES[provider] })}</p>;
+  return <p className="settings-hint account-no-pc" role="note">{t("No PC in this account yet. Signed in with {provider}: each way of signing in is a separate Ovis account until you link them.", { provider: PROVIDER_NAMES[provider] })}</p>;
 }
 
 function statusDotOf(state: MyPcState): StatusDotState {

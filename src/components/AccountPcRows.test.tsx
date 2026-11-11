@@ -11,11 +11,17 @@ import { SettingsProvider } from "../lib/settings.ts";
 
 // the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
 await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { AccountPcRows, NoAccountPcHint, hostedPcUrl, removePcFromAccount } = await import("./AccountPcs.tsx");
+const { AccountPcRows, HOSTED_APP_URL, NoAccountPcHint, removePcFromAccount, unusedPc } = await import("./AccountPcs.tsx");
 
 const DESK = "a".repeat(32);
 const LAPTOP = "b".repeat(32);
 const pc = (server_id: string, name: string): MyPc => ({ server_id, name, state: "needs-approval", last_seen_at: null, added_at: null, listed: true, paired: false, linked: false });
+
+const NOW = Date.parse("2026-11-11T00:00:00Z");
+/** a PC the account last heard from ten days before `NOW` */
+const gone = (server_id: string, name: string): MyPc => ({ ...pc(server_id, name), state: "offline", last_seen_at: "2026-11-01T00:00:00Z", added_at: "2026-10-01T00:00:00Z" });
+/** a press of a row's button, inside the list's group */
+const click = (group: { focus: () => void } = { focus() {} }) => ({ currentTarget: { closest: () => group } });
 
 const textOf = (node: ReactTestInstance): string =>
   node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
@@ -81,53 +87,100 @@ describe("the account's PCs in a PC's own Settings", () => {
   };
   const dialogs = (root: ReactTestInstance) => root.findAll((node) => node.props.role === "alertdialog");
 
-  it("gives each account PC a link to its page in the hosted app, in a new tab", async () => {
-    const root = await mount(createElement(AccountPcRows, { pcs: [pc(DESK, "Desk"), pc(LAPTOP, "Laptop")], watching: false, remove: async () => {}, onRemoved: () => {} }));
+  it("gives the rows no action of their own, and one link under them to the hosted app's front page", async () => {
+    const root = await mount(createElement(AccountPcRows, { pcs: [pc(DESK, "Desk"), pc(LAPTOP, "Laptop")], watching: false, now: NOW, remove: async () => {}, onRemoved: () => {} }));
+    // a PC's own page cannot tell whether this browser is paired with that PC at app.ovis.sh, where /s/<id>/ opens
+    // only a paired one: the link goes to the front page, which is right for every browser, and is named for it
     const links = root.findAll((node) => node.type === "a");
-    expect(links.map((link) => [textOf(link), link.props.href, link.props.target, link.props.rel])).toEqual([
-      ["Open in browser", `https://app.ovis.sh/s/${DESK}/`, "_blank", "noreferrer"],
-      ["Open in browser", `https://app.ovis.sh/s/${LAPTOP}/`, "_blank", "noreferrer"],
+    expect(links.map((link) => [textOf(link), link.props.href, link.props.target, link.props.rel])).toEqual([["Open app.ovis.sh", "https://app.ovis.sh/", "_blank", "noreferrer"]]);
+    expect(HOSTED_APP_URL).toBe("https://app.ovis.sh/");
+    expect(root.findAll((node) => node.type === "li").map(textOf)).toEqual([
+      "DeskPCIn your account", "LaptopPCIn your account",
+      "To open a PC of your account in a browser, sign in to this account at app.ovis.sh.Open app.ovis.sh",
     ]);
-    expect(hostedPcUrl(DESK)).toBe(`https://app.ovis.sh/s/${DESK}/`);
-    // the rows still say what the directory knows (the state text of the stacked change)
-    expect(root.findAll((node) => node.type === "li").map(textOf)).toEqual(["DeskPCIn your accountOpen in browser", "LaptopPCIn your accountOpen in browser"]);
+    expect(root.findAll((node) => node.type === "button")).toHaveLength(0);
   });
 
-  it("removes a PC from the account only after the confirm, once, then asks for the list again", async () => {
+  it("draws no link when the account lists no other PC", async () => {
+    const root = await mount(createElement(AccountPcRows, { pcs: [], watching: false, now: NOW, remove: async () => {}, onRemoved: () => {} }));
+    expect(root.findAll((node) => node.type === "a" || node.type === "li")).toHaveLength(0);
+  });
+
+  it("offers Remove only on a PC the account has not heard from for two days", async () => {
+    const ago = (ms: number): string => new Date(NOW - ms).toISOString();
+    const HOUR = 3_600_000;
+    const root = await mount(createElement(AccountPcRows, { watching: false, now: NOW, remove: async () => {}, onRemoved: () => {}, pcs: [
+      // in use: a device of the account that opens it lists it again, so a removal would not last
+      { ...pc(DESK, "Live"), last_seen_at: ago(60_000), added_at: ago(900 * HOUR) },
+      // off since last night: back tomorrow
+      { ...pc("c".repeat(32), "Overnight"), state: "offline", last_seen_at: ago(20 * HOUR), added_at: ago(900 * HOUR) },
+      // just listed by its own Add this PC screen, which lists it again while it waits
+      { ...pc("d".repeat(32), "Fresh"), last_seen_at: null, added_at: ago(HOUR) },
+      // nothing known of when: not offered
+      { ...pc("e".repeat(32), "Unknown"), last_seen_at: null, added_at: null },
+      { ...pc(LAPTOP, "Gone"), state: "offline", last_seen_at: ago(49 * HOUR), added_at: ago(900 * HOUR) },
+      // listed once and never enrolled
+      { ...pc("f".repeat(32), "Abandoned"), last_seen_at: null, added_at: ago(49 * HOUR) },
+    ] }));
+    expect(root.findAll((node) => node.type === "button").map((button) => button.props["aria-label"])).toEqual(["Remove Gone from the list", "Remove Abandoned from the list"]);
+    expect(unusedPc({ last_seen_at: ago(48 * HOUR - 1000), added_at: ago(900 * HOUR) }, NOW)).toBe(false);
+    expect(unusedPc({ last_seen_at: ago(48 * HOUR + 1000), added_at: ago(900 * HOUR) }, NOW)).toBe(true);
+    // a clock behind the service's, or a date that does not parse: not offered
+    expect(unusedPc({ last_seen_at: "soon", added_at: null }, NOW)).toBe(false);
+  });
+
+  it("removes a PC from the list only after a confirm that says what it does not do, once, then asks for the list again", async () => {
     const calls: string[] = [];
     const root = await mount(createElement(AccountPcRows, {
-      pcs: [pc(DESK, "Desk"), pc(LAPTOP, "Laptop")], watching: false,
+      pcs: [pc(DESK, "Desk"), gone(LAPTOP, "Laptop")], watching: false, now: NOW,
       remove: async (id: string) => { calls.push(`remove ${id}`); }, onRemoved: () => { calls.push("recheck"); },
     }));
-    const removeButton = root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Laptop from your account");
-    expect(removeButton.props.title).toBe("Remove Laptop from your account");
+    const removeButton = root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Laptop from the list");
+    expect(removeButton.props.title).toBe("Remove Laptop from the list");
 
-    await act(async () => { removeButton.props.onClick(); });
+    await act(async () => { removeButton.props.onClick(click()); });
     const dialog = dialogs(root)[0]!;
     const words = textOf(dialog);
-    expect(words).toContain("Remove Laptop from your account?");
-    // what the removal does not do, and what it does to the relay where an account is required
-    expect(words).toContain("Devices already paired with it keep working until they are revoked on that PC.");
-    expect(words).toContain("Laptop leaves the relay within two days.");
+    expect(words).toContain("Remove Laptop from the list?");
+    expect(words).toContain("Takes Laptop off your account's list of PCs on every device.");
+    // it ends no access, now or later
+    expect(words).toContain("It revokes nothing: devices paired with Laptop keep their access, and a device you later remove from your account is not removed from it.");
+    // and it is not for good on a PC that is used again
+    expect(words).toContain("If Laptop is used again, it comes back on the list when a device of your account opens it.");
+    expect(words).toContain("Until then it cannot use the Ovis relay where the relay needs an account.");
+    expect(words).not.toContain("within two days");
 
     await act(async () => { dialog.find((node) => node.type === "button" && textOf(node) === "Cancel").props.onClick(); });
     expect(dialogs(root)).toHaveLength(0);
     expect(calls).toEqual([]);
 
-    await act(async () => { removeButton.props.onClick(); });
-    await act(async () => { await dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Remove from account").props.onClick(); });
+    await act(async () => { removeButton.props.onClick(click()); });
+    await act(async () => { await dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Remove from list").props.onClick(); });
     expect(calls).toEqual([`remove ${LAPTOP}`, "recheck"]);
     expect(dialogs(root)).toHaveLength(0);
+  });
+
+  it("moves the focus to the list's group once the removed row is gone", async () => {
+    let focused = 0;
+    const group = { focus: () => { focused += 1; } };
+    const root = await mount(createElement(AccountPcRows, { pcs: [gone(LAPTOP, "Laptop")], watching: false, now: NOW, remove: async () => {}, onRemoved: () => {} }));
+    await act(async () => { root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Laptop from the list").props.onClick(click(group)); });
+    await act(async () => { dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Cancel").props.onClick(); });
+    // a no gives the focus back to the button by itself (ConfirmDialog)
+    expect(focused).toBe(0);
+    await act(async () => { root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Laptop from the list").props.onClick(click(group)); });
+    await act(async () => { await dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Remove from list").props.onClick(); });
+    expect(focused).toBe(1);
   });
 
   it("keeps the confirm up with a retry line when the removal fails, and asks for no recheck", async () => {
     let rechecks = 0;
     const root = await mount(createElement(AccountPcRows, {
-      pcs: [pc(DESK, "Desk")], watching: false,
+      pcs: [gone(DESK, "Desk")], watching: false, now: NOW,
       remove: async () => { throw new Error("502 bad gateway from the service"); }, onRemoved: () => { rechecks += 1; },
     }));
-    await act(async () => { root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Desk from your account").props.onClick(); });
-    await act(async () => { await dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Remove from account").props.onClick(); });
+    await act(async () => { root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Desk from the list").props.onClick(click()); });
+    await act(async () => { await dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Remove from list").props.onClick(); });
     const alert = dialogs(root)[0]!.find((node) => node.props.role === "alert");
     expect(textOf(alert)).toBe("Desk could not be removed. Try again.");
     expect(rechecks).toBe(0);
@@ -137,27 +190,26 @@ describe("the account's PCs in a PC's own Settings", () => {
     let rechecks = 0;
     let attempts = 0;
     const root = await mount(createElement(AccountPcRows, {
-      pcs: [pc(DESK, "Desk")], watching: false,
+      pcs: [gone(DESK, "Desk")], watching: false, now: NOW,
       remove: async () => { attempts += 1; throw new SignedOutError(); }, onRemoved: () => { rechecks += 1; },
     }));
-    await act(async () => { root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Desk from your account").props.onClick(); });
-    await act(async () => { await dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Remove from account").props.onClick(); });
+    await act(async () => { root.find((node) => node.type === "button" && node.props["aria-label"] === "Remove Desk from the list").props.onClick(click()); });
+    await act(async () => { await dialogs(root)[0]!.find((node) => node.type === "button" && textOf(node) === "Remove from list").props.onClick(); });
     // no dialog left to retry in: the page reads the stored sign-in again and shows signed out, or the other account
     expect(dialogs(root)).toHaveLength(0);
     expect(textOf(root)).not.toContain("Try again");
     expect([attempts, rechecks]).toEqual([1, 1]);
   });
 
-  it("offers a watching device neither action", async () => {
-    const root = await mount(createElement(AccountPcRows, { pcs: [pc(DESK, "Desk")], watching: true, remove: async () => {}, onRemoved: () => {} }));
-    expect(root.findAll((node) => node.type === "a")).toHaveLength(0);
+  it("offers a watching device no removal", async () => {
+    const root = await mount(createElement(AccountPcRows, { pcs: [gone(DESK, "Desk")], watching: true, now: NOW, remove: async () => {}, onRemoved: () => {} }));
     expect(root.findAll((node) => node.type === "button")).toHaveLength(0);
-    expect(root.findAll((node) => node.type === "li").map(textOf)).toEqual(["DeskPCIn your account"]);
+    expect(root.findAll((node) => node.type === "li").map(textOf)[0]).toStartWith("DeskPCOffline");
   });
 
-  it("says an account with no PC has none, naming what it signed in with", async () => {
-    const root = await mount(createElement(NoAccountPcHint, { provider: "google" }));
-    expect(textOf(root)).toBe("No PC in this account yet. Signed in with Google: GitHub and Google are separate Ovis accounts until you link them.");
+  it("says an account with no PC has none, in words that hold for every way of signing in", async () => {
+    const root = await mount(createElement(NoAccountPcHint, { provider: "apple" }));
+    expect(textOf(root)).toBe("No PC in this account yet. Signed in with Apple: each way of signing in is a separate Ovis account until you link them.");
   });
 });
 
