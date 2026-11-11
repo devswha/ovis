@@ -146,6 +146,10 @@ it.skipIf(!onWindows)("waits when Windows accepts an interactive task without ru
 
 it.skipIf(!onWindows)("starts a desktop child outside the launcher, preserving quoted arguments and private environment, or waits without launching", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-desktop-start-"));
+  const registry = join(root, "physical registry");
+  const legacy = join(root, "legacy registry");
+  mkdirSync(registry);
+  symlinkSync(registry, legacy, "junction");
   const resultPath = join(root, "result.json");
   const stopPath = join(root, "stop");
   const script = join(root, "child with spaces.ts");
@@ -165,7 +169,7 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
   process.env["OVIS_START_TEST_SECRET"] = sentinel;
   const failures: unknown[] = [];
   try {
-    const started = await startInteractiveWindowsHerdr(process.execPath, [script, "argument with spaces & 한글"], join(root, "herdr.log"));
+    const started = await startInteractiveWindowsHerdr(process.execPath, [script, "argument with spaces & 한글"], join(legacy, "herdr.log"));
     if (started === "waiting_login") {
       expect(existsSync(resultPath)).toBe(false);
     } else {
@@ -177,13 +181,15 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
       expect(child.args).toEqual(["argument with spaces & 한글"]);
       expect(() => process.kill(child.pid, 0)).not.toThrow();
     }
-    expect(readdirSync(root).filter((name) => name.startsWith("herdr-start-"))).toEqual([]);
+    expect(readdirSync(registry).filter((name) => name.startsWith("herdr-start-"))).toEqual([]);
   } catch (error) { failures.push(error); }
   try {
     await waiting.close();
     if (previous === undefined) delete process.env["OVIS_START_TEST_SECRET"]; else process.env["OVIS_START_TEST_SECRET"] = previous;
     // Only this fixture's child is stopped, never a herdr daemon or another test's task.
     if (pid !== undefined) try { process.kill(pid); } catch {}
+    // Remove the junction itself before recursively cleaning its target fixture.
+    await rm(legacy, { force: true, recursive: true });
     const cleanupBy = Date.now() + 5000;
     for (;;) {
       try { await rm(root, { recursive: true, force: true }); break; }
@@ -246,7 +252,7 @@ for (const migrated of [false, true]) {
   it.skipIf(!onWindows)(`writes the Windows bridge launcher and reads startup status with migration junction=${migrated}`, async () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), "ovis-registry-native-")));
     const legacy = join(home, ".config", "herdr-web-ui");
-    const target = migrated ? join(home, "physical %TEMP% registry's folder") : legacy;
+    const target = migrated ? join(home, "physical [%TEMP%] registry's folder") : legacy;
     const registry = join(target, "bridges");
     const session = migrated ? "web-qa" : undefined;
     const files = windowsBridgeFiles(session);
@@ -268,13 +274,19 @@ for (const migrated of [false, true]) {
       }
       const inspection = await windowsHost.inspect(ssh, session);
       expect(inspection.registryDir).toBe(join(legacy, "bridges"));
+      const descriptor = { pid: 2147483647, port: 1, token: "fixture", socket_path: "C:\\herdr.sock", bridge_protocol: 1, bundle_version: REMOTE_BUNDLE_VERSION };
+      writeFileSync(join(registry, "fixture[1].json"), JSON.stringify(descriptor));
+      expect(await windowsHost.descriptors(ssh)).toEqual([descriptor]);
+      expect((await windowsHost.inspect(ssh, session)).descriptors).toEqual([descriptor]);
+      await windowsHost.stop(ssh, descriptor.pid);
+      expect(existsSync(join(registry, "fixture[1].json"))).toBe(false);
       mkdirSync(join(inspection.runtimeDir, "bin"), { recursive: true });
       mkdirSync(join(inspection.runtimeDir, "server"));
       copyFileSync(process.execPath, join(inspection.runtimeDir, "bin", "bun.exe"));
-      writeFileSync(join(inspection.runtimeDir, "server", "remote-entry.ts"), `await Bun.write(${JSON.stringify(join(home, "started.json"))}, JSON.stringify({ session: process.env.HERDR_REMOTE_SESSION ?? "" }));`);
+      writeFileSync(join(inspection.runtimeDir, "server", "remote-entry.ts"), `await Bun.write(${JSON.stringify(join(home, "started.json"))}, JSON.stringify({ session: process.env.HERDR_REMOTE_SESSION ?? "", cwd: process.cwd() }));`);
       writeFileSync(join(registry, files.status), "interactive_failed: stale attempt");
       await windowsHost.start(ssh, { session, herdrPath: "C:\\herdr.exe", inspection });
-      expect(JSON.parse(readFileSync(join(home, "started.json"), "utf8"))).toEqual({ session: session ?? "" });
+      expect(JSON.parse(readFileSync(join(home, "started.json"), "utf8"))).toEqual({ session: session ?? "", cwd: home });
       const launcher = readFileSync(join(registry, files.launcher), "utf8");
       expect(launcher.startsWith("@echo off\r\n")).toBe(true);
       expect(launcher).toContain(`set "HERDR_REMOTE_SESSION=${session ?? ""}"`);
