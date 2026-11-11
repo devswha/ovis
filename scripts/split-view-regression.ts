@@ -950,6 +950,16 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
       const { page, errors } = await open([left, right], "chat", (context) => context.addInitScript((pane) => {
         type Data = { type?: string; message?: { type?: string; from?: string }; machines?: Array<{ snapshot?: { panes: Array<{ pane_id: string }> } | null }> };
         const held: MessageEvent<string>[] = [];
+        // a roster without the pane may come first by itself: then the notice that follows is let through
+        // once that roster's render and its effects have run, instead of being held for a roster that came
+        let without = false;
+        const release = (handler: (event: MessageEvent<string>) => void, target: EventSource) => {
+          const late = held.splice(0);
+          requestAnimationFrame(() => requestAnimationFrame(() => {
+            for (const event of late) handler.call(target, event);
+            (window as { rosterWithout?: boolean }).rosterWithout = true;
+          }));
+        };
         const own = Object.getOwnPropertyDescriptor(EventSource.prototype, "onmessage")!;
         Object.defineProperty(EventSource.prototype, "onmessage", {
           configurable: true,
@@ -957,15 +967,16 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
           set(this: EventSource, handler: ((event: MessageEvent<string>) => void) | null) {
             own.set!.call(this, handler && function (this: EventSource, event: MessageEvent<string>) {
               const data = JSON.parse(event.data) as Data;
-              if (data.type === "machine-message" && data.message?.type === "pane-moved" && data.message.from === pane) { held.push(event); return; }
+              if (data.type === "machine-message" && data.message?.type === "pane-moved" && data.message.from === pane) {
+                held.push(event);
+                if (without) release(handler, this);
+                return;
+              }
               handler.call(this, event);
-              if (held.length > 0 && data.type === "machines" && !data.machines!.some((machine) => machine.snapshot?.panes.some((item) => item.pane_id === pane))) {
+              if (data.type === "machines" && !without && !data.machines!.some((machine) => machine.snapshot?.panes.some((item) => item.pane_id === pane))) {
+                without = true;
                 // told once that roster's render and its effects have run, as a later message would be
-                const late = held.splice(0);
-                requestAnimationFrame(() => requestAnimationFrame(() => {
-                  for (const event of late) handler.call(this, event);
-                  (window as { rosterWithout?: boolean }).rosterWithout = true;
-                }));
+                if (held.length > 0) release(handler, this);
               }
             });
           },
