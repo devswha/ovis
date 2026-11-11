@@ -35,7 +35,8 @@ describe("deleting the account from the hosted shell", () => {
   const last = (): RelayShellProps => shellProps(rendered.at(-1)!);
   const accountView = () => { const { state } = last(); return state.kind === "list" || state.kind === "empty" ? state.account ?? null : null; };
 
-  async function signedInShell(clock: () => number = Date.now, provider: "github" | "apple" = "github") {
+  /** `onDelete` runs as the service answers a delete, before the page sees the answer */
+  async function signedInShell(clock: () => number = Date.now, provider: "github" | "apple" = "github", onDelete?: (store: ReturnType<typeof memoryAccountStore>, fake: FakeAccountService) => Promise<void>) {
     const fake = new FakeAccountService(clock);
     const accountStore = memoryAccountStore();
     await accountStore.set("session", { service: SERVICE, account: ACCOUNT, provider, access_token: fake.issueToken(ACCOUNT), refresh_token: "refresh", expires_at: clock() + 3_600_000 });
@@ -46,7 +47,12 @@ describe("deleting the account from the hosted shell", () => {
       open: () => Promise.reject(new Error("no connection is expected here")),
       checkPc: async () => ({ kind: "offline", reason: "relay" }),
       reload: async () => {},
-      accountService: SERVICE, accountProviders: ["github", "apple"], accountStore, store: noDevices, accountFetch: fake.fetch,
+      accountService: SERVICE, accountProviders: ["github", "apple"], accountStore, store: noDevices,
+      accountFetch: async (input, init) => {
+        const answer = await fake.fetch(input, init);
+        if (onDelete !== undefined && new Request(input, init).method === "DELETE") await onDelete(accountStore, fake);
+        return answer;
+      },
     };
     await mountRelayShell(mount);
     await until(() => accountView()?.kind === "signed-in", "the signed-in front page");
@@ -85,6 +91,19 @@ describe("deleting the account from the hosted shell", () => {
     expect((await accountStore.get("session"))?.account).toBe("acct-two");
   });
 
+  it("shows the sign-in that took the deleted one's place while the delete was out, not a signed-out page", async () => {
+    const { fake, accountStore } = await signedInShell(Date.now, "github", async (store, service) => {
+      const mine = (await store.get("session"))!;
+      await store.set("session", { ...mine, account: "acct-two", access_token: service.issueToken("acct-two"), refresh_token: "refresh-two", sign_in_id: "another-sign-in" });
+    });
+    last().onDeleteAccount?.();
+    // the other sign-in's directory, read after the delete, drawn
+    const readAfter = () => fake.requests.slice(fake.requests.indexOf("DELETE /v1/account") + 1).includes("GET /v1/pcs");
+    await until(() => fake.deleted(ACCOUNT) && (accountView()?.kind === "signed-out" || (readAfter() && (accountView() as { pcs?: unknown }).pcs != null)), "the delete settled");
+    expect(accountView()?.kind).toBe("signed-in");
+    expect((await accountStore.get("session"))?.account).toBe("acct-two");
+  });
+
   describe("in the phone app, with a sign-in over ten minutes old", () => {
     const savedFetch = globalThis.fetch;
     afterEach(() => { Reflect.deleteProperty(globalThis, "Capacitor"); globalThis.fetch = savedFetch; });
@@ -110,6 +129,25 @@ describe("deleting the account from the hosted shell", () => {
       expect(fake.deleted(ACCOUNT)).toBe(true);
       expect(fake.requests.filter((line) => line === "DELETE /v1/account")).toHaveLength(2);
       expect(await accountStore.get("session")).toBeUndefined();
+    });
+
+    it("signs in again over nothing another tab stored after the refusal, and deletes nothing", async () => {
+      let now = Date.now();
+      const { fake, accountStore } = await signedInShell(() => now, "apple", async (store, service) => {
+        const mine = (await store.get("session"))!;
+        await store.set("session", { ...mine, account: "acct-two", access_token: service.issueToken("acct-two"), refresh_token: "refresh-two", sign_in_id: "another-sign-in" });
+      });
+      now += 11 * 60_000;
+      const tokened = nativeSignInTo(fake, ACCOUNT);
+      let signedInAgain = false;
+      void tokened.then(() => { signedInAgain = true; });
+      last().onDeleteAccount?.();
+      // settled: refused with a reason, or signed in again and deleted
+      await until(() => { const view = accountView(); return (view?.kind === "signed-in" && view.error !== null) || fake.deleted(ACCOUNT); }, "the delete settled");
+      expect(signedInAgain).toBe(false);
+      expect(fake.deleted(ACCOUNT)).toBe(false);
+      expect(fake.deleted("acct-two")).toBe(false);
+      expect((await accountStore.get("session"))?.account).toBe("acct-two");
     });
 
     it("deletes nothing when the sign-in again lands in another account", async () => {

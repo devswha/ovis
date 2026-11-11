@@ -81,7 +81,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const changed = async (): Promise<void> => { await view.changed(); armRefresh(); };
   const refresh = async (initial = false, forced = false): Promise<void> => {
-    if (reading?.epoch === generation || leaving || accountService === null || (!initial && !forced && (!view.active() || accountView?.kind !== "signed-in"))) return;
+    // a delete in flight draws what it ends in itself: no background read replaces its notice, only its own reads go on
+    if (reading?.epoch === generation || leaving || (deleting && !initial && !forced) || accountService === null || (!initial && !forced && (!view.active() || accountView?.kind !== "signed-in"))) return;
     const epoch = generation;
     let current = accountView;
     const live = (): boolean => epoch === generation;
@@ -247,12 +248,18 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       try { await deleteAccountOf({ service: account, accountStore, session }); }
       catch (error) {
         if (!(error instanceof AccountServiceError && error.code === "reauth_required") || accountService === null || !nativeSignInAvailable()) throw error;
+        // a sign-in another tab stored since is not signed over: the view reads it instead
+        const stored = await account.session();
+        if (stored === undefined || !sameSignIn(stored, session)) throw new SignedOutError();
         const again = await nativeSignIn(session.provider, { store: accountStore, service: accountService });
         if (again.account !== session.account) throw new AnotherAccountError();
         await deleteAccountOf({ service: account, accountStore, session: again });
       }
     }).then(async () => {
       // signed in again meanwhile: that view is not this delete's to change
+      if (epoch !== generation) return;
+      // a sign-in that took the deleted one's place while the delete was out stays (deleteAccount.ts): it is shown
+      if (await account.session().catch(() => undefined) !== undefined) { await refresh(true); return; }
       if (epoch !== generation) return;
       directory = [];
       accountView = { kind: "signed-out", error: null, notice: t("Your account was deleted.") };

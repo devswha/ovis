@@ -12,6 +12,10 @@ import { AccountSection } from "./AccountSection.tsx";
 // same button asks before it deletes, and the service's refusals are said in the person's words.
 const SERVICE = "https://account.ovis.example";
 const ACCOUNT = "acct_one";
+/** who the next sign-in in this section turns out to be */
+let signsInAs = ACCOUNT;
+/** runs as the service answers a delete, before this page sees the answer */
+let onDelete: (() => Promise<void>) | null = null;
 
 describe("deleting the account from Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -24,6 +28,8 @@ describe("deleting the account from Settings", () => {
   beforeEach(() => {
     ahead = 0;
     userCode = null;
+    signsInAs = ACCOUNT;
+    onDelete = null;
     fake = new FakeAccountService(() => Date.now() + ahead);
     fake.offerLinkPage(["github", "google"]);
     for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -56,8 +62,9 @@ describe("deleting the account from Settings", () => {
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }
       // the code is approved as this page's first poll comes in, on the link page and on a provider's own device page
-      if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, ACCOUNT, "github"); fake.approveDevice(userCode, ACCOUNT); userCode = null; }
+      if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, "github"); fake.approveDevice(userCode, signsInAs); userCode = null; }
       const answer = await fake.fetch(input, init);
+      if (url.pathname === "/v1/account" && onDelete !== null) await onDelete();
       if (!url.pathname.startsWith("/v1/signin/") || !answer.ok) return answer;
       const started = await answer.json() as Record<string, unknown>;
       userCode = String(started["user_code"]);
@@ -154,6 +161,34 @@ describe("deleting the account from Settings", () => {
     await until(() => buttons().includes("Delete account"));
     expect(buttons()).not.toContain("Delete account for good?");
     expect(shown()).not.toContain("for good");
+  });
+
+  it("drops a sign-in-again prompt to delete when the person signs out, so it never deletes the next account", async () => {
+    await signedIn();
+    ahead = 11 * 60_000;
+    await press("Delete account");
+    await press("Delete account for good?");
+    await until(() => shown().includes("To delete your account, sign in again"));
+    await press("Sign out of GitHub");
+    await until(() => buttons().includes("Sign in"));
+    signsInAs = "acct_two";
+    await press("Sign in");
+    await until(() => buttons().includes("Delete account"));
+    expect(buttons()).not.toContain("Sign in again");
+    expect(shown()).not.toContain("To delete your account, sign in again");
+    expect(fake.deleted("acct_two")).toBe(false);
+  });
+
+  it("shows the sign-in that took the deleted one's place while the delete was out, not a signed-out page", async () => {
+    await signedIn();
+    const mine = (await indexedAccountStore.get("session"))!;
+    onDelete = () => indexedAccountStore.set("session", { ...mine, account: "acct_two", access_token: fake.issueToken("acct_two"), refresh_token: "rt-two", sign_in_id: "another-sign-in" });
+    await press("Delete account");
+    await press("Delete account for good?");
+    // settled: signed out, or the other sign-in read after the delete and shown
+    await until(() => fake.deleted(ACCOUNT) && (buttons().includes("Sign in") || (fake.requests.slice(fake.requests.indexOf("DELETE /v1/account") + 1).some((line) => line.startsWith("GET ")) && buttons().includes("Delete account"))));
+    expect(buttons()).not.toContain("Sign in");
+    expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
   });
 
   it("says to cancel a subscription that still renews, and keeps the account", async () => {
