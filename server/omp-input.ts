@@ -211,9 +211,11 @@ export function parseOmpSuggestion(ansi: string): string | null {
   for (const row of rows.slice(-4).reverse()) {
     const lead = leadingBlanks(cells[row]!);
     const gutter = Array.from(OMP_GUTTER_RE.exec(raw[row]!)![0]).length;
-    // pi's row has no gutter, so a prediction there may begin like another shape's (`| `, `❯ `): read from the row's
-    // first character too, and let the empty row of the shape on screen tell which it is (#3643)
-    for (const start of gutter > lead ? [lead, gutter] : [gutter]) {
+    // pi's row has no gutter, so a prediction there may begin like the box's IME-safe gutter (`| `): with that gutter,
+    // read from the row's first character first, and let the empty row of the shape on screen tell which it is (#3643).
+    // Any other gutter (`❯ `, `╰─ `) is read past first: a claude-shape row with its `❯ ` blanked reads as pi's
+    const pipe = /^[|│] $/u.test(raw[row]!.slice(lead, gutter));
+    for (const start of gutter <= lead ? [gutter] : pipe ? [lead, gutter] : [gutter, lead]) {
       const ghost = ghostFrom(cells[row]!, start, ompGhostDrawn, true);
       if (ghost === null || OMP_QUEUE_HEADER_RE.test(ghost.text)) continue;
       const blanked = raw.slice();
