@@ -129,6 +129,10 @@ describe("omp's predicted next prompt", () => {
     // a claude-shape row whose `❯ ` is drawn in the prediction's own color reads past it: blanked whole, that row
     // would read as pi's (#3643)
     expect(parseOmpSuggestion(screen(rule, `\u001b[38;5;244m❯ ${RESET}\u001b[38;5;244mopen the PR${RESET}`, rule, status))).toBe("open the PR");
+    // and its empty composer's right-aligned hint in that color is no prediction, nor read from the `❯ ` on
+    expect(parseOmpSuggestion(screen(rule, `\u001b[38;5;244m❯ ${RESET}${" ".repeat(80)}\u001b[38;5;244mShift+Tab effort${RESET}`, rule, status))).toBeNull();
+    // only the box's `| ` gutter is read from the first character: a pi prediction that starts like another gap stays as on main
+    for (const cap of ["▐ ", "▎ ", "╰─ "]) expect(parseOmpSuggestion(screen(rule, `${DARK_DIM}${cap}continue${RESET}`, rule, status)), cap).toBeNull();
     // the box's IME-safe gutter, drawn in its border color, is still no part of the prediction
     expect(parseOmpSuggestion(screen(`${fg(61, 66, 74)}╭─ π > GPT-6.1 Sol ${"─".repeat(90)}╮${RESET}`, `${fg(61, 66, 74)}│ ${RESET}${DARK_DIM}open the PR${RESET}`, `${fg(61, 66, 74)}╰${"─".repeat(116)}╯${RESET}`))).toBe("open the PR");
   });
