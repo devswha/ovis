@@ -84,15 +84,27 @@ describe("codexOwnScreenOpen", () => {
       // the transcript's pager, as 0.167 drew it with `[tui] fullscreen_transcript = false` (seen, not recorded)
       "^space select\n ↑/↓ to scroll · pgup/pgdn to page · home/end to jump\n q close · f3 find · esc browse prompts",
       // its prompt browser (esc in that pager), where Enter rewinds the conversation: its footer begins with a word, and a
-      // narrower pane shortens it to one row instead of wrapping it, as 0.167.0 and 0.167.1 drew it at 100, 80, 60, 50,
-      // 40 and 30 columns (seen, not recorded)
+      // narrower pane shortens it to one row instead of wrapping it, as 0.167.0 to 0.167.2 drew it at 100, 80, 60, 50,
+      // 40, 30 and 20 columns (seen, not recorded)
       "Browsing transcript · ↑↓/jk scroll · ←→/hl prompts · ^t details · ↵ rewind · esc back",
       "Browsing · ↑↓/jk scroll · ←→/hl prompts · ^t details · ↵ rewind · esc back",
       "Browsing · ↑↓/jk ←→/hl · ^t details · ↵ rewind · esc back",
       "Browsing · ↑↓/jk ←→/hl · ↵ rewind · esc",
       "Browsing · ↵ rewind · esc back",
       "Browsing · esc back",
+      "Browsing · esc",
     ]) expect(codexOwnScreenOpen(under("  Some list", "› 1. First", "  2. Second", footer)), footer).toBeTrue();
+  });
+
+  it("reads the prompt browser's label alone as its footer only on a screen as narrow as the panes Codex draws it in", () => {
+    // 0.167.2 at 15 and at 10 columns (seen, not recorded): the transcript's last rows, then the label
+    const at15 = ["/ T R A N S C R", "  >_ OpenAI Co…", "     …atch/proj", "› hello narrow", "  check", "■ Conversation", "interrupted -",
+      "use /feedback", "if something", "went wrong", "Browsing"].join("\n");
+    expect(codexOwnScreenOpen(at15)).toBeTrue();
+    expect(codexOwnScreenOpen(["d - use /", "feedback", "if", "something", "went wrong", "Browsing"].join("\n"))).toBeTrue();
+    // a wider screen whose last row is the word: there the footer would say more
+    expect(codexOwnScreenOpen(under("• The view was called", "  Browsing"))).toBeFalse();
+    expect(codexOwnScreenOpen(at15.replace("went wrong", "went wrong, as the log above shows"))).toBeFalse();
   });
 
   it("leaves the composer alone, with whatever it and the conversation above it show", () => {

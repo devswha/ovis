@@ -297,12 +297,18 @@ const CODEX_KEY_CAPTURE_RE = /(?:^|\s)esc cancels\.$/i;
 /**
  * The transcript's prompt browser: Esc in the transcript pager, which Ctrl+T opens with `[tui] fullscreen_transcript =
  * false` (by default Ctrl+T leaves the composer). Its footer is the screen's last row and begins with a word, not a
- * key, and Codex shortens it to one row as the pane narrows (0.167.0 and 0.167.1): `Browsing transcript · ↑↓/jk scroll ·
+ * key, and Codex shortens it to one row as the pane narrows (0.167.0 to 0.167.2): `Browsing transcript · ↑↓/jk scroll ·
  * ←→/hl prompts · ^t details · ↵ rewind · esc back` at 90 columns, `Browsing · ↑↓/jk ←→/hl · ↵ rewind · esc` at 50,
- * `Browsing · esc back` at 30. There h, j, k and l move through the prompts, and Enter rewinds the conversation to the
- * one picked.
+ * `Browsing · esc back` at 30 and `Browsing · esc` at 20. There h, j, k and l move through the prompts, and Enter
+ * rewinds the conversation to the one picked.
  */
 const CODEX_TRANSCRIPT_RE = /^Browsing(?: transcript)? · (?:.+ · )?esc(?: back)?$/;
+/**
+ * Narrower, the label alone: Codex keeps the first of those forms that fits its footer, the pane less two columns, and
+ * from 15 columns down only `Browsing` does (under 10 nothing does, and no footer is drawn). The word ends the screen
+ * as its footer only there: a screen with a wider row does not read it as one.
+ */
+const CODEX_TRANSCRIPT_LABEL_COLUMNS = 15;
 
 /** What a chat send to a Codex pane is refused with while one of those screens is open (`agent_blocked`). */
 export const CODEX_OWN_SCREEN_MESSAGE = "Codex has one of its own screens open in the terminal; close it there, then send";
@@ -335,6 +341,7 @@ export function codexOwnScreenOpen(screen: string): boolean {
   if (filled.length === 0) return false;
   if (CODEX_HISTORY_SEARCH_RE.test(filled.at(-1)!.text)) return true;
   if (CODEX_TRANSCRIPT_RE.test(filled.at(-1)!.text)) return true;
+  if (filled.at(-1)!.text === "Browsing" && rows.every((row) => row.length <= CODEX_TRANSCRIPT_LABEL_COLUMNS)) return true;
   const marked = findLastIndex(rows, (row) => /^[›»](?:\s|$)/.test(row));
   const tail = filled.filter(({ at }) => at > marked).slice(-CODEX_FOOTER_ROWS);
   // the sentence a view ends with instead of a footer, as one row or wrapped onto two, the first of them no status
