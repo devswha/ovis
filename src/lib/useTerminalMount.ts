@@ -1737,7 +1737,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         // lost in silence. Not Backspace, which edits the draft, nor a mouse report, nor what xterm sends by itself, which
         // no one typed (a focus report, its answers to the program's queries). Told apart at the source, not by the bytes:
         // Shift+F3 sends what a cursor-position report does, Alt+] the start of a colour report.
-        else if (typed.automatic !== true && !/^([\x7f\b]+|\x1b\[(<|M)[\s\S]*)$/.test(typed.input)) {
+        else if (typed.automatic !== true && !/^([\x7f\b\x17]+|\x1b\[(<|M)[\s\S]*)$/.test(typed.input)) {
           setInputError(tRef.current("Not sent: the terminal is not ready for keys."));
         }
       };
@@ -1767,8 +1767,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         enterAs = null;
         enterKey = null;
         if (commandBackspace && data === "\x7f") data = "\x15";
-        // a held draft is edited by its own Backspace: Ctrl+W there would erase a word of the pane's line instead
-        if (controlBackspace && data === "\b" && draftHeldForRef.current !== paneRef.current) data = "\x17";
+        if (controlBackspace && data === "\b") data = "\x17";
         commandBackspace = false;
         controlBackspace = false;
         const current = paneRef.current;
@@ -1797,10 +1796,10 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
             setInputError(t("Not sent: send or discard the held input first."));
             return;
           }
-          // Text, a paste, Backspace and anything with a line break go to the draft, which leaves
+          // Text, a paste, Backspace (Ctrl+Backspace's word erase too) and anything with a line break go to the draft, which leaves
           // Enter out, so a partial command never runs. Other control keys (Ctrl+C, Escape, Tab,
           // arrows) still reach the program below: an interrupt must not wait on the draft.
-          if (pasted || /[\r\n\x7f\b]/.test(input) || applyToDraft(EMPTY_DRAFT, input) !== EMPTY_DRAFT) {
+          if (pasted || /[\r\n\x7f\b\x17]/.test(input) || applyToDraft(EMPTY_DRAFT, input) !== EMPTY_DRAFT) {
             if (secret) {
               const t = tRef.current;
               setInputError(t("Not sent: send or discard the held input first."));
