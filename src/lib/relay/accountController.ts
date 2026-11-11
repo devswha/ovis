@@ -4,7 +4,7 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { myPcs } from "../account/myPcs.ts";
-import { AccountService, AccountServiceError, accountProvidersOf, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
+import { AccountService, AccountServiceError, DeleteRefusedSignInError, DeleteUnansweredError, accountProvidersOf, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError } from "../account/signin.ts";
@@ -293,21 +293,22 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // a sign-out or a sign-in while that read was out: what it drew stays
       if (!current()) return;
       if (error instanceof SignedOutError && await account.session().catch(() => undefined) === undefined) {
-        // nothing is stored any more: the signed-out page. After a delete of this sign-in that was never answered, the
-        // account is most likely what ended it, so its key and records go as after an answered delete (deleteAccount.ts)
-        if (from !== undefined && unanswered !== undefined && sameSignIn(unanswered, from)) {
+        // nothing is stored any more: the signed-out page. When an earlier delete of this sign-in went out unanswered and
+        // this press's own delete was refused for its sign-in, the account is most likely what ended it, so its key and
+        // records go as after an answered delete (deleteAccount.ts). A sign-out found here, before any request, keeps them.
+        if (error instanceof DeleteRefusedSignInError && from !== undefined && unanswered !== undefined && sameSignIn(unanswered, from)) {
           unanswered = undefined;
           await accountStore.clear(undefined, { only: (stored) => stored === undefined, spare: ["pending"] });
         }
         if (!current()) return;
         directory = [];
-        accountView = { kind: "signed-out", error: null };
+        accountView = { kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") };
         armRefresh();
         await changed();
         return;
       }
-      // sent, and no answer came back (not a refusal, not a sign-in gone)
-      if (from !== undefined && !(error instanceof AccountServiceError) && !(error instanceof SignedOutError) && !(error instanceof AnotherAccountError)) unanswered = from;
+      // the DELETE itself went out and no answer came back: not offline before it, not a refresh, not the sign-in sheet
+      if (from !== undefined && error instanceof DeleteUnansweredError) unanswered = from;
       // a sign-in that ended or was replaced deleted nothing, and the page now shown is not the one asked about: no
       // failure is drawn on it to try again
       // said on Devices alone, where Delete account was pressed: the directory's own failure keeps `error`
