@@ -1767,7 +1767,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         enterAs = null;
         enterKey = null;
         if (commandBackspace && data === "\x7f") data = "\x15";
-        if (controlBackspace && data === "\b") data = "\x17";
+        // a held draft is edited by its own Backspace: Ctrl+W there would erase a word of the pane's line instead
+        if (controlBackspace && data === "\b" && draftHeldForRef.current !== paneRef.current) data = "\x17";
         commandBackspace = false;
         controlBackspace = false;
         const current = paneRef.current;
