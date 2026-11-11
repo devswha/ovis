@@ -1,4 +1,4 @@
 ### Fixed
-- Add a connection → SSH no longer looks empty in the native app and other windows the PC keeps its
-  list of known PCs from (a device on the relay, a Portal visitor, an open LAN window): one line now
-  says this connection does not list them, above the field where the PC's address is typed.
+- Add a connection → SSH no longer looks empty in an open LAN window, which the PC keeps its list of
+  known PCs from: one line now says where that list can be seen (on the PC itself, or from a device
+  paired with it directly).

@@ -241,10 +241,13 @@ describe("Connect a phone on a phone", () => {
     expect(connected).toEqual(["build-box"]);
   });
 
-  it("says the list is not shown to a window the server keeps it from, and still takes a typed address", async () => {
-    const hint = "This connection does not list the PCs this PC knows. Type the address of the PC to add.";
+  it("says where the list can be seen when the server keeps it from this window", async () => {
+    // the server's own words for the refusal (server/dispatch.ts): no instruction to type an address, which an open LAN
+    // window could not add either
+    const hint = "See the PCs this PC knows on this PC itself, or from a device paired with it directly.";
     const added: (AddPcPreset | undefined)[] = [];
-    // a device on the relay (the native app), a Portal visitor, an open LAN window
+    // an open LAN window: the one window that shows the SSH tab and is refused the list (the relay shell and a Portal
+    // visitor, read only, show no SSH tab)
     candidatesRefused = "owner_only";
     await mount(<SshTab machines={[]} onAddPc={(preset) => { added.push(preset); }} onConnectMachine={() => {}} />);
     expect(requests).toContain("/api/machines/ssh-candidates");

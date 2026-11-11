@@ -184,13 +184,14 @@ const SOURCE_LABEL: Record<FoundSource, string> = { herdr: "herdr", ssh_config: 
 /**
  * SSH: the PCs found, each with Connect (saved in herdr, its own dialog), Add (Add PC with its address) or Added,
  * then a field for any other address. A window the server will not tell (an open LAN window, Portal, the relay)
- * gets the field with one line saying so, so an empty tab is not taken for a PC that knows none.
+ * gets the field; one refused as owner_only (an open LAN window: the relay shell and a Portal visitor show no SSH tab)
+ * is told where the list can be seen, so an empty tab is not taken for a PC that knows none.
  */
 export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: readonly Machine[]; onAddPc: (preset?: AddPcPreset) => void; onConnectMachine: (machine: Machine) => void }) {
   const t = useT();
   const [found, setFound] = useState<SshCandidate[] | null>(null);
   const [failed, setFailed] = useState(false);
-  // the server keeps its list from this window (owner_only): said in one line above the field
+  // the server keeps its list from this window (owner_only): one line above the field says where it can be seen
   const [withheld, setWithheld] = useState(false);
   const [reads, setReads] = useState(0);
   const [typed, setTyped] = useState("");
@@ -218,7 +219,7 @@ export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: read
       if (!live) return;
       setFound([]);
       setFailed(!refused);
-      // a watching device (read_only) adds no PC: only a window that may add one is told to type its address
+      // a watching device (read_only) adds no PC: it is told nothing new
       setWithheld(error instanceof ApiError && error.code === "owner_only");
     });
     return () => { live = false; };
@@ -261,7 +262,7 @@ export function SshTab({ machines, onAddPc, onConnectMachine }: { machines: read
           <button type="button" className="btn" onClick={() => { setFound(null); setReads((count) => count + 1); }}><RefreshCw aria-hidden="true" />{t("Try again")}</button>
         </div>
       )}
-      {withheld && <p className="settings-hint" role="status">{t("This connection does not list the PCs this PC knows. Type the address of the PC to add.")}</p>}
+      {withheld && <p className="settings-hint" role="status">{t("See the PCs this PC knows on this PC itself, or from a device paired with it directly.")}</p>}
       <form className="connect-ssh-form" onSubmit={add}>
         <label className="settings-label" htmlFor="connect-ssh-address">{t("Or type an SSH address")}</label>
         <div className="connect-ssh-field">
