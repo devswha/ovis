@@ -128,11 +128,12 @@ const withoutGhost = (cells: readonly Cell[], ghost: { start: number; to: number
 
 /**
  * The words of a ghost as a suggestion: none when pi-tui cut it at the row's edge (`truncateToWidth` ends it
- * with `…`), as only part of it would go into the box.
+ * with `…`), as only part of it would go into the box, and none for a ghost with no letter or digit in it: a
+ * glyph drawn alone in the box is the composer's own (gjc's microphone while it records speech), not a prompt.
  */
 function suggestionWords(text: string): string | null {
   const words = text.replace(/\u00a0/g, " ").trim();
-  return words === "" || words.endsWith("…") ? null : words;
+  return words === "" || words.endsWith("…") || !/[\p{L}\p{N}]/u.test(words) ? null : words;
 }
 
 /** The screen's rows as cells, and as plain text untrimmed. */

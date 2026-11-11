@@ -43,6 +43,15 @@ describe("gjc's suggested next prompt", () => {
     expect(parseGjcSuggestion(screen(top, row(""), bottom))).toBeNull();
   });
 
+  test("nothing for a colored glyph alone: gjc's microphone while it records speech is no prompt", () => {
+    // gjc draws its speech-to-text cursor as the theme's mic icon in a color of its own, by itself in the empty box
+    expect(parseGjcSuggestion(screen(top, row(`${fg(200, 40, 40)}🎤${RESET}`), bottom))).toBeNull();
+    expect(parseGjcSuggestion(screen(top, row(ghost("●")), bottom))).toBeNull();
+    // a suggestion of one word, or of digits alone, is still one
+    expect(parseGjcSuggestion(screen(top, row(ghost("계속")), bottom))).toBe("계속");
+    expect(parseGjcSuggestion(screen(top, row(ghost("2")), bottom))).toBe("2");
+  });
+
   test("nothing for a suggestion cut short at the box's edge: only part of it would go into the box", () => {
     expect(parseGjcSuggestion(screen(top, row(ghost("공통 규칙이랑 화면 줄 수정 커밋하고, 새 강의 몇 개로 한 번씩만 돌려서 원…")), bottom))).toBeNull();
   });

@@ -3121,8 +3121,12 @@ describe("gjc's and omp's suggestion on a prompt poll", () => {
     omp: ["Done.", "", " π > GPT-6.1 Sol > ▶─2%────", `╰─ \u001b[0m\u001b[38;2;95;102;115mopen the PR\u001b[0m`, ""].join("\r\n"),
   };
 
-  /** a herdr with one pane of `agent`, scrolled `offset` rows into its history, whose screen shows the suggestion */
-  async function suggestingHerdr(agent: string, status: string, offset: number | null, run: (reads: string[]) => Promise<void>): Promise<void> {
+  /**
+   * a herdr with one pane of `agent`, scrolled `offset` rows into its history, whose screen shows the suggestion.
+   * `after`: where the viewport is when the pane is asked about again, after its screen was read ("fail": herdr
+   * does not answer that look); as in the snapshot unless told.
+   */
+  async function suggestingHerdr(agent: string, status: string, offset: number | null, run: (reads: string[]) => Promise<void>, after: number | null | "fail" = offset): Promise<void> {
     const root = mkdtempSync(join(tmpdir(), "herdr-prompt-suggestion-"));
     const path = join(root, "herdr.sock");
     const reads: string[] = [];
@@ -3137,10 +3141,15 @@ describe("gjc's and omp's suggestion on a prompt poll", () => {
         if (!input.includes("\n")) return;
         const request = JSON.parse(input.split("\n")[0]!) as { id: string; method: string; params: { format?: string } };
         const answer = (result: unknown) => socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+        // a herdr that reports no scroll (null) is read as at the bottom
+        const scrollAt = (rows: number | null) => rows === null ? null : { offset_from_bottom: rows, max_offset_from_bottom: 100, viewport_rows: 40 };
         if (request.method === "session.snapshot") {
-          // a herdr that reports no scroll (null) is read as at the bottom
-          const scroll = offset === null ? null : { offset_from_bottom: offset, max_offset_from_bottom: 100, viewport_rows: 40 };
-          return answer({ snapshot: { panes: [{ pane_id: "p_1", agent, agent_status: status, scroll }], layouts: [] } });
+          return answer({ snapshot: { panes: [{ pane_id: "p_1", agent, agent_status: status, scroll: scrollAt(offset) }], layouts: [] } });
+        }
+        if (request.method === "pane.get") {
+          reads.push("scroll");
+          if (after === "fail") return socket.end(`${JSON.stringify({ id: request.id, error: { code: "herdr_unavailable", message: "no answer" } })}\n`);
+          return answer({ pane: { pane_id: "p_1", agent, agent_status: status, scroll: scrollAt(after) } });
         }
         if (request.method !== "pane.read") throw new Error(`unexpected fixture RPC: ${request.method}`);
         reads.push(request.params.format ?? "");
@@ -3170,8 +3179,19 @@ describe("gjc's and omp's suggestion on a prompt poll", () => {
       for (const offset of [0, null]) {
         await suggestingHerdr(agent, "done", offset, async (reads) => {
           expect(await poll()).toEqual({ prompt: null, suggestion: "open the PR", restored: null });
-          expect(reads.at(-1)).toBe("ansi");
+          // its screen is read, and then where its viewport is by then
+          expect(reads.slice(-2)).toEqual(["ansi", "scroll"]);
         });
+      }
+    });
+
+    test(`${agent}: none when the viewport was scrolled into the history while its screen was read, or herdr does not say where it is`, async () => {
+      // another device scrolls the pane after the snapshot: the rows read may end in an older frame of the box
+      for (const after of [3, "fail"] as const) {
+        await suggestingHerdr(agent, "done", 0, async (reads) => {
+          expect(await poll()).toEqual({ prompt: null, suggestion: null, restored: null });
+          expect(reads.slice(-2)).toEqual(["ansi", "scroll"]);
+        }, after);
       }
     });
 
