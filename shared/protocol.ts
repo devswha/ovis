@@ -1142,10 +1142,10 @@ export interface PromptAnswer {
  *  detaches and watches; it attaches again when the user is back. One watch per pane and connection;
  *  a second watch for the same pane starts it again at the new grid. watch-end: the view ended
  *  (unwatch does not answer one), and a pane the view could not start for gets one at once. At most
- *  64 panes watched per connection, a pane counting until its view's process has ended: one more
- *  answers `too_many_watches` and its watch-end. A `pane_id` that is no string, is blank, begins
- *  with a hyphen (blanks before it aside), holds a control character or is longer than 256
- *  characters answers `invalid_watch`.
+ *  64 panes watched per connection: one more gets its watch-end at once, with no error. A view asked
+ *  for as another is given up starts once that one's process has ended. A `pane_id` that is no
+ *  string, is blank, begins with a hyphen (blanks before it aside), holds a control character or is
+ *  longer than 256 characters answers `invalid_watch`.
  */
 
 /** A connection's authority over the shared ptys: `interact` types and resizes, `observe` only watches. */

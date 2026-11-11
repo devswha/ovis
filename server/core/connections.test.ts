@@ -75,25 +75,88 @@ it("holds no more than 64 observe processes for one connection, and ends the vie
   // each watch is a `herdr terminal session observe` process with three descriptors: a page watches the panes of four tabs
   for (let index = 0; index < 64; index++) w.watchPane(w.client, `w1:p${index}`, GRID);
   expect([w.started.length, w.frames]).toEqual([64, []]);
-  // one more pane: nothing is started for it, and its view is told it ended
+  // one more pane: nothing is started for it, and its view is told it ended, as any view that cannot start is. No
+  // error is sent with it: a page writes an error it does not know into every terminal it shows
   w.watchPane(w.client, "w1:p64", GRID);
   expect(w.started).toHaveLength(64);
-  expect(w.frames).toEqual([
-    { type: "error", code: "too_many_watches", message: "at most 64 watches per connection", pane_id: "w1:p64" },
-    { type: "watch-end", pane_id: "w1:p64" },
-  ]);
-  // a place given up is still its process's until that has exited: asked to end, it is still one of the 64
-  w.unwatchPane(w.client, "w1:p0");
-  expect(w.started[0]!.killed).toBe(1);
-  w.watchPane(w.client, "w1:p64", GRID);
-  expect(w.started).toHaveLength(64);
-  await w.started[0]!.exit();
-  w.watchPane(w.client, "w1:p64", GRID);
-  expect(w.started.map((process) => process.paneId).at(-1)).toBe("w1:p64");
-  expect(w.started).toHaveLength(65);
+  expect(w.frames).toEqual([{ type: "watch-end", pane_id: "w1:p64" }]);
   // and the connection's end stops them all
   w.end(w.client, "closed");
-  expect(w.started.filter((process) => process.killed > 0)).toHaveLength(65);
+  expect(w.started.filter((process) => process.killed > 0)).toHaveLength(64);
+});
+
+it("starts a view asked for at the limit once a pane given up before it has ended its process, and tells it no end meanwhile", async () => {
+  const w = watching();
+  for (let index = 0; index < 64; index++) w.watchPane(w.client, `w1:p${index}`, GRID);
+  // a tab left the page's recent ones and another came: its panes are given up and the next tab's asked for in one read
+  w.unwatchPane(w.client, "w1:p0");
+  w.unwatchPane(w.client, "w1:p1");
+  w.watchPane(w.client, "w1:p64", GRID);
+  w.watchPane(w.client, "w1:p65", GRID);
+  // 64 processes still: the two views wait for the two that were asked to end, and are told nothing
+  expect([w.started.length, w.frames]).toEqual([64, []]);
+  // a third has no place to wait for
+  w.watchPane(w.client, "w1:p66", GRID);
+  expect(w.frames).toEqual([{ type: "watch-end", pane_id: "w1:p66" }]);
+  // asked for again while it waits: it starts at the grid asked for last
+  w.watchPane(w.client, "w1:p65", { cols: 100, rows: 30 });
+  await w.started[0]!.exit();
+  expect(w.started.slice(64).map((process) => [process.paneId, process.cols])).toEqual([["w1:p64", 80]]);
+  await w.started[1]!.exit();
+  expect(w.started.slice(64).map((process) => [process.paneId, process.cols])).toEqual([["w1:p64", 80], ["w1:p65", 100]]);
+  expect(w.frames).toHaveLength(1);
+});
+
+it("counts a view that ended by itself no more: the next view asked for takes its place once its process has exited", async () => {
+  const w = watching();
+  for (let index = 0; index < 64; index++) w.watchPane(w.client, `w1:p${index}`, GRID);
+  // a pane closed: herdr says so before its observe process is gone
+  w.started[0]!.end();
+  w.watchPane(w.client, "w1:p64", GRID);
+  expect([w.started.length, w.frames]).toEqual([64, [{ type: "watch-end", pane_id: "w1:p0" }]]);
+  await w.started[0]!.exit();
+  expect(w.started.slice(64).map((process) => process.paneId)).toEqual(["w1:p64"]);
+});
+
+it("keeps the place a waiting view was given: the pane given up for it is not watched again in its stead", async () => {
+  const w = watching();
+  for (let index = 0; index < 64; index++) w.watchPane(w.client, `w1:p${index}`, GRID);
+  w.unwatchPane(w.client, "w1:p0");
+  w.watchPane(w.client, "w1:p64", GRID);
+  // 63 views run and one waits: the pane given up is a 65th
+  w.watchPane(w.client, "w1:p0", GRID);
+  expect(w.frames).toEqual([{ type: "watch-end", pane_id: "w1:p0" }]);
+  await w.started[0]!.exit();
+  expect(w.started.slice(64).map((process) => process.paneId)).toEqual(["w1:p64"]);
+});
+
+it("forgets a view that waits for a place when it is given up, and when its connection ends", async () => {
+  const w = watching();
+  for (let index = 0; index < 64; index++) w.watchPane(w.client, `w1:p${index}`, GRID);
+  w.unwatchPane(w.client, "w1:p0");
+  w.watchPane(w.client, "w1:p64", GRID);
+  w.unwatchPane(w.client, "w1:p64");
+  await w.started[0]!.exit();
+  expect(w.started).toHaveLength(64);
+  // the place is free now: a view asked for starts at once
+  w.watchPane(w.client, "w1:p64", GRID);
+  expect(w.started).toHaveLength(65);
+  w.unwatchPane(w.client, "w1:p1");
+  w.watchPane(w.client, "w1:p65", GRID);
+  w.end(w.client, "closed");
+  await w.started[1]!.exit();
+  expect([w.started.length, w.frames]).toEqual([65, []]);
+});
+
+it("holds no more than 64 processes for frames that ask for panes and give them up over and over", async () => {
+  const w = watching();
+  for (let index = 0; index < 10; index++) w.watchPane(w.client, `w1:p${index}`, GRID);
+  // each is given up at once, and its process is still there until the event loop turns
+  for (let index = 0; index < 3000; index++) { w.watchPane(w.client, `x${index}`, GRID); w.unwatchPane(w.client, `x${index}`); }
+  expect([w.started.length, w.frames]).toEqual([64, []]);
+  // as they end, nothing starts in their places: none of those views is wanted any more
+  for (const process of w.started.slice(10)) await process.exit();
+  expect(w.started).toHaveLength(64);
 });
 
 it("runs one observe process for a pane at a time: watched again, it starts once the last has exited, at the grid asked for last", async () => {
