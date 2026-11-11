@@ -8,5 +8,5 @@
   beginning less than a minute apart; Send now still sends a waiting message at once. A turn that
   begins this way while a message is being typed, in the few tenths of a second between its paste
   and its Enter, leaves the text in Claude's input line, with the message marked as not confirmed,
-  instead of sending it into that turn. This is most likely when the task ended during the turn the
-  message was waiting behind.
+  instead of sending it into that turn. That can happen to a message that waited behind a turn
+  during which the task ended, as that turn's end both sends the message and begins the new turn.
