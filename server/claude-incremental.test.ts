@@ -292,14 +292,21 @@ describe("a subagent's hand-back through the page reader (#3658)", () => {
     results: tasks(turns).map((task) => task.result),
   });
 
-  for (const order of ["notification first", "hand-back first"] as const) {
+  const rows = (turns: ConversationTurn[]) => turns.map((turn) => turn.parts.map((part) => part.kind === "text" ? part.text : part.kind === "task_result" ? `card:${part.tasks[0]!.result.slice(0, 10)}` : part.kind).join(" "));
+
+  for (const order of ["notification first", "hand-back first", "hand-back, reply, notification"] as const) {
     it(`puts the report in the card, warm as cold, with the ${order}`, () => {
       const { handback, ended, report } = handbackRecords();
-      const records = order === "notification first" ? [enqueue(ended), handback, user(ended)] : [handback, user(ended)];
+      const records = order === "notification first" ? [enqueue(ended), handback, user(ended)]
+        : order === "hand-back first" ? [handback, user(ended)]
+        // the agent answers the report before the notification comes: the card stays where the report came, before that answer
+        : [handback, assistant([{ type: "text", text: "Summary of the report" }], "end_turn"), user(ended)];
       const root = mkdtempSync(join(tmpdir(), "ovis-handback-page-")); roots.push(root);
       const path = join(root, "session.jsonl");
       writeFileSync(path, `${jsonl(user("Price it"), assistant([{ type: "text", text: "Started." }], "end_turn"), ...records)}\n`);
-      expect(shown(transcriptPage("claude-transcript", path).turns)).toEqual({ notices: 0, results: [report] });
+      const cold = transcriptPage("claude-transcript", path).turns;
+      expect(shown(cold)).toEqual({ notices: 0, results: [report] });
+      if (order === "hand-back, reply, notification") expect(rows(cold)).toEqual(["Price it", "Started.", "card:## Verdict", "Summary of the report"]);
       // the next prompt settles that turn: a warm read keeps what a cold one shows
       appendFileSync(path, `${jsonl(user("Thanks"), assistant([{ type: "text", text: "Sure." }], "end_turn"))}\n`);
       const warm = transcriptPage("claude-transcript", path).turns;
@@ -308,6 +315,11 @@ describe("a subagent's hand-back through the page reader (#3658)", () => {
       expect(warm).toEqual(transcriptPage("claude-transcript", path).turns);
     });
   }
+
+  it("keeps the first line's own indentation, a report that opens with code", () => {
+    const { handback, ended } = handbackRecords(["", "    const x = 1;", "", "That is the line."]);
+    expect(tasks(parseClaudeTranscript(jsonl(enqueue(ended), handback, user(ended)))).map((task) => task.result)).toEqual(["    const x = 1;\n\nThat is the line."]);
+  });
 
   it("leaves a report longer than a card holds as the message it came as, whole", () => {
     const lines = [...Array.from({ length: 2_000 }, (_, index) => `line ${index} of the report`), "TAIL"];

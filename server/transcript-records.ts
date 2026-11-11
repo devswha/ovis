@@ -55,7 +55,8 @@ export function claudeHandback(value: unknown): { taskId: string; report: string
   const taskId = typeof origin.senderTaskId === "string" ? origin.senderTaskId : "";
   const framed = typeof origin.body === "string" ? /^\[Subagent hand-back\][^\n]*\n([\s\S]*)$/.exec(origin.body) : null;
   if (origin.kind !== "peer" || !taskId || framed === null) return null;
-  const report = framed[1]!.split("\n").map((line) => line.replace(/^ {2}/, "")).join("\n").trim();
+  // blank rows around the report go, its first line's own indentation (a code block) stays
+  const report = framed[1]!.split("\n").map((line) => line.replace(/^ {2}/, "")).join("\n").replace(/^(?:[ \t]*\n)+/, "").trimEnd();
   return report && report.length <= OMO_TASK_RESULT_MAX ? { taskId, report } : null;
 }
 

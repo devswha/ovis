@@ -546,17 +546,22 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     if (notice.agent && !noticed.has(key)) {
       noticed.add(key);
       const card = agentTaskResult(notice, options.subagents?.get(notice.taskId));
-      turns.splice(noticeAt(), 0, { role: "user", ts, parts: [{ kind: "task_result", tasks: [card] }] });
+      const turn: ConversationTurn = { role: "user", ts, parts: [{ kind: "task_result", tasks: [card] }] };
       // the report it points at is drawn in the card, as a report in the notification itself is
       const pointed = CLAUDE_HANDBACK_POINTER.exec(card.result)?.[1];
       const held = pointed === undefined ? undefined : handbacks.get(pointed);
       if (held?.report !== undefined && held.card === undefined) {
         fillCard(card, held.report);
         held.card = card;
+        // the card takes the row the report was drawn in, before what the agent said after it
         const at = held.notice === undefined ? -1 : turns.indexOf(held.notice);
-        if (at !== -1) turns.splice(at, 1);
+        if (at !== -1) turns[at] = { ...turn, ts: held.notice!.ts };
+        else turns.splice(noticeAt(), 0, turn);
         delete held.notice;
-      } else if (pointed !== undefined) handbacks.set(pointed, { card });
+      } else {
+        turns.splice(noticeAt(), 0, turn);
+        if (pointed !== undefined) handbacks.set(pointed, { card });
+      }
     }
     return true;
   };
