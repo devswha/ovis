@@ -8,7 +8,7 @@ import type { BridgeDescriptor } from "./bridge.ts";
 import type { CompletionTracker } from "./completion.ts";
 import { MachineManager } from "./machines.ts";
 import type { PushService } from "./push.ts";
-import { refusalHint, SshConnection, sshClient, sweepSshDirs } from "./ssh.ts";
+import { forwardSaysReady, refusalHint, SshConnection, sshClient, sweepSshDirs } from "./ssh.ts";
 import { posixHost, type HostInspection } from "./remote-host.ts";
 
 // The direct mode Windows uses (its OpenSSH has no connection sharing), run here against a
@@ -356,6 +356,18 @@ describe("sweeping connection folders an earlier server left", () => {
       expect(["herdr-ssh-old1", "herdr-ssh-old2", "herdr-ssh-busy", "herdr-ssh-new", "other-old"].filter((name) => existsSync(join(root, name)))).toEqual(["herdr-ssh-busy", "herdr-ssh-new", "other-old"]);
       expect(await sweepSshDirs(join(root, "missing"))).toBe(0);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("which ssh says a forward is bound", () => {
+  // Windows' own OpenSSH writes no -v line to a pipe: forward() must not wait for one from it, or every
+  // Windows connect without Git for Windows times out after 25 s
+  it("waits for the word from Git for Windows' ssh and from OpenSSH outside Windows, never from Windows' own", () => {
+    expect(forwardSaysReady({ git: true }, "win32")).toBe(true);
+    expect(forwardSaysReady({}, "win32")).toBe(false);
+    expect(forwardSaysReady({ git: false }, "win32")).toBe(false);
+    expect(forwardSaysReady({}, "linux")).toBe(true);
+    expect(forwardSaysReady({}, "darwin")).toBe(true);
   });
 });
 
