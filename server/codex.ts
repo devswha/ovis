@@ -3014,7 +3014,7 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
  * that binds a rollout to them takes the same read. Never a caller's earlier read, which may predate a Kiro
  * wrapper the pane runs now (#2774).
  */
-async function codexAgentInfo(paneId: string): Promise<Pick<AgentInfo, "agent_session" | "terminal_title" | "terminal_title_stripped" | "cwd" | "foreground_cwd"> & { nestedTerminal?: true; processRead?: { info: ProcessInfo | undefined } }> {
+async function codexAgentInfo(paneId: string): Promise<Pick<AgentInfo, "agent_session" | "terminal_title" | "terminal_title_stripped" | "cwd" | "foreground_cwd"> & { nestedTerminal?: true; unlabelled?: true; processRead?: { info: ProcessInfo | undefined } }> {
   try {
     const agent = await agentGet(paneId);
     let processRead: { info: ProcessInfo | undefined } | undefined;
@@ -3034,7 +3034,9 @@ async function codexAgentInfo(paneId: string): Promise<Pick<AgentInfo, "agent_se
       return { ...pane, agent_session: undefined, nestedTerminal: true };
     }
     const pane = await paneGet(paneId);
-    return { ...pane, ...(pane.agent_session?.agent === "codex" ? {} : { agent_session: undefined }), ...(processRead ? { processRead } : {}) };
+    // unlabelled: its peers may carry no label either, so freshReportedThread cannot rule them out
+    return { ...pane, ...(pane.agent_session?.agent === "codex" ? {} : { agent_session: undefined }), unlabelled: true as const,
+      ...(kiroNested(info, false) ? { nestedTerminal: true as const } : {}), ...(processRead ? { processRead } : {}) };
   }
 }
 
@@ -3537,7 +3539,7 @@ export async function codexOpenRollout(paneId: string, cwd: string | null | unde
   if (open.size === 1) return [...open][0]!;
   const reported = cwd ? reportedRollout(agent.agent_session, home) : null;
   // a nested pane's peers may carry no label either, so freshReportedThread cannot rule them out
-  if (reported !== null && !agent.nestedTerminal && resumedThread(codexProcesses.map((process) => process.argv ?? [])) === null
+  if (reported !== null && !agent.nestedTerminal && !agent.unlabelled && resumedThread(codexProcesses.map((process) => process.argv ?? [])) === null
     && await freshReportedThread(paneId, cwd!, home, reported, codexProcesses)) return reported;
   const bound = boundRollouts.get(paneId);
   if (bound === undefined || bound.processes !== processes || processes === "" || !cwd || codexRolloutPath(bound.path, home) === null) return null;
@@ -3912,7 +3914,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     return boundHere.path;
   }
   // a nested pane's peers may carry no label either, so freshReportedThread cannot rule them out
-  if (resumed === null && reported !== null && !agent.nestedTerminal
+  if (resumed === null && reported !== null && !agent.nestedTerminal && !agent.unlabelled
     && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
   if (resumed !== null) return resumedNewer.length === 0 ? resumedPath : null;
   // Other nested terminals may have no agent labels either, so the weaker exchange/peer

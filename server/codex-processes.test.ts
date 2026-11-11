@@ -296,12 +296,13 @@ it("resolves a foreground Codex launched from continues before herdr sets pane.a
     pane_id: root, workspace_id: root, tab_id: root, terminal_id: root,
     cwd: root, agent_status: "unknown", agent_session: reportedSession, focused: false, revision: 0,
   }], workspaces: [], tabs: [], agents: [], layouts: [], protocol: 1, version: "test" } as unknown as SessionSnapshot;
+  // an unlabelled pane's reported thread alone is no proof (another unlabelled pane may have begun it): its screen is
+  screen = answer;
   try {
     expect(await paneTranscript(root, home, snapshot)).toMatchObject({ source: "codex-transcript", path });
     expect(await codexOpenRollout(root, root, home)).toBe(path);
     // Also resolves when pane.agent_session has not arrived yet and the screen shows the conversation.
     reportedSession = null;
-    screen = answer;
     const withoutSession = { ...snapshot, panes: [{ ...snapshot.panes[0]!, agent_session: null }] } as SessionSnapshot;
     expect(await paneTranscript(root, home, withoutSession)).toMatchObject({ source: "codex-transcript", path });
     // Once Codex exits back to the shell while pane.agent_session remains, falls back cleanly instead of throwing agent_not_found.
@@ -309,6 +310,37 @@ it("resolves a foreground Codex launched from continues before herdr sets pane.a
     foreground = [{ pid: 900000, argv: ["/bin/bash"] }];
     await expect(paneTranscript(root, home, snapshot)).rejects.toMatchObject({ message: "no_session_path" });
   } finally { bound.mockRestore(); upper.mockRestore(); }
+});
+
+it("takes no reported thread for an unlabelled pane while another unlabelled Codex pane may have begun it", async () => {
+  // Given two unlabelled Codex panes in one folder, and the thread pane B began after both started, which the
+  // shared daemon reported on pane A (the pane that started it); pane B has no report, and no screen shows anything
+  const other = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc02";
+  const otherPath = join(home, "sessions", `rollout-${other}.jsonl`);
+  writeFileSync(otherPath, [
+    { type: "session_meta", payload: { id: other, cwd: root } },
+    { type: "event_msg", payload: { type: "agent_message", message: "Pane B's own conversation, which pane A must never be shown as its own." } },
+  ].map((entry) => JSON.stringify(entry)).join("\n"));
+  const db = new Database(join(home, "state_5.sqlite"));
+  db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2000, 2000, 'cli')").run(other, otherPath, root);
+  db.close();
+  unlabelled = true;
+  reportedSession = { source: "herdr:codex", agent: "codex", kind: "id", value: other };
+  foreground = [{ pid: 900001, argv: ["/usr/bin/codex"] }];
+  foregrounds.set("peer", [{ pid: 900002, argv: ["/usr/bin/codex"] }]);
+  // pane A's Codex started by 1000 s, pane B's from 1000.5 s: both before the thread
+  const start = (pid: number) => pid === 900001 ? 1_000_000 : 1_000_500;
+  const spies = [
+    spyOn(processStart, "processStartUpperBound").mockImplementation(start),
+    spyOn(processStart, "processStartLowerBound").mockImplementation(start),
+    spyOn(processStart, "processStartedAt").mockImplementation(start),
+  ];
+  const pane = (pane_id: string) => ({ pane_id, workspace_id: root, tab_id: root, terminal_id: root, agent_status: "unknown", cwd: root, focused: false, revision: 0 });
+  try {
+    // Then pane A is not resolved to pane B's conversation, by the chat or by a background reader
+    expect(await codexTranscriptPath(root, root, home, [{ ...pane(root), agent_session: reportedSession }, pane("peer")] as never)).not.toBe(otherPath);
+    expect(await codexOpenRollout(root, root, home)).not.toBe(otherPath);
+  } finally { for (const spy of spies) spy.mockRestore(); }
 });
 
 for (const agentFound of [true, false]) {
