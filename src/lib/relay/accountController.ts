@@ -9,7 +9,7 @@ import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
-import type { AccountProvider, AccountSession } from "../account/store.ts";
+import type { AccountProvider, AccountSession, AccountStore } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
 import { deleteAccount as deleteAccountOf } from "../account/deleteAccount.ts";
 import { leaveAccount } from "../account/leave.ts";
@@ -75,14 +75,18 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let shownFor: AccountSession | undefined;
   let generation = 0;
   let leaving = false;
-  let deleting = false;
+  /**
+   * The delete pressed for (deleteAccount), until it ends: a sign-out, a sign-in or a leave ends it, and every step of
+   * it after a wait (the sign-in again, the second delete, what is drawn) goes on only while it is still this one.
+   */
+  let deletion: object | undefined;
   // the read out now and the sign-in it is for: a read of an earlier sign-in never holds back the next one's
   let reading: { readonly epoch: number; readonly read: Promise<void> } | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
   const changed = async (): Promise<void> => { await view.changed(); armRefresh(); };
   const refresh = async (initial = false, forced = false): Promise<void> => {
     // a delete in flight draws what it ends in itself: no background read replaces its notice, only its own reads go on
-    if (reading?.epoch === generation || leaving || (deleting && !initial && !forced) || accountService === null || (!initial && !forced && (!view.active() || accountView?.kind !== "signed-in"))) return;
+    if (reading?.epoch === generation || leaving || (deletion !== undefined && !initial && !forced) || accountService === null || (!initial && !forced && (!view.active() || accountView?.kind !== "signed-in"))) return;
     const epoch = generation;
     let current = accountView;
     const live = (): boolean => epoch === generation;
@@ -188,7 +192,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
     else if (!wanted && refreshTimer !== undefined) { clearInterval(refreshTimer); refreshTimer = undefined; }
   };
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void refresh(); armRefresh(); });
-  const invalidate = (): void => { generation++; directory = []; accountView = { kind: "signed-out", error: null }; armRefresh(); };
+  const invalidate = (): void => { deletion = undefined; generation++; directory = []; accountView = { kind: "signed-out", error: null }; armRefresh(); };
   const signOut = (): void => {
     // the sign-in the person ended, read before anything waits: one made meanwhile stays (service.ts, forSignIn)
     const ending = account.session();
@@ -198,6 +202,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   };
   const leave = (): void => {
     if (leaving) return;
+    deletion = undefined;
     leaving = true;
     const epoch = ++generation;
     // the sign-in the person leaves, read before anything waits: one made meanwhile is never touched (leave.ts)
@@ -235,50 +240,64 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * front page. The service wants a sign-in from the last ten minutes: the phone app signs in again in place, with
    * the method this sign-in used, and deletes only if that is the same account; a browser is told to sign in again.
    */
-  const deleteAccount = (): void => {
-    if (deleting || leaving) return;
-    deleting = true;
+  const deleteAccount = (): Promise<void> => {
+    if (deletion !== undefined || leaving) return Promise.resolve();
+    const mine = {};
+    deletion = mine;
     const epoch = ++generation;
+    const current = (): boolean => deletion === mine && epoch === generation;
     // the sign-in the signed-in view on screen speaks of, not the one stored now: one another tab stored meanwhile is
     // never deleted (deleteAccount.ts), and the view then reads it
     const from = accountView?.kind === "signed-in" ? shownFor : undefined;
-    for (const serverId of running.values()) cancelEnrollment(serverId);
-    void Promise.resolve(from).then(async (session) => {
+    return Promise.resolve(from).then(async (session) => {
       if (session === undefined) throw new SignedOutError();
       try { await deleteAccountOf({ service: account, accountStore, session }); }
       catch (error) {
-        if (!(error instanceof AccountServiceError && error.code === "reauth_required") || accountService === null || !nativeSignInAvailable()) throw error;
+        if (!(error instanceof AccountServiceError && error.code === "reauth_required") || accountService === null || !nativeSignInAvailable() || !current()) throw error;
         // a sign-in another tab stored since is not signed over: the view reads it instead
         const stored = await account.session();
         if (stored === undefined || !sameSignIn(stored, session)) throw new SignedOutError();
-        const again = await nativeSignIn(session.provider, { store: accountStore, service: accountService });
+        // the sheet's sign-in is not stored by the sheet: only below, once this delete is still on and its sign-in still
+        // the one stored, so a sign-out or another sign-in while the sheet was open is neither undone nor deleted
+        const holding: AccountStore = { ...accountStore, set: (async (name: string, value: unknown) => { if (name !== "session") await accountStore.set(name as "pending", value as never); }) as AccountStore["set"] };
+        const again = await nativeSignIn(session.provider, { store: holding, service: accountService });
+        if (!current()) throw error;
         if (again.account !== session.account) throw new AnotherAccountError();
+        let signedInAgain = false;
+        await accountStore.update("session", (now) => { if (now === undefined || !sameSignIn(now, session)) return now; signedInAgain = true; return again; });
+        if (!signedInAgain) throw new SignedOutError();
         await deleteAccountOf({ service: account, accountStore, session: again });
       }
     }).then(async () => {
-      // signed in again meanwhile: that view is not this delete's to change
-      if (epoch !== generation) return;
+      // signed out or in meanwhile: that view is not this delete's to change
+      if (!current()) return;
       // a sign-in that took the deleted one's place while the delete was out stays (deleteAccount.ts): it is shown
       if (await account.session().catch(() => undefined) !== undefined) { await refresh(true); return; }
-      if (epoch !== generation) return;
+      if (!current()) return;
+      // the account is gone: a PC being brought into it is not
+      for (const serverId of running.values()) cancelEnrollment(serverId);
       directory = [];
       accountView = { kind: "signed-out", error: null, notice: t("Your account was deleted.") };
       armRefresh();
       await changed();
     }, async (error: unknown) => {
+      // called off by a sign-out or a sign-in: what that drew stays
+      if (!current()) return;
       console.warn("Ovis: the account was not deleted", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
-      if (epoch !== generation) return;
       // the sign-in ended meanwhile, or a sign-in again landed in another account: read what is stored now
       if (error instanceof SignedOutError || error instanceof AnotherAccountError) await refresh(true);
-      if (accountView?.kind === "signed-in") accountView = { ...accountView, error: deleteFailure(error) };
+      // a sign-in that ended or was replaced deleted nothing, and the page now shown is not the one asked about: no
+      // failure is drawn on it to try again
+      if (accountView?.kind === "signed-in" && !(error instanceof SignedOutError)) accountView = { ...accountView, error: deleteFailure(error) };
       await changed();
-    }).finally(() => { deleting = false; });
+    }).finally(() => { if (deletion === mine) deletion = undefined; });
   };
 
 
   const signIn = (provider: AccountProvider): void => {
     if (accountService === null) return;
     if (accountView?.kind === "signing-in") return;
+    deletion = undefined;
     generation++;
     accountView = { kind: "signing-in", provider };
     void changed();

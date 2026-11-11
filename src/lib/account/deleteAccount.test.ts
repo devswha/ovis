@@ -98,6 +98,20 @@ describe("deleting the account", () => {
     expect((await store.key()).public_spki).toBe(key.public_spki);
   });
 
+  it("keeps a sign-in another tab began while the delete was out", async () => {
+    const { store, session, fake } = await signedIn();
+    const fetch: typeof fake.fetch = async (input, init) => {
+      const answer = await fake.fetch(input, init);
+      if (new Request(input, init).method === "DELETE") await beginSignIn("github", { store, service: SERVICE, redirectUri: WEB_REDIRECT });
+      return answer;
+    };
+    const service = new AccountService({ store, fetch, lock: memoryLock() });
+    await deleteAccount({ service, accountStore: store, session });
+    expect(fake.deleted(session.account)).toBe(true);
+    expect(await store.get("session")).toBeUndefined();
+    expect(Object.keys(await store.get("pending") ?? {})).toHaveLength(1);
+  });
+
   it("never deletes or forgets a sign-in made meanwhile", async () => {
     const { fake, store, session, service } = await signedIn();
     await service.signOut();

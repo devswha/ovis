@@ -14,6 +14,7 @@ import type { AccountSession, AccountStore } from "./store.ts";
 export async function deleteAccount(options: { service: AccountService; accountStore: AccountStore; session: AccountSession }): Promise<void> {
   await options.service.forSignIn(options.session).deleteAccount();
   // the sign-in, the key and the records were the deleted account's: a later sign-in gets a new key (a kept pairing
-  // holds its own copy). A sign-in that took its place while the delete was out keeps all of it, the session included.
-  await options.accountStore.clear(undefined, (current) => current !== undefined && sameSignIn(current, options.session));
+  // holds its own copy). A sign-in that took its place while the delete was out keeps all of it, the session included,
+  // and a sign-in another tab began (its `pending` state) is no account's: it stays to finish.
+  await options.accountStore.clear(undefined, { only: (current) => current !== undefined && sameSignIn(current, options.session), spare: ["pending"] });
 }

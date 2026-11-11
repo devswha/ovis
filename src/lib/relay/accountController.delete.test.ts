@@ -84,10 +84,11 @@ describe("deleting the account from the hosted shell", () => {
     const shown = (await accountStore.get("session"))!;
     await accountStore.set("session", { ...shown, account: "acct-two", access_token: fake.issueToken("acct-two"), refresh_token: "refresh-two", sign_in_id: "another-sign-in" });
     const before = fake.requests.length;
-    last().onDeleteAccount?.();
-    await until(() => fake.requests.length > before, "the next call to the service");
+    await (last().onDeleteAccount?.() as Promise<void> | undefined);
     expect(fake.requests.slice(before)).not.toContain("DELETE /v1/account");
     expect(fake.deleted("acct-two")).toBe(false);
+    // the other sign-in's page, with no failure of a delete it never asked for to try again
+    expect(accountView()).toMatchObject({ kind: "signed-in", error: null });
     expect((await accountStore.get("session"))?.account).toBe("acct-two");
   });
 
@@ -141,13 +142,37 @@ describe("deleting the account from the hosted shell", () => {
       const tokened = nativeSignInTo(fake, ACCOUNT);
       let signedInAgain = false;
       void tokened.then(() => { signedInAgain = true; });
-      last().onDeleteAccount?.();
-      // settled: refused with a reason, or signed in again and deleted
-      await until(() => { const view = accountView(); return (view?.kind === "signed-in" && view.error !== null) || fake.deleted(ACCOUNT); }, "the delete settled");
+      await (last().onDeleteAccount?.() as Promise<void> | undefined);
       expect(signedInAgain).toBe(false);
+      expect(accountView()).toMatchObject({ kind: "signed-in", error: null });
       expect(fake.deleted(ACCOUNT)).toBe(false);
       expect(fake.deleted("acct-two")).toBe(false);
       expect((await accountStore.get("session"))?.account).toBe("acct-two");
+    });
+
+    it("calls the delete off when the person signs out while the sign-in sheet is open: its answer deletes and stores nothing", async () => {
+      let now = Date.now();
+      const { fake, accountStore } = await signedInShell(() => now, "apple");
+      now += 11 * 60_000;
+      // the app's sheet stays open until the test lets it answer
+      const sheet = Promise.withResolvers<{ idToken: string }>();
+      const opened = Promise.withResolvers<void>();
+      const tokened = Promise.withResolvers<void>();
+      Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }], nativePromise: () => { opened.resolve(); return sheet.promise; } } });
+      globalThis.fetch = Object.assign(async () => { tokened.resolve(); return Response.json({ access_token: fake.issueToken(ACCOUNT), refresh_token: "refresh-again", expires_in: 3600, account: ACCOUNT, provider: "apple" }); }, { preconnect: savedFetch.preconnect });
+      let settled = false;
+      const done = (last().onDeleteAccount?.() as Promise<void> | undefined);
+      void done?.then(() => { settled = true; });
+      await opened.promise;
+      last().onSignOut?.();
+      await until(() => accountView()?.kind === "signed-out", "the signed-out front page");
+      sheet.resolve({ idToken: "apple-id-token" });
+      await tokened.promise;
+      await until(() => settled, "the delete to end");
+      expect(fake.requests.filter((line) => line === "DELETE /v1/account")).toHaveLength(1);
+      expect(fake.deleted(ACCOUNT)).toBe(false);
+      expect(await accountStore.get("session")).toBeUndefined();
+      expect(accountView()).toMatchObject({ kind: "signed-out", error: null });
     });
 
     it("deletes nothing when the sign-in again lands in another account", async () => {
