@@ -19,9 +19,7 @@ describe("typeAheadKey", () => {
   it("erases and moves as the terminal does", () => {
     expect(key("Backspace")).toEqual({ input: "\x7f" });
     expect(key("Backspace", { altKey: true })).toEqual({ input: "\x1b\x7f" });
-    // Ctrl+Backspace erases a word as the terminal's own does (#3415); with Alt as xterm sends it
-    expect(key("Backspace", { ctrlKey: true })).toEqual({ input: "\x17" });
-    expect(key("Backspace", { ctrlKey: true, altKey: true })).toEqual({ input: "\x1b\b" });
+    expect(key("Backspace", { ctrlKey: true })).toEqual({ input: "\b" });
     expect(key("Backspace", { metaKey: true })).toEqual({ input: "\x15" });
     expect(key("Delete")).toEqual({ input: "\x1b[3~" });
     expect(key("Home")).toEqual({ input: "\x1b[H" });

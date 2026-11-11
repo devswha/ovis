@@ -1664,14 +1664,16 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       });
       // Let xterm finish pending IME text before remapping the key's following data.
       // Cmd+Backspace uses the terminal's Ctrl+U line-deletion shortcut on macOS. Ctrl+Backspace erases the word
-      // before the cursor (Ctrl+W), as desktop terminals do, where xterm sends Ctrl+H, a one-character erase (#3415).
+      // before the cursor with Ctrl+W, where xterm sends Ctrl+H, which a shell reads as a one-character erase (#3415).
+      // Only on an attached pane: a mirrored one is a Windows PC's, whose shells (PowerShell) already read Ctrl+H
+      // as the word erase and have no Ctrl+W.
       let commandBackspace = false;
       let controlBackspace = false;
       const onCommandBackspace = term.onKey(({ key, domEvent: event }) => {
         const backspace = !term.options.disableStdin && event.type === "keydown" && event.key === "Backspace"
           && !event.altKey && !event.shiftKey && !event.isComposing && event.keyCode !== 229;
         commandBackspace = backspace && isMac && key === "\x7f" && event.metaKey && !event.ctrlKey;
-        controlBackspace = backspace && key === "\b" && event.ctrlKey && !event.metaKey;
+        controlBackspace = backspace && key === "\b" && event.ctrlKey && !event.metaKey && mirroredRef.current === false;
       });
       // A paste is text, even when it happens to contain just one letter. xterm
       // handles the DOM paste synchronously after this capture-phase listener.
