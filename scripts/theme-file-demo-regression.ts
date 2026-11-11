@@ -60,11 +60,14 @@ async function open(browser: Browser, width: number, scheme: Scheme): Promise<{ 
  * page.waitForFunction, whose timeout names what it waited for and what the page then showed: CI's stack loses the
  * line that waited, and a 30 s timeout alone does not say which of the waits below it was
  */
-async function waitDrawn<Arg>(page: Page, predicate: (arg: Arg) => unknown, arg?: Arg): Promise<void> {
+async function waitDrawn<Arg>(page: Page, predicate: (arg: Arg) => unknown, arg?: Arg, step?: string): Promise<void> {
   try { await page.waitForFunction(predicate, arg as Arg); }
   catch (error) {
-    const state = await page.evaluate(() => ({ palette: document.documentElement.dataset["palette"] ?? null, bg: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(), rows: localStorage.getItem("ovis:custom-theme-rows") !== null, cards: document.querySelectorAll('.settings-dialog [data-theme-card^="custom:"]').length })).catch(() => null);
-    throw new Error(`${(error as Error).message}; waiting for ${String(predicate).replace(/\s+/g, " ").slice(0, 160)} with ${JSON.stringify(arg ?? null)}; the page showed ${JSON.stringify(state)}`, { cause: error });
+    // a page that no longer answers leaves the snapshot pending: it gets two seconds, then the timeout is thrown with none
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const snapshot = page.evaluate(() => ({ palette: document.documentElement.dataset["palette"] ?? null, bg: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(), rows: localStorage.getItem("ovis:custom-theme-rows") !== null, cards: document.querySelectorAll('.settings-dialog [data-theme-card^="custom:"]').length })).catch(() => null);
+    const state = await Promise.race([snapshot, new Promise<null>((resolve) => { deadline = setTimeout(() => resolve(null), 2_000); })]).finally(() => clearTimeout(deadline));
+    throw new Error(`${(error as Error).message}; ${step ? `at ${step}, ` : ""}waiting for ${String(predicate).replace(/\s+/g, " ").slice(0, 160)} with ${JSON.stringify(arg ?? null)}; the page showed ${JSON.stringify(state)}`, { cause: error });
   }
 }
 
@@ -116,7 +119,7 @@ try {
 
             // the example of docs/themes.md: both sides, so both are chosen and the one drawn now changes at once
             await picker.setInputFiles(file("lamplight.json", EXAMPLE));
-            await waitDrawn(page, () => document.documentElement.dataset["palette"] === "custom");
+            await waitDrawn(page, () => document.documentElement.dataset["palette"] === "custom", undefined, "the example file's import");
             await dialog.getByRole("status").filter({ hasText: "Imported Lamplight." }).waitFor();
             const want = deriveTheme(example.theme[scheme]!).vars;
             for (const role of ["bg", "bg-elevated", "text", "text-dim", "accent", "notice", "notice-tint", "term-bg", "syntax-keyword"] as const) {
@@ -178,7 +181,7 @@ try {
             assert.equal((await stored(page)).list?.[scheme], null, `${where}: the side draws no imported theme`);
             assert.ok((await stored(page)).list?.[other] !== null, `${where}: the other side keeps its own`);
             await cards.first().click();
-            await waitDrawn(page, () => document.documentElement.dataset["palette"] === "custom");
+            await waitDrawn(page, () => document.documentElement.dataset["palette"] === "custom", undefined, "picking the imported theme again");
             assert.equal(await token(page, "--bg"), want.bg);
 
             // a Base16 scheme as published, one side: it goes to that side, and the picker shows that side's cards
