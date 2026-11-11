@@ -2046,6 +2046,11 @@ describe("ClaudeSubagentStatus", () => {
           // a prompt of the person's that quotes the key, and one that holds it in an object inside it
           holdsNothing(() => s.parent({ type: "user", timestamp: at(3), permissionMode: "default", origin: { kind: "human" }, turnOrigin: "human", message: { role: "user", content: 'why "turnOrigin":"task_notification"?' } }));
           holdsNothing(() => s.parent({ type: "user", timestamp: at(3), permissionMode: "default", origin: { kind: "human" }, turnOrigin: "human", message: { role: "user", content: "and this?" }, attached: { turnOrigin: "task_notification" } }));
+          // the prompt of a turn of another origin, with the keys Claude Code writes on it (read from the transcripts of
+          // this PC): one begun on another session's message, a meta entry of the origin `peer`, and one sent through
+          // the SDK. Only a scheduled turn's prompt and a notice's hold: any other origin holds nothing, as before
+          holdsNothing(() => s.parent({ type: "user", isMeta: true, isSidechain: false, origin: { kind: "peer" }, permissionMode: "auto", turnOrigin: "peer", timestamp: at(3), message: { role: "user", content: "the build is green" } }));
+          holdsNothing(() => s.parent({ type: "user", isSidechain: false, permissionMode: "auto", turnOrigin: "sdk", timestamp: at(3), message: { role: "user", content: "next" } }));
           // a subagent's entry that carries it, however its line is spaced
           holdsNothing(() => s.parent({ type: "user", isSidechain: true, origin: { kind: "task-notification" }, turnOrigin: "task_notification", timestamp: at(3), message: { role: "user", content: block() } }));
           holdsNothing(() => appendFileSync(s.path, `{"type":"user","isSidechain": true,"turnOrigin":"task_notification","timestamp":"${at(3)}","message":{"role":"user","content":"notice"}}\n`));
@@ -2088,6 +2093,7 @@ describe("ClaudeSubagentStatus", () => {
           expect(status.loopHoldsNow("p1")).toBe(false);
           // the notice's turn begins at that rest, and holds from its own prompt on. A known bound: nothing holds
           // between that rest and this line, which Claude dates 24 to 97 ms after it in the transcripts of this PC
+          // and writes later still (read once as it reached the file: 133 ms after its own date)
           taken(s, 4);
           prompt(s, 4);
           expect(status.loopHoldsNow("p1")).toBe(true);

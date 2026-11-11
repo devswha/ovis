@@ -1230,8 +1230,9 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
       const h = await workingClaude();
       const id = h.pane.pane_id;
       queue(h);
-      // A task ends while it works. The turn rests and Claude begins the notice's turn at once, before herdr's idle
-      // word for the turn before (the prompt is dated 24 to 97 ms after that rest in the transcripts of this PC).
+      // A task ends while it works. The turn rests and Claude begins the notice's turn at once, its prompt written
+      // before herdr's idle word for the turn before is heard (the prompt is dated 24 to 97 ms after that rest in the
+      // transcripts of this PC, and read once as it reached the file, 133 ms after that date).
       taskEnds(h.path); h.rest(); noticeTurn(h.path);
       h.herdrSays(h.pane);
       handlers.onStatus(id, "idle", "claude");
@@ -1887,6 +1888,34 @@ describe("a /loop wakeup that fires at a Claude pane herdr reads at rest (#3494)
         turnEnds(h); h.poll();
         await flush();
         expect(writes).toEqual(["paste \u001b[200~pasted\u001b[201~"]);
+      });
+
+      it("leaves a paste uncommitted when herdr's idle word for the turn a message waited behind is heard before the prompt of the notice's turn begun at that rest is written", async () => {
+        const d = await delivering();
+        const { h, writes, submit, flush, waiting } = d;
+        const id = h.pane.pane_id;
+        // Given a message queued behind a turn of the person's, and a task that ends while that turn works: its notice
+        // waits in Claude's queue, which holds nothing.
+        h.next();
+        says(h, "working");
+        await submit(36, "at the rest");
+        taskEnds(h.path);
+        // That turn rests and the notice's turn begins at once, but herdr's idle word is heard before Claude has written
+        // that turn's prompt: the check before the paste has no prompt to read, and the prompt is in the file for the
+        // read before the Enter (written here during the paste). A known bound: nothing holds between that rest and
+        // the prompt's line, which is in the file some 100 to 230 ms after that rest.
+        d.on.paste = () => { delete d.on.paste; noticeTurn(h.path); };
+        turnEnds(h);
+        h.herdrSays(h.pane);
+        handlers.onStatus(id, "idle", "claude");
+        await flush();
+        // Then no Enter goes into the notice's turn: the text stays in Claude's input line and the message is left for
+        // the person to check, typed again by nothing, that turn's rest included.
+        expect(writes).toEqual(["paste \u001b[200~at the rest\u001b[201~"]);
+        expect(waiting()).toEqual(["uncertain"]);
+        turnEnds(h); h.poll();
+        await flush();
+        expect(writes).toEqual(["paste \u001b[200~at the rest\u001b[201~"]);
       });
 
       it("sends no Enter for a message typed at once when the notice's turn begins while its Enter's connection to herdr is being made", async () => {
