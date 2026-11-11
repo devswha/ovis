@@ -3,9 +3,9 @@ import { ompComposerPromptRow } from "./dialogs/omp.ts";
 /**
  * One character of a screen row as herdr's ANSI read draws it: its foreground (null for the terminal's own,
  * `38;2;r;g;b` or `38;5;n` for an extended one, the code for one of the 16 named ones), and whether it is dim,
- * inverse and blinking.
+ * inverse, blinking and bold.
  */
-interface Cell { char: string; fg: string | null; dim: boolean; inverse: boolean; blink: boolean }
+interface Cell { char: string; fg: string | null; dim: boolean; inverse: boolean; blink: boolean; bold: boolean }
 
 /**
  * A row's characters with the attributes they are drawn in. Only SGR changes them; other escapes are dropped.
@@ -18,8 +18,9 @@ function rowCells(row: string): Cell[] {
   let dim = false;
   let inverse = false;
   let blink = false;
+  let bold = false;
   let offset = 0;
-  const add = (text: string): void => { for (const char of text) cells.push({ char, fg, dim, inverse, blink }); };
+  const add = (text: string): void => { for (const char of text) cells.push({ char, fg, dim, inverse, blink, bold }); };
   const escape = /\u001b(?:\[([0-?]*)[ -/]*([@-~])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g;
   for (const match of row.matchAll(escape)) {
     if (match.index > offset) add(row.slice(offset, match.index));
@@ -41,11 +42,12 @@ function rowCells(row: string): Cell[] {
           index += take;
         }
         if (code === 38) fg = color.length === 4 || (color.length === 2 && color[0] === 5) ? `38;${color.join(";")}` : null;
-      } else if (code === 0) { fg = null; dim = false; inverse = false; blink = false; }
+      } else if (code === 0) { fg = null; dim = false; inverse = false; blink = false; bold = false; }
       else if (code === 39) fg = null;
       else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) fg = String(code);
+      else if (code === 1) bold = true;
       else if (code === 2) dim = true;
-      else if (code === 22) dim = false;
+      else if (code === 22) { dim = false; bold = false; }
       else if (code === 5 || code === 6) blink = true;
       else if (code === 25) blink = false;
       else if (code === 7) inverse = true;
@@ -64,9 +66,8 @@ const gjcGhostDrawn = (cell: Cell): boolean => cell.fg !== null || cell.dim;
  * the color omp paints its prediction in, as truecolor and as the 256-color cell omp picks for each without
  * truecolor (`Bun.color(hex, "ansi-256")`, as its `colorToAnsi`). omp paints typed text in the theme's `text` color,
  * which for most themes is the contrast-safe fallback of pi-tui's `Theme.fgResolved` (#e5e5e7 over a dark background,
- * #000000 over a light one), a skill or a keyword in its `accent` or `customMessageLabel`, and a model @mention's chip
- * in its `statusLineModel`: a color any built-in theme uses for those is left out (2 truecolor, 16 256-color; birch's
- * and dark-monochrome's mention cells 59 and 248, #3643), as the theme on screen is not known. A custom theme's
+ * #000000 over a light one), and a skill or a keyword in its `accent` or `customMessageLabel`: a color any built-in
+ * theme uses for those is left out (2 truecolor, 14 256-color), as the theme on screen is not known. A custom theme's
  * prediction is offered only when it is drawn in one of these.
  */
 const OMP_DIM_TRUECOLOR = new Set([
@@ -80,11 +81,15 @@ const OMP_DIM_TRUECOLOR = new Set([
   "93a1a1", "9a7a65", "9a8772", "9a968f", "9a9aa0", "9b8a78", "9e9e9e", "a0a1a7", "a0a8b8", "a89080", "a898b0",
   "a99bb5", "b4bcc8",
 ]);
-const OMP_DIM_256 = new Set([58, 102, 103, 241, 242, 243, 244, 245, 246, 250]);
+const OMP_DIM_256 = new Set([58, 59, 102, 103, 241, 242, 243, 244, 245, 246, 248, 250]);
 
-/** Whether a cell is drawn in a built-in omp theme's `dim` and in no color omp paints typed text in. */
+/**
+ * Whether a cell is drawn in a built-in omp theme's `dim` and in no color omp paints typed text in. omp draws a typed
+ * skill or model @mention bold, in a color that can be another theme's `dim` (statusLineModel: cells 59 and 248 in six
+ * built-in themes), and a prediction never bold (#3643).
+ */
 function ompGhostDrawn(cell: Cell): boolean {
-  if (cell.inverse || cell.fg === null) return false;
+  if (cell.inverse || cell.bold || cell.fg === null) return false;
   const codes = cell.fg.split(";").map(Number);
   if (codes[1] === 5) return OMP_DIM_256.has(codes[2]!);
   if (codes[1] !== 2) return false;
