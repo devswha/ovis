@@ -627,6 +627,7 @@ final class PCStore {
 
     /** scheme://host[:port] of a well-formed http or https address, the host in lowercase, or null: `http://pc:abc/` is refused, not saved for Capacitor to fail on at the next start. */
     static String origin(String text) {
+        if (text == null) return null;
         URI uri;
         try {
             uri = new URI(text).parseServerAuthority();
