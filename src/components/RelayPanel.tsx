@@ -4,7 +4,7 @@ import { Keyboard, Link2, RefreshCw } from "lucide-react";
 import "./RelayPanel.css";
 
 import { copyText } from "../lib/clipboard.ts";
-import { ApiError, cancelRelayCode, requestRelayCode, requestRelayLink, requestRelayOffer, startPairing, type RelayCode, type RelayOffer } from "../lib/api.ts";
+import { ApiError, cancelRelayCode, endPairing, requestRelayCode, requestRelayLink, requestRelayOffer, startPairing, type RelayCode, type RelayOffer } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { callNative, hasNativePlugin } from "../lib/nativeApp.ts";
 import { announcePairingCode, PAIRING_CODE_EVENT, type RelayState } from "../lib/useRelay.ts";
@@ -108,9 +108,12 @@ function announceFromRelay(code: PairingCode): void {
  * answering each other.
  * `qrOnly`: the QR code alone, with New code. No code to type is asked for (`POST /api/relay/code` is never sent), so
  * nothing on the screen can be read and typed on another device: the relay tab's account QR code, which puts a PC in
- * the account of whoever redeems it (ConnectPhoneDialog `AccountQr`).
+ * the account of whoever redeems it (ConnectPhoneDialog `AccountQr`). Its offer says so to the PC
+ * (`x-ovis-no-account-only`), which makes it only while it is in no account, with a code of its own that no other
+ * place started; New code ends that code and asks again. `onInAccount`: the PC refused the offer because it is in an
+ * account by now.
  */
-export function RelayPairing({ phone = false, compact = false, qrOnly = false }: { phone?: boolean; compact?: boolean; qrOnly?: boolean }) {
+export function RelayPairing({ phone = false, compact = false, qrOnly = false, onInAccount }: { phone?: boolean; compact?: boolean; qrOnly?: boolean; onInAccount?: () => void }) {
   const t = useT();
   const [offer, setOffer] = useState<RelayOffer | null>(null);
   const [left, setLeft] = useState("");
@@ -123,7 +126,11 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false }:
   // the code on screen, and an ask for the offer that is not announced (another relay QR's code)
   const shown = useRef<string | null>(null);
   const quiet = useRef(false);
+  // the code another relay QR code last announced
+  const heard = useRef<string | null>(null);
   const again = () => setGeneration((value) => value + 1);
+  const refused = useRef(onInAccount);
+  refused.current = onInAccount;
   // a six-digit code started anywhere else ends the typed code on the PC (server/relay/pair-code.ts): its words go too
   const [typedReset, setTypedReset] = useState(0);
   const [typedId, setTypedId] = useState<string | null>(null);
@@ -137,21 +144,29 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false }:
     const silent = quiet.current;
     quiet.current = false;
     setState("minting");
-    requestRelayOffer().then((next) => {
+    requestRelayOffer({ noAccountOnly: qrOnly }).then((next) => {
       if (cancelled) return;
       setOffer(next);
       setState("live");
       // the server made this offer's code, maybe with no New code pressed: the page watches it like any other
       // (the Devices group re-reads its list while a code is out and closes the dialog once the phone is in)
       const code = decodeOffer(next.url)?.code;
+      // qrOnly: the PC gives this QR code a code of its own, so the code another relay QR code announced is not the
+      // one it got, and the others are told this one (they then ask for the offer again, and get the same)
+      const differs = qrOnly && code !== heard.current;
       shown.current = code ?? null;
-      if (code !== undefined && !silent) {
+      if (code !== undefined && (!silent || differs)) {
         announcing.current = true;
         try { announceFromRelay({ code, expires_at: next.expires_at }); } finally { announcing.current = false; }
       }
     }, (reason: unknown) => {
       if (cancelled) return;
       setOffer(null);
+      // the PC joined an account meanwhile: no refusal to read, the tab says which account instead
+      if (reason instanceof ApiError && reason.code === "in_account" && refused.current !== undefined) {
+        refused.current();
+        return;
+      }
       setFailure(failureText(reason));
       setState("failed");
     });
@@ -164,6 +179,7 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false }:
       dropTyped();
       const code = (event as CustomEvent<PairingCode | undefined>).detail?.code;
       if (relayAnnouncing) {
+        heard.current = code ?? null;
         if (code === undefined || code !== shown.current) { quiet.current = true; again(); }
         return;
       }
@@ -197,6 +213,19 @@ export function RelayPairing({ phone = false, compact = false, qrOnly = false }:
   const renew = async () => {
     setState("minting");
     dropTyped();
+    if (qrOnly) {
+      // the PC keeps this QR code's own code until it ends: ended here, the offer asked for next carries a new one.
+      // No code is started the way the Devices group starts one, which the PC would make on a PC in an account too
+      try {
+        if (shown.current !== null) await endPairing(shown.current);
+        again();
+      } catch (reason) {
+        setOffer(null);
+        setFailure(failureText(reason));
+        setState("failed");
+      }
+      return;
+    }
     try {
       const code = await startPairing();
       announcing.current = true;

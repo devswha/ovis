@@ -4,7 +4,9 @@
  * identity. The Add a connection sheet has one tab per way (SSH, Phones and devices, Ovis relay), SSH first on
  * an owner's PC window, and none of the old sheet's folds or its relay pairing QR code. Signed out, the Ovis
  * relay tab opens the Ovis link page in a new tab while the sheet stays open; signed in, it carries
- * the relay's switch (with the gate note while off). Phones and devices starts a six-digit code at once and
+ * the relay's switch (with the gate note while off). Its QR code waits for a press, tells the PC what it is for, and
+ * is for a PC in no account only: once the PC joins one the PC takes its code back, the QR code leaves, and the tab
+ * says to sign in to that account on the device instead. Phones and devices starts a six-digit code at once and
  * keeps it while another tab is open; a phone pairing with it closes the sheet. Reset relay identity asks first
  * (Escape closes only the confirmation) and gives the PC a new ID. A Portal visitor gets no SSH tab, no switch,
  * no sign-in, no reset, no code and no relay group; a serve-only install shows Blocked with no switch and no
@@ -35,6 +37,13 @@ export interface RelayFixture {
   readonly origin: string;
   readonly relayPort: number;
   readonly stateDir: string;
+  /** the six-digit pairing code pending on the PC, null with none */
+  pendingCode(): string | null;
+  /**
+   * Puts the PC in `account` the way a sign-in on the PC and an approval do: a device (`label`) is let in by comparing
+   * digits, which spends no pairing code, and links itself as the PC's first member.
+   */
+  joinAccount(account: string, label: string): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -62,6 +71,15 @@ export function startRelayFixture(options: { serveOnly?: boolean } = {}): RelayF
     origin: `http://127.0.0.1:${server.port}`,
     relayPort: relay.port,
     stateDir,
+    pendingCode: () => server.context.services.devices.activePairing()?.code ?? null,
+    async joinAccount(account, label) {
+      const devices = server.context.services.devices;
+      const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      const key = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+      const paired = devices.pairRelayApproved(label, key, { path: "code" });
+      assert.ok(paired, "the fixture's device was let in");
+      assert.ok(devices.linkAccountKey(paired.device.id, key, key, account), "and linked itself to the account");
+    },
     async stop() {
       await service.shutdown();
       server.stop();
@@ -298,6 +316,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     const offered = answered(page, "/api/relay/offer");
     await showQr.click();
     assert.equal((await offered).status(), 200, "the press asks for the offer");
+    assert.equal((await offered).request().headers()["x-ovis-no-account-only"], "1", "and says it is for a PC in no account, so the PC makes none once it is in one");
     await relayQr.waitFor();
     assert.equal(await sheet.isVisible(), true, "the sheet stays open under its QR code");
     // the QR code alone: no code to type that could be read off the screen and typed on another device
@@ -316,7 +335,7 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     assert.equal(await sheet.isVisible(), true, "the sheet stays open across a pairing while its QR code is up");
     // it paired at this PC's own address and is in no account: asked about at once, with Not me first
     const asked = accountQr.getByTestId("connect-account-alone");
-    await asked.getByText("Paired with this PC at its own address with the code shown here, not through the relay: Scanner.", { exact: true }).waitFor();
+    await asked.getByText("Paired with this PC at its own address while its QR code was up, not through the relay: Scanner.", { exact: true }).waitFor();
     assert.equal((await codeEnded).status(), 200, "the question takes the QR code down and ends its pairing code");
     assert.equal(await relayQr.count(), 0, "no QR code stays up beside the question");
     assert.deepEqual(await asked.getByRole("button").allInnerTexts(), ["Not me: remove it", "Keep it"], "Not me comes first");
@@ -337,6 +356,51 @@ export async function checkRelayPanel(browser: Browser): Promise<void> {
     await ui.openTab("relay");
     await accountQr.getByRole("button", { name: "Show a new code", exact: true }).waitFor();
     assert.equal(await relayQr.count(), 0, "the QR code is down until it is asked for again");
+
+    // the PC joins an account while its QR code is up, by a sign-in on the PC and an approval and not by a scan: the
+    // PC takes the QR code's code back, the QR code leaves, and the tab says which account. A PC that is in an
+    // account gets no QR code: the tab says to sign in to that account on the device instead
+    const offeredLast = answered(page, "/api/relay/offer");
+    await accountQr.getByRole("button", { name: "Show a new code", exact: true }).click();
+    const lastCode = decodeOffer(((await (await offeredLast).json()) as { url: string }).url)?.code;
+    await relayQr.waitFor();
+    assert.equal(fixture.pendingCode(), lastCode, "the QR code's code is the one pending on the PC");
+    await fixture.joinAccount("fixture", "Owner's phone");
+    assert.equal(fixture.pendingCode(), null, "the PC took the QR code's code back as it joined the account");
+    const joined = accountQr.getByTestId("connect-account-joined");
+    await joined.getByText("This PC is in your account (fixture).", { exact: true }).waitFor();
+    await joined.getByText("Added by Owner's phone.", { exact: true }).waitFor();
+    assert.equal(await relayQr.count(), 0, "the QR code left as the PC joined an account");
+    assert.equal(await sheet.isVisible(), true, "the sheet stays open to say which account the PC joined");
+    assert.deepEqual(await joined.getByRole("button").allInnerTexts(), ["Done", "Not me: revoke every device"], "the account is this browser's own: Done, then Not me");
+    await joined.getByRole("button", { name: "Done", exact: true }).click();
+    await accountQr.getByText("This PC is in your Ovis account (fixture).", { exact: true }).waitFor();
+    await accountQr.getByText("To add a device, sign in to this PC's account on it: it is then added to this PC by itself. A device new to the account is approved once, on a device already in it.", { exact: true }).waitFor();
+    await accountQr.getByText("This PC shows a QR code only while it is in no account.", { exact: true }).waitFor();
+    assert.equal(await accountQr.getAttribute("data-account"), "mine", "the part says the PC is in this browser's account");
+    assert.equal(await accountQr.getByRole("button").count(), 0, "a PC that is in an account offers no QR code");
+    assert.equal(await relayTab.getByRole("button", { name: "Open the account", exact: true }).count(), 0, "and nothing says to add this PC to the account any more");
+    assert.equal(await accountQr.evaluate((node) => node.contains(document.activeElement)), true, "the answered notice hands the focus to what the part says now");
+    // the PC itself makes no such code any more, whatever page asks for it
+    const refused = await page.evaluate(async () => {
+      const response = await fetch("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1", "x-ovis-no-account-only": "1" } });
+      return [response.status, ((await response.json()) as { error: { code: string } }).error.code];
+    });
+    assert.deepEqual(refused, [409, "in_account"], "the PC refuses the QR code's code once it is in an account");
+    assert.equal(fixture.pendingCode(), null, "and makes none");
+    // opened again, the tab still shows no QR code and asks the PC for none
+    await ui.closeSheet();
+    const askedAgain: string[] = [];
+    const noteOffer = (request: Request): void => { if (isPost(request, "/api/relay/offer") || isPost(request, "/api/relay/code")) askedAgain.push(new URL(request.url()).pathname); };
+    page.on("request", noteOffer);
+    await connect.click();
+    await ui.openTab("relay");
+    await accountQr.getByText("This PC is in your Ovis account (fixture).", { exact: true }).waitFor();
+    assert.equal(await accountQr.getByRole("button").count(), 0, "opened again, a PC in an account still offers no QR code");
+    assert.equal(await relayQr.count(), 0, "and shows none");
+    assert.equal(await relayTab.getByRole("switch").count(), 0, "online and in the account, the tab has nothing to switch");
+    page.off("request", noteOffer);
+    assert.deepEqual(askedAgain, [], "the tab asked the PC for no code");
 
     // Phones and devices starts a six-digit code at once; its panel stays while another tab is open, with the same code
     const codeStart = pairStart();

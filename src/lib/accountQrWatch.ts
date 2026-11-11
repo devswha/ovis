@@ -20,22 +20,27 @@ export const ACCOUNT_QR_ALONE_MS = 10_000;
 /** how long the PC is watched after its QR code came down: as long as a pairing code lives (server/devices.ts) */
 export const ACCOUNT_QR_LATE_MS = 10 * 60_000;
 
-/** the PC's account and device ids as the press on Show the QR code found them; a device the person kept since counts in `ids` */
-export interface AccountQrBaseline { readonly account: string | null; readonly ids: ReadonlySet<string> }
+/**
+ * The PC's devices as the press on Show the QR code found them, on a PC in no account (the QR code is shown for no
+ * other): a device the person kept since counts in `ids`. `seen`: when each device that came since was first seen,
+ * filled in by every read (dueStrays). It travels with the press, to the watch and to a notice that waits, so a notice
+ * drawn again later does not give a device its ten seconds anew.
+ */
+export interface AccountQrBaseline { readonly ids: ReadonlySet<string>; readonly seen: Map<string, number> }
 
 /** a device the QR code's code let in that nobody vouched for; `relay`: it came through the relay, not at the PC's own address */
 export interface AccountQrStray { readonly id: string; readonly label: string; readonly relay: boolean }
 
 /**
  * What there is to tell of a PC that was in no account when its QR code was made (`known`), and to ask: `strays` are
- * removed unless the person keeps them. The relay tab reads the PC on from `known`, so what changed while the notice
- * waited is told as well.
+ * removed unless the person keeps them, and `checking` are the devices still in their ten seconds, asked about once
+ * those end. The relay tab reads the PC on from `known`, so what changed while the notice waited is told as well.
  */
 export type AccountQrNotice =
   /** the PC is still in no account, and those devices paired with it */
-  | { readonly kind: "alone"; readonly strays: readonly AccountQrStray[]; readonly known: AccountQrBaseline }
+  | { readonly kind: "alone"; readonly strays: readonly AccountQrStray[]; readonly checking: readonly AccountQrStray[]; readonly known: AccountQrBaseline }
   /** the PC joined `account`; `device` is the member of that account that added it, null when no row is one */
-  | { readonly kind: "joined"; readonly account: string; readonly device: string | null; readonly strays: readonly AccountQrStray[]; readonly known: AccountQrBaseline };
+  | { readonly kind: "joined"; readonly account: string; readonly device: string | null; readonly strays: readonly AccountQrStray[]; readonly checking: readonly AccountQrStray[]; readonly known: AccountQrBaseline };
 
 /**
  * Fired on `window` when the watch starts or ends, and with `detail.notice` true when a notice waits
@@ -44,11 +49,6 @@ export type AccountQrNotice =
 export const ACCOUNT_QR_WATCH_EVENT = "ovis:account-qr-watch";
 
 const newest = (devices: readonly PairedDevice[]): PairedDevice | null => devices.reduce<PairedDevice | null>((latest, device) => latest === null || device.created_at > latest.created_at ? device : latest, null);
-
-/** The newest device paired through the relay that is not in `known`: the one a QR code shown after `known` was read let in. */
-export function newestRelayDevice(devices: readonly PairedDevice[], known: ReadonlySet<string>): PairedDevice | null {
-  return newest(devices.filter((device) => device.via_relay === true && !known.has(device.id)));
-}
 
 /**
  * Who put the PC in `account`: a member of that account (its row carries the account, whose key signed its link), never
@@ -81,6 +81,17 @@ export function dueStrays(strays: readonly PairedDevice[], seen: Map<string, num
     if (!seen.has(device.id)) seen.set(device.id, now);
     return device.via_relay !== true || now - seen.get(device.id)! >= ACCOUNT_QR_ALONE_MS;
   }).map(strayOf);
+}
+
+/**
+ * What one read of the PC says of the devices that came since `known`: `due` are asked about now, `checking` are still
+ * in their ten seconds. While either is not empty somebody the code let in is unanswered, and no notice may go.
+ */
+export function accountQrFindings(devices: readonly PairedDevice[], account: string | null, known: AccountQrBaseline, now: number): { due: AccountQrStray[]; checking: AccountQrStray[] } {
+  const strays = unvouched(devices, known.ids, account);
+  const due = dueStrays(strays, known.seen, now);
+  const asked = new Set(due.map((stray) => stray.id));
+  return { due, checking: strays.filter((device) => !asked.has(device.id)).map(strayOf) };
 }
 
 let watch: { readonly known: AccountQrBaseline; readonly lingering: boolean; stop: () => void } | null = null;
@@ -139,7 +150,6 @@ export function watchEndedAccountQr(known: AccountQrBaseline, ended: Promise<boo
   let live = true;
   let asking = false;
   let confirmed = false;
-  const seen = new Map<string, number>();
   const started = Date.now();
   const stop = () => {
     if (!live) return;
@@ -159,20 +169,19 @@ export function watchEndedAccountQr(known: AccountQrBaseline, ended: Promise<boo
     try {
       const [status, devices] = await Promise.all([pcAccountStatus(apiFetch), fetchDevices()]);
       if (!live) return;
-      const strays = unvouched(devices, known.ids, status.account);
-      const due = dueStrays(strays, seen, Date.now());
+      const { due, checking } = accountQrFindings(devices, status.account, known, Date.now());
       if (status.account !== null) {
         stop();
-        publish({ kind: "joined", account: status.account, device: addedBy(devices, known.ids, status.account)?.label ?? null, strays: due, known });
+        publish({ kind: "joined", account: status.account, device: addedBy(devices, known.ids, status.account)?.label ?? null, strays: due, checking, known });
         return;
       }
       if (due.length > 0) {
         stop();
-        publish({ kind: "alone", strays: due, known });
+        publish({ kind: "alone", strays: due, checking, known });
         return;
       }
       // nobody came: with the code's end confirmed before this read began, nobody will
-      if (strays.length === 0 && conclusive && !linger) stop();
+      if (checking.length === 0 && conclusive && !linger) stop();
     } catch { /* the next round asks again */ } finally { asking = false; }
   };
   const poll = window.setInterval(() => void ask(), ACCOUNT_QR_POLL_MS);
