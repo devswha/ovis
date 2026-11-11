@@ -162,9 +162,12 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
   const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
   const pane = created.root_pane.pane_id;
   let piSeq = 1;
+  /** herdr's omp integration's last report, by its `seq`: 0 until it reported the pane's session */
+  let ompSeq = 0;
+  const ompSession = join(root, `${id}-omp-session.jsonl`);
   /** herdr's omp integration reports the pane's session, as it does once omp takes input */
-  const ompReports = () => herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:omp", agent: "omp", seq: Date.now() * 1000,
-    agent_session_path: join(root, `${id}-omp-session.jsonl`), session_start_source: "startup" });
+  const ompReports = () => herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:omp", agent: "omp", seq: ompSeq = Math.max(ompSeq + 1, Date.now() * 1000),
+    agent_session_path: ompSession, session_start_source: "startup" });
   const log = join(root, `${id}.jsonl`);
   const screenFile = join(root, `${id}.screen`);
   writeFileSync(screenFile, "");
@@ -203,6 +206,10 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
     const from = reader.seen.length;
     await herdrRpc("pane.report_agent", agent === "pi" && piTranscript
       ? { pane_id: pane, source: "herdr:pi", agent, state: value, seq: piSeq++, agent_session_path: piTranscript }
+      // once herdr's omp integration reported the session, herdr soon stops taking a `manual` state for the pane
+      // (herdr 0.9.3: about half a second after): its states come from the integration, as a real omp's do
+      : agent === "omp" && ompSeq > 0
+      ? { pane_id: pane, source: "herdr:omp", agent, state: value, seq: ompSeq = Math.max(ompSeq + 1, Date.now() * 1000), agent_session_path: ompSession }
       : { pane_id: pane, source: "manual", agent, state: value });
     await reader.wait((frame) => frame.type === "pane-status" && frame.pane_id === pane && (value === "idle" || value === "unknown" ? ["idle", "done"].includes(frame.agent_status) : frame.agent_status === value), from);
   };
