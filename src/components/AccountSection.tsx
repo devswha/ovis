@@ -1,6 +1,6 @@
 /**
  * Settings → Phone & devices → Account: sign in with GitHub, Google or Apple, see the account's PCs,
- * add or remove a sign-in method, sign out. The desktop app signs in through the system browser
+ * add or remove a sign-in method, sign out, delete the account. The desktop app signs in through the system browser
  * (lib/account/desktop.ts); a browser on the PC's own secure address, which no sign-in can be sent
  * back to, signs in with a code (lib/account/deviceSignIn.ts): one button and the Ovis link page
  * where the service has it, else the provider's device flow. Only
@@ -11,6 +11,7 @@ import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNod
 
 import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { deleteAccount } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
 import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
@@ -30,7 +31,7 @@ import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
 
 type View =
   | { kind: "loading" }
-  | { kind: "signed-out"; error: string | null }
+  | { kind: "signed-out"; error: string | null; /** what just ended the sign-in as asked (the account was deleted) */ notice?: string }
   | { kind: "signing-in" }
   | { kind: "device-code"; provider: DeviceSignInProvider; userCode: string | null; verificationUri: string; verificationUriComplete: string | null }
   | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; methods: AccountIdentity[] | null; limits: AccountLimits | null; error: string | null };
@@ -789,7 +790,9 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
-  const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | null>(null);
+  const [reauth, setReauth] = useState<{ action: "add" | "remove" | "delete"; provider: AccountProvider } | null>(null);
+  /** Delete account was pressed once: the same button now asks, and says what goes */
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const deviceSignIn = useRef<AbortController | null>(null);
   /**
    * The sign-in that just finished on this screen, whether the button pressed for it said it adds this PC, and
@@ -1031,13 +1034,49 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     runSignIn(current, false)?.then(async (session) => {
       await load();
       if (session.account !== account) return;
-      if (action === "add") addMethod(provider);
-      else removeMethod(provider);
+      switch (action) {
+        case "add": addMethod(provider); return;
+        case "remove": removeMethod(provider); return;
+        case "delete": deleteNow(); return;
+        default: action satisfies never;
+      }
     }, async (error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
       await load();
       setView((now) => now.kind === "signed-in" ? { ...now, error: failureText(error, current) } : now);
+    });
+  };
+
+  /**
+   * Deletes the account this section shows (lib/account/deleteAccount.ts): the sign-in read here is the one
+   * deleted, so one made meanwhile (another tab) is never touched. The service wants a sign-in from the last
+   * ten minutes, as for a change to the ways in.
+   */
+  const deleteNow = (): void => {
+    setConfirmingDelete(false);
+    const service = new AccountService({ store: indexedAccountStore });
+    let deleting: AccountSession | undefined;
+    void service.session().then((session) => {
+      if (session === undefined) throw new SignedOutError();
+      deleting = session;
+      return deleteAccount({ service, accountStore: indexedAccountStore, session }).then(() => session);
+    }).then((session) => {
+      cancelDeviceSignIn();
+      // a PC that waited to be added under the deleted account waits no longer
+      keepAddPcWaiting(null);
+      signedInHere.current = null;
+      loads.current++;
+      setReauth(null);
+      setView((current) => current.kind === "signed-in" && current.account !== session.account ? current : { kind: "signed-out", error: null, notice: t("Your account was deleted.") });
+    }, (error: unknown) => {
+      console.warn("Ovis: the account was not deleted", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+      // the sign-in ended meanwhile, or another took its place: the section reads what is stored now
+      if (error instanceof SignedOutError) { void load(); return; }
+      if (needsReauth(error) && deleting !== undefined) { setReauth({ action: "delete", provider: deleting.provider }); return; }
+      const message = error instanceof AccountServiceError && error.code === "subscription_active"
+        ? t("Cancel your subscription first, then delete the account.") : t("The account could not be deleted. Try again.");
+      setView((current) => current.kind === "signed-in" ? { ...current, error: message } : current);
     });
   };
 
@@ -1060,10 +1099,11 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
             ? (
               <div className="account-sign-in">
                 <button type="button" className="btn btn-primary account-provider" data-provider="ovis" onClick={() => signIn("github", addsPc)}>{addsPc ? t("Sign in and add this PC") : t("Sign in")}</button>
+                {view.notice !== undefined && view.error === null && <p className="account-fineprint account-notice" role="status">{view.notice}</p>}
                 {view.error !== null && <p className="account-error" role="alert">{view.error}</p>}
               </div>
             )
-            : <AccountSignIn onSignIn={(provider) => signIn(provider)} error={view.error} providers={providers} />}
+            : <AccountSignIn onSignIn={(provider) => signIn(provider)} error={view.error} notice={view.notice ?? null} providers={providers} />}
         </div>
       )}
       {view.kind === "signing-in" && <SettingsRow label={t("Signing in…")} description={t("Finish signing in in your browser.")}>{null}</SettingsRow>}
@@ -1153,7 +1193,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
                   </li>
                 ))}
               </ul>
-              {reauth !== null && (
+              {reauth !== null && reauth.action !== "delete" && (
                 <div className="account-reauth" role="alert">
                   <p className="settings-description">{bridge === null
                       // a sign-in again stays with this account's provider, at its own device page, never the link page's choice
@@ -1176,6 +1216,23 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
           )}
           <AddThisPc signedInHere={takeSignedInHere} />
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
+          {/* last, and the same button asks before it deletes: what goes and what stays is said before the second press */}
+          <SettingsRow label={t("Delete account")}
+            description={confirmingDelete
+              ? <span role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</span>
+              : t("Delete your Ovis account and everything the account service keeps for it.")}>
+            <button type="button" className={confirmingDelete ? "btn btn-danger" : "btn"} data-action="delete-account" data-confirm={confirmingDelete ? "delete-account" : undefined}
+              onClick={() => { if (confirmingDelete) deleteNow(); else { setReauth(null); setConfirmingDelete(true); } }}>{confirmingDelete ? t("Delete account for good?") : t("Delete account")}</button>
+            {confirmingDelete && <button type="button" className="btn btn-ghost" onClick={() => setConfirmingDelete(false)}>{t("Cancel")}</button>}
+          </SettingsRow>
+          {reauth?.action === "delete" && (
+            <div className="settings-item account-reauth" role="alert">
+              <p className="settings-description">{bridge === null
+                ? t("To delete your account, sign in again with {provider} on its own sign-in page first.", { provider: PROVIDER_NAMES[view.provider] })
+                : t("To delete your account, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
+              {(bridge !== null || isDeviceProvider(view.provider)) && <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>}
+            </div>
+          )}
           {view.error !== null && <p className="settings-condition" role="alert">{view.error}</p>}
         </>
       )}

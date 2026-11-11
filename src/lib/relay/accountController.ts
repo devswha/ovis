@@ -4,13 +4,14 @@ import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { newRecordId } from "../../../shared/account-records.ts";
 import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { myPcs } from "../account/myPcs.ts";
-import { AccountService, accountProvidersOf, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
+import { AccountService, AccountServiceError, accountProvidersOf, sameSignIn, shellAccountServiceOf, SignedOutError } from "../account/service.ts";
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, finishSignIn, SignInError } from "../account/signin.ts";
 import type { SignInReturn } from "../account/signin.ts";
 import type { AccountProvider, AccountSession } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
+import { deleteAccount as deleteAccountOf } from "../account/deleteAccount.ts";
 import { leaveAccount } from "../account/leave.ts";
 import { nativeSignIn, nativeSignInAvailable } from "../account/native.ts";
 import { deviceLabel, deviceOs } from "../phone.ts";
@@ -31,6 +32,10 @@ const DIRECTORY_REFRESH_MS = 60_000;
  */
 interface EnrollOptions { readonly consent?: PairingConsent; readonly settled?: () => void }
 const wait = (ms: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, ms); });
+/** A sign-in again, made to delete an account, landed in another account: nothing is deleted. */
+class AnotherAccountError extends Error {
+  constructor() { super("The sign-in is for another account"); this.name = "AnotherAccountError"; }
+}
 /**
  * The sign-in a pairing's confirm was drawn for is no longer the one stored (another tab signed out, or in as someone
  * else): the pairing is not made, and the person is asked again.
@@ -70,6 +75,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   let shownFor: AccountSession | undefined;
   let generation = 0;
   let leaving = false;
+  let deleting = false;
   // the read out now and the sign-in it is for: a read of an earlier sign-in never holds back the next one's
   let reading: { readonly epoch: number; readonly read: Promise<void> } | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -214,6 +220,51 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       if (accountView?.kind === "signed-in") accountView = { ...accountView, error: t("This device could not leave the account. Try again.") };
       await changed();
     }).finally(() => { leaving = false; });
+  };
+
+  /** What the service said to a delete it refused, in the person's words. */
+  const deleteFailure = (error: unknown): string => {
+    if (error instanceof AccountServiceError && error.code === "reauth_required") return t("To delete your account, sign out, sign in again, then delete it within ten minutes.");
+    if (error instanceof AccountServiceError && error.code === "subscription_active") return t("Cancel your subscription first, then delete the account.");
+    if (error instanceof AnotherAccountError) return t("You signed in to another account. Nothing was deleted.");
+    return t("The account could not be deleted. Try again.");
+  };
+  /**
+   * Deletes the signed-in account at the account service (account/deleteAccount.ts), then shows the signed-out
+   * front page. The service wants a sign-in from the last ten minutes: the phone app signs in again in place, with
+   * the method this sign-in used, and deletes only if that is the same account; a browser is told to sign in again.
+   */
+  const deleteAccount = (): void => {
+    if (deleting || leaving) return;
+    deleting = true;
+    const epoch = ++generation;
+    // the sign-in the person deletes from, read before anything waits: one made meanwhile is never deleted (deleteAccount.ts)
+    const from = account.session();
+    for (const serverId of running.values()) cancelEnrollment(serverId);
+    void from.then(async (session) => {
+      if (session === undefined) throw new SignedOutError();
+      try { await deleteAccountOf({ service: account, accountStore, session }); }
+      catch (error) {
+        if (!(error instanceof AccountServiceError && error.code === "reauth_required") || accountService === null || !nativeSignInAvailable()) throw error;
+        const again = await nativeSignIn(session.provider, { store: accountStore, service: accountService });
+        if (again.account !== session.account) throw new AnotherAccountError();
+        await deleteAccountOf({ service: account, accountStore, session: again });
+      }
+    }).then(async () => {
+      // signed in again meanwhile: that view is not this delete's to change
+      if (epoch !== generation) return;
+      directory = [];
+      accountView = { kind: "signed-out", error: null, notice: t("Your account was deleted.") };
+      armRefresh();
+      await changed();
+    }, async (error: unknown) => {
+      console.warn("Ovis: the account was not deleted", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+      if (epoch !== generation) return;
+      // the sign-in ended meanwhile, or a sign-in again landed in another account: read what is stored now
+      if (error instanceof SignedOutError || error instanceof AnotherAccountError) await refresh(true);
+      if (accountView?.kind === "signed-in") accountView = { ...accountView, error: deleteFailure(error) };
+      await changed();
+    }).finally(() => { deleting = false; });
   };
 
 
@@ -436,5 +487,5 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
   const stored = async (): Promise<AccountSession | undefined> => accountService === null ? undefined : await account.session().catch(() => undefined);
   return { get state() { return accountView; }, get directory() { return directory; },
     /** the sign-in the signed-in view speaks of; none while signed out, or before a new sign-in's first read */
-    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, prepare, enroll, cancelEnrollment, armRefresh };
+    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, load, refresh, refreshNow, reread, stored, signIn, signOut, leave, deleteAccount, prepare, enroll, cancelEnrollment, armRefresh };
 }
