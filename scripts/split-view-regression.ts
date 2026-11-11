@@ -951,7 +951,10 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
         type Data = { type?: string; message?: { type?: string; from?: string }; machines?: Array<{ snapshot?: { panes: Array<{ pane_id: string }> } | null }> };
         const held: MessageEvent<string>[] = [];
         // a roster without the pane may come first by itself: then the notice that follows is let through
-        // once that roster's render and its effects have run, instead of being held for a roster that came
+        // once that roster's render and its effects have run, instead of being held for a roster that came.
+        // Only a roster with panes, after one that showed the pane, proves it moved: the first, cached one
+        // may predate the pane, and one with no snapshot shows nothing
+        let present = false;
         let without = false;
         const release = (handler: (event: MessageEvent<string>) => void, target: EventSource) => {
           const late = held.splice(0);
@@ -973,7 +976,9 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
                 return;
               }
               handler.call(this, event);
-              if (data.type === "machines" && !without && !data.machines!.some((machine) => machine.snapshot?.panes.some((item) => item.pane_id === pane))) {
+              const shows = data.type === "machines" && data.machines!.some((machine) => machine.snapshot?.panes.some((item) => item.pane_id === pane));
+              if (shows) present = true;
+              else if (data.type === "machines" && present && !without && data.machines!.some((machine) => machine.snapshot)) {
                 without = true;
                 // told once that roster's render and its effects have run, as a later message would be
                 if (held.length > 0) release(handler, this);
