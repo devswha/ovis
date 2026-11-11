@@ -143,6 +143,16 @@ describe("Pages deployment gate", () => {
     expect(deploy.indexOf("Verify deployment SHA is current")).toBeLessThan(deploy.indexOf("actions/deploy-pages@"));
   });
 
+  it("skips the deployment, not the run, when main moved on while it built", () => {
+    const deploy = pageJob("deploy");
+    expect(deploy).toContain("id: current");
+    expect(deploy).toMatch(/- id: deployment\n        if: steps\.current\.outputs\.stale != 'true'\n        uses: actions\/deploy-pages@/);
+    expect(deploy).toContain("if: success() && steps.current.outputs.stale != 'true'");
+    // a broken site build still fails the run: deploy waits for it and nothing lets the build pass on an error
+    expect(deploy).toContain("needs.build.result == 'success'");
+    expect(pageJob("build")).not.toContain("continue-on-error");
+  });
+
   it("summarizes the validated, built, and deployed source SHAs", () => {
     const deploy = pageJob("deploy");
     expect(deploy).toContain("Validated SHA:");
@@ -335,16 +345,18 @@ describe.skipIf(process.platform === "win32")("Pages SHA guard execution", () =>
   const sha = "a".repeat(40);
 
   for (const scenario of [
-    { name: "accepts the validated build at current main", built: sha, latest: sha, api: "0", code: 0 },
-    { name: "rejects an older rerun", built: sha, latest: "b".repeat(40), api: "0", code: 1 },
-    { name: "rejects an artifact from another commit", built: "b".repeat(40), latest: sha, api: "0", code: 1 },
-    { name: "fails closed when GitHub denies the lookup", built: sha, latest: sha, api: "1", code: 1 },
-    { name: "rejects a malformed API response", built: sha, latest: "null", api: "0", code: 1 },
+    { name: "accepts the validated build at current main", built: sha, latest: sha, api: "0", code: 0, stale: false },
+    { name: "skips an older run without failing it, with a notice", built: sha, latest: "b".repeat(40), api: "0", code: 0, stale: true },
+    { name: "rejects an artifact from another commit", built: "b".repeat(40), latest: sha, api: "0", code: 1, stale: false },
+    { name: "fails closed when GitHub denies the lookup", built: sha, latest: sha, api: "1", code: 1, stale: false },
+    { name: "rejects a malformed API response", built: sha, latest: "null", api: "0", code: 1, stale: false },
   ]) {
     it(scenario.name, () => {
       const root = mkdtempSync(join(tmpdir(), "pages-guard-"));
       try {
         writeFileSync(join(root, "gh"), '#!/usr/bin/env bash\nif [[ "$CASE_API" != 0 ]]; then exit "$CASE_API"; fi\nprintf "%s\\n" "$CASE_LATEST"\n', { mode: 0o700 });
+        const output = join(root, "github-output");
+        writeFileSync(output, "");
         const result = spawnSync("bash", ["-c", guard], {
           encoding: "utf8",
           timeout: 5_000,
@@ -355,10 +367,13 @@ describe.skipIf(process.platform === "win32")("Pages SHA guard execution", () =>
             BUILT_SHA: scenario.built,
             CASE_API: scenario.api,
             CASE_LATEST: scenario.latest,
+            GITHUB_OUTPUT: output,
           },
         });
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(scenario.code);
+        expect(readFileSync(output, "utf8").includes("stale=true")).toBe(scenario.stale);
+        expect(result.stdout.includes("::notice title=Deployment skipped::")).toBe(scenario.stale);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

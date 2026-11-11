@@ -75,6 +75,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Verify deployment SHA is current
+        id: current
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
@@ -91,13 +92,16 @@ jobs:
             exit 1
           fi
           if [[ "$latest_sha" != "$EXPECTED_SHA" ]]; then
-            echo "Refusing to deploy outdated SHA $EXPECTED_SHA; main is now $latest_sha" >&2
-            exit 1
+            # main moved on while this run built: nothing is wrong, and the run for main's newer commit deploys the site
+            echo "::notice title=Deployment skipped::$EXPECTED_SHA is no longer main's head ($latest_sha); the newer commit's own run deploys the site."
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
       - id: deployment
+        if: steps.current.outputs.stale != 'true'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
       - name: Summarize deployment
-        if: success()
+        if: success() && steps.current.outputs.stale != 'true'
         env:
           VALIDATED_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           BUILT_SHA: ${{ needs.build.outputs.sha }}
