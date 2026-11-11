@@ -926,8 +926,9 @@ On Linux and macOS a candidate found there is run only when it and every folder 
 belong to you or root and nobody else can write them; a path you set in `OVIS_HC_BIN` is run as
 you named it. On Windows, which has no such bits to read, a candidate is run only from inside your
 profile folder (`%LOCALAPPDATA%\Programs\herdr-core`, scoop, cargo): any account on the PC may
-write a folder made at the top of a drive, such as `C:\tools`; set `OVIS_HC_BIN` to an `hc`
-kept elsewhere. Two exceptions on Linux and macOS: a folder further up may be writable by anyone when it is sticky
+write a folder made at the top of a drive, such as `C:\tools`. An `hc` in Program Files, or a bare
+`OVIS_HC_BIN=hc` found outside your profile, is passed over too; set `OVIS_HC_BIN` to the full
+path of an `hc` kept elsewhere. Two exceptions on Linux and macOS: a folder further up may be writable by anyone when it is sticky
 (like `/tmp`), since nobody can then rename or replace what is yours in it; and on macOS, folders
 under Homebrew's `/opt/homebrew` and `/usr/local` may be writable by the `admin` group, as
 Homebrew leaves them, so another administrator of that Mac could change an `hc` found there.

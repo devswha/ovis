@@ -214,6 +214,16 @@ it.skipIf(process.platform !== "linux")("on Windows runs only an hc inside the u
   writeFileSync(join(home, "scoop", "hc.exe"), readFileSync(join(home, "scoop", "hc")), { mode: 0o755 });
   expect((await win([outside, join(home, "scoop")].join(";")))?.version).toBe("0.1.99");
   expect(existsSync(marker)).toBe(false);
+  // a link outside the profile into it is refused too: whoever may write there could repoint it after the check
+  symlinkSync(join(home, "scoop"), join(root, "tools-link"));
+  expect(await win(join(root, "tools-link"))).toBeNull();
+  // a bare OVIS_HC_BIN is looked for in every PATH folder: one refused outside leaves the next
+  const bare = await findHc({ env: { PATH: [outside, join(home, "scoop")].join(";"), OVIS_HC_BIN: "hc" }, home, platform: "win32", loginShellPath: async () => null, usualDirs: [] });
+  expect(bare?.bin).toBe(join(home, "scoop", "hc.exe"));
+  expect(existsSync(marker)).toBe(false);
+  // a HOME the environment sets is not the profile: with no USERPROFILE the OS's answer is
+  expect(await findHc({ env: { PATH: outside, HOME: outside }, platform: "win32", loginShellPath: async () => null, usualDirs: [] })).toBeNull();
+  expect(existsSync(marker)).toBe(false);
 });
 
 it.skipIf(!unix)("says which entry a refused candidate fails on, and which rule", () => {

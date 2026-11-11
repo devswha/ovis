@@ -8,7 +8,7 @@
  * when its socket file is there: nothing connects to it.
  */
 import { lstatSync, readFileSync, readlinkSync, realpathSync, statSync, type Stats } from "node:fs";
-import { userInfo } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrCoreFacts } from "../../shared/machines.ts";
 import { readHerdrConfig } from "../herdr-sidebar.ts";
@@ -82,6 +82,8 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
     ...env,
     PATH: [...new Set(checkedDirs(dirsOn(env["PATH"])))].join(delimiter) || checkedDirs(SYSTEM_PATH).join(delimiter) || "/nonexistent",
   };
+  // Windows' trust boundary: the profile as the OS gives it, never a HOME the environment sets
+  const profile = options.home ?? (env["USERPROFILE"] || homedir());
   const pick = async (candidates: string[], named = false): Promise<FoundHc | null> => {
     for (const candidate of candidates) {
       // absolute: a terminal attach runs it from another folder (server/core/terminal-process.ts),
@@ -90,7 +92,7 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
       if (seen.has(bin)) continue;
       seen.add(bin);
       if (!isFile(bin)) continue;
-      const refused = named ? null : harmless === null ? insideProfile(bin, home) : trustRefusal(bin, harmless, false, acl);
+      const refused = named ? null : harmless === null ? insideProfile(bin, profile) : trustRefusal(bin, harmless, false, acl);
       if (refused !== null) {
         options.onRefused?.(bin, refused);
         continue;
@@ -105,8 +107,7 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
   const configured = env["OVIS_HC_BIN"];
   const bare = configured !== undefined && !/[\\/]/.test(configured);
   const named = !configured ? [] : !bare ? [configured]
-    : harmless === null ? [Bun.which(configured, { PATH: env["PATH"] ?? "" }) ?? configured]
-    : dirsOn(env["PATH"]).map((dir) => join(dir, configured));
+    : dirsOn(env["PATH"]).map((dir) => join(dir, platform === "win32" && !/\.[^.]+$/.test(configured) ? `${configured}.exe` : configured));
   return await pick(named, !bare)
     ?? await pick((options.usualDirs ?? usualHcDirs(home, platform, env)).flatMap(names))
     ?? await pick(dirsOn(env["PATH"]).flatMap(names))
@@ -114,14 +115,18 @@ export async function findHc(options: FindHcOptions = {}): Promise<FoundHc | nul
 }
 
 /**
- * Windows: null when `bin`, links and junctions followed, is inside the user's profile, which only
- * they, SYSTEM and administrators may write; else why not. Elsewhere on a drive, a folder made at
- * its top inherits Modify for every signed-in account.
+ * Windows: null when `bin` is inside the user's profile, which only they, SYSTEM and administrators
+ * may write, both as written (what is stored and run later) and with links and junctions followed;
+ * else why not. Elsewhere on a drive, a folder made at its top inherits Modify for every signed-in
+ * account, so a junction there could be pointed elsewhere after the check.
  */
 function insideProfile(bin: string, home: string): string | null {
+  const inside = (from: string, to: string) => {
+    const rel = relative(from, to);
+    return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+  };
   try {
-    const rel = relative(realpathSync(home), realpathSync(bin));
-    return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel) ? null : `${bin} is outside your profile folder, where another account may have put it`;
+    return inside(resolve(home), resolve(bin)) && inside(realpathSync(home), realpathSync(bin)) ? null : `${bin} is outside your profile folder, where another account may have put it`;
   } catch (error) {
     return `${bin} could not be checked (${(error as NodeJS.ErrnoException).code ?? String(error)})`;
   }
