@@ -105,6 +105,31 @@ describe("deleting the account from the hosted shell", () => {
     expect((await accountStore.get("session"))?.account).toBe("acct-two");
   });
 
+  it("draws the signed-out page when another tab signed out before the press, and sends nothing", async () => {
+    const { fake, accountStore } = await signedInShell();
+    await accountStore.set("session", undefined);
+    const before = fake.requests.length;
+    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    expect(fake.requests.slice(before)).not.toContain("DELETE /v1/account");
+    expect(accountView()?.kind).toBe("signed-out");
+  });
+
+  it("after a delete whose answer was lost, the next press finds the account gone: signed out, and its key forgotten", async () => {
+    let deletes = 0;
+    const { fake, accountStore } = await signedInShell(Date.now, "github", async () => {
+      // the service erased the account, and the answer never came back
+      if (++deletes === 1) throw new TypeError("network connection lost");
+    });
+    const key = (await accountStore.key()).public_spki;
+    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    expect(fake.deleted(ACCOUNT)).toBe(true);
+    expect(accountView()).toMatchObject({ kind: "signed-in", deleteError: "The account could not be deleted. Try again." });
+    await (last().onDeleteAccount?.() as Promise<void> | undefined);
+    expect(accountView()?.kind).toBe("signed-out");
+    expect(await accountStore.get("session")).toBeUndefined();
+    expect((await accountStore.key()).public_spki).not.toBe(key);
+  });
+
   describe("in the phone app, with a sign-in over ten minutes old", () => {
     const savedFetch = globalThis.fetch;
     afterEach(() => { Reflect.deleteProperty(globalThis, "Capacitor"); globalThis.fetch = savedFetch; });

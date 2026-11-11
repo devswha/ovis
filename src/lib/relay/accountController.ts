@@ -80,6 +80,8 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
    * it after a wait (the sign-in again, the second delete, what is drawn) goes on only while it is still this one.
    */
   let deletion: object | undefined;
+  /** a sign-in whose delete was sent and never answered (the connection dropped): the account may be gone already */
+  let unanswered: AccountSession | undefined;
   // the read out now and the sign-in it is for: a read of an earlier sign-in never holds back the next one's
   let reading: { readonly epoch: number; readonly read: Promise<void> } | undefined;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -275,6 +277,7 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       // a sign-in that took the deleted one's place while the delete was out stays (deleteAccount.ts): it is shown
       if (await account.session().catch(() => undefined) !== undefined) { await refresh(true); return; }
       if (!current()) return;
+      unanswered = undefined;
       // the account is gone: a PC being brought into it is not
       for (const serverId of running.values()) cancelEnrollment(serverId);
       directory = [];
@@ -289,6 +292,22 @@ export function createAccountController(mount: RelayShellMount, view: { readonly
       if (error instanceof SignedOutError || error instanceof AnotherAccountError) await refresh(true);
       // a sign-out or a sign-in while that read was out: what it drew stays
       if (!current()) return;
+      if (error instanceof SignedOutError && await account.session().catch(() => undefined) === undefined) {
+        // nothing is stored any more: the signed-out page. After a delete of this sign-in that was never answered, the
+        // account is most likely what ended it, so its key and records go as after an answered delete (deleteAccount.ts)
+        if (from !== undefined && unanswered !== undefined && sameSignIn(unanswered, from)) {
+          unanswered = undefined;
+          await accountStore.clear(undefined, { only: (stored) => stored === undefined, spare: ["pending"] });
+        }
+        if (!current()) return;
+        directory = [];
+        accountView = { kind: "signed-out", error: null };
+        armRefresh();
+        await changed();
+        return;
+      }
+      // sent, and no answer came back (not a refusal, not a sign-in gone)
+      if (from !== undefined && !(error instanceof AccountServiceError) && !(error instanceof SignedOutError) && !(error instanceof AnotherAccountError)) unanswered = from;
       // a sign-in that ended or was replaced deleted nothing, and the page now shown is not the one asked about: no
       // failure is drawn on it to try again
       // said on Devices alone, where Delete account was pressed: the directory's own failure keeps `error`
