@@ -18,7 +18,8 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { RecordedContext, RecordedReading, RecordedSource, RecordedWindow } from "./usage-recorded.ts";
-import { AHEAD_MS, byLength, claudeLimit, readStore, resetOf, STALE_AFTER_MS } from "./usage-recorded-pi.ts";
+import { RECORDED_STALE_AFTER_MS } from "../shared/usage.ts";
+import { AHEAD_MS, byLength, claudeLimit, readStore, resetOf } from "./usage-recorded-pi.ts";
 
 /** A week is the longest window read here: a row older than that, with a day to spare, records none that still runs. */
 const SINCE_MS = 8 * 86_400_000;
@@ -108,7 +109,7 @@ function latestReports(rows: readonly HistoryRow[]): RecordedReading[] {
 
 export const ompRecorded: RecordedSource = {
   by: "omp",
-  staleAfterMs: STALE_AFTER_MS,
+  staleAfterMs: RECORDED_STALE_AFTER_MS.omp,
   read(ctx) {
     const now = ctx.now();
     const rows = readStore(storePath(ctx), (db) => db.query<HistoryRow, [number, number, number]>(ROWS).all(now - SINCE_MS, now + AHEAD_MS, MAX_ROWS));

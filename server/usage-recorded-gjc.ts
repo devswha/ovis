@@ -17,7 +17,8 @@
 import { existsSync } from "node:fs";
 import { join, normalize, resolve } from "node:path";
 import type { RecordedContext, RecordedReading, RecordedSource, RecordedWindow } from "./usage-recorded.ts";
-import { AHEAD_MS, byLength, claudeLimit, EPOCH_MS_FROM, readStore, resetOf, STALE_AFTER_MS } from "./usage-recorded-pi.ts";
+import { RECORDED_STALE_AFTER_MS } from "../shared/usage.ts";
+import { AHEAD_MS, byLength, claudeLimit, EPOCH_MS_FROM, readStore, resetOf } from "./usage-recorded-pi.ts";
 
 const PREFIX = "usage_cache:report:anthropic:";
 /** The key after every key that starts with PREFIX: the two bound a search on the table's own index. */
@@ -112,7 +113,7 @@ function reportOf(row: CacheRow, now: number): Report | null {
 
 export const gjcRecorded: RecordedSource = {
   by: "gjc",
-  staleAfterMs: STALE_AFTER_MS,
+  staleAfterMs: RECORDED_STALE_AFTER_MS.gjc,
   read(ctx) {
     const now = ctx.now();
     const rows = readStore(storePath(ctx), (db) => db.query<CacheRow, [string, string, number, number]>(ROWS).all(PREFIX, AFTER_PREFIX, Math.floor(now / 1000), MAX_ROWS));

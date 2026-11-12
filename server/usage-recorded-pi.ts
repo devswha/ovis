@@ -9,8 +9,6 @@ import type { RecordedWindow } from "./usage-recorded.ts";
 
 const FIVE_HOURS = 5 * 3600;
 const SEVEN_DAYS = 7 * 86400;
-/** Either tool reads again five minutes after its last read, give or take a quarter: three reads missed, it has stopped reading. */
-export const STALE_AFTER_MS = 15 * 60_000;
 /** A clock a little ahead of this one is no reason to drop a record; a time further ahead is not one the tool read at. */
 export const AHEAD_MS = 60_000;
 /** A store in use is read through its write-ahead log without waiting; should it still be busy, this long and no longer. */
