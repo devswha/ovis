@@ -1,6 +1,6 @@
 # User guide
 
-[← README](../README.md) · [Quick start](#quick-start) · [Supported agents](#supported-agents) · [Features](#features) · [Phone](#on-your-phone) · [Remote PCs](#remote-pcs-over-ssh) · [Access and safety](#access-and-safety) · [Configuration](#configuration) · [Updates](#updates) · [Keyboard shortcuts](#keyboard-shortcuts) · [How it works](#how-it-works) · [FAQ](#faq)
+[← README](../README.md) · [Quick start](#quick-start) · [Ovis and herdr](#how-ovis-fits-with-herdr) · [Supported agents](#supported-agents) · [Features](#features) · [Phone](#on-your-phone) · [Remote PCs](#remote-pcs-over-ssh) · [Access and safety](#access-and-safety) · [Configuration](#configuration) · [Updates](#updates) · [Keyboard shortcuts](#keyboard-shortcuts) · [How it works](#how-it-works) · [FAQ](#faq)
 
 Install, connect and use Ovis on your desktop and phone.
 
@@ -209,9 +209,22 @@ tailscale serve --https=<port> off    # the port the installer printed, if it se
 
 The installer's herdr, Bun and Node stay, since other tools may use them: `~/.local/bin/herdr`, `~/.bun`, and `~/.local/share/ovis/node` (`~/.local/share/herdr-web-ui/node` for an install from before the rename); an older installer also linked it as `~/.local/bin/node`. Running the installer again removes that link once the installed release finds its Node itself; a release from before that still needs the link, so it stays until the installer runs again after Ovis is updated. Push keys, paired devices and the identity file that owns the app's Portal address are in `~/.config/ovis`.
 
+## How Ovis fits with herdr
+
+- **[herdr](https://github.com/herdrdev/herdr)** is a terminal multiplexer for coding agents. It keeps their terminals running and knows which agent is working, blocked or idle.
+- **The [Herdr app](https://herdr.dev/download/)** is herdr's own desktop app. Its terminals run on **[herdr-core](https://herdr.dev/core)** (`hc`).
+- **Ovis** is an independent project on top of them: a chat, a phone app and a browser client for the same terminals.
+
+Ovis replaces none of them. The terminals it shows from herdr or the Herdr app are the same live ones, so you use both at once, with nothing to move over. Which terminals you see depends on how Ovis was installed:
+
+- **The one-line install** shows your herdr sessions (herdr 0.9.0 or newer). On Linux or macOS with the Herdr app and no herdr, it shows the Herdr app's terminals instead. On Windows, or with both installed, it starts on herdr, and **Settings → About → Terminals** switches to the Herdr app's ([Herdr app terminals](#herdr-app-terminals)).
+- **The desktop app** keeps terminals of its own ([The desktop app](#the-desktop-app)).
+
 ## Supported agents
 
-Every agent herdr runs shows up with its live status, terminal and alerts. The chat view reads the agent's own session files wherever it knows where they are:
+Every agent herdr runs shows up with its live status, terminal and alerts. How much of the chat works depends on the agent: all of it for Claude Code; most of it for Codex, omp and omo; part of it for pi, OpenCode, Hermes, Devin CLI, Antigravity, Grok, gjc and the rest of the table, with fewer prompt cards and extras. Any other agent shows the terminal's text where the chat would be, and the real terminal always works.
+
+The chat view reads the agent's own session files wherever it knows where they are:
 
 | Agent | Chat | Answer prompts from chat |
 | --- | --- | --- |
@@ -498,11 +511,11 @@ On an iPhone or iPad the app needs iOS 16 or later (Safari 16 or later on a Mac)
 
 ### Through the Ovis relay
 
-The Ovis relay lets your phone reach this PC from anywhere, with no Tailscale, no account and nothing to set up on the phone. It's off until you turn it on. While it's on, the PC and the phone each connect out to a relay that Ovis runs at `relay.ovis.sh`, which passes their traffic between them. Everything they send is end-to-end encrypted between the phone and the PC, so the relay can't read it. To turn it on, open **Settings → Devices and PCs → Add a connection → Ovis relay** on the PC, switch it on, then point the phone's camera at the QR code that shows up. On a fresh install, the setup guide's **Connect your phone** offers it first: choose **Turn on the Ovis relay** and its QR code shows right there. **Use Tailscale or Wi-Fi instead**, under it, shows this page's own address and pairing QR code, or sends you to **Settings → Devices and PCs** when the page is open on the PC itself.
+The Ovis relay lets your phone reach this PC from anywhere, with no Tailscale, no account and nothing to set up on the phone. It's off until you turn it on. While it's on, the PC and the phone each connect out to a relay that Ovis runs at `relay.ovis.sh`, which passes their traffic between them. Everything they send is end-to-end encrypted between the phone and the PC, so the relay can't read it. To turn it on, open **Settings → Devices and PCs → Add a connection → Ovis relay** on the PC, switch it on, choose **Show the QR code**, then point the phone's camera at it. On a fresh install, the setup guide's **Connect your phone** offers it first: choose **Turn on the Ovis relay** and its QR code shows right there. **Use Tailscale or Wi-Fi instead**, under it, shows this page's own address and pairing QR code, or sends you to **Settings → Devices and PCs** when the page is open on the PC itself.
 
 Step by step:
 
-1. On the PC, open **Settings → Devices and PCs**, choose **Add a connection**, and turn on the switch on its **Ovis relay** tab. Once it is online, a QR code shows with a code to type beside it. Both work for ten minutes, and **Refresh** makes new ones. Signed in to your Ovis account, the dialog asks the new device to sign in instead, and you approve it once on a device already in the account; **Connect with a code (no sign-in)** still shows the QR code. The relay's switch and **Reset relay identity** are also under **More settings** on that page.
+1. On the PC, open **Settings → Devices and PCs**, choose **Add a connection**, and turn on the switch on its **Ovis relay** tab. Once it is online, choose **Show the QR code**. It works for ten minutes, **New code** makes another, and it comes down when the dialog closes. A PC that is already in an Ovis account shows no QR code there: a new device signs in to that account and opens the PC ([Through an account](#through-an-account)). Where this PC uses no account service (`OVIS_ACCOUNT_SERVICE_URL=off`, or it cannot be reached), the QR code shows at once with a code to type beside it, and **Refresh** makes new ones. The relay's switch and **Reset relay identity** are also under **More settings** on that page.
 2. Scan the QR code with the phone's camera. Ovis opens in the phone's browser at `app.ovis.sh` and asks whether to pair with this PC: tap **Pair**.
 3. Install it: in Safari, choose **Share → Add to Home Screen**; in Chrome, choose **Install app** or **Add to Home screen** from its menu. Then open the **⋯** menu at the top right and tap **Alerts** to get alerts on this phone. iPhone needs iOS 16.4+ and the home-screen app.
 
@@ -572,7 +585,7 @@ To stop trusting `app.ovis.sh` too, host the app yourself. `bun run build:shell`
 
 Signing in links your devices once instead of pairing each phone with each PC. It's optional: a QR code and a pairing code work as before, with or without an account.
 
-1. Sign in with **Continue with GitHub** or **Continue with Google** where the app offers it: in the desktop app, or on a PC's own page (**Settings → Devices and PCs → Account**). The public `app.ovis.sh` shows no sign-in at the moment; a phone pairs there with a QR code, and a hosted app built with `OVIS_ACCOUNT_SERVICE_URL` offers it. **Your PCs** lists the PCs of your account and the ones this phone is already paired with.
+1. Sign in with **Continue with GitHub** or **Continue with Google** where the app offers it: in the desktop app, on a PC's own page (**Settings → Devices and PCs → Account**), or on a phone at `app.ovis.sh`, which opens on **Sign in to Ovis** with **Pair with a QR or code** under it (a hosted app built with `OVIS_ACCOUNT_SERVICE_URL=off` offers no sign-in). **Your PCs** lists the PCs of your account and the ones this phone is already paired with.
 2. A phone already paired by QR code needs nothing more: the next time it opens each PC, it moves that pairing into the account by itself. Until then the PC's row says **Ready · not in the account yet**, since removing the phone through the account would not reach it.
 3. A PC marked **Needs approval** has not let this device in yet. Tap it: this device and the PC show the same six digits, as with a link without a code. The first device of an account is approved on the PC itself. After that, any device already in the account can approve: it asks whether to add the new device and shows three numbers, and you pick the one the new device shows. One approval adds the device to every PC of the account: the approving device signs a record that adds it to each PC, and a PC that was off picks that record up when it comes back.
 

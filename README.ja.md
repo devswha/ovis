@@ -5,7 +5,16 @@
 <h1 align="center">Ovis</h1>
 
 <p align="center">
-  <strong>自分のコンピューターで動く Claude Code や Codex などのコーディングエージェントと、<br>デスクトップ、スマートフォン、ブラウザーからチャットできるアプリです。</strong>
+  <strong>コーディングエージェントを、デスクトップ、スマートフォン、ブラウザーで。</strong>
+  <br>
+  自分のコンピューターで動く Claude Code や Codex などのエージェントとチャットし、タップひとつで答えられます。
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-666666?labelColor=333333" alt="MIT license"></a>
+  <a href="https://github.com/devswha/ovis/releases/latest"><img src="https://img.shields.io/github/v/release/devswha/ovis?label=release&labelColor=333333&color=666666" alt="Latest release"></a>
+  <a href="https://github.com/devswha/ovis/stargazers"><img src="https://img.shields.io/github/stars/devswha/ovis?labelColor=333333&color=666666&logo=github" alt="GitHub stars"></a>
+  <a href="https://github.com/herdrdev/herdr"><img src="https://img.shields.io/badge/herdr-0.9.0%2B-666666?labelColor=333333" alt="herdr 0.9.0+"></a>
 </p>
 
 <p align="center">
@@ -13,34 +22,24 @@
   <br>
   <a href="https://ovis.sh/">公式サイト</a> ·
   <a href="#install">インストール</a> ·
-  <a href="https://ovis.sh/demo/">デモを試す</a> ·
-  <a href="docs/guide.md#quick-start">クイックスタート</a> ·
-  <a href="docs/guide.md#faq">よくある質問</a> ·
-  <a href="https://ovis.sh/discord">Discord</a> ·
-  <a href="#docs">ドキュメント</a>
+  <a href="https://ovis.sh/demo/">デモ</a> ·
+  <a href="docs/guide.md">ドキュメント</a> ·
+  <a href="https://ovis.sh/discord">Discord</a>
 </p>
 
 <p align="center">
   <a href="https://ovis.sh/demo/"><img src="docs/media/readme/desktop-and-phone.webp" width="830" alt="デスクトップのブラウザーとスマートフォンで見た Ovis。デスクトップには、ワークスペースとエージェントの一覧の横に Claude Code との会話がチャットとして表示されています。スマートフォンには、git push origin feat/export-guard を実行してよいかを尋ねる Codex の Allow command? カードが、Yes、Yes and don't ask again for git push、No の選択肢とともに表示されています。"></a>
 </p>
 
-<p align="center">
-  エージェントに作業を任せたまま、どこからでも返事をしたい人のためのアプリです。
-  <br>
-  <strong>入手：</strong><a href="https://ovis.sh/Ovis-mac-arm64.dmg">Mac</a>（<a href="https://ovis.sh/Ovis-mac-x64.dmg">Intel</a>）· <a href="https://ovis.sh/Ovis-win-x64.exe">Windows</a> · <a href="https://ovis.sh/Ovis-linux-x64.deb">Linux</a>（<a href="docs/guide.md#the-desktop-app">その他</a>）
-  <br>
-  <strong>スマートフォン：</strong><a href="https://ovis.sh/ja/beta/">iPhone・Android</a>（ベータ版）
-</p>
+Ovis は、エージェントが作業しているコンピューター上で動き、スマートフォンやどのブラウザーからでもそこに接続できます。[herdr](https://github.com/herdrdev/herdr) を基盤としており、herdr や [Herdr アプリ](https://herdr.dev/download/)で見ているのと同じ、実際に動いているターミナルを表示するので、両方を一緒に使えます。[それぞれの関係 →](docs/guide.md#how-ovis-fits-with-herdr)
 
 <a id="install"></a>
 
 ## インストール
 
-Ovis は、エージェントが動いているそのコンピューターで動きます。スマートフォンや別のブラウザーはそこに接続するだけなので、まずコンピューターを用意してください。
+**デスクトップアプリ：** [Mac](https://ovis.sh/Ovis-mac-arm64.dmg)（[Intel](https://ovis.sh/Ovis-mac-x64.dmg)）· [Windows](https://ovis.sh/Ovis-win-x64.exe) · [Linux](https://ovis.sh/Ovis-linux-x64.deb)（[すべてのビルド](docs/guide.md#the-desktop-app)）。ほかに何も要りません。
 
-**コンピューターに：** 上のリンクからデスクトップアプリを入手します。ほかに何も要らず、独自のターミナルを使います。「Windows によって PC が保護されました」と表示されたら、**詳細情報** → **実行** を選んでください。[すべてのビルド →](docs/guide.md#the-desktop-app)
-
-**すでに herdr や Herdr アプリを使っていますか？** デスクトップアプリの代わりに、コマンド 1 行で Ovis を入れて一緒に使えます（[そのとき表示されるターミナル](#how-it-fits-with-herdr)）。Linux か macOS で：
+**herdr や Herdr アプリを使っている場合：** コマンド 1 行で Ovis を一緒に入れられます。Linux か macOS で：
 
 ```bash
 curl -fsSL https://ovis.sh/install.sh | sh
@@ -52,15 +51,18 @@ Windows では PowerShell で：
 irm https://ovis.sh/install.ps1 | iex
 ```
 
-**スマートフォンに：** コンピューターで **設定 → デバイスと PC → 接続を追加 → Ovis リレー** を開いてスイッチをオンにし、表示された QR コードをスマートフォンのカメラで読み取ります。スマートフォンのブラウザーで Ovis が開きます。ホーム画面に追加して使うか、アプリとして使うなら [iPhone・Android のベータ版](https://ovis.sh/ja/beta/)に参加してください。[スマートフォンの設定 →](docs/guide.md#on-your-phone)
+**スマートフォンで：** コンピューターで **設定 → デバイスと PC → 接続を追加 → Ovis リレー** を開いてスイッチをオンにし、表示される QR コードをスマートフォンで読み取ります。コンピューターが Ovis アカウントに入っている場合は、QR コードの代わりにスマートフォンでのサインインを求められます。[iPhone・Android アプリ](https://ovis.sh/ja/beta/)はベータ版です。[スマートフォンの設定 →](docs/guide.md#on-your-phone)
 
-## できること
+## 機能
 
-- **エージェントをチャットとして読む。** 1 ターンのコマンドや編集は、開いて確認できる 1 行にまとまります。
-- **タップで答える。** 承認の確認や質問がカードで届きます。
-- **新しいエージェントを始める。** デスクトップからでもスマートフォンからでも、フォルダーを選んで始められます。
-- **エージェントに呼ばれたら分かる。** アプリを閉じていてもプッシュ通知が届きます。
-- **本物のターミナルを開く。** ワンクリックで開き、スマートフォンにはキーバーが付きます。
+- **エージェントをチャットで。** Claude Code、Codex [など](docs/guide.md#supported-agents)。1 ターンのコマンドや編集は 1 行にまとまります。
+- **確認や質問はカードで。** タップで答えます。
+- **プッシュ通知。** アプリを閉じていても届きます。
+- **本物のターミナルをワンクリックで。** スマートフォンにはキーバー付き。
+- **どこからでも新しいエージェントを開始。** 選んだフォルダーで、デスクトップからでもスマートフォンからでも。
+- **すべてのワークスペースをひとつのリストに。** SSH でつないだ別の PC も。
+
+[すべての機能 →](docs/guide.md#features)
 
 <details>
 <summary>動いている様子を見る（25 秒の動画）</summary>
@@ -71,51 +73,26 @@ irm https://ovis.sh/install.ps1 | iex
 </p>
 </details>
 
-<a id="how-it-fits-with-herdr"></a>
+**制約：** 自分のコンピューターが起動していて、接続できる状態である必要があります（Ovis リレー、Tailscale、VPN、SSH トンネルのいずれか）。チャットの機能は Claude Code ではすべてそろっていて、ほかのエージェントではそれより少なくなります。本物のターミナルはいつでも使えます。Windows で 1 行のインストールを使うと最初は herdr で動き、**設定 → 情報 → ターミナル** で Herdr アプリのターミナルに切り替えられます。
 
-## herdr との関係
-
-- [**herdr**](https://github.com/herdrdev/herdr) はコーディングエージェントのためのターミナルマルチプレクサーです。エージェントのターミナルを動かし続け、どのエージェントが作業中か、止まっているか、待機中かを把握します。
-- [**Herdr アプリ**](https://herdr.dev/download/)は herdr 自身のデスクトップアプリで、そのターミナルは [**herdr-core**](https://herdr.dev/core)（`hc`）の上で動きます。
-- **Ovis** はこれらの上に作った独立したプロジェクトです。同じターミナルを、チャット、スマートフォンアプリ、ブラウザーから使えるようにします。
-
-Ovis はこれらのどれかを置き換えるものではありません。Ovis に表示される herdr のセッションや Herdr アプリのターミナルは、herdr や Herdr アプリで見ているのと同じ、実際に動いているターミナルなので、何も移さずに両方を一緒に使えます。1 行のインストールコマンドで入れると herdr のセッション（herdr 0.9.0 以降）か Herdr アプリのターミナルが表示され、デスクトップアプリは独自のターミナルを使います。[Herdr アプリのターミナル →](docs/guide.md#herdr-app-terminals)
-
-## コンピューターへの接続方法
-
-コンピューターは起動している必要があります。スマートフォンから接続する方法は 3 つあります。
-
-- **[Ovis リレー](docs/guide.md#through-the-ovis-relay)：** QR コードを一度読み取れば、どこからでも使えます。エンドツーエンドで暗号化されますが（[信頼モデル](docs/relay.md#trust-model)）、通信は `relay.ovis.sh` を経由し、常時稼働は保証されません。
-- **同じ Wi-Fi：** リレーで一度ペアリングすると、iPhone・Android アプリはコンピューターと同じネットワークの中では直接つながり、それができない場所ではリレーを使います。
-- **Tailscale：** 自分の Tailscale ネットワーク内だけで開ける HTTPS アドレスを使います。Ovis リレーは通りませんが、コンピューターとスマートフォンの両方に Tailscale が必要です。
-
-VPN、SSH トンネル、自前の HTTPS プロキシでも使えます（[アクセスと安全性](docs/guide.md#access-and-safety)）。
-
-**プライバシー：** セッションは自分のコンピューターに残り、アカウントなしで使えます。匿名の利用集計はデフォルトで有効で、**設定 → 情報** か `OVIS_TELEMETRY=0` でオフにできます（[送信される内容](docs/guide.md#anonymous-usage-counts)）。
-
-## エージェント
-
-herdr が動かすエージェントはすべて、リアルタイムの状態、本物のターミナル、通知とともに表示されます。チャットはエージェント自身のセッションファイルを読んで作るため、どこまで使えるかはエージェントによって違います。
-
-- **すべて使える：** Claude Code。
-- **ほとんど使える：** Codex、Oh My Pi（omp）、OmO。
-- **一部使える：** pi、OpenCode、Hermes、Devin CLI、Antigravity、Grok、Gajae Code（gjc）など。質問や承認のカード、付加機能は少なめです。
-- **そのほかのエージェント：** チャットの代わりにターミナルのテキストが表示されます。
-
-本物のターミナルはいつでも使えます。[対応エージェント →](docs/guide.md#supported-agents)
-
-<a id="docs"></a>
+**プライバシー：** セッションは自分のコンピューターに残り、アカウントは不要です。リレーはエンドツーエンドで暗号化されます（[信頼モデル](docs/relay.md#trust-model)）。匿名の使用状況の集計はデフォルトで有効で、**設定 → 情報** か `OVIS_TELEMETRY=0` でオフにできます（[送信される内容](docs/guide.md#anonymous-usage-counts)）。
 
 ## ドキュメント
 
-- **[ユーザーガイド](docs/guide.md)：** [クイックスタート](docs/guide.md#quick-start) · [機能](docs/guide.md#features) · [リモート PC](docs/remote-pcs.md) · [設定](docs/guide.md#configuration) · [キーボードショートカット](docs/guide.md#keyboard-shortcuts) · [よくある質問](docs/guide.md#faq)
-- **[INSTALL.md](INSTALL.md)**（すべてのインストール方法の手順）· **[デモ](https://ovis.sh/demo/)** · **[変更履歴](CHANGELOG.md)**
-- **コントリビュート：** セットアップとコマンドは [CONTRIBUTING.md](CONTRIBUTING.md) にあり、[開発ドキュメント](docs/development.md)、[DESIGN.md](DESIGN.md)、[SECURITY.md](SECURITY.md) も参照してください。コーディングエージェントは、インストールを支援するときは [INSTALL.md](INSTALL.md) に、リポジトリを変更するときは[レビュールール](.github/REVIEW.md)と [AGENTS.md](AGENTS.md) に従ってください。
+- **[ユーザーガイド](docs/guide.md)：** [クイックスタート](docs/guide.md#quick-start) · [対応エージェント](docs/guide.md#supported-agents) · [スマートフォン](docs/guide.md#on-your-phone) · [リモート PC](docs/remote-pcs.md) · [設定](docs/guide.md#configuration) · [よくある質問](docs/guide.md#faq)
+- **[INSTALL.md](INSTALL.md)：** すべてのインストール方法を手順を追って説明しています。
+- **[デモ](https://ovis.sh/demo/)** · **[変更履歴](CHANGELOG.md)**
 
 ドキュメントは英語で書かれています。
+
+## コントリビュート
+
+セットアップとチェックの手順は [CONTRIBUTING.md](CONTRIBUTING.md) にあります。[開発ドキュメント](docs/development.md)、[DESIGN.md](DESIGN.md)、[SECURITY.md](SECURITY.md) も参照してください。コーディングエージェントは、インストールを手伝うときは [INSTALL.md](INSTALL.md) に、リポジトリを変更するときは [AGENTS.md](AGENTS.md) と[レビュー規則](.github/REVIEW.md)に従います。
 
 ## 謝辞
 
 [herdr](https://github.com/herdrdev/herdr) を基盤とし、[chatmux](https://github.com/devswha/chatmux) から着想を得て、[xterm.js](https://xtermjs.org)、[React](https://react.dev)、[Bun](https://bun.sh)、[Lucide](https://lucide.dev) を使用しています。[@Yoonwoo-Ha](https://github.com/Yoonwoo-Ha) をはじめ、貢献してくださったすべての方に感謝します。アイコンとウェブサイトのデザインを手伝ってくださった [@sanguneo](https://github.com/sanguneo) にも感謝します。
 
-[MIT](LICENSE)。Copyright © 2026 devswha.
+## ライセンス
+
+[MIT](LICENSE). Copyright © 2026 devswha.
