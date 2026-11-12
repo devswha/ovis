@@ -60,6 +60,36 @@ describe("a Codex pane whose turn ended in an error", () => {
     } finally { h.restore(); }
   });
 
+  it("lets no read begun while herdr still said working undo the failed rest, or tell it twice", async () => {
+    const h = codexHub(failed);
+    try {
+      h.herdrSays(pane("working"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      const release = await h.heldSnapshot();
+      h.herdrSays(pane("done"));
+      handlers.onStatus("w1:p1", "done", "codex");
+      await h.looked();
+      expect(h.last().status).toBe("idle");
+      await release();
+      expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+      expect(h.read).toHaveBeenCalledTimes(1);
+      expect(h.failures).toEqual(["w1:p1"]);
+    } finally { h.restore(); }
+  });
+
+  it("keeps a failed rest when herdr gives the pane a new ID", async () => {
+    const h = codexHub(failed);
+    try {
+      handlers.onStatus("w1:p1", "working", "codex");
+      handlers.onStatus("w1:p1", "done", "codex");
+      await h.looked();
+      (handlers as unknown as { onPaneMoved: (from: string, to: string) => void }).onPaneMoved("w1:p1", "w2:p1");
+      h.herdrSays({ ...pane("done"), pane_id: "w2:p1", workspace_id: "w2", tab_id: "w2:t1" });
+      expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+    } finally { h.restore(); }
+  });
+
   it("finishes a turn that answered", async () => {
     const h = codexHub(`${failed}${answered}`);
     try {

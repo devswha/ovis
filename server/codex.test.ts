@@ -1771,6 +1771,12 @@ describe("a Codex turn that ended in an error", () => {
       text: "Error: You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 13th, 2026 6:05 PM." }]);
   });
 
+  it("shows no error another turn's end recorded under this one", () => {
+    const started = event({ type: "task_started", turn_id: "main" });
+    const other = event({ type: "task_complete", turn_id: "subagent", last_agent_message: null, error: { message: "Sub-agent failed" } });
+    expect(JSON.stringify(parseCodexTranscript(jsonl(started, message("user", "Hi"), other)))).not.toContain("Sub-agent failed");
+  });
+
   it("adds nothing for a turn that ended well or was interrupted", () => {
     const done = event({ type: "task_complete", last_agent_message: "Done", error: null });
     expect(parseCodexTranscript(jsonl(message("user", "Hi"), message("assistant", "Done"), done)).at(-1)!.parts).toEqual([{ kind: "text", text: "Done" }]);

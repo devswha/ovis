@@ -345,6 +345,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const codexLooked = new Map<string, { path: string; size: number } | null>();
   const codexLooking = new Set<string>();
   const codexTurns = new Map<string, number>();
+  /** snapshot reads begun, and the count when each pane's failure was found: a read begun before it tells no new turn */
+  let codexReads = 0;
+  const codexFailedAt = new Map<string, number>();
   /**
    * A Codex pane's last turn is no longer the failed one, and its rollout may be another: `began`, it is at work again,
    * a turn this server sees run (only such a turn's failure is told: one found already over, after a restart or in a pane
@@ -352,6 +355,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    */
   const codexWorking = (paneId: string, began: boolean): void => {
     codexFailed.delete(paneId);
+    codexFailedAt.delete(paneId);
     codexLooked.delete(paneId);
     if (began) codexTurns.set(paneId, (codexTurns.get(paneId) ?? 0) + 1);
   };
@@ -364,6 +368,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /** herdr's snapshot with OmO's and GJC's own status in it: what the completion tracker and web push are given */
   const rawSnapshot = async (): Promise<SessionSnapshot> => {
     const titleRead = ++titleReads;
+    const codexRead = ++codexReads;
     const promptCheckpoint = options.openCodeState?.checkpoint();
     const read = opencodeAgents.beginRead();
     const snapshot = await omoSnapshot();
@@ -374,7 +379,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // a Codex pane herdr reads DONE may have ended its turn in an error: looked at, not waited for
     for (const pane of snapshot.panes) {
       if (pane.agent !== "codex") continue;
-      if (pane.agent_status === "working") codexWorking(pane.pane_id, true);
+      // reads overlap: one begun before a failure was found is no turn after it
+      if (pane.agent_status === "working") { if ((codexFailedAt.get(pane.pane_id) ?? -1) < codexRead) codexWorking(pane.pane_id, true); }
       else if (pane.agent_status === "done" && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) codexRest(pane.pane_id, snapshot);
     }
     const named = codexRests(letta.apply(gjc.apply(omo.apply(snapshot))));
@@ -704,6 +710,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       const now = completions.current(paneId);
       if (!failed || now === "working" || now === "blocked" || codexFailed.has(paneId)) return;
       codexFailed.add(paneId);
+      codexFailedAt.set(paneId, codexReads);
       const status = completions.observe(paneId, "idle", "codex", "failed");
       // told as any rest is: the queue and the wait on background work hear it before devices do
       pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
@@ -811,6 +818,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onPaneMoved: (from, to) => {
       // its finishes go on counting under the new ID, and what was read of them is read there (server/seen.ts)
       const renumber = finishes.moved(from, to);
+      // a Codex pane's failed rest and its turns go with it too
+      for (const state of [codexFailedAt, codexTurns, codexLooked] as Map<string, unknown>[]) if (state.has(from)) { state.set(to, state.get(from)); state.delete(from); }
+      if (codexFailed.delete(from)) codexFailed.add(to);
       // a read record that cannot be written costs that record, never the rest of the move
       try { options.seenMoved?.(from, to, renumber); }
       catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }

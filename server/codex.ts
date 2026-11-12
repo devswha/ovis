@@ -263,7 +263,9 @@ export function createCodexTranscriptParser(state: CodexParseState = { turns: []
           state.activeTurnId = string(payload.turn_id) || undefined;
         }
         // a turn that failed (a usage limit, a refused request) records why on its end, and nothing else: no answer
-        const failure = payload.type === "task_complete" ? string(record(payload.error).message) : "";
+        // of the turn read as running only, as its items are (a sub-agent's turn ends in its own record)
+        const failure = payload.type === "task_complete" && (!state.activeTurnId || !payload.turn_id || payload.turn_id === state.activeTurnId)
+          ? string(record(payload.error).message) : "";
         if (failure) assistant(ts).parts.push({ kind: "text", text: `Error: ${failure}`, failed: true });
         if (payload.type === "task_complete" || payload.type === "turn_aborted") {
           const turn = turns.at(-1);
