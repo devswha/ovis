@@ -1038,7 +1038,7 @@ export function App() {
           {!guideShown && !inbox.shown && <ConnectionChip
             connected={connected}
             word={connWord}
-            quiet={(headerConnection === "reconnecting" && note === null && ((crumb !== null && !stripInHeader) || phoneTabRow)) || statusBarShown}
+            quiet={(headerConnection === "reconnecting" && note === null && ((crumb !== null && !stripInHeader) || (phoneTabRow && stripInHeader))) || statusBarShown}
             title={[connected ? null : connWord, shownHerdr ? (shownHerdr.runtime === "herdr-core" ? t("herdr-core {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol }) : t("herdr {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol })) : null].filter((part) => part !== null).join(" · ") || undefined}
           />}
           {/* the Host's herdr is away: the step to take is on that PC (the sidebar's state line says the same) */}

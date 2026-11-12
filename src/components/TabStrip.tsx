@@ -54,6 +54,13 @@ import { lastViewedPane, rememberViewedPane } from "../lib/lastViewedPane.ts";
  *  header takes the tabs at (a resize, not a split or a workspace change) takes it, within
  *  FOCUS_HANDOFF_MS and while nothing else has. */
 let focusHandoff: { workspaceId: string; wide: boolean; at: number } | null = null;
+/** names being typed, per PC, workspace and tab: a strip that goes (a phone turned, the row moving between the
+ *  header and the pane) leaves its draft for the strip that takes its place, and an open name field reopens there
+ *  within FOCUS_HANDOFF_MS */
+const renameDraftStore = new Map<string, string>();
+let renameHandoff: { owner: string; tabId: string; layout: string; at: number } | null = null;
+/** which side of the widths that move the strip (the header's row from 769px, a phone's sheets to 640px) the window is on */
+const stripLayout = (): string => typeof window === "undefined" || !window.matchMedia ? "" : `${window.matchMedia(HEADER_TABS_QUERY).matches}|${window.matchMedia(SHEET_QUERY).matches}`;
 const FOCUS_HANDOFF_MS = 500;
 const HEADER_TABS_QUERY = "(min-width: 769px)";
 
@@ -127,7 +134,6 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const stripId = useId();
   const [picker, setPicker] = useState<{ anchor: HTMLElement; tab: HerdrTab; point?: { x: number; y: number }; previousFocus: HTMLElement | null; touch: boolean; workspaces?: true } | null>(null);
   const [editing, setEditing] = useState<{ tabId: string; value: string } | null>(null);
-  const renameDrafts = useRef(new Map<string, string>());
   // the name just sent, shown until herdr's snapshot carries it
   const [sent, setSent] = useState<{ tabId: string; label: string } | null>(null);
   const [confirm, setConfirm] = useState<{ tab: HerdrTab; title: string; body: string } | null>(null);
@@ -147,6 +153,26 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     ?? strip.current?.querySelector<HTMLElement>('[role="tab"]') ?? null;
   latest.current = { machineId, workspaceId: workspace.workspace_id, tabId: selectedPane.tab_id };
   const owner = JSON.stringify([machineId, workspace.workspace_id]);
+  const draftKey = (tabId: string): string => JSON.stringify([owner, tabId]);
+  const renameDrafts = { current: {
+    get: (tabId: string) => renameDraftStore.get(draftKey(tabId)),
+    set: (tabId: string, value: string) => { renameDraftStore.set(draftKey(tabId), value); },
+    delete: (tabId: string) => { renameDraftStore.delete(draftKey(tabId)); },
+  } };
+  const editingNow = useRef(editing);
+  editingNow.current = editing;
+  useLayoutEffect(() => {
+    const handoff = renameHandoff;
+    renameHandoff = null;
+    const mountedIn = stripLayout();
+    if (handoff && handoff.owner === owner && handoff.layout !== stripLayout() && performance.now() - handoff.at < FOCUS_HANDOFF_MS) {
+      setEditing({ tabId: handoff.tabId, value: renameDraftStore.get(JSON.stringify([owner, handoff.tabId])) ?? "" });
+    }
+    return () => {
+      const open = editingNow.current;
+      if (open) renameHandoff = { owner, tabId: open.tabId, layout: mountedIn, at: performance.now() };
+    };
+  }, [owner]);
   const previousOwner = useRef(owner);
   // a press held on a tab of the header's row (`phoneRow`): its menu opens when the timer fires, for the PC and
   // workspace it was pressed on; `until` is when the click that lifting it sends stops being the press's
@@ -163,7 +189,6 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     cancelLongPress();
     // Native IDs can repeat on another PC. A pending dialog never changes its target PC.
     setPicker(null); setEditing(null); setConfirm(null); setSent(null); setError(null);
-    renameDrafts.current.clear();
     refocus.current = null; closed.current = null;
   }, [owner]);
   const panes = rosterPanes(snapshot.panes.filter((pane) => pane.workspace_id === workspace.workspace_id), selectedPane.pane_id);
@@ -552,9 +577,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const pickerItems = (tab: HerdrTab, touch: boolean): RowMenuItem[] => {
     const own = soloPanes ? panesOf(tab) : [];
     const layout = snapshot.layouts?.find((entry) => entry.tab_id === tab.tab_id);
+    const tabItems = tabActions(tab);
+    // the pane's menu can carry the tab's own actions too (where More holds them): the tab's group says them once
     const paneItems = touch && tab.tab_id === selectedPane.tab_id
-      ? (paneActions?.(selectedPane.pane_id) ?? []).filter((item) => !soloPanes
-        || (item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down")) : [];
+      ? (paneActions?.(selectedPane.pane_id) ?? []).filter((item) => !tabItems.some((own) => own.id === item.id) && (!soloPanes
+        || (item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down"))) : [];
     const groups: RowMenuItem[][] = [
       own.length < 2 ? [] : own.map((pane): RowMenuItem => ({
         id: `pane:${pane.pane_id}`, label: displayPaneTitle(pane), icon: Terminal,
@@ -562,7 +589,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
         current: pane.pane_id === selectedPane.pane_id, run: () => onSelectPane(pane.pane_id),
       })),
       paneItems,
-      tabActions(tab),
+      tabItems,
     ].filter((group) => group.length > 0);
     return groups.flatMap((group, at) => at === 0 ? group : group.map((item, index) => index === 0 ? { ...item, divider: true } : item));
   };
@@ -737,7 +764,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
           aria-haspopup={popup} aria-expanded={moreAnchor !== null} onClick={(event) => setMoreAnchor(moreAnchor ? null : event.currentTarget)}>
           <ChevronDown aria-hidden="true" />{leftOut.length}
         </button>}
-        {error && <span className="tab-strip-error" role="alert">{error}</span>}
+        {error && popup !== "dialog" && <span className="tab-strip-error" role="alert">{error}</span>}
       </div>
   );
   // the header's list of the tabs: each opens where it was left, and closes as the row's menu closes it.
@@ -771,6 +798,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     <>
       {!rowShown ? (error && <p className="pane-notice" role="alert">{error}</p>)
         : end === undefined ? row : <div className="tab-strip-row">{row}<div className="tab-strip-end">{end}</div></div>}
+      {/* a phone's row scrolls: its end, where a wider strip says a failed action, is out of sight, so a phone says it
+          as the pane's notice under the row (under the header, from the header's row) */}
+      {rowShown && error && popup === "dialog" && <p className="pane-notice tab-strip-notice" role="alert">{error}</p>}
       {picker && <RowMenu key={picker.workspaces ? "workspaces" : "tab"} anchor={picker.anchor} point={picker.point} restoreFocusTo={picker.previousFocus}
         title={picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab)}
         header={<span className="tab-strip-menu-target">{picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab)}</span>}

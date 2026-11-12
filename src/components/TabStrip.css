@@ -493,3 +493,13 @@
 
 .header-tabs-connection.is-reconnecting { color: var(--status-reconnecting); }
 .header-tabs-connection.is-connected { color: var(--status-done); }
+
+/* a failed action from the header's row: the notice hangs under the header, over the pane's top */
+.header-tabs .tab-strip-notice {
+  position: fixed;
+  top: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+  right: 0;
+  left: 0;
+  z-index: var(--z-header);
+  background: var(--bg-panel);
+}
