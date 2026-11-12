@@ -87,8 +87,8 @@ try {
           return others.length;
         }, panes.api);
         assert.ok(closed > 0, "the demo pane's workspace had another tab to close");
-        // the title's place among the workspace's tabs goes with the second tab
-        await page.waitForFunction(() => document.querySelector(".context-position") === null);
+        // the header's tab count goes with the second tab
+        await page.waitForFunction(() => document.querySelector(".header-tabs-count") === null);
         // a finished session and a running one: a phone's header counts neither beside More (the drawer says them)
         await page.evaluate(async () => {
           const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { panes: { pane_id: string; agent: string | null; agent_status: string }[] } };
