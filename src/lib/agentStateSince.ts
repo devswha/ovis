@@ -194,7 +194,8 @@ function leftStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
  *   what this one has not yet.
  *
  * A PC that is away keeps its stamps untouched, and a pane no longer listed keeps its stamp for thirty days from the
- * look that first missed it. Hands back the very `stamps` it was given when nothing changed.
+ * look that first missed it, as long as the page remembers having seen it. Hands back the very `stamps` it was given
+ * when nothing changed.
  */
 export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly PcLook[], now: number, dated = true): SeenStamps {
   const next: Record<string, PcStamps> = {};
@@ -282,8 +283,13 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     if (sameHerdr && kept.epoch === look.epoch && sameRows(kept.rows, rows)) next[look.id] = kept;
     else if (Object.keys(rows).length > 0) { next[look.id] = { lifetime: look.lifetime, epoch: look.epoch, rows }; changed = true; }
     else if (kept !== undefined) changed = true;
-    // a pane missing from this roster stays in the page's memory, with when it was first missed
-    if (watched !== undefined) for (const [pane, old] of watched.rows) if (!memory.has(pane)) memory.set(pane, old.left === undefined ? { ...old, left: now } : old);
+    // a pane missing from this roster stays in the page's memory, with when it was first missed, for as long as its
+    // stamp would be kept
+    if (watched !== undefined) for (const [pane, old] of watched.rows) {
+      if (memory.has(pane)) continue;
+      if (old.left === undefined) memory.set(pane, { ...old, left: now });
+      else if (now - old.left <= KEPT_UNLISTED_MS) memory.set(pane, old);
+    }
     seen.set(look.id, { lifetime: look.lifetime, epoch: look.epoch, at: now, first: watched?.first ?? now, rows: memory });
   }
   // a PC no longer in the roster (removed, or hidden on this device) keeps its stamps as long as a pane that left a roster does

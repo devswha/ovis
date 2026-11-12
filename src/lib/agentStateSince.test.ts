@@ -397,6 +397,22 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(page.since("b", "working")).toBeNull();
   });
 
+  it("forgets a pane it saw thirty days after it left the roster, as the device forgets its stamp", () => {
+    const page = device();
+    page.see(T, look({ a: ["idle", 1], b: ["idle", 2] }));
+    page.see(T + MIN, look({ a: ["idle", 1] }));
+    // back within that time it is a pane the page has seen: what it shows began out of sight
+    page.see(T + 29 * DAY, look({ a: ["idle", 1], b: ["working", 9] }));
+    expect(page.since("b", "working")).toBeNull();
+
+    const long = device();
+    long.see(T, look({ a: ["idle", 1], b: ["idle", 2] }));
+    long.see(T + MIN, look({ a: ["idle", 1] }));
+    long.see(T + 31 * DAY, look({ a: ["idle", 1] }));
+    long.see(T + 31 * DAY + MIN, look({ a: ["idle", 1], b: ["working", 9] }));
+    expect(long.since("b", "working")).toBe(T + 31 * DAY + MIN);
+  });
+
   it("stamps no change at a look that cannot date it, and keeps the times the page had", () => {
     const page = device();
     page.see(T, look({ a: ["idle", 1], b: ["idle", 2], c: ["idle", 3] }));
