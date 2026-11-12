@@ -67,7 +67,9 @@
 /* Settings → Group agents by state: a quiet heading over each group, which folds it (#3505): the fold's caret
    in the leading cell, as the other heads' is, so the words line up with the rows' titles, and the group's
    count in the trailing cell, folded or open. It is a label over rows, not a line among them: a pointer's
-   target tall with its words centred, so the focus ring clears them, under a gap that is the list's. */
+   target tall with its words centred, so the focus ring clears them, under a gap that is the list's. The
+   gap stands over every heading, the first too: more space over the words than under them is what files
+   a heading with the rows it heads. */
 .agent-group-toggle {
   display: flex;
   align-items: center;
@@ -89,7 +91,6 @@
   cursor: pointer;
 }
 
-.agent-group-label:first-child .agent-group-toggle { margin-top: 0; }
 .agent-group-toggle:disabled { cursor: default; }
 .agent-group-toggle:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
 
@@ -118,11 +119,13 @@
   .agent-group-toggle:hover:not(:disabled) { color: var(--text); }
 }
 
-/* a finger's heading is a row tall, which sets the groups apart by itself: it takes no gap */
+/* a finger's heading is a row tall and takes no gap: the room over its words is inside the target, which is
+   tall enough for the focus ring to clear them */
 @media (pointer: coarse) {
   .agent-group-toggle {
     min-height: var(--side-row);
     margin-top: 0;
+    padding-top: var(--space-4);
   }
 }
 
@@ -607,6 +610,40 @@
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* Two lines: the title has the first line and the place the second, as before. The time ends the second line,
+   beside the place, so a row gives its title no less room for saying the time and the times of a list stand in
+   one column; the row's marks end the first line, and a row with none gives its title the whole of it. The
+   row's parts stand on a grid for this; a helper's row is one line and keeps the row's flow. */
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row {
+  display: grid;
+  grid-template-areas: "mark title marks" "mark place since";
+  grid-template-columns: var(--side-box) minmax(0, 1fr) auto;
+  align-content: center;
+  align-items: center;
+  row-gap: var(--space-1);
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row > .sidebar-mark { grid-area: mark; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-copy { display: contents; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-title-line { grid-area: title; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row:has(> .agent-row-status:empty) .agent-title-line { grid-column: 2 / -1; }
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-context { grid-area: place; }
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-tokens {
+  grid-row: 3;
+  grid-column: 2 / -1;
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row-status {
+  grid-area: marks;
+  justify-self: end;
+}
+
+.agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-since {
+  grid-area: since;
+  justify-self: end;
 }
 
 /* ---- DEMO ONLY (lane agents-list-polish, #3505): the drafts `?agents=a|b|c` chooses between (lib/agentsListVariant.ts).
