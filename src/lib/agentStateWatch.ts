@@ -18,9 +18,10 @@
 const BEAT_MS = 5_000;
 /**
  * A hidden tab's timers run as seldom as once a minute: a longer silence is a page that was not
- * running, and a longer gap in what the page knew is one its times do not bridge.
+ * running, and a longer gap in what the page knew is one its times do not bridge. The stamps go by
+ * the same measure for a pane missing from a roster (lib/agentStateSince.ts).
  */
-const BLIND_MS = 90_000;
+export const BLIND_MS = 90_000;
 
 /** a look that cannot date what it finds: `first` as a page's first look, `undated` with the times the page had kept */
 export type UnseenLook = "first" | "undated";
@@ -116,7 +117,8 @@ export const stateWatch = {
     const timer = setInterval(beat, BEAT_MS);
     return () => {
       clearInterval(timer);
-      unseen = null;
+      // a later keeper's listener is not this one's to end
+      if (unseen === look) unseen = null;
     };
   },
 };

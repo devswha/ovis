@@ -124,6 +124,17 @@ describe("the watch the state stamps go by", () => {
     expect(unseen).toEqual(["undated"]);
   });
 
+  it("leaves a later keeper's listener when an earlier one ends", () => {
+    const later: UnseenLook[] = [];
+    const endLater = stateWatch.keep((look) => { later.push(look); });
+    end();
+    end = endLater;
+    reads();
+    sleeps(60 * MIN);
+    reads();
+    expect(later).toEqual(["first"]);
+  });
+
   it("starts with nothing known and no stream for the page that comes after one that ended", () => {
     streams();
     sleeps(60 * MIN);
