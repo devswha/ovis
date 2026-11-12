@@ -463,14 +463,19 @@ function openProcessCodexHome(pid: number): string | null {
     if (descriptors.length > 512) return null;
     const paths: string[] = [];
     for (const fd of descriptors) {
+      const link = `${directory}/${fd}`;
+      let path: string;
+      let held;
       try {
-        const link = `${directory}/${fd}`;
-        const path = readlinkSync(link);
-        if (!isAbsolute(path) || (nodePath.basename(path) !== "state_5.sqlite" && !path.endsWith(".jsonl"))) continue;
-        const held = statSync(link, { bigint: true });
-        const current = statSync(path, { bigint: true });
-        if (held.isFile() && held.dev === current.dev && held.ino === current.ino && readlinkSync(link) === path) paths.push(path);
-      } catch { /* A descriptor may close while enumerating it. */ }
+        path = readlinkSync(link);
+        held = statSync(link, { bigint: true });
+      } catch { continue; } // A descriptor may close while enumerating it.
+      if (!isAbsolute(path) || (nodePath.basename(path) !== "state_5.sqlite" && !path.endsWith(".jsonl"))) continue;
+      // An uninspectable held candidate makes the scan incomplete: uniqueness is unknown.
+      const current = statSync(path, { bigint: true });
+      let stillHeld: boolean;
+      try { stillHeld = readlinkSync(link) === path; } catch { continue; } // Closed while inspecting it.
+      if (held.isFile() && held.dev === current.dev && held.ino === current.ino && stillHeld) paths.push(path);
     }
     const homes = new Set<string>();
     for (const path of paths) {
