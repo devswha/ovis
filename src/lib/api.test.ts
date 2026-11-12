@@ -1,7 +1,7 @@
 import { afterEach, expect, it, jest } from "bun:test";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { NOTICE_VERSION } from "../../shared/telemetry.ts";
-import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, fetchAgentCatalog, fetchAgentKinds, fetchTelemetry, movePaneBeside, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, fetchAgentCatalog, fetchAgentKinds, fetchPaneSummaries, fetchTelemetry, movePaneBeside, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
 import { movingHerdrFocusOn } from "./followFocus.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "./settings.ts";
 
@@ -158,6 +158,28 @@ it("treats a missing telemetry route as unavailable for reads and an API error f
   const error = await changeTelemetry({ enabled: true }).catch((failure: unknown) => failure);
   expect(error).toBeInstanceOf(ApiError);
   expect(error).toMatchObject({ status: 404, code: "not_found" });
+});
+
+it("asks a PC for its panes' summaries, and stops asking one whose bridge has no summary route", async () => {
+  const requests: string[] = [];
+  const summaries = { server_time: "2026-11-12T10:00:00.000Z", summaries: { "w1:p1": null } };
+  globalThis.fetch = (async (url: string) => {
+    requests.push(url);
+    if (url.startsWith("/api/machines/old-pc/")) return Response.json({ error: { code: "not_found", message: "Not found" } }, { status: 404 });
+    if (url.startsWith("/api/machines/broken-pc/")) return Response.json({ error: { code: "summary_failed", message: "Could not read" } }, { status: 500 });
+    return Response.json(summaries);
+  }) as typeof fetch;
+
+  expect(await fetchPaneSummaries("summary-pc", ["w1:p1", "w2:p3"])).toEqual(summaries);
+  expect(await fetchPaneSummaries("old-pc", ["w1:p1"])).toBeNull();
+  expect(await fetchPaneSummaries("old-pc", ["w1:p1"])).toBeNull();
+  const error = await fetchPaneSummaries("broken-pc", ["w1:p1"]).catch((failure: unknown) => failure);
+  expect(error).toMatchObject({ status: 500, code: "summary_failed" });
+  expect(requests).toEqual([
+    "/api/machines/summary-pc/pane/summary?pane_id=w1%3Ap1&pane_id=w2%3Ap3",
+    "/api/machines/old-pc/pane/summary?pane_id=w1%3Ap1",
+    "/api/machines/broken-pc/pane/summary?pane_id=w1%3Ap1",
+  ]);
 });
 
 /**
