@@ -2005,18 +2005,23 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   - The name (`.inbox-name`): the Agents list's own row title, one line with an ellipsis, `--fs-lg`,
     `--fw-medium`, `--text-strong`. A screen reader hears the agent's kind before it. At the end of
     its line, how long the agent has been in its state (`time.inbox-time`, `--fs-xs`, `--text-dim`,
-    tabular figures), in the Agents list's words (**<1m**, **6m**, **2h**, **3d**): a working agent
-    since the user last asked it, any other since its last words; the full local time is its
-    title. It ticks every 30 seconds while a row shows one, and a row with no last words has none.
+    tabular figures), in the Agents list's words (**<1m**, **6m**, **2h**, **3d**): a waiting agent
+    since this page saw it begin to wait, as the Agents list times a wait, and no time when the page
+    did not see it begin (a row already waiting when the page opened: its last words tell when it
+    last spoke, not when it began to wait); a working agent since the user last asked it; any other
+    since its last words. The full local time is its title. It ticks every 30 seconds while a row
+    shows one; a row with no last words, and no wait seen to begin, has none.
   - Up to two lines of the agent's own words (`.inbox-words`, `--fs-md`, `--text-dim`), only when
     it has some: what a waiting agent asks (the note its row in the Agents list shows, else the
     question its prompt card asks), a working agent's current plan step, and otherwise what the
     agent last said, as plain text without Markdown's marks; when the last words are the user's
-    own message they read **You: …**. Nothing is made up for a state with no words of its own.
+    own message they read **You: …**. Nothing is made up for a state with no words of its own. The
+    words take their direction from their own first strong letter (`dir="auto"`).
   - The state chip and the place, on one line (`.inbox-meta`). The chip is the app's badge
     (`.badge.badge-<state>`, its tint and its color, its word: **INPUT**, **RUN**, **DONE**) drawn as
     a small pill (`.inbox-chip`: `--radius-pill`, `--fs-xs`, `--fw-medium`, no letter spacing or
-    uppercasing); a ready agent has none. The place (`.inbox-place`, one line, `--fs-xs`,
+    uppercasing); a ready agent has none. A done agent whose last words are a request it recorded as
+    failed shows **Turn failed** in place of DONE, drawn as the INPUT badge (`.badge-blocked`). The place (`.inbox-place`, one line, `--fs-xs`,
     `--text-dim`) is the PC's name when more than one PC is shown, the workspace (a worktree by its
     short name) and the tab, joined with ` · `, leaving out what repeats the name.
   - A hairline `--border` under the words, starting at the text past the mark, as a messenger's
@@ -2059,8 +2064,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   is attached or read for one; only a waiting agent's question is read, and each row's last words
   and their time: one read-only request (GET /api/pane/summary) per PC for up to 24 rows, for the
   first 60 rows of connected PCs in the list's order. A row is read again when its finish, its
-  activity or its shown state changes; a pane the answer left out, or a request that failed, is
-  asked again up to three times. A PC whose server has no such route shows its rows without them.
+  activity or its shown state changes, and a working row whose new read repeats the words and time
+  it had is read once more after two seconds (its agent may not have written the new turn yet). The
+  server gives each pane's read at most 400 ms of the request's 1.5 s and leaves a slower pane out,
+  reading on; a later request for that pane waits on the read still running while it is younger
+  than 1.5 s, and starts a new one in place of an older one. A pane the answer left
+  out, or a request that failed, is asked again up to three times, the first pane an answer left out
+  behind the others, and an answer whose fields have the wrong type counts as none. A PC whose
+  server has no such route shows its rows without them until it goes away and comes back.
   A pane once opened stays mounted under the list, hidden (`visibility: hidden`, inert, keeping
   its size), so a message on its way is not cut.
 - It follows the herdr phone app's Inbox and T3 Code's phone session list: the first screen lists

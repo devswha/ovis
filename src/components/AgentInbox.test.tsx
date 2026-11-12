@@ -31,6 +31,7 @@ await mock.module("./RowMenu.tsx", () => ({ ...rowMenu, RowMenu }));
 const { AgentInbox } = await import("./AgentInbox.tsx");
 const { newQuestionReads } = await import("../lib/useInboxQuestions.ts");
 const { SummaryReads } = await import("../lib/useInboxSummaries.ts");
+const { InboxWaits } = await import("../lib/useInbox.ts");
 
 // the summary reads the page's reader makes: each case answers them itself
 type SummaryCall = { machineId: string; paneIds: readonly string[]; resolve(answer: PaneSummaries | null): void };
@@ -68,8 +69,11 @@ describe("AgentInbox", () => {
   // the page's reader (lib/useInbox.ts), which outlives each mount of the list
   let questionReads: ReturnType<typeof newQuestionReads>;
   let summaryReads: InstanceType<typeof SummaryReads>;
+  // when the page saw each wait begin (lib/useInbox.ts), which outlives the list too
+  let waits: InstanceType<typeof InboxWaits>;
 
   beforeEach(() => {
+    waits = new InboxWaits();
     promptReads = 0;
     questionReads = newQuestionReads();
     summaryCalls = [];
@@ -123,7 +127,7 @@ describe("AgentInbox", () => {
   let drawn: { machines: Machine[]; options: DrawOptions } = { machines: [], options: {} };
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <AgentInbox machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})}
-      query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} />
+      query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} waits={waits} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -426,12 +430,45 @@ describe("AgentInbox", () => {
     expect(words(root, "w1E:p1")).toEqual(["You: Run the export tests again"]);
   });
 
-  it("keeps a waiting agent's question as its words and still says how long it has waited", async () => {
+  it("keeps a waiting agent's question as its words and says how long it has waited since the page saw the wait begin", async () => {
+    waits.observe([["local:w1D:p1", "working"]], Date.now() - 40 * 60_000);
+    waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 3.5 * 60_000);
     const root = await draw(roster());
     await act(async () => { answerPrompt(question("Run the export tests?")); });
-    await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(3.5)) });
+    // the agent last spoke before it worked for half an hour: its words' time is not its wait's
+    await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(40.5)) });
     expect(words(root, "w1D:p1")).toEqual(["Run the export tests?"]);
     expect(age(root, "w1D:p1")).toEqual(["3m"]);
+  });
+
+  it("says nothing of how long a row has waited when it was already waiting as the page opened", async () => {
+    waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 3.5 * 60_000);
+    const root = await draw(roster());
+    await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(40.5)) });
+    expect(times(root, "w1D:p1")).toEqual([]);
+  });
+
+  it("draws a wait seen to begin while the list is shown", async () => {
+    waits.observe([["local:w1D:p1", "working"]], Date.now() - 60 * 60_000);
+    const root = await draw(roster());
+    expect(times(root, "w1D:p1")).toEqual([]);
+    await act(async () => { waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 2.5 * 60_000); });
+    expect(age(root, "w1D:p1")).toEqual(["2m"]);
+  });
+
+  it("draws a done row whose last words are a failed request with the Turn failed chip, as the blocked badge", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done", "w1F:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Error: rate limited", ago(1.5), { failed: true }), "w1F:p1": said("All good.", ago(1.5)) });
+    const chip = (paneId: string) => byClass(item(root, paneId), "inbox-chip").map((node) => [text(node), node.props.className]);
+    expect(chip("w1E:p1")).toEqual([["Turn failed", "badge badge-blocked inbox-chip"]]);
+    expect(chip("w1F:p1")).toEqual([["DONE", "badge badge-done inbox-chip"]]);
+  });
+
+  it("draws nothing, and throws nothing, for a summary whose text is not text", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": { text: 5 } as unknown as PaneSummary });
+    expect(words(root, "w1E:p1")).toEqual([]);
+    expect(times(root, "w1E:p1")).toEqual([]);
   });
 
   it("keeps a working agent's plan step as its words and times it from the user's last ask", async () => {
@@ -452,8 +489,10 @@ describe("AgentInbox", () => {
 
   it("draws the last words without Markdown's marks", async () => {
     const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
-    await answerSummaries({ "w1E:p1": said("## Fixed the flaky test\n\n- Pinned the `clock` in **retry.test.ts**\n- See [the run](https://example.com/run)", ago(1.5)) });
-    expect(words(root, "w1E:p1")).toEqual(["Fixed the flaky test\nPinned the clock in retry.test.ts\nSee the run"]);
+    // one line, as the route sends it: its block marks are gone already, its inline marks are the list's to drop
+    await answerSummaries({ "w1E:p1": said("Pinned the `clock` in **retry.test.ts**, see [the run](https://example.com/run)", ago(1.5)) });
+    expect(words(root, "w1E:p1")).toEqual(["Pinned the clock in retry.test.ts, see the run"]);
+    expect(byClass(item(root, "w1E:p1"), "inbox-words")[0]!.props.dir).toBe("auto");
   });
 
   it("reads the rows' last words once for the page: not again when the list mounts again with the same rows", async () => {
