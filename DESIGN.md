@@ -2023,9 +2023,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - The filters are **All**, **Needs you**, **Working** and **Done**, the Agents list's group headings
   for the same states (a row's chip keeps the state's badge word), a radio group (`role="radiogroup"`, the
   arrow keys move the choice and the focus); a ready agent shows only under All. The search narrows
-  the list with the command palette's fuzzy match over the words a row shows: the labels the
-  sidebar's filter matches (lib/sidebarFilter.ts) and the agent's own words on the row (a waiting
-  agent's note or question, a working agent's plan step), never a working directory or a transcript. The filter, the query and
+  the list to the words a row shows: the labels the sidebar's filter matches with the command
+  palette's fuzzy match (lib/sidebarFilter.ts), and the agent's own words on the row (a waiting
+  agent's note or question, a working agent's plan step) when they hold the query as typed, in any
+  letter case; never a working directory or a transcript. The filter, the query and
   the scroll offset are kept while a thread is open.
 - A tap opens that agent's existing chat, with its prompt card and composer; the list adds no chat
   of its own. In a thread the header's first button is **Back to agents** (`#inbox-back`, a chevron,

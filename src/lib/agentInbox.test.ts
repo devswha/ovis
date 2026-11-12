@@ -72,6 +72,13 @@ describe("agent inbox", () => {
     expect(label(inboxSearched(rows, "export", fixture, t, words))).toEqual(["Guard the export button"]);
   });
 
+  it("matches a row's drawn words only where they hold the query as typed, in any letter case", () => {
+    const rows = inboxOrder(fixture, activity());
+    const words = (row: AgentRow): string | null => row.entry.pane.pane_id === "w1D:p1" ? "Allow the agent to edit settings.json?" : null;
+    expect(ids(inboxSearched(rows, "tests", fixture, t, words))).toEqual([]);
+    expect(ids(inboxSearched(rows, "  EDIT Settings ", fixture, t, words))).toEqual(["w1D:p1"]);
+  });
+
   it("keeps every row for a blank query", () => {
     const rows = inboxOrder(fixture, activity());
     expect(ids(inboxSearched(rows, "", fixture, t, () => "words"))).toEqual(ids(rows));

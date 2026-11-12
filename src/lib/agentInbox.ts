@@ -11,7 +11,6 @@ import type { Translate } from "./i18n.ts";
 import type { AgentGroupSort } from "./settings.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 import { capped } from "./promptText.ts";
-import { matchesQuery } from "./paletteSearch.ts";
 import { machineFilter, sidebarFilter } from "./sidebarFilter.ts";
 import { sidebarPinKey } from "./sidebarPins.ts";
 
@@ -45,13 +44,15 @@ export function inboxFiltered(rows: readonly AgentRow[], filter: InboxFilter, ac
 }
 
 /**
- * The rows a typed query keeps, matched on the labels the Agents list shows (lib/sidebarFilter.ts) and on the
- * words the row draws (`words`: inboxWords); a blank query keeps all.
+ * The rows a typed query keeps, matched on the labels the Agents list shows (lib/sidebarFilter.ts), and kept when
+ * the words the row draws (`words`: inboxWords) hold the query as typed, in any letter case: the palette's
+ * subsequence match is too loose for a sentence. A blank query keeps all.
  */
 export function inboxSearched(rows: readonly AgentRow[], query: string, machines: readonly Machine[], t: Translate, words: (row: AgentRow) => string | null): AgentRow[] {
   const filter = sidebarFilter(query, machines, { machineId: "", paneId: null }, t);
   if (!filter.active) return [...rows];
-  return rows.filter((row) => machineFilter(filter, row.machine.id)?.panes.has(row.entry.pane.pane_id) === true || matchesQuery(query, words(row) ?? ""));
+  const typed = query.trim().toLowerCase();
+  return rows.filter((row) => machineFilter(filter, row.machine.id)?.panes.has(row.entry.pane.pane_id) === true || (words(row)?.toLowerCase().includes(typed) ?? false));
 }
 
 /** The rows in the order `held` names their keys, the rest after them in their given order. */
