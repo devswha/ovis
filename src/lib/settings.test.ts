@@ -764,6 +764,12 @@ describe("telemetry settings snapshot", () => {
     }
   });
 
+  it("keeps a phone's tabs under the header unless In the header was chosen", () => {
+    expect(sanitizeSettings({}).phoneTabs).toBe("row");
+    expect(sanitizeSettings({ phoneTabs: "header" }).phoneTabs).toBe("header");
+    expect(sanitizeSettings({ phoneTabs: "sheet" }).phoneTabs).toBe("row");
+  });
+
   it("reports every status indicator choice in a valid snapshot", () => {
     for (const statusIndicators of ["classic", "dots", "symbols"] as const) {
       const settings = sanitizeSettings({ statusIndicators });

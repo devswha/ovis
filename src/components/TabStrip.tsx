@@ -90,9 +90,16 @@ export interface TabStripProps {
    *  unless `closable` is false (a watching device), a close */
   browserTabs?: boolean;
   closable?: boolean;
+  /** a phone's header (Settings -> Tabs on a phone, In the header, #3375): the tabs in the title's place, one row that scrolls
+   *  sideways with no + or ellipsis (the header's chevron opens the sheet); a long press opens a tab's menu */
+  phoneRow?: boolean;
 }
 
-export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, end, inHeader = false, sheet = null, onSheetClose, browserTabs = false, closable = true }: TabStripProps) {
+/** a press held this long on a tab of the header's row opens its menu, as a long press does a phone's list row; moving further than the slop is a scroll */
+const LONG_PRESS_MS = 450;
+const LONG_PRESS_SLOP = 8;
+
+export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, end, inHeader = false, sheet = null, onSheetClose, browserTabs = false, closable = true, phoneRow = false }: TabStripProps) {
   const t = useT();
   const { settings } = useSettings();
   const machineId = useMachineId();
@@ -295,7 +302,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // browser's: moved by deltaY alone, the strip would go against the swipe's sideways part (#2103).
   // React's own onWheel is passive, so the listener is the strip's own; `end` coming or going (a
   // split opened or closed) draws the strip as a new node, which needs it again.
-  const tabsHidden = tabRowHidden(cramped, tabs.length, inHeader);
+  const tabsHidden = !phoneRow && tabRowHidden(cramped, tabs.length, inHeader);
+  const longPress = useRef<{ timer: number; x: number; y: number; fired: boolean } | null>(null);
+  const endLongPress = (): void => { if (longPress.current) window.clearTimeout(longPress.current.timer); };
   // a row that goes (a phone turned narrow) takes the menu it opened with it
   useLayoutEffect(() => {
     if (tabsHidden && editing === null) setPicker(null);
@@ -580,7 +589,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
           // what the strip draws as a mark and a dot, said in words for a screen reader (G-045): the agent and its state
           // one id per strip: a split draws two strips of the same tabs, whose descriptions can differ
           const tabStatusId = `${stripId}-desc-${tab.tab_id}`;
-          const tabDescription = [agentNameOf(tab) ?? (browserTabs ? t("Shell") : null), status !== "unknown" ? t(STATUS_WORD[status]) : null].filter(Boolean).join(" · ");
+          const tabDescription = [agentNameOf(tab) ?? (browserTabs || phoneRow ? t("Shell") : null), status !== "unknown" ? t(STATUS_WORD[status]) : null].filter(Boolean).join(" · ");
           const paneTitle = own.length === 1 && own[0] ? displayPaneTitle(own[0]) : t("{n} panes", { n: own.length });
           const tabTitle = paneTitle.includes(name) ? paneTitle : `${name} — ${paneTitle}`;
           return (
@@ -623,38 +632,55 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   tabIndex={active ? 0 : -1}
                   title={tabTitle}
                   onPointerDown={(event) => {
+                    if (phoneRow && event.pointerType !== "mouse") {
+                      endLongPress();
+                      const anchor = event.currentTarget;
+                      const pressed = { x: event.clientX, y: event.clientY, fired: false, timer: 0 };
+                      pressed.timer = window.setTimeout(() => {
+                        pressed.fired = true;
+                        setPicker({ anchor, tab, previousFocus: anchor, touch: active });
+                      }, LONG_PRESS_MS);
+                      longPress.current = pressed;
+                    }
                     reorder.onPointerDown(event, tab.tab_id);
                     // the chat of the tab pressed starts reading before the click picks it
                     const pane = event.button === 0 && !event.ctrlKey && !active ? paneFor(tab) : undefined;
                     if (pane?.agent != null) pressPane?.(machineId, pane.pane_id);
                   }}
-                  onPointerMove={reorder.onPointerMove}
-                  onPointerUp={reorder.onPointerUp}
-                  onPointerCancel={reorder.cancelDrag}
+                  onPointerMove={(event) => {
+                    const pressed = longPress.current;
+                    if (pressed && Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > LONG_PRESS_SLOP) endLongPress();
+                    reorder.onPointerMove(event);
+                  }}
+                  onPointerUp={(event) => { endLongPress(); reorder.onPointerUp(event); }}
+                  onPointerCancel={() => { endLongPress(); reorder.cancelDrag(); }}
                   onLostPointerCapture={reorder.cancelDrag}
                   onDragStart={(event) => event.preventDefault()}
                   onMouseDown={(event) => { if (event.button === 2 || (event.button === 0 && event.ctrlKey)) event.preventDefault(); }}
                   onClick={(event) => {
+                    if (longPress.current?.fired) { longPress.current = null; return; }
                     if (reorder.consumeClick(event.detail) || event.ctrlKey) return;
                     event.currentTarget.focus({ preventScroll: true });
                     const pane = paneFor(tab);
                     if (pane && pane.pane_id !== selectedPane.pane_id) onSelectPane(pane.pane_id);
                   }}
                   onDoubleClick={!renameOffered || !closable ? undefined : () => beginRename(tab)}
-                  onContextMenu={(event) => { event.preventDefault(); openPicker(event, tab); }}
+                  onContextMenu={(event) => { event.preventDefault(); if (!longPress.current?.fired) openPicker(event, tab); }}
                   // the middle button closes a tab, as it does a browser's
                   onAuxClick={(event) => { if (event.button === 1 && closable) { event.preventDefault(); requestClose(tab); } }}
                 >
                   {busyStatus(status) && statusMark(status)}
                   {/* named by the tab's own words alone: a screen reader hears the tab, not the agent's logo */}
                   {agent ? <span className="tab-strip-agent" aria-hidden="true"><AgentMark agent={agent} size={14} /></span>
-                    : browserTabs && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
+                    : (browserTabs || phoneRow) && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
                   <span className="tab-strip-label">{name}</span>
+                  {/* a split tab's open pane, as the title's 1/2 says it: the header's row stands in the title's place */}
+                  {phoneRow && active && own.length > 1 && <span className="tab-strip-position">{own.findIndex((pane) => pane.pane_id === selectedPane.pane_id) + 1}/{own.length}</span>}
                 </button>
               )}
               {/* beside the tab, not in it: inside, its words would join the tab's name ("Tab 1Shell") */}
               {tabDescription && <span id={tabStatusId} className="visually-hidden">{tabDescription}</span>}
-              {menuButton && active && editing?.tabId !== tab.tab_id && <button type="button" className="tab-strip-menu" aria-label={t("Actions for {tab}", { tab: name })} title={t("Actions for {tab}", { tab: name })} aria-haspopup={popup} aria-expanded={pickerOpen} onClick={(event) => openPicker(event, tab)}>
+              {menuButton && active && !phoneRow && editing?.tabId !== tab.tab_id && <button type="button" className="tab-strip-menu" aria-label={t("Actions for {tab}", { tab: name })} title={t("Actions for {tab}", { tab: name })} aria-haspopup={popup} aria-expanded={pickerOpen} onClick={(event) => openPicker(event, tab)}>
                 <Ellipsis aria-hidden="true" />
               </button>}
               {browserTabs && closable && editing?.tabId !== tab.tab_id && !tabLocked(tab) && <button type="button" className="tab-strip-close" tabIndex={-1} aria-label={t("Close {tab}", { tab: name })} title={t("Close {tab}", { tab: name })} onClick={() => requestClose(tab)}>
@@ -663,9 +689,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
             </div>
           );
         })}
-        <button type="button" className="tab-strip-add" disabled={!closable} aria-label={t("New terminal")} title={!closable ? `${t("New terminal")} · ${t("View only")}` : t("New terminal")} onClick={newTerminal}>
+        {!phoneRow && <button type="button" className="tab-strip-add" disabled={!closable} aria-label={t("New terminal")} title={!closable ? `${t("New terminal")} · ${t("View only")}` : t("New terminal")} onClick={newTerminal}>
           <Plus aria-hidden="true" />
-        </button>
+        </button>}
         {leftOut.length > 0 && <button type="button" className="tab-strip-more" aria-label={t("{n} more tabs", { n: leftOut.length })} title={t("{n} more tabs", { n: leftOut.length })}
           aria-haspopup={popup} aria-expanded={moreAnchor !== null} onClick={(event) => setMoreAnchor(moreAnchor ? null : event.currentTarget)}>
           <ChevronDown aria-hidden="true" />{leftOut.length}
