@@ -463,6 +463,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // a pin moves the row to the other list, so React draws it anew: the control of the row that had
   // the focus (its row or its ⋯) gets it back
   const sectionRef = useRef<HTMLElement>(null);
+  // what in the list held the focus as a commit began. A blur forgets it once the work it came in is over, so the
+  // focus a row loses by being moved is still known when the rows are drawn, and one the reader took away is not
+  const heldFocus = useRef<Element | null>(null);
+  const forgetFocus = (left: Element): void => { queueMicrotask(() => { if (heldFocus.current === left) heldFocus.current = null; }); };
   // the list fades at an edge only while rows lie past it (lib/useEdgeFades.ts)
   const listRef = useRef<HTMLDivElement>(null);
   useEdgeFades(listRef);
@@ -592,10 +596,13 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     return { restDepths, restLines, helpersOf, foldedHelpers };
   }, [parts, people, groups, named, foldHelpers, openHelpers, selectedMachineId, selectedPaneId, rowStatus]);
   // a helper with the focus that folds away (it stopped needing the reader, or the selection moved) hands it to its line,
-  // and so does a row whose new state files it under a state group that is folded: the focus goes to that group's heading
+  // and so does a row whose new state files it under a state group that is folded: the focus goes to that group's heading.
+  // A row that changes group is moved, which drops its focus before this runs and cannot give it back to a hidden row:
+  // that row is the one `heldFocus` still names
   useLayoutEffect(() => {
     const active = document.activeElement;
-    const item = active && sectionRef.current?.contains(active) ? active.closest("li") : null;
+    const focused = active && sectionRef.current?.contains(active) ? active : heldFocus.current;
+    const item = focused?.closest("li") ?? null;
     if (item?.hidden) foldControlAbove(item)?.focus({ preventScroll: true });
   }, [foldedHelpers, groups, stateFolds]);
   const toggleHelpers = (key: string): void => {
@@ -792,7 +799,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const oneLine = settings.sidebarRows === "one";
   // the folded list still says how many of its agents wait for the reader (G-016), in the head's own words
   const waiting = allRows.filter((row) => rowStatus(row) === "blocked").length;
-  return <section ref={sectionRef} onPointerEnter={() => setPointerIn(true)} onPointerLeave={() => setPointerIn(false)} onTouchEnd={holdAfterTouch} onTouchCancel={holdAfterTouch} onFocus={() => setFocusIn(true)} onBlur={(event) => { if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }} className={`agents-sidebar${folded ? " is-collapsed" : ""}${rows.length === 0 ? " is-empty" : ""}${oneLine ? " is-one-line is-compact" : ""}`} data-variant={AGENTS_LIST_VARIANT} data-place={AGENTS_LIST_PLACE} aria-label={t("Agents")}>
+  return <section ref={sectionRef} onPointerEnter={() => setPointerIn(true)} onPointerLeave={() => setPointerIn(false)} onTouchEnd={holdAfterTouch} onTouchCancel={holdAfterTouch} onFocus={(event) => { setFocusIn(true); heldFocus.current = event.target; }} onBlur={(event) => { forgetFocus(event.target); if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }} className={`agents-sidebar${folded ? " is-collapsed" : ""}${rows.length === 0 ? " is-empty" : ""}${oneLine ? " is-one-line is-compact" : ""}`} data-variant={AGENTS_LIST_VARIANT} data-place={AGENTS_LIST_PLACE} aria-label={t("Agents")}>
     <button type="button" className="agent-section-toggle sidebar-section-label" aria-expanded={!folded} aria-controls={listId} onClick={() => {
       // the filter's fold lasts for the filter's time and is never kept; the reader's own is
       if (filter.active) { setFilterFold(!folded); return; }

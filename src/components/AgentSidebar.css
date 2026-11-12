@@ -64,17 +64,17 @@
   list-style: none;
 }
 
-/* Settings → Group agents by state: a quiet heading over each group, which folds it (#3505). The
-   fold's caret takes the leading cell, as the other heads' does, so the words line up with the rows'
-   titles; the group's count stays in the trailing cell, folded or open. The space over the words is
-   the button's own, so the whole heading is the target: a pointer's 24px, a finger's row. */
+/* Settings → Group agents by state: a quiet heading over each group, which folds it (#3505): the fold's caret
+   in the leading cell, as the other heads' is, so the words line up with the rows' titles, and the group's
+   count in the trailing cell, folded or open. It is a label over rows, not a line among them: a pointer's
+   target tall with its words centred, so the focus ring clears them, under a gap that is the list's. */
 .agent-group-toggle {
   display: flex;
   align-items: center;
   width: 100%;
   min-height: var(--pointer-target);
-  margin: 0;
-  padding: var(--space-2) 0 0;
+  margin: var(--space-2) 0 0;
+  padding: 0;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
@@ -89,18 +89,17 @@
   cursor: pointer;
 }
 
-.agent-group-label:first-child .agent-group-toggle { padding-top: 0; }
+.agent-group-label:first-child .agent-group-toggle { margin-top: 0; }
 .agent-group-toggle:disabled { cursor: default; }
 .agent-group-toggle:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
 
-.agent-group-label[data-group="blocked"] .agent-group-toggle { color: var(--status-blocked); }
-
-/* the caret is the fold's, not the state's: it keeps the heads' dim whatever colour the words take */
-.agent-group-toggle .agent-section-caret { color: var(--text-dim); }
+/* a state the list gives a colour says its words and its count in it; the caret is the fold's, and stays the heads' dim */
+.agent-group-label[data-group="blocked"] { --agent-group-ink: var(--status-blocked); }
 
 .agent-group-name {
   min-width: 0;
   overflow: hidden;
+  color: var(--agent-group-ink, inherit);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -109,21 +108,22 @@
   flex: none;
   width: var(--side-box);
   margin-left: auto;
+  color: var(--agent-group-ink, inherit);
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
 
+/* under the pointer the heading brightens as the list's other fold lines do; a state's colour stays its own */
 @media (hover: hover) {
-  .agent-group-toggle:hover:not(:disabled) { background: var(--side-hover); }
+  .agent-group-toggle:hover:not(:disabled) { color: var(--text); }
 }
 
+/* a finger's heading is a row tall, which sets the groups apart by itself: it takes no gap */
 @media (pointer: coarse) {
   .agent-group-toggle {
     min-height: var(--side-row);
-    padding-top: var(--space-3);
+    margin-top: 0;
   }
-
-  .agent-group-label:first-child .agent-group-toggle { padding-top: var(--space-3); }
 }
 
 /* Agents a launcher tagged role=background (workers, subagents) stand after the rest, under a
@@ -745,14 +745,14 @@
   text-transform: none;
 }
 
-.agents-sidebar[data-variant="c"] .agent-group-label[data-group="working"] .agent-group-toggle { color: var(--status-working); }
-.agents-sidebar[data-variant="c"] .agent-group-label[data-group="done"] .agent-group-toggle { color: var(--status-done); }
+.agents-sidebar[data-variant="c"] .agent-group-label[data-group="working"] { --agent-group-ink: var(--status-working); }
+.agents-sidebar[data-variant="c"] .agent-group-label[data-group="done"] { --agent-group-ink: var(--status-done); }
 
 .agents-sidebar[data-variant="c"] .agent-group-count,
 .agents-sidebar[data-variant="c"].is-one-line .agent-group-count {
   width: auto;
   margin-left: var(--space-2);
-  color: var(--text-dim);
+  color: inherit;
   font-weight: var(--fw-regular);
   text-align: start;
 }

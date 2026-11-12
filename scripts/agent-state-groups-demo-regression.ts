@@ -9,7 +9,8 @@
  * starts folded and the other groups open; a heading folds and opens its group by click, Enter and
  * Space and says the same count either way; a folded group keeps the selected agent in sight; what
  * the reader chose is kept across a reload; the filter opens every group for its time; a watching
- * device folds its own groups too.
+ * device folds its own groups too; and a row with the keyboard's focus that moves under a folded
+ * group hands the focus to that group's heading.
  *
  * UI_EVIDENCE_DIR: agent-state-groups-<390|1280>-<light|dark>.png (the list as it starts, Idle
  * folded) and agent-state-groups-open-<...>.png (every group open).
@@ -139,6 +140,28 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await row(panes.omp).waitFor({ state: "visible" });
   await heading("idle").click();
   await row(panes.omp).waitFor({ state: "hidden" });
+
+  // a row with the keyboard's focus whose new state files it under a folded group hands the focus to that group's
+  // heading. This page's clock is held from its first moment, so the demo agent's turn ends when the check runs it
+  await page.evaluate(() => localStorage.setItem("ovis:agent-state-folds", JSON.stringify(["done", "idle"])));
+  const held = await context.newPage();
+  held.on("pageerror", (error) => errors.push(error.message));
+  await held.clock.install({ time: new Date() });
+  await held.clock.pauseAt(new Date(Date.now() + 1000));
+  await held.goto(`${origin}?pane=${encodeURIComponent(panes.web)}`);
+  await held.clock.runFor(1500);
+  await held.locator(".conn-live").waitFor({ state: "attached" });
+  if (phone) {
+    await held.locator("#drawer-toggle").click();
+    await held.clock.runFor(500);
+  }
+  const working = held.locator(`.agents-sidebar .agent-item[data-pane="${panes.api}"]`);
+  await working.waitFor();
+  await working.locator(".agent-select").focus();
+  await held.clock.runFor(4000);
+  await working.waitFor({ state: "hidden" });
+  assert.equal(await held.evaluate(() => document.activeElement?.closest("li")?.getAttribute("data-group") ?? null), "done", `${tag}: a focused row that moves under a folded group hands its focus to the heading`);
+  await held.close();
 
   assert.deepEqual(errors, [], `${tag}: no page errors`);
   await context.close();

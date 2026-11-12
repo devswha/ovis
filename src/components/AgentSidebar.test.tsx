@@ -341,6 +341,8 @@ describe("AgentSidebar phone sheet live row", () => {
 });
 
 describe("AgentSidebar fold memory", () => {
+  /** the element a focus event names, for the tests that call the list's focus handlers themselves: a control in no row */
+  const focusedRow = { closest: () => null };
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   const FOLD_KEY = "ovis:agents-collapsed";
   let renderer: ReactTestRenderer | undefined;
@@ -749,10 +751,10 @@ describe("AgentSidebar fold memory", () => {
     expect(drawnEntries()).toEqual(["w1D:p1", "w1E:p1", "w1C:p1", "RESTING"]);
 
     // Continuing from that state, while keyboard focus is inside the list, another resting row (w1F:p1) turning blocked also waits until focus leaves:
-    await act(async () => { section().props.onFocus(); });
+    await act(async () => { section().props.onFocus({ target: focusedRow }); });
     await act(async () => { mounted.update(renderList(withStatuses({ "w1E:p1": "blocked", "w1F:p1": "blocked" }))); });
     expect(drawnEntries()).toEqual(["w1D:p1", "w1E:p1", "w1C:p1", "RESTING"]);
-    await act(async () => { section().props.onBlur({ currentTarget: { contains: () => false }, relatedTarget: null }); });
+    await act(async () => { section().props.onBlur({ target: focusedRow, currentTarget: { contains: () => false }, relatedTarget: null }); });
     expect(drawnEntries()).toEqual(["w1D:p1", "w1E:p1", "w1F:p1", "w1C:p1"]);
   });
 
@@ -782,7 +784,7 @@ describe("AgentSidebar fold memory", () => {
     expect(restingLabel()).toBe("+2 resting");
 
     // When both pointer and focus are in the list, and the selected working row (w1C:p1) and the nonselected blocked row (w1D:p1) turn idle:
-    await act(async () => { section().props.onPointerEnter(); section().props.onFocus(); });
+    await act(async () => { section().props.onPointerEnter(); section().props.onFocus({ target: focusedRow }); });
     await act(async () => { mounted.update(renderList(withStatuses({ [paneId]: "idle", "w1D:p1": "idle" }))); });
     // Then both stay in place above the resting heading (neither jumps below RESTING nor disappears), while the resting count updates at once:
     expect(drawnEntries()).toEqual(["w1D:p1", "w1C:p1", "RESTING"]);
@@ -793,7 +795,7 @@ describe("AgentSidebar fold memory", () => {
     expect(drawnEntries()).toEqual(["w1D:p1", "w1C:p1", "RESTING"]);
 
     // Once focus leaves too, the idle rows move into the resting fold (the selected w1C:p1 stays visible below the heading):
-    await act(async () => { section().props.onBlur({ currentTarget: { contains: () => false }, relatedTarget: null }); });
+    await act(async () => { section().props.onBlur({ target: focusedRow, currentTarget: { contains: () => false }, relatedTarget: null }); });
     expect(drawnEntries()).toEqual(["RESTING", "w1C:p1"]);
   });
 
