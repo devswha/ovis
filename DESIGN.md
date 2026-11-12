@@ -1296,7 +1296,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a grip, the row's name and place, 48px rows and a Cancel button; Tab stays among them. A row
   whose agent waits says what it waits for on a line of its own under the place
   (`.row-sheet-alert`, `--status-blocked`, `--fs-sm`, wrapped and whole): a one-line row has no
-  room for it, and the sheet is where a thumb reads it without opening the pane. The
+  room for it, and the sheet is where a thumb reads it without opening the pane. The popover a
+  wider screen opens says it too, under its header (`.row-menu-alert`, `--fs-meta`, wrapped and
+  whole): a touch screen too wide for the sheet has no tooltip either. The
   rows scroll between the head and Cancel (`.row-sheet-items`), which stay put, when the sheet's
   92% of the screen cannot hold them. Escape, a press outside and
   focus leaving it close it (on a desktop a scroll or a resize too), and focus returns to the
@@ -1723,8 +1725,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the leading cell, the state's word in sentence case, `--fs-meta` `--fw-medium`, in the state's
   own colour (`--status-blocked`, `--status-working`, `--status-done`; Idle in `--text-dim`), and
   its count beside the word in `--text-dim`. A row under a heading that says its state draws no
-  state mark of its own (it stays in the row for a screen reader); a row whose state differs from
-  its group's (an agent kept with a helper that needs the reader, a BG ring) keeps its mark. An
+  state mark of its own, a working row's breathing dot included (the mark stays in the row for a
+  screen reader); a row whose state differs from
+  its group's (an agent kept with a helper that needs the reader, a BG ring) keeps its mark, drawn
+  before its time so that the times of a group still end on one edge. An
   empty group is left out, and
   the pinned card stays first. **Within a state** orders each group: **Longest wait** (the
   default; the oldest `state_change_seq` first, as herdr's agent view sorts with
@@ -1750,7 +1754,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   are a press away. A folded group keeps the selected agent in sight, as the list's other folds
   that start folded do (the resting line, the background workspaces), so reading a finished agent
   never makes its row vanish. Under the filter every group stands open and no heading folds, as
-  the other folds do; the kept folds return with the filter's end. A row with the keyboard's focus
+  the other folds do, and a heading that cannot fold draws no caret (a named group's neither);
+  the kept folds return with the filter's end. A row with the keyboard's focus
   whose new state files it under a folded group hands the focus to that group's heading. The
   headings follow herdr-app's agents mod, whose priority sections fold from a header in the
   state's colour with a dim count beside it, and whose rows under such a header say the state
@@ -1759,14 +1764,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   minutes, hours and days, `5m`, `2h`, `3d`; `stateAge`), in `--text-dim` `--fs-meta` with tabular
   digits, right-aligned in a column four figures wide at the row's end: before the state cell, or
   ending the row where a heading says the state. Under a pointer a one-line row's `⋯` shows
-  before it, never over it. On a two-line row the time ends the second line, beside the place,
+  before it, never over it; on a row that says no time the `⋯` keeps no room for one. On a two-line row the time ends the second line, beside the place,
   and the row's marks (plan, helpers, context) end the first, so the times of a list stand in one
   column and a row with no marks gives its title the whole first line; there the `⋯` takes its
   room from the row under the pointer, as it always did, and the time moves with the place.
   Beside the filter's **Selected** note a one-line row's time steps aside, as its place does.
   herdr reports no time of change, so this device stamps a change when it sees one
   and keeps the stamps (`ovis:agent-state-since`, lib/agentStateSince.ts) across reloads, where
-  herdr's `state_change_seq` proves that nothing changed meanwhile. Done and idle are one state:
+  herdr's `state_change_seq` proves that nothing changed meanwhile: a stamp is kept only where
+  it and the row carry the same counter, so with a herdr that counts nothing a time lasts until
+  the page is loaded again. Done and idle are one state:
   reading a finished agent does not reset its time. A state this device did not see begin says no
   time rather than a wrong one, a PC that is away says none, and a pane gone from its roster for
   thirty days is forgotten. The times are stamped in one place for the whole page
@@ -1778,7 +1785,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   content: the Agents head with its fold; each state's heading with its word, count and caret;
   each row's agent mark, title, time in its state and `⋯` menu, and the marks it had (plan,
   helpers, progress, context ring, plugin tokens); a waiting agent's reason and a row's place, on
-  the row where they fit whole and always in its tooltip and its `⋯` sheet; the pinned card; the
+  the row where they fit whole and always in its tooltip and its `⋯` menu (a phone's sheet, a
+  popover elsewhere); the pinned card; the
   fold lines; the empty line. Left out on purpose: a state mark on every row under a heading that
   already says the state; on a One line row, a second line, and on a touch screen the place; a
   clock that runs by the second.
