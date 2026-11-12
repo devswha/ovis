@@ -12,6 +12,7 @@ import { badRequest, conflictResponse, errorResponse, isCount, isJsonObject, jso
 import { conversationImage, ConversationReadPending, ConversationUnavailable, forgetPaneTranscriptState, HistoryChanged, paneConversation, paneProcessRoots, paneTranscript, toolOutput, type ConversationPage } from "./conversation.ts";
 import { copilotRecoverable, unavailableReason } from "./conversation-shared.ts";
 import { MAX_SEARCH_QUERY, searchPattern, type ConversationSearchResponse } from "../shared/conversation-search.ts";
+import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, summaryOf, type PaneSummaries } from "../shared/pane-summary.ts";
 import { searchConversationPages } from "./conversation-search.ts";
 import { OPENCODE_TOOL_REF } from "./opencode.ts";
 import { openCodeFlagVersion, openCodeInstalledVersion } from "./opencode-service.ts";
@@ -338,6 +339,30 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     } catch (error) {
       return errorResponse(error);
     }
+  }
+
+  if (pathname === "/api/pane/summary") {
+    setRequestRoute(pathname);
+    if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
+    const paneIds = [...new Set(url.searchParams.getAll("pane_id").filter((id) => id.trim() !== ""))];
+    if (paneIds.length === 0) return badRequest("missing_pane_id", "pane_id query parameter is required");
+    if (paneIds.length > PANE_SUMMARY_MAX_IDS) return badRequest("too_many_panes", `at most ${PANE_SUMMARY_MAX_IDS} pane_id values`);
+    const summaries: PaneSummaries["summaries"] = {};
+    const deadline = Date.now() + PANE_SUMMARY_DEADLINE_MS;
+    // one pane after another: a list row waits for none past the deadline, and a pane that cannot be read is null, never the list's failure
+    for (const paneId of paneIds) {
+      const left = deadline - Date.now();
+      if (left <= 0) break;
+      const read = paneConversation(paneId, options.codexHome, { prompts: 1 }, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData)
+        .then((conversation) => summaryOf(conversation.turns), () => null);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), left); });
+      const summary = await Promise.race([read, late]);
+      clearTimeout(timer);
+      if (summary === "late") break;
+      summaries[paneId] = summary;
+    }
+    return jsonResponse({ server_time: new Date().toISOString(), summaries } satisfies PaneSummaries, 200, { "cache-control": "no-store" });
   }
 
   if (pathname === "/api/pane/conversation") {

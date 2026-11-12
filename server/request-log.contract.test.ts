@@ -34,6 +34,7 @@ it("attributes reserved setup job lookups to the dispatch branch rather than a m
     // Adjacent dispatch branches keep their own templates and never copy private segments.
     for (const [path, route, status] of [
       ["/api/machines/private-pc/pane/conversation", "/api/machines/:machine_id/pane/conversation", 503],
+      ["/api/machines/private-pc/pane/summary", "/api/machines/:machine_id/pane/summary", 503],
       ["/api/devices/private-label", "/api/devices/:device_id", 400],
       ["/api/fs/page-media/private-token", "/api/fs/page-media/:media_id", 404],
       ["/api/pane/private-pane", "unmatched", 404],

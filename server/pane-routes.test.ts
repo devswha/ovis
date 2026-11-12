@@ -14,6 +14,8 @@ import { paneAgentOf, resolveAgent } from "./pane-context.ts";
 import { openCodeServiceOptions } from "./opencode-service.ts";
 import * as conversation from "./conversation.ts";
 import { requestIdContext } from "./http.ts";
+import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, type PaneSummaries } from "../shared/pane-summary.ts";
+import type { ConversationTurn } from "../shared/protocol.ts";
 
 // The real RPC client against a unix socket this test owns; only herdr's answers are synthetic.
 let root: string;
@@ -655,4 +657,70 @@ it("asks the share rule about the folder an agent's commands are listed for, as 
     // on a Windows PC a share no pane works on is refused before it is read (directories.ts expandedPath)
     expect(expanded.mock.calls).toEqual([["//host/share"]]);
   } finally { expanded.mockRestore(); }
+});
+
+const summaryUrl = (ids: string[]) => new URL(`http://x/api/pane/summary?${new URLSearchParams(ids.map((id) => ["pane_id", id]))}`);
+const askSummary = (ids: string[], method = "GET") => {
+  const url = summaryUrl(ids);
+  return handlePaneRequest(new Request(url, { method }), url, "/api/pane/summary", {});
+};
+const said = (text: string, ts: string): conversation.RecognizedConversation => ({
+  source: "claude-transcript", cursor: null, history_id: "h", version: "v", metadata: { model: null, reasoning_effort: null },
+  turns: [{ role: "user", ts, parts: [{ kind: "text", text }] } satisfies ConversationTurn],
+});
+
+it("answers each pane's last words once, reading one prompt of each", async () => {
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => said(`hello from ${paneId}`, "2026-11-12T10:00:00Z"));
+  try {
+    const response = (await askSummary(["w:p1", "w:p2", "w:p1", " "]))!;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = await response.json() as PaneSummaries;
+    expect(Number.isNaN(Date.parse(body.server_time))).toBe(false);
+    expect(body.summaries).toEqual({
+      "w:p1": { role: "user", text: "hello from w:p1", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" },
+      "w:p2": { role: "user", text: "hello from w:p2", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" },
+    });
+    expect(read.mock.calls.map((call) => [call[0], call[2]])).toEqual([["w:p1", { prompts: 1 }], ["w:p2", { prompts: 1 }]]);
+  } finally { read.mockRestore(); }
+});
+
+it("gives null for a pane it cannot read, beside the panes it can", async () => {
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    if (paneId === "gone") throw new Error("pane_not_found");
+    if (paneId === "shell") throw new conversation.ConversationUnavailable("no_session_path");
+    return said("fine", "2026-11-12T10:00:00Z");
+  });
+  try {
+    const body = await (await askSummary(["gone", "w:p1", "shell"]))!.json() as PaneSummaries;
+    expect(body.summaries).toEqual({ gone: null, "w:p1": { role: "user", text: "fine", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" }, shell: null });
+  } finally { read.mockRestore(); }
+});
+
+it("refuses a summary with no pane, too many panes or another method", async () => {
+  const read = spyOn(conversation, "paneConversation");
+  const code = async (response: Response | null) => [response!.status, ((await response!.json()) as { error: { code: string } }).error.code];
+  try {
+    expect(await code(await askSummary([]))).toEqual([400, "missing_pane_id"]);
+    expect(await code(await askSummary(["", "  "]))).toEqual([400, "missing_pane_id"]);
+    expect(await code(await askSummary(Array.from({ length: PANE_SUMMARY_MAX_IDS + 1 }, (_, index) => `w:p${index}`)))).toEqual([400, "too_many_panes"]);
+    expect(await code(await askSummary(["w:p1"], "POST"))).toEqual([400, "method_not_allowed"]);
+    expect(read).not.toHaveBeenCalled();
+  } finally { read.mockRestore(); }
+});
+
+it("leaves out the panes it has no time left to read", async () => {
+  let clock = 1_000_000;
+  const now = spyOn(Date, "now").mockImplementation(() => clock);
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    // the first read takes all but a moment of the deadline, and the second never ends
+    if (paneId === "slow") return new Promise<never>(() => {});
+    clock += PANE_SUMMARY_DEADLINE_MS - 5;
+    return said("first", "2026-11-12T10:00:00Z");
+  });
+  try {
+    const body = await (await askSummary(["w:p1", "slow", "w:p3"]))!.json() as PaneSummaries;
+    expect(Object.keys(body.summaries)).toEqual(["w:p1"]);
+    expect(read.mock.calls.map((call) => call[0])).toEqual(["w:p1", "slow"]);
+  } finally { read.mockRestore(); now.mockRestore(); }
 });
