@@ -29,17 +29,25 @@ const conversationDiagnostics = new ConversationDiagnostics();
 
 /** The agents whose chat herdr's integration alone binds, by the session it reports (opencode.ts, grok-store.ts). */
 const INTEGRATION_BOUND = new Set(["opencode", "grok"]);
+/** a look on a chat's fallback poll: short, and the list read again only now and then */
+const INTEGRATION_LOOK_MS = 2000;
+const INTEGRATION_LIST_TTL_MS = 30_000;
+let integrations: { at: number; list: Promise<Awaited<ReturnType<typeof integrationList>>> } | null = null;
 
 /**
- * Whether the pane runs such an agent and herdr's integration for it is not installed: then no session is
- * ever reported, and installing it is what the user can do. A failed look says nothing, and the reason stays
- * the plainer one.
+ * Whether the pane runs such an agent, herdr reported no session for it, and herdr's integration for it is not
+ * installed: then none ever is, and installing it is what the user can do. A failed look says nothing, and the
+ * reason stays the plainer one.
  */
 async function integrationMissing(paneId: string): Promise<boolean> {
   try {
-    const agent = (await paneGet(paneId)).agent;
-    if (typeof agent !== "string" || !INTEGRATION_BOUND.has(agent)) return false;
-    return (await integrationList()).some((integration) => integration.target === agent && integration.state === "not_installed");
+    const pane = await paneGet(paneId, undefined, INTEGRATION_LOOK_MS);
+    if (typeof pane.agent !== "string" || !INTEGRATION_BOUND.has(pane.agent) || pane.agent_session) return false;
+    if (integrations === null || performance.now() - integrations.at > INTEGRATION_LIST_TTL_MS) {
+      integrations = { at: performance.now(), list: integrationList() };
+      integrations.list.catch(() => { integrations = null; });
+    }
+    return (await integrations.list).some((integration) => integration.target === pane.agent && integration.state === "not_installed");
   } catch {
     return false;
   }

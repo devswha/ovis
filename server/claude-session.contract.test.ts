@@ -436,7 +436,7 @@ it.skipIf(!NATIVE)("answers a session Claude has not written yet as an empty con
   expect(written.history_id).not.toBe(`unwritten:${UNWRITTEN}`);
   expect(written.turns.at(-1)?.parts[0]).toMatchObject({ text: `Answer ${UNWRITTEN}` });
   rmSync(join(project, `${UNWRITTEN}.jsonl`));
-  expect(await read(fresh.pane)).toEqual({ source: "scrollback", turns: [], unavailable: "missing" });
+  expect(await read(fresh.pane)).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
 });
 
 it.skipIf(!NATIVE)("answers a session not written yet as empty while Herdr says working, as a /clear does for a moment (#2550)", async () => {

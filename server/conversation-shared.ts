@@ -51,11 +51,13 @@ export class ConversationUnavailable extends Error {
 /** Why a pane's conversation could not be read, as the chat can say it (ConversationResponse.unavailable); undefined where it has no words for it. */
 export function unavailableReason(error: ConversationUnavailable): ConversationResponse["unavailable"] {
   if (error.diagnostic === "agent_cwd_missing") return "no_folder";
+  // Copilot's own stages (a log cut or rewritten, a peer, an API refusal) are no "not recorded yet"
+  if (error.diagnostic !== undefined) return undefined;
   switch (error.message) {
     case "no_session_id": case "no_session_path": return "not_found";
     case "no_recognized_transcript": return "no_reader";
-    case "transcript_missing": return "missing";
-    case "transcript_unreadable": case "branch_unreadable": return "unreadable";
+    // a file gone, and a file whose records no reader could take (Muse, Grok, Letta, Agy), alike
+    case "transcript_missing": case "transcript_unreadable": case "branch_unreadable": return "unreadable";
     default: return undefined;
   }
 }

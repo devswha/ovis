@@ -57,12 +57,11 @@ describe("the chat's fallback transcript", () => {
     expect(notFound).toContain("Claude Code has not recorded a conversation Ovis can find for this pane yet.");
     expect(notFound).toContain("Open Terminal");
     expect(render({ agent: "claude", messages: [], outcomes: [], unavailable: "no_reader" })).toContain("Ovis can&#x27;t read Claude Code conversations yet.");
-    expect(render({ agent: "claude", messages: [], outcomes: [], unavailable: "missing" })).toContain("The file Claude Code kept this conversation in is gone (deleted or moved).");
-    expect(render({ agent: "claude", messages: [], outcomes: [], unavailable: "unreadable" })).toContain("Ovis couldn&#x27;t read the file Claude Code keeps this conversation in.");
+    expect(render({ agent: "claude", messages: [], outcomes: [], unavailable: "unreadable" })).toContain("Ovis couldn&#x27;t find or read the file Claude Code keeps this conversation in.");
     expect(render({ agent: "claude", messages: [], outcomes: [], unavailable: "no_folder" })).toContain("herdr has not said which folder this pane is in");
     expect(render({ agent: "opencode", messages: [], outcomes: [], unavailable: "no_integration" })).toContain("OpenCode chat needs herdr&#x27;s OpenCode integration, which is not installed on this PC.");
     // no terminal to show: no button that does nothing
-    expect(render({ agent: "claude", messages: [], outcomes: [], unavailable: "missing" })).not.toContain("Open Terminal");
+    expect(render({ agent: "claude", messages: [], outcomes: [], unavailable: "unreadable" })).not.toContain("Open Terminal");
     expect(notFound).toContain("<summary>Show a terminal output preview</summary>");
     // no reason known: the preview alone, as before
     expect(render({ agent: "claude", messages: [], outcomes: [] })).not.toContain("chat-unavailable-reason");

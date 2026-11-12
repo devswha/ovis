@@ -1430,8 +1430,7 @@ function UnavailableReason({ agent, reason, onOpenTerminal }: { agent: string; r
     switch (reason) {
       case "not_found": return t("{agent} has not recorded a conversation Ovis can find for this pane yet. Before the first message this is normal; if it stays, use the terminal.", { agent: name });
       case "no_reader": return t("Ovis can't read {agent} conversations yet. Use the terminal to work with it.", { agent: name });
-      case "missing": return t("The file {agent} kept this conversation in is gone (deleted or moved). Use the terminal.", { agent: name });
-      case "unreadable": return t("Ovis couldn't read the file {agent} keeps this conversation in. Use the terminal.", { agent: name });
+      case "unreadable": return t("Ovis couldn't find or read the file {agent} keeps this conversation in. Use the terminal.", { agent: name });
       case "no_integration": return t("{agent} chat needs herdr's {agent} integration, which is not installed on this PC. Settings → Agents shows the command that installs it; then start {agent} again in this pane.", { agent: name });
       case "no_folder": return t("herdr has not said which folder this pane is in, so Ovis can't find its conversation. Use the terminal.");
     }

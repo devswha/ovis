@@ -84,7 +84,7 @@ it("diagnoses fallback and recovery without changing the conversation or 304 res
   try {
     const fallback = (await ask())!;
     expect(fallback.status).toBe(200);
-    expect(await fallback.json()).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+    expect(await fallback.json()).toEqual({ source: "scrollback", turns: [] });
     const recovered = (await ask({ "if-none-match": 'W/"fixture"' }))!;
     expect(recovered.status).toBe(304);
     expect(recovered.headers.get("etag")).toBe('W/"fixture"');
@@ -128,13 +128,13 @@ it("asks a chat showing a history to wait only when Copilot's rejection may be w
   };
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   try {
-    expect(await ask("copilot_log_truncated", true)).toEqual({ source: "scrollback", turns: [], recovery: "waiting", unavailable: "not_found" });
-    expect(await ask("copilot_log_truncated", false)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
-    expect(await ask("copilot_session_unregistered", true)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+    expect(await ask("copilot_log_truncated", true)).toEqual({ source: "scrollback", turns: [], recovery: "waiting" });
+    expect(await ask("copilot_log_truncated", false)).toEqual({ source: "scrollback", turns: [] });
+    expect(await ask("copilot_session_unregistered", true)).toEqual({ source: "scrollback", turns: [] });
     // a --ui-server API that timed out may answer later; one that names no or another foreground session settled it
-    expect(await ask("copilot_api_rpc_timeout", true)).toEqual({ source: "scrollback", turns: [], recovery: "waiting", unavailable: "not_found" });
-    expect(await ask("copilot_api_no_foreground", true)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
-    expect(await ask("copilot_api_foreground_changed", true)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+    expect(await ask("copilot_api_rpc_timeout", true)).toEqual({ source: "scrollback", turns: [], recovery: "waiting" });
+    expect(await ask("copilot_api_no_foreground", true)).toEqual({ source: "scrollback", turns: [] });
+    expect(await ask("copilot_api_foreground_changed", true)).toEqual({ source: "scrollback", turns: [] });
   } finally { warn.mockRestore(); }
 });
 
@@ -146,7 +146,7 @@ it("passes on what the user could change for a Copilot pane to be read, beside a
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   try {
     expect(await (await handlePaneRequest(new Request(url), url, "/api/pane/conversation", {}))!.json())
-      .toEqual({ source: "scrollback", turns: [], recovery: "waiting", hint: "copilot_ui_server", unavailable: "not_found" });
+      .toEqual({ source: "scrollback", turns: [], recovery: "waiting", hint: "copilot_ui_server" });
   } finally { read.mockRestore(); warn.mockRestore(); }
 });
 
@@ -164,13 +164,14 @@ it("says why a conversation could not be read, in the few words the chat can exp
     const { ConversationUnavailable: Unavailable } = conversation;
     expect(await ask(new Unavailable("no_session_id"))).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
     expect(await ask(new Unavailable("no_session_path"))).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
-    expect(await ask(new Unavailable("transcript_missing"))).toEqual({ source: "scrollback", turns: [], unavailable: "missing" });
+    expect(await ask(new Unavailable("transcript_missing"))).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
     expect(await ask(new Unavailable("transcript_unreadable"))).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
     expect(await ask(new Unavailable("branch_unreadable"))).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
     expect(await ask(new Unavailable("no_recognized_transcript", undefined, "agent_cwd_missing"))).toEqual({ source: "scrollback", turns: [], unavailable: "no_folder" });
     // a plain shell's scrollback is its expected view, and an agent with no reader reads the same: the chat tells them apart by the pane's agent
     expect(await ask(new Unavailable("no_recognized_transcript"))).toEqual({ source: "scrollback", turns: [], unavailable: "no_reader" });
-    // a reason the chat has no words for says nothing rather than something wrong
+    // a reason the chat has no words for says nothing rather than something wrong; nor does a Copilot stage (a log cut, a peer)
+    expect(await ask(new Unavailable("no_session_path", undefined, "copilot_log_truncated"))).toEqual({ source: "scrollback", turns: [] });
     expect(await ask(new Unavailable("pane_not_found"))).toEqual({ source: "scrollback", turns: [] });
     expect(await ask(new Unavailable("dsh_transcript_unavailable"))).toEqual({ source: "scrollback", turns: [] });
   } finally { warn.mockRestore(); }
