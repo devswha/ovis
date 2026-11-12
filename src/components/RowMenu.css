@@ -117,6 +117,18 @@
   border-bottom: var(--hairline) solid var(--border);
 }
 
+/* what the row waits for, under the header: a row with no room for it leaves it out whole, and a touch screen too
+   wide for the sheet has no tooltip to say it, so the popover says it, wrapped and whole, as the sheet does */
+.row-menu-alert {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--status-blocked);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-tight);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .row-menu-divider {
   height: var(--hairline);
   margin: var(--space-1) 0;

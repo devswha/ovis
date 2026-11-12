@@ -53,7 +53,7 @@ interface Props {
   /** the menu's accessible name, and the sheet's title */
   title: string;
   subtitle?: string;
-  /** a phone's sheet only, first under the subtitle: what the row waits for, in the waiting state's colour, wrapped and whole */
+  /** what the row waits for, in the waiting state's colour, wrapped and whole: first under the sheet's subtitle, and under the popover's header */
   alert?: string;
   /** a phone's sheet only, under the subtitle and wrapped, not cut: text a row cuts (a hover tooltip says it on a desktop) */
   detail?: string;
@@ -292,7 +292,7 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
 
   return createPortal(
     <div ref={surface} className={`menu row-menu${overModal ? " is-over-modal" : ""}${variant === "paths" ? " row-menu-paths" : ""}`} role="menu" aria-label={title} style={place ?? { visibility: "hidden" }} onKeyDown={onKeyDown} onBlur={onBlur}>
-      {header && <div className="row-menu-header" role="presentation">{header}</div>}
+      {(header || alert) && <div className="row-menu-header" role="presentation">{header}{alert && <span className="row-menu-alert">{alert}</span>}</div>}
       {items.map((item) => (
         <Fragment key={item.id}>
           {item.divider && <span className="row-menu-divider" role="separator" />}

@@ -529,6 +529,32 @@ describe("AgentSidebar fold memory", () => {
     expect(foldedRows()).toEqual(["w1E:p1", "w1F:p1"]);
   });
 
+  it("says a waiting agent's whole reason in the menu's popover, where no sheet is drawn and a touch screen has no tooltip (#3505)", async () => {
+    // Given a screen too wide for the sheet, and an agent blocked on a permission, with its message.
+    const blocked = roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : {
+        ...machine.snapshot,
+        panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "blocked" as const, agent_kind: "permission", agent_message: "Allow bash?" } : pane),
+      },
+    }));
+    // the menu places itself by its button's box and its own size; a portal's elements take their node from its container
+    const node = { isConnected: true, offsetWidth: 220, offsetHeight: 120, focus() {}, contains: () => false, querySelector: () => null, closest: () => null, getBoundingClientRect: () => ({ top: 40, bottom: 64, left: 260, right: 284 }) };
+    Object.assign(document.body, { createNodeMock: () => node });
+    await act(async () => {
+      renderer = create(<SettingsProvider>
+        <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+          <AgentSidebar machines={blocked} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+        </SidebarFilterProvider>
+      </SettingsProvider>, { createNodeMock: () => node });
+    });
+    // When the row's menu opens.
+    await act(async () => { renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: node }); });
+    // Then it is the popover, and it says the reason in full under the row's name.
+    expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+    expect(renderer!.root.findByProps({ role: "menu" }).findByProps({ className: "row-menu-alert" }).children).toEqual(["Needs permission: Allow bash?"]);
+  });
+
   it("opens every folded group while the filter is in use, and leaves the stored fold alone (#3505)", async () => {
     // Given Idle folded on this device, and a filter that keeps one idle agent.
     stored.set("ovis:agent-groups", "true");
