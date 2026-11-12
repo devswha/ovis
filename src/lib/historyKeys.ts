@@ -7,6 +7,11 @@
 export const SHEET_HISTORY_KEY = "ovis:sheet";
 /** the sheet's id on the entry it opened over, and on its own: one that takes the sheet's entry over can tell that entry */
 export const SHEET_UNDER_KEY = "ovis:sheet-under";
+/**
+ * where an entry lies in the tab's history: a key of its own and its count, written by
+ * lib/sheetHistory.ts on every entry where the browser tells neither (no Navigation API)
+ */
+export const PLACE_KEY = "ovis:place";
 
 /** a file's own entry (lib/useFileViewer.ts) and a repository diff's (lib/repoDiff.ts) */
 export const FILE_PREVIEW_KEY = "ovis:file-preview";

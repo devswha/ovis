@@ -33,9 +33,13 @@
  * top down, one that refuses keeps the Back from those under it, and the history goes again onto
  * the entry it stood on. Whoever keeps state by the history's entry (Settings, a file, a diff, a
  * web page) asks whether a popstate is a step of that (sheetStep.holds) and leaves its state alone.
+ *
+ * Going onto an entry again, and telling which one a traversal landed on, takes a key and a count
+ * for each entry: the browser's own (the Navigation API), or, in a Chromium that skips entries
+ * and has none (before 102), the ones this module keeps in each entry's state (`places`).
  */
 import { useEffect, useRef } from "react";
-import { SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep } from "./historyKeys.ts";
+import { PLACE_KEY, SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep } from "./historyKeys.ts";
 import { SHEET_QUERY } from "./sheets.ts";
 import { useMediaQuery } from "./useMediaQuery.ts";
 
@@ -85,7 +89,66 @@ interface NavigationApi {
   entries(): Array<{ key: string; index: number }>;
   traverseTo(key: string): { committed: Promise<unknown>; finished: Promise<unknown> };
 }
-const navigation = (): NavigationApi | undefined => (window as unknown as { navigation?: NavigationApi }).navigation;
+/** an entry's place, as this module writes it into the entry's state: the run its count is of, a key of its own, and the count */
+interface Place { run: string; key: string; index: number }
+function placeIn(state: unknown): Place | null {
+  const place = state !== null && typeof state === "object" ? (state as Record<string, unknown>)[PLACE_KEY] : null;
+  if (place === null || typeof place !== "object") return null;
+  const { run, key, index } = place as Record<string, unknown>;
+  return typeof run === "string" && typeof key === "string" && typeof index === "number" && Number.isInteger(index) ? { run, key, index } : null;
+}
+/** `state` with that place, or with none */
+function placed(state: unknown, place: Place | null): unknown {
+  if (state === null || typeof state !== "object") return place === null ? state : { [PLACE_KEY]: place };
+  if (place === null && !(PLACE_KEY in state)) return state;
+  const { [PLACE_KEY]: _, ...rest } = state as Record<string, unknown>;
+  return place === null ? rest : { ...rest, [PLACE_KEY]: place };
+}
+const token = (): string => Math.random().toString(36).slice(2, 10);
+/** the run the places kept here are of: the one the page loaded in, or the last one started */
+let run: string | null = null;
+/** the entries of that run this page has made or been on: their counts, by key */
+const counted = new Map<string, number>();
+/** the way onto an entry asked for through these places that has not landed: the next traversal to land settles it */
+let asking: { key: string; landed: () => void; dropped: (why: Error) => void } | null = null;
+/**
+ * What this module uses of the Navigation API, for a browser that skips entries and has none
+ * (Chromium before 102), from a place kept in each entry's state. A push writes the place one
+ * above the entry it is made from, and a replace keeps the entry's. The counts are of one run: an
+ * entry with no place, or with one of another run (the browser made it for a #fragment, or an
+ * earlier load of the app did), is one this module cannot place. There it tells nothing, as a
+ * browser with no such API tells nothing, and the next push starts a run from that entry. Going
+ * onto an entry is `history.go` by the difference of two counts. That counts the steps a framed
+ * page took as well, so a way over more than one entry can land short where such a page is open.
+ */
+const places: NavigationApi = {
+  get currentEntry() {
+    const place = placeIn(window.history.state);
+    if (place === null || place.run !== run) return null;
+    counted.set(place.key, place.index);
+    return { key: place.key, index: place.index };
+  },
+  entries: () => [...counted].map(([key, index]) => ({ key, index })),
+  traverseTo(key) {
+    const from = places.currentEntry, to = counted.get(key);
+    asking?.dropped(new Error("another way was asked for"));
+    asking = null;
+    const way = from == null || to === undefined || to === from.index
+      ? Promise.reject<void>(new Error("no way onto that entry is known"))
+      : new Promise<void>((landed, dropped) => { asking = { key, landed, dropped }; window.history.go(to - from.index); });
+    return { committed: way, finished: way };
+  },
+};
+/** A traversal landed: the way asked for through those places landed with it, or another traversal overtook it. */
+function settle(at: { key: string } | null): void {
+  const way = asking;
+  asking = null;
+  if (way === null) return;
+  if (at?.key === way.key) way.landed();
+  else way.dropped(new Error("another traversal landed"));
+}
+/** the browser's Navigation API, or those places where a browser that skips entries has none */
+const navigation = (): NavigationApi | undefined => (window as unknown as { navigation?: NavigationApi }).navigation ?? (SKIPS ? places : undefined);
 /** where the history stands by that key and count, as this module last saw it: a traversal is read against it */
 let here: { key: string; index: number } | null = null;
 function where(): { key: string; index: number } | null {
@@ -318,16 +381,40 @@ export function leaveSheet(id: string): void {
 if (typeof window !== "undefined") {
   const history = window.history;
   const push = history.pushState.bind(history);
+  const replace = history.replaceState.bind(history);
+  /** whether the entries' places are kept here (`places`) */
+  const counting = (): boolean => navigation() === places;
+  run = placeIn(history.state)?.run ?? null;
+  /** A new entry: where places are kept here, with the place one above the entry it is pushed from. */
+  const pushEntry = (state: unknown, ...rest: [string, (string | URL | null)?]): void => {
+    if (!counting()) return push(state, ...rest);
+    let from = placeIn(history.state);
+    if (from === null || from.run !== run) {
+      // the entry the history is on is one this module cannot place: a run starts from it
+      run = token();
+      counted.clear();
+      from = { run, key: token(), index: 0 };
+      replace(placed(history.state, from), "");
+    }
+    // the entries ahead go with the push
+    for (const [key, index] of [...counted]) if (index > from.index) counted.delete(key);
+    const next = { run: from.run, key: token(), index: from.index + 1 };
+    counted.set(from.key, from.index).set(next.key, next.index);
+    return push(placed(state, next), ...rest);
+  };
+  // an entry stays where it is: it keeps its place through whatever is written on it, and takes no other entry's
+  history.replaceState = ((state: unknown, ...rest: [string, (string | URL | null)?]) =>
+    replace(counting() ? placed(state, placeIn(history.state)) : state, ...rest)) as History["replaceState"];
   history.pushState = ((state: unknown, ...rest: [string, (string | URL | null)?]) => {
     try {
-      if (pushing) return push(state, ...rest);
+      if (pushing) return pushEntry(state, ...rest);
       // a navigation made from a sheet (an item that opened another pane, Settings, a file) takes the
       // sheet's entry: Back from there goes to the pane before the sheet, and no entry is left between.
       // A staying sheet still up under it is covered
       seen = null;
       if (owned(history.state)) { cover(history.state); return history.replaceState(without(state), ...rest); }
       // an entry pushed over a sheet's copies its state (the file viewer's does): only the sheet's own carries its mark
-      return push(without(state), ...rest);
+      return pushEntry(without(state), ...rest);
     } finally {
       // a new entry drops the ones ahead, and what a navigation wrote is no place to go onto again
       here = where();
@@ -381,6 +468,7 @@ if (typeof window !== "undefined") {
     holding = false;
     const was = here;
     here = where();
+    settle(here);
     ahead = null;
     took = climbing !== null && here?.key === climbing.key;
     if (climbing !== null && took) {
@@ -445,11 +533,8 @@ if (typeof window !== "undefined") {
     stepping = null;
     steppedOff = step !== null;
     const heir = from === null ? undefined : heirs.get(from);
-    // the entry just left: where the browser skips an entry made now, the sheets that stay go onto it
-    // again. By the browser's key for it, or, where the browser gives none (no Navigation API), one
-    // step forward: a sheet's entry is the last one, and a Back by one step left it right ahead
-    const left = from === null ? undefined : entryKeys.get(from);
-    const reached = SKIPS && (left !== undefined || navigation() === undefined);
+    // the entry just left, by its key: where the browser skips an entry made now, the sheets that stay go onto it again
+    const left = SKIPS && from !== null ? entryKeys.get(from) : undefined;
     // the sheets that stay: one whose entry was taken over (`under`: the traversal left what covered
     // it) and one that opened during the step were never asked; one busy at Back refuses it (`refused`).
     // They are asked from the top down, the one opened last first, and one that refuses keeps the
@@ -480,15 +565,12 @@ if (typeof window !== "undefined") {
     // the entry just left is still in the history, and is theirs: the entry of the sheet that refused,
     // or of the sheet that closed over one still up under it
     // (never after a step the app asked for: the entry it left is one of those it meant to leave)
-    const owner = own || !reached || from === null ? undefined
+    const owner = own || left === undefined || from === null ? undefined
       : (again.find((kept) => kept.refused && kept.id === from) ?? again.find((kept) => kept.under && kept.id === heir))?.id;
-    if (owner !== undefined && from !== null) {
+    if (owner !== undefined && left !== undefined && from !== null) {
       // going onto it again makes no entry
       for (const kept of again) { open.set(kept.id, kept.onBack); if (kept.under && kept.id !== owner) covered.add(kept.id); }
       returning = { entry: from, owner, href: window.location.href };
-      // one step forward that lands short of the entry (the user had jumped further back than one
-      // step) is heard as any other traversal: the sheets are asked again there
-      if (left === undefined) { window.history.forward(); return; }
       // a traversal the browser drops (another one overtook it) leaves them up with no entry: the next tap makes theirs
       const dropped = (): void => {
         if (returning?.entry !== from) return;
@@ -503,8 +585,9 @@ if (typeof window !== "undefined") {
     // the user's Back or Forward off an entry that is no sheet's, which a sheet with no entry of its
     // own refused (a device's request to join, up with no tap behind it): nothing under it moves.
     // The history goes again onto the entry the app is on, and neither step is the app's
-    // (sheetStep.holds). A browser that tells no entry apart (no Navigation API) leaves the traversal
-    // as it landed, and Back from the first entry leaves the app with no popstate to refuse
+    // (sheetStep.holds). Where either entry is one with no key (a browser that tells none, an entry
+    // this module cannot place) the traversal is left as it landed, and Back from the first entry
+    // leaves the app with no popstate to refuse
     const onto = refusal && step === null && from === null && was !== null ? stood ?? was.key : undefined;
     if (onto !== undefined && here !== null && here.key !== onto) {
       steppedOff = true;
