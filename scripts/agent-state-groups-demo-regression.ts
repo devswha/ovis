@@ -3,8 +3,10 @@
  * demo's fixture transport, at 390 and 1280, light and dark. No live session is read.
  *
  * Settings → Group agents by state and the sidebar's filter are on. Two stamps are stored as this
- * device would have kept them, so their ages are known: the waiting agent's 12 minutes and a
- * resting agent's 3 days. A row says its time only where a stamp tells of it; the agent that
+ * device would have kept them, so their ages are known: the waiting agent's two hours and a
+ * resting agent's 3 days (ages a slow run cannot carry over a unit's edge), each with the counter herdr gives its agent (read from the demo's own
+ * session on a first load), which is what lets a later load trust it. A third is stored with no
+ * counter and proves nothing. A row says its time only where a stamp tells of it; the agent that
  * finishes as the demo opens is stamped in sight and keeps its time when its finish is read. Idle
  * starts folded and the other groups open; a heading folds and opens its group by click, Enter and
  * Space and says the same count either way; a folded group keeps the selected agent in sight; what
@@ -26,26 +28,21 @@ import { chromePath } from "./chrome-path.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 const DAY = 86_400_000;
 
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark"): Promise<void> {
   const phone = width === 390;
   const tag = `${width} ${theme}`;
   const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", colorScheme: theme });
-  await context.addInitScript(({ settings, waiting, resting, waited, rested }) => {
+  await context.addInitScript(({ settings }) => {
     // seeded once, so a reload keeps what the page itself stored
     if (localStorage.getItem("ovis:settings") !== null) return;
     localStorage.setItem("ovis:settings", settings);
     localStorage.setItem("ovis:agent-groups", "true");
     localStorage.setItem("ovis:agents-collapsed", "0");
     localStorage.setItem("ovis:sidebar-filter-shown", "true");
-    // the demo's one PC and its herdr (site/demo/transport.ts), as the app stores its stamps (lib/agentStateSince.ts)
-    const now = Date.now();
-    localStorage.setItem("ovis:agent-state-since", JSON.stringify({ version: 1, pcs: { local: { lifetime: "demo-local", rows: {
-      [waiting]: { state: "blocked", at: now - waited },
-      [resting]: { state: "idle", at: now - rested },
-    } } } }));
-  }, { settings: JSON.stringify({ language: "en", theme }), waiting: panes.web, resting: panes.omp, waited: 12 * MINUTE, rested: 3 * DAY });
+  }, { settings: JSON.stringify({ language: "en", theme }) });
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -67,12 +64,29 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
     await list();
   };
 
+  // A first load only to read the demo's one PC and its herdr (site/demo/transport.ts): the stamps are stored as the app
+  // stores them (lib/agentStateSince.ts), each with the counter herdr gives its agent now. The same counter on the next
+  // load proves that the state did not change meanwhile; the third stamp has none, so nothing proves it.
+  await open();
+  const counters = await page.evaluate(async ({ waiting, resting, uncounted, waited, rested }) => {
+    const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { herdr_lifetime?: string | null; agents: Array<{ pane_id: string; state_change_seq?: number }> } };
+    const counter = (pane: string): number | undefined => snapshot.agents.find((agent) => agent.pane_id === pane)?.state_change_seq;
+    const now = Date.now();
+    localStorage.setItem("ovis:agent-state-since", JSON.stringify({ version: 1, pcs: { local: { lifetime: snapshot.herdr_lifetime, rows: {
+      [waiting]: { state: "blocked", at: now - waited, seq: counter(waiting) },
+      [resting]: { state: "idle", at: now - rested, seq: counter(resting) },
+      [uncounted]: { state: "idle", at: now - rested },
+    } } } }));
+    return [counter(waiting), counter(resting)];
+  }, { waiting: panes.web, resting: panes.omp, uncounted: panes.cli, waited: 2 * HOUR + 5 * MINUTE, rested: 3 * DAY });
+  assert.ok(counters.every((counter) => Number.isSafeInteger(counter)), `${tag}: the demo's agents carry herdr's counter: ${JSON.stringify(counters)}`);
+
   await open();
   // a device that kept no fold: Idle starts folded, the other groups open, and a time shows where a stamp tells of it
   assert.equal(await expanded("idle"), "false", `${tag}: Idle starts folded`);
   assert.equal(await expanded("blocked"), "true", `${tag}: Needs you starts open`);
   await row(panes.omp).waitFor({ state: "hidden" });
-  assert.deepEqual(await since(panes.web), ["12m"], `${tag}: a waiting agent says how long it has waited`);
+  assert.deepEqual(await since(panes.web), ["2h"], `${tag}: a waiting agent says how long it has waited`);
   const count = await heading("idle").locator(".agent-group-count").textContent();
   const target = await heading("idle").boundingBox();
   assert.ok(target !== null && target.height >= (phone ? 44 : 24), `${tag}: the heading is a ${phone ? "finger's" : "pointer's"} target, ${target?.height}px`);
@@ -83,7 +97,8 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await row(panes.omp).waitFor({ state: "visible" });
   assert.equal(await heading("idle").locator(".agent-group-count").textContent(), count, `${tag}: the heading says the same count open and folded`);
   assert.deepEqual(await since(panes.omp), ["3d"], `${tag}: a resting agent says how long it has rested`);
-  assert.deepEqual(await since(panes.cli), [], `${tag}: a state this device did not see begin says no time`);
+  assert.deepEqual(await since(panes.cli), [], `${tag}: a stamp with no counter proves nothing, so its row says no time`);
+  assert.deepEqual(await since(panes.flaky), [], `${tag}: a state this device did not see begin says no time`);
 
   // the demo's own agent is mid-turn as it opens and finishes a few seconds in: a change in sight
   await state(panes.api, "done").waitFor({ state: "attached" });
@@ -119,7 +134,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   assert.equal(await expanded("blocked"), "false", `${tag}: a fold is kept across a reload`);
   await heading("blocked").click();
   await row(panes.web).waitFor({ state: "visible" });
-  assert.deepEqual(await since(panes.web), ["12m"], `${tag}: a stamp is kept across a reload`);
+  assert.deepEqual(await since(panes.web), ["2h"], `${tag}: a stamp is kept across a reload`);
 
   // the filter shows what it kept: a match under a folded heading is in sight, and the heading does not fold
   await heading("idle").click();
