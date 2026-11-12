@@ -30,7 +30,7 @@ export interface RowSummary {
 }
 
 /**
- * A row whose summary is read: a new `stamp` (finish, activity or shown state changed) reads it again. A row whose new
+ * A row whose summary is read: a new `stamp` (herdr lifetime, finish, activity or shown state changed) reads it again. A row whose new
  * stamp answers with the words it already had is read once more (its agent may not have written the turn yet, or the
  * answer came from a read started before the change).
  */
@@ -42,7 +42,9 @@ export function summaryTargets(rows: readonly AgentRow[], activity: SidebarActiv
     const pane = row.entry.pane;
     const seq = activity.seqs(row.machine.id).get(pane.pane_id) ?? 0;
     const status = inboxStatus(row, activity);
-    return { key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, stamp: `${pane.finish_id ?? ""}:${seq}:${status ?? ""}` };
+    // a replaced herdr can reuse a pane id with the same finish, counter and state
+    const lifetime = row.machine.snapshot?.herdr_lifetime ?? "";
+    return { key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, stamp: `${lifetime}:${pane.finish_id ?? ""}:${seq}:${status ?? ""}` };
   });
 }
 

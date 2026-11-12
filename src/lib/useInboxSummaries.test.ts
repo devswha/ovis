@@ -1,7 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
-import type { PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
-import { SUMMARY_RETRIES, SUMMARY_RETRY_MS, SummaryReads, type SummaryTarget } from "./useInboxSummaries.ts";
+import type { Machine } from "../../shared/machines.ts";
+import type { AgentStatus, PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
+import machinesFixture from "../../site/demo/fixtures/machines.json";
+import { inboxOrder } from "./agentInbox.ts";
+import type { SidebarActivity } from "./sidebarActivity.tsx";
+import { SUMMARY_RETRIES, SUMMARY_RETRY_MS, SummaryReads, summaryTargets, type SummaryTarget } from "./useInboxSummaries.ts";
 
 /** A read whose answers the test hands out one by one, in the order the reads started. */
 function harness(now = 0, subscribed = true) {
@@ -27,6 +31,19 @@ const answer = (summaries: Record<string, PaneSummary | null>, server_time = "19
 const settled = () => new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => undefined);
 /** past every microtask, so an unhandled rejection has been reported */
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+describe("summaryTargets", () => {
+  it("stamps a row with its PC's herdr lifetime, so a replaced herdr reusing the pane reads it again", () => {
+    const activity: SidebarActivity = { seqs: () => new Map(), status: (_machineId, pane) => pane.agent_status as AgentStatus };
+    const living = (lifetime: string): Machine[] => (JSON.parse(JSON.stringify(machinesFixture.machines)) as Machine[])
+      .map((machine) => machine.snapshot === null ? machine : { ...machine, snapshot: { ...machine.snapshot, herdr_lifetime: lifetime } });
+    const before = summaryTargets(inboxOrder(living("first"), activity), activity);
+    const after = summaryTargets(inboxOrder(living("second"), activity), activity);
+    expect(before.length).toBeGreaterThan(0);
+    expect(after.map((target) => target.key)).toEqual(before.map((target) => target.key));
+    after.forEach((target, index) => expect(target.stamp).not.toBe(before[index]!.stamp));
+  });
+});
 
 describe("SummaryReads", () => {
   it("asks each PC in batches of at most 24, one request in flight per PC", async () => {
