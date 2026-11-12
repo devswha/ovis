@@ -240,6 +240,17 @@ export function claudeInputBoxContent(live: string): string | null {
 }
 
 /**
+ * The box a refusal may offer to send anyway over, and a send anyway may go over (claudeInputBoxContent),
+ * or null where it may not: a paste or an image Claude Code folded into a placeholder (`[Pasted text #1 +12
+ * lines]`, `[Image #1]`) hides what it holds, so the user cannot see what the Enter would send along
+ * with the message (#3563).
+ */
+export function claudeSendAnywayBox(live: string): string | null {
+  const content = claudeInputBoxContent(live);
+  return content === null || /\[(?:Pasted text #\d+|Image #\d+)/.test(content) ? null : content;
+}
+
+/**
  * Whether Claude Code's rewind dialog is open: the screen ends in its panel and Claude's own input box
  * is not drawn under it (the dialog takes its place in every recorded state). A reply that draws the
  * panel has the box under it, and must not hold the pane's sends; rules above the panel (an earlier
