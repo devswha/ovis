@@ -124,6 +124,42 @@ describe("the watch the state stamps go by", () => {
     expect(unseen).toEqual(["undated"]);
   });
 
+  it("takes back the word of a silent stream that ends just after a read trusted it: it was dead, for no telling how long", () => {
+    streams();
+    runs(10 * MIN);
+    reads();
+    expect(unseen).toEqual(["undated"]);
+    // the socket, probed as the tab was shown again, did not answer twice
+    runs(6 * SEC);
+    stateWatch.subscription("lost");
+    expect(unseen).toEqual(["undated", "first"]);
+    // the loss is told once
+    stateWatch.subscription("closed");
+    expect(unseen).toEqual(["undated", "first"]);
+  });
+
+  it("keeps what a read left standing once the silent stream has spoken, or has outlived its socket's verdict", () => {
+    streams();
+    runs(10 * MIN);
+    reads();
+    stateWatch.heard();
+    stateWatch.subscription("lost");
+    expect(unseen).toEqual(["undated"]);
+
+    streams();
+    runs(10 * MIN);
+    reads();
+    runs(MIN);
+    stateWatch.subscription("lost");
+    expect(unseen).toEqual(["undated", "undated"]);
+
+    // and a stream that ends without any read having trusted its silence is a stream that reconnects
+    streams();
+    runs(10 * SEC);
+    stateWatch.subscription("lost");
+    expect(unseen).toEqual(["undated", "undated"]);
+  });
+
   it("leaves a later keeper's listener when an earlier one ends", () => {
     const later: UnseenLook[] = [];
     const endLater = stateWatch.keep((look) => { later.push(look); });

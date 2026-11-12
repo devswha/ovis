@@ -12,6 +12,13 @@
  * time. A shorter gap (a server that restarts, a stream that reconnects) is within what a time in
  * minutes can say, and its changes are dated as they come.
  *
+ * A stream that says nothing for long is no gap while it lives: nothing changed. But a tab that is
+ * hidden reads no roster and probes no connection, so its stream may be dead for hours unnoticed.
+ * The read that comes as the tab is shown again takes the stream's silence at its word, dating no
+ * change it finds and keeping the times the page had; if the stream then ends within the time its
+ * socket takes to find a dead connection, the page was not being told after all, and the roster is
+ * read as after a long gap.
+ *
  * The roster loader tells the watch what it learns (lib/useMachineRoster.ts) and the stamping asks
  * it at each look (lib/useAgentStateSince.ts). A page told of no roster yet has lost nothing.
  */
@@ -22,6 +29,12 @@ const BEAT_MS = 5_000;
  * the same measure for a pane missing from a roster (lib/agentStateSince.ts).
  */
 export const BLIND_MS = 90_000;
+/**
+ * How long after a read took a silent stream at its word the stream may still prove to have been
+ * dead: its socket probes the connection as the page comes back and drops one that does not answer
+ * twice (lib/ws.ts, 3 s each at first).
+ */
+const VERDICT_MS = 30_000;
 
 /** a look that cannot date what it finds: `first` as a page's first look, `undated` with the times the page had kept */
 export type UnseenLook = "first" | "undated";
@@ -40,6 +53,8 @@ let gaps = 0;
  */
 let stream: "none" | "opening" | "live" = "none";
 let subscribed = false;
+/** until when the end of the stream says it was dead all along: a read has just taken its silence for nothing having happened */
+let trustedUntil: number | null = null;
 let unseen: ((look: UnseenLook) => void) | null = null;
 
 /** The page runs now. A stream that vouches has kept its knowledge current since the last beat, unless that is too long ago. */
@@ -60,6 +75,7 @@ function whole(now: number, by: "read" | "stream"): void {
     : by === "read" && heardAt !== null && now - heardAt > BLIND_MS ? "undated" : null;
   knownAt = now;
   heardAt = now;
+  trustedUntil = look === "undated" ? now + VERDICT_MS : by === "stream" ? null : trustedUntil;
   if (look !== null) unseen?.(look);
 }
 
@@ -79,14 +95,19 @@ export const stateWatch = {
   },
   /** The roster stream's subscription opened, or ended (`lost`, `closed`). */
   subscription(update: "opened" | "lost" | "closed"): void {
-    beat();
+    const now = beat();
+    // the stream whose silence a read has just trusted ends: it was dead, for no telling how long
+    if (update !== "opened" && trustedUntil !== null && now <= trustedUntil) unseen?.("first");
+    trustedUntil = null;
     subscribed = update === "opened";
     stream = subscribed ? "opening" : "none";
   },
   /** An event of the roster stream reached the page. */
   heard(): void {
     const now = beat();
-    if (stream === "live") heardAt = now;
+    if (stream !== "live") return;
+    heardAt = now;
+    trustedUntil = null;
   },
   /** A roster the stream pushed, in the batch that draws it. */
   pushed(): void {
@@ -113,6 +134,7 @@ export const stateWatch = {
     beatAt = null;
     stream = "none";
     subscribed = false;
+    trustedUntil = null;
     beat();
     const timer = setInterval(beat, BEAT_MS);
     return () => {

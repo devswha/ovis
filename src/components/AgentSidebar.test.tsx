@@ -666,6 +666,36 @@ describe("AgentSidebar fold memory", () => {
     }
   });
 
+  it("keeps a time through a silent stream's ten minutes, and drops it when that stream proves dead as the tab is shown again (#3505)", async () => {
+    const start = 1_800_000_000_000;
+    const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
+      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
+    } }));
+    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(start));
+    try {
+      // Given a page whose stream is open, that sees an agent begin to wait: a time nothing can prove later (the roster names no server's count).
+      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
+      await act(async () => { stateWatch.subscription("opened"); stateWatch.pushed(); });
+      await act(async () => { renderer!.update(groupedList(inactive, at("blocked"))); });
+      expect(since()).toEqual(["<1m"]);
+      // When the tab is hidden for ten minutes in which the stream says nothing, and the read that comes as it is shown again finds the row as it was.
+      await act(async () => { jest.advanceTimersByTime(10 * 60_000); });
+      await act(async () => { stateWatch.read(stateWatch.asked()); });
+      // Then the stream's silence is taken at its word: nothing changed, and the time stands.
+      expect(since()).toEqual(["10m"]);
+      // And when its socket then finds the connection dead, the page was not being told: the time goes.
+      await act(async () => { jest.advanceTimersByTime(6_000); stateWatch.subscription("lost"); });
+      expect(since()).toEqual([]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+      renderer = undefined;
+      jest.useRealTimers();
+      setSystemTime();
+    }
+  });
+
   it("reads no time from a stamping that has ended: the page's stamps leave with it, and the device keeps them", async () => {
     const finished = roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "done" as const } : pane),
