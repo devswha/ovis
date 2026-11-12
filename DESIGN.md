@@ -2029,7 +2029,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - A tap opens that agent's existing chat, with its prompt card and composer; the list adds no chat
   of its own. In a thread the header's first button is **Back to agents** (`#inbox-back`, a chevron,
   in the drawer toggle's place while the drawer is closed and the guide is not shown), and the
-  system Back returns to the list. The list's address names no pane, so a reload keeps it; leaving
+  system Back returns to the list. There the drawer opens by its edge swipe, or from More's **Open
+  workspace list**, which More offers only then. The list's address names no pane, so a reload keeps it;
+  it names no PC either, as the list is every shown PC's, so a PC picked in the drawer over it is not
+  kept across a reload; leaving
   it for a pane pushes one history entry. A link or an alert that names a pane opens that pane
   directly; from there the header's Back opens the list in its place, and the system Back leaves
   as it would without the list.

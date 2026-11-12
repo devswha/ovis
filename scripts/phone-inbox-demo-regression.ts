@@ -437,6 +437,84 @@ try {
           pass(18, "the drawer swiped open over a thread from the list gives the focus back to Back to agents when it closes");
         });
 
+        await withPage(browser, base, on, "/", async (page) => {
+          await rowCount(page, 6);
+          await openThread(page, WORKING);
+          const sheet = page.locator(".row-sheet");
+          await page.locator(".header-more-button").tap();
+          const item = sheet.locator('[data-item="open-drawer"]');
+          await item.waitFor();
+          assert.equal((await item.textContent())?.trim(), "Open workspace list");
+          await item.tap();
+          await sheet.waitFor({ state: "detached" });
+          await page.locator('#drawer-toggle[aria-expanded="true"]').waitFor();
+          // a tap on the scrim beside it puts it away, and the focus goes back to More, which opened it
+          await page.touchscreen.tap(375, 420);
+          await page.locator("#inbox-back").waitFor();
+          await page.waitForFunction(() => document.activeElement?.classList.contains("header-more-button") === true, undefined, { timeout: 5_000 });
+          pass(19, "in a thread from the list More has Open workspace list, which opens the drawer, and the focus goes back to More when it closes");
+        });
+
+        await withPage(browser, base, { ...on, shortcutOverrides: { "close-pane": "ctrl+alt+x" } }, "/", async (page) => {
+          await rowCount(page, 6);
+          await openThread(page, WORKING);
+          await page.locator(".pane-slot").first().waitFor();
+          const blur = () => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+          // the key is bound: in the thread it asks to close the working agent's pane
+          const confirm = page.locator(".confirm-dialog");
+          await blur();
+          await page.keyboard.press("Control+Alt+x");
+          await confirm.waitFor();
+          await page.keyboard.press("Escape");
+          await confirm.waitFor({ state: "detached" });
+          await backToList(page);
+          await blur();
+          await page.keyboard.press("Control+Alt+x");
+          await frames(page);
+          assert.equal(await confirm.count(), 0, "the key asks nothing of the pane under the list");
+          assert.equal(await page.locator(`.inbox-item[data-pane="${WORKING}"]`).count(), 1, "the pane under the list is still in the roster");
+          pass(20, "a key bound to Close pane closes the thread's pane, and nothing while the list covers it");
+        });
+
+        await withPage(browser, base, { ...on, keepScreenOn: true }, "/", async (page) => {
+          // a wake lock that counts the locks held, from the next load on
+          await page.context().addInitScript(() => {
+            const lock = { held: 0 };
+            Object.defineProperty(window, "wakeLockHeld", { get: () => lock.held });
+            Object.defineProperty(navigator, "wakeLock", { configurable: true, value: { request: async () => {
+              lock.held += 1;
+              let released = false;
+              return { release: async () => { if (!released) { released = true; lock.held -= 1; } } };
+            } } });
+          });
+          await page.reload();
+          await rowCount(page, 6);
+          const held = (count: number) => page.waitForFunction((n) => (window as unknown as { wakeLockHeld: number }).wakeLockHeld === n, count, { timeout: 5_000 });
+          await frames(page);
+          assert.equal(await page.evaluate(() => (window as unknown as { wakeLockHeld: number }).wakeLockHeld), 0, "a cold list holds no lock");
+          await openThread(page, WORKING);
+          await held(1);
+          await backToList(page);
+          await held(0);
+          pass(21, "Keep screen on holds a lock in a thread and lets it go on the list");
+        });
+
+        await withPage(browser, base, on, "/", async (page) => {
+          await rowCount(page, 6);
+          // the demo's second PC holds the same pane ids as the first
+          await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
+          await rowCount(page, 12);
+          const names: Record<string, string> = await page.evaluate(async () => Object.fromEntries((await (await fetch("/api/machines")).json()).machines.map((machine: Machine) => [machine.id, machine.name])));
+          const places = await page.locator(".inbox-item").evaluateAll((items) => items.map((item) => [item.getAttribute("data-machine") ?? "", item.querySelector(".inbox-place")?.textContent ?? ""]));
+          for (const [machine, place] of places) assert.equal(place!.split(" \u00b7 ")[0], names[machine!], `a row of ${machine} names its PC: ${place}`);
+          await page.locator(`.inbox-item[data-machine="laptop"][data-pane="${WORKING}"] .inbox-row`).tap();
+          await page.locator(".agent-inbox").waitFor({ state: "detached" });
+          await page.locator("#inbox-back").waitFor();
+          assert.equal(new URL(page.url()).searchParams.get("machine"), "laptop");
+          assert.equal(paneInAddress(page), WORKING);
+          pass(22, "with two PCs holding the same pane ids each row names its PC, and the other PC's row opens that PC's pane");
+        });
+
         assert.deepEqual(errors, []);
         pass(16, "no page error");
       }

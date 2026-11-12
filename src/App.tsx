@@ -425,7 +425,8 @@ export function App() {
 
 
   const { selectedPane } = useSelectedPane({ snapshot, selectedPaneId });
-  useScreenWakeLock(settings.keepScreenOn && locked === false && selectedPane !== null);
+  // held only while a pane is shown: one hidden under the phone's list keeps no screen on
+  useScreenWakeLock(settings.keepScreenOn && locked === false && selectedPane !== null && !inbox.shown);
   const { selectedWorkspace, presentedPaneId } = useSelectedLayout({ selectedPane, snapshot, drawerOpen: drawerOpen || inbox.shown, selectedMachineId, selectedPaneId, setSelectedPaneId, setAutoSelected });
   // the selected pane has a tab strip to rename in: its pane and workspace are in the roster
   const tabStripMounted = selectedPane !== null && selectedWorkspace !== null;
@@ -522,7 +523,8 @@ export function App() {
     return { machineId, workspace, cwd: workspace.worktree?.checkout_path ?? inFront?.cwd ?? null, agent: inFront?.agent ?? null, panes };
   };
 
-  const closeOffered = selectedPane !== null && auth?.role !== "watch" && !guideShown && !paneLocked(selectedPane.pane_id);
+  // a pane hidden under the phone's list is not closed, typed into, split or zoomed by a key: the shortcuts listen on the window, past its inert slot
+  const closeOffered = selectedPane !== null && auth?.role !== "watch" && !guideShown && !inbox.shown && !paneLocked(selectedPane.pane_id);
   const actions = useMemo<AppActions>(
     () => ({
       selectPane,
@@ -568,7 +570,7 @@ export function App() {
       setView,
       // a peek shows the terminal over the chat: the shortcut takes the chat back, the lens stays Chat
       toggleView: () => { if (terminalPeek !== null) endPeek(); else setView(view === "chat" ? "terminal" : "chat"); setDrawerOpen(false); },
-      focusInput: () => paneControls.current?.focusInput(),
+      focusInput: () => { if (!inbox.shown) paneControls.current?.focusInput(); },
       scrollPage: (direction) => paneControls.current?.scrollPage(direction),
       openNewSession: () => {
         setDrawerOpen(false);
@@ -704,7 +706,7 @@ export function App() {
       openLocalPage: settings.webLinks === "panel" && shellMode() !== "relay" ? (url) => { setDrawerOpen(false); openWebPage(url, false, LOCAL_MACHINE); } : null,
       searchConversation: selectedSearchable && selectedPaneId !== null ? () => requestSearch(split ? split.active : soloSlot, selectedMachineId, selectedPaneId) : null,
       // herdr's layout calls on the selected pane (lib/layoutActions.ts): only those the PC's herdr answers
-      ...layoutActions({ selectedPaneId, offer: appLayout, paneSplits: !selectedPane?.own_tab, selection: selectionRef, roster: snapshotRef, load, selectPane, layoutRefused }),
+      ...layoutActions({ selectedPaneId: inbox.shown ? null : selectedPaneId, offer: appLayout, paneSplits: !selectedPane?.own_tab, selection: selectionRef, roster: snapshotRef, load, selectPane, layoutRefused }),
       // the open pane's own menu's Close, as the canvas has it now (its confirmation, a lock's absence of
       // it): none where that menu has none (a locked agent, no canvas under the setup guide), and a pane
       // the canvas no longer offers Close for by the press closes nothing
@@ -713,7 +715,7 @@ export function App() {
         if (target) paneActionsRef.current?.(target).find((item) => item.id === "close" && !item.disabled)?.run();
       },
     }),
-    [closeOffered, revealFiles, selectPane, selectTarget, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter, selectedSearchable, requestSearch, split, soloSlot, settings.webLinks, settings.sidebarBackgroundWorkspaces, openWebPage],
+    [closeOffered, inbox.shown, revealFiles, selectPane, selectTarget, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter, selectedSearchable, requestSearch, split, soloSlot, settings.webLinks, settings.sidebarBackgroundWorkspaces, openWebPage],
   );
 
   useShortcuts(actions, locked === false);
@@ -804,8 +806,12 @@ export function App() {
   const foldPane = isSheetWidth && paneGroup.length > 1;
   const groupItems = openGroupItems(moreGroup?.kind ?? null, isSheetWidth, findGroup, paneGroup);
   useGroupClosedWhenEmpty(moreMenu, groupItems.length === 0);
+  // in a thread opened from the list, the header's first button goes back to it; the drawer opens by its edge
+  // swipe, and from More for a keyboard, a screen reader or a window with no edge to swipe
+  const inboxBack = inbox.enabled && !inbox.shown && !drawerOpen && !guideShown;
   const moreItems: RowMenuItem[] = [
     ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(sessionTally.waiting), icon: CircleHelp, run: openNextWaiting }] : []),
+    ...(inboxBack ? [{ id: "open-drawer", label: t("Open workspace list"), icon: Menu, run: () => setDrawerOpen(true) }] : []),
     // first at every width: a phone's header has no palette button, and a touch screen no shortcut
     { id: "palette", label: t("Search panes and actions"), icon: Search, ...(paletteKeys ? { hint: paletteKeys } : {}), run: () => openPalette() },
     ...(foldFind && more ? [{ id: "find-group", label: t("Find…"), icon: TextSearch, run: () => openMoreGroup("find", more.anchor) }] : findInTerminal),
@@ -831,8 +837,6 @@ export function App() {
   // the connection. A touch screen keeps that room for its key bar and says them in More and the chip.
   const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown;
   const waitingDot = waitingInMore && !statusBarShown;
-  // in a thread opened from the list, the header's first button goes back to it; the drawer still opens by its edge swipe
-  const inboxBack = inbox.enabled && !inbox.shown && !drawerOpen && !guideShown;
   const openNewOn = (id: string): void => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); };
 
   if (locked === null) {
