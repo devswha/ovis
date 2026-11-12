@@ -10,6 +10,7 @@ import * as conversationModule from "./conversation.ts";
 import * as processStart from "./process-start.ts";
 import { processStartedAt } from "./process-start.ts";
 import * as kiro from "./kiro-terminal.ts";
+import * as tmux from "./tmux-terminal.ts";
 import { paneTranscript } from "./conversation.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 
@@ -158,6 +159,19 @@ it.skipIf(process.platform !== "linux")("reads a project store held by Codex wit
   agentFolders = { cwd: root };
   // No configured home and no screen match: use the process's actual store and held rollout.
   expect(await paneTranscript(root, undefined, labelledSnapshot())).toMatchObject({ source: "codex-transcript", path });
+});
+
+it.each([
+  [["codex"], true], [["node", "codex.js"], true], [["node", "--no-warnings", "codex.js"], true],
+  [["node", "--max-old-space-size=16", "codex.js"], true], [["node", "--", "codex.js"], true],
+  [["node", "--unknown=value", "codex.js"], true], [["bun", "--bun", "codex.js"], true],
+  [["node", "--require=hook", "codex.js"], false], [["node", "--import", "codex.js"], false],
+  [["node", "--title", "codex.js"], false], [["node", "-e", "codex.js"], false],
+  [["bash", "-c", "codex.js"], false], [["node", "", "codex.js"], false],
+  [["node", "other.js", "codex.js"], false], [["node", "--unknown", "codex.js"], false],
+] as const)("keeps the existing direct argv rule for %j", async (argv, accepted) => {
+  foreground = [{ pid: 2147483647, argv: [...argv] }];
+  expect((await codexModule.paneCodexProcess(root))?.pid ?? null).toBe(accepted ? 2147483647 : null);
 });
 
 it.skipIf(process.platform !== "linux")("shows no conversation of the store an earlier read's Codex keeps once another Codex runs there", async () => {
@@ -706,6 +720,119 @@ async function codexHolding(rollout: string): Promise<ReturnType<typeof Bun.spaw
   expect(await firstLine(child.stdout)).toBe("READY\n");
   return child;
 }
+
+it.skipIf(process.platform !== "linux")("reads the native rollout behind a verified local tmux attach client", async () => {
+  const child = await codexHolding(path);
+  foreground = [{ pid: 2147483647, argv: ["/usr/bin/tmux", "-S", "/synthetic/tmux.sock", "attach-session", "-t", "work"] }];
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: `client:1,pane:${child.pid}:1` });
+  try {
+    expect(await resolve()).toBe(path);
+    expect(await codexOpenRollout(root, root, home)).toBe(path);
+  } finally { nested.mockRestore(); }
+});
+
+it.skipIf(process.platform !== "linux")("reads the exact held tmux rollout despite a zombie foreground peer", async () => {
+  const child = await codexHolding(path);
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483646\t/dev/pts/2\t0\t0\n";
+  const rows = () => kiro.parseTerminalProcesses(`
+2147483647 1 2147483647 2147483647 pts/1 S tmux: client
+2147483646 2147483645 2147483646 2147483644 pts/2 S /bin/bash
+2147483644 2147483646 2147483644 2147483644 pts/2 S /bin/sh
+${child.pid} 2147483644 2147483644 2147483644 pts/2 R codex
+2147483643 ${child.pid} 2147483644 2147483644 pts/2 Z chrome
+`);
+  const discover = tmux.tmuxCodexProcess;
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockImplementation((info) =>
+    discover(info, "linux", async () => mapping, async () => rows(), (pid) => pid));
+  try {
+    expect(await resolve()).toBe(path);
+    expect(await codexOpenRollout(root, root, home)).toBe(path);
+  } finally { nested.mockRestore(); }
+});
+
+it.skipIf(process.platform !== "linux")("requires outer shell proof for a held rollout and keeps the nested guard when it fails", async () => {
+  const child = await codexHolding(path);
+  shellPid = 2147483646;
+  foreground = [{ pid: shellPid, argv: ["/bin/sh"] }, { pid: 2147483644, argv: ["/bin/sh"] },
+    { pid: 2147483647, argv: ["tmux", "attach"] }];
+  const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483642\t/dev/pts/2\t0\t0\n";
+  const rows = () => kiro.parseTerminalProcesses(`
+2147483646 1 2147483646 2147483646 pts/1 S /bin/sh
+2147483644 2147483646 2147483646 2147483646 pts/1 S /bin/sh
+2147483647 2147483644 2147483646 2147483646 pts/1 S tmux: client
+2147483642 2147483645 2147483642 ${child.pid} pts/2 S /bin/bash
+${child.pid} 2147483642 ${child.pid} ${child.pid} pts/2 S codex
+`);
+  const discover = tmux.tmuxCodexProcess;
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockImplementation((info) =>
+    discover(info, "linux", async () => mapping, async () => rows(), (pid) => pid));
+  try {
+    expect(await resolve()).toBe(path);
+    expect(await codexOpenRollout(root, root, home)).toBe(path);
+    shellPid = 2147483641;
+    reportedSession = { source: "fixture", agent: "codex", kind: "native", value: thread };
+    screen = answer;
+    expect(await resolve()).toBeNull();
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+  } finally { nested.mockRestore(); }
+});
+
+describe.skipIf(process.platform !== "linux")("tmux attachment continuity", () => {
+  it.each(["chat", "background"])("revalidates interpreter argv after the held FD lookup for %s", async (reader) => {
+    const child = await codexHolding(path);
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483646\t/dev/pts/2\t0\t0\n";
+    const rows = kiro.parseTerminalProcesses(`
+2147483647 1 2147483647 2147483647 pts/1 S tmux: client
+2147483646 2147483645 2147483646 ${child.pid} pts/2 S /bin/bash
+${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S node
+`);
+    const discover = tmux.tmuxCodexProcess;
+    let generation = 0;
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockImplementation((info) => {
+      const argument = String(++generation);
+      return discover(info, "linux", async () => mapping, async () => rows, (pid) => pid,
+        () => ["node", "codex.js", argument]);
+    });
+    try {
+      expect(await (reader === "chat" ? resolve() : codexOpenRollout(root, root, home))).toBeNull();
+      expect(nested).toHaveBeenCalledTimes(2);
+    } finally { nested.mockRestore(); }
+  });
+
+  it.each(["chat", "background"])("refuses a rejected final identity read for %s without rejecting the lookup", async (reader) => {
+    const child = await codexHolding(path);
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: "stable-fixture" });
+    failedReads.add(reader === "chat" ? 2 : 3);
+    try { await expect(reader === "chat" ? resolve() : codexOpenRollout(root, root, home)).resolves.toBeNull(); }
+    finally { nested.mockRestore(); }
+  });
+
+  it.each(["missing", "switched", "reused"])("refuses a tmux binding that is %s after reading its held rollout", async (change) => {
+    const child = await codexHolding(path);
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    const first = { pid: child.pid, argv: ["codex"], identity: "client:1,pane:1" };
+    const next = change === "missing" ? null : { ...first, ...(change === "switched" ? { pid: 2147483646 } : {}), identity: "client:1,pane:2" };
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValueOnce(first).mockResolvedValue(next);
+    try { expect(await resolve()).toBeNull(); }
+    finally { nested.mockRestore(); }
+  });
+});
+
+it.skipIf(process.platform !== "linux")("does not replace a tmux Codex's missing open rollout with a screen or session hint", async () => {
+  const child = await runningCodex();
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  agentFolders = { cwd: root };
+  reportedSession = { source: "fixture", agent: "codex", kind: "native", value: thread };
+  screen = answer;
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: "client:1,pane:1" });
+  try {
+    expect(await resolve()).toBeNull();
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+  } finally { nested.mockRestore(); }
+});
 
 // /proc on Linux, lsof -FnDi on macOS: both name the held file itself
 it.skipIf(process.platform === "win32")("records the exact identity of the rollout its Codex holds open, for the file it returns (#3402)", async () => {

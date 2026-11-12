@@ -4,10 +4,10 @@ import { kiroCodexProcess, kiroNested, kiroWrapper, nestedCodex, parseTerminalPr
 
 const info = { shell_pid: 10, foreground_processes: [{ pid: 10, argv: ["zsh (kiro-cli-term)"] }] } as ProcessInfo;
 const table = () => parseTerminalProcesses(`
- 10 1 10 10 ttys001 zsh (kiro-cli-term)
- 20 10 20 30 ttys002 /bin/zsh
- 30 20 30 30 ttys002 codex
- 40 1 40 40 ttys003 codex
+ 10 1 10 10 ttys001 S zsh (kiro-cli-term)
+ 20 10 20 30 ttys002 S /bin/zsh
+ 30 20 30 30 ttys002 R+ codex
+ 40 1 40 40 ttys003 S codex
 `);
 
 it("selects only the known wrapper's nested foreground Codex", async () => {
@@ -61,6 +61,13 @@ it("rejects exits, topology changes, PID reuse, and incomplete reads", async () 
   expect(await kiroCodexProcess(info, "darwin", async () => table(), () => null)).toBeNull();
   expect(await kiroCodexProcess(info, "darwin", async () => { throw new Error("timeout"); }, () => 1)).toBeNull();
   expect(parseTerminalProcesses("malformed\n")).toEqual([]);
+});
+
+it("parses Linux and Darwin ps state columns without retaining volatile live state", () => {
+  expect(parseTerminalProcesses("30 20 30 30 pts/2 R+ /opt/bin/codex\n40 30 30 30 pts/2 Z chrome"))
+    .toEqual([{ pid: 30, parent: 20, group: 30, foreground: 30, tty: "pts/2", command: "/opt/bin/codex" }]);
+  expect(parseTerminalProcesses("30 20 30 30 ttys002 S+ codex\n40 30 30 30 ttys002 Z+ chrome"))
+    .toEqual([{ pid: 30, parent: 20, group: 30, foreground: 30, tty: "ttys002", command: "codex" }]);
 });
 
 it("reads herdr's wrapper fact on macOS only, and only for the wrapper herdr started", () => {
