@@ -84,9 +84,14 @@
   mask-image: repeating-linear-gradient(to right, var(--text) 0 2px, transparent 2px 4px);
 }
 
-/* a record its tool has stopped updating: the number stays readable in the dim ink, its mark and bar fade */
+/* a record its tool has stopped updating: the number stays readable in the dim ink, its mark and bar fade, and a
+   limit near its end is no longer red, since a stale figure is no alarm */
 .usage-chip.is-stale .usage-chip-value {
   color: var(--text-dim);
+}
+
+.usage-chip.is-stale .usage-chip-bar {
+  background: linear-gradient(to right, var(--text-dim) var(--fill), var(--border-strong) var(--fill));
 }
 
 .usage-chip.is-stale .agent-mark,
@@ -276,6 +281,10 @@
 
 .usage-provider.is-stale .usage-bar {
   opacity: 0.55;
+}
+
+.usage-provider.is-stale .usage-bar > span {
+  background: var(--text-dim);
 }
 
 @media (pointer: coarse) {
