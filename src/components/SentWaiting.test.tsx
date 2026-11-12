@@ -6,7 +6,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { Machine } from "../../shared/machines.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { currentWaitingSends, forgetWaitingSends, rememberWaitingSend, settleWaitingSends, WAITING_HINT_MS, waitingBaseline, waitingKey, type WaitingSend } from "../lib/sentWaiting.ts";
+import { currentWaitingSends, forgetWaitingSends, observeWaitingClock, rememberWaitingSend, settleWaitingSends, WAITING_HINT_MS, WAITING_SEND_MS, waitingBaseline, waitingKey, type WaitingSend } from "../lib/sentWaiting.ts";
 import { SentWaitingList, useWaitingSends } from "./SentWaiting.tsx";
 
 const at = Date.parse("2026-10-29T03:00:00Z");
@@ -49,6 +49,16 @@ describe("SentWaitingList", () => {
     const markup = render(at, [long, send]);
     expect(textWithoutTags(markup)).toBe(long.text + send.text);
     expect(markup.match(/class="chat-bubble(?: [^"]*)?"/gu)).toEqual(['class="chat-bubble is-capped"', 'class="chat-bubble"']);
+  });
+
+  test("says an unanswered send is not in the conversation, where the agent's error would be, and offers the terminal", () => {
+    setSystemTime(new Date(at + WAITING_SEND_MS));
+    const markup = withEnglish(() => renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(SentWaitingList, {
+      sends: [{ ...send, unanswered: true }], paneKey: "local:p1", agent: "hermes", onOpenTerminal: () => {},
+    }) })));
+    expect(textWithoutTags(markup)).toBe(`${send.text}Not in the conversation. If Hermes showed an error, it is in the terminal.Open Terminal`);
+    expect(markup).toContain('aria-label="Dismiss"');
+    expect(markup).not.toContain("chat-sent-late");
   });
 
   test("is no live region of its own: the chat footer's one status region stays the only one", () => {
@@ -100,6 +110,32 @@ describe("mounted", () => {
     act(() => { jest.advanceTimersByTime(1); });
     expect(clocks(renderer)).toBe(1);
     expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("says a send unanswered a minute on, once read at rest, never while it works, and lets it go on Dismiss", async () => {
+    const key = waitingKey("local", "unanswered-mounted");
+    function Chat({ resting }: { resting: boolean }) {
+      return createElement(SentWaitingList, { sends: useWaitingSends("local", "unanswered-mounted", true), paneKey: key, resting, agent: "letta" });
+    }
+    try {
+      settleWaitingSends(key, [], at - 1, true);
+      rememberWaitingSend(key, "the turn letta failed", at);
+      const renderer = mount(createElement(Chat, { resting: false }));
+      act(() => { jest.advanceTimersByTime(WAITING_SEND_MS); });
+      observeWaitingClock(key, new Date().toISOString(), 0, Date.now());
+      settleWaitingSends(key, [], Date.now(), true);
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);
+      act(() => { renderer.update(createElement(SettingsProvider, { children: createElement(Chat, { resting: true }) })); });
+      // at rest, but nothing read since: still on its way
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);
+      // the chat's next read, at rest: the turn never came
+      act(() => { jest.advanceTimersByTime(1); observeWaitingClock(key, new Date().toISOString(), 0, Date.now()); settleWaitingSends(key, [], Date.now(), true); });
+      await act(async () => { await Promise.resolve(); });
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([true]);
+      expect(renderer.root.findAll((node) => node.props.className === "chat-unanswered-note")).toHaveLength(1);
+      act(() => { renderer.root.findByProps({ "aria-label": "Dismiss" }).props.onClick(); });
+      expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
   });
 
   test("leaves no timer behind when the bubble goes before its clock", () => {
