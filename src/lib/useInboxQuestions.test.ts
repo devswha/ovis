@@ -31,7 +31,7 @@ function harness(words: (asked: InteractivePrompt, language: string) => string =
   return { reads, calls, waits, notified: () => notified };
 }
 
-const target = (key: string, seq = 1): QuestionTarget => ({ key, machineId: "local", paneId: `pane-${key}`, seq });
+const target = (key: string, seq = 1, lifetime = ""): QuestionTarget => ({ key, machineId: "local", paneId: `pane-${key}`, seq, lifetime });
 const settled = () => new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => undefined);
 
 describe("QuestionReads", () => {
@@ -271,6 +271,20 @@ describe("QuestionReads", () => {
     expect(calls.map((call) => call.paneId)).toEqual(["pane-a", "pane-b", "pane-c", "pane-a", "pane-b"]);
   });
 
+  it("reads a target again under a new herdr lifetime with the same seq, showing none of the old pane's words", async () => {
+    const { reads, calls } = harness();
+    reads.sync([target("a", 1, "first")]);
+    calls[0]!.resolve({ prompt: prompt("Old pane's question") });
+    await settled();
+    expect(reads.wordsFor(target("a", 1, "first"))).toBe("Old pane's question");
+    reads.sync([target("a", 1, "second")]);
+    expect(calls).toHaveLength(2);
+    expect(reads.wordsFor(target("a", 1, "second"))).toBeUndefined();
+    calls[1]!.resolve({ prompt: prompt("New pane's question") });
+    await settled();
+    expect(reads.wordsFor(target("a", 1, "second"))).toBe("New pane's question");
+  });
+
   it("schedules no further wait after a second empty answer", async () => {
     const { reads, calls, waits } = harness();
     reads.sync([target("a")]);
@@ -301,6 +315,13 @@ describe("questionTargets", () => {
     const shown = machines();
     const targets = questionTargets(inboxOrder(shown, activity), activity);
     expect(targets.map((t) => [t.machineId, t.paneId, t.seq]).sort()).toEqual([["local", "w1C:p1", 0], ["local", blockedPane, 7]]);
+  });
+
+  it("names each target's herdr lifetime", () => {
+    const shown = machines((machine) => machine.snapshot === null ? machine : { ...machine, snapshot: { ...machine.snapshot, herdr_lifetime: "life-1" } });
+    const targets = questionTargets(inboxOrder(shown, activity), activity);
+    expect(targets.length).toBeGreaterThan(0);
+    expect(targets.map((t) => t.lifetime)).toEqual(targets.map(() => "life-1"));
   });
 
   it("leaves out a waiting pane whose agent reported a message or a kind", () => {

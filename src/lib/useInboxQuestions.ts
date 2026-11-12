@@ -18,15 +18,21 @@ export const QUESTION_RETRY_MS = 1500;
 /** Prompt reads in flight at once, so a list of waiting agents never fans out. */
 export const QUESTION_READS_AT_ONCE = 2;
 
-/** A waiting row whose question is read: `seq` is its state counter, a new wait reads it again. */
-export interface QuestionTarget { key: string; machineId: string; paneId: string; seq: number }
+/**
+ * A waiting row whose question is read: `seq` is its state counter, a new wait reads it again; `lifetime` is its PC's
+ * herdr lifetime, as a replaced herdr can reuse a pane id and counter.
+ */
+export interface QuestionTarget { key: string; machineId: string; paneId: string; seq: number; lifetime: string }
 
 /** The rows of a PC in reach that wait for the user and whose agent reported no words of its own. */
 export function questionTargets(rows: readonly AgentRow[], activity: SidebarActivity): QuestionTarget[] {
   return rows.flatMap((row) => {
     const pane = row.entry.pane;
     if (agentGroup(inboxStatus(row, activity)) !== "blocked" || pane.agent_kind || pane.agent_message?.trim()) return [];
-    return [{ key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, seq: activity.seqs(row.machine.id).get(pane.pane_id) ?? 0 }];
+    return [{
+      key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, seq: activity.seqs(row.machine.id).get(pane.pane_id) ?? 0,
+      lifetime: row.machine.snapshot?.herdr_lifetime ?? "",
+    }];
   });
 }
 
@@ -34,11 +40,13 @@ type Read = (paneId: string, machineId: string) => Promise<{ prompt: Interactive
 type Words = (prompt: InteractivePrompt, language: Language) => string;
 type Wait = (run: () => void, ms: number) => () => void;
 
-/** A target read in one interface language: a new seq or another language reads it again. */
+/** A target read in one interface language: a new seq, lifetime or language reads it again. */
 interface Ask extends QuestionTarget { language: Language }
 
 const NO_TEXTS: ReadonlyMap<string, string> = new Map();
-const readOf = (ask: Ask): string => `${ask.key}\n${ask.seq}\n${ask.language}`;
+/** what a target's words are read for: its herdr lifetime and seq */
+const waitOf = (target: QuestionTarget): string => `${target.lifetime}\n${target.seq}`;
+const readOf = (ask: Ask): string => `${ask.key}\n${waitOf(ask)}\n${ask.language}`;
 
 /**
  * Each target's question, read once per key, seq and language, at most QUESTION_READS_AT_ONCE at a time, and
@@ -53,8 +61,8 @@ const readOf = (ask: Ask): string => `${ask.key}\n${ask.seq}\n${ask.language}`;
 export class QuestionReads {
   private readonly listeners = new Set<() => void>();
   private current: ReadonlyMap<string, string> = NO_TEXTS;
-  /** the seq each stored text was read for */
-  private readonly readFor = new Map<string, number>();
+  /** the lifetime and seq each stored text was read for */
+  private readonly readFor = new Map<string, string>();
   private targets = new Map<string, Ask>();
   /** the reads started, queued or done, and those given their second attempt */
   private readonly started = new Set<string>();
@@ -76,9 +84,9 @@ export class QuestionReads {
   /** The same object until a text is added, replaced or removed. */
   texts = (): ReadonlyMap<string, string> => this.current;
 
-  /** The words read for this target's own seq: none while its new wait is not read yet. */
+  /** The words read for this target's own seq and lifetime: none while its new wait is not read yet. */
   wordsFor(target: QuestionTarget): string | undefined {
-    return this.readFor.get(target.key) === target.seq ? this.current.get(target.key) : undefined;
+    return this.readFor.get(target.key) === waitOf(target) ? this.current.get(target.key) : undefined;
   }
 
   /** The list is shown again: every read done may be made once more at the next sync, its attempts afresh; one in flight, queued or waiting its retry is left as it is. */
@@ -100,7 +108,7 @@ export class QuestionReads {
       this.waits.delete(read);
     }
     this.queue = this.queue.filter((ask) => this.isCurrent(ask));
-    const stale = [...this.current.keys()].filter((key) => this.targets.get(key)?.seq !== this.readFor.get(key));
+    const stale = [...this.current.keys()].filter((key) => { const now = this.targets.get(key); return now === undefined || waitOf(now) !== this.readFor.get(key); });
     if (stale.length > 0) this.change((texts) => { for (const key of stale) { texts.delete(key); this.readFor.delete(key); } });
     for (const ask of asks) {
       const read = readOf(ask);
@@ -113,7 +121,7 @@ export class QuestionReads {
 
   private isCurrent(ask: Ask): boolean {
     const now = this.targets.get(ask.key);
-    return now?.seq === ask.seq && now.language === ask.language;
+    return now?.seq === ask.seq && now.lifetime === ask.lifetime && now.language === ask.language;
   }
 
   private change(edit: (texts: Map<string, string>) => void): void {
@@ -151,7 +159,7 @@ export class QuestionReads {
     if (!this.isCurrent(ask)) return;
     if (prompt !== null) {
       const words = this.words(prompt, ask.language);
-      this.readFor.set(ask.key, ask.seq);
+      this.readFor.set(ask.key, waitOf(ask));
       if (this.current.get(ask.key) !== words) this.change((texts) => { texts.set(ask.key, words); });
       return;
     }
@@ -187,7 +195,7 @@ export const newQuestionReads = (): QuestionReads =>
 export function useInboxQuestions(reads: QuestionReads, targets: readonly QuestionTarget[]): ReadonlyMap<string, string> {
   const { resolvedLanguage } = useSettings();
   const targetsRef = useRef(targets); targetsRef.current = targets;
-  const signature = targets.map((target) => `${target.key}:${target.seq}`).join("\n");
+  const signature = targets.map((target) => `${target.key}:${target.seq}:${target.lifetime}`).join("\n");
   // each mount of the list reads every waiting row's question once more, before its first sync
   useEffect(() => { reads.shownAgain(); }, [reads]);
   useEffect(() => { reads.sync(targetsRef.current, resolvedLanguage); }, [reads, signature, resolvedLanguage]);
