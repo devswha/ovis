@@ -824,7 +824,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       </>}
     </div>
     {/* the menu names the agent it is for above its items (G-022): the popover covers the row */}
-    {menu && menuShown && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menuShown.title} subtitle={menuShown.place} detail={[menuBlocked, ...menuShown.tokens].filter(Boolean).join(" · ") || undefined} onClose={closeMenu}
+    {menu && menuShown && <RowMenu anchor={menu.anchor} point={menu.point} restoreFocusTo={menu.previousFocus} title={menuShown.title} subtitle={menuShown.place} alert={menuBlocked ?? undefined} detail={menuShown.tokens.join(" · ") || undefined} onClose={closeMenu}
       header={<span className="row-menu-target"><span className="row-menu-target-name" title={menuShown.title}>{menuShown.title}</span>{menuShown.place && <span className="row-menu-target-place" title={menuShown.place}>{menuShown.place}</span>}</span>}
       items={[
       // a locked row keeps its pin until it is unlocked

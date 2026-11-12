@@ -53,6 +53,8 @@ interface Props {
   /** the menu's accessible name, and the sheet's title */
   title: string;
   subtitle?: string;
+  /** a phone's sheet only, first under the subtitle: what the row waits for, in the waiting state's colour, wrapped and whole */
+  alert?: string;
   /** a phone's sheet only, under the subtitle and wrapped, not cut: text a row cuts (a hover tooltip says it on a desktop) */
   detail?: string;
   /** drawn above the items, and in the sheet's head in the title's place: what the menu is about, when that is more than a name */
@@ -82,7 +84,7 @@ export function rowMenuAnchor(node: Element): HTMLElement | null {
   return surface === null ? null : anchors.get(surface) ?? null;
 }
 
-export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, detail, header, items, align = "end", onClose, variant }: Props) {
+export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert, detail, header, items, align = "end", onClose, variant }: Props) {
   const t = useT();
   const sheet = useMediaQuery(SHEET_QUERY);
   const surface = useRef<HTMLDivElement>(null);
@@ -250,10 +252,11 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, detail
         <div ref={surface} className="modal row-sheet" role="dialog" aria-modal="true" aria-label={title} onKeyDown={onKeyDown} onBlur={onBlur}>
           <span className="row-sheet-grip" aria-hidden="true" />
           {/* a header of the menu's own stands in for the title and subtitle; the detail still follows it */}
-          {header ? <div className="row-sheet-head">{header}{detail && <span className="row-sheet-detail">{detail}</span>}</div> : (
+          {header ? <div className="row-sheet-head">{header}{alert && <span className="row-sheet-alert">{alert}</span>}{detail && <span className="row-sheet-detail">{detail}</span>}</div> : (
             <div className="row-sheet-head">
               <span className="row-sheet-title">{title}</span>
               {subtitle && <span className="row-sheet-subtitle">{subtitle}</span>}
+              {alert && <span className="row-sheet-alert">{alert}</span>}
               {detail && <span className="row-sheet-detail">{detail}</span>}
             </div>
           )}

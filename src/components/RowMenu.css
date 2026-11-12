@@ -226,6 +226,18 @@
   -webkit-touch-callout: default;
 }
 
+/* what the row waits for, in the agent's own words: the first thing under its name and place, in the waiting
+   state's colour, since a one-line row has no room to say it. It wraps and can be copied, as the name can. */
+.row-sheet-alert {
+  padding-top: var(--space-1);
+  color: var(--status-blocked);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
 /* what the row cut, said whole: it wraps, even inside a long word. Plugin tokens can be dozens of
    long values, so it scrolls past a third of the screen instead of pushing the actions out */
 .row-sheet-detail {

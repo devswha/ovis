@@ -268,8 +268,9 @@ describe("AgentSidebar phone sheet live row", () => {
         panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "blocked" as const, agent_kind: "permission", agent_message: "Allow bash?" } : pane),
       },
     })));
-    // Then the sheet gives the reason in full before the plugin values.
-    expect(mounted.root.findByProps({ className: "row-sheet-detail" }).children).toEqual(["Needs permission: Allow bash? \u00b7 95%"]);
+    // Then the sheet gives the reason in full, first and apart from the plugin values.
+    expect(mounted.root.findByProps({ className: "row-sheet-alert" }).children).toEqual(["Needs permission: Allow bash?"]);
+    expect(mounted.root.findByProps({ className: "row-sheet-detail" }).children).toEqual(["95%"]);
   });
 
   it("removes the sheet detail when a token is deleted", async () => {
