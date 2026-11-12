@@ -535,6 +535,15 @@ describe("AgentInbox", () => {
     expect(words(root, "w1E:p1")).toEqual(["All six export tests pass."]);
   });
 
+  it("keeps a done row when the query is part of the last words it shows", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await redraw({ query: "jq quirk" });
+    expect(order(root)).toEqual([]);
+    await answerSummaries({ "w1E:p1": said("Fixed the `jq` quirk in the zsh prompt.", ago(3.5)) });
+    expect(order(root)).toEqual(["w1E:p1"]);
+    expect(words(root, "w1E:p1")).toEqual(["Fixed the jq quirk in the zsh prompt."]);
+  });
+
   it("shows at the next mount the question whose read landed after the list closed", async () => {
     await draw(roster());
     await act(async () => { renderer?.unmount(); });
