@@ -174,6 +174,10 @@ it("says why a conversation could not be read, in the few words the chat can exp
     expect(await ask(new Unavailable("no_recognized_transcript"))).toEqual({ source: "scrollback", turns: [], unavailable: "no_reader" });
     panes[pane] = { agent: "devin", process: [] };
     expect(await ask(new Unavailable("no_recognized_transcript"))).toEqual({ source: "scrollback", turns: [] });
+    // Copilot's own reader governs its fallback: a page read that failed carries no reason either
+    panes[pane] = { agent: "copilot", process: [] };
+    expect(await ask(new Unavailable("transcript_missing"))).toEqual({ source: "scrollback", turns: [] });
+    expect(await ask(new Unavailable("no_session_id"))).toEqual({ source: "scrollback", turns: [] });
     delete panes[pane];
     // a reason the chat has no words for says nothing rather than something wrong; nor does a Copilot stage (a log cut, a peer)
     expect(await ask(new Unavailable("no_session_path", undefined, "copilot_log_truncated"))).toEqual({ source: "scrollback", turns: [] });

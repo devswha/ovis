@@ -46,10 +46,14 @@ let integrations: { at: number; list: Promise<Awaited<ReturnType<typeof integrat
  * failed look says nothing more: no reason rather than a wrong one, or the plainer one.
  */
 async function paneReason(paneId: string, reason: ReturnType<typeof unavailableReason>): Promise<ReturnType<typeof unavailableReason>> {
-  if (reason !== "not_found" && reason !== "no_reader") return reason;
+  if (reason !== "not_found" && reason !== "no_reader" && reason !== "unreadable") return reason;
   try {
     const pane = await paneGet(paneId, undefined, LOOK_MS);
     const agent = typeof pane.agent === "string" ? pane.agent : null;
+    // Copilot's reader says what it waits out and what the user can change itself (recovery, hint): a page read
+    // that failed once may answer at the next poll, where a reason line would come and go
+    if (agent === "copilot") return undefined;
+    if (reason === "unreadable") return reason;
     if (reason === "no_reader") return agent === null || READ_AGENTS.has(agent) ? undefined : reason;
     if (agent === null || !INTEGRATION_BOUND.has(agent) || pane.agent_session) return reason;
     if (integrations === null || performance.now() - integrations.at > INTEGRATION_LIST_TTL_MS) {
