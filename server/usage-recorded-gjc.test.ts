@@ -103,6 +103,22 @@ function store(entries: readonly Entry[], path = join(home, ".gjc", "agent", "ag
 
 const read = () => gjcRecorded.read(recordedContext());
 
+/** Oh My Pi's record of an account's session limit, read at `readAt` */
+function ompStoreOf(account: string, email: string, readAt: number, used: number): void {
+  const path = join(home, ".omp", "agent", "agent.db");
+  mkdirSync(dirname(path), { recursive: true });
+  const db = new Database(path, { create: true });
+  db.exec(`
+    CREATE TABLE usage_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, recorded_at INTEGER NOT NULL, provider TEXT NOT NULL, account_key TEXT NOT NULL,
+      email TEXT, account_id TEXT, limit_id TEXT NOT NULL, label TEXT NOT NULL, window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER
+    );
+    INSERT INTO usage_history (recorded_at, provider, account_key, email, account_id, limit_id, label, used_fraction, status, resets_at)
+      VALUES (${readAt}, 'anthropic', 'oauth|account:${account}', '${email}', '${account}', 'anthropic:5h', 'Claude 5 Hour', ${used}, 'ok', ${now + 3 * HOUR});
+  `);
+  db.close();
+}
+
 describe("Gajae Code's record of Claude's limits", () => {
   it("gives each account's last report: the session, the week and each model's week, as read then", () => {
     store([{ limits: [
@@ -206,6 +222,19 @@ describe("where Gajae Code keeps its store", () => {
     expect(read().map((reading) => reading.accountId)).toEqual([ACCOUNT]);
   });
 
+  it("is the folder GJC_CONFIG_DIR names under the home, else its older name PI_CONFIG_DIR, and .gjc for a name that climbs out of the home", () => {
+    store([{ key: `${PREFIX}oauth|account:default` }]);
+    store([{ key: `${PREFIX}oauth|account:renamed` }], join(home, "team", "agent", "agent.db"));
+    store([{ key: `${PREFIX}oauth|account:older-name` }], join(home, ".pi-config", "agent", "agent.db"));
+    const at = (env: Record<string, string>) => gjcRecorded.read(recordedContext(env)).map((reading) => reading.accountId);
+    expect(at({ GJC_CONFIG_DIR: "team", PI_CONFIG_DIR: ".pi-config" })).toEqual(["renamed"]);
+    expect(at({ PI_CONFIG_DIR: ".pi-config" })).toEqual(["older-name"]);
+    // as Gajae Code joins it: trimmed, and beneath the home even where it looks absolute
+    expect(at({ GJC_CONFIG_DIR: " /team " })).toEqual(["renamed"]);
+    expect(at({ GJC_CONFIG_DIR: "../elsewhere" })).toEqual(["default"]);
+    expect(at({ GJC_CONFIG_DIR: "../elsewhere", PI_CONFIG_DIR: ".pi-config" })).toEqual(["older-name"]);
+  });
+
   it("is GJC_CODING_AGENT_DIR when that is set, else its older name PI_CODING_AGENT_DIR, and then nowhere else", () => {
     store([{ key: `${PREFIX}oauth|account:default` }]);
     store([{ key: `${PREFIX}oauth|account:moved` }], join(home, "moved", "agent.db"));
@@ -222,19 +251,6 @@ describe("where Gajae Code keeps its store", () => {
     expect(gjcRecorded.read(recordedContext({ XDG_DATA_HOME: data })).map((reading) => reading.accountId)).toEqual(["default"]);
     store([{ key: `${PREFIX}oauth|account:xdg` }], join(data, "gjc", "agent.db"));
     expect(gjcRecorded.read(recordedContext({ XDG_DATA_HOME: data })).map((reading) => reading.accountId)).toEqual(["xdg"]);
-  it("is the folder GJC_CONFIG_DIR names under the home, else its older name PI_CONFIG_DIR, and .gjc for a name that climbs out of the home", () => {
-    store([{ key: `${PREFIX}oauth|account:default` }]);
-    store([{ key: `${PREFIX}oauth|account:renamed` }], join(home, "team", "agent", "agent.db"));
-    store([{ key: `${PREFIX}oauth|account:older-name` }], join(home, ".pi-config", "agent", "agent.db"));
-    const at = (env: Record<string, string>) => gjcRecorded.read(recordedContext(env)).map((reading) => reading.accountId);
-    expect(at({ GJC_CONFIG_DIR: "team", PI_CONFIG_DIR: ".pi-config" })).toEqual(["renamed"]);
-    expect(at({ PI_CONFIG_DIR: ".pi-config" })).toEqual(["older-name"]);
-    // as Gajae Code joins it: trimmed, and beneath the home even where it looks absolute
-    expect(at({ GJC_CONFIG_DIR: " /team " })).toEqual(["renamed"]);
-    expect(at({ GJC_CONFIG_DIR: "../elsewhere" })).toEqual(["default"]);
-    expect(at({ GJC_CONFIG_DIR: "../elsewhere", PI_CONFIG_DIR: ".pi-config" })).toEqual(["older-name"]);
-  });
-
   });
 });
 
@@ -304,21 +320,6 @@ describe("Claude's meter with Gajae Code's record", () => {
     };
   }
 
-  function ompStoreOfTheSameAccount(readAt: number, used: number): void {
-    const path = join(home, ".omp", "agent", "agent.db");
-    mkdirSync(dirname(path), { recursive: true });
-    const db = new Database(path, { create: true });
-    db.exec(`
-      CREATE TABLE usage_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, recorded_at INTEGER NOT NULL, provider TEXT NOT NULL, account_key TEXT NOT NULL,
-        email TEXT, account_id TEXT, limit_id TEXT NOT NULL, label TEXT NOT NULL, window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER
-      );
-      INSERT INTO usage_history (recorded_at, provider, account_key, email, account_id, limit_id, label, used_fraction, status, resets_at)
-        VALUES (${readAt}, 'anthropic', 'oauth|account:${ACCOUNT}', 'me@example.com', '${ACCOUNT}', 'anthropic:5h', 'Claude 5 Hour', ${used}, 'ok', ${NOW + 3 * HOUR});
-    `);
-    db.close();
-  }
-
   const claude = USAGE_PROVIDERS.filter((provider) => provider.id === "claude");
   const shown = async () => (await new UsageService(context(), claude).report()).providers
     .map((usage) => ({ key: usage.key, account: usage.account, recorded: usage.recorded, checked_at: usage.checked_at, session: usage.windows.find((window) => window.kind === "session")?.used_percent }));
@@ -330,7 +331,7 @@ describe("Claude's meter with Gajae Code's record", () => {
 
   it("lists an account Oh My Pi recorded too once, by whichever of the two read it last", async () => {
     store([{ readAt: NOW - 9 * MINUTE, limits: [{ id: "anthropic:5h", used: 0.425 }] }]);
-    ompStoreOfTheSameAccount(NOW - 2 * MINUTE, 0.6);
+    ompStoreOf(ACCOUNT, "me@example.com", NOW - 2 * MINUTE, 0.6);
     expect((await shown()).map((usage) => [usage.key, usage.recorded?.by, usage.session])).toEqual([[`claude:${ACCOUNT}`, "omp", 60]]);
     now = NOW + MINUTE;
     const again = new Database(join(home, ".gjc", "agent", "agent.db"));
@@ -368,22 +369,6 @@ describe("the report gjc 0.18.12 wrote itself", () => {
     };
   }
 
-  /** Oh My Pi's record of the same account, read at `readAt` */
-  function ompRecord(readAt: number, used: number): void {
-    const path = join(home, ".omp", "agent", "agent.db");
-    mkdirSync(dirname(path), { recursive: true });
-    const db = new Database(path, { create: true });
-    db.exec(`
-      CREATE TABLE usage_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, recorded_at INTEGER NOT NULL, provider TEXT NOT NULL, account_key TEXT NOT NULL,
-        email TEXT, account_id TEXT, limit_id TEXT NOT NULL, label TEXT NOT NULL, window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER
-      );
-      INSERT INTO usage_history (recorded_at, provider, account_key, email, account_id, limit_id, label, used_fraction, status, resets_at)
-        VALUES (${readAt}, 'anthropic', 'oauth|account:${OWN}', 'gjc-own@example.test', '${OWN}', 'anthropic:5h', 'Claude 5 Hour', ${used}, 'ok', ${now + 3 * HOUR});
-    `);
-    db.close();
-  }
-
   const write = (path: string, value: unknown): void => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)); };
   const claude = USAGE_PROVIDERS.filter((provider) => provider.id === "claude");
   const shown = async () => (await new UsageService(context(), claude).report()).providers
@@ -411,14 +396,14 @@ describe("the report gjc 0.18.12 wrote itself", () => {
   it("is one row with Claude Code's own sign-in of the account and Oh My Pi's record of it: Claude Code's reading while it answers, the record read last once it is refused", async () => {
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "claude-code-token", expiresAt: now + HOUR, subscriptionType: "max" } });
     write(join(home, ".claude.json"), { oauthAccount: { accountUuid: OWN, emailAddress: "gjc-own@example.test" } });
-    ompRecord(wrote.fetchedAt - 5 * MINUTE, 0.6);
+    ompStoreOf(OWN, "gjc-own@example.test", wrote.fetchedAt - 5 * MINUTE, 0.6);
     expect(await shown()).toEqual([{ key: `claude:${OWN}`, problem: null, recorded: null, session: 10 }]);
     reply = { status: 401, body: {} };
     expect(await shown()).toEqual([{ key: `claude:${OWN}`, problem: "expired", recorded: { by: "gjc", signed_in: true }, session: 37.5 }]);
   });
 
   it("is one row with Oh My Pi's record of the account, which stands once Oh My Pi has read it later", async () => {
-    ompRecord(wrote.fetchedAt + 2 * MINUTE, 0.6);
+    ompStoreOf(OWN, "gjc-own@example.test", wrote.fetchedAt + 2 * MINUTE, 0.6);
     expect(await shown()).toEqual([{ key: `claude:${OWN}`, problem: null, recorded: { by: "omp", signed_in: false }, session: 60 }]);
   });
 });

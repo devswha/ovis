@@ -35,6 +35,7 @@ const ROWS = `
     AND typeof(key) = 'text' AND length(key) <= 1024
     AND typeof(value) = 'text' AND length(value) <= ${MAX_VALUE_LENGTH}
     AND typeof(expires_at) = 'integer' AND expires_at > ?
+  ORDER BY key
   LIMIT ?`;
 
 interface CacheRow {
