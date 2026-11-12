@@ -91,9 +91,10 @@ export interface WatchedRow extends SeenRow {
 }
 /**
  * One PC at this page's last look: which herdr and which server's count it was of, when, since when the page has
- * been looking at it without a break (`first`), and the row of each pane the page has seen there.
+ * been looking at it without a break (`first`), and the row of each pane the page has seen there: by its ID, or by
+ * its terminal once that ID is another pane's (`displaced`: its ID went to another while it was not listed).
  */
-export interface PcSeen { lifetime: string | null; epoch: string | null; at: number; first: number; rows: ReadonlyMap<string, WatchedRow> }
+export interface PcSeen { lifetime: string | null; epoch: string | null; at: number; first: number; rows: ReadonlyMap<string, WatchedRow>; displaced: ReadonlyMap<string, WatchedRow> }
 /** what this page saw at its last look, by PC: a state that differs from it changed in sight */
 export type LastLook = ReadonlyMap<string, PcSeen>;
 /** what a page carries from one look to the next: the device's stamps, and the states it saw last */
@@ -182,9 +183,10 @@ function leftStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
 }
 
 /**
- * The rows of a look that are a pane this page remembers under another ID, each with its memory of it there. herdr
- * gives a pane it moves to another workspace a new ID and leaves it its terminal (#1503), so a row whose terminal
- * the page saw under another ID is that pane. Only where the roster names that terminal once, and the page
+ * The rows of a look that are a pane this page remembers otherwise than under their ID, each with its memory of the
+ * pane. herdr gives a pane it moves to another workspace a new ID and leaves it its terminal (#1503), so a row whose
+ * terminal the page saw under another ID is that pane; and so is one whose terminal the page saw before its ID went
+ * to another pane, under whatever ID it is back. Only where the roster names that terminal once, and the page
  * remembers it once: a terminal named twice says nothing of which pane is which.
  */
 function movedRows(rows: readonly SeenRow[], watched: PcSeen | undefined): Map<string, WatchedRow> {
@@ -193,10 +195,10 @@ function movedRows(rows: readonly SeenRow[], watched: PcSeen | undefined): Map<s
   const listed = new Map<string, number>();
   for (const row of rows) listed.set(row.terminal, (listed.get(row.terminal) ?? 0) + 1);
   const remembered = new Map<string, WatchedRow | null>();
-  for (const old of watched.rows.values()) remembered.set(old.terminal, remembered.has(old.terminal) ? null : old);
+  for (const old of [...watched.rows.values(), ...watched.displaced.values()]) remembered.set(old.terminal, remembered.has(old.terminal) ? null : old);
   for (const row of rows) {
     const old = remembered.get(row.terminal);
-    if (old !== undefined && old !== null && old.pane !== row.pane && listed.get(row.terminal) === 1) moved.set(row.pane, old);
+    if (old !== undefined && old !== null && old !== watched.rows.get(row.pane) && listed.get(row.terminal) === 1) moved.set(row.pane, old);
   }
   return moved;
 }
@@ -213,7 +215,8 @@ function movedRows(rows: readonly SeenRow[], watched: PcSeen | undefined): Map<s
  *   under an ID herdr gave out again, the row is a pane the page has not seen, with no stamp, and the stamp the last
  *   pane left there is kept as an unlisted pane's until the row has one of its own. A pane herdr moved
  *   under a new ID (`movedRows`) is the row the page was seeing under the old one: it is judged by what the page
- *   saw of it there, and by the stamp it had there, which goes with it.
+ *   saw of it there, and by the stamp it had there, which goes with it. A pane whose ID went to another while it
+ *   was not listed stays one the page has seen: listed again, under whatever ID, it is no new pane.
  * - A state the page has been seeing keeps its stamp while the counters stand. A finish counted meanwhile, or
  *   herdr's counter moved, means the state was left and come back to out of sight (updates come together, a
  *   subscription has gaps), and the stamp goes. Two moves of herdr's counter are none of the state: the one that
@@ -334,14 +337,20 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     else if (Object.keys(rows).length > 0) { next[look.id] = { lifetime: look.lifetime, epoch: look.epoch, rows }; changed = true; }
     else if (kept !== undefined) changed = true;
     // a pane missing from this roster stays in the page's memory, with when it was first missed, for as long as its
-    // stamp would be kept; one that moved is remembered under its new ID alone
-    const carried = new Set([...moved.values()].map((old) => old.pane));
-    if (watched !== undefined) for (const [pane, old] of watched.rows) {
-      if (memory.has(pane) || carried.has(pane)) continue;
-      if (old.left === undefined) memory.set(pane, { ...old, left: now });
-      else if (now - old.left <= KEPT_UNLISTED_MS) memory.set(pane, old);
+    // stamp would be kept: under its ID, or by its terminal while that ID is another pane's
+    const carried = new Set(moved.values());
+    const displaced = new Map<string, WatchedRow>();
+    if (watched !== undefined) for (const old of [...watched.rows.values(), ...watched.displaced.values()]) {
+      const taken = memory.get(old.pane);
+      // listed in this roster: under another ID, where it is remembered now, or under its own
+      if (carried.has(old) || taken?.terminal === old.terminal) continue;
+      const left = old.left ?? now;
+      if (now - left > KEPT_UNLISTED_MS) continue;
+      const missed = old.left === undefined ? { ...old, left } : old;
+      if (taken === undefined) memory.set(old.pane, missed);
+      else displaced.set(old.terminal, missed);
     }
-    seen.set(look.id, { lifetime: look.lifetime, epoch: look.epoch, at: now, first: watched?.first ?? now, rows: memory });
+    seen.set(look.id, { lifetime: look.lifetime, epoch: look.epoch, at: now, first: watched?.first ?? now, rows: memory, displaced });
   }
   // a PC no longer in the roster (removed, or hidden on this device) keeps its stamps as long as a pane that left a roster does
   for (const [id, kept] of Object.entries(stamps)) {

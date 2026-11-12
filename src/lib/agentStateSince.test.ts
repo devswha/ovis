@@ -507,6 +507,40 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(ahead.since("a", "idle", "term-9")).toBe(T + 5 * MIN);
   });
 
+  it("does not take a pane for a new one because its ID went to another while it was out of sight", () => {
+    const rests: Row = ["idle", 5, 1, { done: true, terminal: "term-1" }];
+    const other: Row = ["working", 12, 0, { terminal: "term-9" }];
+    const page = device();
+    page.see(T, look({ x: ["working", 4, 0, { terminal: "term-1" }], still: ["idle", 9] }));
+    page.see(T + MIN, look({ x: rests, still: ["idle", 9] }));
+    // three days on herdr loses sight of its agent, moves its pane, and gives the ID it left to another pane
+    page.see(T + 3 * DAY, look({ still: ["idle", 9] }));
+    page.see(T + 3 * DAY + 2000, look({ x: other, still: ["idle", 9] }));
+    expect(page.since("x", "working", "term-9")).toBe(T + 3 * DAY + 2000);
+    // found again under the ID it was moved to, it is the pane the page was seeing: no agent that began now
+    page.see(T + 3 * DAY + 5000, look({ x: other, y: rests, still: ["idle", 9] }));
+    expect(page.since("y", "idle", "term-1")).toBeNull();
+
+    // so for one back under the very ID it had, once the other pane has left it, however much later
+    const back = device();
+    back.see(T, look({ x: ["working", 4, 0, { terminal: "term-1" }], still: ["idle", 9] }));
+    back.see(T + MIN, look({ x: rests, still: ["idle", 9] }));
+    back.see(T + 10 * MIN, look({ still: ["idle", 9] }));
+    back.see(T + 11 * MIN, look({ x: other, still: ["idle", 9] }));
+    back.see(T + 12 * MIN, look({ still: ["idle", 9] }));
+    back.see(T + 20 * MIN, look({ x: rests, still: ["idle", 9] }));
+    expect(back.since("x", "idle", "term-1")).toBeNull();
+
+    // thirty days after it went out of sight the page has forgotten it, as it forgets any pane
+    const long = device();
+    long.see(T, look({ x: rests, still: ["idle", 9] }));
+    long.see(T + MIN, look({ still: ["idle", 9] }));
+    long.see(T + 2 * MIN, look({ x: other, still: ["idle", 9] }));
+    long.see(T + 31 * DAY, look({ x: other, still: ["idle", 9] }));
+    long.see(T + 31 * DAY + MIN, look({ x: other, y: rests, still: ["idle", 9] }));
+    expect(long.since("y", "idle", "term-1")).toBe(T + 31 * DAY + MIN);
+  });
+
   it("reads no time for a row from a stamp of another pane that had its ID: a roster is drawn before it is looked at", () => {
     const page = device();
     page.see(T, look({ a: ["working", 4] }));
