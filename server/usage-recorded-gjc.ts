@@ -15,7 +15,7 @@
  * The same file holds Gajae Code's sign-ins (`auth_credentials`): nothing here names that table, and the file is only read.
  */
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import type { RecordedContext, RecordedReading, RecordedSource, RecordedWindow } from "./usage-recorded.ts";
 import { AHEAD_MS, byLength, claudeLimit, EPOCH_MS_FROM, readStore, resetOf, STALE_AFTER_MS } from "./usage-recorded-pi.ts";
 
@@ -50,14 +50,24 @@ interface Report {
 
 /**
  * Where Gajae Code keeps agent.db, as it finds it itself (packages/utils/src/dirs.ts): in GJC_CODING_AGENT_DIR or its
- * older name PI_CODING_AGENT_DIR, else in $XDG_DATA_HOME/gjc once that folder exists (Linux and macOS), else in ~/.gjc/agent.
+ * older name PI_CODING_AGENT_DIR, else in $XDG_DATA_HOME/gjc once that folder exists (Linux and macOS), else in ~/.gjc/agent,
+ * where GJC_CONFIG_DIR, or its older name PI_CONFIG_DIR, may give that folder another name.
  */
 function storePath(ctx: RecordedContext): string {
   const agentDir = ctx.env["GJC_CODING_AGENT_DIR"] || ctx.env["PI_CODING_AGENT_DIR"];
   if (agentDir) return join(resolve(agentDir), "agent.db");
   const data = ctx.platform === "linux" || ctx.platform === "darwin" ? ctx.env["XDG_DATA_HOME"] : undefined;
   if (data && existsSync(join(data, "gjc"))) return join(data, "gjc", "agent.db");
-  return join(ctx.home, ".gjc", "agent", "agent.db");
+  return join(ctx.home, configDirName(ctx.env), "agent", "agent.db");
+}
+
+/** The name of Gajae Code's folder under the home. As Gajae Code does, a name that climbs out of the home is passed over. */
+function configDirName(env: RecordedContext["env"]): string {
+  for (const name of ["GJC_CONFIG_DIR", "PI_CONFIG_DIR"]) {
+    const value = env[name]?.trim();
+    if (value && !normalize(value).split(/[\\/]/).includes("..")) return value;
+  }
+  return ".gjc";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

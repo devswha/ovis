@@ -222,6 +222,19 @@ describe("where Gajae Code keeps its store", () => {
     expect(gjcRecorded.read(recordedContext({ XDG_DATA_HOME: data })).map((reading) => reading.accountId)).toEqual(["default"]);
     store([{ key: `${PREFIX}oauth|account:xdg` }], join(data, "gjc", "agent.db"));
     expect(gjcRecorded.read(recordedContext({ XDG_DATA_HOME: data })).map((reading) => reading.accountId)).toEqual(["xdg"]);
+  it("is the folder GJC_CONFIG_DIR names under the home, else its older name PI_CONFIG_DIR, and .gjc for a name that climbs out of the home", () => {
+    store([{ key: `${PREFIX}oauth|account:default` }]);
+    store([{ key: `${PREFIX}oauth|account:renamed` }], join(home, "team", "agent", "agent.db"));
+    store([{ key: `${PREFIX}oauth|account:older-name` }], join(home, ".pi-config", "agent", "agent.db"));
+    const at = (env: Record<string, string>) => gjcRecorded.read(recordedContext(env)).map((reading) => reading.accountId);
+    expect(at({ GJC_CONFIG_DIR: "team", PI_CONFIG_DIR: ".pi-config" })).toEqual(["renamed"]);
+    expect(at({ PI_CONFIG_DIR: ".pi-config" })).toEqual(["older-name"]);
+    // as Gajae Code joins it: trimmed, and beneath the home even where it looks absolute
+    expect(at({ GJC_CONFIG_DIR: " /team " })).toEqual(["renamed"]);
+    expect(at({ GJC_CONFIG_DIR: "../elsewhere" })).toEqual(["default"]);
+    expect(at({ GJC_CONFIG_DIR: "../elsewhere", PI_CONFIG_DIR: ".pi-config" })).toEqual(["older-name"]);
+  });
+
   });
 });
 

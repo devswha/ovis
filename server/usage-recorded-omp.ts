@@ -72,14 +72,15 @@ interface HistoryRow {
 
 /**
  * Where Oh My Pi keeps agent.db, as it finds it itself (packages/utils/src/dirs.ts): in PI_CODING_AGENT_DIR, else in
- * $XDG_DATA_HOME/omp once that folder exists (Linux and macOS), else in ~/.omp/agent.
+ * $XDG_DATA_HOME/omp once that folder exists (Linux and macOS), else in ~/.omp/agent, where PI_CONFIG_DIR may give
+ * that folder another name.
  */
 function storePath(ctx: RecordedContext): string {
   const agentDir = ctx.env["PI_CODING_AGENT_DIR"];
   if (agentDir) return join(resolve(agentDir), "agent.db");
   const data = ctx.platform === "linux" || ctx.platform === "darwin" ? ctx.env["XDG_DATA_HOME"] : undefined;
   if (data && existsSync(join(data, "omp"))) return join(data, "omp", "agent.db");
-  return join(ctx.home, ".omp", "agent", "agent.db");
+  return join(ctx.home, ctx.env["PI_CONFIG_DIR"] || ".omp", "agent", "agent.db");
 }
 
 /**
