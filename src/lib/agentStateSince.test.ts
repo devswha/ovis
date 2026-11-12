@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { advanceStateStamps, parseStateStamps, stampState, stateSince, type LastLook, type PcLook, type StampState, type StateStamps } from "./agentStateSince.ts";
+import { advanceStateStamps, loadStateStamps, parseStateStamps, saveStateStamps, stampState, stateSince, type LastLook, type PcLook, type StampState, type StateStamps } from "./agentStateSince.ts";
 
 const MIN = 60_000;
 const DAY = 86_400_000;
@@ -276,6 +276,29 @@ describe("stored state stamps", () => {
       pc: { lifetime: "herdr-1", rows: { good: { state: "blocked", at: T, seq: 4 }, unseq: { state: "idle", at: T + 1 }, left: { state: "idle", at: T + 2, seq: 5, gone: T + 9 }, leaving: { state: "idle", at: T + 3 } } },
       nameless: { lifetime: null, rows: { a: { state: "working", at: T } } },
     });
+  });
+
+  it("reads what this page wrote without parsing it again, and what another tab then wrote", () => {
+    const page = Object.getOwnPropertyDescriptor(globalThis, "window");
+    let text: string | null = null;
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: {
+      getItem: () => text,
+      setItem: (_key: string, value: string) => { text = value; },
+    } } });
+    try {
+      const mine: StateStamps = { pc: { lifetime: "herdr-1", rows: { a: { state: "idle", at: T, seq: 1 } } } };
+      expect(saveStateStamps(mine)).toBe(true);
+      expect(loadStateStamps()).toBe(mine);
+
+      const theirs: StateStamps = { pc: { lifetime: "herdr-1", rows: { a: { state: "working", at: T + MIN, seq: 2 } } } };
+      text = JSON.stringify({ version: 1, pcs: theirs });
+      const read = loadStateStamps();
+      expect(read).toEqual(theirs);
+      expect(loadStateStamps()).toBe(read);
+    } finally {
+      if (page) Object.defineProperty(globalThis, "window", page);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
   });
 
   it("reads nothing from another version, from text that is not JSON, or from no record", () => {

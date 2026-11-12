@@ -196,15 +196,26 @@ export function parseStateStamps(raw: string | null): StateStamps {
   return stamps;
 }
 
+/** the stored text this page last read or wrote, and its stamps: they are read at every look, and the same text is not parsed again */
+let lastRead: { text: string | null; stamps: StateStamps } | null = null;
+
 /** The stamps this device keeps, or null where its storage cannot be read: the page then goes by its own. */
 export function loadStateStamps(): StateStamps | null {
-  try { return parseStateStamps(window.localStorage.getItem(STATE_STAMPS_KEY)); } catch { return null; }
+  try {
+    const text = window.localStorage.getItem(STATE_STAMPS_KEY);
+    if (lastRead === null || lastRead.text !== text) lastRead = { text, stamps: parseStateStamps(text) };
+    return lastRead.stamps;
+  } catch {
+    return null;
+  }
 }
 
 /** Whether the stamps were kept: false in private mode or over quota, where the page keeps them for its own time. */
 export function saveStateStamps(stamps: StateStamps): boolean {
   try {
-    window.localStorage.setItem(STATE_STAMPS_KEY, JSON.stringify({ version: 1, pcs: stamps }));
+    const text = JSON.stringify({ version: 1, pcs: stamps });
+    window.localStorage.setItem(STATE_STAMPS_KEY, text);
+    lastRead = { text, stamps };
     return true;
   } catch {
     return false;
