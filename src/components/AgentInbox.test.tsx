@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import * as ReactDom from "react-dom";
 import { act, type ReactElement, type ReactNode } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -518,6 +518,20 @@ describe("AgentInbox", () => {
     expect(summaryCalls).toHaveLength(1);
     expect(words(root, "w1E:p1")).toEqual(["Ready when you are."]);
     expect(age(root, "w1E:p1")).toEqual(["4m"]);
+  });
+
+  it("draws a timed row a filter brings back from the clock as it is now, not as it was when the last time was drawn", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Done.", ago(6.5)) });
+    expect(age(root, "w1E:p1")).toEqual(["6m"]);
+    // a filter that draws no time while an hour passes: no clock ticks meanwhile
+    await redraw({ filter: "working" });
+    const later = Date.now() + 60 * 60_000;
+    const clock = spyOn(Date, "now").mockReturnValue(later);
+    try {
+      await redraw({ filter: "all" });
+      expect(age(root, "w1E:p1")).toEqual(["1h"]);
+    } finally { clock.mockRestore(); }
   });
 
   it("reads a time in the future (another clock) as under a minute, never a negative age", async () => {

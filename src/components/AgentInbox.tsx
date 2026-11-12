@@ -77,10 +77,8 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
   const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity));
   const waitStarts = useSyncExternalStore(waits.subscribe, waits.current, waits.current);
   // the rows' times age on a clock that ticks only while one is drawn (AgentSidebar.tsx); the time is read in the
-  // render that draws new words or a new wait, so their landing costs no second render
+  // render that draws new words, a new wait or another set of timed rows, so their landing costs no second render
   const [tick, setTick] = useState(0);
-  // read again whenever the clock ticks or new words or a new wait land
-  const now = useMemo(() => Date.now(), [tick, summaries, waitStarts]);
   /** the agent's own words its row draws: the search finds them too */
   const wordsOf = (row: AgentRow): string | null => {
     const online = row.machine.state === "connected";
@@ -149,6 +147,10 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
   };
   const rows = shown.map(describe);
   const timed = rows.some((row) => row.since !== null);
+  // read again whenever the clock ticks, new words or a new wait land, or the rows that draw a time change (a filter
+  // that drew none while the clock stood still brings one back)
+  const timedRows = rows.flatMap((row) => row.since === null ? [] : [row.key]).join("\n");
+  const now = useMemo(() => Date.now(), [tick, summaries, waitStarts, timedRows]);
   useEffect(() => {
     if (!timed) return;
     const timer = setInterval(() => setTick((count) => count + 1), CLOCK_MS);
