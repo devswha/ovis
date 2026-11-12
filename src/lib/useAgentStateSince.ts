@@ -3,10 +3,11 @@
  * that says how long an agent has been in its state. App runs the stamping for as long as the page
  * lives, so a change is stamped whether or not a list is in sight; the lists only read.
  */
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { Machine } from "../../shared/machines.ts";
 import { advanceStateStamps, loadStateStamps, saveStateStamps, stateLooks, type LastLook, type StateStamps } from "./agentStateSince.ts";
+import { stateWatch, type UnseenLook } from "./agentStateWatch.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 
 const NONE: StateStamps = {};
@@ -33,24 +34,34 @@ export function useAgentStateStamps(): StateStamps {
 /**
  * Stamps every PC's agents whenever a look at them differs from the one before it. The stored stamps
  * are read anew at each look, so two tabs of one device keep each other's; where the storage cannot
- * be read or written (private mode), the page goes by the stamps it made itself.
+ * be read or written (private mode), the page goes by the stamps it made itself. Where the page was
+ * not told of its PCs for too long (lib/agentStateWatch.ts), a look dates nothing: what the page
+ * saw before does not tell when a state began.
  */
 export function useAgentStateStamping(machines: readonly Machine[], activity: SidebarActivity): void {
   const looks = useMemo(() => stateLooks(machines, (machineId, pane) => activity.status(machineId, pane)), [machines, activity]);
   const signature = useMemo(() => looks.map((look) => `${look.id}|${look.lifetime ?? ""}|${look.rows === null ? "-" : look.rows.map((row) => `${row.pane}=${row.state}#${row.seq ?? ""}`).join(",")}`).join("\n"), [looks]);
   const latest = useRef(looks);
   latest.current = looks;
-  // what the page carries from one look to the next: its own stamps, the states it saw last, and whether the storage still takes them
-  const carried = useRef<{ own: StateStamps; last: LastLook; kept: boolean } | null>(null);
+  // a roster that cannot date what it brings, told by the watch in the batch that draws it, so it is looked at even when it changed nothing
+  const [unseen, setUnseen] = useState<{ round: number; look: UnseenLook }>({ round: 0, look: "first" });
+  // what the page carries from one look to the next: its own stamps, the states it saw last, whether the storage still takes them, and the last such roster it looked at
+  const carried = useRef<{ own: StateStamps; last: LastLook; kept: boolean; round: number } | null>(null);
   useEffect(() => {
-    const page = carried.current ??= { own: loadStateStamps() ?? NONE, last: new Map(), kept: true };
+    const page = carried.current ??= { own: loadStateStamps() ?? NONE, last: new Map(), kept: true, round: unseen.round };
+    const told = page.round !== unseen.round ? unseen.look : null;
+    page.round = unseen.round;
+    if (told === "first" || stateWatch.blind()) page.last = new Map();
     const before = (page.kept ? loadStateStamps() : null) ?? page.own;
-    const next = advanceStateStamps({ stamps: before, last: page.last }, latest.current, Date.now());
+    const next = advanceStateStamps({ stamps: before, last: page.last }, latest.current, Date.now(), told !== "undated");
     if (next.stamps !== before) page.kept = saveStateStamps(next.stamps);
     page.own = next.stamps;
     page.last = next.last;
     publish(next.stamps);
-  }, [signature]);
+  }, [signature, unseen]);
   // a page that ends leaves nothing behind: the next one reads the device's stamps anew, and a list with no stamping draws no time
-  useEffect(() => () => publish(NONE), []);
+  useEffect(() => {
+    const end = stateWatch.keep((look) => setUnseen((last) => ({ round: last.round + 1, look })));
+    return () => { end(); publish(NONE); };
+  }, []);
 }

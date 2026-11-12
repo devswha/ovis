@@ -8,6 +8,7 @@ import machinesFixture from "../../site/demo/fixtures/machines.json";
 import { currentAgentRowTokens, setAgentRowTokens } from "../lib/agentRowTokens.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { SidebarActivityProvider, useSidebarActivity } from "../lib/sidebarActivity.tsx";
+import { stateWatch } from "../lib/agentStateWatch.ts";
 import { useAgentStateStamping } from "../lib/useAgentStateSince.ts";
 import type { SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
@@ -605,6 +606,36 @@ describe("AgentSidebar fold memory", () => {
       await act(async () => { renderer!.unmount(); });
       await act(async () => { renderer = create(groupedList(inactive, at("idle"))); });
       expect(since()).toEqual(["5m"]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+      renderer = undefined;
+      jest.useRealTimers();
+      setSystemTime();
+    }
+  });
+
+  it("gives no time to a change that reached a page that was not running, and counts again once a roster has come (#3505)", async () => {
+    const start = 1_800_000_000_000;
+    const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
+      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
+    } }));
+    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(start));
+    try {
+      // Given a page that watches an agent at work: its roster was read, as the roster loader tells the watch.
+      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
+      await act(async () => { stateWatch.read(stateWatch.asked()); });
+      // When the device sleeps for an hour (the clock moves, no timer of the page fires) and the agent's wait reaches the page as it wakes.
+      jest.setSystemTime(new Date(start + 60 * 60_000));
+      await act(async () => { renderer!.update(groupedList(inactive, at("blocked"))); });
+      // Then the row says no time: the wait began out of sight, an hour ago at most.
+      expect(since()).toEqual([]);
+      // And once a roster read after the sleep has come, the next change is seen as it happens.
+      await act(async () => { stateWatch.read(stateWatch.asked()); });
+      expect(since()).toEqual([]);
+      await act(async () => { renderer!.update(groupedList(inactive, at("working"))); });
+      expect(since()).toEqual(["<1m"]);
     } finally {
       await act(async () => { renderer?.unmount(); });
       renderer = undefined;

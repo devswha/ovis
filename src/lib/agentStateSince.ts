@@ -84,9 +84,11 @@ function stillTrue(stamp: StateStamp | undefined, row: SeenRow): stamp is StateS
  * page (a reload, a PC back from away, a PC whose herdr was replaced) keeps its stamp only while it
  * still tells of it, and has none otherwise: the change happened out of sight. A PC that is away
  * keeps its stamps untouched, and a pane no longer listed keeps its stamp for thirty days from the
- * look that first missed it. Hands back the very `stamps` it was given when nothing changed.
+ * look that first missed it. A look that is not `dated` (the page cannot say when what it finds
+ * began, lib/agentStateWatch.ts) stamps no change and keeps the times it had. Hands back the very
+ * `stamps` it was given when nothing changed.
  */
-export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly PcLook[], now: number): SeenStamps {
+export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly PcLook[], now: number, dated = true): SeenStamps {
   const next: Record<string, PcStamps> = {};
   const seen = new Map<string, PcSeen>();
   let changed = false;
@@ -113,7 +115,7 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       // already tells of the row as it is: another tab of this device stamped the change first (the stamps are
       // read anew at each look), or the row only left the roster for a look
       if (watched !== undefined && sawBefore !== row.state && !stillTrue(stamp, row)) {
-        rows[row.pane] = { state: row.state, at: now, ...seq };
+        if (dated) rows[row.pane] = { state: row.state, at: now, ...seq };
         continue;
       }
       // a row this page was watching keeps its stamp through a counter that moved within one state (done read as

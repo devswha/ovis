@@ -20,6 +20,11 @@ function device(kept: { stamps: StateStamps } = { stamps: {} }) {
       ({ stamps: kept.stamps, last } = advanceStateStamps({ stamps: kept.stamps, last }, looks, now));
       return kept.stamps;
     },
+    /** a look that cannot say when what it finds began (lib/agentStateWatch.ts) */
+    seeUndated(now: number, ...looks: PcLook[]): StateStamps {
+      ({ stamps: kept.stamps, last } = advanceStateStamps({ stamps: kept.stamps, last }, looks, now, false));
+      return kept.stamps;
+    },
     reload(): void { last = new Map(); },
     since: (pane: string, state: StampState): number | null => stateSince(kept.stamps, "pc", pane, state),
   };
@@ -125,6 +130,21 @@ describe("state stamps: when this device saw a state begin", () => {
     page.see(T + 2 * MIN, look({}));
     page.see(T + 3 * MIN, look({ a: ["working", 7] }));
     expect(page.since("a", "working")).toBe(T + 3 * MIN);
+  });
+
+  it("stamps no change at a look that cannot date it, and keeps the times the page had", () => {
+    const page = device();
+    page.see(T, look({ a: ["idle", 1], b: ["idle", 2], c: ["idle", 3] }));
+    page.see(T + MIN, look({ a: ["working", 4], b: ["working", 5], c: ["idle", 3] }));
+    // a read after the stream said nothing for an hour: `b` waits and `d` is new, since some time in that hour
+    page.seeUndated(T + 60 * MIN, look({ a: ["working", 4], b: ["blocked", 6], c: ["idle", 3], d: ["working", 7] }));
+    expect(page.since("a", "working")).toBe(T + MIN);
+    expect(page.since("b", "blocked")).toBeNull();
+    expect(page.since("d", "working")).toBeNull();
+
+    // the page watches again from that look on
+    page.see(T + 61 * MIN, look({ a: ["working", 4], b: ["working", 8], c: ["idle", 3], d: ["working", 7] }));
+    expect(page.since("b", "working")).toBe(T + 61 * MIN);
   });
 
   it("leaves a PC's stamps alone while it is away, and trusts them on its return only where nothing changed", () => {

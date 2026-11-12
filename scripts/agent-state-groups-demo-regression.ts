@@ -12,8 +12,9 @@
  * Space and says the same count either way; a folded group keeps the selected agent in sight; what
  * the reader chose is kept across a reload; the filter opens every group for its time; a watching
  * device folds its own groups too; and a row with the keyboard's focus that moves under a folded
- * group hands the focus to that group's heading, while a focus the reader put elsewhere is never taken. On Two lines
- * a row's time stands in the second line and sizes
+ * group hands the focus to that group's heading, while a focus the reader put elsewhere is never taken. A change
+ * that reaches a page that was not running (the device slept) says no time, and a time herdr's counter proves
+ * stands through the sleep. On Two lines a row's time stands in the second line and sizes
  * nothing: a row with a time is drawn as a row without one.
  *
  * UI_EVIDENCE_DIR: agent-state-groups-<390|1280>-<light|dark>.png (the list as it starts, Idle
@@ -225,7 +226,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   }
   const moved = away.locator(`.agents-sidebar .agent-item[data-pane="${panes.api}"]`);
   // herdr's own word for the pane, as the demo's transport sends it; the row is then drawn under that state's heading
-  const becomes = async (status: "working" | "done" | "idle", pane: string = panes.api): Promise<void> => {
+  const becomes = async (status: "working" | "blocked" | "done" | "idle", pane: string = panes.api): Promise<void> => {
     await away.evaluate(([id, next]) => (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder.status(id!, next!), [pane, status]);
     await away.clock.runFor(200);
     await away.waitForFunction(([id, group]) => {
@@ -255,6 +256,24 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
     await moved.waitFor({ state: "hidden" });
     assert.equal(await elsewhere.evaluate((node) => node === document.activeElement), true, `${tag}: a row that goes under a folded group takes no focus from where the reader put it after its ${control} lost it: the focus is on ${await focusNow()}`);
   }
+
+  // A change is dated only while the page was being told of its PCs (lib/agentStateWatch.ts). Here the device sleeps
+  // for an hour: the clock moves and no timer of the page fires. The wait that reaches the page as it wakes began at
+  // no time the page can say, so its row says none; the waiting agent's two hours, which herdr's counter proves, are
+  // three; and once the page has read its roster again, a change is dated as it is seen
+  const timeOf = (pane: string): Promise<string[]> => away.locator(`.agents-sidebar .agent-item[data-pane="${pane}"] .agent-since`).allTextContents();
+  await becomes("working");
+  assert.deepEqual(await timeOf(panes.api), ["<1m"], `${tag}: a change the page sees as it happens is dated`);
+  assert.deepEqual(await timeOf(panes.web), ["2h"], `${tag}: the waiting agent's time before the sleep`);
+  await away.clock.setSystemTime(await away.evaluate((slept) => Date.now() + slept, HOUR));
+  await becomes("blocked");
+  assert.deepEqual(await timeOf(panes.api), [], `${tag}: a wait that began while the device slept says no time`);
+  // past the roster's slowest read, so the page has one from after the sleep
+  await away.clock.runFor(35_000);
+  assert.deepEqual(await timeOf(panes.api), [], `${tag}: nor does it once the page has read its roster again`);
+  assert.deepEqual(await timeOf(panes.web), ["3h"], `${tag}: a time herdr's counter proves stands through the sleep`);
+  await becomes("working");
+  assert.deepEqual(await timeOf(panes.api), ["<1m"], `${tag}: from then on a change is dated as it is seen`);
   await away.close();
 
   assert.deepEqual(errors, [], `${tag}: no page errors`);
