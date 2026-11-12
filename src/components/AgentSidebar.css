@@ -605,12 +605,15 @@
   }
 }
 
+/* its box is as tall as its own words, as the row's other small words are: saying a time never makes a row, or a
+   line of it, taller */
 .agent-since {
   flex: 0 0 auto;
   padding-inline: var(--space-1);
   color: var(--text-dim);
   font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
+  line-height: var(--lh-tight);
   white-space: nowrap;
 }
 
@@ -620,10 +623,13 @@
 /* Two lines: the title has the first line and the place the second, as before. The time ends the second line,
    beside the place, so a row gives its title no less room for saying the time and the times of a list stand in
    one column; the row's marks end the first line, and a row with none gives its title the whole of it. The
-   row's parts stand on a grid for this; a helper's row is one line and keeps the row's flow. */
+   row's parts stand on a grid for this, whose two lines are as tall as the title's words and the place's: the
+   marks, the time and a kept state mark stand in those lines and never size them, so every row draws its title
+   and its place at the same height, with a time or without. A helper's row is one line and keeps the row's flow. */
 .agents-sidebar:not(.is-one-line) .agent-item:not([data-depth]) .agent-row {
   display: grid;
   grid-template-areas: "mark title marks" "mark place since";
+  grid-template-rows: calc(var(--fs-md) * var(--lh-tight)) calc(var(--fs-xs) * var(--lh-tight));
   grid-template-columns: var(--side-box) minmax(0, 1fr) auto;
   align-content: center;
   align-items: center;

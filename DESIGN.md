@@ -1764,10 +1764,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   minutes, hours and days, `5m`, `2h`, `3d`; `stateAge`), in `--text-dim` `--fs-meta` with tabular
   digits, right-aligned in a column four figures wide at the row's end: before the state cell, or
   ending the row where a heading says the state. Under a pointer a one-line row's `⋯` shows
-  before it, never over it; on a row that says no time the `⋯` keeps no room for one. On a two-line row the time ends the second line, beside the place,
+  before it, never over it; on a row that says no time the `⋯` keeps no room for one. On a
+  two-line row the time ends the second line, beside the place,
   and the row's marks (plan, helpers, context) end the first, so the times of a list stand in one
   column and a row with no marks gives its title the whole first line; there the `⋯` takes its
   room from the row under the pointer, as it always did, and the time moves with the place.
+  The time's box is as tall as its words (`--lh-tight`), and a two-line row's lines are the
+  title's and the place's own: marks and a time stand in a line and never size it, so every row
+  is as tall as before and draws its words at the same height, with a time or without, at either
+  density and at any interface type size.
   Beside the filter's **Selected** note a one-line row's time steps aside, as its place does.
   herdr reports no time of change, so this device stamps a change when it sees one
   and keeps the stamps (`ovis:agent-state-since`, lib/agentStateSince.ts) across reloads, where

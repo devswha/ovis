@@ -12,7 +12,8 @@
  * Space and says the same count either way; a folded group keeps the selected agent in sight; what
  * the reader chose is kept across a reload; the filter opens every group for its time; a watching
  * device folds its own groups too; and a row with the keyboard's focus that moves under a folded
- * group hands the focus to that group's heading.
+ * group hands the focus to that group's heading. On Two lines a row's time stands in the second line and sizes
+ * nothing: a row with a time is drawn as a row without one.
  *
  * UI_EVIDENCE_DIR: agent-state-groups-<390|1280>-<light|dark>.png (the list as it starts, Idle
  * folded) and agent-state-groups-open-<...>.png (every group open).
@@ -147,6 +148,31 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await row(panes.omp).waitFor({ state: "hidden" });
   assert.equal(await expanded("idle"), "false", `${tag}: the fold is back once the filter is cleared`);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `${tag}: no sideways scroll`);
+
+  // Settings → Sidebar rows → Two lines: the time ends the second line, beside the place, and sizes neither line. Under
+  // Idle one row says its time and one has none: both are as tall, and draw their title and their place at one height
+  await heading("idle").click();
+  await row(panes.omp).waitFor({ state: "visible" });
+  const oneLine = await page.evaluate(() => localStorage.getItem("ovis:settings") ?? "{}");
+  await page.evaluate((stored) => localStorage.setItem("ovis:settings", JSON.stringify({ ...(JSON.parse(stored) as object), sidebarRows: "two" })), oneLine);
+  await page.reload();
+  await page.locator(".conn-live").waitFor({ state: "attached" });
+  await list(panes.omp);
+  const drawn = (pane: string) => row(pane).evaluate((item) => {
+    const box = item.getBoundingClientRect();
+    const middle = (selector: string): number | null => {
+      const part = item.querySelector(selector)?.getBoundingClientRect();
+      return part === undefined ? null : part.top + part.height / 2 - box.top;
+    };
+    return { height: box.height, title: middle(".agent-title"), place: middle(".agent-context"), time: middle(".agent-since") };
+  });
+  const timed = await drawn(panes.omp), untimed = await drawn(panes.cli);
+  assert.ok(timed.time !== null && untimed.time === null && timed.title !== null && untimed.title !== null && timed.place !== null && untimed.place !== null, `${tag}: two lines draw a title and a place, and a time where a stamp tells of it: ${JSON.stringify([timed, untimed])}`);
+  assert.ok(Math.abs(timed.height - untimed.height) < 0.5 && Math.abs(timed.title - untimed.title) < 0.5 && Math.abs(timed.place - untimed.place) < 0.5, `${tag}: on two lines a row with a time is drawn as a row without one: ${JSON.stringify([timed, untimed])}`);
+  assert.ok(Math.abs(timed.time - timed.place) < 1, `${tag}: on two lines the time stands on the place's line: ${JSON.stringify(timed)}`);
+  await heading("idle").click();
+  await row(panes.omp).waitFor({ state: "hidden" });
+  await page.evaluate((stored) => localStorage.setItem("ovis:settings", stored), oneLine);
 
   // a device that only watches (`?demo_devices=watch`) sends nothing, and a fold is its own
   await open("&demo_devices=watch");
