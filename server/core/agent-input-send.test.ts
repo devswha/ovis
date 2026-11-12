@@ -116,10 +116,11 @@ it("judges Codex's own screens and its composer on the same last read: a dialog 
   expect(prompted()).toBeFalse();
 });
 
-it("takes no colours from a viewport that is not the live screen: history scrolled into view is no draft", async () => {
+it("takes no colours from a viewport that is not the live screen: a draft shown there, over an empty live composer, is no draft", async () => {
   pane = { agent: "codex", argv: ["codex"] };
-  // another client scrolled the viewport to an earlier prompt and its answer; the live composer is empty
-  screens.visible = "› previous prompt\n\n• prior response\n";
+  // the viewport, in colour, shows a composer holding typed text (another client's scroll, or a screen since redrawn);
+  // the live composer is empty
+  screens.visible = recorded("codex-0.167.0/composer-ultra-draft-100.ansi");
   screens.live = readFileSync(join(FIXTURES, "codex-0.167.0/composer-empty-100.txt"), "utf8");
   await submit();
   expect(prompted()).toBeTrue();
