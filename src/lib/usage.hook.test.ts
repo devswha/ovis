@@ -140,6 +140,17 @@ describe("the report the usage hook hands on", () => {
     expect([asks, stale()]).toEqual([3, true]);
   });
 
+  it("counts a clock set back and then forward again as no time at all, while the PC is silent", async () => {
+    pc = says(PC - 2 * MINUTE);
+    await open();
+    pc = silent;
+    setSystemTime(new Date(Date.now() - 25 * MINUTE));
+    await minute("unheard");
+    setSystemTime(new Date(Date.now() + 25 * MINUTE));
+    await minute("unheard");
+    expect([asks, stale()]).toEqual([3, false]);
+  });
+
   it("takes a record as the PC has just called it, though the device's clock was set back while the ask was in flight", async () => {
     pc = says(PC - 2 * MINUTE);
     await open();

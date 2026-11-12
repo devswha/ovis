@@ -283,10 +283,12 @@ export function useUsage(enabled: boolean) {
   const [held, setHeld] = useState<HeldReport | null>(null);
   const [loading, setLoading] = useState(false);
   /**
-   * How long the PC has been silent, up to the last ask (`at`): counted from ask to ask, each stretch by the longer of
-   * the device's two clocks, so that a clock put right later takes nothing back and no record grows younger meanwhile.
+   * How long the PC has been silent, from its last answer (`from`) up to the last ask (`at`). At each ask it is the
+   * longer of two: what it was plus what surely went by since the ask before, which is the running clock's stretch; and
+   * what the two clocks say of the whole time since the answer. So a clock put right takes nothing back and no record
+   * grows younger, a clock set back and forward again counts for nothing, and a sleep still counts.
    */
-  const [silence, setSilence] = useState<{ readonly since: number; readonly at: DeviceTime }>(() => ({ since: 0, at: deviceTime() }));
+  const [silence, setSilence] = useState<{ readonly since: number; readonly at: DeviceTime; readonly from: DeviceTime }>(() => { const opened = deviceTime(); return { since: 0, at: opened, from: opened }; });
   const visible = usePageVisible();
   const generation = useRef(0);
 
@@ -295,10 +297,10 @@ export function useUsage(enabled: boolean) {
     setLoading(true);
     // asked, not yet answered: a server that never answers must not leave the report in hand as young as it arrived
     const askedAt = deviceTime();
-    setSilence((before) => ({ since: before.since + goneBy(before.at, askedAt), at: askedAt }));
+    setSilence((before) => ({ since: Math.max(before.since + Math.max(0, askedAt.running - before.at.running), goneBy(before.from, askedAt)), at: askedAt, from: before.from }));
     try {
       const next = await fetchUsage(refresh);
-      if (current === generation.current) { const heardAt = deviceTime(); setHeld((previous) => heldReport(previous, next, heardAt)); setSilence({ since: 0, at: heardAt }); }
+      if (current === generation.current) { const heardAt = deviceTime(); setHeld((previous) => heldReport(previous, next, heardAt)); setSilence({ since: 0, at: heardAt, from: heardAt }); }
     } catch { /* offline or restarting: the last report stays, and ages with each ask */ }
     finally { if (current === generation.current) setLoading(false); }
   }, []);
