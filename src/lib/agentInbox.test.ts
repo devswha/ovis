@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
-import { heldOrder, inboxEmpty, inboxFiltered, inboxOrder, inboxSearched, inboxStartsOpen, inboxStatus, inboxWords, questionWords } from "./agentInbox.ts";
+import { heldOrder, inboxEmpty, inboxFiltered, inboxOrder, inboxSearched, inboxSinceAt, inboxStartsOpen, inboxStatus, inboxWords, questionWords } from "./agentInbox.ts";
 import type { AgentRow } from "./agentRoster.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 
@@ -147,5 +147,21 @@ describe("agent inbox", () => {
     expect(inboxEmpty(empty, 0, 0)).toBe("none");
     expect(inboxEmpty(fixture, 4, 0)).toBe("no-match");
     expect(inboxEmpty(fixture, 4, 4)).toBeNull();
+  });
+});
+
+describe("inboxSinceAt", () => {
+  const summary = { role: "assistant" as const, text: "Done.", at: 5_000, askedAt: 2_000, failed: false };
+  it("times a working agent from the user's last ask, else from its last words", () => {
+    expect(inboxSinceAt("working", summary)).toBe(2_000);
+    expect(inboxSinceAt("working", { ...summary, askedAt: null })).toBe(5_000);
+  });
+  it("times any other agent from its last words", () => {
+    for (const group of ["blocked", "done", "idle"] as const) expect(inboxSinceAt(group, summary)).toBe(5_000);
+    expect(inboxSinceAt("done", { ...summary, at: null })).toBeNull();
+  });
+  it("has no time without a summary", () => {
+    expect(inboxSinceAt("working", undefined)).toBeNull();
+    expect(inboxSinceAt("done", null)).toBeNull();
   });
 });

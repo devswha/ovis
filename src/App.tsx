@@ -1293,7 +1293,7 @@ export function App() {
           })}
           {inbox.shown && <AgentInbox machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll}
             onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
-            onNew={openNewOn} questionReads={inbox.questionReads} />}
+            onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads} />}
           {dividers.length > 0 && <SplitDividers dividers={dividers} areaRef={paneAreaRef} onResize={resizeDivider} />}
           <SplitDropPreview visible={splitDragOn && (paneDragging || tabDrag !== null)} grid={gridPreview} />
         </div>}

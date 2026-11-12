@@ -7,6 +7,7 @@ import { inboxStartsOpen, type InboxFilter } from "./agentInbox.ts";
 import type { AppLink } from "./deepLink.ts";
 import { SHEET_QUERY } from "./sheets.ts";
 import { newQuestionReads } from "./useInboxQuestions.ts";
+import { newSummaryReads } from "./useInboxSummaries.ts";
 import { useMediaQuery } from "./useMediaQuery.ts";
 
 /** The history entry's mark that it was pushed on leaving the list: Back on such an entry returns to it. */
@@ -57,7 +58,9 @@ export function useInbox({ setting, initialLink, drawerOpenRef }: { setting: boo
   const scroll = useRef(0);
   /** the waiting agents' questions, read once for the page: the list unmounts whenever a thread opens */
   const [questionReads] = useState(newQuestionReads);
+  /** each row's last words, read for the page as the questions are */
+  const [summaryReads] = useState(newSummaryReads);
   /** whether the drawer or the list covers the selected pane: its finishes are not read, its alerts not held back */
   const coveredRef = useMemo(() => ({ get current(): boolean { return drawerOpenRef.current === true || shownRef.current; } }) as RefObject<boolean>, [drawerOpenRef]);
-  return { enabled, shown, cold, shownRef, enabledRef, coveredRef, show, leave, back, filter, setFilter, query, setQuery, scroll, questionReads };
+  return { enabled, shown, cold, shownRef, enabledRef, coveredRef, show, leave, back, filter, setFilter, query, setQuery, scroll, questionReads, summaryReads };
 }

@@ -4,7 +4,7 @@ import { act, type ReactElement, type ReactNode } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
-import type { AgentStatus, HerdrPane, InteractivePrompt } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrPane, InteractivePrompt, PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
 import { inboxKey, inboxOrder, type InboxFilter } from "../lib/agentInbox.ts";
 import * as api from "../lib/api.ts";
@@ -30,6 +30,14 @@ function RowMenu(_props: Parameters<typeof rowMenu.RowMenu>[0]) { return null; }
 await mock.module("./RowMenu.tsx", () => ({ ...rowMenu, RowMenu }));
 const { AgentInbox } = await import("./AgentInbox.tsx");
 const { newQuestionReads } = await import("../lib/useInboxQuestions.ts");
+const { SummaryReads } = await import("../lib/useInboxSummaries.ts");
+
+// the summary reads the page's reader makes: each case answers them itself
+type SummaryCall = { machineId: string; paneIds: readonly string[]; resolve(answer: PaneSummaries | null): void };
+let summaryCalls: SummaryCall[] = [];
+/** an ISO time this many minutes ago */
+const ago = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
+const said = (text: string, at: string | null, more: Partial<PaneSummary> = {}): PaneSummary => ({ role: "assistant", text, at, asked_at: null, ...more });
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const activity: SidebarActivity = {
@@ -59,10 +67,13 @@ describe("AgentInbox", () => {
   let renderer: ReactTestRenderer | undefined;
   // the page's reader (lib/useInbox.ts), which outlives each mount of the list
   let questionReads: ReturnType<typeof newQuestionReads>;
+  let summaryReads: InstanceType<typeof SummaryReads>;
 
   beforeEach(() => {
     promptReads = 0;
     questionReads = newQuestionReads();
+    summaryCalls = [];
+    summaryReads = new SummaryReads((machineId, paneIds) => new Promise((resolve) => { summaryCalls.push({ machineId, paneIds, resolve }); }));
     presses = [];
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const events = new EventTarget();
@@ -112,7 +123,7 @@ describe("AgentInbox", () => {
   let drawn: { machines: Machine[]; options: DrawOptions } = { machines: [], options: {} };
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <AgentInbox machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})}
-      query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} />
+      query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -122,7 +133,8 @@ describe("AgentInbox", () => {
     drawn = { machines, options };
     await act(async () => {
       renderer = create(view(machines, options), { createNodeMock: (element) => {
-        const name = element.type === "section" ? "section" : String((element.props as { className?: string }).className ?? element.type);
+        // by the first class: the scroller is "inbox-scroll" with or without its modifier
+        const name = element.type === "section" ? "section" : String((element.props as { className?: string }).className ?? element.type).split(" ")[0]!;
         let top = 0;
         const node = {
           get scrollTop() { return top; },
@@ -385,6 +397,103 @@ describe("AgentInbox", () => {
     await redraw({ activity: { ...activity, seqs: () => new Map([["w1D:p1", 5]]) } });
     expect(promptReads).toBe(2);
     expect(byClass(item(root, "w1D:p1"), "inbox-words").length).toBe(0);
+  });
+
+  /** answers the newest summary read: every pane it asked about, null where the case gives nothing */
+  const answerSummaries = async (summaries: Record<string, PaneSummary>) => {
+    const call = summaryCalls.at(-1)!;
+    await act(async () => { call.resolve({ server_time: new Date().toISOString(), summaries: Object.fromEntries(call.paneIds.map((id) => [id, summaries[id] ?? null])) }); });
+  };
+  const words = (root: ReactTestInstance, paneId: string) => byClass(item(root, paneId), "inbox-words").map(text);
+  const times = (root: ReactTestInstance, paneId: string) => item(root, paneId).findAll((node) => node.type === "time");
+  const age = (root: ReactTestInstance, paneId: string) => times(root, paneId).map(text);
+
+  it("shows a done agent's last words and how long it has been done", async () => {
+    const at = ago(6.5);
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    expect(words(root, "w1E:p1")).toEqual([]);
+    await answerSummaries({ "w1E:p1": said("All six export tests pass.", at) });
+    expect(words(root, "w1E:p1")).toEqual(["All six export tests pass."]);
+    expect(age(root, "w1E:p1")).toEqual(["6m"]);
+    const [time] = times(root, "w1E:p1");
+    expect(time!.props.className).toBe("inbox-time");
+    expect(Math.abs(Date.parse(time!.props.dateTime) - Date.parse(at))).toBeLessThan(1000);
+  });
+
+  it("marks the user's own last message as theirs", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Run the export tests again", ago(2.5), { role: "user" }) });
+    expect(words(root, "w1E:p1")).toEqual(["You: Run the export tests again"]);
+  });
+
+  it("keeps a waiting agent's question as its words and still says how long it has waited", async () => {
+    const root = await draw(roster());
+    await act(async () => { answerPrompt(question("Run the export tests?")); });
+    await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(3.5)) });
+    expect(words(root, "w1D:p1")).toEqual(["Run the export tests?"]);
+    expect(age(root, "w1D:p1")).toEqual(["3m"]);
+  });
+
+  it("keeps a working agent's plan step as its words and times it from the user's last ask", async () => {
+    const plan = { current: "Write the export guard test", done: 1, total: 3 };
+    const root = await draw(roster((pane) => pane.pane_id === "w1C:p1" ? { ...pane, plan } as HerdrPane : pane));
+    await answerSummaries({ "w1C:p1": said("Reading the export module.", ago(30.5), { asked_at: ago(2.5) }) });
+    expect(words(root, "w1C:p1")).toEqual(["Write the export guard test"]);
+    expect(age(root, "w1C:p1")).toEqual(["2m"]);
+  });
+
+  it("draws no last words and no time for a row without a summary", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1F:p1": said("Ready when you are.", ago(5.5)) });
+    expect(words(root, "w1E:p1")).toEqual([]);
+    expect(times(root, "w1E:p1")).toEqual([]);
+    expect(age(root, "w1F:p1")).toEqual(["5m"]);
+  });
+
+  it("draws the last words without Markdown's marks", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("## Fixed the flaky test\n\n- Pinned the `clock` in **retry.test.ts**\n- See [the run](https://example.com/run)", ago(1.5)) });
+    expect(words(root, "w1E:p1")).toEqual(["Fixed the flaky test\nPinned the clock in retry.test.ts\nSee the run"]);
+  });
+
+  it("reads the rows' last words once for the page: not again when the list mounts again with the same rows", async () => {
+    const machines = roster();
+    await draw(machines);
+    expect(summaryCalls).toHaveLength(1);
+    await answerSummaries({ "w1E:p1": said("Ready when you are.", ago(4.5)) });
+    await act(async () => { renderer?.unmount(); });
+    const root = await draw(machines);
+    expect(summaryCalls).toHaveLength(1);
+    expect(words(root, "w1E:p1")).toEqual(["Ready when you are."]);
+    expect(age(root, "w1E:p1")).toEqual(["4m"]);
+  });
+
+  it("reads a time in the future (another clock) as under a minute, never a negative age", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Done.", ago(-10)) });
+    expect(age(root, "w1E:p1")).toEqual(["<1m"]);
+  });
+
+  it("titles the time with the full local time in the interface language", async () => {
+    const stored: Record<string, string> = { "ovis:settings": JSON.stringify({ language: "ko" }) };
+    Object.assign(window, { localStorage: { getItem: (key: string) => stored[key] ?? null, setItem() {}, removeItem() {} } });
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Done.", ago(6.5)) });
+    const [time] = times(root, "w1E:p1");
+    const at = new Date(time!.props.dateTime);
+    expect(time!.props.title).toBe(at.toLocaleString("ko"));
+    expect(time!.props.title).not.toBe(at.toLocaleString("en"));
+  });
+
+  it("starts no summary read for a filter or a search: the reads cover the whole list", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    expect(summaryCalls).toHaveLength(1);
+    await answerSummaries({ "w1E:p1": said("All six export tests pass.", ago(6.5)) });
+    await redraw({ filter: "working" });
+    await redraw({ filter: "all", query: "export" });
+    await redraw({ query: "" });
+    expect(summaryCalls).toHaveLength(1);
+    expect(words(root, "w1E:p1")).toEqual(["All six export tests pass."]);
   });
 
   it("shows at the next mount the question whose read landed after the list closed", async () => {

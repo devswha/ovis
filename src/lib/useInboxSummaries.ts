@@ -3,10 +3,12 @@
  * /api/pane/summary a batch per PC at a time. Nothing is stored past the page; a row that leaves the
  * list leaves its summary behind.
  */
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { PANE_SUMMARY_MAX_IDS } from "../../shared/pane-summary.ts";
 import type { PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
 import { inboxKey, inboxStatus } from "./agentInbox.ts";
 import type { AgentRow } from "./agentRoster.ts";
+import { fetchPaneSummaries } from "./api.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 
 /** Rows whose summary is read, from the top of the list. */
@@ -192,4 +194,15 @@ export class SummaryReads {
       this.pump(target.machineId);
     }, SUMMARY_RETRY_MS));
   }
+}
+
+/** The page's reader: made once beside the list's other state (lib/useInbox.ts), so it outlives each mount of the list. */
+export const newSummaryReads = (): SummaryReads => new SummaryReads(fetchPaneSummaries);
+
+/** Each target's last words by its key, from the page's reader. */
+export function useInboxSummaries(reads: SummaryReads, targets: readonly SummaryTarget[]): ReadonlyMap<string, RowSummary> {
+  const targetsRef = useRef(targets); targetsRef.current = targets;
+  const signature = targets.map((target) => `${target.key}:${target.machineId}:${target.paneId}:${target.stamp}`).join("\n");
+  useEffect(() => { reads.sync(targetsRef.current); }, [reads, signature]);
+  return useSyncExternalStore(reads.subscribe, reads.summaries, reads.summaries);
 }

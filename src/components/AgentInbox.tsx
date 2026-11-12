@@ -2,9 +2,9 @@ import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useStat
 import { Monitor, Plus, Search, X } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
-import { heldOrder, INBOX_FILTERS, inboxEmpty, inboxFiltered, inboxKey, inboxOrder, inboxSearched, inboxStatus, inboxWords, type InboxFilter } from "../lib/agentInbox.ts";
+import { heldOrder, INBOX_FILTERS, inboxEmpty, inboxFiltered, inboxKey, inboxOrder, inboxSearched, inboxSinceAt, inboxStatus, inboxWords, plainWords, type InboxFilter } from "../lib/agentInbox.ts";
 import { agentGroup, type AgentRow } from "../lib/agentRoster.ts";
-import { useT } from "../lib/i18n.ts";
+import { useT, type Translate } from "../lib/i18n.ts";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { useSettings } from "../lib/settings.ts";
 import { agentName } from "../lib/runtimeMove.ts";
@@ -12,8 +12,9 @@ import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
 import { knownStatus, STATUS_WORD } from "../lib/status.ts";
 import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/useInboxQuestions.ts";
+import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { AgentMark } from "./AgentMark.tsx";
-import { agentRowTitle, blockedNote } from "./AgentSidebar.tsx";
+import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName } from "./Sidebar.tsx";
 import "./AgentInbox.css";
@@ -32,6 +33,8 @@ export interface AgentInboxProps {
   onNew(machineId: string): void;
   /** the page's reader of the waiting agents' questions (lib/useInbox.ts), which outlives this list */
   questionReads: QuestionReads;
+  /** the page's reader of each row's last words (lib/useInbox.ts), which outlives this list */
+  summaryReads: SummaryReads;
 }
 
 /** the marks drawn as a full tile, which fill the round face; the others sit on it as a glyph */
@@ -40,12 +43,22 @@ const TILE_MARKS = new Set(["claude", "omp", "omo"]);
 const FILTER_WORD: Record<Exclude<InboxFilter, "all">, string> = { blocked: "Needs you", working: "Working", done: "Done" };
 /** how long after a press in the list its rows keep their order */
 const PRESS_HOLD_MS = 1000;
+/** how often the rows' times are drawn again, while one is drawn */
+const CLOCK_MS = 30_000;
+
+/** The words a row's last turn says: the agent's as written, the user's own marked as theirs. */
+function lastWords(summary: RowSummary | undefined, t: Translate): string | null {
+  if (summary === undefined) return null;
+  const text = plainWords(summary.text);
+  if (text === null) return null;
+  return summary.role === "user" ? t("You: {text}", { text }) : text;
+}
 
 /**
  * A phone's first screen: every shown PC's agents in one list, the ones that need the reader first.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function AgentInbox({ machines, activity, watching, filter, onFilter, query, onQuery, scroll, onOpen, onNew, questionReads }: AgentInboxProps) {
+export function AgentInbox({ machines, activity, watching, filter, onFilter, query, onQuery, scroll, onOpen, onNew, questionReads, summaryReads }: AgentInboxProps) {
   const t = useT();
   const titleId = useId();
   const pressPane = useContext(PanePressContext);
@@ -53,17 +66,27 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
   const scroller = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const radios = useRef(new Map<InboxFilter, HTMLButtonElement>());
-  const { settings } = useSettings();
+  const { settings, resolvedLanguage } = useSettings();
   // within a state, the Agents list's own order (Settings → Within a state), names as its rows draw them
   const { agentGroupSort: sort, sidebarRows } = settings;
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
+  const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity));
+  // the rows' times age on a clock that ticks only while one is drawn (AgentSidebar.tsx), read afresh when words land
+  const [now, setNow] = useState(() => Date.now());
+  const [ticking, setTicking] = useState(false);
+  useEffect(() => {
+    if (!ticking) return;
+    const timer = setInterval(() => setNow(Date.now()), CLOCK_MS);
+    return () => clearInterval(timer);
+  }, [ticking]);
   /** the agent's own words its row draws: the search finds them too */
   const wordsOf = (row: AgentRow): string | null => {
     const online = row.machine.state === "connected";
+    const key = inboxKey(row);
     return inboxWords({
       group: agentGroup(inboxStatus(row, activity)), blocked: online ? blockedNote(row.entry.pane, t) : null,
-      question: questions.get(inboxKey(row)) ?? null, plan: online ? row.entry.pane.plan : undefined, last: null,
+      question: questions.get(key) ?? null, plan: online ? row.entry.pane.plan : undefined, last: lastWords(summaries.get(key), t),
     });
   };
   const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
@@ -87,7 +110,7 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
     if (!holding) kept.current = { readerKey, order: shown.map(inboxKey) };
   });
 
-  // the place the list had is reached again once its rows are back: a waiting row's question comes after the mount,
+  // the place the list had is reached again once its rows are back: a waiting row's question and each row's last words come after the mount,
   // and a list shorter than the place clamps it. Until the place is reached or the reader touches the list, a scroll
   // (the clamp's own) is not kept as the place; once they do, the place is theirs and is never set again
   const restoring = useRef<number | null>(scroll.current);
@@ -97,7 +120,7 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
     if (node === null || restoring.current === null) return;
     node.scrollTop = restoring.current;
     if (node.scrollTop === restoring.current) restoring.current = null;
-  }, [questions]);
+  }, [questions, summaries]);
   useLayoutEffect(() => { root.current?.focus({ preventScroll: true }); }, []);
 
   const [pcMenu, setPcMenu] = useState<HTMLElement | null>(null);
@@ -115,14 +138,19 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
       workspaceLabel: workspace.worktree?.is_linked_worktree ? compactWorktreeName(workspace.label) : workspace.label,
       tabName: agentTabName(tab, tabs, t),
     }).filter((part) => part !== title);
+    const key = inboxKey(row);
+    const summary = summaries.get(key);
     const words = wordsOf(row);
     return {
-      key: inboxKey(row), machine, pane, online, status, group, title, words, mark: paneMark(entry) ?? "", kind: entry.canonicalAgent,
+      key, machine, pane, online, status, group, title, words, since: inboxSinceAt(group, summary), mark: paneMark(entry) ?? "", kind: entry.canonicalAgent,
       place: [...place, ...online ? [] : [t("Offline")]].join(" · "),
     };
   };
   const rows = shown.map(describe);
+  const timed = rows.some((row) => row.since !== null);
+  useEffect(() => { setNow(Date.now()); setTicking(timed); }, [timed, summaries]);
   const connected = machines.filter((machine) => machine.state === "connected");
+  const offerNew = !watching && connected.length > 0;
   // the sheet of PCs is for a choice among two or more: it closes when that choice goes, and stays closed if it comes back
   useEffect(() => { if (connected.length < 2) setPcMenu(null); }, [connected.length]);
   const emptyWhy = inboxEmpty(machines, all.length, rows.length);
@@ -140,7 +168,7 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
   return (
     <section className="agent-inbox" aria-labelledby={titleId} tabIndex={-1} ref={root}
       onWheel={stopRestoring} onTouchStart={stopRestoring} onPointerDown={stopRestoring} onKeyDown={stopRestoring}>
-      <div className="inbox-scroll" ref={scroller} onScroll={(event) => { if (restoring.current === null) scroll.current = event.currentTarget.scrollTop; }}>
+      <div className={`inbox-scroll${offerNew ? " has-new" : ""}`} ref={scroller} onScroll={(event) => { if (restoring.current === null) scroll.current = event.currentTarget.scrollTop; }}>
         <h1 id={titleId} className="inbox-title">{t("Agents")}</h1>
         <div className="inbox-search" role="search">
           <Search className="inbox-search-glass" aria-hidden="true" />
@@ -175,6 +203,11 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
                       {row.kind && <span className="visually-hidden">{agentName(row.kind)}: </span>}
                       <span className="inbox-line">
                         <span className="inbox-name">{row.title}</span>
+                        {row.since !== null && (
+                          <time className="inbox-time" dateTime={new Date(row.since).toISOString()} title={new Date(row.since).toLocaleString(resolvedLanguage)}>
+                            {stateAge(now - row.since)}
+                          </time>
+                        )}
                       </span>
                       {row.words !== null && <span className="inbox-words">{row.words}</span>}
                       <span className="inbox-meta">
@@ -188,16 +221,16 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
             })}
           </ul>
         )}
+        {offerNew && (
+          <button type="button" className="btn btn-primary inbox-new" aria-haspopup={connected.length > 1 ? "menu" : undefined} aria-expanded={connected.length > 1 ? pcMenu !== null : undefined}
+            onClick={(event) => {
+              if (connected.length === 1) onNew(connected[0]!.id);
+              else setPcMenu(pcMenu === null ? event.currentTarget : null);
+            }}>
+            <Plus aria-hidden="true" />{t("New workspace")}
+          </button>
+        )}
       </div>
-      {!watching && connected.length > 0 && (
-        <button type="button" className="btn btn-primary inbox-new" aria-haspopup={connected.length > 1 ? "menu" : undefined} aria-expanded={connected.length > 1 ? pcMenu !== null : undefined}
-          onClick={(event) => {
-            if (connected.length === 1) onNew(connected[0]!.id);
-            else setPcMenu(pcMenu === null ? event.currentTarget : null);
-          }}>
-          <Plus aria-hidden="true" />{t("New workspace")}
-        </button>
-      )}
       {pcMenu !== null && !watching && connected.length > 1 && <RowMenu anchor={pcMenu} title={t("New workspace")} onClose={() => setPcMenu(null)}
         items={connected.map((machine) => ({ id: machine.id, label: machine.name, icon: Monitor, run: () => onNew(machine.id) }))} />}
     </section>

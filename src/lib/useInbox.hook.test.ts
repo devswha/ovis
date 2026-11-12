@@ -4,6 +4,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { AppLink } from "./deepLink.ts";
 import { INBOX_FROM_KEY, useInbox } from "./useInbox.ts";
 import { QuestionReads } from "./useInboxQuestions.ts";
+import { SummaryReads } from "./useInboxSummaries.ts";
 
 describe("useInbox", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -78,6 +79,17 @@ describe("useInbox", () => {
     await act(async () => { inbox.show(); });
 
     expect(inbox.questionReads).toBe(reads);
+  });
+
+  it("keeps one summary reader while the list is left and shown again", async () => {
+    await mount(true);
+    const reads = inbox.summaryReads;
+    expect(reads).toBeInstanceOf(SummaryReads);
+
+    await act(async () => { inbox.leave(); });
+    await act(async () => { inbox.show(); });
+
+    expect(inbox.summaryReads).toBe(reads);
   });
 
   it("starts closed on a link naming a pane", async () => {

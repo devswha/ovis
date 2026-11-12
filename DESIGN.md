@@ -1972,7 +1972,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `.pane-split`, under the app's own header (drawer toggle, brand, More), on `--bg`. While it shows,
   the header has no lens toggle and no connection chip, and More offers only the next waiting agent,
   the command palette and alerts. A wider window, and a phone with the setting off, are unchanged.
-- Anatomy, top to bottom, in one scroller that ends with room for the floating button:
+- Anatomy, top to bottom, in one scroller (a column). With New workspace, the button follows the
+  rows and the scroller ends with a box of the button's resting offset, so at the list's end the
+  last row ends just above the button; without it, the scroller ends with its own bottom padding
+  (`--touch-target` plus `--space-8` plus the safe area) below the rows:
   - The title **Agents** (`.inbox-title`): `calc(var(--fs-display) * 1.45)`, `--fw-semibold`,
     `--tracking-display`, `--lh-tight`, `--text-strong`. It is the screen's heading.
   - The search field (`.inbox-search`, `role="search"`): one `.input` `--touch-target` tall with
@@ -1985,9 +1988,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     words at `--fw-medium`. No filter takes a state's tint.
   - The rows (`.inbox-list`), or one `.inbox-empty` line (`role="status"`, `--text-dim`, centred)
     saying **Loading agents…**, **No agents running** or **No agents match**.
-  - **New workspace** (`.btn.btn-primary.inbox-new`): a pill floating at the bottom end corner
-    above the safe area, `--touch-target` plus `--space-2` tall, `--radius-pill`, `--shadow-card`,
-    a plus glyph and the words at `--fs-chat`, `--fw-semibold`.
+  - **New workspace** (`.btn.btn-primary.inbox-new`): the scroller's own sticky control, after the
+    rows: a pill in the bottom end corner of the list's area above the safe area (`position:
+    sticky` at the same bottom offset as its bottom margin, an auto top margin), so a short list
+    leaves it in the corner, the rows scroll under it, and it does not move at the list's end, where
+    the last row ends just above it. `--touch-target` plus `--space-2` tall, `--radius-pill`,
+    `--shadow-card`, a plus glyph and the words at `--fs-chat`, `--fw-semibold`.
 - A row (`.inbox-item` > `.inbox-row`, one button) is the whole width, its content centred on the
   mark, `--bg-hover` under a press and, on a hovering pointer, under the pointer, with the app's
   focus ring drawn inside it. It holds:
@@ -1997,11 +2003,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     user carries a `--status-blocked` dot (`.inbox-dot`) at the mark's top end corner, ringed in
     `--bg`.
   - The name (`.inbox-name`): the Agents list's own row title, one line with an ellipsis, `--fs-lg`,
-    `--fw-medium`, `--text-strong`. A screen reader hears the agent's kind before it.
+    `--fw-medium`, `--text-strong`. A screen reader hears the agent's kind before it. At the end of
+    its line, how long the agent has been in its state (`time.inbox-time`, `--fs-xs`, `--text-dim`,
+    tabular figures), in the Agents list's words (**<1m**, **6m**, **2h**, **3d**): a working agent
+    since the user last asked it, any other since its last words; the full local time is its
+    title. It ticks every 30 seconds while a row shows one, and a row with no last words has none.
   - Up to two lines of the agent's own words (`.inbox-words`, `--fs-md`, `--text-dim`), only when
     it has some: what a waiting agent asks (the note its row in the Agents list shows, else the
-    question its prompt card asks) and a working agent's current plan step. Nothing is made up for
-    a state with no words of its own.
+    question its prompt card asks), a working agent's current plan step, and otherwise what the
+    agent last said, as plain text without Markdown's marks; when the last words are the user's
+    own message they read **You: …**. Nothing is made up for a state with no words of its own.
   - The state chip and the place, on one line (`.inbox-meta`). The chip is the app's badge
     (`.badge.badge-<state>`, its tint and its color, its word: **INPUT**, **RUN**, **DONE**) drawn as
     a small pill (`.inbox-chip`: `--radius-pill`, `--fs-xs`, `--fw-medium`, no letter spacing or
@@ -2025,7 +2036,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   arrow keys move the choice and the focus); a ready agent shows only under All. The search narrows
   the list to the words a row shows: the labels the sidebar's filter matches with the command
   palette's fuzzy match (lib/sidebarFilter.ts), and the agent's own words on the row (a waiting
-  agent's note or question, a working agent's plan step) when they hold the query as typed, in any
+  agent's note or question, a working agent's plan step, otherwise what it last said) when they hold
+  the query as typed, in any
   letter case; never a working directory or a transcript. The filter, the query and
   the scroll offset are kept while a thread is open.
 - A tap opens that agent's existing chat, with its prompt card and composer; the list adds no chat
@@ -2044,9 +2056,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - What the list never does: send input, answer a prompt, press a key for the agent, move herdr's
   focus, take a pane over, resize a pane, mark a finish as seen, or silence an alert for a pane it
   covers (it counts as covering the pane, as the open drawer does). Until a pane is opened nothing
-  is attached or read for one; only a waiting agent's question is read. A pane once opened stays
-  mounted under the list, hidden (`visibility: hidden`, inert, keeping its size), so a message on
-  its way is not cut.
+  is attached or read for one; only a waiting agent's question is read, and each row's last words
+  and their time: one read-only request (GET /api/pane/summary) per PC for up to 24 rows, for the
+  first 60 rows of connected PCs in the list's order. A row is read again when its finish, its
+  activity or its shown state changes; a pane the answer left out, or a request that failed, is
+  asked again up to three times. A PC whose server has no such route shows its rows without them.
+  A pane once opened stays mounted under the list, hidden (`visibility: hidden`, inert, keeping
+  its size), so a message on its way is not cut.
 - It follows the herdr phone app's Inbox and T3 Code's phone session list: the first screen lists
   the agents, the ones that need the user first. It differs from them in keeping one flat list
   with state chips, in leaving the workspace tree in the drawer, one tap away

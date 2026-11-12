@@ -4,12 +4,14 @@
  * (lib/agentRoster.ts, lib/sidebarActivity.tsx), so the two never disagree.
  */
 import type { Machine } from "../../shared/machines.ts";
+import { parseInline, shownText } from "../../shared/markdown.ts";
 import type { AgentStatus, PlanSummary } from "../../shared/protocol.ts";
 import { agentGroup, agentRoster, groupAgentRows, type AgentGroup, type AgentRow } from "./agentRoster.ts";
 import { fileFromLink, type AppLink } from "./deepLink.ts";
 import type { Translate } from "./i18n.ts";
 import type { AgentGroupSort } from "./settings.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
+import type { RowSummary } from "./useInboxSummaries.ts";
 import { capped } from "./promptText.ts";
 import { machineFilter, sidebarFilter } from "./sidebarFilter.ts";
 import { sidebarPinKey } from "./sidebarPins.ts";
@@ -68,6 +70,19 @@ export function inboxEmpty(machines: readonly Machine[], total: number, shown: n
   return shown === 0 ? "no-match" : null;
 }
 
+/**
+ * An agent's text as a row draws it: plain, without Markdown's marks. A line's heading or list mark goes, then its
+ * inline marks (code, emphasis, a link as its text) as the chat's inline reader reads them; a line left blank goes.
+ */
+export function plainWords(text: string): string | null {
+  const lines = text.split("\n").flatMap((line) => {
+    const bare = line.replace(/^\s{0,3}#{1,6}(?=\s|$)/, "").replace(/^\s*(?:[-*+]|\d+[.)])(?=\s|$)/, "").trim();
+    const shown = (bare === "" ? "" : shownText(parseInline(bare, false)) ?? bare).trim();
+    return shown === "" ? [] : [shown];
+  });
+  return lines.length === 0 ? null : lines.join("\n");
+}
+
 /** What a waiting agent asks, for its row: the question, then the first line of what it is about. */
 export function questionWords(words: { question: string; body: string | null }): string {
   const first = words.body?.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? "";
@@ -79,6 +94,12 @@ export function inboxWords(input: { group: AgentGroup; blocked: string | null; q
   if (input.group === "blocked") return input.blocked ?? input.question ?? input.last;
   if (input.group === "working") return input.plan?.current?.trim() || input.last;
   return input.last;
+}
+
+/** Since when a row is in its state (ms), by its summary: a working agent since it was asked, any other since its last turn. */
+export function inboxSinceAt(group: AgentGroup, summary: RowSummary | null | undefined): number | null {
+  if (!summary) return null;
+  return group === "working" ? summary.askedAt ?? summary.at : summary.at;
 }
 
 /** Whether a phone opens on the list: the address names no pane, workspace or file. */
