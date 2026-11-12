@@ -92,6 +92,8 @@
 }
 
 .agent-group-toggle:disabled { cursor: default; }
+/* under the filter no heading folds: its caret would promise a control that does not answer, and keeps its cell */
+:is(.agent-group-toggle, .agent-named-group-toggle):disabled .agent-section-caret { visibility: hidden; }
 .agent-group-toggle:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
 
 /* a state the list gives a colour says its words and its count in it; the caret is the fold's, and stays the heads' dim */
