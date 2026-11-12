@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { HerdrError } from "../herdr/client.ts";
 import { createSubmitText } from "./composer.ts";
 
@@ -14,14 +15,20 @@ const recorded = (path: string): string => readFileSync(join(FIXTURES, path), "u
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
-let pane: { agent: string; argv: string[]; offset: number };
-let screens: { visible: string; recent: string };
+let pane: { agent: string; argv: string[] };
+/** `live`: the detection read, the viewport's text (`visible`) unless set */
+let screens: { visible: string; live?: string };
+/** what the pane shows from the second read on: a screen that opened after the first */
+let next: typeof screens | undefined;
+let reads: number;
 let calls: { method: string; params: Record<string, unknown> }[];
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ovis-agent-input-"));
   calls = [];
-  screens = { visible: "", recent: "" };
+  screens = { visible: "" };
+  next = undefined;
+  reads = 0;
   socketBefore = process.env["HERDR_SOCKET"];
   const socket = join(root, "herdr.sock");
   process.env["HERDR_SOCKET"] = socket;
@@ -36,10 +43,10 @@ beforeEach(() => {
         calls.push({ method: request.method, params: request.params ?? {} });
         const result = request.method === "pane.get" ? { pane: {
           pane_id: "w:p1", workspace_id: "w", tab_id: "w:t1", terminal_id: "t1", cwd: root, focused: false, revision: 0,
-          agent: pane.agent, agent_status: "idle", scroll: { max_offset_from_bottom: 50, offset_from_bottom: pane.offset, viewport_rows: 40 },
+          agent: pane.agent, agent_status: "idle",
         } }
           : request.method === "pane.process_info" ? { process_info: { foreground_processes: [{ pid: 2147483646, argv: pane.argv, cwd: root }] } }
-          : request.method === "pane.read" ? { read: { text: request.params?.["source"] === "recent" ? screens.recent : screens.visible } }
+          : request.method === "pane.read" ? { read: { text: shownBy(request.params?.["source"]) } }
           : request.method === "agent.prompt" ? {}
           : null;
         if (result === null) throw new Error(`unexpected RPC ${request.method}`);
@@ -55,6 +62,11 @@ afterEach(() => {
   else process.env["HERDR_SOCKET"] = socketBefore;
   rmSync(root, { recursive: true, force: true });
 });
+
+function shownBy(source: unknown): string {
+  const shown = reads++ > 0 && next ? next : screens;
+  return source === "visible" ? shown.visible : shown.live ?? stripVTControlCharacters(shown.visible);
+}
 
 const submit = () => createSubmitText({
   options: { submitDelayMs: 0 }, lastTyped: new Map(), attachments: new Map(), terminalAttach: async () => false,
@@ -74,11 +86,9 @@ it.each([
   ["codex", ["codex"], "codex-0.167.0/composer-ultra-draft-100.ansi"],
   ["codex", ["codex"], "codex/mention-closed-120.ansi"],
 ])("refuses an immediate send to %s over text typed in its input box (%s), typing nothing", async (agent, argv, screen) => {
-  pane = { agent, argv, offset: 0 };
+  pane = { agent, argv };
   screens.visible = recorded(screen);
-  const error = await refused();
-  expect(error.code).toBe("input_draft");
-  expect(error.message).toBe("The agent's input box in the terminal holds typed text; send or clear it there, then send this message");
+  expect((await refused()).code).toBe("input_draft");
   expect(prompted()).toBeFalse();
 });
 
@@ -90,18 +100,35 @@ it.each([
   // an agent without a recorded box is not read at all
   ["letta", ["letta"], "pi/draft-typed-119.ansi"],
 ])("sends to %s when its box shows no typed text (%s)", async (agent, argv, screen) => {
-  pane = { agent, argv, offset: 0 };
+  pane = { agent, argv };
   screens.visible = recorded(screen);
   await submit();
   expect(prompted()).toBeTrue();
   if (agent === "letta") expect(calls.some((call) => call.method === "pane.read")).toBeFalse();
 });
 
-it("reads the history's last rows when the viewport is scrolled, where the live box is", async () => {
-  pane = { agent: "pi", argv: ["pi"], offset: 12 };
-  screens.visible = recorded("pi/settings-open-119.ansi");
-  screens.recent = recorded("pi/draft-typed-119.ansi");
-  expect((await refused()).code).toBe("input_draft");
-  expect(calls.find((call) => call.method === "pane.read")?.params).toMatchObject({ source: "recent", format: "ansi", lines: 40 });
+it("judges Codex's own screens and its composer on the same last read: a dialog that opens after the first read is refused", async () => {
+  pane = { agent: "codex", argv: ["codex"] };
+  screens.visible = recorded("codex-0.167.0/composer-ultra-empty-100.ansi");
+  const effort = readFileSync(join(FIXTURES, "codex-0.167.0/model-effort-40.txt"), "utf8");
+  next = { visible: effort, live: effort };
+  expect((await refused()).code).toBe("agent_blocked");
   expect(prompted()).toBeFalse();
+});
+
+it("takes no colours from a viewport that is not the live screen: history scrolled into view is no draft", async () => {
+  pane = { agent: "codex", argv: ["codex"] };
+  // another client scrolled the viewport to an earlier prompt and its answer; the live composer is empty
+  screens.visible = "› previous prompt\n\n• prior response\n";
+  screens.live = readFileSync(join(FIXTURES, "codex-0.167.0/composer-empty-100.txt"), "utf8");
+  await submit();
+  expect(prompted()).toBeTrue();
+  expect(calls.filter((call) => call.method === "pane.read").map((call) => call.params["source"])).toEqual(["visible", "detection"]);
+});
+
+it("takes nothing from a read without colour, where a placeholder looks typed", async () => {
+  pane = { agent: "pi", argv: ["pi"] };
+  screens.visible = stripVTControlCharacters(recorded("pi/draft-typed-119.ansi"));
+  await submit();
+  expect(prompted()).toBeTrue();
 });

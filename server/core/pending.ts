@@ -777,7 +777,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         .catch((error: unknown) => { throw error instanceof InputDraftError ? new InputDraftError(error.draft, context.identity, error.box) : error; });
       else if (context.identity.agent === "hermes") context.screen = await freeHermesInput(paneId, context.identity);
       // any other agent's box, where its recorded shape shows typed text (freeAgentInput)
-      else await freeAgentInput(paneId, context.identity.agent, context.identity, { scroll: context.pane.scroll ?? null });
+      else await freeAgentInput(paneId, context.identity.agent, context.identity);
       // OpenCode v2 attaches a skill only through its autocomplete, never from a paste. A first message
       // goes before any Chat read the pane's catalog: the cold send's catalog (bounded reads, within the
       // catalog budget, at the pane's own version) is openCodeSkillsToType's, as for any other send

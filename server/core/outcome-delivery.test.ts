@@ -100,8 +100,9 @@ it("does not preview an unchanged pi screen after immediate delivery without a s
   });
   await submitter()(target.pane_id, "/myext", "/myext", now);
   expect(delivered).toHaveBeenCalledTimes(1);
-  // no screen baseline: only pi's box was read before the send (composer.ts freeAgentInput)
-  expect(screen.mock.calls.map(([options]) => options.format)).toEqual(["ansi"]);
+  // no screen baseline after the send: only pi's box was read, before it (composer.ts freeAgentInput)
+  const sentAt = delivered.mock.invocationCallOrder[0]!;
+  expect(screen.mock.invocationCallOrder.filter((order) => order > sentAt)).toEqual([]);
   now++;
   const url = new URL(`http://localhost/api/pane/prompt?pane_id=${target.pane_id}`);
   const shown = await (await handlePromptRequest(new Request(url), url))?.json() as PanePromptResponse;
@@ -171,9 +172,9 @@ for (const dependency of ["process-info", "transcript", "catalog", "snapshot"] a
       if (dependency === "process-info") processInfo.mockImplementation(async () => { disrupt(); return roots; });
       if (dependency === "transcript") transcript.mockImplementation(async () => { disrupt(); return null; });
       if (dependency === "catalog") catalog.mockImplementation(() => { disrupt(); return []; });
-      // the outcome's screen reads, not the read of the agent's box before the send (format ansi, composer.ts freeAgentInput)
-      if (dependency === "snapshot") snapshot.mockImplementation(async (options) => {
-        if (options.format !== "ansi") disrupt(); return screen;
+      // the outcome's screen reads after delivery, not the reads of the agent's box before it (composer.ts freeAgentInput)
+      if (dependency === "snapshot") snapshot.mockImplementation(async () => {
+        if (delivered.mock.calls.length > 0) disrupt(); return screen;
       });
       const result = await submitter()(pane.pane_id, "/myext", "/myext", now).then(() => "delivered", (error: unknown) => error);
       expect(result).toBe("delivered");

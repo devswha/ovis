@@ -1491,7 +1491,9 @@ describe("connection-owned pending input", () => {
 
   it("holds a queued message rather than pasting it over text typed in Codex's composer (freeAgentInput)", async () => {
     const footer = "  GPT-6.1-Sol default \u00b7 ~/project";
-    const f = await setup("codex-draft", "codex", `\u203a half a thought typed in the terminal\n\n${footer}\n`);
+    const f = await setup("codex-draft", "codex");
+    // Codex draws its footer in colour: the box check takes colours as its evidence, never a colourless read
+    await f.showScreen(`\u203a half a thought typed in the terminal\n\n\u001b[2m${footer}\u001b[0m\n`, footer);
     const message = await f.queue(1, "queued message");
     await f.state("idle");
     const held = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
