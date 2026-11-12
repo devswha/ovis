@@ -56,8 +56,9 @@ const readOf = (target: SummaryTarget): string => `${target.key}\n${target.stamp
 
 function timeOf(stamp: string | null, offset: number): number | null {
   if (stamp === null) return null;
-  const ms = Date.parse(stamp);
-  return Number.isNaN(ms) ? null : ms - offset;
+  const ms = Date.parse(stamp) - offset;
+  // a corrected time a Date cannot hold is no time
+  return Number.isNaN(new Date(ms).getTime()) ? null : ms;
 }
 
 const same = (a: RowSummary | undefined, b: RowSummary): boolean => a !== undefined

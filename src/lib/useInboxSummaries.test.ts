@@ -155,6 +155,15 @@ describe("SummaryReads", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("counts a corrected time a Date cannot hold as no time", async () => {
+    const { reads, calls } = harness(Date.parse("2026-11-12T10:00:00.000Z"));
+    reads.sync([target("a")]);
+    // the server's clock is behind this device's: the latest time a Date holds, corrected, passes it
+    calls[0]!.resolve(answer({ "pane-a": { ...said("far", "+275760-09-13T00:00:00.000Z"), asked_at: "+275760-09-13T00:00:00.000Z" } }, "2026-11-12T09:00:00.000Z"));
+    await settled();
+    expect(reads.summaries().get("a")).toMatchObject({ text: "far", at: null, askedAt: null });
+  });
+
   it("asks no row again when its words changed", async () => {
     const { reads, calls, waits } = harness();
     reads.sync([target("b")]);
