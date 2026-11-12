@@ -27,7 +27,7 @@ try {
     mkdirSync(folder);
     const executable = join(folder, agent);
     copyFileSync(SLEEP, executable); chmodSync(executable, 0o755);
-    const created = await workspaceCreate({ cwd: folder, label: `ovis-test-unavailable-${agent}`, focus: false });
+    const created = await workspaceCreate({ cwd: folder, label: `ovis-test-unavailable-${agent}` });
     workspaces.push(created.workspace.workspace_id);
     const pane = created.root_pane.pane_id;
     await herdrRpc("pane.send_text", { pane_id: pane, text: `${executable} 600\n` });
@@ -54,6 +54,8 @@ try {
       }
       await reason.getByRole("button", { name: "Open Terminal" }).click();
       await page.locator(`.pane-frame[data-layout-pane="${pane}"] .xterm`).first().waitFor();
+      // the terminal itself, not a peek at a command the chat never ran (whose banner would read " ran")
+      assert.equal(await page.locator(".terminal-banner-command").count(), 0, "no command banner after Open Terminal");
       assert.deepEqual(errors, []);
       await page.close();
     }

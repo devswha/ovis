@@ -313,7 +313,7 @@ describe("Muse conversation API", () => {
       // root reads a file whatever its mode
       if (process.getuid?.() !== 0) {
         chmodSync(log, 0);
-        expect(await (await fetch(url)).json()).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+        expect(await (await fetch(url)).json()).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
       }
     } finally {
       app?.stop(); await workspaceClose(created.workspace.workspace_id);
@@ -370,7 +370,7 @@ describe("Devin conversation API", () => {
       bridge = createServer({ port: 0, stateDir: state, devinDbPath: dbPath });
       const response = await fetch(`http://localhost:${bridge.port}/api/pane/conversation?pane_id=${encodeURIComponent(paneId)}`);
       expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ source: "scrollback", turns: [], unavailable: "no_reader" });
+      expect(await response.json()).toEqual({ source: "scrollback", turns: [] });
     } finally {
       bridge?.stop();
       await workspaceClose(created.workspace.workspace_id);

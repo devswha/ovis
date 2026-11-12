@@ -2942,8 +2942,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         ? <p className="chat-inline-state chat-inline-error" role="alert">{t("locked — the token gate is asking again")}</p>
         : <FailureLine action={t("Couldn't load the conversation")} failure={error} onRetry={retryRead} />)}
       {stale && error === null && <p className="chat-inline-state" role="status">{t("Updates paused — waiting for the agent's next activity")}</p>}
-      {loaded && error === null && agent === "grok" && state.source !== "conversation" && state.unavailable !== "no_integration" && <p className="chat-inline-state" role="status">{t("Grok chat is unavailable. Open Terminal to see activity and tool calls.")}</p>}
-      {loaded && error === null && agent === "agy" && state.source !== "conversation" && <p className="chat-inline-state" role="status">{t("Antigravity chat is unavailable. Open Terminal to see activity and tool calls.")}</p>}
+      {loaded && error === null && agent === "grok" && state.source !== "conversation" && state.unavailable === undefined && <p className="chat-inline-state" role="status">{t("Grok chat is unavailable. Open Terminal to see activity and tool calls.")}</p>}
+      {loaded && error === null && agent === "agy" && state.source !== "conversation" && state.unavailable === undefined && <p className="chat-inline-state" role="status">{t("Antigravity chat is unavailable. Open Terminal to see activity and tool calls.")}</p>}
       {loaded && error === null && agent === "copilot" && state.source === "scrollback" && state.hint === "copilot_ui_server" && <p className="chat-inline-state" role="status">{t("Copilot chat is unavailable. On Linux, starting Copilot with copilot --ui-server --port=0 may help. Its local API has no authentication: any program on this PC can control that session.")}</p>}
       {/* The agent's activity, where no open work block says it: before the turn has an assistant or
           tool row (Claude Code's spinner writes nothing to the transcript), and while a native turn
@@ -2998,8 +2998,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     /> : <div className="chat-view" ref={scroller} onScroll={onScroll} role="log" aria-live="polite" aria-label={logLabel}>
       <div className="chat-transcript" data-conversation-source={state.conversationSource}>
         <ChatFallback paneId={paneId} agent={agent} visible={visible} messages={state.messages} scrollback={state.scrollback} outcomes={outcomes} restored={restored} actions={outcomeActions} skills={skillMatcher}
-          // Grok (but for its missing integration), Antigravity and a Copilot with a hint have their own line below
-          unavailable={(agent === "grok" && state.unavailable !== "no_integration") || agent === "agy" || state.hint !== undefined ? undefined : state.unavailable} onOpenTerminal={openTerminal} />
+          // a Copilot with a hint has its own line below; Grok and Antigravity keep theirs only where no reason is known
+          unavailable={state.hint !== undefined ? undefined : state.unavailable} onOpenTerminal={openTerminal} />
         {footer}
       </div>
     </div>}

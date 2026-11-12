@@ -168,8 +168,13 @@ it("says why a conversation could not be read, in the few words the chat can exp
     expect(await ask(new Unavailable("transcript_unreadable"))).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
     expect(await ask(new Unavailable("branch_unreadable"))).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
     expect(await ask(new Unavailable("no_recognized_transcript", undefined, "agent_cwd_missing"))).toEqual({ source: "scrollback", turns: [], unavailable: "no_folder" });
-    // a plain shell's scrollback is its expected view, and an agent with no reader reads the same: the chat tells them apart by the pane's agent
+    // "can't read it yet" only for an agent no reader exists for: not a plain shell, nor an agent Ovis reads whose pane it could not tie
+    expect(await ask(new Unavailable("no_recognized_transcript"))).toEqual({ source: "scrollback", turns: [] });
+    panes[pane] = { agent: "droid", process: [] };
     expect(await ask(new Unavailable("no_recognized_transcript"))).toEqual({ source: "scrollback", turns: [], unavailable: "no_reader" });
+    panes[pane] = { agent: "devin", process: [] };
+    expect(await ask(new Unavailable("no_recognized_transcript"))).toEqual({ source: "scrollback", turns: [] });
+    delete panes[pane];
     // a reason the chat has no words for says nothing rather than something wrong; nor does a Copilot stage (a log cut, a peer)
     expect(await ask(new Unavailable("no_session_path", undefined, "copilot_log_truncated"))).toEqual({ source: "scrollback", turns: [] });
     expect(await ask(new Unavailable("pane_not_found"))).toEqual({ source: "scrollback", turns: [] });

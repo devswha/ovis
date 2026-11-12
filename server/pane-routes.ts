@@ -29,27 +29,36 @@ const conversationDiagnostics = new ConversationDiagnostics();
 
 /** The agents whose chat herdr's integration alone binds, by the session it reports (opencode.ts, grok-store.ts). */
 const INTEGRATION_BOUND = new Set(["opencode", "grok"]);
-/** a look on a chat's fallback poll: short, and the list read again only now and then */
-const INTEGRATION_LOOK_MS = 2000;
+/**
+ * The agents a conversation reader exists for (conversation.ts resolveTranscript): a pane of one that is not read
+ * (a label that does not match its process, a Devin pane with no matching session) is no "Ovis can't read it yet".
+ */
+const READ_AGENTS = new Set(["claude", "codex", "pi", "omp", "omo", "gjc", "dsh", "dsh-tui", "kiro", "copilot", "grok", "agy", "muse", "letta", "kimi", "kimi-code", "devin", "opencode", "hermes", "cmd"]);
+/** each look on a chat's fallback poll is short (the chat's read gives up at 15 s), and the list read again only now and then */
+const LOOK_MS = 2000;
 const INTEGRATION_LIST_TTL_MS = 30_000;
 let integrations: { at: number; list: Promise<Awaited<ReturnType<typeof integrationList>>> } | null = null;
 
 /**
- * Whether the pane runs such an agent, herdr reported no session for it, and herdr's integration for it is not
- * installed: then none ever is, and installing it is what the user can do. A failed look says nothing, and the
- * reason stays the plainer one.
+ * The reason told for a pane, where the pane's agent changes it: `no_reader` only for an agent no reader exists for;
+ * `no_integration` for `not_found` in a pane of an agent whose session only herdr's integration reports, with none
+ * reported and that integration not installed (then none ever is, and installing it is what the user can do). A
+ * failed look says nothing more: no reason rather than a wrong one, or the plainer one.
  */
-async function integrationMissing(paneId: string): Promise<boolean> {
+async function paneReason(paneId: string, reason: ReturnType<typeof unavailableReason>): Promise<ReturnType<typeof unavailableReason>> {
+  if (reason !== "not_found" && reason !== "no_reader") return reason;
   try {
-    const pane = await paneGet(paneId, undefined, INTEGRATION_LOOK_MS);
-    if (typeof pane.agent !== "string" || !INTEGRATION_BOUND.has(pane.agent) || pane.agent_session) return false;
+    const pane = await paneGet(paneId, undefined, LOOK_MS);
+    const agent = typeof pane.agent === "string" ? pane.agent : null;
+    if (reason === "no_reader") return agent === null || READ_AGENTS.has(agent) ? undefined : reason;
+    if (agent === null || !INTEGRATION_BOUND.has(agent) || pane.agent_session) return reason;
     if (integrations === null || performance.now() - integrations.at > INTEGRATION_LIST_TTL_MS) {
-      integrations = { at: performance.now(), list: integrationList() };
+      integrations = { at: performance.now(), list: integrationList(undefined, LOOK_MS) };
       integrations.list.catch(() => { integrations = null; });
     }
-    return (await integrations.list).some((integration) => integration.target === pane.agent && integration.state === "not_installed");
+    return (await integrations.list).some((integration) => integration.target === agent && integration.state === "not_installed") ? "no_integration" : reason;
   } catch {
-    return false;
+    return reason === "no_reader" ? undefined : reason;
   }
 }
 
@@ -368,8 +377,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
       if (error instanceof ConversationUnavailable) {
         conversationDiagnostics.unavailable(paneId, error, requestIdContext.getStore()?.id);
         const recovery = page.history_id !== undefined && copilotRecoverable(error.diagnostic) ? { recovery: "waiting" } : {};
-        const reason = unavailableReason(error);
-        const unavailable = reason === "not_found" && await integrationMissing(paneId) ? "no_integration" : reason;
+        const unavailable = await paneReason(paneId, unavailableReason(error));
         return jsonResponse({ source: "scrollback", turns: [], ...recovery, ...(error.hint ? { hint: error.hint } : {}), ...(unavailable ? { unavailable } : {}), ...(error.screen ? { metadata: error.screen, screen: true } : {}) });
       }
       return errorResponse(error);
