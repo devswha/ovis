@@ -102,6 +102,40 @@ function nextId(): string {
   return `br-${Date.now().toString(36)}-${requestCounter}`;
 }
 
+// Opt-in per-method tally of herdrRpc traffic, for measuring what a poll actually costs.
+// Off unless HERDR_RPC_COUNT=1, read once at module load rather than per call so a
+// measurement window cannot flip mid-run.
+let rpcCounting = false;
+let rpcCounts: Map<string, number> | null = null;
+
+/**
+ * The public counter interface, kept as three named calls rather than inlined expressions
+ * because another consumer reads it as a report: toggling, reading a copy, and delimiting a
+ * measurement window.
+ *
+ * `setHerdrRpcCounting` is the only place the tally is switched; module load calls it once
+ * with the env flag, never per call, so a window cannot flip mid-run.
+ */
+export function setHerdrRpcCounting(enabled: boolean): void {
+  rpcCounting = enabled;
+  rpcCounts = enabled ? new Map() : null;
+}
+
+/**
+ * Calls made per method since the last reset, as a plain object: the consumer is a report,
+ * not a Map user, and handing back a copy stops a caller from mutating the tally.
+ */
+export function herdrRpcCounts(): Readonly<Record<string, number>> {
+  return Object.fromEntries(rpcCounts ?? []);
+}
+
+/** Zeroes the tally so a measurement can delimit its own window. */
+export function resetHerdrRpcCounts(): void {
+  rpcCounts?.clear();
+}
+
+setHerdrRpcCounting(process.env["HERDR_RPC_COUNT"] === "1");
+
 /**
  * The most bytes one herdr line may hold before its newline, checked before anything is decoded.
  * herdr's schema sets no finite maximum for a reply (`PaneReadResult.text` is an unbounded string,
@@ -263,6 +297,9 @@ export async function herdrRpc(
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
   guard?: () => boolean,
 ): Promise<unknown> {
+  // Counted on entry, not on success: a call that times out or is refused by `guard` still
+  // costs the bridge an attempt, and a report that omitted them would understate the load.
+  if (rpcCounting) rpcCounts?.set(method, (rpcCounts?.get(method) ?? 0) + 1);
   const id = nextId();
   const started = performance.now();
   const key = JSON.stringify([socketPath, method]); // private bookkeeping only; never logged
