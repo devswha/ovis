@@ -345,13 +345,18 @@ const PICKER_CURSOR_ROW_RE = /^[❯›>❭]\s*\S/;
  * last two lines, and a row under a cursor marker in the few lines above it. Agents no reader knows draw their folder
  * trust this way at start (Devin 2026.7, Copilot 1.0.109, Antigravity 1.5.6), and herdr reports them at rest under it,
  * so a chat message's paste and Enter would pick the row under the cursor ("Yes, trust") and the message would be lost.
+ * A narrow pane wraps the hint onto a second row, so two rows joined (where the wrap fell inside a word or not) count too.
  */
 export function agentPickerOwnsScreen(screen: string): boolean {
   const shown = screen.replace(ANSI_RE, "").split(/\r?\n/).filter((line) => cleanLine(line) && !isDivider(line)).map(cleanLine);
-  const hint = shown.slice(-2).findIndex((line) => PICKER_MOVE_RE.test(line) && PICKER_CHOOSE_RE.test(line));
-  if (hint < 0) return false;
-  const end = shown.length - 2 + hint;
-  return shown.slice(Math.max(0, end - 8), end).some((line) => PICKER_CURSOR_ROW_RE.test(line));
+  const isHint = (line: string): boolean => PICKER_MOVE_RE.test(line) && PICKER_CHOOSE_RE.test(line);
+  // where the hint starts: one row of the last two, or two rows wrapped, ending on the last row or the one before it
+  const starts = [shown.length - 2, shown.length - 1].filter((start) => start >= 0 && isHint(shown[start]!));
+  for (const start of [shown.length - 2, shown.length - 3]) {
+    const [head, tail] = [shown[start], shown[start + 1]];
+    if (start >= 0 && head !== undefined && tail !== undefined && (isHint(`${head} ${tail}`) || isHint(`${head}${tail}`))) starts.push(start);
+  }
+  return starts.some((end) => shown.slice(Math.max(0, end - 8), end).some((line) => PICKER_CURSOR_ROW_RE.test(line)));
 }
 
 /**

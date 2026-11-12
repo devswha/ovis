@@ -95,3 +95,24 @@ it("refuses a chat message over Devin's folder trust and writes nothing", async 
   expect(typed).not.toHaveBeenCalled();
   expect(keys).not.toHaveBeenCalled();
 });
+
+// the trust can come up after the read before agent.prompt: once herdr refuses the prompt, the paste typed instead
+// would land in it, so the screen is read for a picker again right before that paste
+it("types no chat message after a refused prompt once Devin's folder trust came up", async () => {
+  const { prompt, typed, keys } = herdr();
+  spyOn(client, "paneGet").mockResolvedValue({ pane_id: "w:p1", agent: "devin", agent_status: "idle", cwd: "/tmp", terminal_id: "devin-test" } as Awaited<ReturnType<typeof client.paneGet>>);
+  const composer = readFileSync(new URL("../fixtures/devin-3000.12.43-composer.txt", import.meta.url), "utf8");
+  const trust = readFileSync(new URL("../fixtures/devin-3000.12.43-trust.txt", import.meta.url), "utf8");
+  let screen = composer;
+  spyOn(client, "paneRead").mockImplementation(async () => ({ text: screen }) as Awaited<ReturnType<typeof client.paneRead>>);
+  prompt.mockImplementation(async () => {
+    screen = trust;
+    throw new client.HerdrError("agent_not_ready", "fixture refusal");
+  });
+  const failed = await submitter()("w:p1", "hello devin", "hello devin", Date.now(), false).then(() => null, (error: unknown) => error);
+  expect(prompt).toHaveBeenCalledTimes(1);
+  expect(failed).toBeInstanceOf(client.HerdrError);
+  expect((failed as client.HerdrError).code).toBe("agent_blocked");
+  expect(typed).not.toHaveBeenCalled();
+  expect(keys).not.toHaveBeenCalled();
+});

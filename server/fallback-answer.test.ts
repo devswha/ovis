@@ -196,6 +196,21 @@ test.each([
   expect(agentPickerOwnsScreen(recorded(name))).toBe(picker);
 });
 
+// a narrow pane wraps the key hint onto a second row: neither row alone both moves and chooses
+test.each(["↑↓ sel", "↑↓ select ·", "↑↓ select · "])("tells Devin's folder trust with its key hint wrapped after %p", (head) => {
+  const lines = recorded("devin-3000.12.43-trust").split("\n");
+  const at = lines.findIndex((line) => line.includes("↑↓ select"));
+  const hint = lines[at]!;
+  const cut = hint.indexOf(head) + head.length;
+  lines.splice(at, 1, hint.slice(0, cut), hint.slice(cut));
+  expect(agentPickerOwnsScreen(lines.join("\n"))).toBe(true);
+});
+
+test("tells a picker whose worded key hint wraps inside a word", () => {
+  const screen = recorded("devin-3000.12.43-trust").replace(/ ↑↓ select .*/, " up/down to move · en\nter to select");
+  expect(agentPickerOwnsScreen(screen)).toBe(true);
+});
+
 test("offers and answers Devin's folder trust while herdr reports Devin at rest", async () => {
   await withPane("devin", "idle", recorded("devin-3000.12.43-trust"), async (pane) => {
     const prompt = (await card())!;

@@ -456,6 +456,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
     let sentText = text;
     let command: ReturnType<typeof prepareCommandSend>;
     let beforeScreen: string | undefined;
+    // an agent no reader knows whose screen was read for a picker of its own before agent.prompt (freeAgentPicker)
+    let pickerAgent: string | undefined;
     // herdr's foreground answer read before this send, which the outcome's process binding uses again
     let seen: ProcessInfo | undefined;
     // the send-time screen's history row, once the read alongside delivery confirms it; `noted`: the send it goes on
@@ -716,7 +718,10 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           inTime();
         } else if (agent === "codex") await freeCodexInput(paneId);
         // and a picker of its own that has an agent's input while herdr reports it at rest (agents no reader knows)
-        if (agent && !SCREEN_READ_AGENTS.has(agent)) await freeAgentPicker(paneId, agent);
+        if (agent && !SCREEN_READ_AGENTS.has(agent)) {
+          pickerAgent = agent;
+          await freeAgentPicker(paneId, agent);
+        }
         const watch = pane ? startOpenCodeWatch(pane, command, options.openCodeStateDir) : null;
         try {
           inTime();
@@ -760,6 +765,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
       // lines: several of them are shaped here as the same block typed into the mirror is. herdr is
       // asked only for such a block, so a one-line message never waits on it.
       const shaped = await mirrorInput(closeMention(payload), async () => await terminalAttach() ? null : await paneAgentOf(paneId));
+      // agent.prompt was refused, and its picker may have come up since the read before it: read once more, last
+      if (pickerAgent !== undefined) await freeAgentPicker(paneId, pickerAgent);
       inTime();
       await paneSendText(paneId, shaped, undefined, mayType).catch(refusal);
       // fixed wait: a TUI busy with the paste takes an Enter in the same chunk for a newline (SUBMIT_DELAY_MS)
