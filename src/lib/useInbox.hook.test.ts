@@ -141,6 +141,17 @@ describe("useInbox", () => {
     expect(backs).toBe(2);
   });
 
+  it("takes a press again once the page shows again with no popstate (a cancelled leave, a restore from the page cache)", async () => {
+    await mount(true, paneLink);
+    historyState = { [INBOX_FROM_KEY]: true };
+
+    await act(async () => { inbox.back(); inbox.back(); });
+    expect(backs).toBe(1);
+    await act(async () => { events.dispatchEvent(new Event("pageshow")); });
+    await act(async () => { inbox.back(); });
+    expect(backs).toBe(2);
+  });
+
   it("takes a press again once the list has shown", async () => {
     await mount(true, paneLink);
     historyState = { [INBOX_FROM_KEY]: true };

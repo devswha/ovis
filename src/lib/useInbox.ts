@@ -30,12 +30,17 @@ export function useInbox({ setting, initialLink, drawerOpenRef }: { setting: boo
   const show = useCallback(() => setOpen(true), []);
   const leave = useCallback(() => setOpen(false), []);
   // a step back asked of the history and not landed yet: the entry still carries the mark until it has, and a
-  // second step would go past the list (out of the app on a cold start)
+  // second step would go past the list (out of the app on a cold start). A step that leaves the document and is
+  // cancelled, or a page restored from the page cache, fires pageshow and no popstate
   const goingBack = useRef(false);
   useEffect(() => {
     const landed = (): void => { goingBack.current = false; };
     window.addEventListener("popstate", landed);
-    return () => window.removeEventListener("popstate", landed);
+    window.addEventListener("pageshow", landed);
+    return () => {
+      window.removeEventListener("popstate", landed);
+      window.removeEventListener("pageshow", landed);
+    };
   }, []);
   useEffect(() => { if (shown) goingBack.current = false; }, [shown]);
   /** the header's Back: the entry the list pushed is left through the history, any other place opens the list */
