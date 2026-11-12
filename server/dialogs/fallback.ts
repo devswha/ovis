@@ -333,6 +333,27 @@ function fallbackGjcSelectionMenu(agent: string, lines: string[], shown: number[
   return { start, rows, selectedIndex };
 }
 
+/** a picker's key hint: a way to move ("↑↓", "↑/↓", "up/down") and a way to choose with Enter ("↵ confirm", "enter to select") */
+const PICKER_MOVE_RE = /↑\s*\/?\s*↓|\bup\/down\b/i;
+const PICKER_CHOOSE_RE = /[↵⏎]|\benter\b/i;
+
+/** a picker's row under its cursor: a marker, then the row's words ("❭ 1 Yes, trust", "❯ 1. Yes", "> Yes, I trust this folder") */
+const PICKER_CURSOR_ROW_RE = /^[❯›>❭]\s*\S/;
+
+/**
+ * Whether a picker of the agent's own owns its input: a key hint that moves and chooses with Enter among the screen's
+ * last two lines, and a row under a cursor marker in the few lines above it. Agents no reader knows draw their folder
+ * trust this way at start (Devin 2026.7, Copilot 1.0.109, Antigravity 1.5.6), and herdr reports them at rest under it,
+ * so a chat message's paste and Enter would pick the row under the cursor ("Yes, trust") and the message would be lost.
+ */
+export function agentPickerOwnsScreen(screen: string): boolean {
+  const shown = screen.replace(ANSI_RE, "").split(/\r?\n/).filter((line) => cleanLine(line) && !isDivider(line)).map(cleanLine);
+  const hint = shown.slice(-2).findIndex((line) => PICKER_MOVE_RE.test(line) && PICKER_CHOOSE_RE.test(line));
+  if (hint < 0) return false;
+  const end = shown.length - 2 + hint;
+  return shown.slice(Math.max(0, end - 8), end).some((line) => PICKER_CURSOR_ROW_RE.test(line));
+}
+
 /** The same framed question must still own the inline Other editor before any text is sent. */
 export function gjcCustomEditorMatches(screen: string, expected: ParsedPrompt, draft: string): boolean {
   if (expected.responder !== "fallback-gjc-menu" || expected.customMenuIndex === null) return false;

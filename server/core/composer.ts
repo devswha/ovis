@@ -18,7 +18,7 @@ import { processStartedAt } from "../process-start.ts";
 import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
 import { bindCommandProcess, CLAUDE_CLEAR_INPUT_KEYS, claudeClearableDraft, claudeInputDraft, claudeInputEmpty, claudeRestoredDraft, claudeRewindOpen, claudeSendAnywayBox, codexQuestionsCollapsed, heldCandidate, historyEndShowsLive, lastChatSubmitted, hermesInputDraft, noteSubmitted, parseInteractivePrompt, prepareCommandSend, viewportShowsLive } from "../prompt.ts";
-import { registry } from "../dialogs/registry.ts";
+import { agentPickerWaits, registry, SCREEN_READ_AGENTS } from "../dialogs/registry.ts";
 import { codexOwnScreenOpen, CODEX_OWN_SCREEN_MESSAGE } from "../dialogs/codex.ts";
 import { CLAUDE_REWIND_OPEN_MESSAGE } from "../dialogs/claude.ts";
 import { type PendingIdentity, PendingInputError } from "../pending-input.ts";
@@ -315,6 +315,21 @@ const screenText = (text: string): string => stripVTControlCharacters(text).spli
 export async function freeCodexInput(paneId: string): Promise<void> {
   if (codexOwnScreenOpen((await paneRead({ paneId, source: "detection", format: "text" })).text)) {
     throw new HerdrError("agent_blocked", CODEX_OWN_SCREEN_MESSAGE);
+  }
+}
+
+/** The refusal of a chat send over a picker of the agent's own (agentPickerWaits): the chat's card answers it. */
+export const AGENT_PICKER_MESSAGE = "The agent is waiting for an answer to its own menu; answer the card above, then send";
+
+/**
+ * An agent no reader knows, as every chat send reads it last, right before herdr is written to. herdr reports such an
+ * agent at rest under a picker of its own (Devin's and Copilot's folder trust at start), so agent.prompt would paste
+ * the message there and its Enter would pick the row under the cursor ("Yes, trust"), losing the message. While one
+ * is on screen the send is refused, as over Codex's own screens, and the message stays where it was written.
+ */
+export async function freeAgentPicker(paneId: string, agent: string): Promise<void> {
+  if (agentPickerWaits(agent, (await paneRead({ paneId, source: "detection", format: "text" })).text)) {
+    throw new HerdrError("agent_blocked", AGENT_PICKER_MESSAGE);
   }
 }
 
@@ -700,6 +715,8 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
           await freeAgentInput(paneId, agent, identity ?? undefined, agent === "codex");
           inTime();
         } else if (agent === "codex") await freeCodexInput(paneId);
+        // and a picker of its own that has an agent's input while herdr reports it at rest (agents no reader knows)
+        if (agent && !SCREEN_READ_AGENTS.has(agent)) await freeAgentPicker(paneId, agent);
         const watch = pane ? startOpenCodeWatch(pane, command, options.openCodeStateDir) : null;
         try {
           inTime();
