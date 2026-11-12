@@ -1784,9 +1784,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   needs the reader, what works, what just finished; then how long each has been so. Required
   content: the Agents head with its fold; each state's heading with its word, count and caret;
   each row's agent mark, title, time in its state and `⋯` menu, and the marks it had (plan,
-  helpers, progress, context ring, plugin tokens); a waiting agent's reason and a row's place, on
-  the row where they fit whole and always in its tooltip and its `⋯` menu (a phone's sheet, a
-  popover elsewhere); the pinned card; the
+  helpers, progress, context ring, plugin tokens); a waiting agent's reason on the row where it
+  fits whole, a row's place where at least `4.5em` of it fits (none on a touch screen's one-line
+  row), and both always in its tooltip and its `⋯` menu (a phone's sheet, a popover elsewhere);
+  the pinned card; the
   fold lines; the empty line. Left out on purpose: a state mark on every row under a heading that
   already says the state; on a One line row, a second line, and on a touch screen the place; a
   clock that runs by the second.
