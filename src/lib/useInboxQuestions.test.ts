@@ -91,7 +91,7 @@ describe("QuestionReads", () => {
     expect(calls[4]!.paneId).toBe("pane-e");
   });
 
-  it("stores nothing for a failed read, reads it once more at the next sync and not a third time", async () => {
+  it("stores nothing for a failed read, tries it once more after the retry's wait without a sync, and not a third time", async () => {
     const { reads, calls, waits, notified } = harness();
     reads.sync([target("a")]);
     const before = reads.texts();
@@ -99,19 +99,41 @@ describe("QuestionReads", () => {
     await settled();
     expect(reads.texts()).toBe(before);
     expect(notified()).toBe(0);
-    expect(waits).toHaveLength(0);
-    reads.sync([target("a")]);
+    expect(waits.map((wait) => wait.ms)).toEqual([QUESTION_RETRY_MS]);
+    waits[0]!.run();
     expect(calls).toHaveLength(2);
     calls[1]!.reject(new Error("offline"));
     await settled();
+    expect(waits).toHaveLength(1);
     reads.sync([target("a")]);
     expect(calls).toHaveLength(2);
-    expect(waits).toHaveLength(0);
   });
 
-  it("releases the slot of a read whose answer cannot be worded, and reads it once more at the next sync", async () => {
+  it("stores the words the retry after a failed read finds", async () => {
+    const { reads, calls, waits } = harness();
+    reads.sync([target("a")]);
+    calls[0]!.reject(new Error("offline"));
+    await settled();
+    waits[0]!.run();
+    calls[1]!.resolve({ prompt: prompt("Allow command?") });
+    await settled();
+    expect(reads.texts().get("a")).toBe("Allow command?");
+  });
+
+  it("cancels the retry of a failed read when its target leaves, and reads nothing when it fires", async () => {
+    const { reads, calls, waits } = harness();
+    reads.sync([target("a")]);
+    calls[0]!.reject(new Error("offline"));
+    await settled();
+    reads.sync([]);
+    expect(waits[0]!.cancelled).toBe(true);
+    waits[0]!.run();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("releases the slot of a read whose answer cannot be worded, and reads it once more after the retry's wait", async () => {
     // bun test fails a test during which a promise rejection goes unhandled
-    const { reads, calls } = harness((asked) => { if (asked.question === "Broken") throw new Error("no words"); return asked.question; });
+    const { reads, calls, waits } = harness((asked) => { if (asked.question === "Broken") throw new Error("no words"); return asked.question; });
     reads.sync(["a", "b", "c"].map((key) => target(key)));
     calls[0]!.resolve({ prompt: prompt("Broken") });
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -120,7 +142,7 @@ describe("QuestionReads", () => {
     calls[1]!.resolve({ prompt: prompt("B") });
     await settled();
     expect(reads.texts().get("b")).toBe("B");
-    reads.sync(["a", "b", "c"].map((key) => target(key)));
+    waits[0]!.run();
     expect(calls.map((call) => call.paneId)).toEqual(["pane-a", "pane-b", "pane-c", "pane-a"]);
   });
 

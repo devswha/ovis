@@ -45,8 +45,8 @@ const readOf = (ask: Ask): string => `${ask.key}\n${ask.seq}\n${ask.language}`;
  * once more each time the list is shown (`shownAgain`): a seq is no prompt's identity (a bridge without one
  * gives every wait 0, and two prompts can share a state), so the words kept from before are checked. The reader
  * lives as long as the page: the words stay across mounts, shown until the new answer lands, and a read still
- * on its way is not started twice. A read gets two attempts: an empty answer is asked once more after
- * QUESTION_RETRY_MS, a failed one at the next sync; a second empty answer removes the words. A target's words
+ * on its way is not started twice. A read gets two attempts: an empty or failed answer is asked once more
+ * after QUESTION_RETRY_MS, cancelled when the target moves on or leaves; a second empty answer removes the words. A target's words
  * belong to the seq they were read for and go when it moves on or leaves. An answer for a target gone or
  * moved on since is dropped.
  */
@@ -155,12 +155,19 @@ export class QuestionReads {
       if (this.current.get(ask.key) !== words) this.change((texts) => { texts.set(ask.key, words); });
       return;
     }
+    // asked twice and no question: the words read before (a showing earlier, another language) are gone
+    if (!this.retry(ask) && this.current.has(ask.key)) this.change((texts) => { texts.delete(ask.key); this.readFor.delete(ask.key); });
+  }
+
+  /** a failed read is tried once more as an empty one is, without waiting for the list to change */
+  private failed(ask: Ask): void {
+    if (this.isCurrent(ask)) this.retry(ask);
+  }
+
+  /** Asks again after QUESTION_RETRY_MS, once: false when this was the second attempt. */
+  private retry(ask: Ask): boolean {
     const read = readOf(ask);
-    if (this.retried.has(read)) {
-      // asked twice and no question: the words read before (a showing earlier, another language) are gone
-      if (this.current.has(ask.key)) this.change((texts) => { texts.delete(ask.key); this.readFor.delete(ask.key); });
-      return;
-    }
+    if (this.retried.has(read)) return false;
     this.retried.add(read);
     this.waits.set(read, this.wait(() => {
       this.waits.delete(read);
@@ -168,15 +175,7 @@ export class QuestionReads {
       this.queue.push(ask);
       this.pump();
     }, QUESTION_RETRY_MS));
-  }
-
-  /** a failed read is started again at the next sync, once */
-  private failed(ask: Ask): void {
-    if (!this.isCurrent(ask)) return;
-    const read = readOf(ask);
-    if (this.retried.has(read)) return;
-    this.retried.add(read);
-    this.started.delete(read);
+    return true;
   }
 }
 
