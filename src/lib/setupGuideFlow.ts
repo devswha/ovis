@@ -204,9 +204,12 @@ export function readSignedIn<T>(read: () => Promise<T>, found: (answer: T) => vo
   return () => { live = false; cancelRetry(); };
 }
 
-/** The agents this PC is signed in to, from its plan usage: one whose sign-in expired is not counted. */
+/**
+ * The agents this PC is signed in to, from its plan usage: one whose sign-in expired is not counted, nor an account
+ * known only from another tool's record of it, which is that tool's sign-in and not the agent's.
+ */
 export function signedInAgents(providers: readonly ProviderUsage[]): string[] {
-  return [...new Set(providers.filter((usage) => usage.problem !== "expired").map((usage) => usage.id))];
+  return [...new Set(providers.filter((usage) => usage.problem !== "expired" && usage.recorded === undefined).map((usage) => usage.id))];
 }
 
 export type CheckStatus = { kind: "looking" } | { kind: "installed"; version: string | null } | { kind: "missing" } | { kind: "unknown" };

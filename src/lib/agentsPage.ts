@@ -84,8 +84,10 @@ export type SignInState =
 
 export function signInState(provider: UsageProviderId | null, accounts: readonly ProviderUsage[], read: boolean, missing: string | null = null): SignInState {
   if (provider === null || !read) return { kind: "unknown" };
-  if (accounts.length === 0) return missing === null ? { kind: "none" } : { kind: "unreadable", command: missing };
-  const problems = accounts.filter((usage) => usage.problem !== null).length;
-  if (problems > 0) return { kind: "problem", count: accounts.length, problems };
-  return { kind: "signed-in", count: accounts.length, account: accounts.length === 1 ? accounts[0]!.account : null };
+  // another tool's record of an account is listed with the accounts, but it is no sign-in of this agent's
+  const signIns = accounts.filter((usage) => usage.recorded === undefined);
+  if (signIns.length === 0) return missing === null ? { kind: "none" } : { kind: "unreadable", command: missing };
+  const problems = signIns.filter((usage) => usage.problem !== null).length;
+  if (problems > 0) return { kind: "problem", count: signIns.length, problems };
+  return { kind: "signed-in", count: signIns.length, account: signIns.length === 1 ? signIns[0]!.account : null };
 }

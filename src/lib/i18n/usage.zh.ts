@@ -95,4 +95,7 @@ export const USAGE_ZH: Record<string, string> = {
   "Limit resets": "限额重置",
   "Expires in {time}": "{time}后过期",
   "{n} left": "剩余 {n} 次",
+  "Recorded by {tool}": "{tool} 的记录",
+  "Recorded by {tool}, {when}": "{tool} 的记录，{when}",
+  "It may have changed since.": "之后可能已有变化。",
 };

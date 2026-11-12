@@ -95,4 +95,7 @@ export const USAGE_JA: Record<string, string> = {
   "Limit resets": "制限リセット",
   "Expires in {time}": "{time}後に期限切れ",
   "{n} left": "残り{n}回",
+  "Recorded by {tool}": "{tool} の記録",
+  "Recorded by {tool}, {when}": "{tool} の記録、{when}",
+  "It may have changed since.": "その後変わった可能性があります。",
 };

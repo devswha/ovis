@@ -113,6 +113,9 @@ describe("the setup screen after the PC check", () => {
     const account = (id: ProviderUsage["id"], key: string, problem: ProviderUsage["problem"]): ProviderUsage => ({ id, key, account: null, plan: null, windows: [], problem, checked_at: null });
     expect(signedInAgents([])).toEqual([]);
     expect(signedInAgents([account("claude", "a", null), account("claude", "b", "rate_limited"), account("codex", "c", "expired"), account("copilot", "d", null)])).toEqual(["claude", "copilot"]);
+    // an account another tool recorded is that tool's sign-in: Claude Code is still to be signed in
+    const recorded: ProviderUsage = { ...account("claude", "r", null), checked_at: "2026-09-29T12:00:00Z", recorded: { by: "omp", stale: false } };
+    expect(signedInAgents([recorded, account("copilot", "d", null)])).toEqual(["copilot"]);
   });
 
   it("keeps an instant answer on screen briefly, and adds nothing to a slow check", () => {

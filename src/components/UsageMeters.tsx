@@ -7,7 +7,7 @@ import type { ProviderUsage, UsageCredits, UsageWindow } from "../../shared/prot
 import { useT, type Translate } from "../lib/i18n.ts";
 import { useSettings, type UsageCount, type UsageGlance } from "../lib/settings.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
-import { canSignInAgain, creditsText, formatPercent, formatResetIn, glanceWindow, HIGH_PERCENT, meterPercent, meterText, orderProviders, PROVIDER_MARK, PROVIDER_NAME, usageName, useStatuslineSwitch, useUsage, windowLabel } from "../lib/usage.ts";
+import { canSignInAgain, creditsText, formatPercent, formatResetIn, glanceWindow, HIGH_PERCENT, meterPercent, meterText, orderProviders, PROVIDER_MARK, PROVIDER_NAME, recordedNote, usageName, useStatuslineSwitch, useUsage, windowLabel } from "../lib/usage.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { UsageSignInAgain } from "./UsageLocalLogin.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -44,7 +44,7 @@ function otherHigh(usage: ProviderUsage, shown: UsageWindow | null): UsageWindow
 function Chip({ usage, count, glance }: { usage: ProviderUsage; count: UsageCount; glance: UsageGlance }) {
   const window = glanceWindow(usage, glance);
   return (
-    <span className={`usage-chip${level(window)}${usage.problem ? " has-problem" : ""}`}>
+    <span className={`usage-chip${level(window)}${usage.problem ? " has-problem" : ""}${usage.recorded ? " is-recorded" : ""}${usage.recorded?.stale ? " is-stale" : ""}`}>
       <AgentMark agent={PROVIDER_MARK[usage.id]} size={14} />
       <span className="usage-chip-value">{window ? formatPercent(meterPercent(window, count)) : "—"}</span>
       <span className="usage-chip-bar" style={{ "--fill": `${window ? meterPercent(window, count) : 0}%` } as CSSProperties} />
@@ -76,14 +76,17 @@ function Provider({ usage, now, count, onLocalLogin, onFollow, watching }: { usa
   const name = PROVIDER_NAME[usage.id];
   const offered = onLocalLogin !== undefined && canSignInAgain(usage);
   const problem = problemText(t, usage, offered);
+  const recorded = recordedNote(usage, now);
   return (
-    <section className="usage-provider" aria-label={usageName(usage)}>
+    <section className={`usage-provider${usage.recorded?.stale ? " is-stale" : ""}`} aria-label={usageName(usage)}>
       <header className="usage-provider-head">
         <AgentMark agent={PROVIDER_MARK[usage.id]} size={16} />
         <span className="usage-provider-name">{name}</span>
         {usage.plan && <span className="usage-plan">{usage.plan}</span>}
         {usage.account && <span className="usage-account" title={usage.account}>{usage.account}</span>}
       </header>
+      {/* another tool's record is never shown as a reading of our own: who recorded it, and when, comes first */}
+      {recorded && <p className="usage-note usage-recorded">{recorded.map((line) => <span key={line}>{line}</span>)}</p>}
       {problem && <p className={`usage-note${isError(usage) ? " is-problem" : ""}`}>{problem}</p>}
       {offered && <UsageSignInAgain usage={usage} onStarted={onLocalLogin} onFollow={onFollow} />}
       {/* a 403 to a token that has not expired is a refused network, not an expired sign-in: the status line can stand in */}
@@ -210,7 +213,8 @@ export function UsageMeters({ onLocalLogin, watching = false }: { /** opens a si
   const summary = shown.map((usage) => {
     const window = glanceWindow(usage, settings.usageGlance);
     const high = otherHigh(usage, window);
-    return `${usageName(usage)} ${window ? meterText(window, count) : "—"}${high ? ` (${windowLabel(high)} ${meterText(high, count)})` : ""}`;
+    const recorded = recordedNote(usage, now);
+    return `${usageName(usage)} ${window ? meterText(window, count) : "—"}${high ? ` (${windowLabel(high)} ${meterText(high, count)})` : ""}${recorded ? ` (${recorded.join(" · ")})` : ""}`;
   }).join(", ");
 
   return (

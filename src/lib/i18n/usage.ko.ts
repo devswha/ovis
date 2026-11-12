@@ -95,4 +95,7 @@ export const USAGE_KO: Record<string, string> = {
   "Limit resets": "한도 초기화권",
   "Expires in {time}": "{time} 후 만료",
   "{n} left": "{n}회 남음",
+  "Recorded by {tool}": "{tool} 기록",
+  "Recorded by {tool}, {when}": "{tool} 기록, {when}",
+  "It may have changed since.": "그 뒤로 달라졌을 수 있어요.",
 };

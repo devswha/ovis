@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Browser, BrowserContext, BrowserContextOptions } from "playwright-core";
+import type { Browser, BrowserContext, BrowserContextOptions, Page } from "playwright-core";
+import { AGENT_CATALOG, catalogRow } from "../shared/agent-catalog.ts";
 import type { UsageReport } from "../shared/protocol.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
@@ -232,6 +233,110 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
   }
   console.log("PASS plan meters beside the Settings gear: session left by default, accounts, order, hiding, week and used, row fit, popover, refresh, Escape, off switch and phone fit");
   await checkStatuslineSwitch(browser, origin);
+  await checkRecordedAccounts(browser, origin);
+}
+
+/**
+ * Two Claude accounts the server knows only from Oh My Pi's record of them, one it still reads and one it stopped
+ * reading three hours ago, beside a Codex sign-in of this PC's own.
+ */
+const recordedReport = (): UsageReport => ({
+  providers: [
+    { id: "claude", key: "claude:recorded", account: "omp@example.com", plan: null, problem: null, checked_at: at(0), recorded: { by: "omp", stale: false }, windows: [
+      { kind: "session", scope: null, used_percent: 31, resets_at: at(3), starts_at: at(3 - 5) },
+      { kind: "week", scope: null, used_percent: 52, resets_at: at(76), starts_at: at(76 - 168) },
+    ] },
+    { id: "claude", key: "claude:stale", account: "idle@example.com", plan: null, problem: null, checked_at: at(-3), recorded: { by: "omp", stale: true }, windows: [
+      { kind: "session", scope: null, used_percent: 87, resets_at: at(1.4), starts_at: at(1.4 - 5) },
+    ] },
+    { id: "codex", key: "codex:work", account: "me@work.example", plan: "pro", problem: null, checked_at: at(0), windows: [
+      { kind: "session", scope: null, used_percent: 12, resets_at: at(0.8), starts_at: at(0.8 - 5) },
+    ] },
+  ],
+});
+
+/**
+ * An account another tool recorded is never drawn as a reading of the server's own: its chip's bar is dotted and the
+ * popover, the strip's name and Settings say who recorded it and when. A stale one says it may have changed and loses
+ * its alarm colour. Neither is a sign-in of Claude Code, whose row still offers Sign in.
+ */
+async function checkRecordedAccounts(browser: Browser, origin: string): Promise<void> {
+  // the earlier checks on this server saved an order and a hidden account: this one starts from neither
+  const reset = await fetch(`${origin}/api/preferences`, { method: "PUT", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ settings: { showUsage: true, usageOrder: [], usageHidden: [], usageCount: "left", usageGlance: "session" } }) });
+  assert.equal(reset.status, 200);
+  const installed = { installed: true, binary: "/usr/bin/claude", on_path: true, version: "2.1.311", version_error: null, meets_min_version: true };
+  const claudeCode = catalogRow(AGENT_CATALOG.find((entry) => entry.id === "claude")!, "linux", installed);
+  const staged = async (context: BrowserContext): Promise<void> => {
+    await context.route("**/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [claudeCode] } }));
+    await context.route("**/api/usage/statusline", (route) => route.fulfill({ json: { installed: false, supported: true } }));
+    await context.route("**/api/usage*", (route) => route.fulfill({ json: recordedReport() }));
+    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
+  };
+  const notes = (popover: ReturnType<Page["locator"]>) => popover.locator(".usage-provider").evaluateAll((sections) =>
+    sections.map((section) => [...section.querySelectorAll(".usage-recorded > span")].map((line) => line.textContent)));
+
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  try {
+    await staged(context);
+    const page = await context.newPage();
+    await page.goto(origin);
+    const strip = page.locator(".usage-strip");
+    await strip.waitFor();
+    // the strip: a record is told from a reading by its bar, a stale one is dimmed and no longer red
+    assert.deepEqual(await page.locator(".usage-chip").evaluateAll((chips) => chips.map((chip) => [chip.querySelector(".usage-chip-value")?.textContent, ...["is-recorded", "is-stale"].filter((name) => chip.classList.contains(name))])),
+      [["69%", "is-recorded"], ["13%", "is-recorded", "is-stale"], ["88%"]]);
+    const [staleInk, dimInk] = await page.evaluate(() => [getComputedStyle(document.querySelector(".usage-chip.is-stale .usage-chip-value")!).color, getComputedStyle(document.querySelector(".usage-strip")!).color]);
+    assert.equal(staleInk, dimInk, "a stale record's percent is drawn in the dim ink, not the colour of a limit near its end");
+    assert.equal(await strip.getAttribute("aria-label"),
+      "Subscription usage: Claude · omp@example.com 69% left (Recorded by Oh My Pi, just now), Claude · idle@example.com 13% left (Recorded by Oh My Pi, 3 h ago · It may have changed since.), Codex · me@work.example 88% left");
+
+    // the popover: who recorded it and when under the account, a second line once it is stale, nothing under a reading of our own
+    await strip.click();
+    const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+    await popover.waitFor();
+    assert.deepEqual(await notes(popover), [["Recorded by Oh My Pi, just now"], ["Recorded by Oh My Pi, 3 h ago", "It may have changed since."], []]);
+    assert.deepEqual(await popover.locator(".usage-provider").evaluateAll((sections) => sections.map((section) => section.classList.contains("is-stale"))), [false, true, false]);
+    const stale = popover.locator(".usage-provider.is-stale");
+    assert.equal(await stale.locator(".usage-row").first().evaluate((row) => getComputedStyle(row.querySelector(".usage-row-value")!).color === getComputedStyle(row.querySelector(".usage-row-reset")!).color), true,
+      "a stale record's 13% left is drawn in the dim ink, not red");
+    assert.equal(await popover.locator(".usage-note.is-problem").count(), 0, "a record is no problem of a sign-in");
+    assert.equal(await popover.getByRole("button", { name: /Sign in again/ }).count(), 0);
+    if (process.env.UI_EVIDENCE_DIR) await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-popover.png") });
+
+    // Settings: both are listed under Claude Code, which they do not sign in: its row says so and offers Sign in
+    await page.keyboard.press("Escape");
+    await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
+    await openSettingsPage(page, "Agents");
+    const row = page.locator('.agents-item[data-agent="claude"]');
+    assert.equal(await row.locator(".agents-state").textContent(), "Not signed in");
+    await row.getByRole("button", { name: "Sign in to Claude Code", exact: true }).waitFor();
+    await row.locator(".agents-toggle").click();
+    assert.deepEqual(await row.locator(".usage-accounts-row").evaluateAll((rows) => rows.map((account) => [...account.querySelectorAll(".usage-account-meta > span")].map((cell) => cell.textContent))),
+      [["Recorded by Oh My Pi · Session 69% left", "just now"], ["Recorded by Oh My Pi · Session 13% left", "Outdated"]]);
+    assert.equal(await row.getByRole("button", { name: /Sign in again/ }).count(), 0);
+    if (process.env.UI_EVIDENCE_DIR) await page.getByRole("tabpanel", { name: "Agents", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-settings.png") });
+  } finally {
+    await context.close();
+  }
+
+  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, locale: "en-US" });
+  try {
+    await staged(phone);
+    const page = await phone.newPage();
+    await page.goto(origin);
+    await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+    await page.locator(".usage-strip").click();
+    const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+    await popover.waitFor();
+    const box = await popover.boundingBox();
+    assert.ok(box && box.x >= 0 && box.x + box.width <= 390, "the popover stays inside the phone's screen");
+    // each line of the note is one line: no sentence is broken in the middle on a phone
+    assert.equal(await popover.locator(".usage-recorded > span").evaluateAll((lines) => lines.every((line) => line.getClientRects().length === 1 && line.scrollWidth <= line.clientWidth)), true);
+    if (process.env.UI_EVIDENCE_DIR) await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-popover-phone.png") });
+  } finally {
+    await phone.close();
+  }
+  console.log("PASS accounts another tool recorded: dotted chip, recorder and age in the popover, strip and Settings, a stale one dimmed and no alarm, no sign-in of Claude Code, phone fit");
 }
 
 /**
