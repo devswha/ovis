@@ -77,18 +77,20 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   // third stamp has no counter of herdr's, so nothing proves it.
   await open();
   const counters = await page.evaluate(async ({ waiting, resting, uncounted, waited, rested }) => {
-    const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { herdr_lifetime?: string | null; finish_epoch?: string; panes: Array<{ pane_id: string; finish_id?: number }>; agents: Array<{ pane_id: string; state_change_seq?: number }> } };
+    const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { herdr_lifetime?: string | null; finish_epoch?: string; panes: Array<{ pane_id: string; terminal_id: string; finish_id?: number }>; agents: Array<{ pane_id: string; state_change_seq?: number }> } };
     const counter = (pane: string): number | undefined => snapshot.agents.find((agent) => agent.pane_id === pane)?.state_change_seq;
     const finishes = (pane: string): number | undefined => snapshot.panes.find((entry) => entry.pane_id === pane)?.finish_id;
+    const terminal = (pane: string): string | undefined => snapshot.panes.find((entry) => entry.pane_id === pane)?.terminal_id;
     const now = Date.now();
     localStorage.setItem("ovis:agent-state-since", JSON.stringify({ version: 1, pcs: { local: { lifetime: snapshot.herdr_lifetime, epoch: snapshot.finish_epoch, rows: {
-      [waiting]: { state: "blocked", at: now - waited, seq: counter(waiting), finish: finishes(waiting) },
-      [resting]: { state: "idle", at: now - rested, seq: counter(resting), finish: finishes(resting) },
-      [uncounted]: { state: "idle", at: now - rested, finish: finishes(uncounted) },
+      [waiting]: { state: "blocked", at: now - waited, terminal: terminal(waiting), seq: counter(waiting), finish: finishes(waiting) },
+      [resting]: { state: "idle", at: now - rested, terminal: terminal(resting), seq: counter(resting), finish: finishes(resting) },
+      [uncounted]: { state: "idle", at: now - rested, terminal: terminal(uncounted), finish: finishes(uncounted) },
     } } } }));
-    return { epoch: snapshot.finish_epoch, numbers: [counter(waiting), counter(resting), finishes(waiting), finishes(resting)] };
+    return { epoch: snapshot.finish_epoch, numbers: [counter(waiting), counter(resting), finishes(waiting), finishes(resting)], terminals: [terminal(waiting), terminal(resting), terminal(uncounted)] };
   }, { waiting: panes.web, resting: panes.omp, uncounted: panes.cli, waited: 2 * HOUR + 5 * MINUTE, rested: 3 * DAY });
   assert.ok(counters.numbers.every((number) => Number.isSafeInteger(number)), `${tag}: the demo's agents carry herdr's counter and the server's count of their finishes: ${JSON.stringify(counters)}`);
+  assert.ok(counters.terminals.every((name) => typeof name === "string" && name !== "") && new Set(counters.terminals).size === counters.terminals.length, `${tag}: each of the demo's panes names a terminal of its own: ${JSON.stringify(counters)}`);
   assert.equal(counters.epoch, "kept", `${tag}: every load of this check is under the one server it names`);
 
   await open();

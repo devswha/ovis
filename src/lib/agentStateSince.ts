@@ -5,6 +5,10 @@
  * agent doing anything. A state this device did not see begin has no stamp, and its row says no
  * time rather than a wrong one.
  *
+ * A pane's ID is not the pane for good: herdr gives a pane it moves to another workspace a new ID,
+ * and gives the ID of a pane that ended or moved away to another. A pane's terminal is its own for
+ * as long as it lives, so a stamp names the terminal of the pane it tells of, and tells of no other.
+ *
  * A kept stamp is trusted by a look that did not see its state begin only on proof that the state
  * held meanwhile. Two counters give it together: herdr's `state_change_seq`, which moves with every
  * state of herdr's own, and the server's `finish_id`, which moves whenever the status Ovis shows
@@ -33,6 +37,8 @@ export interface StateStamp {
   state: StampState;
   /** when the state began, as this device's clock said it */
   at: number;
+  /** the terminal (`terminal_id`) of the pane it tells of: under the same ID, a pane with another terminal is another pane */
+  terminal: string;
   /**
    * herdr's `state_change_seq` of the change that began the state. Absent while only a pushed status told of the
    * change (the roster that carries its counter comes after), where the state changed and herdr's counter did not
@@ -129,12 +135,18 @@ export function stateLooks(machines: readonly Machine[], status: (machineId: str
 /** a stamp is kept this long after its pane left the roster, so a pane that leaves it for a moment keeps its time */
 const KEPT_UNLISTED_MS = 30 * 86_400_000;
 
-/** The stamp of a pane that is not listed, marked with when it first was not: null once that is thirty days ago. */
-function unlisted(stamp: StateStamp, now: number): StateStamp | null {
+/**
+ * The stamp of a pane that is not listed, marked with when it first was not: null once that is thirty days ago. Its
+ * finish count goes where the look's server is not the one that counted it (`counted` false).
+ */
+function unlisted(stamp: StateStamp, now: number, counted = true): StateStamp | null {
   // a clock set back never leaves the mark in the future
   const gone = Math.min(stamp.gone ?? now, now);
   if (now - gone > KEPT_UNLISTED_MS) return null;
-  return gone === stamp.gone ? stamp : { ...stamp, gone };
+  const left = gone === stamp.gone ? stamp : { ...stamp, gone };
+  if (counted || left.finish === undefined) return left;
+  const { finish: _old, ...uncounted } = left;
+  return uncounted;
 }
 
 /**
@@ -160,7 +172,7 @@ function ahead(stamp: StateStamp, row: SeenRow, counted: boolean): boolean {
 
 /** A stamp as a look keeps it for a listed pane: no mark of leaving, never ahead of the clock, and no finish count of another epoch. */
 function keptStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp {
-  return { state: stamp.state, at: Math.min(stamp.at, now), ...(stamp.seq === undefined ? {} : { seq: stamp.seq }), ...(stamp.finish === undefined || !counted ? {} : { finish: stamp.finish }) };
+  return { state: stamp.state, at: Math.min(stamp.at, now), terminal: stamp.terminal, ...(stamp.seq === undefined ? {} : { seq: stamp.seq }), ...(stamp.finish === undefined || !counted ? {} : { finish: stamp.finish }) };
 }
 
 /** A stamp that is not this look's to judge, left as it is: with the mark of a look that missed its pane, which is that look's page's to lift. */
@@ -197,9 +209,11 @@ function movedRows(rows: readonly SeenRow[], watched: PcSeen | undefined): Map<s
  *   of a pane new to this page and to the device, once the page has looked at its PC for longer than the gap a page
  *   bridges (lib/agentStateWatch.ts): sooner, it may be an agent the roster had not listed yet, or had lost sight of.
  *   A look that is not `dated` (the page cannot say when what it finds began) stamps no change.
- * - A pane herdr moved under a new ID (`movedRows`) is the row the page was seeing under the old one: it is judged by
- *   what the page saw of it there and by the stamp it had there, which goes with it. What the new ID held is another
- *   pane's: herdr gives an ended pane's ID out again.
+ * - What the device keeps and the page remembers under an ID is a row's own only where it names the row's terminal:
+ *   under an ID herdr gave out again, the row is a pane the page has not seen, with no stamp, and the stamp the last
+ *   pane left there is kept as an unlisted pane's until the row has one of its own. A pane herdr moved
+ *   under a new ID (`movedRows`) is the row the page was seeing under the old one: it is judged by what the page
+ *   saw of it there, and by the stamp it had there, which goes with it.
  * - A state the page has been seeing keeps its stamp while the counters stand. A finish counted meanwhile, or
  *   herdr's counter moved, means the state was left and come back to out of sight (updates come together, a
  *   subscription has gaps), and the stamp goes. Two moves of herdr's counter are none of the state: the one that
@@ -248,8 +262,15 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     const moved = movedRows(look.rows, watched);
     for (const row of look.rows) {
       const from = moved.get(row.pane);
-      const stamp = before[from === undefined ? row.pane : from.pane];
-      const known = from ?? watched?.rows.get(row.pane);
+      const own = (candidate: StateStamp | undefined): StateStamp | undefined => candidate !== undefined && candidate.terminal === row.terminal ? candidate : undefined;
+      const here = own(before[row.pane]);
+      const there = from === undefined ? undefined : own(before[from.pane]);
+      // a moved pane is judged by the stamp it had under its old ID, which this page judged at its last look. One under
+      // its new ID was not this page's to judge then: it is another tab's, which followed the move first, where the
+      // counters say it tells of this state or of a later one, and else what the pane left when it last had this ID
+      const stamp = from === undefined || (here !== undefined && (ahead(here, row, counted) || proven(here, row, counted))) ? here : there;
+      const remembered = watched?.rows.get(row.pane);
+      const known = from ?? (remembered !== undefined && remembered.terminal === row.terminal ? remembered : undefined);
       const saw = known !== undefined && known.left !== undefined && now - known.left > BLIND_MS ? undefined : known;
       const began = watched !== undefined && saw?.state !== row.state;
       // herdr's counter moved: two numbers that differ. A roster that names none for a moment says nothing either way
@@ -274,11 +295,11 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
         // yet. A stamp marked as its pane left is of an agent that was there before, whenever it was made
         const told = stamp !== undefined && stamp.gone === undefined && stamp.state === row.state && stamp.at >= (saw?.since ?? watched.at)
           && (lags || stamp.seq === undefined || row.seq === undefined || stamp.seq === row.seq);
-        if (stamp !== undefined && told) rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), ...(lags && stamp.seq !== undefined ? { seq: stamp.seq } : seq), ...finish };
+        if (stamp !== undefined && told) rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), terminal: row.terminal, ...(lags && stamp.seq !== undefined ? { seq: stamp.seq } : seq), ...finish };
         else if (proven(stamp, row, counted)) rows[row.pane] = keptStamp(stamp, now, counted);
         // a change in sight began now, and so did what a pane shows that neither this page nor the device has seen,
         // where the page has looked long enough to know that the pane was not there
-        else if (dated && (saw !== undefined || (known === undefined && stamp === undefined && now - watched.first > BLIND_MS))) rows[row.pane] = { state: row.state, at: now, ...seq, ...finish };
+        else if (dated && (saw !== undefined || (known === undefined && stamp === undefined && now - watched.first > BLIND_MS))) rows[row.pane] = { state: row.state, at: now, terminal: row.terminal, ...seq, ...finish };
       } else if (stamp !== undefined && stamp.state !== row.state) {
         // another tab's, of a state this page has not seen the pane in yet
         rows[row.pane] = leftStamp(stamp, now, counted);
@@ -296,16 +317,16 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
         const stands = saw.left === undefined ? !counter || saw.owed || single : !row.own && saw.seq !== undefined && row.seq === saw.seq;
         if (!finished && stands) {
           const herdrs = counter ? row.seq : stamp.seq;
-          rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), ...(herdrs === undefined ? {} : { seq: herdrs }), ...finish };
+          rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), terminal: row.terminal, ...(herdrs === undefined ? {} : { seq: herdrs }), ...finish };
         }
       }
     }
     for (const [pane, stamp] of Object.entries(before)) {
-      if (memory.has(pane)) continue;
-      const left = unlisted(stamp, now);
-      if (left === null) continue;
-      if (counted || left.finish === undefined) rows[pane] = left;
-      else { const { finish: _old, ...uncounted } = left; rows[pane] = uncounted; }
+      // a listed ID with no stamp of its row keeps what another pane left there, as that pane's: a tab a roster
+      // behind, or ahead, may still be seeing it under this ID
+      if (memory.has(pane) && (rows[pane] !== undefined || stamp.terminal === memory.get(pane)?.terminal)) continue;
+      const left = unlisted(stamp, now, counted);
+      if (left !== null) rows[pane] = left;
     }
     // a PC with no stamp has no entry: a look that stamps nothing changes nothing, and is not written
     if (sameHerdr && kept.epoch === look.epoch && sameRows(kept.rows, rows)) next[look.id] = kept;
@@ -340,14 +361,17 @@ function sameRows(left: Readonly<Record<string, StateStamp>>, right: Readonly<Re
   const entries = Object.entries(left);
   return entries.length === Object.keys(right).length && entries.every(([pane, a]) => {
     const b = right[pane];
-    return b !== undefined && a.state === b.state && a.at === b.at && a.seq === b.seq && a.finish === b.finish && a.gone === b.gone;
+    return b !== undefined && a.state === b.state && a.at === b.at && a.terminal === b.terminal && a.seq === b.seq && a.finish === b.finish && a.gone === b.gone;
   });
 }
 
-/** When the row's state began, if this device saw it: null for a state that differs from the stamp (a change not stamped yet) or was never stamped. */
-export function stateSince(stamps: StateStamps, machineId: string, pane: string, state: StampState): number | null {
+/**
+ * When the row's state began, if this device saw it: null where nothing was stamped, for a state that differs from the
+ * stamp (a change not stamped yet), and for a stamp of another pane that had the ID (a roster not looked at yet).
+ */
+export function stateSince(stamps: StateStamps, machineId: string, pane: string, terminal: string, state: StampState): number | null {
   const stamp = stamps[machineId]?.rows[pane];
-  return stamp !== undefined && stamp.state === state ? stamp.at : null;
+  return stamp !== undefined && stamp.terminal === terminal && stamp.state === state ? stamp.at : null;
 }
 
 /** kept on this device, as its folds are: a phone and a desktop each stamp what they saw */
@@ -373,9 +397,9 @@ export function parseStateStamps(raw: string | null): StateStamps {
     if (rows === null) continue;
     const kept: Record<string, StateStamp> = {};
     for (const [pane, value] of Object.entries(rows)) {
-      const { state, at, seq, finish, gone } = fieldsOf(value) ?? {};
-      if (!isStampState(state) || !isNumber(at)) continue;
-      kept[pane] = { state, at, ...(isNumber(seq) ? { seq } : {}), ...(isNumber(finish) ? { finish } : {}), ...(isNumber(gone) ? { gone } : {}) };
+      const { state, at, terminal, seq, finish, gone } = fieldsOf(value) ?? {};
+      if (!isStampState(state) || !isNumber(at) || typeof terminal !== "string") continue;
+      kept[pane] = { state, at, terminal, ...(isNumber(seq) ? { seq } : {}), ...(isNumber(finish) ? { finish } : {}), ...(isNumber(gone) ? { gone } : {}) };
     }
     const { lifetime, epoch } = fieldsOf(pc) ?? {};
     stamps[id] = { lifetime: typeof lifetime === "string" ? lifetime : null, epoch: typeof epoch === "string" ? epoch : null, rows: kept };

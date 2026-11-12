@@ -672,7 +672,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const status = online ? activity.status(machine.id, pane) : undefined;
     const progress = online && pane.agent_progress !== undefined && (status === "working" || status === "blocked") ? t("Progress {percent}%", { percent: pane.agent_progress }) : null;
     // a PC that is away says no state, so no time of one either
-    const stateBegan = online ? stateSince(stamps, machine.id, pane.pane_id, stampState(agentGroup(status))) : null;
+    const stateBegan = online ? stateSince(stamps, machine.id, pane.pane_id, pane.terminal_id, stampState(agentGroup(status))) : null;
     const since = stateBegan === null ? null : stateAge(Math.max(0, now - stateBegan));
     const tooltip = [...new Set([pane.pane_id, title, ownTitle, agent?.title?.trim(), place, machines.length === 1 ? machine.name : null, startedBy, blocked, progress, ...tokens, markKind, name, agent?.display_agent, pane.cwd, online ? null : stateWord(machine)].filter(Boolean))].join("\n");
     const pinKey = sidebarPinKey(machine.id, pane.pane_id);
