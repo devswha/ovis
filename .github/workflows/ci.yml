@@ -124,7 +124,9 @@ jobs:
     name: Native macOS session identity
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-15
+    # GitHub's arm64 macOS pool often gives this job no runner for 15 minutes, and the run fails on the cancel; these
+    # checks are not arm64-specific, and the Intel pool takes jobs
+    runs-on: macos-15-intel
     timeout-minutes: 5
     env:
       HERDR_TEST_MODE: unit
