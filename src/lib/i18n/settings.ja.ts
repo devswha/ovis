@@ -95,6 +95,8 @@ export const SETTINGS_JA: Record<string, string> = {
   "Two lines": "2 行",
   "Sidebar filter": "サイドバーの絞り込み",
   "Show the sidebar on hover": "ホバーでサイドバーを表示",
+  "Agent inbox on a phone": "スマホではエージェント一覧を先に",
+  "On this device, a phone-width window that opens with no pane in its address shows the list of agents, the ones that need you first; from a pane, the header's Back opens it. A tap opens the agent's chat, and Back returns to the list.": "このデバイスでは、アドレスにペインを含まずに開いたスマホ幅のウィンドウにエージェント一覧を表示します。応答が必要なエージェントが先頭に並びます。ペインからはヘッダーの戻るボタンで一覧を開きます。行をタップするとそのエージェントのチャットが開き、戻るで一覧に戻ります。",
   "Name tabs from the first message": "最初のメッセージでタブに名前を付ける",
   "Context left on agent rows": "エージェント行に残りのコンテキスト",
   "Agents order": "エージェントの並び順",

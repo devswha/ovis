@@ -181,6 +181,7 @@ run_script scripts/file-viewer-mobile-regression.ts
 run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
 run_script scripts/phone-safe-area-demo-regression.ts
+run_script scripts/phone-back-demo-regression.ts
 run_script scripts/reconnect-header-demo-regression.ts
 run_script scripts/tab-agent-mark-demo-regression.ts
 run_script scripts/header-context-demo-regression.ts
@@ -210,6 +211,7 @@ run_script scripts/command-outcome-demo-regression.ts
 run_script scripts/chat-outcome-note-browser-qa.ts
 run_script scripts/prompt-card-lifetime-browser-qa.ts
 run_script scripts/sidebar-activity-demo-regression.ts
+run_script scripts/phone-inbox-demo-regression.ts
 run_script scripts/sidebar-filter-demo-regression.ts
 run_script scripts/sidebar-declutter-demo-regression.ts
 run_script scripts/drawer-modal-regression.ts

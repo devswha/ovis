@@ -95,6 +95,8 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Two lines": "双行",
   "Sidebar filter": "侧边栏筛选",
   "Show the sidebar on hover": "悬停时显示侧边栏",
+  "Agent inbox on a phone": "手机上先显示 Agent 列表",
+  "On this device, a phone-width window that opens with no pane in its address shows the list of agents, the ones that need you first; from a pane, the header's Back opens it. A tap opens the agent's chat, and Back returns to the list.": "在此设备上，地址中未指定窗格而打开的手机宽度窗口会显示 Agent 列表，需要你回应的排在最前。在窗格中，页眉的返回按钮会打开列表。点按一行会打开该 Agent 的聊天，返回则回到列表。",
   "Name tabs from the first message": "用第一条消息命名标签页",
   "Context left on agent rows": "在代理行显示剩余上下文",
   "Agents order": "代理排序",
