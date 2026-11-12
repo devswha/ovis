@@ -144,19 +144,33 @@ export function heldReport(held: HeldReport | null, next: UsageReport, heardAt: 
 }
 
 /**
+ * How old a record the PC has just called current was when the PC said so: the PC's time less the record's, both on
+ * the PC's clock, so that no device's clock is held against the PC's. An older server says no time. Then this
+ * device's clock is asked, and believed only where it agrees with the PC: between no age and `limit`, past which the
+ * PC would have called the record stale. A clock far from the PC's is thus not believed, and the record counts as
+ * just read.
+ */
+function ageWhenHeard(held: HeldReport, checkedAt: string | null, limit: number): number {
+  if (checkedAt === null) return 0;
+  if (held.serverTime !== undefined) {
+    const seen = Date.parse(held.serverTime) - Date.parse(checkedAt);
+    return Number.isFinite(seen) ? Math.max(0, seen) : 0;
+  }
+  const guessed = held.heardAt.wall - Date.parse(checkedAt);
+  return guessed >= 0 && guessed <= limit ? guessed : 0;
+}
+
+/**
  * The report in hand as of `now`: a record older by then than its tool leaves between reads is stale, whatever the PC
- * said of it. The record's age is the one the PC last saw (its `serverTime` less the record's `checked_at`, both on
- * the PC's clock) plus the time gone by on this device since that answer, so no device's clock is held against the
- * PC's. An older server says no time, and only the time gone by counts. The held report itself where nothing has aged.
+ * said of it. Its age is the one it had when the PC last answered plus the time gone by on this device since. The held
+ * report itself where nothing has aged.
  */
 export function agedReport(held: HeldReport, now: DeviceTime): UsageReport {
-  const sent = held.serverTime === undefined ? NaN : Date.parse(held.serverTime);
   const since = goneBy(held.heardAt, now);
   const aged = (usage: ProviderUsage): ProviderUsage => {
     if (!usage.recorded || usage.recorded.stale) return usage;
-    const seen = usage.checked_at === null ? NaN : sent - Date.parse(usage.checked_at);
     const limit = (RECORDED_STALE_AFTER_MS as Readonly<Record<string, number | undefined>>)[usage.recorded.by] ?? LONGEST_STALE_AFTER_MS;
-    return (Number.isFinite(seen) ? Math.max(0, seen) : 0) + since > limit ? { ...usage, recorded: { ...usage.recorded, stale: true } } : usage;
+    return ageWhenHeard(held, usage.checked_at, limit) + since > limit ? { ...usage, recorded: { ...usage.recorded, stale: true } } : usage;
   };
   const providers = held.report.providers.map(aged);
   return providers.some((usage, index) => usage !== held.report.providers[index]) ? { ...held.report, providers } : held.report;

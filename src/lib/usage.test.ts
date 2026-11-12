@@ -137,6 +137,17 @@ describe("usage meters", () => {
     expect(goneBy(from, { wall: NOW - 300_000, running: 500 })).toBe(0);
   });
 
+  it("asks this device's clock for a record's age where an older server says no time, and believes it only where it agrees with the PC", () => {
+    const record = (readAt: number): ProviderUsage => ({ ...provider("claude", [window(40)], "recorded"), checked_at: new Date(readAt).toISOString(), recorded: { by: "omp", stale: false, signed_in: false } });
+    const stale = (readAt: number, minutes: number) => agedReport({ report: { providers: [record(readAt)] }, serverTime: undefined, heardAt: { wall: NOW, running: 0 } }, { wall: NOW + minutes * 60_000, running: minutes * 60_000 }).providers[0]?.recorded?.stale;
+    // the PC had just called the record current, and by this device's clock it was 14 minutes old: old two minutes on
+    expect([1, 2].map((minutes) => stale(NOW - 14 * 60_000, minutes))).toEqual([false, true]);
+    // a device clock 20 minutes ahead makes it 34 minutes old, which the PC had just denied: not believed, and the count starts at the answer
+    expect([2, 15, 16].map((minutes) => stale(NOW - 34 * 60_000, minutes))).toEqual([false, false, true]);
+    // nor is a device clock behind the PC's, by which the record is yet to be read
+    expect([2, 15, 16].map((minutes) => stale(NOW + 5 * 60_000, minutes))).toEqual([false, false, true]);
+  });
+
   it("holds the report object in hand while the PC says the same but for its time, and always the PC's latest time and arrival", () => {
     const record = (readAt: number): ProviderUsage => ({ ...provider("claude", [window(40)], "recorded"), checked_at: new Date(readAt).toISOString(), recorded: { by: "omp", stale: false, signed_in: false } });
     const answer = (minute: number, usage: ProviderUsage) => ({ server_time: new Date(NOW + minute * 60_000).toISOString(), providers: [usage] });

@@ -114,7 +114,7 @@ export interface UsageReport {
   /**
    * The PC's clock, which the times are on (ISO time). A page ages a record by it: the record's age as the PC saw it
    * (this less `checked_at`) plus the time gone by on the device, never the device's clock against the PC's.
-   * Absent from an older server.
+   * Absent from an older server, for whose records the page has only its own clock to ask.
    */
   readonly server_time?: string;
   readonly providers: readonly ProviderUsage[];
