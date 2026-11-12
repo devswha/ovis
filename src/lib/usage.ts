@@ -31,6 +31,11 @@ export const WINDOW_LABEL: Readonly<Record<UsageWindow["kind"], string>> = {
 /** The tools whose own record of an account's limits the server reads, as their users know them. */
 export const RECORDER_NAME: Readonly<Record<UsageRecorder, string>> = { omp: "Oh My Pi", gjc: "Gajae Code" };
 
+/** A recorder's name; its id for one this page does not know yet (a newer server's). */
+function recorderName(by: string): string {
+  return (RECORDER_NAME as Readonly<Record<string, string | undefined>>)[by] ?? by;
+}
+
 /** A pane's agent selects a provider, not an inferred active account. */
 export function providerForAgent(agent: string | null | undefined): UsageProviderId | null {
   return (Object.keys(PROVIDER_MARK) as UsageProviderId[]).find((id) => PROVIDER_MARK[id] === agent) ?? null;
@@ -97,7 +102,7 @@ export function isHubAccount(usage: ProviderUsage): boolean {
 
 /** Whose record an account's numbers are ("Recorded by Oh My Pi"); null for a reading the server made itself. */
 export function recordedBy(usage: ProviderUsage): string | null {
-  return usage.recorded ? t("Recorded by {tool}", { tool: RECORDER_NAME[usage.recorded.by] }) : null;
+  return usage.recorded ? t("Recorded by {tool}", { tool: recorderName(usage.recorded.by) }) : null;
 }
 
 /** For a recorder this page does not know yet: as long as any tool it knows is given. */
@@ -144,7 +149,7 @@ export function heldReport(held: HeldReport | null, next: UsageReport, arrivedAt
  */
 export function recordedNote(usage: ProviderUsage, now: number): readonly string[] | null {
   if (!usage.recorded) return null;
-  const by = t("Recorded by {tool}, {when}", { tool: RECORDER_NAME[usage.recorded.by], when: lastSeen(usage.checked_at, now) });
+  const by = t("Recorded by {tool}, {when}", { tool: recorderName(usage.recorded.by), when: lastSeen(usage.checked_at, now) });
   return usage.recorded.stale ? [by, t("It may have changed since.")] : [by];
 }
 

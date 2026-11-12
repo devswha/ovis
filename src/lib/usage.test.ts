@@ -95,6 +95,10 @@ describe("usage meters", () => {
     const own: ProviderUsage = { ...provider("claude", [window(40)]), checked_at: new Date(NOW - 180 * 60_000).toISOString() };
     expect(recordedNote(own, NOW)).toBeNull();
     expect(recordedBy(own)).toBeNull();
+    // a recorder this page does not know yet (a newer server's) is named by its id, not as undefined
+    const unknown: ProviderUsage = { ...at(4, false), recorded: { by: "a-tool-not-known-yet" as "omp", stale: false, signed_in: false } };
+    expect(recordedNote(unknown, NOW)).toEqual(["Recorded by a-tool-not-known-yet, 4 min ago"]);
+    expect(recordedBy(unknown)).toBe("Recorded by a-tool-not-known-yet");
   });
 
   it("ages a report by the time gone by on this device, never by comparing its clock with the PC's", () => {
