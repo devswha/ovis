@@ -9,7 +9,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { meetsMinVersion, parseVersion, type AgentCatalogEntry, type AgentInstallState, type CatalogPlatform } from "../shared/agent-catalog.ts";
-import { loginPathProbe, loginShell, shellCommandLine, type LoginPathProbe } from "./shell-agent.ts";
+import { agentPathProbe, loginShell, shellCommandLine, type LoginPathProbe } from "./shell-agent.ts";
 
 /** How long one `--version` may run before it is killed and reported as timed out. */
 export const VERSION_TIMEOUT_MS = 5_000;
@@ -95,11 +95,14 @@ export function catalogLocator(options: { probe: LoginPathProbe | null; serviceP
   return Object.assign(locate, { searchPath: () => [servicePath(), kept?.path ?? ""].filter((part) => part !== "").join(delimiter), refresh });
 }
 
-/** The login-shell PATH probe of the real entrypoints: none on Windows, nor where the user has no login shell. */
+/**
+ * The login-shell PATH probe of the real entrypoints, as a pane's interactive shell sees it
+ * (agentPathProbe): none on Windows, nor where the user has no login shell.
+ */
 export function defaultLoginProbe(platform: string = process.platform): LoginPathProbe | null {
   if (platform === "win32") return null;
   const shell = loginShell();
-  return shell === null ? null : loginPathProbe({ shell });
+  return shell === null ? null : agentPathProbe({ shell });
 }
 
 export interface VersionRun {

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as client from "./herdr/client.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
-import { loginPathProbe, paneShell, parseLoginPath, powershellNativeArgs, shellAgentExecutable, ShellAgentLocator, shellCommandLine, startShellAgent, type LoginPathProbe, type LoginPathResult } from "./shell-agent.ts";
+import { agentPathProbe, loginPathProbe, paneShell, parseLoginPath, powershellNativeArgs, shellAgentExecutable, ShellAgentLocator, shellCommandLine, startShellAgent, type LoginPathProbe, type LoginPathResult } from "./shell-agent.ts";
 import { descendantArgv, descendantProcesses, parseProcessTable, windowsArgv, windowsProcessTable } from "./windows-processes.ts";
 
 it("tells a pane's shell from the program herdr reports in front", () => {
@@ -201,6 +201,37 @@ it("reads the login PATH between its markers, whatever the profile prints around
   expect(parseLoginPath("/a:/b\n")).toBeNull();
   expect(parseLoginPath("__OVIS_LOGIN_PATH__\n/a\nno end\n")).toBeNull();
   expect(parseLoginPath("__OVIS_LOGIN_PATH__\n\n__OVIS_LOGIN_PATH_END__\n")).toBeNull();
+});
+
+it("finds an agent a pane's interactive shell puts on PATH (zsh's .zshrc), and keeps the login PATH where that shell gives none", async () => {
+  // a login run sets the login PATH; an interactive one also adds what only .zshrc adds, as zsh does
+  const f = fixture();
+  const rcBin = join(f.root, "rc bin");
+  mkdirSync(rcBin);
+  const gjc = join(rcBin, "gjc");
+  writeFileSync(gjc, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  unlinkSync(f.gjc);
+  const shell = join(f.root, "interactive-shell");
+  writeFileSync(shell, [
+    "#!/bin/sh",
+    "PATH=/usr/bin:/bin",
+    'while :; do case "$1" in -l) PATH="' + f.loginBin + ':$PATH"; shift;; -i) PATH="' + rcBin + ':$PATH"; shift;; *) break;; esac; done',
+    "export PATH",
+    '[ "$1" = "-c" ] && exec /bin/sh -c "$2"',
+    "exit 64",
+    "",
+  ].join("\n"), { mode: 0o755 });
+  // the login shell alone misses it: what hid Claude Code from the desktop app's agent list on a Mac
+  expect(await new ShellAgentLocator({ platform: "linux", servicePath: f.servicePath, probe: loginPathProbe({ shell, env: f.env }) }).executable("gjc")).toBeNull();
+  expect(await once(agentPathProbe({ shell, env: f.env }))).toEqual({ path: `${rcBin}:${f.loginBin}:/usr/bin:/bin` });
+  expect(await new ShellAgentLocator({ platform: "linux", servicePath: f.servicePath, probe: agentPathProbe({ shell, env: f.env }) }).executable("gjc")).toBe(gjc);
+  // a shell whose interactive run fails still answers with its login PATH
+  expect(await once(agentPathProbe({ shell: f.shell, env: f.env }))).toEqual({ path: `${f.loginBin}:/usr/bin:/bin` });
+  // and one that fails both ways says why
+  const failing = fixture("exit 3");
+  const failed = await once(agentPathProbe({ shell: failing.shell, env: failing.env }));
+  expect(failed.path).toBeNull();
+  expect(failed.path === null && failed.reason).toContain("exit 3");
 });
 
 it("service miss resolves the same executable for offer and start", async () => {

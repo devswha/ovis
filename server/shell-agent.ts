@@ -116,21 +116,40 @@ export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
   };
 }
 
+/**
+ * The PATH a pane's shell starts an agent from: that of an interactive login shell (`-l -i -c`), which
+ * also reads what only an interactive shell reads (zsh's .zshrc, where installers and nvm add their
+ * folders), then the plain login shell's folders it does not name. Both run at once, each as
+ * loginPathProbe runs, under the same limits; one that gives no PATH leaves the other's, and when
+ * neither does, the reasons of both are the miss's.
+ */
+export function agentPathProbe(options: LoginShellOptions): LoginPathProbe {
+  const interactive = loginPathProbe({ ...options, interactive: true });
+  const login = loginPathProbe(options);
+  return async (signal) => {
+    const [rc, plain] = await Promise.all([interactive(signal), login(signal)]);
+    if (rc.path === null && plain.path === null) return { path: null, reason: `${plain.reason}; interactive: ${rc.reason}` };
+    const named = new Set<string>();
+    const path = [rc.path, plain.path].flatMap((part) => part?.split(":") ?? []).filter((dir) => !named.has(dir) && named.add(dir)).join(":");
+    return { path };
+  };
+}
+
 /** The environment the user's login shell sets up, or why it gave none; run as loginPathProbe runs. */
 export function loginEnvProbe(options: LoginShellOptions, runtime: string = process.execPath): (signal: AbortSignal) => Promise<{ value: Record<string, string> } | { value: null; reason: string }> {
   if (runtime.includes("'")) return async () => ({ value: null, reason: `${runtime} cannot be quoted for the login shell` });
   return loginShellProbe({ maxBytes: 256 * 1024, ...options }, loginEnvScript(runtime), parseLoginEnv, "environment");
 }
 
-/** `cwd`: where the shell starts (this process's folder when unset) */
-interface LoginShellOptions { shell: string; env?: Record<string, string | undefined>; cwd?: string; timeoutMs?: number; maxBytes?: number; graceMs?: number }
+/** `cwd`: where the shell starts (this process's folder when unset); `interactive`: run it with `-i` too */
+interface LoginShellOptions { shell: string; env?: Record<string, string | undefined>; cwd?: string; timeoutMs?: number; maxBytes?: number; graceMs?: number; interactive?: boolean }
 
 function loginShellProbe<T>(options: LoginShellOptions, script: string, read: (output: string) => T | null, what: string): (signal: AbortSignal) => Promise<{ value: T } | { value: null; reason: string }> {
-  const { shell, env = process.env, cwd, timeoutMs = 2000, maxBytes = 64 * 1024, graceMs = 500 } = options;
+  const { shell, env = process.env, cwd, timeoutMs = 2000, maxBytes = 64 * 1024, graceMs = 500, interactive = false } = options;
   type Result = { value: T } | { value: null; reason: string };
   return (signal) => new Promise<Result>((resolve) => {
     if (signal.aborted) { resolve({ value: null, reason: "stopped" }); return; }
-    const child = spawn(shell, ["-l", "-c", script], { env, ...(cwd ? { cwd } : {}), stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn(shell, interactive ? ["-l", "-i", "-c", script] : ["-l", "-c", script], { env, ...(cwd ? { cwd } : {}), stdio: ["ignore", "pipe", "pipe"], detached: true });
     const chunks: Buffer[] = [];
     let bytes = 0;
     /** why the group was killed; set once */
@@ -234,7 +253,7 @@ export class ShellAgentLocator {
     this.#servicePath = options.servicePath ?? (() => process.env["PATH"] ?? "");
     // Windows keeps its own PATH and allowlist: no Unix login shell is asked there
     const shell = this.#platform === "win32" || options.probe !== undefined ? null : loginShell();
-    this.#probe = this.#platform === "win32" ? null : options.probe !== undefined ? options.probe : shell === null ? null : loginPathProbe({ shell });
+    this.#probe = this.#platform === "win32" ? null : options.probe !== undefined ? options.probe : shell === null ? null : agentPathProbe({ shell });
     this.#ttlMs = options.ttlMs ?? 60_000;
     this.#now = options.now ?? Date.now;
   }
