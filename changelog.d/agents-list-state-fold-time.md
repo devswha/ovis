@@ -3,11 +3,13 @@
   are kept on the device, Idle starts folded, the selected agent stays in sight under a folded
   group, and the filter opens every group.
 - Every agent row says how long its agent has been in its state (`<1m`, `5m`, `2h`, `3d`). The
-  device notes each change it sees and keeps the times across reloads; reading a finished agent
-  does not reset its time, and a state the device did not see begin shows no time.
+  device notes each change it sees, and keeps a time across reloads while herdr's own change
+  counter shows that nothing changed meanwhile; reading a finished agent does not reset its time,
+  and a state the device did not see begin shows no time.
 
 ### Changed
 - Agents list, grouped by state: a heading says its state once, in the state's colour with the
   count beside it, and the rows under it no longer repeat the state mark. A row leaves out what
   would be cut to a few letters, and on a phone it is one line: the title, then the time.
-- A phone's row menu says first what a waiting agent waits for, on a line of its own.
+- An agent row's menu says first what a waiting agent waits for, on a line of its own, in a phone's
+  sheet and in the menu of a wider screen.
