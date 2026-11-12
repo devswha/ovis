@@ -57,9 +57,12 @@ export function stateLooks(machines: readonly Machine[], status: (machineId: str
 /** a stamp of a pane no longer listed is kept this long, so a pane that leaves the roster for a moment keeps its time */
 const KEPT_UNLISTED_MS = 30 * 86_400_000;
 
-/** whether a kept stamp still tells of the row as it is: the same state, and by herdr's counter no change since */
+/**
+ * Whether a kept stamp still tells of the row as it is: the same state, and by herdr's counter no change since.
+ * A herdr that counts nothing proves nothing: the state may have gone and come back out of sight.
+ */
 function stillTrue(stamp: StateStamp | undefined, row: SeenRow): stamp is StateStamp {
-  return stamp !== undefined && stamp.state === row.state && (stamp.seq === undefined || row.seq === undefined || stamp.seq === row.seq);
+  return stamp !== undefined && stamp.state === row.state && stamp.seq !== undefined && stamp.seq === row.seq;
 }
 
 /**

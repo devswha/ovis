@@ -60,6 +60,38 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(page.since("a", "blocked")).toBeNull();
   });
 
+  it("drops a stamp on a reload when herdr gives no counter: nothing proves the state did not go and come back", () => {
+    const page = device();
+    page.see(T, look({ a: ["working"] }));
+    page.see(T + MIN, look({ a: ["blocked"] }));
+    // in sight the page saw every look, so the stamp holds with no counter
+    page.see(T + 2 * MIN, look({ a: ["blocked"] }));
+    expect(page.since("a", "blocked")).toBe(T + MIN);
+
+    page.reload();
+    page.see(T + 9 * MIN, look({ a: ["blocked"] }));
+    expect(page.since("a", "blocked")).toBeNull();
+
+    page.see(T + 10 * MIN, look({ a: ["working"] }));
+    expect(page.since("a", "working")).toBe(T + 10 * MIN);
+  });
+
+  it("drops a stamp on a reload when only the stamp, or only the row, carries herdr's counter", () => {
+    const counted = device();
+    counted.see(T, look({ a: ["working", 1] }));
+    counted.see(T + MIN, look({ a: ["blocked", 2] }));
+    counted.reload();
+    counted.see(T + 5 * MIN, look({ a: ["blocked"] }));
+    expect(counted.since("a", "blocked")).toBeNull();
+
+    const uncounted = device();
+    uncounted.see(T, look({ a: ["working"] }));
+    uncounted.see(T + MIN, look({ a: ["blocked"] }));
+    uncounted.reload();
+    uncounted.see(T + 5 * MIN, look({ a: ["blocked", 2] }));
+    expect(uncounted.since("a", "blocked")).toBeNull();
+  });
+
   it("counts done and idle as one state: a finish that is read keeps its time, in sight and across a reload", () => {
     expect(stampState("done")).toBe("idle");
     expect(stampState("blocked")).toBe("blocked");
