@@ -11,7 +11,9 @@ import { chromePath } from "./chrome-path.ts";
 // a summary on checkout-api's Claude, a task's progress on web-dashboard's Codex, a plugin's line for
 // the OMP agent (display_agent), and markup that must stay text. Only this disposable demo fixture is
 // rewritten; no live session is read. The machine events then say herdr's `[ui.sidebar.agents]`
-// rows, as server/herdr-sidebar.ts reads them, and a later roster brings a new value.
+// rows, as server/herdr-sidebar.ts reads them, and a later roster brings a new value. A roster the
+// page reads carries the same as one pushed to it: the page reads it again every 30 seconds, and a
+// read without them would take them off the rows until the next push.
 const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-tokens-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const LONG = "reviewing the authentication middleware and the session refresh path before the release branch is cut";
@@ -29,6 +31,17 @@ const patch = `(() => {
   });
   const sources = new Set();
   let last = [];
+  const fetchDemo = window.fetch.bind(window);
+  window.fetch = async (input, init) => {
+    const answer = await fetchDemo(input, init);
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+    if (url.pathname !== "/api/machines" || method.toUpperCase() !== "GET" || !answer.ok) return answer;
+    const body = await answer.clone().json();
+    if (!Array.isArray(body.machines)) return answer;
+    last = body.machines;
+    return new Response(JSON.stringify({ ...body, machines: roster(body.machines) }), { status: answer.status, headers: answer.headers });
+  };
   window.__tokens = {
     // a roster with a pane's tokens changed, as the server sends after herdr's pane.updated
     report(paneId, tokens) { reports[paneId] = { ...reports[paneId], tokens }; for (const source of sources) source.tell({ type: "machines", machines: roster(last) }); },
