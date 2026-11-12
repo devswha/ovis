@@ -113,20 +113,20 @@ test.each([
   });
 });
 
-test("reads a drawing glyph inside a word or path as written, and only one standing apart as a drawing", () => {
+test("reads drawing glyphs outside Copilot's banner logo as written", () => {
   const screen = recorded("copilot-1.0.109-ask-32s");
   const id = (option: string) => parseFallbackPrompt("copilot", screen.replace("   blue", `   ${option}`)).id;
   expect(id("./\u2588.txt")).not.toBe(id("./\u2591.txt"));
-  expect(id("blue \u2588")).toBe(id("blue \u2591"));
+  expect(id("blue \u2588")).not.toBe(id("blue \u2591"));
 });
 
 // a menu that marks its selection with a filled block against a hollow one: the mark moving is another card, so an
 // Enter read for one row never lands on the other (merge-pass review of #3730)
-test("still refuses an answer once a block-marked menu's selection moved", async () => {
+test.each([["\u2591", "\u2588"], ["\u2591\u2591", "\u2588\u2588"], ["\u28c0", "\u28ff"]])("still refuses an answer once a menu marked %s / %s moved its selection", async (hollow, filled) => {
   const menu = (marks: [string, string]) => `Remove the staging database?\n\n${marks[0]} Delete\n${marks[1]} Keep\n\n↑/↓ to move · enter to choose\n`;
-  await withPane("copilot", "blocked", menu(["\u2591", "\u2588"]), async (pane) => {
+  await withPane("copilot", "blocked", menu([hollow, filled]), async (pane) => {
     const prompt = (await card())!;
-    pane.screen = menu(["\u2588", "\u2591"]);
+    pane.screen = menu([filled, hollow]);
     expect(parseFallbackPrompt("copilot", pane.screen).id).not.toBe(prompt.id);
     expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("Enter") })).toEqual({ status: 409, code: "prompt_changed" });
     expect(pane.sent).toEqual([]);

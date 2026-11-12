@@ -144,7 +144,7 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
       responder: "fallback-menu", menuLabels: choices.map(({ label }) => label), selectedIndex: 0,
       checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
       optionSteps: choices.map(({ steps }) => steps),
-    }, steadyFields(question, body, steady.read)));
+    }, steadyFields(agent, question, body, steady.read)));
   }
   if (selectionMenu) {
     // the selector's own heading: the block of lines right above its rows, never an earlier question
@@ -184,7 +184,7 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
       responder: "fallback-gjc-menu", menuLabels: choices.map(({ label }) => label), selectedIndex: selectionMenu.selectedIndex,
       checkedOptionIndices: [], customMenuIndex: customIndex, rejectWithEscapeIndex: null,
       optionSteps: choices.map(({ steps }) => steps),
-    }, steadyFields(question, body, steady.read)), choiceRows);
+    }, steadyFields(agent, question, body, steady.read)), choiceRows);
   }
   const last = shown.slice(-16).map((index) => cleanLine(lines[index]!));
   // letters and arrows only for the prompt's own last lines, never while an input box ends the
@@ -210,30 +210,26 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
     responder: "fallback-keys", menuLabels: choices.map(({ label }) => englishOf(label)), selectedIndex: 0,
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
     optionSteps: choices.map(({ steps }) => steps),
-  }, steadyFields(question, body, steady.read)));
+  }, steadyFields(agent, question, body, steady.read)));
 }
 
 /** A fallback card's question and body as its id reads them: with the working line's ticking parts blanked. */
-function steadyFields(question: string | undefined, body: string | null, steady: (line: string) => string): Partial<Pick<InteractivePrompt, "question" | "body">> {
-  return { ...(question === undefined ? {} : { question: steady(question) }), body: body === null ? null : body.split("\n").map((line) => tickless(steady(line))).join("\n") };
+function steadyFields(agent: string, question: string | undefined, body: string | null, steady: (line: string) => string): Partial<Pick<InteractivePrompt, "question" | "body">> {
+  return { ...(question === undefined ? {} : { question: steady(question) }), body: body === null ? null : body.split("\n").map((line) => tickless(agent, steady(line))).join("\n") };
 }
 
 /**
- * A drawing of glyphs: box drawing, block elements and braille, two or more with the spaces between them, or one ending
- * the line, standing apart from any other text. They draw borders, logos, scroll bars and spinners, and say nothing of
- * what a prompt asks or offers, yet some agents animate them while the prompt stands (Copilot's logo, Grok's scroll
- * bar thumb at a row's end). A lone glyph before a row's words may be the row's selection mark ("█ Delete" against
- * "░ Keep"), and one inside a word, path or command ("./█.txt") is part of it: both are read as written.
+ * Copilot's banner logo (Copilot 1.0.109), which it animates while a prompt of its waits: a drawing at the start of a
+ * banner row, before the row's own words and the panel's `│` ("╰─╯╰─╯  Copilot v1.0.109 uses AI.  │  Use the tabs…").
+ * Only that drawing, on a row shaped so, reads as one mark; the words after it stay. Drawing glyphs anywhere else are
+ * read as written: a glyph may mark a menu's selected row ("██ Delete" against "░░ Keep"), and no rule tells it from a
+ * drawing, so only an animation known to the letter is read as steady.
  */
-const DRAWING_RUN_RE = /(?<=^|\s)(?:[\u2500-\u259f\u2800-\u28ff](?:[\u2500-\u259f\u2800-\u28ff]| )*[\u2500-\u259f\u2800-\u28ff]|[\u2500-\u259f\u2800-\u28ff]$)(?=\s|$)/g;
+const COPILOT_LOGO_ROW_RE = /^[\u2500-\u259f\u2800-\u28ff](?:[\u2500-\u259f\u2800-\u28ff ]*[\u2500-\u259f\u2800-\u28ff])?(\s+(?:(?:Copilot v\S+ uses AI\.|Check for mistakes\.)\s+)?│.*)$/u;
 
-/**
- * A line as a fallback card's id reads it, apart from its question: each run of drawing glyphs is one mark, whatever
- * frame of an animation it shows. Every word and number stays, so a changed command, file, path, time or option is
- * still another card.
- */
-function tickless(line: string): string {
-  return line.replace(DRAWING_RUN_RE, "▒");
+/** A line as a fallback card's id reads it, apart from its question: Copilot's animated banner logo as one mark. */
+function tickless(agent: string, line: string): string {
+  return agent === "copilot" ? line.replace(COPILOT_LOGO_ROW_RE, (_all, rest: string) => `<logo>${rest.replace(/\s+/g, " ")}`) : line;
 }
 
 const gjcMenuIdentities = new WeakMap<ParsedPrompt, string>();
@@ -253,7 +249,7 @@ function screenCard(lines: string[], shown: number[], steady: SteadyReader, pars
     // GJC moves its cursor within the same menu; the selectedIndex is checked separately on reread.
     const read = steady.read(cursorRows?.has(index) ? line.replace(GJC_SELECTED_RE, "") : line);
     // the question is kept as it is asked; every other line without what ticks (tickless)
-    return read === parsed.question ? read : tickless(read);
+    return read === parsed.question ? read : tickless(parsed.agent, read);
   }).join("\n");
   parsed.id = createHash("sha256").update(JSON.stringify({ card: parsed.id, screen, ...(steady.working === null ? {} : { working: steady.working }) })).digest("hex").slice(0, 12);
   return publicPrompt(parsed);
