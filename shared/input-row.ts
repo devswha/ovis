@@ -206,8 +206,14 @@ export const piInputRow: InputRowRecognizer = (screen, typed) => {
   const inner = Array.from({ length: lower - upper - 1 }, (_, offset) => text(upper + 1 + offset));
   if (inner.length === 1 && inner[0]!.trim() === "") return "ready";
   // the draft check (`typed` given) also takes rows typed with leading spaces (an indented snippet), which the peek
-  // reads as a dialog's, and keeps doing so; only a dialog's search field (`> `) over its select cursor (`→ `) is none
-  const dialog = inner.some((row) => /^\s*→ /.test(row)) && inner.some((row) => /^\s*>(?: |$)/.test(row));
+  // reads as a dialog's, and keeps doing so; only a dialog's search field (`> `) over its select cursor (`→ `, which pi
+  // draws in colour: typed text takes the terminal's own) is none
+  const cursor = (index: number): boolean => {
+    const at = /^\s*→ /.exec(text(index))?.[0].indexOf("→") ?? -1;
+    return at >= 0 && screen.rows[index]!.cells[at]?.fgDefault === false;
+  };
+  const dialog = Array.from({ length: lower - upper - 1 }, (_, offset) => upper + 1 + offset).some(cursor)
+    && inner.some((row) => /^\s*>(?: |$)/.test(row));
   if (inner.length > 0 && inner.length <= 6
     && (typed === undefined ? inner.every((row) => !row.startsWith("  ")) : !dialog)
     && inner.some((row) => row.trim() !== "") && !inner.some((row) => row.trim() === ">")) {
@@ -260,13 +266,17 @@ export const gjcInputRow: InputRowRecognizer = (screen, typed) => {
     const index = rows[position]!;
     if (!text(index).startsWith("│ >")) continue;
     const top = rows[position - 1]!;
-    const bottom = rows[position + 1];
+    // the draft check (`typed` given) also reads the rows a draft wraps onto, `│ …│` down to the bottom border
+    const wrapped = typed === undefined ? 0 : Math.max(0, rows.slice(position + 1, position + 1 + BOX_MAX_ROWS).findIndex((row) => !/^│ .*│$/.test(text(row))));
+    const bottom = rows[position + 1 + wrapped];
     if (!/^╭─+╮$/.test(text(top)) || bottom === undefined || !/^╰─+╯$/.test(text(bottom))) continue;
     const body = text(index).slice(3).replace(/│+$/, "").trim();
-    const cells = cellsFrom(screen.rows[index]!, 4).filter((cell) => !blank(cell) && cell.char !== "│");
+    const cells = [cellsFrom(screen.rows[index]!, 4), ...rows.slice(position + 1, position + 1 + wrapped).map((row) => cellsFrom(screen.rows[row]!, 2))]
+      .flat().filter((cell) => !blank(cell) && cell.char !== "│");
     const placeholder = body.startsWith("Type your message") && cells.every((cell) => !cell.fgDefault);
-    const after = rows.slice(position + 2);
-    if (body === "" || placeholder) return after.length === 0 ? "ready" : "covered";
+    const after = rows.slice(position + 2 + wrapped);
+    // with wrapped rows read, the box is empty only when all of them are (a draft may start with a blank line)
+    if ((wrapped === 0 ? body === "" : cells.length === 0) || placeholder) return after.length === 0 ? "ready" : "covered";
     typed?.push(...cells);
     return "draft";
   }
@@ -422,7 +432,8 @@ function boxRow(screen: ScreenSnapshot, mark: RegExp, above: RegExp, below: RegE
     const index = rows[position]!;
     const found = mark.exec(text(index));
     if (!found) continue;
-    if (!above.test(text(rows[position - 1]!))) return "gone";
+    // a draft's own row may start with the mark (a quoted line in Qwen's): the box's first row has the border above it
+    if (!above.test(text(rows[position - 1]!))) continue;
     const end = rows.slice(position + 1, position + 1 + BOX_MAX_ROWS).findIndex((row) => below.test(text(row)));
     if (end < 0) return "gone";
     const cells = [cellsFrom(screen.rows[index]!, Array.from(found[0]).length), ...rows.slice(position + 1, position + 1 + end).map((row) => screen.rows[row]!.cells)]
@@ -448,13 +459,46 @@ const clineInputRow: InputRowRecognizer = (screen, typed) => boxRow(screen, /^\s
 /** dsh-tui 0.19.0: `│ ❯ ` in a rounded box, its placeholder grey. */
 const dshTuiInputRow: InputRowRecognizer = (screen, typed) => boxRow(screen, /^\s*│ ❯ /, /^\s*╭─+╮$/, /^\s*╰─+╯$/, typed);
 
+/** Letta Code 0.34.23: `› ` between two full-width rules, its suggestion grey behind a drawn cursor. */
+const lettaInputRow: InputRowRecognizer = (screen, typed) => boxRow(screen, /^› ?/, FULL_RULE, FULL_RULE, typed);
+
+/** maki 0.7.1: `❯ ` between two full-width rules, its placeholder grey. */
+const makiInputRow: InputRowRecognizer = (screen, typed) => boxRow(screen, /^❯ ?/, FULL_RULE, FULL_RULE, typed);
+
+/** Kimi Code 2.5.3 (herdr's `kimi`): `│ > ` in a rounded box. */
+const kimiInputRow: InputRowRecognizer = (screen, typed) => boxRow(screen, /^\s*│ > ?/, /^\s*╭─+╮$/, /^\s*╰─+╯$/, typed);
+
+/** Gemini CLI 0.68.0: `> ` between a row of `▄` and one of `▀`, its placeholder grey behind a drawn cursor. */
+const geminiInputRow: InputRowRecognizer = (screen, typed) => boxRow(screen, /^\s*> ?/, /^▄+$/, /^▀+$/, typed);
+
+/**
+ * Kilo 7.8.27: rows starting with `┃` over a `╹▀…` row, home screen and session alike; the last of them is its
+ * agent and model, the ones above it the editor (its command list too, drawn there once `/` is typed).
+ */
+const kiloInputRow: InputRowRecognizer = (screen, typed) => {
+  const rows = filled(screen);
+  const text = (index: number): string => screen.rows[index]!.text;
+  let end = rows.length - 1;
+  while (end >= 0 && !/^\s*╹▀+$/.test(text(rows[end]!))) end--;
+  if (end < 2) return "gone";
+  let start = end;
+  while (start > 0 && /^\s*┃/.test(text(rows[start - 1]!))) start--;
+  const editor = rows.slice(start, end - 1);
+  if (editor.length === 0) return "gone";
+  const cells = editor.flatMap((index) => cellsFrom(screen.rows[index]!, text(index).indexOf("┃") + 1));
+  if (cells.every(blank)) return "ready";
+  typed?.push(...cells);
+  return "draft";
+};
+
 /** Every box the draft check reads, by herdr's agent name: the peek's and the ones above. */
 const DRAFT_RECOGNIZERS: Readonly<Record<string, InputRowRecognizer>> = {
   ...RECOGNIZERS, muse: museInputRow, qwen: qwenInputRow, cline: clineInputRow, "dsh-tui": dshTuiInputRow,
+  letta: lettaInputRow, maki: makiInputRow, kimi: kimiInputRow, gemini: geminiInputRow, kilo: kiloInputRow,
 };
 
 /** The agents whose recognizer reports the cells of its box: only their box can refuse a send (typedDraft). */
-const REPORTS_TYPED: ReadonlySet<string> = new Set(["codex", "pi", "omo", "gjc", "muse", "qwen", "cline", "dsh-tui"]);
+const REPORTS_TYPED: ReadonlySet<string> = new Set(["codex", "pi", "omo", "gjc", "muse", "qwen", "cline", "dsh-tui", "letta", "maki", "kimi", "gemini", "kilo"]);
 
 /**
  * The colours an agent draws typed text in where it does not use the terminal's own (as recorded, default
@@ -464,6 +508,9 @@ const REPORTS_TYPED: ReadonlySet<string> = new Set(["codex", "pi", "omo", "gjc",
 const TYPED_COLOURS: Readonly<Record<string, readonly string[]>> = {
   muse: ["2;204;211;219"],
   cline: ["2;237;241;242"],
+  maki: ["2;191;189;182"],
+  gemini: ["2;255;255;255"],
+  kilo: ["2;250;250;249"],
 };
 
 /** Whether a send to `agent` is worth a read of its box: typedDraft can answer true only for these. */
@@ -484,7 +531,8 @@ export function typedDraft(agent: string | null | undefined, screen: ScreenSnaps
   const typed: ScreenCell[] = [];
   if (DRAFT_RECOGNIZERS[agent!]!(screen, typed) !== "draft") return false;
   const colours = TYPED_COLOURS[agent!] ?? [];
-  return typed.some((cell) => !blank(cell) && !cell.dim && !cell.italic && !cell.inverse
+  // a character that draws nothing (a zero-width space an agent pads its box with) is no evidence either
+  return typed.some((cell) => /[^\p{Z}\p{C}]/u.test(cell.char) && !cell.dim && !cell.italic && !cell.inverse
     && (cell.fgDefault || (cell.fg !== undefined && colours.includes(cell.fg))));
 }
 
