@@ -667,6 +667,22 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(ahead.since("a", "idle")).toBe(T + MIN);
   });
 
+  it("leaves the mark on a stamp ahead of its roster too: the agent that comes after is not taken for the one that left", () => {
+    const kept = { stamps: {} as StateStamps };
+    const ahead = device(kept);
+    const behind = device(kept);
+    // no counter of herdr's here: only the server's count of finishes says which roster is the later one
+    ahead.see(T, look({ a: ["working", undefined, 1] }));
+    behind.see(T, look({ a: ["working", undefined, 1] }));
+    ahead.see(T + MIN, look({ a: ["idle", undefined, 2, DONE] }));
+    // its agent leaves, which the tab ahead sees; the one behind looks at a roster from before the rest
+    ahead.see(T + 2 * MIN, look({}));
+    behind.see(T + 2 * MIN + 1000, look({ a: ["working", undefined, 1], b: ["idle"] }));
+    // another agent is started in the pane and rests: its rest began now
+    behind.see(T + 10 * MIN, look({ a: ["idle", undefined, 3, DONE], b: ["idle"] }));
+    expect(behind.since("a", "idle")).toBe(T + 10 * MIN);
+  });
+
   it("does not let a tab behind stamp its old news over a newer stamp", () => {
     const kept = { stamps: {} };
     const ahead = device(kept), behind = device(kept);
