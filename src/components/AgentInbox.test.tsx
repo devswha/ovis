@@ -333,6 +333,13 @@ describe("AgentInbox", () => {
     expect(order(root)).toEqual(["w1D:p1"]);
   });
 
+  it("keeps the waiting row when the query is part of the question it shows", async () => {
+    const root = await draw(roster());
+    await act(async () => { answerPrompt(question("Allow rm of node_modules?")); });
+    await redraw({ query: "node_modules" });
+    expect(order(root)).toEqual(["w1D:p1"]);
+  });
+
   it("says no agent runs on a loaded PC that has none", async () => {
     const root = await draw(roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && { ...machine.snapshot, panes: [] } })));
     expect(byClass(root, "inbox-empty").map(text)).toEqual(["No agents running"]);

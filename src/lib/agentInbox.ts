@@ -11,6 +11,7 @@ import type { Translate } from "./i18n.ts";
 import type { AgentGroupSort } from "./settings.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 import { capped } from "./promptText.ts";
+import { matchesQuery } from "./paletteSearch.ts";
 import { machineFilter, sidebarFilter } from "./sidebarFilter.ts";
 import { sidebarPinKey } from "./sidebarPins.ts";
 
@@ -43,10 +44,14 @@ export function inboxFiltered(rows: readonly AgentRow[], filter: InboxFilter, ac
   return filter === "all" ? [...rows] : rows.filter((row) => agentGroup(inboxStatus(row, activity)) === filter);
 }
 
-/** The rows a typed query keeps, matched on the labels the Agents list shows (lib/sidebarFilter.ts); a blank query keeps all. */
-export function inboxSearched(rows: readonly AgentRow[], query: string, machines: readonly Machine[], t: Translate): AgentRow[] {
+/**
+ * The rows a typed query keeps, matched on the labels the Agents list shows (lib/sidebarFilter.ts) and on the
+ * words the row draws (`words`: inboxWords); a blank query keeps all.
+ */
+export function inboxSearched(rows: readonly AgentRow[], query: string, machines: readonly Machine[], t: Translate, words: (row: AgentRow) => string | null): AgentRow[] {
   const filter = sidebarFilter(query, machines, { machineId: "", paneId: null }, t);
-  return rows.filter((row) => !filter.active || machineFilter(filter, row.machine.id)?.panes.has(row.entry.pane.pane_id) === true);
+  if (!filter.active) return [...rows];
+  return rows.filter((row) => machineFilter(filter, row.machine.id)?.panes.has(row.entry.pane.pane_id) === true || matchesQuery(query, words(row) ?? ""));
 }
 
 /** The rows in the order `held` names their keys, the rest after them in their given order. */

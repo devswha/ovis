@@ -59,13 +59,23 @@ describe("agent inbox", () => {
 
   it("keeps the rows whose shown labels match the query", () => {
     const rows = inboxOrder(fixture, activity());
-    expect(label(inboxSearched(rows, "export", fixture, t))).toEqual(["Guard the export button"]);
+    expect(label(inboxSearched(rows, "export", fixture, t, () => null))).toEqual(["Guard the export button"]);
+  });
+
+  it("keeps a row whose drawn words match the query: a waiting agent's question, a working agent's plan step", () => {
+    const rows = inboxOrder(fixture, activity());
+    const drawn: Record<string, string> = { "w1D:p1": "Allow rm of node_modules?", "w1C:p1": "Bisect the flaky checkout" };
+    const words = (row: AgentRow): string | null => drawn[row.entry.pane.pane_id] ?? null;
+    expect(ids(inboxSearched(rows, "node_modules", fixture, t, words))).toEqual(["w1D:p1"]);
+    expect(ids(inboxSearched(rows, "flaky checkout", fixture, t, words))).toEqual(["w1C:p1"]);
+    // what the labels matched before still matches
+    expect(label(inboxSearched(rows, "export", fixture, t, words))).toEqual(["Guard the export button"]);
   });
 
   it("keeps every row for a blank query", () => {
     const rows = inboxOrder(fixture, activity());
-    expect(ids(inboxSearched(rows, "", fixture, t))).toEqual(ids(rows));
-    expect(ids(inboxSearched(rows, "   ", fixture, t))).toEqual(ids(rows));
+    expect(ids(inboxSearched(rows, "", fixture, t, () => "words"))).toEqual(ids(rows));
+    expect(ids(inboxSearched(rows, "   ", fixture, t, () => "words"))).toEqual(ids(rows));
   });
 
   it("says a waiting agent's question, then the first line of what it is about", () => {

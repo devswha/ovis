@@ -58,7 +58,15 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
   const { agentGroupSort: sort, sidebarRows } = settings;
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
-  const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t);
+  /** the agent's own words its row draws: the search finds them too */
+  const wordsOf = (row: AgentRow): string | null => {
+    const online = row.machine.state === "connected";
+    return inboxWords({
+      group: agentGroup(inboxStatus(row, activity)), blocked: online ? blockedNote(row.entry.pane, t) : null,
+      question: questions.get(inboxKey(row)) ?? null, plan: online ? row.entry.pane.plan : undefined, last: null,
+    });
+  };
+  const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
 
   // a state change never moves a row under a finger or the focus (AgentSidebar.tsx): while either is in the list,
   // rows keep the order last drawn; the reader's own doing (a filter, a query) draws them as they are at once
@@ -107,10 +115,7 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
       workspaceLabel: workspace.worktree?.is_linked_worktree ? compactWorktreeName(workspace.label) : workspace.label,
       tabName: agentTabName(tab, tabs, t),
     }).filter((part) => part !== title);
-    const words = inboxWords({
-      group, blocked: online ? blockedNote(pane, t) : null, question: questions.get(inboxKey(row)) ?? null,
-      plan: online ? pane.plan : undefined, last: null,
-    });
+    const words = wordsOf(row);
     return {
       key: inboxKey(row), machine, pane, online, status, group, title, words, mark: paneMark(entry) ?? "", kind: entry.canonicalAgent,
       place: [...place, ...online ? [] : [t("Offline")]].join(" · "),
