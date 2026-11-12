@@ -2007,8 +2007,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     its line, how long the agent has been in its state (`time.inbox-time`, `--fs-xs`, `--text-dim`,
     tabular figures), in the Agents list's words (**<1m**, **6m**, **2h**, **3d**): a waiting agent
     since this page saw it begin to wait, as the Agents list times a wait, and no time when the page
-    did not see it begin (a row already waiting when the page opened: its last words tell when it
-    last spoke, not when it began to wait); a working agent since the user last asked it; any other
+    did not see it begin (a row already waiting when the page opened, or when the list became
+    enabled on this device, by the setting or a narrower window: waits are watched only while it
+    is; its last words tell when it last spoke, not when it began to wait); a working agent since the user last asked it; any other
     since its last words. The full local time is its title. It ticks every 30 seconds while a row
     shows one; a row with no last words, and no wait seen to begin, has none.
   - Up to two lines of the agent's own words (`.inbox-words`, `--fs-md`, `--text-dim`), only when

@@ -732,8 +732,8 @@ export function App() {
   // the PCs this device shows in its sidebar, Agents list and palette (Settings → Devices and PCs); every other
   // use of the roster keeps them all, so a link, an alert or a split still reaches a hidden PC's pane
   const sidebarMachines = useShownMachines({ machines, selectedMachineRef, selectTargetRef, picks, restored: !linkSelects(initialLink) });
-  // when each inbox row began to wait, observed whether the list is shown or not
-  useInboxWaits(inbox.waits, sidebarMachines, activity);
+  // when each inbox row began to wait, observed whether the list is shown or not, where it is enabled
+  useInboxWaits(inbox.waits, sidebarMachines, activity, inbox.enabled);
   // every connected PC's sessions as its sidebar draws them, so the "waiting for you" count and its next jump
   // triage the same set the Agents list shows (G-002), and the selected PC's even when the sidebar hides it (lib/headerSessions.ts)
   const waitingRosters = useWaitingRosters(sidebarMachines, machines.find((machine) => machine.id === selectedMachineId), activity.status);

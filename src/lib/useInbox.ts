@@ -39,16 +39,30 @@ export class InboxWaits {
     this.starts = next;
     for (const listener of [...this.listeners]) listener();
   }
+
+  /** Forgets every start and state seen: the next observation is a first one, as at a page load. */
+  reset(): void {
+    this.before = null;
+    if (this.starts.size === 0) return;
+    this.starts = new Map();
+    for (const listener of [...this.listeners]) listener();
+  }
 }
 
-/** Feeds the page's waits every pane's shown state (none on a PC that is away) whenever one changes, list shown or not. */
-export function useInboxWaits(waits: InboxWaits, machines: readonly Machine[], activity: SidebarActivity): void {
-  const statuses = machines.flatMap((machine) => (machine.snapshot?.panes ?? []).map((pane) =>
-    [sidebarPinKey(machine.id, pane.pane_id), machine.state === "connected" ? activity.status(machine.id, pane) : undefined] as const));
+/**
+ * Feeds the page's waits every pane's shown state (none on a PC that is away) whenever one changes, list shown or not,
+ * while the list is enabled on this device; otherwise it reads nothing and the waits keep no starts.
+ */
+export function useInboxWaits(waits: InboxWaits, machines: readonly Machine[], activity: SidebarActivity, enabled: boolean): void {
+  const statuses = enabled ? machines.flatMap((machine) => (machine.snapshot?.panes ?? []).map((pane) =>
+    [sidebarPinKey(machine.id, pane.pane_id), machine.state === "connected" ? activity.status(machine.id, pane) : undefined] as const)) : [];
   const statusesRef = useRef(statuses);
   statusesRef.current = statuses;
-  const signature = statuses.map(([key, status]) => `${key}=${status ?? ""}`).join("\n");
-  useEffect(() => { waits.observe(statusesRef.current, Date.now()); }, [waits, signature]);
+  const signature = enabled ? statuses.map(([key, status]) => `${key}=${status ?? ""}`).join("\n") : null;
+  useEffect(() => {
+    if (enabled) waits.observe(statusesRef.current, Date.now());
+    else waits.reset();
+  }, [waits, enabled, signature]);
 }
 
 /** The history entry's mark that it was pushed on leaving the list: Back on such an entry returns to it. */
