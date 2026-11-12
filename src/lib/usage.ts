@@ -109,38 +109,57 @@ export function recordedBy(usage: ProviderUsage): string | null {
 const LONGEST_STALE_AFTER_MS = Math.max(...Object.values(RECORDED_STALE_AFTER_MS));
 
 /**
- * A report `elapsedMs` after it arrived here: a record older by then than its tool leaves between reads is stale,
- * whatever the report said when it was made. The record's age is the one the PC saw (the report's `server_time` less
- * the record's `checked_at`, both on the PC's clock) plus the time gone by on this device, so no device's clock is
- * held against the PC's. An older server says no time, and only the time gone by counts. The report itself where
- * nothing has aged.
+ * This device's two clocks, read together. A correction can set the wall clock back or forward; the running one only
+ * moves on, but stands still on some devices while they sleep.
  */
-export function agedReport(report: UsageReport, elapsedMs: number): UsageReport {
-  const sent = report.server_time === undefined ? NaN : Date.parse(report.server_time);
+export interface DeviceTime {
+  readonly wall: number;
+  readonly running: number;
+}
+
+const deviceTime = (): DeviceTime => ({ wall: Date.now(), running: performance.now() });
+
+/**
+ * The time gone by from one reading to a later one: the longer of the two clocks' answers. A sleep shortens one and a
+ * wall clock set back the other, and neither may make a record younger than it is.
+ */
+export function goneBy(from: DeviceTime, to: DeviceTime): number {
+  return Math.max(0, to.wall - from.wall, to.running - from.running);
+}
+
+/**
+ * What the PC last said, to be aged on this device: `report` without the PC's time, the one object handed on while
+ * the PC keeps saying the same; `serverTime`, the PC's clock in its latest answer; `heardAt`, when that one arrived.
+ */
+export interface HeldReport {
+  readonly report: UsageReport;
+  readonly serverTime: string | undefined;
+  readonly heardAt: DeviceTime;
+}
+
+/** What to hold once `next` arrives: the report object in hand while `next` says the same but for the PC's time, so that an unchanged answer redraws nothing. */
+export function heldReport(held: HeldReport | null, next: UsageReport, heardAt: DeviceTime): HeldReport {
+  const { server_time: serverTime, ...said } = next;
+  return { report: held !== null && JSON.stringify(held.report) === JSON.stringify(said) ? held.report : said, serverTime, heardAt };
+}
+
+/**
+ * The report in hand as of `now`: a record older by then than its tool leaves between reads is stale, whatever the PC
+ * said of it. The record's age is the one the PC last saw (its `serverTime` less the record's `checked_at`, both on
+ * the PC's clock) plus the time gone by on this device since that answer, so no device's clock is held against the
+ * PC's. An older server says no time, and only the time gone by counts. The held report itself where nothing has aged.
+ */
+export function agedReport(held: HeldReport, now: DeviceTime): UsageReport {
+  const sent = held.serverTime === undefined ? NaN : Date.parse(held.serverTime);
+  const since = goneBy(held.heardAt, now);
   const aged = (usage: ProviderUsage): ProviderUsage => {
     if (!usage.recorded || usage.recorded.stale) return usage;
     const seen = usage.checked_at === null ? NaN : sent - Date.parse(usage.checked_at);
     const limit = (RECORDED_STALE_AFTER_MS as Readonly<Record<string, number | undefined>>)[usage.recorded.by] ?? LONGEST_STALE_AFTER_MS;
-    return (Number.isFinite(seen) ? Math.max(0, seen) : 0) + elapsedMs > limit ? { ...usage, recorded: { ...usage.recorded, stale: true } } : usage;
+    return (Number.isFinite(seen) ? Math.max(0, seen) : 0) + since > limit ? { ...usage, recorded: { ...usage.recorded, stale: true } } : usage;
   };
-  const providers = report.providers.map(aged);
-  return providers.some((usage, index) => usage !== report.providers[index]) ? { ...report, providers } : report;
-}
-
-/** A report in hand, and this device's clock when it arrived. */
-export interface HeldReport {
-  readonly report: UsageReport;
-  readonly arrivedAt: number;
-}
-
-/**
- * What to hold once `next` arrives: the report in hand, with its own arrival, while the new one says the same but for
- * the PC's time. An unchanged answer then redraws nothing, and the kept report, aged from its own arrival, gives each
- * record the age the newer one would: the time between the two went by on both clocks alike.
- */
-export function heldReport(held: HeldReport | null, next: UsageReport, arrivedAt: number): HeldReport {
-  const said = (report: UsageReport): string => JSON.stringify({ ...report, server_time: undefined });
-  return held !== null && said(held.report) === said(next) ? held : { report: next, arrivedAt };
+  const providers = held.report.providers.map(aged);
+  return providers.some((usage, index) => usage !== held.report.providers[index]) ? { ...held.report, providers } : held.report;
 }
 
 /**
@@ -250,8 +269,8 @@ export function moveInOrder(shown: readonly string[], saved: readonly string[], 
 export function useUsage(enabled: boolean) {
   const [held, setHeld] = useState<HeldReport | null>(null);
   const [loading, setLoading] = useState(false);
-  /** this device's clock when the server was last asked or last heard: the report in hand is aged up to then */
-  const [asOf, setAsOf] = useState(0);
+  /** when the server was last asked or last heard: the report in hand is aged up to then */
+  const [asOf, setAsOf] = useState(deviceTime);
   const visible = usePageVisible();
   const generation = useRef(0);
 
@@ -259,11 +278,11 @@ export function useUsage(enabled: boolean) {
     const current = ++generation.current;
     setLoading(true);
     // asked, not yet answered: a server that never answers must not leave the report in hand as young as it arrived
-    setAsOf(Date.now());
+    setAsOf(deviceTime());
     try {
       const next = await fetchUsage(refresh);
-      if (current === generation.current) { const arrivedAt = Date.now(); setHeld((previous) => heldReport(previous, next, arrivedAt)); setAsOf(arrivedAt); }
-    } catch { if (current === generation.current) setAsOf(Date.now()); /* offline or restarting: the last report stays, and ages */ }
+      if (current === generation.current) { const heardAt = deviceTime(); setHeld((previous) => heldReport(previous, next, heardAt)); setAsOf(heardAt); }
+    } catch { if (current === generation.current) setAsOf(deviceTime()); /* offline or restarting: the last report stays, and ages */ }
     finally { if (current === generation.current) setLoading(false); }
   }, []);
 
@@ -283,7 +302,7 @@ export function useUsage(enabled: boolean) {
   }, [enabled, load]);
 
   const refresh = useCallback(() => { if (enabled) void load(true); }, [enabled, load]);
-  const report = useMemo(() => held === null ? null : agedReport(held.report, asOf - held.arrivedAt), [held, asOf]);
+  const report = useMemo(() => held === null ? null : agedReport(held, asOf), [held, asOf]);
   return { report, loading, refresh };
 }
 

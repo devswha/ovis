@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ProviderUsage, UsageWindow } from "../../shared/protocol.ts";
-import { agedReport, canSignInAgain, composerUsage, creditsText, formatPercent, formatResetIn, glanceWindow, heldReport, isCurrent, isSignIn, meterPercent, meterText, moveInOrder, orderProviders, planForPane, providerForAgent, recordedBy, recordedNote, statusWindows, tightestWindow, usageName, windowLabel } from "./usage.ts";
+import { agedReport, canSignInAgain, composerUsage, creditsText, formatPercent, formatResetIn, glanceWindow, goneBy, heldReport, isCurrent, isSignIn, meterPercent, meterText, moveInOrder, orderProviders, planForPane, providerForAgent, recordedBy, recordedNote, statusWindows, tightestWindow, usageName, windowLabel, type DeviceTime, type HeldReport } from "./usage.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
 const window = (used_percent: number, kind: UsageWindow["kind"] = "week", scope: string | null = null): UsageWindow => ({ kind, scope, used_percent, resets_at: null, starts_at: null });
@@ -101,42 +101,60 @@ describe("usage meters", () => {
     expect(recordedBy(unknown)).toBe("Recorded by a-tool-not-known-yet");
   });
 
-  it("ages a report by the time gone by on this device, never by comparing its clock with the PC's", () => {
+  it("ages what the PC last said by the time gone by on this device, never by comparing its clock with the PC's", () => {
     const PC = NOW + 40 * 60_000; // the PC's clock, 40 minutes ahead of this device's
     const record = (minutesBefore: number, by: string, stale = false): ProviderUsage => ({ ...provider("claude", [window(40)], `${by}-${minutesBefore}`), checked_at: new Date(PC - minutesBefore * 60_000).toISOString(), recorded: { by: by as "omp", stale, signed_in: false } });
     const own: ProviderUsage = { ...provider("claude", [window(40)], "own"), checked_at: new Date(PC - 180 * 60_000).toISOString() };
-    const report = { server_time: new Date(PC).toISOString(), providers: [record(4, "omp"), record(10, "gjc"), record(10, "a-tool-not-known-yet"), record(180, "omp", true), own] };
-    const stale = (elapsedMinutes: number) => agedReport(report, elapsedMinutes * 60_000).providers.map((usage) => usage.recorded?.stale ?? null);
-    expect(stale(0)).toEqual([false, false, false, true, null]);
-    expect(stale(5)).toEqual([false, false, false, true, null]);
-    expect(stale(6)).toEqual([false, true, true, true, null]);
-    expect(stale(12)).toEqual([true, true, true, true, null]);
-    // nothing aged: the report itself, so that nothing is redrawn
-    expect(agedReport(report, 5 * 60_000)).toBe(report);
+    const heardAt: DeviceTime = { wall: NOW, running: 5_000 };
+    const held: HeldReport = { report: { providers: [record(4, "omp"), record(10, "gjc"), record(10, "a-tool-not-known-yet"), record(180, "omp", true), own] }, serverTime: new Date(PC).toISOString(), heardAt };
+    const later = (minutes: number): DeviceTime => ({ wall: heardAt.wall + minutes * 60_000, running: heardAt.running + minutes * 60_000 });
+    const stale = (from: HeldReport, minutes: number) => agedReport(from, later(minutes)).providers.map((usage) => usage.recorded?.stale ?? null);
+    expect(stale(held, 0)).toEqual([false, false, false, true, null]);
+    expect(stale(held, 5)).toEqual([false, false, false, true, null]);
+    expect(stale(held, 6)).toEqual([false, true, true, true, null]);
+    expect(stale(held, 12)).toEqual([true, true, true, true, null]);
+    // the wall clock set back a quarter of an hour while twelve minutes went by: every record is twelve minutes older all the same
+    expect(agedReport(held, { wall: heardAt.wall - 15 * 60_000, running: heardAt.running + 12 * 60_000 }).providers.map((usage) => usage.recorded?.stale ?? null)).toEqual([true, true, true, true, null]);
+    // nothing aged: the report in hand itself, so that nothing is redrawn
+    expect(agedReport(held, later(5))).toBe(held.report);
     // a number that is no longer current leaves the composer, as a stale record does
-    expect(agedReport(report, 6 * 60_000).providers.map(isCurrent)).toEqual([true, false, false, false, true]);
+    expect(agedReport(held, later(6)).providers.map(isCurrent)).toEqual([true, false, false, false, true]);
     // a server that does not say its time: only the time gone by here counts
-    const { server_time: _, ...older } = report;
-    expect(agedReport(older, 15 * 60_000).providers.map((usage) => usage.recorded?.stale ?? null)).toEqual([false, false, false, true, null]);
-    expect(agedReport(older, 16 * 60_000).providers.map((usage) => usage.recorded?.stale ?? null)).toEqual([true, true, true, true, null]);
+    const older: HeldReport = { ...held, serverTime: undefined };
+    expect(stale(older, 15)).toEqual([false, false, false, true, null]);
+    expect(stale(older, 16)).toEqual([true, true, true, true, null]);
   });
 
-  it("holds the report in hand, with its own arrival, while the next says the same but for the PC's time", () => {
-    const DEVICE = NOW - 3 * 3600_000; // this device's clock, three hours behind the PC's
+  it("takes the time gone by as the longer of the device's two clocks: a sleep stops one, a correction sets the other back", () => {
+    const from: DeviceTime = { wall: NOW, running: 1_000 };
+    expect(goneBy(from, { wall: NOW + 600_000, running: 601_000 })).toBe(600_000);
+    // twelve minutes asleep, on a device whose running clock stands still meanwhile
+    expect(goneBy(from, { wall: NOW + 720_000, running: 1_200 })).toBe(720_000);
+    // ten minutes on, the wall clock was set back a quarter of an hour
+    expect(goneBy(from, { wall: NOW - 300_000, running: 601_000 })).toBe(600_000);
+    // ten minutes on, the wall clock was set forward half an hour: not to be told from a sleep, so it counts
+    expect(goneBy(from, { wall: NOW + 2_400_000, running: 601_000 })).toBe(2_400_000);
+    expect(goneBy(from, { wall: NOW - 300_000, running: 500 })).toBe(0);
+  });
+
+  it("holds the report object in hand while the PC says the same but for its time, and always the PC's latest time and arrival", () => {
     const record = (readAt: number): ProviderUsage => ({ ...provider("claude", [window(40)], "recorded"), checked_at: new Date(readAt).toISOString(), recorded: { by: "omp", stale: false, signed_in: false } });
     const answer = (minute: number, usage: ProviderUsage) => ({ server_time: new Date(NOW + minute * 60_000).toISOString(), providers: [usage] });
-    const first = heldReport(null, answer(1, record(NOW)), DEVICE + 60_000);
-    expect(first).toEqual({ report: answer(1, record(NOW)), arrivedAt: DEVICE + 60_000 });
+    const at = (minute: number): DeviceTime => ({ wall: 1_000 + minute * 60_000, running: minute * 60_000 }); // a device clock decades behind the PC's
+    const first = heldReport(null, answer(1, record(NOW)), at(1));
+    expect(first).toEqual({ report: { providers: [record(NOW)] }, serverTime: answer(1, record(NOW)).server_time, heardAt: at(1) });
     // thirteen minutes on, the PC says the same of a record it has not seen read again
-    const kept = heldReport(first, answer(14, record(NOW)), DEVICE + 14 * 60_000);
-    expect(kept).toBe(first);
-    // the PC out of reach from then: the record is 16 minutes old two minutes later, by the kept report as by the newer one
-    const staleAt = (minute: number) => agedReport(kept.report, DEVICE + minute * 60_000 - kept.arrivedAt).providers[0]?.recorded?.stale;
-    expect([staleAt(15), staleAt(16)]).toEqual([false, true]);
-    expect(agedReport(answer(14, record(NOW)), 2 * 60_000).providers[0]?.recorded?.stale).toBe(true);
-    // an answer that says anything else takes its place, with its own arrival
-    const reread = answer(15, record(NOW + 14 * 60_000));
-    expect(heldReport(kept, reread, DEVICE + 15 * 60_000)).toEqual({ report: reread, arrivedAt: DEVICE + 15 * 60_000 });
+    const again = heldReport(first, answer(14, record(NOW)), at(14));
+    expect(again.report).toBe(first.report);
+    expect(again).toEqual({ report: first.report, serverTime: answer(14, record(NOW)).server_time, heardAt: at(14) });
+    // the PC out of reach from then: the record is 16 minutes old two minutes later
+    expect([15, 16].map((minute) => agedReport(again, at(minute)).providers[0]?.recorded?.stale)).toEqual([false, true]);
+    // a wall clock corrected forward by half an hour between two answers ages nothing: the count starts again at each answer
+    const corrected: DeviceTime = { wall: at(14).wall + 30 * 60_000, running: at(14).running };
+    expect(agedReport(heldReport(first, answer(14, record(NOW)), corrected), corrected).providers[0]?.recorded?.stale).toBe(false);
+    // an answer that says anything else takes the report's place
+    const reread = record(NOW + 14 * 60_000);
+    expect(heldReport(again, answer(15, reread), at(15))).toEqual({ report: { providers: [reread] }, serverTime: answer(15, reread).server_time, heardAt: at(15) });
   });
 
   const withProblem = (problem: ProviderUsage["problem"], recorded?: ProviderUsage["recorded"]): ProviderUsage => ({ ...provider("claude", [window(40)]), problem, ...(recorded ? { recorded } : {}) });
