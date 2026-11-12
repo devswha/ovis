@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, setSystemTime } from "bun:test";
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
@@ -7,7 +7,8 @@ import type { AgentStatus } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
 import { currentAgentRowTokens, setAgentRowTokens } from "../lib/agentRowTokens.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { SidebarActivityProvider } from "../lib/sidebarActivity.tsx";
+import { SidebarActivityProvider, useSidebarActivity } from "../lib/sidebarActivity.tsx";
+import { useAgentStateStamping } from "../lib/useAgentStateSince.ts";
 import type { SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
 import { setSidebarPins } from "../lib/sidebarPins.ts";
@@ -16,6 +17,12 @@ import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const paneId = "w1C:p1";
+
+/** App's part in a row's time: it stamps the state changes the list reads (lib/useAgentStateSince.ts) */
+function Stamping({ machines }: { machines: Machine[] }) {
+  useAgentStateStamping(machines, useSidebarActivity());
+  return null;
+}
 
 function roster(tokens: Record<string, string> = { quota: "95%" }): Machine[] {
   return structuredClone(fixture).map((machine) => ({
@@ -88,10 +95,11 @@ describe("AgentSidebar phone sheet live row", () => {
   });
 
   const view = (machines: Machine[]) => <SettingsProvider>
+    <Stamping machines={machines} />
     <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={paneId} stateWord={(machine) => machine.state} onSelect={() => {}} />
   </SettingsProvider>;
 
-  it("says how long an agent has waited only for a wait this page saw begin, never a reload's guess", async () => {
+  it("says how long an agent has been in its state only where this page saw the state begin, never a reload's guess", async () => {
     const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
     } }));
@@ -99,10 +107,14 @@ describe("AgentSidebar phone sheet live row", () => {
     // already waiting when the page opened: herdr says nothing of when it began, so the row says no time
     await act(async () => { renderer = create(view(at("blocked"))); });
     expect(since()).toEqual([]);
-    // a wait this page sees begin says how long it has lasted
+    // a state this page sees begin says how long it has lasted, whatever the state is
     await act(async () => { renderer!.update(view(at("working"))); });
-    expect(since()).toEqual([]);
-    await act(async () => { renderer!.update(view(at("blocked"))); });
+    expect(since()).toEqual(["<1m"]);
+    // this page has no storage: it keeps the time itself when another agent's change makes it look again
+    const otherChanged = at("working").map((machine) => ({ ...machine, snapshot: machine.snapshot && {
+      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === "w1E:p1" ? { ...pane, agent_status: "working" as const } : pane),
+    } }));
+    await act(async () => { renderer!.update(view(otherChanged)); });
     expect(since()).toEqual(["<1m"]);
   });
 
@@ -465,6 +477,128 @@ describe("AgentSidebar fold memory", () => {
     // Then nothing is stored, and the list comes back with the screen's default.
     expect(writes).toEqual([]);
     expect((await sidebar.remount(inactive)).expanded()).toBe(true);
+  });
+
+  const groupedList = (filter: SidebarFilter, machines: Machine[] = roster(), watching = false) => <SettingsProvider>
+    <Stamping machines={machines} />
+    <SidebarFilterProvider value={{ filter, reportBranches: () => {} }}>
+      <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} watching={watching} stateWord={(machine) => machine.state} onSelect={() => {}} />
+    </SidebarFilterProvider>
+  </SettingsProvider>;
+  const heading = (group: string) => renderer!.root.find((node) => node.type === "li" && node.props.className === "agent-group-label" && node.props["data-group"] === group).findByType("button");
+  const foldedRows = (): string[] => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pane"] !== undefined && node.props.hidden === true).map((node) => node.props["data-pane"]);
+
+  it("starts with Idle folded and the other groups open, and keeps what the reader then folds and opens (#3505)", async () => {
+    // Given grouping by state on a device that kept no fold, with two idle agents.
+    stored.set("ovis:agent-groups", "true");
+    await act(async () => { renderer = create(groupedList(inactive)); });
+    // Then the resting agents are out of sight under their heading, which still says how many they are.
+    expect(heading("idle").props["aria-expanded"]).toBe(false);
+    expect(heading("working").props["aria-expanded"]).toBe(true);
+    expect(foldedRows()).toEqual(["w1E:p1", "w1F:p1"]);
+    expect(heading("idle").findByProps({ className: "agent-group-count" }).children).toEqual(["2"]);
+    // When the reader opens Idle and folds Working from their headings.
+    await act(async () => { heading("idle").props.onClick(); });
+    await act(async () => { heading("working").props.onClick(); });
+    expect(foldedRows()).toEqual([paneId]);
+    expect(heading("working").findByProps({ className: "agent-group-count" }).children).toEqual(["1"]);
+    // Then both choices are still there when the page loads again.
+    await act(async () => { renderer!.unmount(); });
+    await act(async () => { renderer = create(groupedList(inactive)); });
+    expect(heading("idle").props["aria-expanded"]).toBe(true);
+    expect(foldedRows()).toEqual([paneId]);
+  });
+
+  it("keeps the selected agent in sight under its folded group, as the list's other folds do (#3505)", async () => {
+    stored.set("ovis:agent-groups", "true");
+    const selecting = (pane: string) => <SettingsProvider>
+      <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+        <AgentSidebar machines={roster()} selectedMachineId="local" selectedPaneId={pane} stateWord={(machine) => machine.state} onSelect={() => {}} />
+      </SidebarFilterProvider>
+    </SettingsProvider>;
+    // Given Idle folded, as it starts, and one of its two agents selected.
+    await act(async () => { renderer = create(selecting("w1E:p1")); });
+    // Then that row alone stays under the folded heading, which counts both.
+    expect(foldedRows()).toEqual(["w1F:p1"]);
+    expect(heading("idle").findByProps({ className: "agent-group-count" }).children).toEqual(["2"]);
+    // And it folds away with the other once the selection moves on.
+    await act(async () => { renderer!.update(selecting(paneId)); });
+    expect(foldedRows()).toEqual(["w1E:p1", "w1F:p1"]);
+  });
+
+  it("opens every folded group while the filter is in use, and leaves the stored fold alone (#3505)", async () => {
+    // Given Idle folded on this device, and a filter that keeps one idle agent.
+    stored.set("ovis:agent-groups", "true");
+    stored.set("ovis:agent-state-folds", JSON.stringify(["idle"]));
+    const keepsIdle: SidebarFilter = { query: "backup", active: true, matches: 1, machines: new Map([["local", {
+      shown: true, matched: false, workspaces: new Set(), matchedWorkspaces: new Set(), revealedWorkspaces: new Set(), panes: new Set(["w1E:p1"]), matchedPanes: new Set(["w1E:p1"]),
+    }]]) };
+    await act(async () => { renderer = create(groupedList(keepsIdle)); });
+    // Then the match is in sight, under a heading that stands open and does not fold for the filter's time.
+    expect(heading("idle").props["aria-expanded"]).toBe(true);
+    expect(heading("idle").props.disabled).toBe(true);
+    expect(foldedRows()).toEqual([]);
+    // And with the filter gone the group is folded as the reader left it.
+    await act(async () => { renderer!.update(groupedList(inactive)); });
+    expect(foldedRows()).toEqual(["w1E:p1", "w1F:p1"]);
+    expect(JSON.parse(stored.get("ovis:agent-state-folds")!)).toEqual(["idle"]);
+  });
+
+  it("lets a watching device fold its groups: the fold is the device's own, and nothing is sent for it (#3505)", async () => {
+    stored.set("ovis:agent-groups", "true");
+    stored.set("ovis:agent-state-folds", "[]");
+    await act(async () => { renderer = create(groupedList(inactive, roster(), true)); });
+    await act(async () => { heading("working").props.onClick(); });
+    expect(foldedRows()).toEqual([paneId]);
+    expect(JSON.parse(stored.get("ovis:agent-state-folds")!)).toEqual(["working"]);
+  });
+
+  it("counts an agent's time in its state from the change this device saw, through a read finish and a reload (#3505)", async () => {
+    const start = 1_800_000_000_000;
+    const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
+      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
+    } }));
+    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(start));
+    try {
+      // Given an agent that finishes while this page watches.
+      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
+      await act(async () => { renderer!.update(groupedList(inactive, at("done"))); });
+      expect(since()).toEqual(["<1m"]);
+      // When five minutes pass, its row says so at the list's next tick.
+      jest.setSystemTime(new Date(start + 5 * 60_000));
+      await act(async () => { jest.advanceTimersByTime(30_000); });
+      expect(since()).toEqual(["5m"]);
+      // Then reading the finish (done turns idle) keeps the time, and so does loading the page again.
+      await act(async () => { renderer!.update(groupedList(inactive, at("idle"))); });
+      expect(since()).toEqual(["5m"]);
+      await act(async () => { renderer!.unmount(); });
+      await act(async () => { renderer = create(groupedList(inactive, at("idle"))); });
+      expect(since()).toEqual(["5m"]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+      renderer = undefined;
+      jest.useRealTimers();
+      setSystemTime();
+    }
+  });
+
+  it("reads no time from a stamping that has ended: the page's stamps leave with it, and the device keeps them", async () => {
+    const finished = roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
+      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "done" as const } : pane),
+    } }));
+    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    // Given a page whose stamping saw the agent finish, so its row says a time.
+    await act(async () => { renderer = create(groupedList(inactive)); });
+    await act(async () => { renderer!.update(groupedList(inactive, finished)); });
+    expect(since()).toEqual(["<1m"]);
+    // When that page ends, and the list is drawn again with no stamping beside it.
+    await act(async () => { renderer!.unmount(); });
+    await act(async () => { renderer = create(<SettingsProvider><AgentSidebar machines={finished} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} /></SettingsProvider>); });
+    // Then it has no stamp to read, while the device still holds the one the page made.
+    expect(since()).toEqual([]);
+    expect(JSON.parse(stored.get("ovis:agent-state-since")!).pcs.local.rows[paneId].state).toBe("idle");
   });
 
   it("draws the composer's context ring on agent rows only while Context left on agent rows is on", async () => {

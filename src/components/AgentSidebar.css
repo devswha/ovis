@@ -64,30 +64,66 @@
   list-style: none;
 }
 
-/* Settings → Group agents by state: a quiet heading over each group, the leading cell left empty
-   so the words line up with the rows' titles, and the group's count in the trailing cell */
-.agent-group-label {
+/* Settings → Group agents by state: a quiet heading over each group, which folds it (#3505). The
+   fold's caret takes the leading cell, as the other heads' does, so the words line up with the rows'
+   titles; the group's count stays in the trailing cell, folded or open. The space over the words is
+   the button's own, so the whole heading is the target: a pointer's 24px, a finger's row. */
+.agent-group-toggle {
   display: flex;
   align-items: center;
-  margin: var(--space-2) 0 0;
-  padding-left: var(--side-box);
+  width: 100%;
+  min-height: var(--pointer-target);
+  margin: 0;
+  padding: var(--space-2) 0 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--text-dim);
+  font: inherit;
   font-size: var(--fs-meta);
   font-weight: var(--fw-semibold);
   letter-spacing: var(--tracking-caps);
   line-height: var(--lh-tight);
+  text-align: left;
   text-transform: uppercase;
+  cursor: pointer;
 }
 
-.agent-group-label:first-child { margin-top: 0; }
+.agent-group-label:first-child .agent-group-toggle { padding-top: 0; }
+.agent-group-toggle:disabled { cursor: default; }
+.agent-group-toggle:focus-visible { outline-offset: calc(var(--ring-offset) * -1); }
 
-.agent-group-label[data-group="blocked"] { color: var(--status-blocked); }
+.agent-group-label[data-group="blocked"] .agent-group-toggle { color: var(--status-blocked); }
+
+/* the caret is the fold's, not the state's: it keeps the heads' dim whatever colour the words take */
+.agent-group-toggle .agent-section-caret { color: var(--text-dim); }
+
+.agent-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .agent-group-count {
+  flex: none;
   width: var(--side-box);
   margin-left: auto;
   font-variant-numeric: tabular-nums;
   text-align: center;
+}
+
+@media (hover: hover) {
+  .agent-group-toggle:hover:not(:disabled) { background: var(--side-hover); }
+}
+
+@media (pointer: coarse) {
+  .agent-group-toggle {
+    min-height: var(--side-row);
+    padding-top: var(--space-3);
+  }
+
+  .agent-group-label:first-child .agent-group-toggle { padding-top: var(--space-3); }
 }
 
 /* Agents a launcher tagged role=background (workers, subagents) stand after the rest, under a

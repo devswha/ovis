@@ -1,0 +1,56 @@
+/**
+ * This device's state stamps (lib/agentStateSince.ts), taken in one place and read by every list
+ * that says how long an agent has been in its state. App runs the stamping for as long as the page
+ * lives, so a change is stamped whether or not a list is in sight; the lists only read.
+ */
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+
+import type { Machine } from "../../shared/machines.ts";
+import { advanceStateStamps, loadStateStamps, saveStateStamps, stateLooks, type LastLook, type StateStamps } from "./agentStateSince.ts";
+import type { SidebarActivity } from "./sidebarActivity.tsx";
+
+const NONE: StateStamps = {};
+let published: StateStamps = NONE;
+const listeners = new Set<() => void>();
+
+function publish(stamps: StateStamps): void {
+  if (stamps === published) return;
+  published = stamps;
+  for (const listener of [...listeners]) listener();
+}
+
+const subscribe = (listener: () => void): (() => void) => {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+};
+const current = (): StateStamps => published;
+
+/** The stamps as the page's stamping last left them; none until it has looked once. */
+export function useAgentStateStamps(): StateStamps {
+  return useSyncExternalStore(subscribe, current, current);
+}
+
+/**
+ * Stamps every PC's agents whenever a look at them differs from the one before it. The stored stamps
+ * are read anew at each look, so two tabs of one device keep each other's; where the storage cannot
+ * be read or written (private mode), the page goes by the stamps it made itself.
+ */
+export function useAgentStateStamping(machines: readonly Machine[], activity: SidebarActivity): void {
+  const looks = useMemo(() => stateLooks(machines, (machineId, pane) => activity.status(machineId, pane)), [machines, activity]);
+  const signature = useMemo(() => looks.map((look) => `${look.id}|${look.lifetime ?? ""}|${look.rows === null ? "-" : look.rows.map((row) => `${row.pane}=${row.state}#${row.seq ?? ""}`).join(",")}`).join("\n"), [looks]);
+  const latest = useRef(looks);
+  latest.current = looks;
+  // what the page carries from one look to the next: its own stamps, the states it saw last, and whether the storage still takes them
+  const carried = useRef<{ own: StateStamps; last: LastLook; kept: boolean } | null>(null);
+  useEffect(() => {
+    const page = carried.current ??= { own: loadStateStamps() ?? NONE, last: new Map(), kept: true };
+    const before = (page.kept ? loadStateStamps() : null) ?? page.own;
+    const next = advanceStateStamps({ stamps: before, last: page.last }, latest.current, Date.now());
+    if (next.stamps !== before) page.kept = saveStateStamps(next.stamps);
+    page.own = next.stamps;
+    page.last = next.last;
+    publish(next.stamps);
+  }, [signature]);
+  // a page that ends leaves nothing behind: the next one reads the device's stamps anew, and a list with no stamping draws no time
+  useEffect(() => () => publish(NONE), []);
+}
