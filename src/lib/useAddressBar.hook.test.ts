@@ -3,7 +3,7 @@ import { createElement, useLayoutEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane, HerdrWorkspace } from "../../shared/protocol.ts";
-import { NAV_KEY, type AppLink, type CreateDraft } from "./deepLink.ts";
+import { NAV_KEY, readLink, type AppLink, type CreateDraft } from "./deepLink.ts";
 import { FILE_PREVIEW_KEY } from "./historyKeys.ts";
 import type { SelectionMark } from "./selectionMark.ts";
 import * as settingsHistory from "./settingsHistory.ts";
@@ -38,7 +38,7 @@ const roster = (): Snapshot => ({
 }) as unknown as Snapshot;
 
 /** what the app shows: the hook's inputs that the tests move */
-let place: { machineId: string; paneId: string | null; newSessionOpen: boolean; newFields: Omit<CreateDraft, "kind"> | null; sidebarCollapsed: boolean; snapshot: Snapshot; viewing: Preview | null; linkLanded: boolean; inbox: { open: boolean; enabled: boolean } };
+let place: { machineId: string; paneId: string | null; newSessionOpen: boolean; newFields: Omit<CreateDraft, "kind"> | null; sidebarCollapsed: boolean; snapshot: Snapshot; viewing: Preview | null; linkLanded: boolean; inbox: { open: boolean; enabled: boolean }; dialogMachineId?: string; rosterOut?: boolean };
 /** what the handler asked of a phone's agent list */
 let inboxCalls: string[];
 /** Reopen files on return: whether a file left behind is kept on its entry */
@@ -66,10 +66,11 @@ const refs = {
 };
 
 function Probe() {
-  const { machineId, paneId, newSessionOpen, newFields, sidebarCollapsed, snapshot, viewing, linkLanded, inbox } = place;
+  const { machineId, paneId, newSessionOpen, newFields, sidebarCollapsed, snapshot, viewing, linkLanded, inbox, dialogMachineId, rosterOut } = place;
   const machine = { id: machineId, name: "workstation", kind: "local", enabled: true, state: "connected", error: null, snapshot } as Machine;
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId) as HerdrPane;
-  refs.machines.current = [machine];
+  // the PCs are not in yet: the page has no roster to settle an entry against
+  refs.machines.current = rosterOut ? [] : [machine];
   // the app marks its selection at commit (lib/useSelection.ts)
   useLayoutEffect(() => { refs.selection.current = { machineId, paneId, generation: 0 }; }, [machineId, paneId]);
   useAddressBar({
@@ -79,7 +80,8 @@ function Probe() {
       show: () => { inboxCalls.push("show"); place.inbox = { ...place.inbox, open: true }; draw(); },
       leave: () => { inboxCalls.push("leave"); place.inbox = { ...place.inbox, open: false }; draw(); },
     },
-    newSessionOpen, newFields, sidebarCollapsed, snapshot, selectedPaneId: paneId, selectedPane: pane,
+    // the New workspace dialog's PC: the selected one, unless it was opened for another (the list's sheet of PCs)
+    newSessionOpen, newSessionMachineId: dialogMachineId ?? machineId, newFields, sidebarCollapsed, snapshot, selectedPaneId: paneId, selectedPane: pane,
     // a pane its roster does not list yet (one New workspace just made) has no workspace
     selectedWorkspace: snapshot.workspaces.find((workspace) => workspace.workspace_id === pane?.workspace_id) as HerdrWorkspace,
     selectedMachineId: machineId, selectedMachine: machine, machines: refs.machines.current, machinesRef: refs.machines,
@@ -481,4 +483,122 @@ it("with the list off, leaves the New workspace dialog's entry as it was once it
   // Then the entry keeps the dialog's address and PC.
   expect(writes).toEqual([]);
   expect(addresses()).toEqual([dialog]);
+});
+
+it("with the list shown, the New workspace dialog opened for another PC writes that PC, and closing it returns the list's address", async () => {
+  // Given a phone on its list, the local PC selected under it.
+  place = { ...place, inbox: { open: true, enabled: true } };
+  await mount([""]);
+
+  // When the dialog opens for another PC picked in the sheet of PCs, with a name typed.
+  await act(async () => { place.newSessionOpen = true; place.dialogMachineId = "remote"; place.newFields = { cwd: null, name: "New", agent: null }; draw(); });
+
+  // Then the address names that PC and the dialog's fields, over the list's one entry.
+  const dialog = readLink(addresses()[0]!);
+  expect(dialog.machine).toBe("remote");
+  expect(dialog.create).toEqual({ kind: "workspace", cwd: null, name: "New", agent: null });
+  expect(dialog.pane).toBeNull();
+  expect(entries).toHaveLength(1);
+
+  // When the dialog closes onto the list.
+  await act(async () => { place.newSessionOpen = false; place.newFields = null; draw(); });
+
+  // Then the entry says the list's place again, and no entry was added.
+  expect(addresses()).toEqual([""]);
+  expect(writes.every((write) => write.startsWith("replaceState 0 "))).toBe(true);
+});
+
+it("Back onto an entry that names only an absolute file keeps the list closed and the file in the address", async () => {
+  // Given p1 opened from the list over an entry that names a file and no pane.
+  const fileOnly = "?file=%2Ftmp%2Fnotes.txt";
+  place = { ...place, paneId: "p1", inbox: { open: false, enabled: true } };
+  await mount([fileOnly, P1]);
+  entries[1]!.state = FROM_INBOX;
+  // the file viewer's listener shows the entry's file before the address bar's runs
+  waiting = () => { place.viewing = { path: "/tmp/notes.txt", paneId: null, machineId: "local" }; };
+
+  // When Back lands on it.
+  await back();
+
+  // Then the list is not shown, and the entry still names the file.
+  expect(inboxCalls).toEqual([]);
+  expect(place.inbox.open).toBe(false);
+  expect(readLink(addresses()[0]!).file).toBe("/tmp/notes.txt");
+});
+
+it("Back onto an entry that names only an absolute file before the PCs are in keeps the list closed and the file in the address", async () => {
+  // Given p1 opened from the list over an entry that names a file and no pane, and no roster in yet.
+  const fileOnly = "?file=%2Ftmp%2Fnotes.txt";
+  place = { ...place, paneId: "p1", rosterOut: true, inbox: { open: false, enabled: true } };
+  await mount([fileOnly, P1]);
+  entries[1]!.state = FROM_INBOX;
+  waiting = () => { place.viewing = { path: "/tmp/notes.txt", paneId: null, machineId: "local" }; };
+
+  // When Back lands on it.
+  await back();
+
+  // Then the list is not shown, and the entry is left as it was.
+  expect(inboxCalls).toEqual([]);
+  expect(place.inbox.open).toBe(false);
+  expect(addresses()).toEqual([fileOnly, P1]);
+
+  // When the PCs come in.
+  await act(async () => { place.rosterOut = false; draw(); });
+
+  // Then the place written over the entry still names the file.
+  expect(readLink(addresses()[0]!).file).toBe("/tmp/notes.txt");
+});
+
+it("with the list offered and a thread shown, the New workspace dialog opened for another PC writes the selected PC and pane, as with the list off", async () => {
+  // Given p2 shown on a phone that has the list, the list not shown.
+  place = { ...place, inbox: { open: false, enabled: true } };
+  await mount([P2]);
+
+  // When the dialog opens for another PC (the drawer's row of that PC), with a name typed.
+  await act(async () => { place.newSessionOpen = true; place.dialogMachineId = "remote"; place.newFields = { cwd: null, name: "New", agent: null }; draw(); });
+
+  // Then the address names the selected PC and pane with the dialog's fields, as main writes it.
+  const dialog = readLink(addresses()[0]!);
+  expect(dialog.machine).toBe("local");
+  expect(dialog.pane).toBe("p2");
+  expect(dialog.create).toEqual({ kind: "workspace", cwd: null, name: "New", agent: null });
+  expect(entries).toHaveLength(1);
+});
+
+it("Back from the shown list onto an entry that names only an absolute file leaves the list over that entry, adding none", async () => {
+  // Given the list shown on its entry, p1 under it, over an entry that names a file and no pane.
+  const fileOnly = "?file=%2Ftmp%2Fnotes.txt";
+  place = { ...place, paneId: "p1", inbox: { open: true, enabled: true } };
+  await mount([fileOnly, ""]);
+  waiting = () => { place.viewing = { path: "/tmp/notes.txt", paneId: null, machineId: "local" }; };
+
+  // When Back lands on it.
+  await back();
+
+  // Then the list is left, the place is written over that entry, and the list's entry is kept for Forward.
+  expect(inboxCalls).toEqual(["leave"]);
+  // the entry landed on is written over once, with the pane under the list beside its file
+  expect(writes).toEqual([`replaceState 0 ${P1}&file=%2Ftmp%2Fnotes.txt`]);
+  expect(addresses()).toEqual([`${P1}&file=%2Ftmp%2Fnotes.txt`, ""]);
+});
+
+it("Back from the shown list onto an entry that names only an absolute file before the PCs are in leaves the list over that entry, adding none", async () => {
+  // Given the list shown on its entry, p1 under it, over an entry that names a file and no pane, and no roster in yet.
+  const fileOnly = "?file=%2Ftmp%2Fnotes.txt";
+  place = { ...place, paneId: "p1", rosterOut: true, inbox: { open: true, enabled: true } };
+  await mount([fileOnly, ""]);
+  waiting = () => { place.viewing = { path: "/tmp/notes.txt", paneId: null, machineId: "local" }; };
+
+  // When Back lands on it, and the PCs come in.
+  await back();
+  expect(inboxCalls).toEqual(["leave"]);
+  // nothing is written before the PCs are in
+  expect(writes).toEqual([]);
+  expect(addresses()).toEqual([fileOnly, ""]);
+  await act(async () => { place.rosterOut = false; draw(); });
+
+  // Then the place is written over that entry, and the list's entry is kept for Forward.
+  // the entry landed on is written over once, with the pane under the list beside its file
+  expect(writes).toEqual([`replaceState 0 ${P1}&file=%2Ftmp%2Fnotes.txt`]);
+  expect(addresses()).toEqual([`${P1}&file=%2Ftmp%2Fnotes.txt`, ""]);
 });
