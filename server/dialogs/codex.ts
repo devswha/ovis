@@ -341,9 +341,12 @@ export function codexOwnScreenOpen(screen: string): boolean {
   if (filled.length === 0) return false;
   const end = filled.at(-1)!;
   if (CODEX_HISTORY_SEARCH_RE.test(end.text)) return true;
-  const browsing = CODEX_TRANSCRIPT_RE.test(end.text) || (end.text === "Browsing" && rows.every((row) => row.length <= CODEX_TRANSCRIPT_LABEL_COLUMNS));
-  // not the end of a status line that a narrow pane cut at a `·`: a thread or a folder may be named like that footer
-  if (browsing && !/·$/.test(rows[end.at - 1] ?? "")) return true;
+  const browsing = CODEX_TRANSCRIPT_RE.test(end.text) || (end.text === "Browsing" && rows.every((row) => Bun.stringWidth(row) <= CODEX_TRANSCRIPT_LABEL_COLUMNS));
+  // not the end of a status line that a narrow pane cut at a `·`, where a thread or a folder may be named like that
+  // footer: such an end is indented as the status line is. The transcript's footer begins its row, whatever the
+  // transcript's last line ends with, and under the composer (Codex's `prompt_navigation` snapshot) the status line
+  // stands whole over it
+  if (browsing && !(/^\s/.test(rows[end.at]!) && /·$/.test(rows[end.at - 1] ?? ""))) return true;
   const marked = findLastIndex(rows, (row) => /^[›»](?:\s|$)/.test(row));
   const tail = filled.filter(({ at }) => at > marked).slice(-CODEX_FOOTER_ROWS);
   // the sentence a view ends with instead of a footer, as one row or wrapped onto two, the first of them no status

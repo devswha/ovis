@@ -94,6 +94,12 @@ describe("codexOwnScreenOpen", () => {
       "Browsing · esc back",
       "Browsing · esc",
     ]) expect(codexOwnScreenOpen(under("  Some list", "› 1. First", "  2. Second", footer)), footer).toBeTrue();
+    // the prompt browser's footer begins its row, so a line of the transcript ending in `·` over it is no status line
+    expect(codexOwnScreenOpen(["› earlier prompt", "  note ·", "Browsing · esc back"].join("\n")), "under a line ending in ·").toBeTrue();
+    // the same browser under the composer, the footer where the hint row was (the `prompt_navigation` snapshot in
+    // Codex 0.167.1's own tests, codex-rs/tui/src/app/snapshots)
+    expect(codexOwnScreenOpen(["› first question", "", "› second question", "", "› Ask Codex to do anything", "", "  gpt-test default · /tmp/project",
+      "  Browsing · ↑↓/jk scroll · ←→/hl prompts · ⌃t details · ↵ rewind · esc back"].join("\n")), "under the composer").toBeTrue();
   });
 
   it("reads the prompt browser's label alone as its footer only on a screen as narrow as the panes Codex draws it in", () => {
@@ -102,6 +108,8 @@ describe("codexOwnScreenOpen", () => {
       "use /feedback", "if something", "went wrong", "Browsing"].join("\n");
     expect(codexOwnScreenOpen(at15)).toBeTrue();
     expect(codexOwnScreenOpen(["d - use /", "feedback", "if", "something", "went wrong", "Browsing"].join("\n"))).toBeTrue();
+    // rows are measured in columns: four flags are eight of them, in sixteen code units
+    expect(codexOwnScreenOpen(["› hello", "🇺🇸🇺🇸🇺🇸🇺🇸", "Browsing"].join("\n"))).toBeTrue();
     // a wider screen whose last row is the word: there the footer would say more
     expect(codexOwnScreenOpen(under("• The view was called", "  Browsing"))).toBeFalse();
     expect(codexOwnScreenOpen(at15.replace("went wrong", "went wrong, as the log above shows"))).toBeFalse();
