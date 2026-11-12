@@ -73,7 +73,9 @@
     if (notOvis) document.getElementById("title").textContent = korean ? "Ovis가 아닙니다" : "This is not Ovis";
     document.getElementById("not-ovis").hidden = !notOvis;
     document.getElementById("refused").hidden = !refused;
-    document.getElementById("loopback").hidden = !refused || !(host === "localhost" || host.endsWith(".localhost") || /^127\.\d+\.\d+\.\d+$/.test(host) || host === "::1");
+    // whatever the reason (iOS reports a refusal in its own words, with no kind): on a phone, an
+    // address of the phone itself never reaches the PC
+    document.getElementById("loopback").hidden = relay || !(host === "localhost" || host.endsWith(".localhost") || /^127\.\d+\.\d+\.\d+$/.test(host) || host === "::1");
     document.getElementById("network").hidden = !unreached;
     document.getElementById("relay").hidden = !relay;
     document.getElementById("check").hidden = relay || notOvis || refused || unreached;

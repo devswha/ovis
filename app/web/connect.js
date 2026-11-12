@@ -11,11 +11,33 @@ if (window.Capacitor?.getPlatform?.() !== "ios") document.querySelector(".hint")
 const form = document.getElementById("connect");
 const input = document.getElementById("address");
 const error = document.getElementById("error");
-const status = document.getElementById("status");
+const spinner = document.getElementById("spinner");
 const statusText = document.getElementById("status-text");
+const cancel = document.getElementById("cancel");
 const android = window.Capacitor?.getPlatform?.() === "android";
 /** Counts the opens of a PC's own address, so one cancelled or replaced says nothing when it ends. */
 let attempt = 0;
+/** Whether an open is waiting for its check (the status shows). */
+let pending = false;
+
+/**
+ * Shows what opens, or nothing. The status text is a live region that stays in the page, empty when
+ * nothing opens: one that appeared together with its text would not be announced.
+ */
+function showStatus(text) {
+  pending = text !== "";
+  statusText.textContent = text;
+  spinner.hidden = !pending;
+  cancel.hidden = !pending;
+}
+
+/** Stops waiting for an open still being checked: it ends without a word, and the app does not open it. */
+function stopPending() {
+  if (!pending) return;
+  attempt++;
+  showStatus("");
+  if (android) void shell("cancelOpen");
+}
 /** PCs that loaded before (an origin, or a relay PC's scope), and the public http address the user was just warned about. */
 let savedOrigins = [];
 let warned = "";
@@ -37,6 +59,8 @@ const relayErrors = {
 };
 
 async function open(text) {
+  // another address, or the same again: an open still being checked gives way, whatever this one does
+  stopPending();
   const url = parseAddress(text);
   if (url === null) { error.textContent = t("That is not an http or https address.", "http 또는 https 주소가 아닙니다."); input.focus(); return; }
   // a PC paired over the Ovis relay opens at its scope on the app's origin, saved under that scope
@@ -60,17 +84,14 @@ async function open(text) {
   // until it answers the screen says what it opens, with Cancel. The iOS app opens it at once.
   error.textContent = "";
   const mine = ++attempt;
-  statusText.textContent = t(`Opening ${url.host}…`, `${url.host} 여는 중…`);
-  status.hidden = false;
+  showStatus(t(`Opening ${url.host}…`, `${url.host} 여는 중…`));
   try { await shell("open", { url: url.href, check: true }); }
   catch (err) { if (mine === attempt) error.textContent = openFailure(url, err?.code, String(err?.message ?? err)); }
-  finally { if (mine === attempt) status.hidden = true; }
+  finally { if (mine === attempt) showStatus(""); }
 }
 
-document.getElementById("cancel").addEventListener("click", () => {
-  attempt++;
-  status.hidden = true;
-  if (android) void shell("cancelOpen");
+cancel.addEventListener("click", () => {
+  stopPending();
   input.focus();
 });
 
