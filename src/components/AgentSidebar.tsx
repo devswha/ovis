@@ -592,10 +592,16 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // a helper with the focus that folds away (it stopped needing the reader, or the selection moved) hands it to its line,
   // and so does a row whose new state files it under a state group that is folded: the focus goes to that group's heading.
   // A row that changes group is moved, which drops its focus before this runs and cannot give it back to a hidden row:
-  // that row is the one `heldFocus` still names
+  // that row is the one `heldFocus` still names. The name is good for this drawing alone, and only for a focus that
+  // fell to the page: a moved row in sight whose `⋯` cannot take the focus back (a desktop draws it only while the
+  // row holds the focus or the pointer) leaves the name behind, and a later drawing must not take a focus the reader
+  // has since put somewhere else
   useLayoutEffect(() => {
     const active = document.activeElement;
-    const focused = active && sectionRef.current?.contains(active) ? active : heldFocus.current;
+    const inList = Boolean(active && sectionRef.current?.contains(active));
+    const held = heldFocus.current;
+    if (!inList) heldFocus.current = null;
+    const focused = inList ? active : !active || active === document.body ? held : null;
     const item = focused?.closest("li") ?? null;
     if (item?.hidden) foldControlAbove(item)?.focus({ preventScroll: true });
   }, [foldedHelpers, groups, stateFolds]);

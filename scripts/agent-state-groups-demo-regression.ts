@@ -12,7 +12,8 @@
  * Space and says the same count either way; a folded group keeps the selected agent in sight; what
  * the reader chose is kept across a reload; the filter opens every group for its time; a watching
  * device folds its own groups too; and a row with the keyboard's focus that moves under a folded
- * group hands the focus to that group's heading. On Two lines a row's time stands in the second line and sizes
+ * group hands the focus to that group's heading, while a focus the reader put elsewhere is never taken. On Two lines
+ * a row's time stands in the second line and sizes
  * nothing: a row with a time is drawn as a row without one.
  *
  * UI_EVIDENCE_DIR: agent-state-groups-<390|1280>-<light|dark>.png (the list as it starts, Idle
@@ -203,6 +204,58 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await working.waitFor({ state: "hidden" });
   assert.equal(await held.evaluate(() => document.activeElement?.closest("li")?.getAttribute("data-group") ?? null), "done", `${tag}: a focused row that moves under a folded group hands its focus to the heading`);
   await held.close();
+
+  // The focus the list places is only one a row held as the row went out of sight. A row moved lower in the list (its
+  // new state files it under an open group) is taken out and put back: its main control gets the focus back, but its
+  // `⋯`, which a desktop draws only while the row holds the focus or the pointer, cannot, so that focus falls to the
+  // page with no word to the list (a touch screen always draws the `⋯`, and it keeps the focus there). Wherever the
+  // reader's focus goes next is theirs: the row going under a folded group later moves no focus
+  await page.evaluate(() => localStorage.setItem("ovis:agent-state-folds", JSON.stringify(["idle"])));
+  const away = await context.newPage();
+  away.on("pageerror", (error) => errors.push(error.message));
+  await away.clock.install({ time: new Date() });
+  await away.clock.pauseAt(new Date(Date.now() + 1000));
+  await away.goto(`${origin}?pane=${encodeURIComponent(panes.web)}`);
+  // past the demo's own end of this agent's turn (site/demo/transport.ts): from here its state is what this check says
+  await away.clock.runFor(6000);
+  await away.locator(".conn-live").waitFor({ state: "attached" });
+  if (phone) {
+    await away.locator("#drawer-toggle").click();
+    await away.clock.runFor(500);
+  }
+  const moved = away.locator(`.agents-sidebar .agent-item[data-pane="${panes.api}"]`);
+  // herdr's own word for the pane, as the demo's transport sends it; the row is then drawn under that state's heading
+  const becomes = async (status: "working" | "done" | "idle", pane: string = panes.api): Promise<void> => {
+    await away.evaluate(([id, next]) => (window as unknown as { __herdrDemoOrder: { status(pane: string, status: string): void } }).__herdrDemoOrder.status(id!, next!), [pane, status]);
+    await away.clock.runFor(200);
+    await away.waitForFunction(([id, group]) => {
+      const item = document.querySelector(`.agents-sidebar .agent-item[data-pane="${id}"]`);
+      for (let above = item?.previousElementSibling ?? null; above; above = above.previousElementSibling) if (above.classList.contains("agent-group-label")) return above.getAttribute("data-group") === group;
+      return false;
+    }, [pane, status]);
+  };
+  // another agent already rests under Done, so the row lands below a heading that stays: React takes the row's own
+  // element out and puts it back there, where a row alone under a new heading would be left in place with its focus
+  await becomes("done", panes.cli);
+  const focusNow = (): Promise<string> => away.evaluate(() => {
+    const active = document.activeElement;
+    return active === null || active === document.body ? "the page" : `${active.tagName.toLowerCase()}.${active.className.split(" ").join(".")} in ${active.closest("li")?.getAttribute("data-group") ?? active.closest("li")?.getAttribute("data-pane") ?? "no row"}`;
+  });
+  const elsewhere = away.locator(".sidebar-footer button").first();
+  assert.equal(await elsewhere.evaluate((node, pane) => document.querySelector(`.agents-sidebar .agent-item[data-pane="${pane}"]`)?.closest("section")?.contains(node) ?? true, panes.api), false, `${tag}: the control the reader moves to is outside the Agents list`);
+  for (const control of ["agent-select", "row-menu-toggle"] as const) {
+    await becomes("working");
+    await moved.locator(".agent-select").focus();
+    if (control === "row-menu-toggle") await away.keyboard.press("Tab");
+    assert.equal(await moved.evaluate((item, name) => item.querySelector(`.${name}`) === document.activeElement, control), true, `${tag}: the row's ${control} holds the keyboard's focus: ${await focusNow()}`);
+    await becomes("done");
+    assert.equal(await moved.isVisible(), true, `${tag}: a finished agent stays in sight under the open Done group`);
+    await elsewhere.focus();
+    await becomes("idle");
+    await moved.waitFor({ state: "hidden" });
+    assert.equal(await elsewhere.evaluate((node) => node === document.activeElement), true, `${tag}: a row that goes under a folded group takes no focus from where the reader put it after its ${control} lost it: the focus is on ${await focusNow()}`);
+  }
+  await away.close();
 
   assert.deepEqual(errors, [], `${tag}: no page errors`);
   await context.close();
