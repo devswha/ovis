@@ -236,7 +236,8 @@ export class SummaryReads {
     const read = readOf(target);
     const tried = this.retries.get(read) ?? 0;
     if (tried >= SUMMARY_RETRIES) {
-      if (this.current.has(target.key)) this.change((summaries) => { summaries.delete(target.key); });
+      // words answered for the current stamp stay: only its once-more read failed
+      if (this.current.has(target.key) && this.answeredFor.get(target.key) !== target.stamp) this.change((summaries) => { summaries.delete(target.key); });
       return;
     }
     this.retries.set(read, tried + 1);

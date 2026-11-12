@@ -178,6 +178,24 @@ describe("SummaryReads", () => {
     expect(reads.summaries().get("a")).toMatchObject({ text: "far", at: null, askedAt: null });
   });
 
+  it("keeps the words answered for the current stamp when its once-more read uses up its retries", async () => {
+    const { reads, calls, waits } = harness();
+    reads.sync([target("a", "1")]);
+    calls[0]!.resolve(answer({ "pane-a": said("Same") }));
+    await settled();
+    reads.sync([target("a", "2")]);
+    calls[1]!.resolve(answer({ "pane-a": said("Same") }));
+    await settled();
+    for (let attempt = 0; attempt <= SUMMARY_RETRIES; attempt++) {
+      waits[attempt]!.run();
+      calls[attempt + 2]!.reject(new Error("offline"));
+      await settled();
+    }
+    expect(calls).toHaveLength(SUMMARY_RETRIES + 3);
+    expect(waits).toHaveLength(SUMMARY_RETRIES + 1);
+    expect(reads.summaries().get("a")?.text).toBe("Same");
+  });
+
   it("asks no row again when its words changed", async () => {
     const { reads, calls, waits } = harness();
     reads.sync([target("b")]);
