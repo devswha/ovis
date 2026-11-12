@@ -804,6 +804,65 @@ describe("AgentSidebar fold memory", () => {
     expect(mounted.root.findAllByProps({ className: "agent-list" })).toHaveLength(0);
   });
 
+  it("hands a row's focus to its group's heading when its new state files it under a folded group, and takes no focus the reader has put elsewhere (#3505)", async () => {
+    // Given grouping on, Idle folded as it starts, and the agent at work.
+    stored.set("ovis:agent-groups", "true");
+    const inState = (status: AgentStatus) => roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane) },
+    }));
+    const grouped = (machines: Machine[]) => <SettingsProvider>
+      <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+        <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+      </SidebarFilterProvider>
+    </SettingsProvider>;
+    await act(async () => { renderer = create(grouped(inState("working"))); });
+    const mounted = renderer!;
+    const section = () => mounted.root.findByType("section");
+    const hidden = (): boolean => mounted.root.find((node) => node.type === "li" && node.props["data-pane"] === paneId).props.hidden === true;
+    const idleHeading = () => mounted.root.find((node) => node.type === "li" && node.props.className === "agent-group-label" && node.props["data-group"] === "idle").findByType("button");
+    // The row's control as a browser has it: whether its row is hidden and whether the heading above it is folded are
+    // read from what the list drew; only the way from the one element to the other is stood in for
+    const focusHeading = jest.fn();
+    const heading = { focus: focusHeading, getAttribute: (name: string) => name === "aria-expanded" ? String(idleHeading().props["aria-expanded"]) : null };
+    const line = { previousElementSibling: null, hasAttribute: () => false, matches: () => true, querySelector: () => heading };
+    const control = { closest: () => ({ get hidden() { return hidden(); }, previousElementSibling: line }) };
+    const focusIsOn = (element: unknown): void => { Object.assign(document, { activeElement: element }); };
+    const composer = {};
+    const becomes = async (status: AgentStatus): Promise<void> => { await act(async () => { mounted.update(grouped(inState(status))); }); };
+    const rowTakesFocus = async (): Promise<void> => { await act(async () => { section().props.onFocus({ target: control }); }); };
+    expect(String(idleHeading().props["aria-expanded"])).toBe("false");
+
+    // When the row holds the focus and its agent rests: the row is moved under Idle and hidden, and its focus falls to the page.
+    await rowTakesFocus();
+    focusIsOn(document.body);
+    await becomes("idle");
+    // Then the heading takes the focus.
+    expect(hidden()).toBe(true);
+    expect(focusHeading).toHaveBeenCalledTimes(1);
+
+    // When the reader's focus is outside the list as a row that had held it goes under the heading.
+    await becomes("working");
+    await rowTakesFocus();
+    focusIsOn(composer);
+    await becomes("idle");
+    // Then the list takes none.
+    expect(hidden()).toBe(true);
+    expect(focusHeading).toHaveBeenCalledTimes(1);
+
+    // When a row that held the focus is moved within sight (it waits: Needs you is open), its focus falling to the page,
+    // and its agent then rests.
+    await becomes("working");
+    await rowTakesFocus();
+    focusIsOn(document.body);
+    await becomes("blocked");
+    expect(hidden()).toBe(false);
+    await becomes("idle");
+    // Then the list takes none either: what the row held was good for the drawing that followed its move alone.
+    expect(hidden()).toBe(true);
+    expect(focusHeading).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a background row's element when it becomes blocked and moves up, so its focus and open menu stay", async () => {
     // Given an opened background part holding the agent, which works, and another background agent.
     stored.set("ovis:agents-background-collapsed", "0");
