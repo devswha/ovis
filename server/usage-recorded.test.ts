@@ -106,6 +106,13 @@ describe("an account another tool recorded", () => {
     expect((await listed(provider))[0]?.recorded).toEqual({ by: "omp", stale: true, signed_in: false });
   });
 
+  it("says its own time with each report, for a page that keeps the report to measure a record's age against", async () => {
+    const service = new UsageService(context(), [recordedOnly(recordedBy(() => [record(NOW)]))]);
+    expect((await service.report()).server_time).toBe(iso(NOW));
+    now = NOW + 7 * MINUTE;
+    expect((await service.report()).server_time).toBe(iso(NOW + 7 * MINUTE));
+  });
+
   it("reads a tool's store once for the reports of half a minute, and again after that", async () => {
     let reads = 0;
     const service = new UsageService(context(), [recordedOnly(recordedBy(() => { reads += 1; return [record(NOW)]; }))]);

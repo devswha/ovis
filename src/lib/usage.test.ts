@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ProviderUsage, UsageWindow } from "../../shared/protocol.ts";
-import { canSignInAgain, composerUsage, creditsText, formatPercent, formatResetIn, glanceWindow, isCurrent, isSignIn, meterPercent, meterText, moveInOrder, orderProviders, planForPane, providerForAgent, recordedBy, recordedNote, statusWindows, tightestWindow, usageName, windowLabel } from "./usage.ts";
+import { agedReport, canSignInAgain, composerUsage, creditsText, formatPercent, formatResetIn, glanceWindow, heldReport, isCurrent, isSignIn, meterPercent, meterText, moveInOrder, orderProviders, planForPane, providerForAgent, recordedBy, recordedNote, statusWindows, tightestWindow, usageName, windowLabel } from "./usage.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
 const window = (used_percent: number, kind: UsageWindow["kind"] = "week", scope: string | null = null): UsageWindow => ({ kind, scope, used_percent, resets_at: null, starts_at: null });
@@ -90,9 +90,6 @@ describe("usage meters", () => {
     const at = (minutesAgo: number, stale: boolean): ProviderUsage => ({ ...provider("claude", [window(40)]), checked_at: new Date(NOW - minutesAgo * 60_000).toISOString(), recorded: { by: "omp", stale, signed_in: false } });
     expect(recordedNote(at(4, false), NOW)).toEqual(["Recorded by Oh My Pi, 4 min ago"]);
     expect(recordedNote(at(180, true), NOW)).toEqual(["Recorded by Oh My Pi, 3 h ago", "It may have changed since."]);
-    // a report kept while the server cannot be reached grows old without it: the record's own age says so, from the minute the server would
-    expect(recordedNote(at(15, false), NOW)).toEqual(["Recorded by Oh My Pi, 15 min ago"]);
-    expect(recordedNote(at(16, false), NOW)).toEqual(["Recorded by Oh My Pi, 16 min ago", "It may have changed since."]);
     expect(recordedBy(at(4, false))).toBe("Recorded by Oh My Pi");
     // a reading the server made itself carries no such note, however old
     const own: ProviderUsage = { ...provider("claude", [window(40)]), checked_at: new Date(NOW - 180 * 60_000).toISOString() };
@@ -100,20 +97,54 @@ describe("usage meters", () => {
     expect(recordedBy(own)).toBeNull();
   });
 
+  it("ages a report by the time gone by on this device, never by comparing its clock with the PC's", () => {
+    const PC = NOW + 40 * 60_000; // the PC's clock, 40 minutes ahead of this device's
+    const record = (minutesBefore: number, by: string, stale = false): ProviderUsage => ({ ...provider("claude", [window(40)], `${by}-${minutesBefore}`), checked_at: new Date(PC - minutesBefore * 60_000).toISOString(), recorded: { by: by as "omp", stale, signed_in: false } });
+    const own: ProviderUsage = { ...provider("claude", [window(40)], "own"), checked_at: new Date(PC - 180 * 60_000).toISOString() };
+    const report = { server_time: new Date(PC).toISOString(), providers: [record(4, "omp"), record(10, "gjc"), record(10, "a-tool-not-known-yet"), record(180, "omp", true), own] };
+    const stale = (elapsedMinutes: number) => agedReport(report, elapsedMinutes * 60_000).providers.map((usage) => usage.recorded?.stale ?? null);
+    expect(stale(0)).toEqual([false, false, false, true, null]);
+    expect(stale(5)).toEqual([false, false, false, true, null]);
+    expect(stale(6)).toEqual([false, true, true, true, null]);
+    expect(stale(12)).toEqual([true, true, true, true, null]);
+    // nothing aged: the report itself, so that nothing is redrawn
+    expect(agedReport(report, 5 * 60_000)).toBe(report);
+    // a number that is no longer current leaves the composer, as a stale record does
+    expect(agedReport(report, 6 * 60_000).providers.map(isCurrent)).toEqual([true, false, false, false, true]);
+    // a server that does not say its time: only the time gone by here counts
+    const { server_time: _, ...older } = report;
+    expect(agedReport(older, 15 * 60_000).providers.map((usage) => usage.recorded?.stale ?? null)).toEqual([false, false, false, true, null]);
+    expect(agedReport(older, 16 * 60_000).providers.map((usage) => usage.recorded?.stale ?? null)).toEqual([true, true, true, true, null]);
+  });
+
+  it("holds the report in hand, with its own arrival, while the next says the same but for the PC's time", () => {
+    const DEVICE = NOW - 3 * 3600_000; // this device's clock, three hours behind the PC's
+    const record = (readAt: number): ProviderUsage => ({ ...provider("claude", [window(40)], "recorded"), checked_at: new Date(readAt).toISOString(), recorded: { by: "omp", stale: false, signed_in: false } });
+    const answer = (minute: number, usage: ProviderUsage) => ({ server_time: new Date(NOW + minute * 60_000).toISOString(), providers: [usage] });
+    const first = heldReport(null, answer(1, record(NOW)), DEVICE + 60_000);
+    expect(first).toEqual({ report: answer(1, record(NOW)), arrivedAt: DEVICE + 60_000 });
+    // thirteen minutes on, the PC says the same of a record it has not seen read again
+    const kept = heldReport(first, answer(14, record(NOW)), DEVICE + 14 * 60_000);
+    expect(kept).toBe(first);
+    // the PC out of reach from then: the record is 16 minutes old two minutes later, by the kept report as by the newer one
+    const staleAt = (minute: number) => agedReport(kept.report, DEVICE + minute * 60_000 - kept.arrivedAt).providers[0]?.recorded?.stale;
+    expect([staleAt(15), staleAt(16)]).toEqual([false, true]);
+    expect(agedReport(answer(14, record(NOW)), 2 * 60_000).providers[0]?.recorded?.stale).toBe(true);
+    // an answer that says anything else takes its place, with its own arrival
+    const reread = answer(15, record(NOW + 14 * 60_000));
+    expect(heldReport(kept, reread, DEVICE + 15 * 60_000)).toEqual({ report: reread, arrivedAt: DEVICE + 15 * 60_000 });
+  });
+
   const withProblem = (problem: ProviderUsage["problem"], recorded?: ProviderUsage["recorded"]): ProviderUsage => ({ ...provider("claude", [window(40)]), problem, ...(recorded ? { recorded } : {}) });
 
   it("takes a number as what is used now when the server read it without a problem, or a tool still records it", () => {
-    expect(isCurrent(withProblem(null), NOW)).toBe(true);
-    expect(isCurrent(withProblem("expired"), NOW)).toBe(false);
-    expect(isCurrent(withProblem(null, { by: "omp", stale: false, signed_in: false }), NOW)).toBe(true);
-    expect(isCurrent(withProblem(null, { by: "omp", stale: true, signed_in: false }), NOW)).toBe(false);
+    expect(isCurrent(withProblem(null))).toBe(true);
+    expect(isCurrent(withProblem("expired"))).toBe(false);
+    expect(isCurrent(withProblem(null, { by: "omp", stale: false, signed_in: false }))).toBe(true);
+    expect(isCurrent(withProblem(null, { by: "omp", stale: true, signed_in: false }))).toBe(false);
     // the problem is the sign-in's: the record standing in for its numbers is as current as the tool keeps it
-    expect(isCurrent(withProblem("expired", { by: "omp", stale: false, signed_in: true }), NOW)).toBe(true);
-    expect(isCurrent(withProblem("rate_limited", { by: "omp", stale: true, signed_in: true }), NOW)).toBe(false);
-    // …and no longer than that tool leaves between its reads, whatever the report said when it was made
-    const kept = (minutesAgo: number): ProviderUsage => ({ ...withProblem(null, { by: "gjc", stale: false, signed_in: false }), checked_at: new Date(NOW - minutesAgo * 60_000).toISOString() });
-    expect(isCurrent(kept(15), NOW)).toBe(true);
-    expect(isCurrent(kept(16), NOW)).toBe(false);
+    expect(isCurrent(withProblem("expired", { by: "omp", stale: false, signed_in: true }))).toBe(true);
+    expect(isCurrent(withProblem("rate_limited", { by: "omp", stale: true, signed_in: true }))).toBe(false);
   });
 
   it("takes an account as a sign-in of this PC's unless it is known from another tool's record alone", () => {

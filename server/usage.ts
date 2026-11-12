@@ -1196,7 +1196,7 @@ export class UsageService {
     }
     // a provider with an account found here needs nothing more; one with none names what it could not look with (a hub's accounts are not this PC's)
     const missingCommands = [...missing].filter(([id]) => !usages.flat().some((usage) => usage.id === id)).map(([provider, command]) => ({ provider, command }));
-    return { providers: [...byKey.values(), ...await this.additional(refresh, skipped)], ...(missingCommands.length > 0 ? { missing_commands: missingCommands } : {}) };
+    return { server_time: new Date(now).toISOString(), providers: [...byKey.values(), ...await this.additional(refresh, skipped)], ...(missingCommands.length > 0 ? { missing_commands: missingCommands } : {}) };
   }
 
   /** What `source` recorded: its store is read when the last read is MIN_REFRESH_MS old, not once for every report. */

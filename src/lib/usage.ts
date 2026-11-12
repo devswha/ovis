@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ProviderUsage, StatuslineState, UsageCredits, UsageProviderId, UsageRecorder, UsageReport, UsageWindow } from "../../shared/protocol.ts";
 import { RECORDED_STALE_AFTER_MS } from "../../shared/usage.ts";
 import { ApiError, fetchStatusline, fetchUsage, setStatusline } from "./api.ts";
@@ -100,13 +100,42 @@ export function recordedBy(usage: ProviderUsage): string | null {
   return usage.recorded ? t("Recorded by {tool}", { tool: RECORDER_NAME[usage.recorded.by] }) : null;
 }
 
+/** For a recorder this page does not know yet: as long as any tool it knows is given. */
+const LONGEST_STALE_AFTER_MS = Math.max(...Object.values(RECORDED_STALE_AFTER_MS));
+
 /**
- * Whether a record's tool has stopped updating it: as the server said with the report, or by the record's own age.
- * The server judges a record at each report; one kept while the server cannot be reached grows old without it.
+ * A report `elapsedMs` after it arrived here: a record older by then than its tool leaves between reads is stale,
+ * whatever the report said when it was made. The record's age is the one the PC saw (the report's `server_time` less
+ * the record's `checked_at`, both on the PC's clock) plus the time gone by on this device, so no device's clock is
+ * held against the PC's. An older server says no time, and only the time gone by counts. The report itself where
+ * nothing has aged.
  */
-export function isStale(usage: ProviderUsage, now: number): boolean {
-  if (!usage.recorded) return false;
-  return usage.recorded.stale || (usage.checked_at !== null && now - Date.parse(usage.checked_at) > RECORDED_STALE_AFTER_MS[usage.recorded.by]);
+export function agedReport(report: UsageReport, elapsedMs: number): UsageReport {
+  const sent = report.server_time === undefined ? NaN : Date.parse(report.server_time);
+  const aged = (usage: ProviderUsage): ProviderUsage => {
+    if (!usage.recorded || usage.recorded.stale) return usage;
+    const seen = usage.checked_at === null ? NaN : sent - Date.parse(usage.checked_at);
+    const limit = (RECORDED_STALE_AFTER_MS as Readonly<Record<string, number | undefined>>)[usage.recorded.by] ?? LONGEST_STALE_AFTER_MS;
+    return (Number.isFinite(seen) ? Math.max(0, seen) : 0) + elapsedMs > limit ? { ...usage, recorded: { ...usage.recorded, stale: true } } : usage;
+  };
+  const providers = report.providers.map(aged);
+  return providers.some((usage, index) => usage !== report.providers[index]) ? { ...report, providers } : report;
+}
+
+/** A report in hand, and this device's clock when it arrived. */
+export interface HeldReport {
+  readonly report: UsageReport;
+  readonly arrivedAt: number;
+}
+
+/**
+ * What to hold once `next` arrives: the report in hand, with its own arrival, while the new one says the same but for
+ * the PC's time. An unchanged answer then redraws nothing, and the kept report, aged from its own arrival, gives each
+ * record the age the newer one would: the time between the two went by on both clocks alike.
+ */
+export function heldReport(held: HeldReport | null, next: UsageReport, arrivedAt: number): HeldReport {
+  const said = (report: UsageReport): string => JSON.stringify({ ...report, server_time: undefined });
+  return held !== null && said(held.report) === said(next) ? held : { report: next, arrivedAt };
 }
 
 /**
@@ -116,7 +145,7 @@ export function isStale(usage: ProviderUsage, now: number): boolean {
 export function recordedNote(usage: ProviderUsage, now: number): readonly string[] | null {
   if (!usage.recorded) return null;
   const by = t("Recorded by {tool}, {when}", { tool: RECORDER_NAME[usage.recorded.by], when: lastSeen(usage.checked_at, now) });
-  return isStale(usage, now) ? [by, t("It may have changed since.")] : [by];
+  return usage.recorded.stale ? [by, t("It may have changed since.")] : [by];
 }
 
 /**
@@ -131,8 +160,8 @@ export function isSignIn(usage: ProviderUsage): boolean {
  * Whether an account's numbers can stand for what is used now: read by the server without a problem, or recorded by a
  * tool that still updates them. A problem is the sign-in's, and says nothing of a record standing in for its numbers.
  */
-export function isCurrent(usage: ProviderUsage, now: number): boolean {
-  return usage.recorded ? !isStale(usage, now) : usage.problem === null;
+export function isCurrent(usage: ProviderUsage): boolean {
+  return usage.recorded ? !usage.recorded.stale : usage.problem === null;
 }
 
 /**
@@ -214,23 +243,27 @@ export function moveInOrder(shown: readonly string[], saved: readonly string[], 
 }
 
 export function useUsage(enabled: boolean) {
-  const [report, setReport] = useState<UsageReport | null>(null);
+  const [held, setHeld] = useState<HeldReport | null>(null);
   const [loading, setLoading] = useState(false);
+  /** this device's clock when the server was last asked or last heard: the report in hand is aged up to then */
+  const [asOf, setAsOf] = useState(0);
   const visible = usePageVisible();
   const generation = useRef(0);
 
   const load = useCallback(async (refresh: boolean) => {
     const current = ++generation.current;
     setLoading(true);
+    // asked, not yet answered: a server that never answers must not leave the report in hand as young as it arrived
+    setAsOf(Date.now());
     try {
       const next = await fetchUsage(refresh);
-      if (current === generation.current) setReport((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
-    } catch { /* offline or restarting: the last report stays */ }
+      if (current === generation.current) { const arrivedAt = Date.now(); setHeld((previous) => heldReport(previous, next, arrivedAt)); setAsOf(arrivedAt); }
+    } catch { if (current === generation.current) setAsOf(Date.now()); /* offline or restarting: the last report stays, and ages */ }
     finally { if (current === generation.current) setLoading(false); }
   }, []);
 
   useEffect(() => {
-    if (!enabled) { generation.current++; setReport(null); setLoading(false); return; }
+    if (!enabled) { generation.current++; setHeld(null); setLoading(false); return; }
     if (!visible) return;
     void load(false);
     const timer = setInterval(() => void load(false), POLL_MS);
@@ -245,6 +278,7 @@ export function useUsage(enabled: boolean) {
   }, [enabled, load]);
 
   const refresh = useCallback(() => { if (enabled) void load(true); }, [enabled, load]);
+  const report = useMemo(() => held === null ? null : agedReport(held.report, asOf - held.arrivedAt), [held, asOf]);
   return { report, loading, refresh };
 }
 
