@@ -125,7 +125,8 @@
 }
 
 /* a finger's heading is a row tall and takes no gap: the room over its words is inside the target, which is
-   tall enough for the focus ring to clear them */
+   tall enough for the focus ring to clear them. After the heading's own rule on purpose: the same selector, and
+   under a finger this one wins */
 @media (pointer: coarse) {
   .agent-group-toggle {
     min-height: var(--side-row);
@@ -442,7 +443,8 @@
 }
 
 /* a touch screen's row is one line too, as One line promises: its mark, its title and its time, in a touch
-   target. The place is not drawn there: it stays in the row for a screen reader, and the row's menu says it whole. */
+   target. The place is not drawn there: it stays in the row for a screen reader, and the row's menu says it whole.
+   After the rule above on purpose: the same selector, and on a touch screen this one wins */
 @media (pointer: coarse) {
   .agents-sidebar.is-one-line .agent-context {
     position: absolute;
@@ -698,8 +700,9 @@
 
 /* Under a state's heading a row does not say that state again (Settings → Group agents by state). The heading
    carries it, in the state's colour and its word; the row's own mark is drawn only where its state differs from
-   its group's, and stays in the row for a screen reader either way. The time then ends the row. These follow the
-   one-line row's own padding above and win by order. */
+   its group's, and stays in the row for a screen reader either way. The time then ends the row. After the one-line
+   row's own padding (`.agents-sidebar.is-one-line .agent-item`) on purpose: the same specificity, and this
+   padding wins. */
 .agents-sidebar .agent-item[data-state-said] {
   --agent-tail: var(--space-2);
   padding-right: var(--space-2);
@@ -717,7 +720,8 @@
 
 /* A row whose state is not its group's keeps its mark (an agent kept with a helper that needs the reader, a helper
    in another state, BG). The mark stands in the row's flow, before the time, so the times of a group still end on
-   one edge; a row with no time ends in its mark. */
+   one edge; a row with no time ends in its mark. Its padding too stands after the one-line row's own on purpose:
+   the same specificity, and this one wins. */
 .agents-sidebar .agent-item[data-state-own] {
   --agent-tail: calc(var(--space-2) + var(--space-6));
   padding-right: var(--space-2);
