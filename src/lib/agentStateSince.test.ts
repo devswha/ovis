@@ -609,6 +609,66 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(two.since("w1:p1", "blocked", "term-9")).toBe(T + 60 * MIN);
   });
 
+  it("asks nothing of a moved pane's count of finishes: the server counts them by pane ID, and under the ID it left it is another count", () => {
+    const rests = (pane: string, seq: number, finish: number): Record<string, Row> => ({ [pane]: ["idle", seq, finish, { done: true, terminal: "tx" }] });
+    const works = (pane: string, seq: number, finish: number): Record<string, Row> => ({ [pane]: ["working", seq, finish, { terminal: "tx" }] });
+    // the ID it is moved to has counted nothing: its stamp, with the three finishes of the ID it left, is not one ahead of the roster
+    const page = device();
+    page.see(T, look(works("a", 9, 2)));
+    page.see(T + MIN, look(rests("a", 10, 3)));
+    page.see(T + 5 * MIN, look(rests("b", 10, 0)));
+    expect(page.since("b", "idle", "tx")).toBe(T + MIN);
+    page.see(T + 6 * MIN, look(works("b", 11, 0)));
+    expect(page.since("b", "working", "tx")).toBe(T + 6 * MIN);
+    page.see(T + 8 * MIN, look(rests("b", 12, 1)));
+    expect(page.since("b", "idle", "tx")).toBe(T + 8 * MIN);
+
+    // nor where its stamp has no counter of herdr's yet: a pushed status told of the rest, and the move came before its roster
+    const pushed = device();
+    pushed.see(T, look(works("a", 9, 2)));
+    pushed.see(T + MIN, look(rests("a", 9, 3)));
+    pushed.see(T + 5 * MIN, look(rests("b", 10, 0)));
+    expect(pushed.since("b", "idle", "tx")).toBe(T + MIN);
+    pushed.see(T + 6 * MIN, look(works("b", 11, 0)));
+    expect(pushed.since("b", "working", "tx")).toBe(T + 6 * MIN);
+
+    // the ID it is moved to has counted more, and the server numbers its last finish above that: no finish was counted meanwhile
+    const above = device();
+    above.see(T, look(works("a", 9, 0)));
+    above.see(T + MIN, look(rests("a", 10, 1)));
+    above.see(T + 5 * MIN, look(rests("b", 10, 7)));
+    expect(above.since("b", "idle", "tx")).toBe(T + MIN);
+    // under its new ID the count is its own again: a finish counted there, with herdr's counter standing, costs the time
+    above.see(T + 6 * MIN, look(rests("b", 10, 8)));
+    expect(above.since("b", "idle", "tx")).toBeNull();
+
+    // and the same numbers under another ID prove nothing: back after longer than a page bridges, it says no time
+    const late = device();
+    late.see(T, look({ ...works("a", 9, 0), still: ["idle", 1] }));
+    late.see(T + MIN, look({ ...rests("a", 10, 1), still: ["idle", 1] }));
+    late.see(T + 2 * MIN, look({ still: ["idle", 1] }));
+    late.see(T + 10 * MIN, look({ ...rests("b", 10, 1), still: ["idle", 1] }));
+    expect(late.since("b", "idle", "tx")).toBeNull();
+
+    // a pane the page did not see move, back from a look that missed it, is held to the count it comes back with
+    const missed = device();
+    missed.see(T, look(works("a", 9, 0)));
+    missed.see(T + MIN, look(rests("a", 10, 1)));
+    missed.see(T + 5 * MIN, look({}));
+    missed.see(T + 5 * MIN + 30_000, look(rests("b", 10, 4)));
+    expect(missed.since("b", "idle", "tx")).toBeNull();
+
+    // back under the very ID it had, once another pane has held and left it, its count there is its own: proof stands
+    const same = device();
+    same.see(T, look({ ...works("a", 9, 0), still: ["idle", 1] }));
+    same.see(T + MIN, look({ ...rests("a", 10, 1), still: ["idle", 1] }));
+    same.see(T + 2 * MIN, look({ still: ["idle", 1] }));
+    same.seeUndated(T + 3 * MIN, look({ a: ["working", 20, 1, { terminal: "other" }], still: ["idle", 1] }));
+    same.see(T + 4 * MIN, look({ still: ["idle", 1] }));
+    same.see(T + 20 * MIN, look({ ...rests("a", 10, 1), still: ["idle", 1] }));
+    expect(same.since("a", "idle", "tx")).toBe(T + MIN);
+  });
+
   it("goes by a pane's ID alone where a terminal is named twice: nothing says which pane is which", () => {
     const SHARED = { done: true, terminal: "shared" };
     const page = device();

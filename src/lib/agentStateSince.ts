@@ -15,7 +15,9 @@
  * turns done. The state Ovis shows is not always herdr's (a Claude whose turn ended while a
  * subagent keeps herdr at working rests; server/core/status.ts), and every way back to a state
  * left that way passes a finish. For the agents whose state Ovis reads from their own session
- * files, herdr's counter stands still whatever they do, so nothing proves their stamps.
+ * files, herdr's counter stands still whatever they do, so nothing proves their stamps. The server
+ * counts a pane's finishes by its ID (server/finishes.ts): a count is held against another only
+ * where both were counted under the same ID.
  */
 import type { Machine } from "../../shared/machines.ts";
 import { OWN_STATUS_AGENTS } from "../../shared/own-status-agents.ts";
@@ -145,9 +147,14 @@ function unlisted(stamp: StateStamp, now: number, counted = true): StateStamp | 
   const gone = Math.min(stamp.gone ?? now, now);
   if (now - gone > KEPT_UNLISTED_MS) return null;
   const left = gone === stamp.gone ? stamp : { ...stamp, gone };
-  if (counted || left.finish === undefined) return left;
-  const { finish: _old, ...uncounted } = left;
-  return uncounted;
+  return counted ? left : uncounted(left);
+}
+
+/** A stamp without its count of finishes, where that count says nothing of the row it is held against: counted by another server, or under another pane ID. */
+function uncounted(stamp: StateStamp): StateStamp {
+  if (stamp.finish === undefined) return stamp;
+  const { finish: _other, ...rest } = stamp;
+  return rest;
 }
 
 /**
@@ -215,8 +222,10 @@ function movedRows(rows: readonly SeenRow[], watched: PcSeen | undefined): Map<s
  *   under an ID herdr gave out again, the row is a pane the page has not seen, with no stamp, and the stamp the last
  *   pane left there is kept as an unlisted pane's until the row has one of its own. A pane herdr moved
  *   under a new ID (`movedRows`) is the row the page was seeing under the old one: it is judged by what the page
- *   saw of it there, and by the stamp it had there, which goes with it. A pane whose ID went to another while it
- *   was not listed stays one the page has seen: listed again, under whatever ID, it is no new pane.
+ *   saw of it there, and by the stamp it had there, which goes with it. What was counted of its finishes under
+ *   the ID it left is another count than the row's: it neither proves that stamp nor puts it ahead of the roster,
+ *   and a pane seen to move is not held to it. A pane whose ID went to another while it was not listed stays one
+ *   the page has seen: listed again, under whatever ID, it is no new pane.
  * - A state the page has been seeing keeps its stamp while the counters stand. A finish counted meanwhile, or
  *   herdr's counter moved, means the state was left and come back to out of sight (updates come together, a
  *   subscription has gaps), and the stamp goes. Two moves of herdr's counter are none of the state: the one that
@@ -265,14 +274,17 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     const moved = movedRows(look.rows, watched);
     for (const row of look.rows) {
       const from = moved.get(row.pane);
+      // remembered under another ID than the row's: what the server counted of its finishes there is another count
+      const elsewhere = from !== undefined && from.pane !== row.pane;
       const own = (candidate: StateStamp | undefined): StateStamp | undefined => candidate !== undefined && candidate.terminal === row.terminal ? candidate : undefined;
       const here = own(before[row.pane]);
-      const there = from === undefined ? undefined : own(before[from.pane]);
+      const brought = elsewhere ? own(before[from.pane]) : undefined;
+      const there = brought === undefined ? undefined : uncounted(brought);
       // a moved pane is judged by the stamp it had under its old ID, which this page judged at its last look. One under
       // its new ID was not this page's to judge then: it is another tab's, which followed the move first, where the
       // counters say it tells of a later state, or of this one and it carries no mark of leaving. Else it is what the
       // pane left when it last had this ID: the counters stand through a state the server makes itself
-      const stamp = from === undefined || (here !== undefined && (ahead(here, row, counted) || (here.gone === undefined && proven(here, row, counted)))) ? here : there;
+      const stamp = !elsewhere || (here !== undefined && (ahead(here, row, counted) || (here.gone === undefined && proven(here, row, counted)))) ? here : there;
       const remembered = watched?.rows.get(row.pane);
       const known = from ?? (remembered !== undefined && remembered.terminal === row.terminal ? remembered : undefined);
       const saw = known !== undefined && known.left !== undefined && now - known.left > BLIND_MS ? undefined : known;
@@ -308,8 +320,10 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
         // another tab's, of a state this page has not seen the pane in yet
         rows[row.pane] = leftStamp(stamp, now, counted);
       } else if (stamp !== undefined && saw !== undefined) {
-        // the rest of a turn whose background work holds the row at working counts one finish
-        const finished = !recount && saw.finish !== undefined && row.finish !== undefined && row.finish !== saw.finish && !(held && row.finish === saw.finish + 1);
+        // the rest of a turn whose background work holds the row at working counts one finish. A pane seen to move
+        // answers for none: the count it had at the last look was the one of the ID it left
+        const recounted = recount || (elsewhere && saw.left === undefined);
+        const finished = !recounted && saw.finish !== undefined && row.finish !== undefined && row.finish !== saw.finish && !(held && row.finish === saw.finish + 1);
         // herdr's counter counts every change of state in its session, so a move by one is a single turn of herdr's own,
         // and this pane's: it cannot have left a state that reads the same before and after it. Unless background work
         // held the row at working: that work's end shows the rest, and moves no counter
