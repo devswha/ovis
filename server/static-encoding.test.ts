@@ -14,7 +14,8 @@ async function fixture(check: (serve: (path: string, encoding?: string | null) =
   const root = mkdtempSync(join(tmpdir(), "herdr-static-encoding-"));
   mkdirSync(join(root, "server")); mkdirSync(join(root, "shared")); mkdirSync(join(root, "dist", "assets"), { recursive: true });
   const body = 'console.log("synthetic static file");\n';
-  writeFileSync(join(root, "server", "static.ts"), readFileSync(join(import.meta.dir, "static.ts")));
+  // static.ts finds dist/ through entries.ts, beside it
+  for (const file of ["static.ts", "entries.ts"]) writeFileSync(join(root, "server", file), readFileSync(join(import.meta.dir, file)));
   writeFileSync(join(root, "shared", "web-policy.ts"), readFileSync(join(import.meta.dir, "..", "shared", "web-policy.ts")));
   writeFileSync(join(root, "dist", "index.html"), "<html>fixture shell</html>");
   writeFileSync(join(root, "dist", "sw.js"), body);

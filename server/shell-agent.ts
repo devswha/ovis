@@ -20,6 +20,7 @@ import { isOmoProcess, omoProcessIdentity } from "./omo.ts";
 import { psQuote } from "./powershell.ts";
 import { descendantArgv, windowsProcessTable } from "./windows-processes.ts";
 import { userHome } from "./user-home.ts";
+import { COMPILED } from "./entries.ts";
 
 /** kind -> the foreground-process test that proves the agent is running in the pane. */
 export const SHELL_AGENTS: Record<string, (argv: readonly string[]) => boolean> = {
@@ -59,7 +60,7 @@ const LOGIN_ENV_END = "__OVIS_LOGIN_ENV_END__";
  * preload would run in the home folder it starts in). Single quotes read the same in fish.
  */
 const loginEnvScript = (runtime: string): string =>
-  `printf '\\n%s\\n' ${LOGIN_ENV_START}; '${runtime}' --no-env-file --config=/dev/null -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
+  `printf '\\n%s\\n' ${LOGIN_ENV_START}; ${COMPILED ? "BUN_BE_BUN=1 " : ""}'${runtime}' --no-env-file --config=/dev/null -e 'process.stdout.write(JSON.stringify(process.env))'; printf '\\n%s\\n' ${LOGIN_ENV_END}`;
 
 /** The user's login shell as an absolute executable: $SHELL, else the account's; null when neither is one. */
 export function loginShell(env: Record<string, string | undefined> = process.env): string | null {
