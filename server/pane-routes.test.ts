@@ -724,3 +724,26 @@ it("leaves out the panes it has no time left to read", async () => {
     expect(read.mock.calls.map((call) => call[0])).toEqual(["w:p1", "slow"]);
   } finally { read.mockRestore(); now.mockRestore(); }
 });
+
+it("keeps a pane id such as __proto__ as an ordinary key", async () => {
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async () => said("fine", "2026-11-12T10:00:00Z"));
+  try {
+    const body = await (await askSummary(["__proto__", "w:p1"]))!.json() as PaneSummaries;
+    expect(Object.keys(body.summaries)).toEqual(["__proto__", "w:p1"]);
+    expect(Object.getOwnPropertyDescriptor(body.summaries, "__proto__")?.value).toEqual({ role: "user", text: "fine", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" });
+  } finally { read.mockRestore(); }
+});
+
+it("reads no further pane once the request is aborted", async () => {
+  const asker = new AbortController();
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async () => {
+    asker.abort();
+    return said("first", "2026-11-12T10:00:00Z");
+  });
+  try {
+    const url = summaryUrl(["w:p1", "w:p2"]);
+    const body = await (await handlePaneRequest(new Request(url, { signal: asker.signal }), url, "/api/pane/summary", {}))!.json() as PaneSummaries;
+    expect(Object.keys(body.summaries)).toEqual(["w:p1"]);
+    expect(read).toHaveBeenCalledTimes(1);
+  } finally { read.mockRestore(); }
+});

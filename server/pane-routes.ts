@@ -347,12 +347,13 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     const paneIds = [...new Set(url.searchParams.getAll("pane_id").filter((id) => id.trim() !== ""))];
     if (paneIds.length === 0) return badRequest("missing_pane_id", "pane_id query parameter is required");
     if (paneIds.length > PANE_SUMMARY_MAX_IDS) return badRequest("too_many_panes", `at most ${PANE_SUMMARY_MAX_IDS} pane_id values`);
-    const summaries: PaneSummaries["summaries"] = {};
+    // no prototype: a pane id such as `__proto__` is a key like any other
+    const summaries: PaneSummaries["summaries"] = Object.create(null);
     const deadline = Date.now() + PANE_SUMMARY_DEADLINE_MS;
-    // one pane after another: a list row waits for none past the deadline, and a pane that cannot be read is null, never the list's failure
+    // one pane after another: a list row waits for none past the deadline or once the asker has gone, and a pane that cannot be read is null, never the list's failure
     for (const paneId of paneIds) {
       const left = deadline - Date.now();
-      if (left <= 0) break;
+      if (left <= 0 || request.signal.aborted) break;
       const read = paneConversation(paneId, options.codexHome, { prompts: 1 }, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData)
         .then((conversation) => summaryOf(conversation.turns), () => null);
       let timer: ReturnType<typeof setTimeout> | undefined;
