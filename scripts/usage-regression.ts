@@ -356,9 +356,11 @@ async function checkRecordedAccounts(browser: Browser, origin: string): Promise<
     await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
     await openSettingsPage(page, "Agents");
     const row = page.locator('.agents-item[data-agent="claude"]');
-    assert.equal(await row.locator(".agents-state").textContent(), "Not signed in");
+    // the row's state and its one action come with the usage report Settings reads once this page shows: read once it has
     await row.getByRole("button", { name: "Sign in to Claude Code", exact: true }).waitFor();
+    assert.equal(await row.locator(".agents-state").textContent(), "Not signed in");
     await row.locator(".agents-toggle").click();
+    await row.locator(".usage-accounts-row").nth(1).waitFor();
     assert.deepEqual(await accountRows(row), [["Recorded by Oh My Pi · Session 69% left", "just now (record)"], ["Recorded by Oh My Pi · Session 13% left", "Old record · 3 h ago (record)"]]);
     assert.equal(await row.getByRole("button", { name: /Sign in again/ }).count(), 0);
     if (process.env.UI_EVIDENCE_DIR) await page.getByRole("tabpanel", { name: "Agents", exact: true }).screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-recorded-settings.png") });
@@ -404,10 +406,12 @@ async function checkRecordedAccounts(browser: Browser, origin: string): Promise<
     await page.locator(".sidebar-footer-row .sidebar-footer-action").click();
     await openSettingsPage(page, "Agents");
     const row = page.locator('.agents-item[data-agent="claude"]');
+    // as above: Sign in again comes with the usage report, and the state line with it
+    await row.getByRole("button", { name: "Sign in again to Claude · me@team.example", exact: true }).waitFor();
     assert.equal(await row.locator(".agents-state").textContent(), "4 accounts · 3 need attention");
     assert.equal(await row.getByRole("button", { name: "Sign in to Claude Code", exact: true }).count(), 0);
-    await row.getByRole("button", { name: "Sign in again to Claude · me@team.example", exact: true }).waitFor();
     await row.locator(".agents-toggle").click();
+    await row.locator(".usage-accounts-row").nth(3).waitFor();
     assert.deepEqual(await accountRows(row), [
       ["Recorded by Oh My Pi · just now · max · Session 69% left", "Expired (problem)"],
       ["Recorded by Oh My Pi · Old record · 3 h ago · pro · Session 13% left", "Signed in"],
