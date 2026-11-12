@@ -46,6 +46,10 @@ interface Ask extends QuestionTarget { language: Language }
 const NO_TEXTS: ReadonlyMap<string, string> = new Map();
 /** what a target's words are read for: its herdr lifetime and seq */
 const waitOf = (target: QuestionTarget): string => `${target.lifetime}\n${target.seq}`;
+interface ReadFor { lifetime: string; seq: number }
+/** words read for this wait: the same seq, under the same herdr, or one whose lifetime was unproven ("") on either side */
+const sameWait = (read: ReadFor | undefined, target: QuestionTarget): boolean => read !== undefined && read.seq === target.seq
+  && (read.lifetime === target.lifetime || read.lifetime === "" || target.lifetime === "");
 const readOf = (ask: Ask): string => `${ask.key}\n${waitOf(ask)}\n${ask.language}`;
 
 /**
@@ -62,7 +66,7 @@ export class QuestionReads {
   private readonly listeners = new Set<() => void>();
   private current: ReadonlyMap<string, string> = NO_TEXTS;
   /** the lifetime and seq each stored text was read for */
-  private readonly readFor = new Map<string, string>();
+  private readonly readFor = new Map<string, ReadFor>();
   private targets = new Map<string, Ask>();
   /** the reads started, queued or done, and those given their second attempt */
   private readonly started = new Set<string>();
@@ -87,7 +91,7 @@ export class QuestionReads {
 
   /** The words read for this target's own seq and lifetime: none while its new wait is not read yet. */
   wordsFor(target: QuestionTarget): string | undefined {
-    return this.readFor.get(target.key) === waitOf(target) ? this.current.get(target.key) : undefined;
+    return sameWait(this.readFor.get(target.key), target) ? this.current.get(target.key) : undefined;
   }
 
   /**
@@ -114,7 +118,7 @@ export class QuestionReads {
       this.waits.delete(read);
     }
     this.queue = this.queue.filter((ask) => this.isCurrent(ask));
-    const stale = [...this.current.keys()].filter((key) => { const now = this.targets.get(key); return now === undefined || waitOf(now) !== this.readFor.get(key); });
+    const stale = [...this.current.keys()].filter((key) => { const now = this.targets.get(key); return now === undefined || !sameWait(this.readFor.get(key), now); });
     if (stale.length > 0) this.change((texts) => { for (const key of stale) { texts.delete(key); this.readFor.delete(key); } });
     for (const ask of asks) {
       const read = readOf(ask);
@@ -175,7 +179,7 @@ export class QuestionReads {
     if (!this.isCurrent(ask)) return;
     if (prompt !== null) {
       const words = this.words(prompt, ask.language);
-      this.readFor.set(ask.key, waitOf(ask));
+      this.readFor.set(ask.key, { lifetime: ask.lifetime, seq: ask.seq });
       if (this.current.get(ask.key) !== words) this.change((texts) => { texts.set(ask.key, words); });
       return;
     }

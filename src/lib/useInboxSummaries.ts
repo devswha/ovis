@@ -32,8 +32,8 @@ export interface RowSummary {
 /**
  * A row whose summary is read: a new `stamp` (herdr lifetime, finish, activity or shown state changed) reads it again,
  * and once more after its first answer under that stamp, whatever it says (its agent may not have written the turn
- * yet, or the answer came from a read begun before the change). `lifetime` is the PC's herdr lifetime, also in the stamp:
- * words answered under another one leave the row at once.
+ * yet, or the answer came from a read begun before the change). `lifetime` is the PC's herdr lifetime, also in the stamp
+ * ("" while unproven): words answered under another known one leave the row at once.
  */
 export interface SummaryTarget { key: string; machineId: string; paneId: string; stamp: string; lifetime: string }
 
@@ -135,8 +135,13 @@ export class SummaryReads {
     const gone = [...this.current.keys()].filter((key) => !this.targets.has(key));
     for (const key of [...this.answeredFor.keys()]) if (!this.targets.has(key)) this.answeredFor.delete(key);
     for (const key of [...this.answeredIn.keys()]) if (!this.targets.has(key)) this.answeredIn.delete(key);
-    // words answered under another herdr lifetime are another pane's: they go at once
-    const replaced = [...this.current.keys()].filter((key) => this.targets.has(key) && this.answeredIn.get(key) !== this.targets.get(key)!.lifetime);
+    // words answered under another herdr lifetime are another pane's: they go at once; a lifetime absent on either side
+    // was only unproven (a snapshot names it once proved), so those words stay until the new read settles
+    const replaced = [...this.current.keys()].filter((key) => {
+      const was = this.answeredIn.get(key);
+      const now = this.targets.get(key)?.lifetime;
+      return Boolean(was) && Boolean(now) && was !== now;
+    });
     if (replaced.length > 0) this.change((summaries) => { for (const key of replaced) { summaries.delete(key); this.sources.delete(key); } });
     for (const key of [...this.sources.keys()]) if (!this.targets.has(key)) this.sources.delete(key);
     // words carried to a new stamp until its read settles are carried without their failed mark, which held for the old state

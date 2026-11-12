@@ -253,6 +253,20 @@ describe("SummaryReads", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("keeps a row's words answered under an absent herdr lifetime when it becomes known, until the new answer replaces them", async () => {
+    const { reads, calls } = harness();
+    reads.sync([target("a", ":f1:3:done")]);
+    calls[0]!.resolve(answer({ "pane-a": said("Words before the proof") }));
+    await settled();
+    // the snapshot proves its herdr now: the same pane, read again
+    reads.sync([target("a", "life-1:f1:3:done", "local", "life-1")]);
+    expect(reads.summaries().get("a")?.text).toBe("Words before the proof");
+    expect(calls).toHaveLength(2);
+    calls[1]!.resolve(answer({ "pane-a": said("Words after the proof") }));
+    await settled();
+    expect(reads.summaries().get("a")?.text).toBe("Words after the proof");
+  });
+
   it("drops a row's words at once when its PC's herdr lifetime changes, and fills them from the new answer", async () => {
     const { reads, calls, notified } = harness();
     reads.sync([target("a", "life-1:f1:3:done", "local", "life-1")]);

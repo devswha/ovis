@@ -293,6 +293,19 @@ describe("QuestionReads", () => {
     expect(calls).toHaveLength(3);
   });
 
+  it("keeps a question's words read under an absent herdr lifetime when it becomes known, while it is read again", async () => {
+    const { reads, calls } = harness();
+    reads.sync([target("a", 1)]);
+    calls[0]!.resolve({ prompt: prompt("Asked before the proof") });
+    await settled();
+    reads.sync([target("a", 1, "life-1")]);
+    expect(calls).toHaveLength(2);
+    expect(reads.wordsFor(target("a", 1, "life-1"))).toBe("Asked before the proof");
+    calls[1]!.resolve({ prompt: prompt("Asked after the proof") });
+    await settled();
+    expect(reads.wordsFor(target("a", 1, "life-1"))).toBe("Asked after the proof");
+  });
+
   it("reads a target again under a new herdr lifetime with the same seq, showing none of the old pane's words", async () => {
     const { reads, calls } = harness();
     reads.sync([target("a", 1, "first")]);
