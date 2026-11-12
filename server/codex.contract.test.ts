@@ -152,3 +152,33 @@ it("serves skill activity without shipping the selected skill's instruction body
   expect(conversation.turns.at(-1)?.parts).toContainEqual({ kind: "skill", skill: { name: "review", path: "/project/skills/review/SKILL.md", evidence: "instructions", status: "loaded" } });
   expect(JSON.stringify(conversation)).not.toContain("PRIVATE SKILL INSTRUCTIONS");
 });
+
+it("shows a turn Codex ended in an error in the chat, and reads it at rest rather than DONE", async () => {
+  const status = async () => ((await (await fetch(`http://127.0.0.1:${server.port}/api/session`)).json()) as { snapshot: { panes: { pane_id: string; agent_status: string }[] } })
+    .snapshot.panes.find((pane) => pane.pane_id === paneId)?.agent_status;
+  const settles = async (wanted: string) => {
+    for (const deadline = Date.now() + 10_000; (await status()) !== wanted;) {
+      if (Date.now() > deadline) throw new Error(`the pane never read ${wanted}: ${await status()}`);
+      await Bun.sleep(50);
+    }
+  };
+  const turn = async () => {
+    await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "working", agent_session_path: rollout });
+    await settles("working");
+    await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "idle", agent_session_path: rollout });
+  };
+  // a turn that answered is a finish
+  writeFileSync(rollout, transcript(`${answerPrefix}Answer one`));
+  await turn();
+  await settles("done");
+  // codex-cli 0.167.0 at its usage limit, as recorded: the turn's end carries the error, and no answer
+  const failed = readFileSync(new URL("./fixtures/codex-usage-limit-0.167.0-rollout.jsonl", import.meta.url), "utf8");
+  writeFileSync(rollout, `${transcript(`${answerPrefix}Answer one`)}\n${failed}`);
+  await turn();
+  await settles("idle");
+  expect((await read()).turns.at(-1)?.parts).toEqual([{ kind: "text", failed: true,
+    text: "Error: You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 13th, 2026 6:05 PM." }]);
+  // herdr saying the rest again changes nothing
+  await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "idle", agent_session_path: rollout });
+  expect(await status()).toBe("idle");
+});

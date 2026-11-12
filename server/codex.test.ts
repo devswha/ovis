@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { dlopen, FFIType, ptr } from "bun:ffi";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexLastTurnFailed, codexTurnFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -1757,5 +1757,41 @@ describe("a Codex pane whose last answer the screen never shows whole (#3262 cas
     expect(footedTailTranscript(codexTurnScreen(null, tail).replace("  Worked for 12s • 7:05 PM", ""), candidates, owners)).toBeNull();
     expect(footedTailTranscript(codexTurnScreen(null, tail).replace("› Ask Codex to do anything", "› and then"), candidates, owners)).toBeNull();
     expect(footedTailTranscript(codexTurnScreen(null, tail.slice(-1)), candidates, owners)).toBeNull();
+  });
+});
+
+describe("a Codex turn that ended in an error", () => {
+  // codex-cli 0.167.0 at its usage limit, as recorded: the turn ends on task_complete with an error and no answer
+  const recorded = readFileSync(new URL("./fixtures/codex-usage-limit-0.167.0-rollout.jsonl", import.meta.url), "utf8");
+
+  it("shows the error Codex recorded under the message, as a failed request", () => {
+    const turns = parseCodexTranscript(recorded);
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
+    expect(turns[1]!.parts).toEqual([{ kind: "text", failed: true,
+      text: "Error: You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 13th, 2026 6:05 PM." }]);
+  });
+
+  it("adds nothing for a turn that ended well or was interrupted", () => {
+    const done = event({ type: "task_complete", last_agent_message: "Done", error: null });
+    expect(parseCodexTranscript(jsonl(message("user", "Hi"), message("assistant", "Done"), done)).at(-1)!.parts).toEqual([{ kind: "text", text: "Done" }]);
+    expect(parseCodexTranscript(jsonl(message("user", "Hi"), event({ type: "turn_aborted", reason: "interrupted" })))).toHaveLength(1);
+  });
+
+  it("tells whether the rollout's last ended turn failed, from the file's end", async () => {
+    expect(codexTurnFailed(recorded)).toBe(true);
+    const done = jsonl(event({ type: "task_complete", last_agent_message: "Done", error: null }));
+    // a later turn that answered, or was interrupted, is no failure
+    expect(codexTurnFailed(`${recorded}${done}\n`)).toBe(false);
+    expect(codexTurnFailed(`${recorded}${jsonl(event({ type: "turn_aborted", reason: "interrupted" }))}\n`)).toBe(false);
+    // a new turn under way after the failure: the last ended turn is still the failed one
+    expect(codexTurnFailed(`${recorded}${jsonl(event({ type: "task_started", turn_id: "next" }))}\n`)).toBe(true);
+    const dir = mkdtempSync(join(tmpdir(), "codex-failed-"));
+    try {
+      const path = join(dir, "rollout.jsonl");
+      writeFileSync(path, `${"x".repeat(4096)}\n${recorded}`);
+      expect(await codexLastTurnFailed(path, 2048)).toBe(true);
+      appendFileSync(path, `${done}\n`);
+      expect(await codexLastTurnFailed(path, 2048)).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

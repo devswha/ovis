@@ -262,6 +262,9 @@ export function createCodexTranscriptParser(state: CodexParseState = { turns: []
           state.startedAt = string(payload.started_at) || ts;
           state.activeTurnId = string(payload.turn_id) || undefined;
         }
+        // a turn that failed (a usage limit, a refused request) records why on its end, and nothing else: no answer
+        const failure = payload.type === "task_complete" ? string(record(payload.error).message) : "";
+        if (failure) assistant(ts).parts.push({ kind: "text", text: `Error: ${failure}`, failed: true });
         if (payload.type === "task_complete" || payload.type === "turn_aborted") {
           const turn = turns.at(-1);
           if (turn?.role === "assistant" && ts) turn.end_ts = ts;
@@ -1249,6 +1252,35 @@ function lastFinishedAnswer(rollout: string): string | null {
     } catch { /* a record cut by the tail read */ }
   }
   return last;
+}
+
+/** Whether a rollout's last ended turn (task_complete, turn_complete, turn_aborted) failed: Codex recorded an error on its end. */
+export function codexTurnFailed(rollout: string): boolean {
+  let failed = false;
+  for (const line of rollout.split("\n")) {
+    if (!line.includes('"task_complete"') && !line.includes('"turn_complete"') && !line.includes('"turn_aborted"')) continue;
+    try {
+      const entry = JSON.parse(line) as { type?: unknown; payload?: Record<string, unknown> };
+      const type = entry.payload?.["type"];
+      if (entry.type !== "event_msg" || (type !== "task_complete" && type !== "turn_complete" && type !== "turn_aborted")) continue;
+      failed = type === "task_complete" && string(record(entry.payload?.["error"]).message) !== "";
+    } catch { /* a record cut by the tail read */ }
+  }
+  return failed;
+}
+
+/** The end of a rollout file, where its last turn's end is: what codexTurnFailed reads. */
+export async function codexLastTurnFailed(path: string, tailBytes = 256 * 1024): Promise<boolean> {
+  const handle = await open(path, "r");
+  try {
+    const { size } = await handle.stat();
+    const start = Math.max(0, size - tailBytes);
+    const buffer = Buffer.alloc(size - start);
+    await handle.read(buffer, 0, buffer.length, start);
+    return codexTurnFailed(buffer.toString("utf8"));
+  } finally {
+    await handle.close();
+  }
 }
 
 /** What a line of a rollout must hold to tell of a turn's start or end (turnUnderWay), looked for before it is parsed. */

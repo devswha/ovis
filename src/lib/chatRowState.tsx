@@ -75,8 +75,8 @@ export function useRowFocus<T extends HTMLElement>(key: string, from: readonly s
 }
 
 /** Native disclosures retain their open state when their row leaves the DOM. */
-export function ChatDetails({ memoryKey, onToggle, ...props }: ComponentProps<"details"> & { memoryKey: string }) {
-  const [open, setOpen] = useChatRowToggle(memoryKey, false);
+export function ChatDetails({ memoryKey, onToggle, defaultOpen = false, ...props }: ComponentProps<"details"> & { memoryKey: string; defaultOpen?: boolean }) {
+  const [open, setOpen] = useChatRowToggle(memoryKey, defaultOpen);
   return <details {...props} open={open === true} onToggle={(event) => {
     setOpen(event.currentTarget.open);
     onToggle?.(event);

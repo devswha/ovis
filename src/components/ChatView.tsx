@@ -1197,8 +1197,9 @@ function FailedRequests({ parts, followed, at }: { parts: readonly Extract<Conve
   const label = followed
     ? t(n === 1 ? "Request failed, then tried again" : "{n} requests failed, then tried again", { n })
     : t(n === 1 ? "Request failed" : "{n} requests failed", { n });
-  // a run the turn went on from is history, in the quiet register; only one nothing followed keeps the alert colour
-  return <ChatDetails memoryKey={`failed:${at}`} data-failed-requests={at} className={`chat-skill${followed ? "" : " is-error"} chat-failed-requests`}>
+  // a run the turn went on from is history, in the quiet register; only one nothing followed keeps the alert colour,
+  // and says what went wrong without a click: the turn ended on it
+  return <ChatDetails memoryKey={`failed:${at}`} defaultOpen={!followed} data-failed-requests={at} className={`chat-skill${followed ? "" : " is-error"} chat-failed-requests`}>
     <summary><CircleAlert aria-hidden="true" /><span className="chat-skill-name">{label}</span><ChevronDown className="chat-skill-caret" aria-hidden="true" /></summary>
     <ol className="chat-skill-detail chat-failed-requests-list">{parts.map((part, index) => <li key={index}>{part.text.replace(/^Error: /, "")}</li>)}</ol>
   </ChatDetails>;
