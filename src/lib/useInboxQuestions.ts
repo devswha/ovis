@@ -207,9 +207,12 @@ export class QuestionReads {
   }
 }
 
-/** The page's reader: made once beside the list's other state (lib/useInbox.ts), so it outlives each mount of the list. */
-export const newQuestionReads = (): QuestionReads =>
-  new QuestionReads(fetchPanePromptState, (prompt, language) => questionWords(promptWords(prompt, (key, vars) => translate(language, key, vars))));
+/**
+ * The page's reader: made once beside the list's other state (lib/useInbox.ts), so it outlives each mount of the list.
+ * `wait` is the retry's timer (a test passes its own).
+ */
+export const newQuestionReads = (wait?: Wait): QuestionReads =>
+  new QuestionReads(fetchPanePromptState, (prompt, language) => questionWords(promptWords(prompt, (key, vars) => translate(language, key, vars))), wait);
 
 /** Each waiting target's question by its key, from the page's reader, in the interface's language. */
 export function useInboxQuestions(reads: QuestionReads, targets: readonly QuestionTarget[]): ReadonlyMap<string, string> {

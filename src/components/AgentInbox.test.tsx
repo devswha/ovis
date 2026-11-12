@@ -75,9 +75,11 @@ describe("AgentInbox", () => {
   beforeEach(() => {
     waits = new InboxWaits();
     promptReads = 0;
-    questionReads = newQuestionReads();
+    // no case runs a reader's retry: their waits never fire, so no timer outlives a case to read into the next one
+    const never = () => () => {};
+    questionReads = newQuestionReads(never);
     summaryCalls = [];
-    summaryReads = new SummaryReads((machineId, paneIds) => new Promise((resolve) => { summaryCalls.push({ machineId, paneIds, resolve }); }));
+    summaryReads = new SummaryReads((machineId, paneIds) => new Promise((resolve) => { summaryCalls.push({ machineId, paneIds, resolve }); }), never);
     presses = [];
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const events = new EventTarget();
