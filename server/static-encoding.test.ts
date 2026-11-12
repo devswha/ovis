@@ -31,8 +31,15 @@ async function fixture(check: (serve: (path: string, encoding?: string | null) =
   const gzipOnly = join(root, "dist", "assets", "gzip-only.js");
   writeFileSync(gzipOnly, body);
   writeFileSync(`${gzipOnly}.gz`, gzipSync(body));
+  // entries.ts reads OVIS_ASSETS once, as it loads: one exported in the environment the tests run in would have
+  // this copy serve that folder instead of the fixture's own dist/
+  const exported = process.env["OVIS_ASSETS"];
+  delete process.env["OVIS_ASSETS"];
   try { await check((await import(join(root, "server", "static.ts"))).serveStatic); }
-  finally { rmSync(root, { recursive: true, force: true }); }
+  finally {
+    if (exported !== undefined) process.env["OVIS_ASSETS"] = exported;
+    rmSync(root, { recursive: true, force: true });
+  }
 }
 
 test("serves compressed immutable scripts with original MIME and encoding-specific bytes", () => fixture(async serve => {
