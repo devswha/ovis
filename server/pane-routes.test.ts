@@ -15,7 +15,7 @@ import { paneAgentOf, resolveAgent } from "./pane-context.ts";
 import { openCodeServiceOptions } from "./opencode-service.ts";
 import * as conversation from "./conversation.ts";
 import { requestIdContext } from "./http.ts";
-import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, PANE_SUMMARY_PANE_MS, type PaneSummaries } from "../shared/pane-summary.ts";
+import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_KEEP_MS, PANE_SUMMARY_MAX_IDS, PANE_SUMMARY_PANE_MS, type PaneSummaries } from "../shared/pane-summary.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
 
 // The real RPC client against a unix socket this test owns; only herdr's answers are synthetic.
@@ -821,6 +821,58 @@ it("has a later request for a pane wait on the read still running for it, and st
   } finally {
     slow.resolve(said("late words", "2026-11-12T10:00:00Z"));
     read.mockRestore(); timers.restore();
+  }
+});
+
+it("hands the result of a read a request stopped waiting for to the next request for the pane, once", async () => {
+  const slow = Promise.withResolvers<conversation.RecognizedConversation>();
+  const timers = paneTimers("kept");
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    timers.reads(paneId);
+    return paneId === "kept" ? slow.promise : said(`hello from ${paneId}`, "2026-11-12T10:00:00Z");
+  });
+  const keptReads = () => read.mock.calls.filter((call) => call[0] === "kept").length;
+  try {
+    expect(Object.keys((await (await askSummary(["kept"]))!.json() as PaneSummaries).summaries)).toEqual([]);
+    // it settles with no request waiting on it, past every microtask its settling queues
+    slow.resolve(said("words read late", "2026-11-12T10:00:00Z"));
+    await slow.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    timers.reads("none");
+    const body = await (await askSummary(["kept"]))!.json() as PaneSummaries;
+    expect(body.summaries).toEqual({ kept: { role: "user", text: "words read late", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" } });
+    expect(keptReads()).toBe(1);
+    // handed over once: the request after it reads anew
+    await askSummary(["kept"]);
+    expect(keptReads()).toBe(2);
+  } finally {
+    slow.resolve(said("words read late", "2026-11-12T10:00:00Z"));
+    read.mockRestore(); timers.restore();
+  }
+});
+
+it("drops a kept result once PANE_SUMMARY_KEEP_MS has passed since it settled", async () => {
+  let clock = 2_000_000;
+  const now = spyOn(Date, "now").mockImplementation(() => clock);
+  const slow = Promise.withResolvers<conversation.RecognizedConversation>();
+  const timers = paneTimers("expired");
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    timers.reads(paneId);
+    return paneId === "expired" && read.mock.calls.length === 1 ? slow.promise : said("words of a new read", "2026-11-12T10:05:00Z");
+  });
+  try {
+    await askSummary(["expired"]);
+    slow.resolve(said("words read late", "2026-11-12T10:00:00Z"));
+    await slow.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    clock += PANE_SUMMARY_KEEP_MS;
+    timers.reads("none");
+    const body = await (await askSummary(["expired"]))!.json() as PaneSummaries;
+    expect(body.summaries).toEqual({ expired: { role: "user", text: "words of a new read", at: "2026-11-12T10:05:00Z", asked_at: "2026-11-12T10:05:00Z" } });
+    expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    slow.resolve(said("words read late", "2026-11-12T10:00:00Z"));
+    read.mockRestore(); timers.restore(); now.mockRestore();
   }
 });
 

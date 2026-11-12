@@ -13,6 +13,8 @@ export const PANE_SUMMARY_TEXT_MAX = 280;
 export const PANE_SUMMARY_DEADLINE_MS = 1500;
 /** How long one pane's read may take within a request; a pane read no faster is left out and the next one read. */
 export const PANE_SUMMARY_PANE_MS = 400;
+/** How long a pane's read that a request stopped waiting for keeps its result once settled, for the next request for the pane. */
+export const PANE_SUMMARY_KEEP_MS = 5_000;
 
 export interface PaneSummary {
   role: "assistant" | "user";
