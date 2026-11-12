@@ -17,12 +17,17 @@ export interface PathLookup {
 
 /** How long an install still missing from the PATH waits before the PATH is read again for it. */
 export const RETRY_MS = 30_000;
+/**
+ * How long an install still missing waits before a retry also has the interactive shell (the user's
+ * .zshrc) read again: an installer may tell the user to add its folder there after placing its binary.
+ */
+export const INTERACTIVE_RETRY_MS = 120_000;
 
 export class InstalledLookup {
   readonly #lookup: PathLookup;
   readonly #now: () => number;
   /** by install: the refresh running for it, or when the last one ended */
-  readonly #refreshes = new Map<string, { running: Promise<void> | null; at: number }>();
+  readonly #refreshes = new Map<string, { running: Promise<void> | null; at: number; interactiveAt: number }>();
 
   constructor(lookup: PathLookup, now: () => number = Date.now) {
     this.#lookup = lookup;
@@ -42,9 +47,11 @@ export class InstalledLookup {
       if (last.running !== null) await last.running;
       return (await this.#lookup.onPath(binary)) !== null;
     }
-    const entry: { running: Promise<void> | null; at: number } = { running: null, at: 0 };
-    // the interactive shell (which runs the user's .zshrc) is asked again for a new install only, not on each retry
-    entry.running = this.#lookup.refresh(last === undefined).catch(() => undefined).finally(() => { entry.running = null; entry.at = this.#now(); });
+    // the interactive shell (which runs the user's .zshrc) is asked again for a new install, then at
+    // most every INTERACTIVE_RETRY_MS while it still misses, not on each retry
+    const interactive = last === undefined || this.#now() - last.interactiveAt >= INTERACTIVE_RETRY_MS;
+    const entry: { running: Promise<void> | null; at: number; interactiveAt: number } = { running: null, at: 0, interactiveAt: interactive ? this.#now() : last!.interactiveAt };
+    entry.running = this.#lookup.refresh(interactive).catch(() => undefined).finally(() => { entry.running = null; entry.at = this.#now(); });
     this.#refreshes.set(install, entry);
     await entry.running;
     return (await this.#lookup.onPath(binary)) !== null;

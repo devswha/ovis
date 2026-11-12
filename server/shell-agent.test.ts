@@ -248,7 +248,7 @@ it("runs the interactive shell once until asked to read it again, with the marke
   // each run of .zshrc leaves a line with the marker's value
   const f = rcFixture('echo "x$OVIS_PATH_PROBE" >> "$HOME/rc-runs"');
   const runs = () => existsSync(join(f.home, "rc-runs")) ? readFileSync(join(f.home, "rc-runs"), "utf8").split("\n").filter(Boolean) : [];
-  const probe = agentPathProbe({ shell: f.shell, env: f.env });
+  const probe = agentPathProbe({ shell: f.shell, env: f.env, rereadGapMs: 0 });
   await Promise.all([once(probe), once(probe)]);
   expect(await once(probe)).toEqual({ path: `${f.rcBin}:${f.loginBin}:/usr/bin:/bin` });
   expect(runs()).toEqual(["x1"]);
@@ -274,25 +274,48 @@ it("runs the interactive shell once until asked to read it again, with the marke
   expect(runs()).toHaveLength(4);
 });
 
-it("an interactive shell that outruns its time leaves the login PATH at once after, and says why, once", async () => {
-  const f = rcFixture("sleep 30");
+it("an interactive shell that outruns its time leaves the login PATH, is not run again for the next lookups, and says why, once", async () => {
+  const f = rcFixture('echo x >> "$HOME/rc-runs"; sleep 30');
+  const runs = () => readFileSync(join(f.home, "rc-runs"), "utf8").split("\n").filter(Boolean).length;
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
   try {
     const probe = agentPathProbe({ shell: f.shell, env: f.env, timeoutMs: 300 });
-    const started = Date.now();
     expect(await once(probe)).toEqual({ path: `${f.loginBin}:/usr/bin:/bin` });
-    expect(Date.now() - started).toBeLessThan(5000);
     expect(probe.problem()).toContain("timed out after 300 ms");
-    // kept: the next lookups do not wait on it again, and it is logged once
-    const again = Date.now();
+    // kept: the next lookups do not run (and wait on) it again, and it is logged once
     expect(await once(probe)).toEqual({ path: `${f.loginBin}:/usr/bin:/bin` });
-    expect(Date.now() - again).toBeLessThan(250);
+    expect(await once(probe)).toEqual({ path: `${f.loginBin}:/usr/bin:/bin` });
+    expect(runs()).toBe(1);
     expect(warn.mock.calls.filter(([line]) => String(line).includes("interactive shell PATH not read"))).toHaveLength(1);
     // the catalog tells it
     expect(catalogLocator({ probe, servicePath: () => "/nonexistent" }).problem?.()).toContain("timed out");
   } finally {
     warn.mockRestore();
   }
+});
+
+it("a reread asked for while a run is out gets a run that starts after it, and rereads within the gap share one", async () => {
+  // the .zshrc puts gjc's folder on PATH only once `added` exists, and each run says it ran
+  const f = rcFixture('echo x >> "$HOME/rc-runs"; [ -e "$HOME/added" ] || return 0 2>/dev/null || exit 0');
+  const runs = () => readFileSync(join(f.home, "rc-runs"), "utf8").split("\n").filter(Boolean).length;
+  const probe = agentPathProbe({ shell: f.shell, env: f.env, rereadGapMs: 0 });
+  const first = once(probe);
+  // the folder is added while that run is out (it may have read .zshrc already): the reread's run follows it
+  writeFileSync(join(f.home, "added"), "");
+  probe.reread();
+  const second = once(probe);
+  await first;
+  expect((await second).path).toBe(`${f.rcBin}:${f.loginBin}:/usr/bin:/bin`);
+  expect(runs()).toBe(2);
+  // rereads asked for before the gap since the last run ends share one run, which waits for it
+  const gapped = agentPathProbe({ shell: f.shell, env: f.env, rereadGapMs: 300 });
+  await once(gapped);
+  for (let i = 0; i < 5; i++) gapped.reread();
+  const asked = [once(gapped), once(gapped)];
+  gapped.reread();
+  asked.push(once(gapped));
+  await Promise.all(asked);
+  expect(runs()).toBe(4);
 });
 
 it("never takes a relative PATH entry a .zshrc adds, which would make the server's folder an agent's", async () => {

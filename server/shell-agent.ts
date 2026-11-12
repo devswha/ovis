@@ -135,19 +135,44 @@ export function loginPathProbe(options: LoginShellOptions): LoginPathProbe {
  * is kept until `reread` (an install, Check again), so a .zshrc runs once per server start, not at
  * every login-shell run; a miss of it leaves the login PATH, is logged once per reason, and is told
  * by `problem`. When neither gives a PATH, the reasons of both are the miss's.
+ *
+ * A run `reread` asks for starts after the one out (which may predate an install) and at least
+ * `rereadGapMs` after it started: rereads meanwhile share it, so however often they are asked for
+ * (a client repeating Check again), the .zshrc runs at most once per gap.
  */
-export function agentPathProbe(options: LoginShellOptions): LoginPathProbe & { reread: () => void; problem: () => string | null } {
+export function agentPathProbe(options: LoginShellOptions & { rereadGapMs?: number }): LoginPathProbe & { reread: () => void; problem: () => string | null } {
   const env = { ...(options.env ?? process.env), [PATH_PROBE_MARKER]: "1" };
   const interactive = loginPathProbe({ ...options, env, interactive: true });
   const login = loginPathProbe({ ...options, env });
+  const gapMs = options.rereadGapMs ?? REREAD_GAP_MS;
   let kept: LoginPathResult | null = null;
   let reading: Promise<LoginPathResult> | null = null;
+  /** a reread's run, waiting for the one out and the gap */
+  let queued: Promise<LoginPathResult> | null = null;
   let stale = false;
+  let startedAt = -Infinity;
   let logged: string | null = null;
   const rc = (signal: AbortSignal): Promise<LoginPathResult> => {
+    if (stale) {
+      stale = false;
+      if (queued !== null) return queued;
+      const run: Promise<LoginPathResult> = (reading ?? Promise.resolve()).then(async () => {
+        const wait = startedAt + gapMs - Date.now();
+        // fixed wait: the gap is a rate limit on running the user's .zshrc, not a wait for a condition
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        if (queued === run) queued = null;
+        return start(signal);
+      });
+      queued = run;
+      return run;
+    }
+    if (queued !== null) return queued;
     if (reading !== null) return reading;
-    if (kept !== null && !stale) return Promise.resolve(kept);
-    stale = false;
+    if (kept !== null) return Promise.resolve(kept);
+    return start(signal);
+  };
+  const start = (signal: AbortSignal): Promise<LoginPathResult> => {
+    startedAt = Date.now();
     const run = interactive(signal).then((result) => {
       // a run stopped with its caller proves nothing: the next one reads again
       if (signal.aborted) { stale = true; return result; }
@@ -172,6 +197,9 @@ export function agentPathProbe(options: LoginShellOptions): LoginPathProbe & { r
     problem: () => kept !== null && kept.path === null ? kept.reason : null,
   });
 }
+
+/** The least time between two runs of the interactive shell that rereads asked for. */
+export const REREAD_GAP_MS = 5_000;
 
 let sharedProbe: { shell: string; probe: LoginPathProbe } | null = null;
 /** agentPathProbe for `shell`, one for the whole server: both locators share its single interactive run. */
