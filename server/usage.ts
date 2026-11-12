@@ -11,6 +11,9 @@
  * reported as `expired` instead; the CLI refreshes its own file the next time it runs.
  * Antigravity uses its official CLI only when HTTP omits Gemini quotas; the CLI owns its authentication.
  *
+ * A sign-in another tool on this PC holds is never read at all. Where that tool keeps its own record of the limits
+ * it read, the record is listed instead, named as that tool's (usage-recorded.ts).
+ *
  * Nothing runs in the background: a provider is asked only when a client asks this server, at
  * most every FRESH_MS unless the client forces it, which is still limited to one ask per
  * MIN_REFRESH_MS. A provider that answered 429 is not asked again before it said to.
@@ -27,6 +30,7 @@ import { installStatusline, removeStatusline, StatuslineInstallError, statusline
 import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
+import { recordedUsages, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
 
 export const FRESH_MS = 5 * 60_000;
 export const MIN_REFRESH_MS = 30_000;
@@ -113,6 +117,11 @@ export interface UsageProvider {
   read(ctx: UsageContext, signIn: SignIn): Promise<Reading | null>;
   /** the command a sign-in may be kept behind that this PC lacks, so `signIns` could not look there; null when none */
   missingCommand?(ctx: UsageContext): string | null;
+  /**
+   * The tools on this PC that keep a record of this provider's limits for a sign-in of their own (usage-recorded.ts):
+   * read for what they recorded, never for that sign-in.
+   */
+  recorded?: readonly RecordedSource[];
 }
 
 /** an answer past MAX_READ_BYTES */
@@ -1165,6 +1174,12 @@ export class UsageService {
       const held = byKey.get(usage.key);
       if (!held || (held.problem !== null && usage.problem === null)) byKey.set(usage.key, usage);
     }
+    // an account another tool on this PC recorded is listed once too, in the place of this PC's own sign-in of it when
+    // it has one, else after this PC's accounts; no sign-in is read for it, so a hidden one may be read as well
+    for (const usage of this.providers.flatMap((provider) => recordedUsages(provider.id, provider.recorded ?? [], this.ctx))) {
+      const own = byKey.get(usage.key);
+      if (!own || !ownStands(own, usage, now)) byKey.set(usage.key, usage);
+    }
     // two sign-ins of one provider that name no account are told apart by a number, in key order
     const unnamed = new Map<UsageProviderId, ProviderUsage[]>();
     for (const usage of byKey.values()) if (usage.account === null) unnamed.set(usage.id, [...unnamed.get(usage.id) ?? [], usage]);
@@ -1331,6 +1346,17 @@ export class UsageService {
       return keep("failed", signIn.plan ?? null, RETRY_MS);
     }
   }
+}
+
+/**
+ * Whether this server's own reading of an account stands over another tool's record of it. One it made within its
+ * refresh interval, without a problem, always does. Any other (numbers kept through a failed read, a status-line
+ * capture hours old) only while it is no older than the record.
+ */
+function ownStands(own: ProviderUsage, recorded: RecordedUsage, now: number): boolean {
+  if (own.checked_at === null) return false;
+  const readAt = Date.parse(own.checked_at);
+  return (own.problem === null && now - readAt < FRESH_MS) || readAt >= Date.parse(recorded.checked_at);
 }
 
 /** Whose sign-in a place holds: the account it names, else its token, hashed (kept in memory only, never reported). */
