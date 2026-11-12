@@ -132,3 +132,23 @@ test.each([["\u2591", "\u2588"], ["\u2591\u2591", "\u2588\u2588"], ["\u28c0", "\
     expect(pane.sent).toEqual([]);
   });
 });
+
+// selection marks beside a border or guide glyph, at a row's end, or two glyphs wide (merge-pass review of #3730): the
+// mark moving is another card for any agent, so an Enter read for one row never lands on the other
+const SWAPPED_MARKS: [string, [string, string], [string, string]][] = [
+  ["a heavy rule", ["\u2503 \u2588 Delete", "\u2503 \u2591 Keep"], ["\u2503 \u2591 Delete", "\u2503 \u2588 Keep"]],
+  ["a double frame", ["\u2551 \u2588 Delete \u2551", "\u2551 \u2591 Keep \u2551"], ["\u2551 \u2591 Delete \u2551", "\u2551 \u2588 Keep \u2551"]],
+  ["a tree guide", ["\u251c \u2588 Delete", "\u2514 \u2591 Keep"], ["\u251c \u2591 Delete", "\u2514 \u2588 Keep"]],
+  ["the row's end", ["Delete \u2588", "Keep \u2591"], ["Delete \u2591", "Keep \u2588"]],
+  ["two glyphs", ["\u2588\u2588 Delete", "\u2591\u2591 Keep"], ["\u2591\u2591 Delete", "\u2588\u2588 Keep"]],
+];
+test.each(SWAPPED_MARKS.flatMap(([shape, before, after]) => ["copilot", "claude"].map((agent) => [agent, shape, before, after] as const)))(
+  "still refuses %s's answer once a selection marked beside %s moved", async (agent, _shape, before, after) => {
+    const menu = (rows: readonly [string, string]) => `Remove the staging database?\n\n${rows[0]}\n${rows[1]}\n\n\u2191/\u2193 to move \u00b7 enter to choose\n`;
+    await withPane(agent, "blocked", menu(before), async (pane) => {
+      const prompt = (await card())!;
+      pane.screen = menu(after);
+      expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("Enter") })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual([]);
+    });
+  });
