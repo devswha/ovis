@@ -29,10 +29,22 @@ export function useInbox({ setting, initialLink, drawerOpenRef }: { setting: boo
   const cold = shown && coldRef.current;
   const show = useCallback(() => setOpen(true), []);
   const leave = useCallback(() => setOpen(false), []);
+  // a step back asked of the history and not landed yet: the entry still carries the mark until it has, and a
+  // second step would go past the list (out of the app on a cold start)
+  const goingBack = useRef(false);
+  useEffect(() => {
+    const landed = (): void => { goingBack.current = false; };
+    window.addEventListener("popstate", landed);
+    return () => window.removeEventListener("popstate", landed);
+  }, []);
+  useEffect(() => { if (shown) goingBack.current = false; }, [shown]);
   /** the header's Back: the entry the list pushed is left through the history, any other place opens the list */
   const back = useCallback(() => {
-    if ((window.history.state as Record<string, unknown> | null)?.[INBOX_FROM_KEY] === true) window.history.back();
-    else setOpen(true);
+    if (goingBack.current) return;
+    if ((window.history.state as Record<string, unknown> | null)?.[INBOX_FROM_KEY] === true) {
+      goingBack.current = true;
+      window.history.back();
+    } else setOpen(true);
   }, []);
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [query, setQuery] = useState("");

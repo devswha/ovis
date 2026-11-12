@@ -12,6 +12,7 @@ describe("useInbox", () => {
   let phone: boolean;
   let historyState: unknown;
   let backs: number;
+  let events: EventTarget;
   const drawerOpenRef: RefObject<boolean> = { current: false };
 
   beforeEach(() => {
@@ -19,11 +20,14 @@ describe("useInbox", () => {
     phone = true;
     historyState = null;
     backs = 0;
+    events = new EventTarget();
     drawerOpenRef.current = false;
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "window", { configurable: true, value: {
       matchMedia: () => ({ matches: phone, addEventListener() {}, removeEventListener() {} }),
       history: { get state() { return historyState; }, back: () => { backs += 1; } },
+      addEventListener: events.addEventListener.bind(events),
+      removeEventListener: events.removeEventListener.bind(events),
     } });
   });
 
@@ -120,5 +124,31 @@ describe("useInbox", () => {
 
     expect(backs).toBe(1);
     expect(inbox.shown).toBe(false);
+  });
+
+  it("steps back once for two presses in a row, and takes a press again once that step has landed", async () => {
+    await mount(true, paneLink);
+    historyState = { [INBOX_FROM_KEY]: true };
+
+    await act(async () => { inbox.back(); inbox.back(); });
+    expect(backs).toBe(1);
+    await act(async () => { inbox.back(); });
+    expect(backs).toBe(1);
+
+    // the step lands on an entry that still says it was pushed from the list (a Back further down the history)
+    await act(async () => { events.dispatchEvent(new Event("popstate")); });
+    await act(async () => { inbox.back(); });
+    expect(backs).toBe(2);
+  });
+
+  it("takes a press again once the list has shown", async () => {
+    await mount(true, paneLink);
+    historyState = { [INBOX_FROM_KEY]: true };
+
+    await act(async () => { inbox.back(); });
+    await act(async () => { inbox.show(); });
+    await act(async () => { inbox.leave(); });
+    await act(async () => { inbox.back(); });
+    expect(backs).toBe(2);
   });
 });
