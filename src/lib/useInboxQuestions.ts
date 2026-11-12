@@ -68,8 +68,9 @@ export class QuestionReads {
   private readonly started = new Set<string>();
   private readonly retried = new Set<string>();
   private readonly waits = new Map<string, () => void>();
-  /** the reads whose answer is on its way */
+  /** the reads whose answer is on its way, and those of them a showing found so (read once more when they land) */
   private readonly reading = new Set<string>();
+  private readonly followUps = new Set<string>();
   private queue: Ask[] = [];
   private inFlight = 0;
 
@@ -89,8 +90,13 @@ export class QuestionReads {
     return this.readFor.get(target.key) === waitOf(target) ? this.current.get(target.key) : undefined;
   }
 
-  /** The list is shown again: every read done may be made once more at the next sync, its attempts afresh; one in flight, queued or waiting its retry is left as it is. */
+  /**
+   * The list is shown again: every read done may be made once more at the next sync, its attempts afresh; one queued
+   * or waiting its retry is left as it is, and one in flight is read once more when it lands (its answer may be of the
+   * question before).
+   */
   shownAgain(): void {
+    for (const read of this.reading) this.followUps.add(read);
     const busy = new Set([...this.reading, ...this.waits.keys(), ...this.queue.map(readOf)]);
     for (const read of [...this.started]) if (!busy.has(read)) this.started.delete(read);
     for (const read of [...this.retried]) if (!busy.has(read)) this.retried.delete(read);
@@ -146,13 +152,23 @@ export class QuestionReads {
       this.inFlight--;
       this.reading.delete(read);
       try { this.answered(ask, prompt); } catch { this.failed(ask); }
+      this.followUp(ask);
       this.pump();
     }, () => {
       this.inFlight--;
       this.reading.delete(read);
       this.failed(ask);
+      this.followUp(ask);
       this.pump();
     });
+  }
+
+  /** One more read of a target a showing found in flight, its attempts afresh, unless its retry already reads it again. */
+  private followUp(ask: Ask): void {
+    const read = readOf(ask);
+    if (!this.followUps.delete(read) || !this.isCurrent(ask) || this.waits.has(read)) return;
+    this.retried.delete(read);
+    this.queue.push(ask);
   }
 
   private answered(ask: Ask, prompt: InteractivePrompt | null): void {

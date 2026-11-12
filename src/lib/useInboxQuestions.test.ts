@@ -271,6 +271,28 @@ describe("QuestionReads", () => {
     expect(calls.map((call) => call.paneId)).toEqual(["pane-a", "pane-b", "pane-c", "pane-a", "pane-b"]);
   });
 
+  it("reads a target once more when the list is shown again while its read is in flight, once that read lands", async () => {
+    const { reads, calls } = harness();
+    reads.sync([target("a")]);
+    calls[0]!.resolve({ prompt: prompt("A") });
+    await settled();
+    reads.shownAgain();
+    reads.sync([target("a")]);
+    expect(calls).toHaveLength(2);
+    // shown again while that read is on its way: it may carry the question as it was before
+    reads.shownAgain();
+    reads.shownAgain();
+    reads.sync([target("a")]);
+    expect(calls).toHaveLength(2);
+    calls[1]!.resolve({ prompt: prompt("A") });
+    await settled();
+    expect(calls.map((call) => call.paneId)).toEqual(["pane-a", "pane-a", "pane-a"]);
+    calls[2]!.resolve({ prompt: prompt("B") });
+    await settled();
+    expect(reads.texts().get("a")).toBe("B");
+    expect(calls).toHaveLength(3);
+  });
+
   it("reads a target again under a new herdr lifetime with the same seq, showing none of the old pane's words", async () => {
     const { reads, calls } = harness();
     reads.sync([target("a", 1, "first")]);
