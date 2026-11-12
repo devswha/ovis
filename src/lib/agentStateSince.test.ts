@@ -375,6 +375,16 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(own.since("a", "working")).toBeNull();
   });
 
+  it("does not take the stamp of an agent that left for another tab's stamp of the one that comes after it", () => {
+    // herdr-core names no counter. An agent rests and leaves in one moment, and nothing else changes until another is started in its pane
+    const page = device();
+    page.see(T, look({ a: ["working"] }));
+    page.see(T + MIN, look({ a: ["idle"] }));
+    page.see(T + MIN, look({}));
+    page.see(T + 9 * MIN, look({ a: ["idle"] }));
+    expect(page.since("a", "idle")).toBeNull();
+  });
+
   it("goes by proof alone for a pane back after longer than a page bridges", () => {
     const page = device();
     page.see(T, look({ a: ["idle", 1], b: ["idle", 5, 0, OWN] }));

@@ -234,8 +234,9 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
         if (proven(stamp, row, counted)) rows[row.pane] = keptStamp(stamp, now, counted);
       } else if (began) {
         // the stamp was made while this page still had the pane in its last state, and no counter says it is of another
-        // change: another tab's, of this one. It takes the counter this look has for the change, where the tab had none yet
-        const told = stamp !== undefined && stamp.state === row.state && stamp.at >= (saw?.since ?? watched.at)
+        // change: another tab's, of this one. It takes the counter this look has for the change, where the tab had none
+        // yet. A stamp marked as its pane left is of an agent that was there before, whenever it was made
+        const told = stamp !== undefined && stamp.gone === undefined && stamp.state === row.state && stamp.at >= (saw?.since ?? watched.at)
           && (lags || stamp.seq === undefined || row.seq === undefined || stamp.seq === row.seq);
         if (stamp !== undefined && told) rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), ...(lags && stamp.seq !== undefined ? { seq: stamp.seq } : seq), ...finish };
         else if (proven(stamp, row, counted)) rows[row.pane] = keptStamp(stamp, now, counted);
@@ -243,7 +244,8 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
         // where the page has looked long enough to know that the pane was not there
         else if (dated && (saw !== undefined || (known === undefined && stamp === undefined && now - watched.first > BLIND_MS))) rows[row.pane] = { state: row.state, at: now, ...seq, ...finish };
       } else if (stamp !== undefined && stamp.state !== row.state) {
-        rows[row.pane] = keptStamp(stamp, now, counted);
+        // another tab's, of a state this page has not seen the pane in yet; one marked as its pane left tells of nothing now
+        if (stamp.gone === undefined) rows[row.pane] = keptStamp(stamp, now, counted);
       } else if (stamp !== undefined && saw !== undefined) {
         // the rest of a turn whose background work holds the row at working counts one finish
         const finished = !recount && saw.finish !== undefined && row.finish !== undefined && row.finish !== saw.finish && !(held && row.finish === saw.finish + 1);
