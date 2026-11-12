@@ -77,6 +77,14 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   // a turn waiting on an approval (blocked) is still the same turn
   useEffect(() => { if (agentStatus !== "working" && agentStatus !== "blocked") hermesStopSentRef.current = false; }, [agentStatus]);
   useEffect(() => { hermesStopSentRef.current = false; hermesCtrlCAtRef.current = null; }, [paneId, agent]);
+  // the second Escape of a two-Escape Stop, still to be sent: it belongs to the pane and connection of the first
+  const secondEscapeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dropSecondEscape = useCallback(() => {
+    if (secondEscapeRef.current !== null) clearTimeout(secondEscapeRef.current);
+    secondEscapeRef.current = null;
+  }, []);
+  // one terminal serves the pane it is switched to: a pending Escape must not follow it there
+  useEffect(() => dropSecondEscape, [paneId, agent, dropSecondEscape]);
   const abortTurn = useCallback(() => {
     const term = termRef.current;
     const socket = socketRef.current;
@@ -109,8 +117,18 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     if (key !== "\u001b\u001b") return press(key);
     // two Escapes as two key presses: written together they read as one Alt+Escape
     press("\u001b");
-    setTimeout(() => { if (socketRef.current?.connected && termRef.current === term) press("\u001b"); }, DOUBLE_ESCAPE_GAP_MS);
-  }, [agent]);
+    // nothing typed is sent after a disconnect: the second Escape goes out only on the connection, role and
+    // pane readiness the first one had (the socket object itself survives a reconnect)
+    const lease = paneId === null ? null : socket.inputLease(paneId);
+    dropSecondEscape();
+    secondEscapeRef.current = setTimeout(() => {
+      secondEscapeRef.current = null;
+      const now = socketRef.current;
+      if (now !== socket || !now.connected || termRef.current !== term) return;
+      if (paneId !== null && now.inputLease(paneId) !== lease) return;
+      press("\u001b");
+    }, DOUBLE_ESCAPE_GAP_MS);
+  }, [agent, paneId, dropSecondEscape]);
 
   return { pressKey, toggleModifier, abortTurn };
 }
