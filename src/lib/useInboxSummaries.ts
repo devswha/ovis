@@ -32,9 +32,10 @@ export interface RowSummary {
 /**
  * A row whose summary is read: a new `stamp` (herdr lifetime, finish, activity or shown state changed) reads it again,
  * and once more after its first answer under that stamp, whatever it says (its agent may not have written the turn
- * yet, or the answer came from a read begun before the change).
+ * yet, or the answer came from a read begun before the change). `lifetime` is the PC's herdr lifetime, also in the stamp:
+ * words answered under another one leave the row at once.
  */
-export interface SummaryTarget { key: string; machineId: string; paneId: string; stamp: string }
+export interface SummaryTarget { key: string; machineId: string; paneId: string; stamp: string; lifetime: string }
 
 /** The first SUMMARY_ROWS rows of a PC in reach, in the given order. */
 export function summaryTargets(rows: readonly AgentRow[], activity: SidebarActivity): SummaryTarget[] {
@@ -44,7 +45,7 @@ export function summaryTargets(rows: readonly AgentRow[], activity: SidebarActiv
     const status = inboxStatus(row, activity);
     // a replaced herdr can reuse a pane id with the same finish, counter and state
     const lifetime = row.machine.snapshot?.herdr_lifetime ?? "";
-    return { key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, stamp: `${lifetime}:${pane.finish_id ?? ""}:${seq}:${status ?? ""}` };
+    return { key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, stamp: `${lifetime}:${pane.finish_id ?? ""}:${seq}:${status ?? ""}`, lifetime };
   });
 }
 
@@ -78,7 +79,7 @@ function wellFormed(value: unknown): value is PaneSummary {
  * once more SUMMARY_RETRY_MS after its first answer under it, whatever that answer says; a key's first stamp on the
  * page is not. A PC whose bridge has no route (null) is not asked again until a sync
  * holds none of its targets (it went away, and may come back updated). A summary of the wrong shape counts as
- * none. A key's words outlive a stamp change until the new read settles, without their failed mark (it held for the
+ * none. A key's words outlive a stamp change within one herdr lifetime until the new read settles, without their failed mark (it held for the
  * state they were answered for): replaced or removed by an answer naming the pane, removed when the read gives up. An answer for a target gone or moved on since
  * is dropped, and a key that leaves the targets loses its summary. Made once per page, it never stops and
  * assumes no subscriber.
@@ -94,8 +95,9 @@ export class SummaryReads {
   private readonly queues = new Map<string, SummaryTarget[]>();
   private readonly busy = new Set<string>();
   private readonly missing = new Set<string>();
-  /** the stamp each key's words were answered for, and the key-and-stamp reads already asked once more */
+  /** the stamp and herdr lifetime each key's words were answered for, and the key-and-stamp reads already asked once more */
   private readonly answeredFor = new Map<string, string>();
+  private readonly answeredIn = new Map<string, string>();
   private readonly rechecked = new Set<string>();
   /** the key-and-stamp reads whose stamp replaced an earlier one of the key: asked once more after their first answer */
   private readonly replacing = new Set<string>();
@@ -132,6 +134,10 @@ export class SummaryReads {
     for (const [machineId, queue] of this.queues) this.queues.set(machineId, queue.filter((target) => this.isCurrent(target)));
     const gone = [...this.current.keys()].filter((key) => !this.targets.has(key));
     for (const key of [...this.answeredFor.keys()]) if (!this.targets.has(key)) this.answeredFor.delete(key);
+    for (const key of [...this.answeredIn.keys()]) if (!this.targets.has(key)) this.answeredIn.delete(key);
+    // words answered under another herdr lifetime are another pane's: they go at once
+    const replaced = [...this.current.keys()].filter((key) => this.targets.has(key) && this.answeredIn.get(key) !== this.targets.get(key)!.lifetime);
+    if (replaced.length > 0) this.change((summaries) => { for (const key of replaced) { summaries.delete(key); this.sources.delete(key); } });
     for (const key of [...this.sources.keys()]) if (!this.targets.has(key)) this.sources.delete(key);
     // words carried to a new stamp until its read settles are carried without their failed mark, which held for the old state
     const unfailed = [...this.current].filter(([key, row]) => row.failed && this.answeredFor.get(key) !== this.targets.get(key)?.stamp).map(([key]) => key);
@@ -205,6 +211,7 @@ export class SummaryReads {
       if (!Object.hasOwn(answer.summaries, target.paneId)) { left.push(target); continue; }
       const summary: unknown = answer.summaries[target.paneId];
       this.answeredFor.set(target.key, target.stamp);
+      this.answeredIn.set(target.key, target.lifetime);
       // under a stamp that replaced another, the first answer may come from a read begun before the change
       if (this.replacing.has(readOf(target))) this.recheck(target);
       if (!wellFormed(summary)) { if (this.current.has(target.key)) cleared.push(target.key); continue; }

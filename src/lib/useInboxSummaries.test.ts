@@ -25,7 +25,7 @@ function harness(now: number | (() => number) = 0, subscribed = true) {
   return { reads, calls, waits, notified: () => notified };
 }
 
-const target = (key: string, stamp = "1", machineId = "local"): SummaryTarget => ({ key, machineId, paneId: `pane-${key}`, stamp });
+const target = (key: string, stamp = "1", machineId = "local", lifetime = ""): SummaryTarget => ({ key, machineId, paneId: `pane-${key}`, stamp, lifetime });
 const said = (text: string, at: string | null = null): PaneSummary => ({ role: "assistant", text, at, asked_at: null });
 const answer = (summaries: Record<string, PaneSummary | null>, server_time = "1970-01-01T00:00:00.000Z"): PaneSummaries => ({ server_time, summaries });
 const settled = () => new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => undefined);
@@ -251,6 +251,22 @@ describe("SummaryReads", () => {
     expect(waits.map((wait) => wait.cancelled)).toEqual([true]);
     waits[0]!.run();
     expect(calls).toHaveLength(2);
+  });
+
+  it("drops a row's words at once when its PC's herdr lifetime changes, and fills them from the new answer", async () => {
+    const { reads, calls, notified } = harness();
+    reads.sync([target("a", "life-1:f1:3:done", "local", "life-1")]);
+    calls[0]!.resolve(answer({ "pane-a": said("Old pane's words") }));
+    await settled();
+    reads.sync([target("a", "life-2:f1:3:done", "local", "life-2")]);
+    expect(reads.summaries().has("a")).toBe(false);
+    expect(notified()).toBe(2);
+    calls[1]!.resolve(answer({ "pane-a": said("New pane's words") }));
+    await settled();
+    expect(reads.summaries().get("a")?.text).toBe("New pane's words");
+    // within one lifetime the words are carried across a stamp change as before
+    reads.sync([target("a", "life-2:f2:4:done", "local", "life-2")]);
+    expect(reads.summaries().get("a")?.text).toBe("New pane's words");
   });
 
   it("cancels the once-more ask of a row whose target moved on or left", async () => {
