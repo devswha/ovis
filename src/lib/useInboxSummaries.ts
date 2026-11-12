@@ -30,9 +30,9 @@ export interface RowSummary {
 }
 
 /**
- * A row whose summary is read: a new `stamp` (herdr lifetime, finish, activity or shown state changed) reads it again. A row whose new
- * stamp answers with the words it already had is read once more (its agent may not have written the turn yet, or the
- * answer came from a read started before the change).
+ * A row whose summary is read: a new `stamp` (herdr lifetime, finish, activity or shown state changed) reads it again,
+ * and once more after its first answer under that stamp, whatever it says (its agent may not have written the turn
+ * yet, or the answer came from a read begun before the change).
  */
 export interface SummaryTarget { key: string; machineId: string; paneId: string; stamp: string }
 
@@ -74,8 +74,9 @@ function wellFormed(value: unknown): value is PaneSummary {
  * Each target's summary, read once per key and stamp: batches of at most PANE_SUMMARY_MAX_IDS per PC, one
  * request in flight per PC. A pane the answer left out, or a request that failed, is asked again after
  * SUMMARY_RETRY_MS, at most SUMMARY_RETRIES times per key and stamp, the first pane an answer left out behind the
- * others it left out, so no pane heads every retry. A target whose new stamp answers with the words it had
- * is asked once more after SUMMARY_RETRY_MS. A PC whose bridge has no route (null) is not asked again until a sync
+ * others it left out, so no pane heads every retry. A target under a stamp that replaced an earlier one is asked
+ * once more SUMMARY_RETRY_MS after its first answer under it, whatever that answer says; a key's first stamp on the
+ * page is not. A PC whose bridge has no route (null) is not asked again until a sync
  * holds none of its targets (it went away, and may come back updated). A summary of the wrong shape counts as
  * none. A key's words outlive a stamp change until the new read settles, without their failed mark (it held for the
  * state they were answered for): replaced or removed by an answer naming the pane, removed when the read gives up. An answer for a target gone or moved on since
@@ -96,7 +97,9 @@ export class SummaryReads {
   /** the stamp each key's words were answered for, and the key-and-stamp reads already asked once more */
   private readonly answeredFor = new Map<string, string>();
   private readonly rechecked = new Set<string>();
-  /** each key's words as the answer gave them, before the clock correction: an answer repeats them when these match */
+  /** the key-and-stamp reads whose stamp replaced an earlier one of the key: asked once more after their first answer */
+  private readonly replacing = new Set<string>();
+  /** each key's words as the answer gave them, before the clock correction: an answer that matches them changes no row */
   private readonly sources = new Map<string, string>();
 
   constructor(private readonly read: SummaryRead,
@@ -112,6 +115,7 @@ export class SummaryReads {
   summaries = (): ReadonlyMap<string, RowSummary> => this.current;
 
   sync(targets: readonly SummaryTarget[]): void {
+    const earlier = this.targets;
     this.targets = new Map(targets.map((target) => [target.key, target]));
     const live = new Set(targets.map(readOf));
     const machines = new Set(targets.map((target) => target.machineId));
@@ -121,6 +125,7 @@ export class SummaryReads {
       this.started.delete(read);
       this.retries.delete(read);
       this.rechecked.delete(read);
+      this.replacing.delete(read);
       this.waits.get(read)?.();
       this.waits.delete(read);
     }
@@ -136,6 +141,8 @@ export class SummaryReads {
       const read = readOf(target);
       if (this.started.has(read) || this.missing.has(target.machineId)) continue;
       this.started.add(read);
+      const before = earlier.get(target.key)?.stamp;
+      if (before !== undefined && before !== target.stamp) this.replacing.add(read);
       this.enqueue(target);
     }
     for (const machineId of [...this.queues.keys()]) this.pump(machineId);
@@ -197,8 +204,9 @@ export class SummaryReads {
       if (!this.isCurrent(target)) continue;
       if (!Object.hasOwn(answer.summaries, target.paneId)) { left.push(target); continue; }
       const summary: unknown = answer.summaries[target.paneId];
-      const before = this.answeredFor.get(target.key);
       this.answeredFor.set(target.key, target.stamp);
+      // under a stamp that replaced another, the first answer may come from a read begun before the change
+      if (this.replacing.has(readOf(target))) this.recheck(target);
       if (!wellFormed(summary)) { if (this.current.has(target.key)) cleared.push(target.key); continue; }
       const row: RowSummary = { role: summary.role, text: summary.text, at: timeOf(summary.at, offset), askedAt: timeOf(summary.asked_at, offset), failed: summary.failed === true };
       // sameness is the answer's own values: two answers' clock corrections differ by the time between them
@@ -208,7 +216,6 @@ export class SummaryReads {
       this.sources.set(target.key, source);
       // words carried to a new stamp lost their failed mark: a repeat gives it back
       if (!repeated || kept.failed !== row.failed) set.set(target.key, row);
-      if (repeated && before !== undefined && before !== target.stamp) this.recheck(target);
     }
     // the first pane left out is likeliest the one the PC was still reading: it goes behind the others
     for (const target of [...left.slice(1), ...left.slice(0, 1)]) this.again(target);
@@ -218,7 +225,7 @@ export class SummaryReads {
     });
   }
 
-  /** Asks a target once more after the wait, its answer having repeated the words of an earlier stamp. */
+  /** Asks a target once more after the wait, once per key and stamp: its first answer under a new stamp may be from before the change. */
   private recheck(target: SummaryTarget): void {
     const read = readOf(target);
     if (this.rechecked.has(read)) return;

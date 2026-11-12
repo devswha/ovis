@@ -196,15 +196,60 @@ describe("SummaryReads", () => {
     expect(reads.summaries().get("a")?.text).toBe("Same");
   });
 
-  it("asks no row again when its words changed", async () => {
+  it("asks a row once more under a new stamp even when its words changed, and the second answer's words replace the first's", async () => {
     const { reads, calls, waits } = harness();
     reads.sync([target("b")]);
     calls[0]!.resolve(answer({ "pane-b": said("Old") }));
     await settled();
     reads.sync([target("b", "2")]);
-    calls[1]!.resolve(answer({ "pane-b": said("New") }));
+    // the first answer under the new stamp may come from a read begun before the change
+    calls[1]!.resolve(answer({ "pane-b": said("Let me run the tests") }));
+    await settled();
+    expect(reads.summaries().get("b")?.text).toBe("Let me run the tests");
+    expect(waits.map((wait) => wait.ms)).toEqual([SUMMARY_RETRY_MS]);
+    waits[0]!.run();
+    expect(calls).toHaveLength(3);
+    expect(calls[2]!.paneIds).toEqual(["pane-b"]);
+    calls[2]!.resolve(answer({ "pane-b": said("All tests pass.") }));
+    await settled();
+    expect(reads.summaries().get("b")?.text).toBe("All tests pass.");
+    // once per key and stamp
+    expect(waits).toHaveLength(1);
+    expect(calls).toHaveLength(3);
+  });
+
+  it("asks a row once more after its first answer under a stamp that replaced one never answered", async () => {
+    const { reads, calls, waits } = harness();
+    reads.sync([target("a", "1")]);
+    reads.sync([target("a", "2")]);
+    calls[0]!.resolve(answer({ "pane-a": said("dropped") }));
+    await settled();
+    calls[1]!.resolve(answer({ "pane-a": null }));
+    await settled();
+    expect(waits.map((wait) => wait.ms)).toEqual([SUMMARY_RETRY_MS]);
+  });
+
+  it("asks no row once more under its first stamp on the page", async () => {
+    const { reads, calls, waits } = harness();
+    reads.sync([target("a"), target("b")]);
+    calls[0]!.resolve(answer({ "pane-a": said("Hi"), "pane-b": null }));
     await settled();
     expect(waits).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("cancels the once-more ask under a new stamp when the target leaves, whatever its answer said", async () => {
+    const { reads, calls, waits } = harness();
+    reads.sync([target("a")]);
+    calls[0]!.resolve(answer({ "pane-a": said("Old") }));
+    await settled();
+    reads.sync([target("a", "2")]);
+    calls[1]!.resolve(answer({ "pane-a": said("New") }));
+    await settled();
+    expect(waits.map((wait) => wait.cancelled)).toEqual([false]);
+    reads.sync([]);
+    expect(waits.map((wait) => wait.cancelled)).toEqual([true]);
+    waits[0]!.run();
     expect(calls).toHaveLength(2);
   });
 
