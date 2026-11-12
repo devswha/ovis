@@ -345,11 +345,15 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const codexLooked = new Map<string, { path: string; size: number } | null>();
   const codexLooking = new Set<string>();
   const codexTurns = new Map<string, number>();
-  /** a Codex pane at work again: its last turn is no longer the failed one, and its rollout may be another */
-  const codexWorking = (paneId: string): void => {
+  /**
+   * A Codex pane's last turn is no longer the failed one, and its rollout may be another: `began`, it is at work again,
+   * a turn this server sees run (only such a turn's failure is told: one found already over, after a restart or in a pane
+   * first seen at rest, was the user's to see then, as OmO's `failed-before` is)
+   */
+  const codexWorking = (paneId: string, began: boolean): void => {
     codexFailed.delete(paneId);
     codexLooked.delete(paneId);
-    codexTurns.set(paneId, (codexTurns.get(paneId) ?? 0) + 1);
+    if (began) codexTurns.set(paneId, (codexTurns.get(paneId) ?? 0) + 1);
   };
   /** herdr calls such a pane's rest DONE as it calls any finish it did not see: it is at rest, and READY */
   const codexRests = (snapshot: SessionSnapshot): SessionSnapshot => {
@@ -370,7 +374,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // a Codex pane herdr reads DONE may have ended its turn in an error: looked at, not waited for
     for (const pane of snapshot.panes) {
       if (pane.agent !== "codex") continue;
-      if (pane.agent_status === "working") codexWorking(pane.pane_id);
+      if (pane.agent_status === "working") codexWorking(pane.pane_id, true);
       else if (pane.agent_status === "done" && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) codexRest(pane.pane_id, snapshot);
     }
     const named = codexRests(letta.apply(gjc.apply(omo.apply(snapshot))));
@@ -637,7 +641,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // an agent herdr lost on the way still works and finishes as such (server/completion.ts);
     // an OmO pane whose session is not known keeps herdr's status, under its own name
     // a Codex pane whose rollout ended its last turn in an error stays at rest, whatever herdr calls that rest (codexRest)
-    if (raw === "working" || agent !== "codex") codexWorking(paneId);
+    if (raw === "working" || agent !== "codex") codexWorking(paneId, raw === "working" && agent === "codex");
     // (herdr's own DONE or Codex's `unknown` at rest included: the tracker reads a failed rest only from an idle)
     const failedRest = codexFailed.has(paneId) && raw !== "blocked";
     const status = completions.observe(paneId, failedRest ? "idle" : raw, omo.runs(paneId) ? "omo" : gjc.runs(paneId) ? "gjc" : agent, failedRest ? "failed" : undefined);
@@ -679,9 +683,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    */
   function codexRest(paneId: string, snapshot?: SessionSnapshot): void {
     const known = codexLooked.get(paneId);
-    if (codexFailed.has(paneId) || codexLooking.has(paneId) || known === null) return;
-    codexLooking.add(paneId);
     const turn = codexTurns.get(paneId) ?? 0;
+    if (turn === 0 || codexFailed.has(paneId) || codexLooking.has(paneId) || known === null) return;
+    codexLooking.add(paneId);
     const look = (found: { path: string; size: number } | null): void => { if ((codexTurns.get(paneId) ?? 0) === turn) codexLooked.set(paneId, found); };
     void (async () => {
       let path = known?.path;
@@ -701,6 +705,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (!failed || now === "working" || now === "blocked" || codexFailed.has(paneId)) return;
       codexFailed.add(paneId);
       const status = completions.observe(paneId, "idle", "codex", "failed");
+      // told as any rest is: the queue and the wait on background work hear it before devices do
+      pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
+      waits.status(paneId, status);
       broadcastAll(paneStatus(paneId, status));
       push.onStatus(paneId, status).catch(logPushError);
       push.onFailed(paneId).catch(logPushError);
@@ -714,7 +721,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   // what a pane that is gone held, whether it ended by itself or was closed; safe to run twice
   // (a program that ended and whose pane then closed)
   function paneGone(paneId: string): void {
-    codexWorking(paneId);
+    codexWorking(paneId, false);
     codexTurns.delete(paneId);
     omo.ended(paneId);
     gjc.ended(paneId);
