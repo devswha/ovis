@@ -83,6 +83,18 @@ final class PCStore {
     /** Why the PC's page failed, for the error page: WebView's reason, or the HTTP status it answered. */
     static volatile String failure;
 
+    /** What kind of failure that was, when the app itself found it: "timeout" (no answer in ANSWER_SECONDS) or "not-ovis"; else null. */
+    static volatile String failureKind;
+
+    /** Sets the failure the error page shows, and its kind (failureKind), which may be null. */
+    static void fail(String reason, String kind) {
+        failure = reason;
+        failureKind = kind;
+    }
+
+    /** How long the connect screen waits for an address to answer (check), and an opening PC for its first page (MainActivity's cover), as the iOS app's cover waits. */
+    static final int ANSWER_SECONDS = 20;
+
     /** Redirects in a row that made another origin the PC (MainActivity), so two servers that redirect to each other stop. */
     static volatile int redirects;
 
@@ -223,6 +235,12 @@ final class PCStore {
         return path != null && cleanPath(scope) != null && scope.endsWith("/") && (path.endsWith("/") ? path : path + "/").startsWith(scope);
     }
 
+    /** Whether the PC `key` is a scope (a relay PC on the hosted app) rather than a whole origin. */
+    static boolean scoped(String key) {
+        String scope = rawPath(key);
+        return !scope.isEmpty() && !scope.equals("/");
+    }
+
     /**
      * `path` (percent-encoded, as a URL carries it) when a browser loads it as written, else null: no
      * `.` or `..` segment, plain or percent-encoded (once or twice), no encoded `/` and no `\`, which a
@@ -341,6 +359,136 @@ final class PCStore {
             && version instanceof BigInteger
             && ((BigInteger) version).compareTo(BigInteger.valueOf(MIN_BRIDGE_PROTOCOL)) >= 0
             && ((BigInteger) version).compareTo(BigInteger.valueOf(MAX_BRIDGE_PROTOCOL)) <= 0;
+    }
+
+    /** What check found an address to be. */
+    static final class Check {
+        /**
+         * "ovis" (an Ovis server, of any version, or the hosted app), "in-front" (its /api/health
+         * redirected: a sign-in in front of the PC or another address, which the WebView then judges),
+         * "not-ovis" (another web server answered), or why no answer came: "refused", "timeout",
+         * "unknown-host" or "no-answer".
+         */
+        final String kind;
+        /** The answer that was not Ovis ("HTTP 404"), or the error when no answer came; null otherwise. */
+        final String detail;
+
+        Check(String kind, String detail) {
+            this.kind = kind;
+            this.detail = detail;
+        }
+
+        /** Whether the app opens the address: it is Ovis, or something in front of it decides. */
+        boolean opens() {
+            return kind.equals("ovis") || kind.equals("in-front");
+        }
+    }
+
+    /**
+     * Whether `url` is Ovis, before the app opens it as a PC or keeps it: asks its origin's
+     * `/api/health?scope=bridge`, which every Ovis since 0.1 answers to anyone with `ok` and `auth`
+     * (older ones without `bridge_protocol`, so this is looser than answersAsOvis, which decides
+     * which origin gets the bridge). A redirect is left to the WebView, as a sign-in in front of the PC
+     * (Cloudflare Access) answers so. The hosted app (app.ovis.sh, or a copy of it) has no
+     * /api/health: its page says what it is (`<meta name="ovis-shell">`, scripts/shell-build.ts), on
+     * the answer itself where every path serves it, else on `url`'s own page (its path only, never a
+     * pairing link's code). `cookies` (the WebView's for the origin, or null) go with both requests.
+     * Gives up after `budgetMs` in all. Blocks: never call it on the main thread.
+     */
+    static Check check(String url, String cookies, long budgetMs) {
+        String origin = origin(url);
+        if (origin == null) return new Check("no-answer", "not an http or https address");
+        long deadline = System.nanoTime() + budgetMs * 1_000_000L;
+        Answer health;
+        try {
+            health = fetch(origin + "/api/health?scope=bridge", cookies, deadline);
+        } catch (IOException failed) {
+            return new Check(failureKind(failed, deadline), String.valueOf(failed.getMessage()));
+        }
+        if (health.status >= 300 && health.status < 400) return new Check("in-front", null);
+        if (health.status == 200 && (answersAsServer(health.body) || hostedApp(health.body))) return new Check("ovis", null);
+        try {
+            Answer page = fetch(origin + cleanStart(url), cookies, deadline);
+            if (page.status == 200 && hostedApp(page.body)) return new Check("ovis", null);
+        } catch (IOException noPage) {
+            // the health answer decides
+        }
+        return new Check("not-ovis", health.status == 200 ? null : "HTTP " + health.status);
+    }
+
+    /** Whether `body` is /api/health as any Ovis server gives it: a JSON object with `ok` true and an `auth` object. */
+    static boolean answersAsServer(String body) {
+        Object answer;
+        try {
+            answer = json(body);
+        } catch (IllegalArgumentException notJson) {
+            return false;
+        }
+        return answer instanceof Map && Boolean.TRUE.equals(((Map<?, ?>) answer).get("ok")) && ((Map<?, ?>) answer).get("auth") instanceof Map;
+    }
+
+    private static final Pattern SHELL_META = Pattern.compile("<meta\\s+name=\"ovis-shell\"", Pattern.CASE_INSENSITIVE);
+
+    /** Whether `body` is the hosted app's page. */
+    static boolean hostedApp(String body) {
+        return SHELL_META.matcher(body).find();
+    }
+
+    /** `url`'s path alone ("/" when it has none): the page to ask, without a pairing link's code. */
+    private static String cleanStart(String url) {
+        String path = rawPath(url);
+        return path.isEmpty() ? "/" : path;
+    }
+
+    /** Why no answer came: the connection refused, no answer before the deadline, a name not found, or anything else. */
+    private static String failureKind(IOException failed, long deadline) {
+        if (failed instanceof java.net.UnknownHostException) return "unknown-host";
+        if (failed instanceof java.net.SocketTimeoutException || System.nanoTime() >= deadline) return "timeout";
+        // a connection that fails before the timeout was refused: Android's HttpURLConnection says only
+        // "Failed to connect to /host:port", with no cause; a route that does not exist says so
+        String message = String.valueOf(failed.getMessage());
+        if (failed instanceof java.net.ConnectException && !message.contains("UNREACH") && !message.contains("No route")) return "refused";
+        return "no-answer";
+    }
+
+    private static final class Answer {
+        final int status;
+        final String body;
+
+        Answer(int status, String body) {
+            this.status = status;
+            this.body = body;
+        }
+    }
+
+    /** A GET of `url`, its redirects not followed, and the first PROBE_MAX_BYTES of its body; ended at `deadline`. */
+    private static Answer fetch(String url, String cookies, long deadline) throws IOException {
+        // rounded up, so the disconnect comes at the deadline or after it, and failureKind reads it as a timeout
+        long left = (deadline - System.nanoTime() + 999_999L) / 1_000_000L;
+        if (left <= 0) throw new java.net.SocketTimeoutException("no answer in time");
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        ScheduledFuture<?> stop = PROBE_DEADLINE.schedule(connection::disconnect, left, TimeUnit.MILLISECONDS);
+        try {
+            connection.setInstanceFollowRedirects(false);
+            connection.setUseCaches(false);
+            connection.setConnectTimeout((int) left);
+            connection.setReadTimeout((int) left);
+            if (cookies != null && !cookies.isEmpty()) connection.setRequestProperty("Cookie", cookies);
+            int status = connection.getResponseCode();
+            if (status != 200) return new Answer(status, "");
+            try (InputStream in = connection.getInputStream()) {
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                for (int read; out.size() < PROBE_MAX_BYTES && (read = in.read(buffer)) != -1; ) {
+                    out.write(buffer, 0, read);
+                    if (System.nanoTime() > deadline) throw new java.net.SocketTimeoutException("answer too slow");
+                }
+                return new Answer(status, new String(out.toByteArray(), StandardCharsets.UTF_8));
+            }
+        } finally {
+            stop.cancel(false);
+            connection.disconnect();
+        }
     }
 
     /**

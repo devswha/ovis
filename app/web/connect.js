@@ -1,7 +1,7 @@
 // The connect screen: the app's first page until a PC is chosen. Opening a PC goes through the
 // native HerdrShell plugin, which makes the PC's address the WebView's first page: navigating
 // there from this page would cost every launch about 1.5 s (docs/native-app.md, Spike results).
-import { ACCOUNT_SIGN_IN, APP_ORIGIN, localize, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
+import { ACCOUNT_SIGN_IN, APP_ORIGIN, localize, openFailure, parseAddress, publicHttp, relayLink, shell, t } from "./shell.js";
 
 localize();
 
@@ -11,6 +11,11 @@ if (window.Capacitor?.getPlatform?.() !== "ios") document.querySelector(".hint")
 const form = document.getElementById("connect");
 const input = document.getElementById("address");
 const error = document.getElementById("error");
+const status = document.getElementById("status");
+const statusText = document.getElementById("status-text");
+const android = window.Capacitor?.getPlatform?.() === "android";
+/** Counts the opens of a PC's own address, so one cancelled or replaced says nothing when it ends. */
+let attempt = 0;
 /** PCs that loaded before (an origin, or a relay PC's scope), and the public http address the user was just warned about. */
 let savedOrigins = [];
 let warned = "";
@@ -51,10 +56,23 @@ async function open(text) {
     );
     return;
   }
+  // the Android app first asks the address whether it is Ovis (PCStore.check), for up to 20 s:
+  // until it answers the screen says what it opens, with Cancel. The iOS app opens it at once.
   error.textContent = "";
-  try { await shell("open", { url: url.href }); }
-  catch (err) { error.textContent = String(err?.message ?? err); }
+  const mine = ++attempt;
+  statusText.textContent = t(`Opening ${url.host}…`, `${url.host} 여는 중…`);
+  status.hidden = false;
+  try { await shell("open", { url: url.href, check: true }); }
+  catch (err) { if (mine === attempt) error.textContent = openFailure(url, err?.code, String(err?.message ?? err)); }
+  finally { if (mine === attempt) status.hidden = true; }
 }
+
+document.getElementById("cancel").addEventListener("click", () => {
+  attempt++;
+  status.hidden = true;
+  if (android) void shell("cancelOpen");
+  input.focus();
+});
 
 form.addEventListener("submit", (event) => { event.preventDefault(); void open(input.value); });
 
