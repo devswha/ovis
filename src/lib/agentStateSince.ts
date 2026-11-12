@@ -14,6 +14,7 @@
  * files, herdr's counter stands still whatever they do, so nothing proves their stamps.
  */
 import type { Machine } from "../../shared/machines.ts";
+import { OWN_STATUS_AGENTS } from "../../shared/own-status-agents.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import { agentGroup, type AgentGroup } from "./agentRoster.ts";
 import { BLIND_MS } from "./agentStateWatch.ts";
@@ -88,11 +89,11 @@ export type LastLook = ReadonlyMap<string, PcSeen>;
 export interface SeenStamps { stamps: StateStamps; last: LastLook }
 
 /**
- * The agents whose state Ovis reads from their own session files in place of herdr's: the trackers of
- * server/omo-status.ts, server/gjc-status.ts and server/letta-status.ts name them so. herdr goes on calling such a
- * pane what it took it for, so its counter stands still while the agent works, waits and rests.
+ * The agents whose state Ovis reads from their own session files in place of herdr's, as the server's trackers are
+ * named (shared/own-status-agents.ts). herdr goes on calling such a pane what it took it for, so its counter stands
+ * still while the agent works, waits and rests.
  */
-const OWN_STATE_AGENTS: ReadonlySet<string> = new Set(["omo", "gjc", "letta"]);
+const OWN_STATE_AGENTS: ReadonlySet<string> = new Set(OWN_STATUS_AGENTS);
 
 /**
  * A look at every PC: the agent rows the Agents list draws for it (lib/sidebarAgents.ts), each with the state it
