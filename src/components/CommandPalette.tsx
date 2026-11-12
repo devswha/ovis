@@ -58,7 +58,7 @@ interface CommandPaletteProps {
   actions: AppActions;
   /** this device may only watch: the PCs refuse it their checkouts, so no branch is read (#2250) */
   watching?: boolean;
-  /** a phone's agent list covers the selected pane: New tab, which would make a tab beside it, is not offered */
+  /** a phone's agent list covers the selected pane: New tab and Rename tab, which would act beside it or on it, are not offered */
   inboxShown?: boolean;
 }
 
@@ -341,7 +341,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => actions.openWorktree?.("open") },
     ] satisfies PaletteAction[] : []),
     ...(historyHere ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory() }] satisfies PaletteAction[] : []),
-    ...(selectedPaneId !== null && tabShown && renameOffered ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
+    ...(selectedPaneId !== null && tabShown && renameOffered && !inboxShown ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
     // herdr's prefix+v and prefix+-: the new pane is opened here only when asked, as herdr's --focus
     ...(splitPane ? [
       { id: "split-right", label: t("Split pane right"), icon: Columns2, shortcut: "split-right", run: () => splitPane("right") },

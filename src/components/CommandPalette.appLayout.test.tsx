@@ -121,11 +121,14 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     expect(await rows(APP_CORE, "p3", ">move tab")).toEqual([]);
   });
 
-  it("offers no New tab while a phone's agent list covers the selected pane, and New workspace still", async () => {
+  it("offers no New tab or Rename tab while a phone's agent list covers the selected pane, and New workspace still", async () => {
     const covered = await rows(TUI, "p1", ">", undefined, snapshot, false, true);
     expect(covered).not.toContain("New tab");
+    expect(covered).not.toContain("Rename tab");
     expect(covered).toContain("New workspace");
-    expect(await rows(TUI, "p1", ">")).toContain("New tab");
+    const shown = await rows(TUI, "p1", ">");
+    expect(shown).toContain("New tab");
+    expect(shown).toContain("Rename tab");
   });
 
   it("lists a core PC's rename, split, zoom and move rows where Ovis keeps its layout", async () => {
