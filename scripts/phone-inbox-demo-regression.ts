@@ -152,7 +152,11 @@ async function shot(page: Page, name: string): Promise<void> {
   await page.screenshot({ path: join(evidence, name), animations: "disabled" });
 }
 
-/** One tab of a fresh browser profile: the settings are seeded once, so a reload keeps what the app stored since. */
+/**
+ * One tab of a fresh browser profile: the settings are seeded once, so a reload keeps what the app stored since.
+ * The inbox is this device's own choice, a JSON boolean of its own beside the settings record: `phoneInbox` in a
+ * seed is stored there, and a seed without it leaves the inbox off.
+ */
 async function withPage(browser: Browser, base: string, settings: Settings, path: string, run: (page: Page) => Promise<void>, wide = false): Promise<void> {
   const context = await browser.newContext({
     viewport: wide ? { width: 1280, height: 900 } : { width: 390, height: 844 },
@@ -162,7 +166,9 @@ async function withPage(browser: Browser, base: string, settings: Settings, path
     await context.addInitScript((seed) => {
       if (sessionStorage.getItem("phone-inbox-regression:seeded")) return;
       sessionStorage.setItem("phone-inbox-regression:seeded", "1");
-      localStorage.setItem("ovis:settings", JSON.stringify(seed));
+      const { phoneInbox, ...settings } = seed;
+      localStorage.setItem("ovis:settings", JSON.stringify(settings));
+      if (phoneInbox === true) localStorage.setItem("ovis:phone-inbox", JSON.stringify(true));
     }, settings);
     const page = await context.newPage();
     page.on("pageerror", (error) => errors.push(`${path}: ${error.message}`));
@@ -407,7 +413,7 @@ try {
           await settings.waitFor({ state: "detached" });
           if (await page.locator('#drawer-toggle[aria-expanded="true"]').count() > 0) await page.locator("#drawer-toggle").tap();
           await page.locator("#inbox-back").waitFor();
-          const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").phoneInbox);
+          const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:phone-inbox") ?? "null"));
           assert.equal(stored, true);
           await backToList(page);
           await rowCount(page, 6);

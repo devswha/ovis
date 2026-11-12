@@ -58,7 +58,7 @@ import { lastViewedPane } from "./lib/lastViewedPane.ts";
 import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
 import { liveGroupKeys, movedAgentGroup } from "./lib/namedAgentGroups.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
-import { pcLoadOn, useSettings } from "./lib/settings.ts";
+import { pcLoadOn, phoneInboxOn, useSettings } from "./lib/settings.ts";
 import { usePaneLocked } from "./lib/paneLocks.ts";
 import { useHiddenMachines, useShownMachines } from "./lib/hiddenMachines.ts";
 import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.ts";
@@ -251,7 +251,7 @@ export function App() {
   const { rosterIn, pendingFile, selectionHint, setHeaderNote, note, autoSelected, setAutoSelected } = useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, pendingLink, rosterSeq, setRosterTick, linkLanded, t });
   const { drawerOpen, setDrawerOpen, drawerOpenRef, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink });
   // a phone's agent inbox: the list that stands in the pane's place until a pane is picked (lib/useInbox.ts)
-  const inbox = useInbox({ setting: settings.phoneInbox, initialLink, drawerOpenRef });
+  const inbox = useInbox({ setting: phoneInboxOn(settings), initialLink, drawerOpenRef });
   // Settings → Show the sidebar on hover: the collapsed sidebar over the pane for a moment (lib/sidebarPeek.ts)
   const { peeking: sidebarPeeking, sidebarRef: peekSidebarRef, toggleRef: peekToggleRef, toggleHandlers: peekToggleHandlers, sidebarHandlers: peekSidebarHandlers } = useSidebarPeek(settings.sidebarPeek && wideScreen && sidebarCollapsed);
   const { selectionRef, movingPanes } = useSelectionMark({ selectedMachineId, selectedPaneId });

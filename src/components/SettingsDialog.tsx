@@ -18,7 +18,7 @@ import { herdrKeys, loadHerdrUi } from "../lib/herdrUi.ts";
 import { HERDR_PREFIX_ACTIONS, type HerdrKeys, type HerdrPrefixAction } from "../../shared/herdr-keys.ts";
 import { WEB_LINK_TARGETS } from "../lib/webPanel.ts";
 import { FILE_OPEN_TARGETS } from "../lib/filePresentation.ts";
-import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
+import { CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_WIDTHS, chatFontSize, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN, TERMINAL_WHEEL_SPEED_MAX, TERMINAL_WHEEL_SPEED_MIN, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, enterSendsOn, phoneInboxOn, useSettings, forgetPaneViews, uiFontSize, type DictationLanguage, type VoiceButton } from "../lib/settings.ts";
 import { isThemeId, pickTheme, rowFor, THEME_IDS, type DrawnTheme, type Mode, type ThemeId } from "../lib/themes.ts";
 import { chosenTheme, customRow, customRowId, type CustomTheme } from "../lib/customThemes.ts";
 import { LANGUAGE_NAMES, LANGUAGE_SETTINGS, useLocale, useT, type Translate } from "../lib/i18n.ts";
@@ -587,8 +587,8 @@ function AppearancePage() {
         <SettingsRow icon={MousePointer2} label={t("Show the sidebar on hover")} description={t("On this device, while the sidebar is hidden, resting the mouse on its button shows it over the pane until the mouse leaves. Click the button to keep it open.")}>
           <Toggle label={t("Show the sidebar on hover")} checked={settings.sidebarPeek} onChange={(sidebarPeek) => update({ sidebarPeek })} />
         </SettingsRow>
-        <SettingsRow icon={Inbox} label={t("Agent inbox on a phone")} description={t("On this device, a phone-width window that opens with no pane in its address shows the list of agents, the ones that need you first; from a pane, the header's Back opens it. A tap opens the agent's chat, and Back returns to the list. Wider windows are unchanged.")} keywords="inbox phone mobile first screen agents list">
-          <Toggle label={t("Agent inbox on a phone")} checked={settings.phoneInbox} onChange={(phoneInbox) => update({ phoneInbox })} />
+        <SettingsRow icon={Inbox} label={t("Agent inbox on a phone")} description={t("On this device, a phone-width window that opens with no pane in its address shows the list of agents, the ones that need you first; from a pane, the header's Back opens it. A tap opens the agent's chat, and Back returns to the list.")} keywords="inbox phone mobile first screen agents list">
+          <Toggle label={t("Agent inbox on a phone")} checked={phoneInboxOn(settings)} onChange={(phoneInbox) => update({ phoneInbox })} />
         </SettingsRow>
         <SettingsRow icon={Layers} label={t("Background workspaces apart")} description={t("On this device, workspaces a tool tagged role=background (herdr workspace report-metadata --token role=background) stand after the others under a folded Background workspaces heading. The open one, and one whose agent asks a question, stay in sight.")}>
           <Toggle label={t("Background workspaces apart")} checked={settings.sidebarBackgroundWorkspaces} onChange={(sidebarBackgroundWorkspaces) => update({ sidebarBackgroundWorkspaces })} />
