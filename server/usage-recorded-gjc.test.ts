@@ -233,6 +233,8 @@ describe("where Gajae Code keeps its store", () => {
     expect(at({ GJC_CONFIG_DIR: " /team " })).toEqual(["renamed"]);
     expect(at({ GJC_CONFIG_DIR: "../elsewhere" })).toEqual(["default"]);
     expect(at({ GJC_CONFIG_DIR: "../elsewhere", PI_CONFIG_DIR: ".pi-config" })).toEqual(["older-name"]);
+    // the agent folder, when it is named, still decides alone
+    expect(at({ GJC_CONFIG_DIR: "team", GJC_CODING_AGENT_DIR: join(home, "nothing-here") })).toEqual([]);
   });
 
   it("is GJC_CODING_AGENT_DIR when that is set, else its older name PI_CODING_AGENT_DIR, and then nowhere else", () => {

@@ -204,6 +204,8 @@ describe("where Oh My Pi keeps its store", () => {
     store([latest("anthropic:5h", 0.4, { account: OTHER, key: `oauth|account:${OTHER}` })], join(home, ".omp-work", "agent", "agent.db"));
     expect(found({ PI_CONFIG_DIR: ".omp-work" })).toEqual([OTHER]);
     expect(found({ PI_CONFIG_DIR: "" })).toEqual([ACCOUNT]);
+    // the agent folder, when it is named, still decides alone
+    expect(found({ PI_CONFIG_DIR: ".omp-work", PI_CODING_AGENT_DIR: join(home, "nothing-here") })).toEqual([]);
   });
 
   it("is PI_CODING_AGENT_DIR when that is set, and then nowhere else", () => {
