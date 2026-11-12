@@ -18,7 +18,9 @@
  * left that way passes a finish. For the agents whose state Ovis reads from their own session
  * files, herdr's counter stands still whatever they do, so nothing proves their stamps. The server
  * counts a pane's finishes by its ID (server/finishes.ts): a count is held against another only
- * where both were counted under the same ID.
+ * where both were counted under the same ID. One thing no counter follows: the hold that a turn's
+ * background work puts on a row at rest (`background_wait`, server/background-wait.ts). A hold
+ * that began and ended wholly out of sight leaves a kept stamp of that rest standing.
  */
 import type { Machine } from "../../shared/machines.ts";
 import { OWN_STATUS_AGENTS } from "../../shared/own-status-agents.ts";
