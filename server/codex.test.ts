@@ -4,7 +4,7 @@ import { appendFileSync, chmodSync, readFileSync, mkdirSync, mkdtempSync, readdi
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexLastTurnFailed, codexTurnFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexLastTurnEnd, codexTurnEnd, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -1780,7 +1780,7 @@ describe("a Codex turn that ended in an error", () => {
 
   it("takes no error of a sub-agent's turn for this turn's, though the read began after this turn did", () => {
     const sub = jsonl(event({ type: "task_complete", turn_id: "sub", root_turn_id: "main", last_agent_message: null, error: { message: "Sub-agent failed" } }));
-    expect(codexTurnFailed(`${sub}\n`)).toBe(false);
+    expect(codexTurnEnd(`${sub}\n`)).toBeNull();
   });
 
   it("shows no error another turn's end recorded under this one", () => {
@@ -1796,23 +1796,23 @@ describe("a Codex turn that ended in an error", () => {
   });
 
   it("tells whether the rollout's last ended turn failed, from the file's end", async () => {
-    expect(codexTurnFailed(recorded)).toBe(true);
+    expect(codexTurnEnd(recorded)).toBe("failed");
     const done = jsonl(event({ type: "task_complete", last_agent_message: "Done", error: null }));
     // a later turn that answered, or was interrupted, is no failure
-    expect(codexTurnFailed(`${recorded}${done}\n`)).toBe(false);
-    expect(codexTurnFailed(`${recorded}${jsonl(event({ type: "turn_aborted", reason: "interrupted" }))}\n`)).toBe(false);
+    expect(codexTurnEnd(`${recorded}${done}\n`)).toBe("answered");
+    expect(codexTurnEnd(`${recorded}${jsonl(event({ type: "turn_aborted", reason: "interrupted" }))}\n`)).toBe("answered");
     // a retry under way after the failure, its end not written yet: no failure (yet)
-    expect(codexTurnFailed(`${recorded}${jsonl(event({ type: "task_started", turn_id: "next" }))}\n`)).toBe(false);
+    expect(codexTurnEnd(`${recorded}${jsonl(event({ type: "task_started", turn_id: "next" }))}\n`)).toBe("running");
     // another turn's end after this one's (a sub-agent's) is not this turn's
     const started = jsonl(event({ type: "task_started", turn_id: "main" }), event({ type: "task_complete", turn_id: "main", last_agent_message: "Done", error: null }));
-    expect(codexTurnFailed(`${started}\n${jsonl(event({ type: "task_complete", turn_id: "sub", last_agent_message: null, error: { message: "Sub-agent failed" } }))}\n`)).toBe(false);
+    expect(codexTurnEnd(`${started}\n${jsonl(event({ type: "task_complete", turn_id: "sub", last_agent_message: null, error: { message: "Sub-agent failed" } }))}\n`)).toBe("answered");
     const dir = mkdtempSync(join(tmpdir(), "codex-failed-"));
     try {
       const path = join(dir, "rollout.jsonl");
       writeFileSync(path, `${"x".repeat(4096)}\n${recorded}`);
-      expect(await codexLastTurnFailed(path, 2048)).toBe(true);
+      expect(await codexLastTurnEnd(path, 2048)).toBe("failed");
       appendFileSync(path, `${done}\n`);
-      expect(await codexLastTurnFailed(path, 2048)).toBe(false);
+      expect(await codexLastTurnEnd(path, 2048)).toBe("answered");
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

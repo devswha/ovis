@@ -139,6 +139,8 @@ describe("Compaction and failed requests (#901)", () => {
     expect(opened(alone)).toEqual([true]);
     expect(opened(retried)).toEqual([false]);
     expect(opened(apart)).toEqual([false, true]);
+    // folded while the turn goes on: a retry arriving under it does not fold it away under the reader
+    expect(opened(render([failed("401 unauthorized")], { live: true }, "assistant", on))).toEqual([false]);
   });
 
   it("names the token counts a compaction recorded only while on", () => {

@@ -15,7 +15,7 @@ import { resolveAgyStore } from "../agy-store.ts";
 import { BackgroundWait } from "../background-wait.ts";
 import { busyPanes, DESKTOP_ACTIVITY_FILE, trackDesktopActivity } from "../desktop-activity.ts";
 import { ClaudeSubagentStatus } from "../claude-subagents.ts";
-import { codexLastTurnFailed, codexOpenRollout, paneCodexHome } from "../codex.ts";
+import { codexLastTurnEnd, codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
 import { listHcMachines, startMachineBridge } from "../herdr-core/machine-bridge.ts";
@@ -365,10 +365,12 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     codexRetryAt.delete(paneId);
     if (began) codexTurns.set(paneId, (codexTurns.get(paneId) ?? 0) + 1);
   };
-  /** herdr calls such a pane's rest DONE as it calls any finish it did not see: it is at rest, and READY */
+  /** herdr calls a Codex at rest DONE, idle or `unknown` (codex/unknown at rest, server/completion.ts) */
+  const atRest = (status: AgentStatus): boolean => status === "done" || status === "idle" || status === "unknown";
+  /** herdr calls such a pane's rest DONE as it calls any finish it did not see, or `unknown`: it is at rest, and READY */
   const codexRests = (snapshot: SessionSnapshot): SessionSnapshot => {
     if (codexFailed.size === 0) return snapshot;
-    const rest = (pane: { pane_id: string; agent?: string | null; agent_status: AgentStatus }) => codexFailed.has(pane.pane_id) && pane.agent === "codex" && pane.agent_status === "done";
+    const rest = (pane: { pane_id: string; agent?: string | null; agent_status: AgentStatus }) => codexFailed.has(pane.pane_id) && pane.agent === "codex" && (pane.agent_status === "done" || pane.agent_status === "unknown");
     return { ...snapshot, panes: snapshot.panes.map((pane) => rest(pane) ? { ...pane, agent_status: "idle" } : pane), agents: snapshot.agents.map((agent) => rest(agent) ? { ...agent, agent_status: "idle" } : agent) };
   };
   /** herdr's snapshot with OmO's and GJC's own status in it: what the completion tracker and web push are given */
@@ -387,7 +389,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (pane.agent !== "codex") continue;
       // reads overlap: one begun before a failure was found is no turn after it
       if (pane.agent_status === "working") { if ((codexFailedAt.get(pane.pane_id) ?? -1) < codexRead) codexWorking(pane.pane_id, true); }
-      else if (pane.agent_status === "done" && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
+      // at DONE, or at any rest after a failure (a late end of the turn after it is read there too)
+      else if ((pane.agent_status === "done" || (codexFailed.has(pane.pane_id) && atRest(pane.agent_status))) && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
     }
     const named = codexRests(letta.apply(gjc.apply(omo.apply(snapshot))));
     // reads overlap (the collector's, each client's): only one newer than every read applied before tells title turns
@@ -723,12 +726,13 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
         if (size < 0) return retry();
       } else if (known!.size === size) return null;
       codexRetryAt.delete(paneId);
-      const failed = await codexLastTurnFailed(path!);
+      const end = await codexLastTurnEnd(path!);
       look({ path: path!, size });
-      return (codexTurns.get(paneId) ?? 0) === turn ? failed : null;
-    })().then((failed) => {
-      if (failed === null) return;
-      if (!failed) {
+      return (codexTurns.get(paneId) ?? 0) === turn ? end : null;
+    })().then((end) => {
+      // a turn under way (a retry the user just sent, herdr not yet saying so) is neither: its end tells
+      if (end === null || end === "running") return;
+      if (end === "answered") {
         if (!codexFailed.has(paneId)) return;
         // read again after the rollout grew: the turn after the failure answered, which is a finish (#687's `answered`)
         codexFailed.delete(paneId); codexFailedAt.delete(paneId);

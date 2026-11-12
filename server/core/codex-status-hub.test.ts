@@ -17,9 +17,9 @@ function codexHub(text: string) {
   writeFileSync(path, text);
   const h = hub();
   const lookups = spyOn(conversation, "paneTranscript").mockResolvedValue({ source: "codex-transcript", path } as never);
-  const original = codex.codexLastTurnFailed;
+  const original = codex.codexLastTurnEnd;
   let reads = Promise.withResolvers<void>();
-  const read = spyOn(codex, "codexLastTurnFailed").mockImplementation(async (file, tail) => {
+  const read = spyOn(codex, "codexLastTurnEnd").mockImplementation(async (file, tail) => {
     try { return await original(file, tail); } finally { reads.resolve(); }
   });
   const failures: string[] = [];
@@ -141,6 +141,27 @@ describe("a Codex pane whose turn ended in an error", () => {
       await h.looked();
       expect(h.last().status).toBe("done");
       expect(h.alerts.at(-1)).toBe("done");
+    } finally { h.restore(); }
+  });
+
+  it("tells nothing of a retry still under way, read before herdr says it works, and still fails or finishes it after", async () => {
+    const h = codexHub(failed);
+    try {
+      handlers.onStatus("w1:p1", "working", "codex");
+      handlers.onStatus("w1:p1", "done", "codex");
+      await h.looked();
+      expect(h.last().status).toBe("idle");
+      // the user sends again: Codex writes the retry's start before herdr reads the pane at work
+      const started = `${failed}${JSON.stringify({ type: "event_msg", timestamp: "2026-11-12T05:56:00.000Z", payload: { type: "task_started", turn_id: "retry" } })}\n`;
+      writeFileSync(h.path, started);
+      h.herdrSays(pane("idle"));
+      await h.snapshot();
+      await h.looked();
+      expect(h.last().status).toBe("idle");
+      expect(h.alerts).toEqual(["working", "idle"]);
+      // herdr at `unknown` at rest is that failed rest too
+      h.herdrSays(pane("unknown"));
+      expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
     } finally { h.restore(); }
   });
 
