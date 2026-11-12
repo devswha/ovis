@@ -79,7 +79,9 @@ describe("the watch the state stamps go by", () => {
 
   it("dates what a stream brings when it reconnects soon, and reads a long loss as a first look", () => {
     streams();
-    runs(MIN);
+    runs(2 * MIN);
+    // heard from a moment before it is lost
+    stateWatch.heard();
     stateWatch.subscription("lost");
     runs(30 * SEC);
     streams();
@@ -136,6 +138,38 @@ describe("the watch the state stamps go by", () => {
     // the loss is told once
     stateWatch.subscription("closed");
     expect(unseen).toEqual(["undated", "first"]);
+  });
+
+  it("knows its PCs only as of the last roster or event once a silent stream has ended: the stream may have been dead since", () => {
+    streams();
+    runs(10 * MIN);
+    // a hidden tab is shown again, and its socket finds the connection dead before the roster read answers
+    stateWatch.subscription("lost");
+    expect(stateWatch.blind()).toBe(true);
+    reads();
+    expect(unseen).toEqual(["first"]);
+
+    // so for the stream that opens again in a hidden tab: its roster cannot date what the last one left unsaid
+    streams();
+    runs(10 * MIN);
+    stateWatch.subscription("lost");
+    runs(5 * SEC);
+    streams();
+    expect(unseen).toEqual(["first", "first"]);
+  });
+
+  it("takes the end of a stream for a short gap in a visible tab, whose reads say every half minute what the stream left unsaid", () => {
+    streams();
+    for (let read = 0; read < 20; read++) {
+      runs(30 * SEC);
+      reads();
+    }
+    // no read took a silence at its word, so the stream's end takes nothing back
+    stateWatch.subscription("lost");
+    expect(stateWatch.blind()).toBe(false);
+    runs(20 * SEC);
+    streams();
+    expect(unseen).toEqual([]);
   });
 
   it("keeps what a read left standing once the silent stream has spoken, or has outlived its socket's verdict", () => {

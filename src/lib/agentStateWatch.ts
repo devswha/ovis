@@ -12,12 +12,16 @@
  * time. A shorter gap (a server that restarts, a stream that reconnects) is within what a time in
  * minutes can say, and its changes are dated as they come.
  *
- * A stream that says nothing for long is no gap while it lives: nothing changed. But a tab that is
- * hidden reads no roster and probes no connection, so its stream may be dead for hours unnoticed.
- * The read that comes as the tab is shown again takes the stream's silence at its word, dating no
- * change it finds and keeping the times the page had; if the stream then ends within the time its
- * socket takes to find a dead connection, the page was not being told after all, and the roster is
- * read as after a long gap.
+ * A stream that says nothing for long is no gap while it lives: nothing changed. But a hidden tab
+ * reads no roster and probes no connection, so its stream may be dead for hours unnoticed, and
+ * only its end tells. So when a stream ends, the page knew its PCs as of the last roster or event
+ * it heard, however long ago: the silence since vouches for nothing. A visible tab reads its roster
+ * every half minute at least, so there the end of a stream costs no more than that.
+ *
+ * The read that comes as a hidden tab is shown again, before its socket has probed the connection,
+ * takes the stream's silence at its word for now: it dates no change it finds and keeps the times
+ * the page had. If the stream then ends within the time its socket takes to find a dead
+ * connection, the page was not being told after all, and that roster is read as after a long gap.
  *
  * The roster loader tells the watch what it learns (lib/useMachineRoster.ts) and the stamping asks
  * it at each look (lib/useAgentStateSince.ts). A page told of no roster yet has lost nothing.
@@ -96,8 +100,12 @@ export const stateWatch = {
   /** The roster stream's subscription opened, or ended (`lost`, `closed`). */
   subscription(update: "opened" | "lost" | "closed"): void {
     const now = beat();
-    // the stream whose silence a read has just trusted ends: it was dead, for no telling how long
-    if (update !== "opened" && trustedUntil !== null && now <= trustedUntil) unseen?.("first");
+    if (update !== "opened") {
+      // the stream whose silence a read has just trusted ends: it was dead, for no telling how long
+      if (trustedUntil !== null && now <= trustedUntil) unseen?.("first");
+      // a stream that ends vouches for nothing it left unsaid: the page knew its PCs as of the last roster or event it heard
+      else if (knownAt !== null && heardAt !== null && heardAt < knownAt) knownAt = heardAt;
+    }
     trustedUntil = null;
     subscribed = update === "opened";
     stream = subscribed ? "opening" : "none";
