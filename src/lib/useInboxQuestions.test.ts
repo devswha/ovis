@@ -136,6 +136,21 @@ describe("QuestionReads", () => {
     expect(reads.texts().has("a")).toBe(false);
   });
 
+  it("shows no old words for a new wait whose read answers empty twice", async () => {
+    const { reads, calls, waits } = harness();
+    reads.sync([target("a", 1)]);
+    calls[0]!.resolve({ prompt: prompt("First") });
+    await settled();
+    reads.sync([target("a", 2)]);
+    calls[1]!.resolve({ prompt: null });
+    await settled();
+    waits[0]!.run();
+    calls[2]!.resolve({ prompt: null });
+    await settled();
+    expect(calls).toHaveLength(3);
+    expect(reads.texts().has("a")).toBe(false);
+  });
+
   it("reads a target again in a new language and keeps its words until the new ones land", async () => {
     const { reads, calls } = harness((asked, language) => `${language}:${asked.question}`);
     reads.sync([target("a")], "en");
