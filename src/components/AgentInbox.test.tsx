@@ -29,6 +29,7 @@ const rowMenu = await import("./RowMenu.tsx");
 function RowMenu(_props: Parameters<typeof rowMenu.RowMenu>[0]) { return null; }
 await mock.module("./RowMenu.tsx", () => ({ ...rowMenu, RowMenu }));
 const { AgentInbox } = await import("./AgentInbox.tsx");
+const { newQuestionReads } = await import("../lib/useInboxQuestions.ts");
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const activity: SidebarActivity = {
@@ -56,9 +57,12 @@ const byClass = (root: ReactTestInstance, name: string): ReactTestInstance[] =>
 describe("AgentInbox", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
+  // the page's reader (lib/useInbox.ts), which outlives each mount of the list
+  let questionReads: ReturnType<typeof newQuestionReads>;
 
   beforeEach(() => {
     promptReads = 0;
+    questionReads = newQuestionReads();
     presses = [];
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const events = new EventTarget();
@@ -108,7 +112,7 @@ describe("AgentInbox", () => {
   let drawn: { machines: Machine[]; options: DrawOptions } = { machines: [], options: {} };
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <AgentInbox machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})}
-      query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} />
+      query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -361,5 +365,27 @@ describe("AgentInbox", () => {
     await act(async () => { answerPrompt(question("Run the export tests?")); });
     expect(scroller.scrollTop).toBe(40);
     expect(scroll.current).toBe(40);
+  });
+
+  it("reads a waiting agent's question once for the page: not again when the list mounts again, again for a new wait", async () => {
+    await draw(roster());
+    expect(promptReads).toBe(1);
+    await act(async () => { answerPrompt(question("Run the export tests?")); });
+    await act(async () => { renderer?.unmount(); });
+    const root = await draw(roster());
+    expect(promptReads).toBe(1);
+    expect(byClass(item(root, "w1D:p1"), "inbox-words").map(text)).toEqual(["Run the export tests?"]);
+    await redraw({ activity: { ...activity, seqs: () => new Map([["w1D:p1", 5]]) } });
+    expect(promptReads).toBe(2);
+    expect(byClass(item(root, "w1D:p1"), "inbox-words").length).toBe(0);
+  });
+
+  it("shows at the next mount the question whose read landed after the list closed", async () => {
+    await draw(roster());
+    await act(async () => { renderer?.unmount(); });
+    await act(async () => { answerPrompt(question("Run the export tests?")); });
+    const root = await draw(roster());
+    expect(promptReads).toBe(1);
+    expect(byClass(item(root, "w1D:p1"), "inbox-words").map(text)).toEqual(["Run the export tests?"]);
   });
 });

@@ -11,7 +11,7 @@ import { agentName } from "../lib/runtimeMove.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
 import { knownStatus, STATUS_WORD } from "../lib/status.ts";
-import { questionTargets, useInboxQuestions } from "../lib/useInboxQuestions.ts";
+import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/useInboxQuestions.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { agentRowTitle, blockedNote } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
@@ -30,6 +30,8 @@ export interface AgentInboxProps {
   scroll: RefObject<number>;
   onOpen(machineId: string, paneId: string): void;
   onNew(machineId: string): void;
+  /** the page's reader of the waiting agents' questions (lib/useInbox.ts), which outlives this list */
+  questionReads: QuestionReads;
 }
 
 /** the marks drawn as a full tile, which fill the round face; the others sit on it as a glyph */
@@ -43,7 +45,7 @@ const PRESS_HOLD_MS = 1000;
  * A phone's first screen: every shown PC's agents in one list, the ones that need the reader first.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function AgentInbox({ machines, activity, watching, filter, onFilter, query, onQuery, scroll, onOpen, onNew }: AgentInboxProps) {
+export function AgentInbox({ machines, activity, watching, filter, onFilter, query, onQuery, scroll, onOpen, onNew, questionReads }: AgentInboxProps) {
   const t = useT();
   const titleId = useId();
   const pressPane = useContext(PanePressContext);
@@ -55,7 +57,7 @@ export function AgentInbox({ machines, activity, watching, filter, onFilter, que
   // within a state, the Agents list's own order (Settings → Within a state), names as its rows draw them
   const { agentGroupSort: sort, sidebarRows } = settings;
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
-  const questions = useInboxQuestions(questionTargets(all, activity));
+  const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
   const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t);
 
   // a state change never moves a row under a finger or the focus (AgentSidebar.tsx): while either is in the list,

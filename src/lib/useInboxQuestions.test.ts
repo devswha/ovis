@@ -14,12 +14,12 @@ function prompt(question: string): InteractivePrompt {
 }
 
 /** A read whose answers the test hands out one by one, in the order the reads started. */
-function harness() {
+function harness(words: (asked: InteractivePrompt, language: string) => string = (asked) => asked.question) {
   const calls: { paneId: string; resolve(answer: { prompt: InteractivePrompt | null }): void; reject(error: Error): void }[] = [];
   const waits: { ms: number; run(): void; cancelled: boolean }[] = [];
   const reads = new QuestionReads(
     (paneId) => new Promise((resolve, reject) => { calls.push({ paneId, resolve, reject }); }),
-    (asked) => asked.question,
+    words,
     (run, ms) => {
       const wait = { ms, run, cancelled: false };
       waits.push(wait);
@@ -91,7 +91,7 @@ describe("QuestionReads", () => {
     expect(calls[4]!.paneId).toBe("pane-e");
   });
 
-  it("stores nothing for a failed read and does not read the same seq again", async () => {
+  it("stores nothing for a failed read, reads it once more at the next sync and not a third time", async () => {
     const { reads, calls, waits, notified } = harness();
     reads.sync([target("a")]);
     const before = reads.texts();
@@ -101,10 +101,55 @@ describe("QuestionReads", () => {
     expect(notified()).toBe(0);
     expect(waits).toHaveLength(0);
     reads.sync([target("a")]);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    calls[1]!.reject(new Error("offline"));
+    await settled();
+    reads.sync([target("a")]);
+    expect(calls).toHaveLength(2);
+    expect(waits).toHaveLength(0);
   });
 
-  it("drops an answer for a target that left, and every answer after stop()", async () => {
+  it("releases the slot of a read whose answer cannot be worded, and reads it once more at the next sync", async () => {
+    // bun test fails a test during which a promise rejection goes unhandled
+    const { reads, calls } = harness((asked) => { if (asked.question === "Broken") throw new Error("no words"); return asked.question; });
+    reads.sync(["a", "b", "c"].map((key) => target(key)));
+    calls[0]!.resolve({ prompt: prompt("Broken") });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(calls.map((call) => call.paneId)).toEqual(["pane-a", "pane-b", "pane-c"]);
+    expect(reads.texts().has("a")).toBe(false);
+    calls[1]!.resolve({ prompt: prompt("B") });
+    await settled();
+    expect(reads.texts().get("b")).toBe("B");
+    reads.sync(["a", "b", "c"].map((key) => target(key)));
+    expect(calls.map((call) => call.paneId)).toEqual(["pane-a", "pane-b", "pane-c", "pane-a"]);
+  });
+
+  it("removes a target's words as soon as its seq changes, and shows none when the new read fails", async () => {
+    const { reads, calls } = harness();
+    reads.sync([target("a", 1)]);
+    calls[0]!.resolve({ prompt: prompt("First") });
+    await settled();
+    reads.sync([target("a", 2)]);
+    expect(reads.texts().has("a")).toBe(false);
+    calls[1]!.reject(new Error("offline"));
+    await settled();
+    expect(reads.texts().has("a")).toBe(false);
+  });
+
+  it("reads a target again in a new language and keeps its words until the new ones land", async () => {
+    const { reads, calls } = harness((asked, language) => `${language}:${asked.question}`);
+    reads.sync([target("a")], "en");
+    calls[0]!.resolve({ prompt: prompt("Allow?") });
+    await settled();
+    reads.sync([target("a")], "ko");
+    expect(calls).toHaveLength(2);
+    expect(reads.texts().get("a")).toBe("en:Allow?");
+    calls[1]!.resolve({ prompt: prompt("Allow?") });
+    await settled();
+    expect(reads.texts().get("a")).toBe("ko:Allow?");
+  });
+
+  it("drops an answer for a target that left", async () => {
     const { reads, calls, waits } = harness();
     reads.sync([target("a"), target("b")]);
     reads.sync([target("b")]);
@@ -112,20 +157,16 @@ describe("QuestionReads", () => {
     calls[0]!.resolve({ prompt: prompt("Gone") });
     await settled();
     expect(reads.texts()).toBe(before);
-    reads.stop();
-    calls[1]!.resolve({ prompt: prompt("Late") });
-    await settled();
-    expect(reads.texts()).toBe(before);
     expect(reads.texts().size).toBe(0);
     expect(waits).toHaveLength(0);
   });
 
-  it("cancels a waiting retry on stop() and reads nothing when it fires", async () => {
+  it("cancels a waiting retry when its target leaves, and reads nothing when it fires", async () => {
     const { reads, calls, waits } = harness();
     reads.sync([target("a")]);
     calls[0]!.resolve({ prompt: null });
     await settled();
-    reads.stop();
+    reads.sync([]);
     expect(waits[0]!.cancelled).toBe(true);
     waits[0]!.run();
     expect(calls).toHaveLength(1);
