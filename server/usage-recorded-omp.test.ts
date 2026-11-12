@@ -57,10 +57,12 @@ function recordedContext(env: Record<string, string | undefined> = {}): Recorded
 
 function insert(db: Database, rows: readonly Row[]): void {
   const statement = db.prepare("INSERT INTO usage_history (recorded_at, provider, account_key, email, account_id, limit_id, label, window_label, used_fraction, status, resets_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-  for (const row of rows) {
-    statement.run(row.at, row.provider ?? "anthropic", row.key ?? KEY, row.email === undefined ? "me@example.com" : row.email, row.account === undefined ? ACCOUNT : row.account,
-      row.limit, row.label ?? "Claude", null, row.used === undefined ? 0.5 : row.used, "ok", row.resets === undefined ? NOW + 3 * HOUR : row.resets);
-  }
+  db.transaction(() => {
+    for (const row of rows) {
+      statement.run(row.at, row.provider ?? "anthropic", row.key ?? KEY, row.email === undefined ? "me@example.com" : row.email, row.account === undefined ? ACCOUNT : row.account,
+        row.limit, row.label ?? "Claude", null, row.used === undefined ? 0.5 : row.used, "ok", row.resets === undefined ? NOW + 3 * HOUR : row.resets);
+    }
+  })();
   // a statement left open keeps the connection, and with it the write-ahead log, past close()
   statement.finalize();
 }
@@ -115,6 +117,29 @@ describe("Oh My Pi's record of Claude's limits", () => {
     expect(ompRecorded.read(recordedContext())[0]?.windows.map((window) => [window.kind, window.scope])).toEqual([["session", null]]);
   });
 
+  it("does not carry a limit over from an account's older report recorded at the very time of another account's latest", () => {
+    const other = { account: OTHER, key: `oauth|account:${OTHER}`, email: null };
+    store([
+      { at: NOW - 9 * MINUTE, limit: "anthropic:5h", used: 0.4 },
+      { at: NOW - 9 * MINUTE, limit: "anthropic:5h", used: 0.9, ...other },
+      { at: NOW - 9 * MINUTE, limit: "anthropic:7d", used: 0.8, ...other },
+      { at: NOW - 2 * MINUTE, limit: "anthropic:5h", used: 0.2, ...other },
+    ]);
+    const readings = ompRecorded.read(recordedContext());
+    expect(readings.map((reading) => [reading.accountId, reading.windows.map((window) => [window.kind, window.usedPercent])]).sort()).toEqual([[ACCOUNT, [["session", 40]]], [OTHER, [["session", 20]]]]);
+  });
+
+  it("does not show an older report's limits when the latest report records its limits without a number", () => {
+    store([{ at: NOW - HOUR, limit: "anthropic:5h", used: 0.4 }, latest("anthropic:5h", null)]);
+    expect(ompRecorded.read(recordedContext())).toEqual([]);
+  });
+
+  it("gives an account Oh My Pi stopped reading days ago, however many rows its other accounts wrote since", () => {
+    const since = Array.from({ length: 2400 }, (_, minute): Row => ({ at: NOW - 2 * DAY + minute * MINUTE, limit: "anthropic:5h", used: 0.6, account: OTHER, key: `oauth|account:${OTHER}`, email: null }));
+    store([{ at: NOW - 6 * DAY, limit: "anthropic:7d", used: 0.4, resets: NOW + DAY }, ...since]);
+    expect(ompRecorded.read(recordedContext()).map((reading) => [reading.accountId, reading.readAt]).sort()).toEqual([[ACCOUNT, NOW - 6 * DAY], [OTHER, NOW - 2 * DAY + 2399 * MINUTE]]);
+  });
+
   it("gives one account kept under two of its keys once, by the key read last", () => {
     store([
       { at: NOW - 3 * DAY, limit: "anthropic:7d:sonnet", label: "Claude 7 Day (Sonnet)", used: 0.8, key: `oauth|account:${ACCOUNT}` },
@@ -122,6 +147,16 @@ describe("Oh My Pi's record of Claude's limits", () => {
     ]);
     const readings = ompRecorded.read(recordedContext());
     expect(readings.map((reading) => [reading.accountId, reading.readAt, reading.windows.map((window) => window.scope)])).toEqual([[ACCOUNT, NOW - 4 * MINUTE, [null]]]);
+  });
+
+  it("gives an account by its other key when the latest report under the key read last holds no limit the meters show", () => {
+    store([
+      // read last, under the account's second sign-in: extra usage only
+      { at: NOW - 2 * MINUTE, limit: "anthropic:extra", label: "Claude Extra Usage", used: 0.5, key: `oauth|account:${ACCOUNT}|org:org-2` },
+      { at: NOW - 9 * MINUTE, limit: "anthropic:5h", used: 0.4 },
+    ]);
+    const readings = ompRecorded.read(recordedContext());
+    expect(readings.map((reading) => [reading.accountId, reading.readAt, reading.windows.map((window) => [window.kind, window.usedPercent])])).toEqual([[ACCOUNT, NOW - 9 * MINUTE, [["session", 40]]]]);
   });
 
   it("gives every Claude account it recorded, and no other provider's", () => {

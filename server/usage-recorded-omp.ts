@@ -29,30 +29,46 @@ const STALE_AFTER_MS = 15 * 60_000;
 const SINCE_MS = 8 * 86_400_000;
 /** A clock a little ahead of this one is no reason to drop a record; a time further ahead is not one Oh My Pi read at. */
 const AHEAD_MS = 60_000;
-/** Far more rows than the accounts of one PC record in a week; the newest ones are read. */
-const MAX_ROWS = 2000;
+/**
+ * The newest rows looked through for each sign-in's latest report. Oh My Pi keeps a row an hour for each limit of each
+ * sign-in, about a thousand in the eight days read: this is twenty sign-ins' worth, and what a stopped sign-in last
+ * recorded is not pushed out by the rows of the others.
+ */
+const MAX_ROWS = 20_000;
 /** A store in use is read through its write-ahead log without waiting; should it still be busy, this long and no longer. */
 const BUSY_TIMEOUT_MS = 250;
 /** Epoch milliseconds are past this since 2001; epoch seconds stay below it for millennia. */
 const EPOCH_MS_FROM = 1e12;
 
 /**
- * Only rows shaped as Oh My Pi writes them: a value of another type, or a name longer than any real one, leaves its
- * row out, so what comes back needs no second look. `+provider` keeps the search on the index by time, newest first.
+ * A row shaped as Oh My Pi writes one: a value of another type, or a name longer than any real one, leaves its row
+ * out, so what comes back needs no second look. A limit recorded without a number is kept, for the time of its
+ * report. `+provider` keeps each search on the index by time.
+ */
+const shaped = (row: string): string => `
+  +${row}.provider = 'anthropic'
+  AND typeof(${row}.recorded_at) = 'integer' AND (${row}.used_fraction IS NULL OR typeof(${row}.used_fraction) IN ('real', 'integer'))
+  AND typeof(${row}.account_key) = 'text' AND length(${row}.account_key) <= 512
+  AND typeof(${row}.account_id) = 'text' AND length(${row}.account_id) BETWEEN 1 AND 128
+  AND typeof(${row}.limit_id) = 'text' AND length(${row}.limit_id) <= 128
+  AND typeof(${row}.label) = 'text' AND length(${row}.label) <= 256
+  AND (${row}.email IS NULL OR (typeof(${row}.email) = 'text' AND length(${row}.email) <= 320))
+  AND (${row}.resets_at IS NULL OR typeof(${row}.resets_at) = 'integer')`;
+
+/**
+ * The rows of each sign-in's latest report, newest first: the time of that report is found among the newest rows of
+ * the days read, of which only the sign-in and the time are taken, and then the rows recorded at it are read.
  */
 const ROWS = `
-  SELECT recorded_at, account_key, account_id, email, limit_id, label, used_fraction, resets_at
-  FROM usage_history
-  WHERE +provider = 'anthropic' AND recorded_at BETWEEN ? AND ?
-    AND typeof(recorded_at) = 'integer' AND typeof(used_fraction) IN ('real', 'integer')
-    AND typeof(account_key) = 'text' AND length(account_key) <= 512
-    AND typeof(account_id) = 'text' AND length(account_id) BETWEEN 1 AND 128
-    AND typeof(limit_id) = 'text' AND length(limit_id) <= 128
-    AND typeof(label) = 'text' AND length(label) <= 256
-    AND (email IS NULL OR (typeof(email) = 'text' AND length(email) <= 320))
-    AND (resets_at IS NULL OR typeof(resets_at) = 'integer')
-  ORDER BY recorded_at DESC
-  LIMIT ?`;
+  WITH latest AS (
+    SELECT account_key AS series, max(recorded_at) AS at
+    FROM (SELECT account_key, recorded_at FROM usage_history AS seen WHERE ${shaped("seen")} AND seen.recorded_at BETWEEN ? AND ? ORDER BY seen.recorded_at DESC LIMIT ?)
+    GROUP BY account_key
+  )
+  SELECT report.recorded_at, report.account_key, report.account_id, report.email, report.limit_id, report.label, report.used_fraction, report.resets_at
+  FROM latest JOIN usage_history AS report ON report.recorded_at = latest.at
+  WHERE report.account_key = latest.series AND ${shaped("report")}
+  ORDER BY report.recorded_at DESC`;
 
 interface HistoryRow {
   readonly recorded_at: number;
@@ -61,7 +77,7 @@ interface HistoryRow {
   readonly email: string | null;
   readonly limit_id: string;
   readonly label: string;
-  readonly used_fraction: number;
+  readonly used_fraction: number | null;
   readonly resets_at: number | null;
 }
 
@@ -109,21 +125,24 @@ function byLength(a: RecordedWindow, b: RecordedWindow): number {
 }
 
 /**
- * Each account's latest report, from rows newest first. Oh My Pi keeps a series per sign-in (`account_key`), and may
- * hold one account under two of them: the account is then given once, by the series read last, never as a mix of two.
- * A limit the latest report lacks is not taken from an older one.
+ * Each account's latest report, from the rows of each sign-in's latest report (ROWS), newest first. Oh My Pi keeps a
+ * series per sign-in (`account_key`), and may hold one account under two of them: the account is then given once, by
+ * the series read last whose latest report holds a limit shown here, never as a mix of two. A limit the latest
+ * report lacks, or records without a number, is not taken from an older one.
  */
 function latestReports(rows: readonly HistoryRow[]): RecordedReading[] {
   const series = new Map<string, { accountId: string; label: string | null; readAt: number; windows: RecordedWindow[] }>();
   for (const row of rows) {
     const report = series.get(row.account_key) ?? { accountId: row.account_id, label: row.email?.trim() || null, readAt: row.recorded_at, windows: [] };
     series.set(row.account_key, report);
-    const limit = row.recorded_at === report.readAt ? limitOf(row) : null;
+    if (row.used_fraction === null) continue;
+    const limit = limitOf(row);
     if (limit !== null) report.windows.push({ ...limit, usedPercent: row.used_fraction * 100, resetsAt: resetOf(row, limit.seconds) });
   }
   const accounts = new Map<string, RecordedReading>();
   for (const { accountId, label, readAt, windows } of series.values()) {
-    if (!accounts.has(accountId)) accounts.set(accountId, { accountId, label, readAt, windows: windows.sort(byLength) });
+    // a series whose latest report holds no limit shown here (extra usage only) stands for nothing: another one may
+    if (windows.length > 0 && !accounts.has(accountId)) accounts.set(accountId, { accountId, label, readAt, windows: windows.sort(byLength) });
   }
   return [...accounts.values()];
 }
