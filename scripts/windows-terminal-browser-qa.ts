@@ -159,32 +159,31 @@ try {
   // screen and moves the anchor), one column short of the edge, wherever this PC's font puts the columns:
   // the cell width is read from the long prompt's run of P's.
   await pan(0);
-  // the mirrored rows are redrawn from herdr's read, so the prompt's run of P's can be between draws here: it is
-  // measured once it is drawn again, not at whatever instant this step comes
-  await host.evaluate((element, drawn) => new Promise<void>((resolve, reject) => {
-    const drawnRun = () => {
+  // the mirrored rows are redrawn from herdr's read, so the prompt's run of P's can be between draws at any
+  // instant: it is found and measured in the same callback, at once and again after each redraw, until it is drawn
+  const { cellWidth, visibleWidth } = await host.evaluate((element, drawn) => new Promise<{ cellWidth: number; visibleWidth: number }>((resolve, reject) => {
+    const measure = () => {
       const walker = document.createTreeWalker(element.querySelector(drawn)!, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.textContent?.startsWith("P".repeat(100))) return true;
-      return false;
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.textContent?.startsWith("P".repeat(100))) continue;
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, 100);
+        const screen = element.querySelector(".xterm-screen")!.getBoundingClientRect();
+        const box = element.getBoundingClientRect();
+        return { cellWidth: range.getBoundingClientRect().width / 100, visibleWidth: box.left + element.clientLeft + element.clientWidth - screen.left };
+      }
+      return null;
     };
-    if (drawnRun()) { resolve(); return; }
-    const observer = new MutationObserver(() => { if (drawnRun()) { observer.disconnect(); clearTimeout(timer); resolve(); } });
-    const timer = setTimeout(() => { observer.disconnect(); reject(new Error("the long prompt's run of P's was not drawn again within 15 s")); }, 15_000);
+    const now = measure();
+    if (now) { resolve(now); return; }
+    const observer = new MutationObserver(() => {
+      const found = measure();
+      if (found) { observer.disconnect(); clearTimeout(timer); resolve(found); }
+    });
+    const timer = setTimeout(() => { observer.disconnect(); reject(new Error("no rendered run of the long prompt's P's to measure a cell by, within 15 s")); }, 15_000);
     observer.observe(element, { childList: true, subtree: true, characterData: true });
   }), shownRows());
-  const { cellWidth, visibleWidth } = await host.evaluate((element, drawn) => {
-    const walker = document.createTreeWalker(element.querySelector(drawn)!, NodeFilter.SHOW_TEXT);
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (!node.textContent?.startsWith("P".repeat(100))) continue;
-      const range = document.createRange();
-      range.setStart(node, 0);
-      range.setEnd(node, 100);
-      const screen = element.querySelector(".xterm-screen")!.getBoundingClientRect();
-      const box = element.getBoundingClientRect();
-      return { cellWidth: range.getBoundingClientRect().width / 100, visibleWidth: box.left + element.clientLeft + element.clientWidth - screen.left };
-    }
-    throw new Error("no rendered run of the long prompt's P's to measure a cell by");
-  }, shownRows());
   // the cursor sits after the V's and "> ", in column count + 2
   const vs = Math.floor(visibleWidth / cellWidth) - 4;
   await paneSendText(pane, `function prompt { ("V" * ${vs}) + "> " }`);
