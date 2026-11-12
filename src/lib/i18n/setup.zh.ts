@@ -84,4 +84,5 @@ export const SETUP_ZH: Record<string, string> = {
   "For networks that block Claude's usage service. It wraps Claude Code's status line on this PC to read the limits Claude shows there; your own status line keeps drawing as before, and turning this off puts Claude's settings back.": "适用于屏蔽了 Claude 用量服务的网络。它会包装此 PC 上 Claude Code 的状态栏，从中读取 Claude 显示的限额；你原来的状态栏照常显示，关闭后会把 Claude 的设置恢复原样。",
   "Opens the first-run guide again, from its first step, to install coding agents on this PC and connect them. What was set up before stays as it is.": "从第一步重新打开首次运行时的设置向导，用于在此 PC 上安装并连接编程 Agent。之前已完成的设置保持不变。",
   "Accounts of providers that none of the agents listed above signs in to, such as Cursor or an agent this PC does not have.": "上方列出的 Agent 都不登录的服务的账号，例如 Cursor，或此 PC 上没有的 Agent 的账号。",
+  "Old record": "旧记录",
 };

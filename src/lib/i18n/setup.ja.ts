@@ -84,4 +84,5 @@ export const SETUP_JA: Record<string, string> = {
   "For networks that block Claude's usage service. It wraps Claude Code's status line on this PC to read the limits Claude shows there; your own status line keeps drawing as before, and turning this off puts Claude's settings back.": "Claude の使用量サービスに接続できないネットワーク向けで、この PC の Claude Code のステータスラインを包んで、そこに表示される上限を読み取ります。これまでのステータスラインはそのまま表示され、オフにすると Claude の設定を元に戻します。",
   "Opens the first-run guide again, from its first step, to install coding agents on this PC and connect them. What was set up before stays as it is.": "初回のセットアップガイドを最初のステップからもう一度開きます。この PC にコーディングエージェントをインストールして接続するための手順で、すでに設定した内容はそのまま残ります。",
   "Accounts of providers that none of the agents listed above signs in to, such as Cursor or an agent this PC does not have.": "上の一覧のどのエージェントもサインインしていないサービスのアカウントです。たとえば Cursor や、この PC にないエージェントのアカウントです。",
+  "Old record": "古い記録",
 };
