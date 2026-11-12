@@ -35,7 +35,8 @@ type TextPart = Extract<ConversationPart, { kind: "text" }>;
 
 interface Words { part: TextPart; text: string }
 
-const FENCE = /^\s*```[\w+-]*\s*$/u;
+/** a code fence line: three or more backticks or tildes, with any info string after them */
+const FENCE = /^\s*(?:`{3,}[^`]*|~{3,}.*)$/u;
 /** a heading, list item or quote mark at a line's start; inline marks stay for the client */
 const BLOCK_MARK = /^\s*(?:#{1,6} |[-*+] |\d+[.)] |> )/u;
 

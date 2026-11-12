@@ -12,7 +12,7 @@ describe("summaryOf", () => {
   it("picks the final answer after the tool parts, timed by the turn's end", () => {
     const summary = summaryOf([
       user("Fix the build", "2026-11-12T10:00:00Z"),
-      assistant([{ kind: "text", text: "Looking", phase: "commentary" }, tool, { kind: "text", text: "Fixed  it\n now.", phase: "final_answer" }, tool],
+      assistant([{ kind: "text", text: "Looking", phase: "commentary" }, tool, { kind: "text", text: "Fixed  it\n now.", phase: "final_answer" }, tool, { kind: "text", text: "One more note", phase: "commentary" }],
         "2026-11-12T10:00:05Z", "2026-11-12T10:03:00Z"),
     ]);
     expect(summary).toEqual({ role: "assistant", text: "Fixed it now.", at: "2026-11-12T10:03:00Z", asked_at: "2026-11-12T10:00:00Z" });
@@ -22,7 +22,7 @@ describe("summaryOf", () => {
     const summary = summaryOf([
       user("first", "2026-11-12T09:00:00Z"),
       assistant([{ kind: "text", text: "done" }], "2026-11-12T09:01:00Z"),
-      user("  and now this  ", "2026-11-12T10:00:00Z"),
+      { role: "user", ts: "2026-11-12T10:00:00Z", parts: [{ kind: "text", text: "  and now this  " }, { kind: "text", text: "pasted context" }] },
       assistant([{ kind: "thinking", text: "hmm" }, tool], "2026-11-12T10:00:02Z"),
     ]);
     expect(summary).toEqual({ role: "user", text: "and now this", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" });
@@ -54,6 +54,8 @@ describe("summaryOf", () => {
     expect(words("## 2.0\n### Added\n- --retries retries a failed upload (#48)\n- Flags can live in cli-tools.toml"))
       .toBe("2.0 Added --retries retries a failed upload (#48) Flags can live in cli-tools.toml");
     expect(words("Run this:\n```bash\nbun test\n```\nDone.")).toBe("Run this: bun test Done.");
+    expect(words("Run this:\n~~~\nbun test\n~~~\nDone.")).toBe("Run this: bun test Done.");
+    expect(words("See:\n```js title=x\nlet a = 1;\n```")).toBe("See: let a = 1;");
     expect(words("1. Read the file\n2) Edit it\n> quoted\n* star + plus")).toBe("Read the file Edit it quoted star + plus");
     expect(words("a - b, issue #48, `code` and **bold**")).toBe("a - b, issue #48, `code` and **bold**");
   });
