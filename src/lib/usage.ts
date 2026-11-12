@@ -109,9 +109,20 @@ export function recordedNote(usage: ProviderUsage, now: number): readonly string
   return usage.recorded.stale ? [by, t("It may have changed since.")] : [by];
 }
 
-/** Whether an account's numbers can stand for what is used now: read without a problem, and no record its tool has stopped updating. */
+/**
+ * Whether the server's PC holds a sign-in of this account. Not so for one known only from another tool's record of
+ * it: that is the tool's sign-in, and the agent itself is still to be signed in.
+ */
+export function isSignIn(usage: ProviderUsage): boolean {
+  return usage.recorded?.signed_in !== false;
+}
+
+/**
+ * Whether an account's numbers can stand for what is used now: read by the server without a problem, or recorded by a
+ * tool that still updates them. A problem is the sign-in's, and says nothing of a record standing in for its numbers.
+ */
 export function isCurrent(usage: ProviderUsage): boolean {
-  return usage.problem === null && usage.recorded?.stale !== true;
+  return usage.recorded ? !usage.recorded.stale : usage.problem === null;
 }
 
 /**

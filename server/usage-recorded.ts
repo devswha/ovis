@@ -70,6 +70,7 @@ function current(window: RecordedWindow, readAt: number, now: number): UsageWind
  * The accounts of `provider` the tools recorded, each once: by the tool that read it last where two recorded it,
  * without the limits whose window is over, and not at all once none is left. In the order of their keys, so an
  * account keeps its place whichever was read last. A reader that fails gives no accounts: it is no failure of the report.
+ * Each is given as known from its record alone (`signed_in` false): whether this PC also signs in to it is the caller's to say.
  */
 export function recordedUsages(provider: UsageProviderId, sources: readonly RecordedSource[], ctx: RecordedContext): RecordedUsage[] {
   const now = ctx.now();
@@ -91,7 +92,7 @@ export function recordedUsages(provider: UsageProviderId, sources: readonly Reco
       if (held && Date.parse(held.checked_at) >= reading.readAt) continue;
       latest.set(key, {
         id: provider, key, account: reading.label, plan: null, windows, problem: null,
-        checked_at: new Date(reading.readAt).toISOString(), recorded: { by: source.by, stale: now - reading.readAt > source.staleAfterMs },
+        checked_at: new Date(reading.readAt).toISOString(), recorded: { by: source.by, stale: now - reading.readAt > source.staleAfterMs, signed_in: false },
       });
     }
   }

@@ -79,5 +79,5 @@ export const SETUP_KO: Record<string, string> = {
   "Show {name}": "{name} 표시",
   "Cannot check": "확인 불가",
   "Manual install": "직접 설치",
-  "Outdated|usage record": "오래됨",
+  "Old record": "오래된 기록",
 };

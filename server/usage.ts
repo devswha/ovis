@@ -1176,11 +1176,13 @@ export class UsageService {
       const held = byKey.get(usage.key);
       if (!held || (held.problem !== null && usage.problem === null)) byKey.set(usage.key, usage);
     }
-    // an account another tool on this PC recorded is listed once too, in the place of this PC's own sign-in of it when
-    // it has one, else after this PC's accounts; no sign-in is read for it, so a hidden one may be read as well
-    for (const usage of this.providers.flatMap((provider) => recordedUsages(provider.id, provider.recorded ?? [], this.ctx))) {
-      const own = byKey.get(usage.key);
-      if (!own || !ownStands(own, usage, now)) byKey.set(usage.key, usage);
+    // an account another tool on this PC recorded is listed once too: after this PC's accounts when it is known from
+    // the record alone, else in the numbers of this PC's own sign-in of it while those are not current. No sign-in is
+    // read for a record, so a hidden account's is read as well
+    for (const record of this.providers.flatMap((provider) => recordedUsages(provider.id, provider.recorded ?? [], this.ctx))) {
+      const own = byKey.get(record.key);
+      if (!own) byKey.set(record.key, record);
+      else if (!ownStands(own, record, now)) byKey.set(record.key, standingIn(own, record));
     }
     // two sign-ins of one provider that name no account are told apart by a number, in key order
     const unnamed = new Map<UsageProviderId, ProviderUsage[]>();
@@ -1359,6 +1361,18 @@ function ownStands(own: ProviderUsage, recorded: RecordedUsage, now: number): bo
   if (own.checked_at === null) return false;
   const readAt = Date.parse(own.checked_at);
   return (own.problem === null && now - readAt < FRESH_MS) || readAt >= Date.parse(recorded.checked_at);
+}
+
+/**
+ * This server's own sign-in of an account with another tool's newer record in place of its numbers. The sign-in stays:
+ * its plan and its problem are still to be told (an expired one is still to be signed in again). Credits and resets
+ * are no part of a record, and those kept from an older reading would pass for it, so they go.
+ */
+function standingIn(own: ProviderUsage, record: RecordedUsage): ProviderUsage {
+  return {
+    id: own.id, key: own.key, account: own.account ?? record.account, plan: own.plan, windows: record.windows, problem: own.problem,
+    checked_at: record.checked_at, recorded: { ...record.recorded, signed_in: true }, ...(own.statusline_offer ? { statusline_offer: true as const } : {}),
+  };
 }
 
 /** Whose sign-in a place holds: the account it names, else its token, hashed (kept in memory only, never reported). */

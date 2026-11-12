@@ -52,6 +52,11 @@ export interface UsageRecorded {
   readonly by: UsageRecorder;
   /** that tool has not read the limits for longer than it leaves between reads while it runs: they may have moved since */
   readonly stale: boolean;
+  /**
+   * Whether the server's PC also holds a sign-in of this account. True: `plan` and `problem` are that sign-in's, and
+   * the record stands in for its numbers only. False: the account is known from the record alone.
+   */
+  readonly signed_in: boolean;
 }
 
 export interface ProviderUsage {
@@ -77,7 +82,8 @@ export interface ProviderUsage {
   readonly checked_at: string | null;
   /**
    * Present when `windows` are another tool's record of this account's limits, read at `checked_at` by that tool, and
-   * not a reading the server made with a sign-in of its own. Absent for every reading the server made itself.
+   * not a reading the server made with a sign-in of its own: `resets` and `credits`, no part of a record, are then absent.
+   * Absent for every reading the server made itself.
    */
   readonly recorded?: UsageRecorded;
   /**

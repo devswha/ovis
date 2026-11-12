@@ -5,7 +5,7 @@
  * install, and how the plan limits are shown. It took the place of Subscription usage and Agent
  * integrations: every control of those two pages is here.
  */
-import { useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { CalendarClock, Check, ChevronDown, ChevronRight, ChevronUp, Compass, Cpu, Eye, EyeOff, Gauge, History, KeyRound, Network, Plus, RotateCw, Shield, ShieldCheck, SquareTerminal, Users, Zap } from "lucide-react";
 
 import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
@@ -24,7 +24,7 @@ import { lastSeen } from "../lib/lastSeen.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useSettings } from "../lib/settings.ts";
 import { openSetupGuide } from "../lib/setupGuide.ts";
-import { canSignInAgain, glanceWindow, isHubAccount, meterText, moveInOrder, orderProviders, PROVIDER_MARK, PROVIDER_NAME, recordedBy, recordedNote, usageName, useStatuslineSwitch, useUsage, windowLabel } from "../lib/usage.ts";
+import { canSignInAgain, glanceWindow, isHubAccount, isSignIn, meterText, moveInOrder, orderProviders, PROVIDER_MARK, PROVIDER_NAME, recordedBy, recordedNote, usageName, useStatuslineSwitch, useUsage, windowLabel } from "../lib/usage.ts";
 import { userErrorMessage, type UserError } from "../lib/userError.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { AgentTile } from "./AgentTile.tsx";
@@ -188,17 +188,28 @@ function ProviderAccounts({ id, providers, removed, onLocalLogin, onFollow }: { 
     {ordered.map((usage, index) => {
       const name = usageName(usage);
       const hidden = settings.usageHidden.includes(usage.key);
-      // another tool's record is no sign-in Ovis holds: its row names that tool, and here how long ago it read
-      const status = usage.recorded ? usage.recorded.stale ? t("Outdated|usage record") : lastSeen(usage.checked_at) : usage.problem === null ? t("Signed in") : {
+      // another tool's record is no sign-in Ovis holds: its row names that tool, and its status says how long ago it
+      // read, as an old record once the tool stopped. Where this PC holds a sign-in of the account too, the status
+      // stays the sign-in's and that age is among the facts of the line
+      const recordOnly = !isSignIn(usage);
+      const age = usage.recorded ? [...(usage.recorded.stale ? [t("Old record")] : []), lastSeen(usage.checked_at)] : [];
+      const status = recordOnly ? age.join(" · ") : usage.problem === null ? t("Signed in") : {
         expired: t("Expired"), failed: t("Failed"), rate_limited: t("Failed"), locked: t("Failed"),
       }[usage.problem];
       const limit = glanceWindow(usage, settings.usageGlance);
+      const facts = [
+        recordedBy(usage) ?? (isHubAccount(usage) ? t("Hub") : t("This PC")),
+        ...(recordOnly ? [] : age),
+        usage.plan,
+        limit ? `${windowLabel(limit)} ${meterText(limit, settings.usageCount)}` : null,
+      ].filter((fact): fact is string => Boolean(fact));
       return <li key={usage.key} className={`usage-accounts-row${hidden ? " is-hidden" : ""}`}>
         <div className="usage-account-identity">
           <span className="usage-accounts-account" title={usage.account ?? undefined}>{usage.account ?? PROVIDER_NAME[id]}</span>
           <span className="usage-account-meta">
-            <span>{recordedBy(usage) ?? (isHubAccount(usage) ? t("Hub") : t("This PC"))}{usage.plan ? ` · ${usage.plan}` : ""}{limit ? ` · ${windowLabel(limit)} ${meterText(limit, settings.usageCount)}` : ""}</span>
-            <span className={`usage-account-status${usage.problem ? " has-problem" : ""}${usage.recorded ? " is-recorded" : ""}`} title={recordedNote(usage, Date.now())?.join("\n")}>{status}</span>
+            {/* each fact wraps whole while it fits a line of its own: a phone's row breaks between two, not inside "Session 69% left" */}
+            <span>{facts.map((fact, nth) => <Fragment key={nth}>{nth > 0 && " "}<span className="usage-account-fact">{fact}{nth < facts.length - 1 && " ·"}</span></Fragment>)}</span>
+            <span className={`usage-account-status${usage.problem ? " has-problem" : ""}${recordOnly ? " is-recorded" : ""}`} title={recordedNote(usage, Date.now())?.join("\n")}>{status}</span>
           </span>
           {onLocalLogin && canSignInAgain(usage) && <UsageSignInAgain usage={usage} onStarted={onLocalLogin} onFollow={onFollow} />}
         </div>
@@ -258,7 +269,7 @@ function AgentItem({ entry, open, onToggle, allProviders, removed, read, limitsO
   const line = stateLine(entry, read, t);
   const again = read && !watching ? accounts.filter(canSignInAgain) : [];
   // an account another tool recorded is listed here, but the agent itself is still to be signed in
-  const signedIn = accounts.filter((usage) => usage.recorded === undefined);
+  const signedIn = accounts.filter(isSignIn);
   const detailsId = `agents-details-${agent.id}`;
   // the one sign-in it lacks is a tap away while the row is shut; open, the list below has its own
   // without the command it is read with, a sign-in would not show here either: the note says what to install instead

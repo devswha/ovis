@@ -89,7 +89,7 @@ describe("an account another tool recorded", () => {
         { kind: "week", scope: null, used_percent: 13.4, resets_at: iso(NOW + 4 * DAY), starts_at: iso(NOW - 3 * DAY) },
         { kind: "week", scope: "Fable", used_percent: 7, resets_at: null, starts_at: null },
       ],
-      recorded: { by: "omp", stale: false },
+      recorded: { by: "omp", stale: false, signed_in: false },
     }]);
   });
 
@@ -101,9 +101,9 @@ describe("an account another tool recorded", () => {
   it("is stale once the tool has not read for longer than it leaves between its reads", async () => {
     const provider = recordedOnly(recordedBy(() => [record(NOW)], 15 * MINUTE));
     now = NOW + 15 * MINUTE;
-    expect((await listed(provider))[0]?.recorded).toEqual({ by: "omp", stale: false });
+    expect((await listed(provider))[0]?.recorded).toEqual({ by: "omp", stale: false, signed_in: false });
     now += 1;
-    expect((await listed(provider))[0]?.recorded).toEqual({ by: "omp", stale: true });
+    expect((await listed(provider))[0]?.recorded).toEqual({ by: "omp", stale: true, signed_in: false });
   });
 
   it("loses a limit whose window has turned over, and one that names no reset once it is older than its window", async () => {
@@ -159,15 +159,33 @@ describe("an account this PC is signed in to and another tool recorded", () => {
     expect(accounts[0]).not.toHaveProperty("recorded");
   });
 
-  it("shows the record when this PC's sign-in has a problem and no numbers of its own", async () => {
+  it("puts the record's numbers in place of a sign-in that is refused, which stays this PC's: its plan, its problem", async () => {
     const own = ownSignIn(recordedBy(() => [record(NOW - 4 * MINUTE)]), () => new UsageHttpError(401, null));
-    expect(await listed(own)).toEqual([expect.objectContaining({ key: "claude:acct-1", problem: null, checked_at: iso(NOW - 4 * MINUTE), recorded: { by: "omp", stale: false }, windows: [expect.objectContaining({ used_percent: 42 })] })]);
+    expect(await listed(own)).toEqual([{
+      id: "claude", key: "claude:acct-1", account: "me@example.com", plan: "max", problem: "expired", checked_at: iso(NOW - 4 * MINUTE),
+      windows: [{ kind: "session", scope: null, used_percent: 42, resets_at: iso(NOW + 3 * HOUR), starts_at: iso(NOW - 2 * HOUR) }],
+      recorded: { by: "omp", stale: false, signed_in: true },
+    }]);
   });
 
-  it("shows whichever was read later once this PC's own read fails: its kept numbers, or a newer record", async () => {
-    const cases: ReadonlyArray<{ recordedAt: number; shown: { problem: UsageProblem | null; checked_at: string; used: number; recorded: boolean } }> = [
-      { recordedAt: NOW + 4 * MINUTE, shown: { problem: null, checked_at: iso(NOW + 4 * MINUTE), used: 42, recorded: true } },
-      { recordedAt: NOW - 10 * MINUTE, shown: { problem: "failed", checked_at: iso(NOW), used: 10, recorded: false } },
+  it("still offers Claude's status line for a sign-in the network refuses while a record stands in", async () => {
+    const refused = () => new UsageHttpError(403, null);
+    expect((await listed(ownSignIn(null, refused)))[0]).toMatchObject({ problem: "expired", statusline_offer: true });
+    expect((await listed(ownSignIn(recordedBy(() => [record(NOW - 4 * MINUTE)]), refused)))[0]).toMatchObject({ problem: "expired", statusline_offer: true, recorded: { signed_in: true } });
+  });
+
+  it("keeps the name this PC's sign-in gives the account, and takes the record's where it gives none", async () => {
+    const renamed = recordedBy(() => [{ ...record(NOW - 4 * MINUTE), label: "alias@example.com" }]);
+    const expired = () => new UsageHttpError(401, null);
+    expect((await listed(ownSignIn(renamed, expired)))[0]?.account).toBe("me@example.com");
+    const unnamed: UsageProvider = { ...ownSignIn(renamed, expired), async signIns() { return [{ source: "default", token: "own-token", expiresAt: null, account: { id: "acct-1", label: null } }]; } };
+    expect((await listed(unnamed))[0]).toMatchObject({ key: "claude:acct-1", account: "alias@example.com" });
+  });
+
+  it("shows whichever was read later once this PC's own read fails: its kept numbers, or a newer record's with the failure still told", async () => {
+    const cases: ReadonlyArray<{ recordedAt: number; shown: { problem: UsageProblem | null; checked_at: string; used: number; recorded: ProviderUsage["recorded"] } }> = [
+      { recordedAt: NOW + 4 * MINUTE, shown: { problem: "failed", checked_at: iso(NOW + 4 * MINUTE), used: 42, recorded: { by: "omp", stale: false, signed_in: true } } },
+      { recordedAt: NOW - 10 * MINUTE, shown: { problem: "failed", checked_at: iso(NOW), used: 10, recorded: undefined } },
     ];
     for (const { recordedAt, shown } of cases) {
       now = NOW;
@@ -177,8 +195,30 @@ describe("an account this PC is signed in to and another tool recorded", () => {
       down = true;
       now = NOW + FRESH_MS + 1;
       const [usage] = (await service.report()).providers;
-      expect({ problem: usage?.problem, checked_at: usage?.checked_at, used: usage?.windows[0]?.used_percent, recorded: usage?.recorded !== undefined }).toEqual(shown);
+      expect({ problem: usage?.problem, checked_at: usage?.checked_at, used: usage?.windows[0]?.used_percent, recorded: usage?.recorded }).toEqual(shown);
     }
+  });
+
+  it("leaves out the credits and limit resets this PC read before: the record standing in holds neither", async () => {
+    let down = false;
+    const own: UsageProvider = {
+      ...ownSignIn(recordedBy(() => [record(NOW + 4 * MINUTE)])),
+      async read() {
+        if (down) throw new UsageHttpError(500, null);
+        return {
+          plan: null, windows: [{ kind: "session", scope: null, used_percent: 10, resets_at: iso(NOW + 2 * HOUR), starts_at: null }],
+          credits: { kind: "spend", currency: "USD", used: 12.5, limit: 50, used_percent: 25 }, resets: { available: 2, expires_at: null },
+        };
+      },
+    };
+    const service = new UsageService(context(), [own]);
+    expect((await service.report()).providers[0]).toMatchObject({ credits: { kind: "spend" }, resets: { available: 2 } });
+    down = true;
+    now = NOW + FRESH_MS + 1;
+    const [usage] = (await service.report()).providers;
+    expect(usage).toMatchObject({ problem: "failed", recorded: { signed_in: true }, windows: [{ used_percent: 42 }] });
+    expect(usage).not.toHaveProperty("credits");
+    expect(usage).not.toHaveProperty("resets");
   });
 
   it("shows a newer record over a local capture of this PC's own that is hours old", async () => {
@@ -186,7 +226,7 @@ describe("an account this PC is signed in to and another tool recorded", () => {
     const refused = () => new UsageHttpError(403, null);
     expect(await listed(ownSignIn(null, refused, NOW - 2 * HOUR))).toEqual([expect.objectContaining({ problem: null, checked_at: iso(NOW - 2 * HOUR) })]);
     const [usage] = await listed(ownSignIn(recordedBy(() => [record(NOW - 5 * MINUTE)]), refused, NOW - 2 * HOUR));
-    expect(usage).toMatchObject({ key: "claude:acct-1", checked_at: iso(NOW - 5 * MINUTE), recorded: { by: "omp", stale: false }, windows: [{ used_percent: 42 }] });
+    expect(usage).toMatchObject({ key: "claude:acct-1", plan: "max", problem: null, checked_at: iso(NOW - 5 * MINUTE), recorded: { by: "omp", stale: false, signed_in: true }, windows: [{ used_percent: 42 }] });
   });
 });
 

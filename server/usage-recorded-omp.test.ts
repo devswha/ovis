@@ -245,7 +245,7 @@ describe("Claude's meter with Oh My Pi's record", () => {
   const write = (path: string, value: unknown): void => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)); };
   const claude = USAGE_PROVIDERS.filter((provider) => provider.id === "claude");
   const shown = async () => (await new UsageService(context(), claude).report()).providers
-    .map((usage) => ({ key: usage.key, account: usage.account, problem: usage.problem, recorded: usage.recorded?.by ?? null, session: usage.windows.find((window) => window.kind === "session")?.used_percent }));
+    .map((usage) => ({ key: usage.key, account: usage.account, plan: usage.plan, problem: usage.problem, recorded: usage.recorded ? { by: usage.recorded.by, signed_in: usage.recorded.signed_in } : null, session: usage.windows.find((window) => window.kind === "session")?.used_percent }));
 
   beforeEach(() => {
     store([latest("anthropic:5h", 0.425)]);
@@ -255,15 +255,15 @@ describe("Claude's meter with Oh My Pi's record", () => {
   it("lists an account Claude Code is not signed in to, under the key a Claude Code sign-in of it would have", async () => {
     // Claude Code's sign-in lapsed as its failed refresh leaves it: an empty token, expired at 0
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "", expiresAt: 0 } });
-    expect(await shown()).toEqual([{ key: `claude:${ACCOUNT}`, account: "me@example.com", problem: null, recorded: "omp", session: 42.5 }]);
+    expect(await shown()).toEqual([{ key: `claude:${ACCOUNT}`, account: "me@example.com", plan: null, problem: null, recorded: { by: "omp", signed_in: false }, session: 42.5 }]);
   });
 
-  it("lists the account once beside Claude Code's own sign-in: Claude Code's reading while it answers, the record once it is refused", async () => {
+  it("lists the account once beside Claude Code's own sign-in: Claude Code's reading while it answers, the record's numbers once it is refused, the sign-in still told", async () => {
     write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "claude-code-token", expiresAt: NOW + HOUR, subscriptionType: "max" } });
     write(join(home, ".claude.json"), { oauthAccount: { accountUuid: ACCOUNT, emailAddress: "me@example.com" } });
-    expect(await shown()).toEqual([{ key: `claude:${ACCOUNT}`, account: "me@example.com", problem: null, recorded: null, session: 10 }]);
+    expect(await shown()).toEqual([{ key: `claude:${ACCOUNT}`, account: "me@example.com", plan: "max", problem: null, recorded: null, session: 10 }]);
     reply = { status: 401, body: {} };
-    expect(await shown()).toEqual([{ key: `claude:${ACCOUNT}`, account: "me@example.com", problem: null, recorded: "omp", session: 42.5 }]);
+    expect(await shown()).toEqual([{ key: `claude:${ACCOUNT}`, account: "me@example.com", plan: "max", problem: "expired", recorded: { by: "omp", signed_in: true }, session: 42.5 }]);
   });
 
   it("is read only by a service that reads Claude: one built for no provider, or for another, opens no store", async () => {

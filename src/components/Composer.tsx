@@ -1608,7 +1608,7 @@ export function Composer({
               </span>}
               {metadata?.context && <ContextRing context={metadata.context} />}
               {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
-                className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.problem ? " has-problem" : ""}${usage.recorded ? " is-recorded" : ""}`}
+                className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}
                 title={`${usageName(usage)}${usageRecorded ? `\n${usageRecorded.join("\n")}` : ""}\n${usageDetail}`}
               >
                 <span aria-hidden="true">{usageCaption}</span>
