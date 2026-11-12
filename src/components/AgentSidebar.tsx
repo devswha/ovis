@@ -11,7 +11,9 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useEdgeFades } from "../lib/useEdgeFades.ts";
 import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { stampState, stateSince } from "../lib/agentStateSince.ts";
+import { AGENTS_LIST_PLACE, AGENTS_LIST_VARIANT } from "../lib/agentsListVariant.ts";
 import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
+import { knownStatus } from "../lib/status.ts";
 import { assignAgentGroup, liveGroupKeys, loadFoldedAgentGroups, rowAgentGroup, saveFoldedAgentGroups, splitNamedGroups } from "../lib/namedAgentGroups.ts";
 import { currentPaneMutes, paneMuteKey, prunePaneMutes, setPaneMutes, subscribePaneMutes, togglePaneMute } from "../lib/paneMutes.ts";
 import { lockedPinKeys, locksAfterPinToggle, toggleAgentLock } from "../lib/paneLocks.ts";
@@ -67,6 +69,9 @@ interface AgentRowBodyProps {
   since?: string | null;
 }
 
+/** DEMO ONLY: the draft that keeps a short place on a touch row draws the place's parts apart (lib/agentsListVariant.ts) */
+const PLACE_PARTS_APART = AGENTS_LIST_PLACE === "short";
+
 /** How long a row has been in its state, as herdr-app's agent rows say it: under a minute, minutes, hours, days. */
 export function stateAge(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
@@ -120,9 +125,11 @@ function AgentRowBody({ mark, markKind, title, name, context, tokens, background
           </>}
         </span>
         {!helper && (name || context) && <span className="agent-context">
-          {name && <span className="agent-name">{name}</span>}
-          {name && context && " · "}
-          {context}
+          {name && <span className={PLACE_PARTS_APART ? "agent-name agent-place-part" : "agent-name"}>{name}</span>}
+          {/* DEMO ONLY (?place=short): each part of the place is an element of its own, so a row short of room leaves a part out whole (AgentSidebar.css) */}
+          {PLACE_PARTS_APART
+            ? context !== "" && context.split(" · ").map((part, index) => <span className="agent-place-part" key={index}>{index > 0 || name ? " · " : ""}{part}</span>)
+            : <>{name && context && " · "}{context}</>}
         </span>}
       </span>
       {/* text as the plugin wrote it, never markup; its own line in either row height, cut where it is too long */}
@@ -623,14 +630,15 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       </button>
     </li>;
   };
-  // a list's rows, each agent followed by its helpers line while the helpers fold; `hidden` is a fold above them all
-  const listItems = (list: readonly AgentRow[], hidden = false) => list.flatMap((row) => {
-    const item = agentItem(row, hidden || foldedHelpers.has(row));
+  // a list's rows, each agent followed by its helpers line while the helpers fold; `hidden` is a fold above them all,
+  // and `group` the state group whose heading stands over them
+  const listItems = (list: readonly AgentRow[], hidden = false, group?: AgentGroup) => list.flatMap((row) => {
+    const item = agentItem(row, hidden || foldedHelpers.has(row), group);
     const helpers = helpersOf.get(row);
     return helpers === undefined ? [item] : [item, helpersLine(row, helpers, hidden)];
   });
 
-  const agentItem = (row: AgentRow, hidden = false) => {
+  const agentItem = (row: AgentRow, hidden = false, group?: AgentGroup) => {
     const { machine, entry } = row;
     const { pane, agent } = entry;
     const depth = Math.min(2, restDepths.get(row) ?? 0);
@@ -658,6 +666,8 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void =>
       setMenu(menuOpen ? null : { key: pinKey, anchor, point, previousFocus });
     return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}${filterContext ? " is-filter-context" : ""}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey} data-depth={depth > 0 ? depth : undefined} data-more={line?.more ? "" : undefined} data-through={line?.through ? "" : undefined} hidden={hidden || undefined}
+      // its group's heading already says this row's state; BG is filed under Working and is not what that heading says
+      data-state-said={group !== undefined && agentGroup(status) === group && knownStatus(status) !== "waiting" ? "" : undefined}
       onMouseDownCapture={(event) => { if (event.button === 2 || (event.button === 0 && event.ctrlKey)) event.preventDefault(); }}
       onContextMenu={(event) => onRowContextMenu(event, toggleMenu)}>
       <button type="button" className="agent-select agent-row" disabled={!online} aria-current={selected ? "true" : undefined} title={tooltip} onClick={() => onSelect(machine.id, pane.pane_id)}
@@ -749,7 +759,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
             <span className="agent-group-count">{groupRows.length}</span>
           </button>
         </li>,
-        ...groupRows.flatMap((row) => listItems([row], groupFolded && !isSelected(row))),
+        ...groupRows.flatMap((row) => listItems([row], groupFolded && !isSelected(row), group)),
       ];
     }) : restingFold && named === null && groups === null ? (() => {
       // one line, waiting first: the agents that wait or work stay; the resting ones (idle, finished) fold under one line, a selected one in sight
@@ -782,7 +792,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const oneLine = settings.sidebarRows === "one";
   // the folded list still says how many of its agents wait for the reader (G-016), in the head's own words
   const waiting = allRows.filter((row) => rowStatus(row) === "blocked").length;
-  return <section ref={sectionRef} onPointerEnter={() => setPointerIn(true)} onPointerLeave={() => setPointerIn(false)} onTouchEnd={holdAfterTouch} onTouchCancel={holdAfterTouch} onFocus={() => setFocusIn(true)} onBlur={(event) => { if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }} className={`agents-sidebar${folded ? " is-collapsed" : ""}${rows.length === 0 ? " is-empty" : ""}${oneLine ? " is-one-line is-compact" : ""}`} aria-label={t("Agents")}>
+  return <section ref={sectionRef} onPointerEnter={() => setPointerIn(true)} onPointerLeave={() => setPointerIn(false)} onTouchEnd={holdAfterTouch} onTouchCancel={holdAfterTouch} onFocus={() => setFocusIn(true)} onBlur={(event) => { if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }} className={`agents-sidebar${folded ? " is-collapsed" : ""}${rows.length === 0 ? " is-empty" : ""}${oneLine ? " is-one-line is-compact" : ""}`} data-variant={AGENTS_LIST_VARIANT} data-place={AGENTS_LIST_PLACE} aria-label={t("Agents")}>
     <button type="button" className="agent-section-toggle sidebar-section-label" aria-expanded={!folded} aria-controls={listId} onClick={() => {
       // the filter's fold lasts for the filter's time and is never kept; the reader's own is
       if (filter.active) { setFilterFold(!folded); return; }

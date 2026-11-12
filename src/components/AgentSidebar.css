@@ -608,3 +608,151 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ---- DEMO ONLY (lane agents-list-polish, #3505): the drafts `?agents=a|b|c` chooses between (lib/agentsListVariant.ts).
+   a is today's list with the fold and the time as the issue words them: nothing below applies to it.
+   The drafts not chosen leave with this block before the PR. ---- */
+
+/* b, c: the times stand in one column, each ending where the next ends, at the info floor a timestamp keeps in either
+   density (--fs-meta). The column's width holds four of the time's own figures ("365d") and its padding, said once so
+   the row's ⋯ can stand clear of it. */
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]) { --agent-since-w: calc(var(--fs-meta) * 2.5 + 2 * var(--space-1)); }
+
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]) .agent-since {
+  min-width: var(--agent-since-w);
+  font-size: var(--fs-meta);
+  text-align: end;
+}
+
+/* b: under a pointer the row's ⋯ shows before the time, not over it */
+@media (hover: hover) and (pointer: fine) and (min-width: 769px) {
+  .agents-sidebar[data-variant="b"].is-one-line .agent-item > .agent-actions { right: calc(var(--space-6) + var(--agent-since-w)); }
+}
+
+/* b, c: a group's count over the rows' trailing cell, not beside it */
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]).is-one-line .agent-group-count { width: var(--space-6); }
+
+/* b, c: what does not fit beside the title is left out whole, never cut to a couple of letters: the agent's own
+   reason and its percent after the title, and the place after them. Each wraps to a second line the box does not
+   show; the tooltip and the row's menu say them in full. */
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]) .agent-title-line {
+  flex-wrap: wrap;
+  height: calc(var(--fs-md) * var(--lh-tight));
+  overflow: hidden;
+}
+
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]) .agent-title { max-width: 100%; }
+
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]) .agent-blocked {
+  flex: none;
+  min-width: 0;
+}
+
+/* b on every screen, c under a pointer: the place shows after the title only where 4.5em of it fits */
+.agents-sidebar[data-variant="b"].is-one-line .agent-main {
+  flex-wrap: wrap;
+  height: calc(var(--fs-md) * var(--lh-tight));
+  overflow: hidden;
+}
+
+.agents-sidebar[data-variant="b"].is-one-line .agent-title-line { max-width: 100%; }
+
+.agents-sidebar[data-variant="b"].is-one-line .agent-context {
+  flex: 1 1 4.5em;
+  min-width: 4.5em;
+}
+
+@media (pointer: fine) {
+  .agents-sidebar[data-variant="c"].is-one-line .agent-main {
+    flex-wrap: wrap;
+    height: calc(var(--fs-md) * var(--lh-tight));
+    overflow: hidden;
+  }
+
+  .agents-sidebar[data-variant="c"].is-one-line .agent-title-line { max-width: 100%; }
+
+  .agents-sidebar[data-variant="c"].is-one-line .agent-context {
+    flex: 1 1 4.5em;
+    min-width: 4.5em;
+  }
+}
+
+/* c on a touch screen: one agent, one line, as One line promises: the title, then the time at the row's end. A finger's
+   row is a touch target tall and draws that one line in it.
+   `?place=none` (the default): the place is not drawn on the row. It stays in the row for a screen reader, and the
+   row's menu says it whole.
+   `?place=short`: the place's parts follow the title, each whole, as many as the title leaves room for. A part that
+   does not fit wraps to a line the box does not show, so no part is ever cut to a few letters. */
+@media (pointer: coarse) {
+  .agents-sidebar[data-variant="c"][data-place="none"].is-one-line .agent-item:not([data-depth]) .agent-context {
+    position: absolute;
+    width: var(--hairline);
+    min-width: 0;
+    height: var(--hairline);
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .agents-sidebar[data-variant="c"][data-place="short"].is-one-line .agent-main {
+    flex-wrap: wrap;
+    column-gap: 0;
+    height: calc(var(--fs-md) * var(--lh-tight));
+    overflow: hidden;
+  }
+
+  .agents-sidebar[data-variant="c"][data-place="short"].is-one-line .agent-title-line { max-width: 100%; }
+
+  /* the parts stand in the title's own line, so each is weighed against the room the title leaves */
+  .agents-sidebar[data-variant="c"][data-place="short"].is-one-line .agent-context { display: contents; }
+
+  .agents-sidebar[data-variant="c"][data-place="short"].is-one-line .agent-place-part {
+    flex: none;
+    white-space: pre;
+  }
+
+  .agents-sidebar[data-variant="c"][data-place="short"].is-one-line .agent-place-part:first-child { margin-inline-start: var(--space-2); }
+}
+
+/* c: under a state's heading a row does not say that state again. The heading carries it, in the state's colour and
+   its word; the row's own mark is drawn only where its state differs from its group's (an agent kept with a helper
+   that needs the reader), and stays in the row for a screen reader either way. The time then ends the row. */
+.agents-sidebar[data-variant="c"] .agent-item[data-state-said] { padding-right: var(--space-2); }
+
+.agents-sidebar[data-variant="c"] .agent-item[data-state-said] .agent-row > .agent-row-state {
+  width: var(--hairline);
+  height: var(--hairline);
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+@media (hover: hover) and (pointer: fine) and (min-width: 769px) {
+  .agents-sidebar[data-variant="c"].is-one-line .agent-item > .agent-actions { right: calc(var(--space-6) + var(--agent-since-w)); }
+  .agents-sidebar[data-variant="c"].is-one-line .agent-item[data-state-said] > .agent-actions { right: calc(var(--space-2) + var(--agent-since-w)); }
+}
+
+/* c: the heading is the group's state said once: sentence case in the state's own colour, its count right after it */
+.agents-sidebar[data-variant="c"] .agent-group-toggle {
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* c: the list's other folds (the background agents, the named groups, the resting agents) read as the state headings do */
+.agents-sidebar[data-variant="c"] :is(.agent-background-toggle, .agent-named-group-toggle) {
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.agents-sidebar[data-variant="c"] .agent-group-label[data-group="working"] .agent-group-toggle { color: var(--status-working); }
+.agents-sidebar[data-variant="c"] .agent-group-label[data-group="done"] .agent-group-toggle { color: var(--status-done); }
+
+.agents-sidebar[data-variant="c"] .agent-group-count,
+.agents-sidebar[data-variant="c"].is-one-line .agent-group-count {
+  width: auto;
+  margin-left: var(--space-2);
+  color: var(--text-dim);
+  font-weight: var(--fw-regular);
+  text-align: start;
+}
