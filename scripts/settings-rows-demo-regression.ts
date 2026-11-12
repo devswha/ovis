@@ -252,19 +252,30 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
       await search.fill("openai api key");
       await results.locator('input[aria-label="OpenAI API key"]').waitFor();
 
-      // Escape empties a search from a result too, not only from the field. The keyboard on a result shows its
-      // row's sentence (#3275), which closes first and leaves the search and the focus as they are
+      // Escape empties a search from a result too, not only from the field. After a click the pointer came last, so
+      // the focus put on the result is not the keyboard's: no sentence shows there (#3275) and the Escape is the search's
+      await search.click();
       await search.fill("sound");
       const playSounds = results.getByRole("switch", { name: "Play sounds", exact: true });
       await playSounds.focus();
+      assert.equal(await page.locator(".settings-help").count(), 0, `${width}px: a focus the keyboard did not move shows no sentence`);
+      await page.keyboard.press("Escape");
+      assert.equal(await search.inputValue(), "", `${width}px: Escape on a result empties the search`);
+      assert.equal(await search.evaluate((field) => field === document.activeElement), true, `${width}px: the field takes the focus back`);
+      // reached by Tab, the result shows its row's sentence, which closes first and leaves the search and the focus
+      await search.fill("sound");
+      await playSounds.focus();
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
+      assert.equal(await playSounds.evaluate((control) => control === document.activeElement), true, `${width}px: Tab is back on the result`);
       await page.locator(".settings-help").waitFor();
       await page.keyboard.press("Escape");
       await page.locator(".settings-help").waitFor({ state: "detached" });
       assert.equal(await search.inputValue(), "sound", `${width}px: Escape on a result closes its sentence first and keeps the search`);
       assert.equal(await playSounds.evaluate((control) => control === document.activeElement), true, `${width}px: and leaves the focus on the result`);
       await page.keyboard.press("Escape");
-      assert.equal(await search.inputValue(), "", `${width}px: the next Escape on a result empties the search`);
-      assert.equal(await search.evaluate((field) => field === document.activeElement), true, `${width}px: the field takes the focus back`);
+      assert.equal(await search.inputValue(), "", `${width}px: the next Escape empties the search`);
+      assert.equal(await search.evaluate((field) => field === document.activeElement), true, `${width}px: and gives the field the focus`);
 
       // a row a found row opens is found with it: Custom from a description match shows its field
       await search.fill("menus dialogs");
@@ -973,6 +984,8 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     await appearance(page);
     const size = page.getByRole("textbox", { name: "Terminal font size", exact: true });
     await size.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
     await sentence.waitFor();
     await size.fill(String(DEFAULT_SETTINGS.terminalFontSize + 2));
     await sentence.waitFor({ state: "detached" });
@@ -985,6 +998,16 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     assert.equal(await size.evaluate((field) => field === document.activeElement), true);
     assert.equal(await sentence.count(), 0, "a click into a field shows no sentence");
 
+    // a pen that cannot hover has only its tap: on the name it opens the sentence in the row, as a finger's does.
+    // The events such a pen sends, dispatched: the browser's own pen input gives a page no click here
+    await appearance(page);
+    await density.locator(".settings-label").evaluate((name) => {
+      const pen = { bubbles: true, cancelable: true, pointerType: "pen", pointerId: 7, isPrimary: true };
+      for (const type of ["pointerover", "pointerdown", "pointerup", "click", "pointerout"]) name.dispatchEvent(new PointerEvent(type, pen));
+    });
+    await density.locator(":scope > .settings-row-sentence").waitFor();
+    assert.equal(await sentence.count(), 0, "a pen's tap draws nothing over the page");
+
     // a dialog moves the keyboard's focus without scrolling (lib/useFocusTrap.ts), so the focus can be on a setting the
     // page is not scrolled to: its sentence waits, drawn nowhere, and shows once the row is in the page's view
     await appearance(page);
@@ -994,7 +1017,10 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     assert.ok(farText !== null && farText.trim() !== "");
     const outOfView = () => far.evaluate((control) => { const page = control.closest(".modal-body")!.getBoundingClientRect(); const row = control.closest(".settings-row")!.getBoundingClientRect(); return row.bottom <= page.top || row.top >= page.bottom; });
     const drawnSentence = () => page.evaluate(() => { const tip = document.querySelector<HTMLElement>(".settings-help"); return tip === null ? null : tip.style.visibility === "hidden" ? "waiting" : tip.textContent; });
-    await far.evaluate((control: HTMLElement) => control.focus({ preventScroll: true }));
+    // Tab from the stop before it, as the dialog moves the focus: without scrolling
+    await page.getByRole("group", { name: "Agent logos", exact: true }).getByRole("button", { name: "Mono", exact: true }).evaluate((control: HTMLElement) => control.focus({ preventScroll: true }));
+    await page.keyboard.press("Tab");
+    assert.equal(await far.evaluate((control) => control === document.activeElement), true, "Tab reached Status indicators");
     assert.equal(await outOfView(), true, "the focused setting is below what the page shows");
     assert.equal(await drawnSentence(), "waiting", "no sentence is drawn for a setting the page is not scrolled to");
     await far.evaluate((control) => control.scrollIntoView({ block: "nearest" }));
@@ -1073,7 +1099,7 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
   } finally {
     await phone.close();
   }
-  console.log("PASS a row's sentence: over the page on a resting mouse and on keyboard focus, off its control and the row below, closed alone by Escape and by a press on its control, none for a click or a tap into a field, waiting for a row out of view, describing a row's button and field, opened in the row by a tap and inside the card, and the same on a watching device");
+  console.log("PASS a row's sentence: over the page on a resting mouse and on keyboard focus, off its control and the row below, closed alone by Escape and by a press on its control, none for a click or a tap into a field, waiting for a row out of view, describing a row's button and field, opened in the row by a finger's or a pen's tap and inside the card, and the same on a watching device");
 }
 
 async function mergedRows(browser: import("playwright-core").Browser, url: string): Promise<void> {

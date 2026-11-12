@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import { SettingsProvider } from "../lib/settings.ts";
-import { placeSentence, sentenceRoom, SettingsBare, SettingsRow, Stepper, Toggle, typedStep } from "./SettingsControls.tsx";
+import { escapeFor, movesFocus, placeSentence, sentenceRoom, SettingsBare, SettingsRow, Stepper, Toggle, typedStep } from "./SettingsControls.tsx";
 
 /** A key on the size field, as React hands it over: `composing` while an IME still holds the draft. */
 const key = (name: string, composing: boolean) => ({
@@ -155,6 +155,29 @@ describe("where a row's sentence goes (#3275)", () => {
     expect(sentenceRoom(lies, [{ left: 400, top: 100, right: 600, bottom: 134 }])).toBeNull();
     // 152px beside the control: narrower than a sentence is worth, so it keeps its width
     expect(sentenceRoom(lies, [{ left: 300, top: 250, right: 600, bottom: 284 }])).toBeNull();
+  });
+});
+
+describe("when a row's sentence shows and whose Escape it is (#3275)", () => {
+  it("counts only a key that moves the focus as the keyboard's: not the Escape or Enter after which the app returns the focus", () => {
+    expect(["Tab", "ArrowDown", "ArrowLeft", "Home", "End"].map(movesFocus)).toEqual([true, true, true, true, true]);
+    expect(["Escape", "Enter", " ", "a", "Shift"].map(movesFocus)).toEqual([false, false, false, false, false]);
+  });
+
+  it("gives Escape to the sentence alone, shares it with a text field, and leaves it to an IME, to a row out of view and to another dialog", () => {
+    const showing = { composing: false, drawn: true, textField: false, otherModal: false };
+    expect(escapeFor(showing)).toBe("sentence");
+    expect(escapeFor({ ...showing, textField: true })).toBe("both");
+    expect(escapeFor({ ...showing, textField: true, composing: true })).toBe("other");
+    expect(escapeFor({ ...showing, drawn: false })).toBe("other");
+    expect(escapeFor({ ...showing, otherModal: true })).toBe("other");
+  });
+
+  it("starts a sentence taller than the screen at the screen's top", () => {
+    const row = { left: 100, top: 20, right: 600, bottom: 80 };
+    const placed = placeSentence(row, { left: 120, top: 40, right: 200, bottom: 60 }, 40, 80, { width: 300, height: 250 }, { width: 800, height: 200 });
+    expect(placed.side).toBe("below");
+    expect(placed.top).toBe(8);
   });
 });
 

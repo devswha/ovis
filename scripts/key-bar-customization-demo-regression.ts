@@ -351,20 +351,13 @@ try {
         await dialog.getByRole("button", { name: "Remove Ctrl+w", exact: true }).waitFor();
         await page.keyboard.press("Escape");
         await returnedToSettings(page);
-        // the keyboard brought the focus back to Edit key bar, so its row's sentence shows (#3275): the next Escape
-        // closes that sentence alone, and the one after it closes Settings
-        const sentence = page.locator(".settings-help");
-        await sentence.waitFor();
-        await page.keyboard.press("Escape");
-        await sentence.waitFor({ state: "detached" });
-        assert.equal(await page.getByRole("dialog", { name: "Settings", exact: true }).isVisible(), true, "Escape closes the row's sentence first, not Settings");
         await page.keyboard.press("Escape");
         await page.getByRole("dialog", { name: "Settings", exact: true }).waitFor({ state: "hidden" });
         await ready(page);
         dialog = await openSettings(page);
         await dialog.getByRole("button", { name: "Remove Ctrl+w", exact: true }).waitFor();
         assert.deepEqual((await settingsOf(page)).keyBarItems, beforeBack, "Escape backs out of the detail without discarding the saved layout");
-        console.log("PASS compact Settings opens the key-bar detail; Back and Escape restore the parent's scroll and focus without losing edits, and from there Escape closes the row's sentence, then Settings");
+        console.log("PASS compact Settings opens the key-bar detail; Back and Escape restore the parent's scroll and focus without losing edits, and a second Escape closes Settings");
         await closeSettings(page, dialog);
         const editedKeys = await keysOf(page);
         assert.equal(editedKeys.includes("Tab"), false);

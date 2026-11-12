@@ -4035,7 +4035,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   surface (`--bg-elevated`, hairline `--border-strong`, `--radius-sm`, `--shadow-menu`, `--fs-xs`,
   no wider than `22rem`), fixed in the dialog's scrim so the scrolling page does not cut it. It goes
   above the row with its left edge on the name's, so it covers neither the row's own control nor
-  the row below, which the pointer goes to next; under the row only where the screen ends above it.
+  the row below, which the pointer goes to next; under the row only where the screen ends above it,
+  and never above the screen's top, so a sentence taller than a short window still starts in sight.
   Over another row's control it narrows to the room beside that control, down to `224px`; with less
   room than that (the row under a font row's field) it keeps its width and lies on that control's
   near end, which the reader reaches by leaving the sentence or with Escape. It is drawn only while
@@ -4050,8 +4051,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   takes Escape while it is open and stops it there: closing Settings would move the focus, which
   1.4.13 does not allow a dismissal to do. A press on the row's control closes the sentence too, the
   keyboard's as a pointer's (a choice, not a question; that tooltip's `shouldCloseOnPress`), so
-  Escape after a choice is Settings' at once. A focus is the keyboard's when a key came last: a
-  click or a tap that puts the focus in a field or a select shows no sentence. In a text field that
+  Escape after a choice is Settings' at once. A focus is the keyboard's when a key that moves the
+  focus came last (Tab, an arrow, Home, End): a click or a tap that puts the focus in a field or a
+  select shows no sentence, and neither does the focus the app gives back after Escape or Enter (a
+  closed editor, a confirmed dialog), where a sentence would take the next Escape from Settings. A
+  dialog opened over Settings keeps its own Escape, and a pen taps as a finger does. In a text field that
   Escape is the field's too, and the first text typed closes it. A finger has no hover: a tap on the row, anywhere but its control, opens the sentence in the
   row, under the name and the control at the row's width (`.settings-row-sentence`), and a second
   tap closes it, so nothing is drawn over a phone's page. Every control in the row is described by

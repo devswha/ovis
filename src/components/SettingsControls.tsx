@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight, Minus, Plus, RotateCcw, type LucideIcon } fr
 
 import { DEFAULT_SETTINGS, useSettings, type Settings } from "../lib/settings.ts";
 import { useT } from "../lib/i18n.ts";
+import { focusInOtherModal } from "../lib/useFocusTrap.ts";
 
 import "./SettingsControls.css";
 
@@ -140,7 +141,8 @@ export function placeSentence(row: ScreenBox, name: ScreenBox, clear: number, un
   const left = Math.max(SENTENCE_EDGE, Math.min(name.left, row.right - size.width, screen.width - size.width - SENTENCE_EDGE));
   const above = clear - SENTENCE_GAP - size.height;
   if (above >= SENTENCE_EDGE) return { left, top: above, side: "above" };
-  return { left, top: Math.min(under + SENTENCE_GAP, screen.height - size.height - SENTENCE_EDGE), side: "below" };
+  // a sentence taller than the screen (a short window, a high zoom) starts at the screen's top, so its first lines are read
+  return { left, top: Math.max(SENTENCE_EDGE, Math.min(under + SENTENCE_GAP, screen.height - size.height - SENTENCE_EDGE)), side: "below" };
 }
 
 /** A mouse rests this long on a row before its sentence shows; a row entered this soon after another's closed shows its own at once. */
@@ -150,14 +152,33 @@ const SENTENCE_FOLLOW_MS = 400;
 let closeSentence: (() => void) | null = null;
 let sentenceClosedAt = Number.NEGATIVE_INFINITY;
 
+const FOCUS_KEYS = new Set(["Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"]);
+
+/** Whether a key moves the focus. Escape, Enter and Space do not: they close, confirm and press. */
+export function movesFocus(key: string): boolean {
+  return FOCUS_KEYS.has(key);
+}
+
 /**
- * What the reader last used. A focus is the keyboard's when a key came last: a click or a tap that puts the focus in
- * a field or a select is a pointer's, though `:focus-visible` matches there. Until anything is pressed, the keyboard's.
+ * Whether the reader's last input was a key that moves the focus: only then is a focus the keyboard's, and its row's
+ * sentence shown. A click or a tap that puts the focus in a field is a pointer's (though `:focus-visible` matches
+ * there), and the focus the app gives back after Escape or Enter (a closed editor, a confirmed dialog) is the app's:
+ * a sentence there would take the next Escape from Settings.
  */
-let lastInput: "keyboard" | "pointer" = "keyboard";
+let keyboardMovedFocus = false;
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("keydown", () => { lastInput = "keyboard"; }, true);
-  window.addEventListener("pointerdown", () => { lastInput = "pointer"; }, true);
+  window.addEventListener("keydown", (event) => { keyboardMovedFocus = movesFocus(event.key); }, true);
+  window.addEventListener("pointerdown", () => { keyboardMovedFocus = false; }, true);
+}
+
+/**
+ * Whose Escape it is while a row's sentence is shown: the sentence's alone; the sentence's and the text field's it is
+ * typed in; or not the sentence's at all, when an IME takes it to drop its composition, when nothing is drawn (its row
+ * is outside the page's view), or when a dialog opened over Settings (Files, the palette) has the keyboard.
+ */
+export function escapeFor(state: { composing: boolean; drawn: boolean; textField: boolean; otherModal: boolean }): "sentence" | "both" | "other" {
+  if (state.composing || !state.drawn || state.otherModal) return "other";
+  return state.textField ? "both" : "sentence";
 }
 
 /** Whether the focus is where text is typed: such a field keeps Escape for its own draft, and for the dialog behind it. */
@@ -205,12 +226,17 @@ function useRowSentence(on: boolean): {
     const close = (): void => setShown(null);
     closeSentence = close;
     const onKey = (event: KeyboardEvent): void => {
-      // an IME's Escape drops its composition, not the sentence
-      if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
-      // nothing is on the screen to close (the row is outside the page's view): this Escape is not the sentence's
-      if (!drawn.current) return;
+      if (event.key !== "Escape") return;
+      const otherModal = focusInOtherModal(row.current?.closest<HTMLElement>("[aria-modal='true']") ?? null);
+      // key code 229: the Escape WebKit can still send for a composition after compositionend
+      const whose = escapeFor({ composing: event.isComposing || event.keyCode === 229, drawn: drawn.current, textField: inTextField(), otherModal });
+      if (whose === "other") {
+        // the dialog in front takes its Escape, and a sentence left showing under it goes; one waiting for its row stays
+        if (otherModal) setShown(null);
+        return;
+      }
       // the sentence alone: Settings stays open, and the pointer and the focus stay where they are (WCAG 1.4.13)
-      if (!inTextField()) {
+      if (whose === "sentence") {
         event.preventDefault();
         event.stopPropagation();
       }
@@ -241,14 +267,15 @@ function useRowSentence(on: boolean): {
         if (shown === "hover") setShown(null);
       },
       onPointerDown: (event) => {
-        finger.current = event.pointerType === "touch";
+        // a pen taps as a finger does: one that cannot hover has no other way to the sentence
+        finger.current = event.pointerType !== "mouse";
         // a press on the row's control is a choice, not a question; a press on the sentence keeps it, to select its words
         if ((event.target as Element).closest(".settings-help")) return;
         window.clearTimeout(rest.current);
         if (shown === "hover") setShown(null);
       },
       onFocus: () => {
-        if (opened || dismissed.current || lastInput !== "keyboard") return;
+        if (opened || dismissed.current || !keyboardMovedFocus) return;
         window.clearTimeout(rest.current);
         setShown("focus");
       },
