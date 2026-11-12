@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as listen } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -24,7 +24,7 @@ describe("server entries", () => {
     for (const name of Object.keys(ENTRIES) as EntryName[]) {
       const [runtime, file] = entryCommand(name);
       expect(runtime).toBe(process.execPath);
-      expect(file).toBe(join(root, ENTRIES[name].file));
+      expect(file).toBe(join(root, ENTRIES[name]));
       expect(existsSync(file)).toBe(true);
     }
     expect(entryCommand("serve", "/elsewhere")[1]).toBe(join("/elsewhere", "server", "index.ts"));
@@ -41,6 +41,23 @@ describe("server entries", () => {
     const { code, stderr } = await main(["machine"]);
     expect(code).not.toBe(0);
     expect(stderr).toContain("machine-entry.ts runs only as machine-bridge.ts starts it");
+  });
+
+  it("keeps the supervisor's own code to what it runs: no other entry's", () => {
+    // an update copies and runs a release's supervisor by what it imports (the updater tests' copySupervisor); a table
+    // that imported every entry would pull the whole server, package.json included, into the supervisor
+    const transpiler = new Bun.Transpiler({ loader: "ts" });
+    const reached = [join(import.meta.dir, "supervisor.ts")];
+    for (const file of reached) {
+      for (const { path } of transpiler.scanImports(readFileSync(file, "utf8"))) {
+        const imported = join(dirname(file), path);
+        if (path.startsWith(".") && !reached.includes(imported)) reached.push(imported);
+      }
+    }
+    const names = reached.map((file) => file.slice(root.length + 1));
+    expect(names).toContain("server/entries.ts");
+    expect(names.filter((file) => !/\.(ts|mjs|js)$/.test(file))).toEqual([]);
+    for (const entry of ["server/index.ts", "server/managed.ts", "server/remote-entry.ts", "scripts/plugin.ts"]) expect(names).not.toContain(entry);
   });
 
   it("starts each entry by its name in the compiled binary, never by a file", () => {

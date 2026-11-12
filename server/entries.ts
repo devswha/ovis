@@ -5,15 +5,17 @@
  */
 import { dirname, join } from "node:path";
 
+// Each entry's file only: what runs it is in server/main.ts, so a module that starts an entry (the supervisor, which an
+// update copies and runs by what it imports) does not import every entry's code with this table
 export const ENTRIES = {
-  serve: { file: "server/index.ts", run: () => import("./index.ts").then((entry) => entry.serve()) },
-  managed: { file: "server/managed.ts", run: () => import("./managed.ts").then((entry) => entry.runManaged()) },
-  supervisor: { file: "server/supervisor.ts", run: () => import("./supervisor.ts").then((entry) => entry.runSupervisor(process.env["OVIS_SOURCE_ROOT"] || ROOT)) },
-  remote: { file: "server/remote-entry.ts", run: () => import("./remote-entry.ts") },
-  machine: { file: "server/herdr-core/machine-entry.ts", run: () => import("./herdr-core/machine-entry.ts") },
-  plugin: { file: "scripts/plugin.ts", run: () => import("../scripts/plugin.ts").then((entry) => entry.runPlugin()) },
-  askpass: { file: "server/ssh-askpass.ts", run: () => import("./ssh-askpass.ts") },
-  "windows-launch": { file: "server/windows-launch.ts", run: () => import("./windows-launch.ts") },
+  serve: "server/index.ts",
+  managed: "server/managed.ts",
+  supervisor: "server/supervisor.ts",
+  remote: "server/remote-entry.ts",
+  machine: "server/herdr-core/machine-entry.ts",
+  plugin: "scripts/plugin.ts",
+  askpass: "server/ssh-askpass.ts",
+  "windows-launch": "server/windows-launch.ts",
 } as const;
 
 export type EntryName = keyof typeof ENTRIES;
@@ -41,5 +43,5 @@ export const BUN_ENV: Record<string, string> = COMPILED ? { BUN_BE_BUN: "1" } : 
 
 /** The command that starts entry `name`: its file under `root` from source, the binary with the entry's name when compiled. */
 export function entryCommand(name: EntryName, root = ROOT, compiled = COMPILED): [string, string] {
-  return [process.execPath, compiled ? name : join(root, ENTRIES[name].file)];
+  return [process.execPath, compiled ? name : join(root, ENTRIES[name])];
 }

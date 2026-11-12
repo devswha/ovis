@@ -2,7 +2,7 @@ import { INSTALL_ID, noInstalledNotes, noUpdateNotes, readInstalledNotes, readUp
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
-import { ASSETS } from "./entries.ts";
+import { ASSETS, COMPILED } from "./entries.ts";
 
 export interface UpdateService {
   status(): UpdateStatus;
@@ -73,8 +73,8 @@ export function connectUpdater(channel?: SupervisorChannel): UpdateService {
     request: (request) => supervisor?.send(request.command === "install"
       ? { type: "update-install-revision", expected_revision: request.expected_revision, ...(request.install_id ? { install_id: request.install_id } : {}) }
       : request.command === "cancel" ? { type: "update-cancel-v2", install_id: request.install_id } : { type: "update-command", command: "check" }),
-    // the dist/ static.ts serves: OVIS_ASSETS, else the release or checkout the supervisor starts the bridge in
-    ...(managed ? { servedRevision: servedRevision(ASSETS) } : {}),
+    // from source, the release or checkout the supervisor starts the bridge in (its cwd), as on main; the binary serves dist/ from its assets root
+    ...(managed ? { servedRevision: servedRevision(COMPILED ? ASSETS : process.cwd()) } : {}),
   };
 }
 

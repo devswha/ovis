@@ -127,7 +127,7 @@ export async function runSupervisor(root = ROOT) {
     // OVIS_RUNTIME_SWITCH: this launcher restarts the bridge on a runtime chosen in Settings (restartForRuntime)
     const settings = { OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release?.revision ?? "" };
     // from source the path is relative to the release it runs in (its cwd), as the bridge's argv always was
-    const candidate = Bun.spawn(COMPILED ? entryCommand("serve") : [process.execPath, ENTRIES.serve.file], {
+    const candidate = Bun.spawn(COMPILED ? entryCommand("serve") : [process.execPath, ENTRIES.serve], {
       cwd: release?.directory ?? root, windowsHide: true, stdin: "ignore", stdout: "inherit", stderr: "inherit",
       // a launcher from before the rename runs from a checkout from before it, where a release that
       // fails falls back to: that bridge reads its settings under the old names
