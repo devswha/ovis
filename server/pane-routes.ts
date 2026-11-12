@@ -375,7 +375,9 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         else {
           const entry: { read: Promise<PaneSummary | null | undefined>; startedAt: number } = {
             read: paneConversation(paneId, options.codexHome, { prompts: 1 }, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData)
-              .then((conversation) => summaryOf(conversation.turns), (error: unknown) => error instanceof ConversationUnavailable ? null : undefined)
+              // a summary that throws while it is made is left out, as a read that failed for now is
+              .then((conversation) => summaryOf(conversation.turns))
+              .catch((error: unknown) => error instanceof ConversationUnavailable ? null : undefined)
               // a read replaced by a newer one leaves its successor in place
               .finally(() => { if (summaryReads.get(paneId) === entry) summaryReads.delete(paneId); }),
             startedAt: Date.now(),

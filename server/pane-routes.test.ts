@@ -714,6 +714,17 @@ it("leaves out a pane whose read failed for now, beside the panes it can, and re
   } finally { read.mockRestore(); }
 });
 
+it("leaves out a pane whose summary cannot be made from its turns, beside the panes it can", async () => {
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => paneId === "malformed"
+    ? { ...said("x", "2026-11-12T10:00:00Z"), turns: [{ role: "assistant", ts: null, parts: null }] as unknown as ConversationTurn[] }
+    : said("fine", "2026-11-12T10:00:00Z"));
+  try {
+    const response = (await askSummary(["malformed", "w:p1"]))!;
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as PaneSummaries).summaries).toEqual({ "w:p1": { role: "user", text: "fine", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" } });
+  } finally { read.mockRestore(); }
+});
+
 it("refuses a summary with no pane, too many panes or another method", async () => {
   const read = spyOn(conversation, "paneConversation");
   const code = async (response: Response | null) => [response!.status, ((await response!.json()) as { error: { code: string } }).error.code];
