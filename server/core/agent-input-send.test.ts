@@ -124,7 +124,17 @@ it("takes no colours from a viewport that is not the live screen: a draft shown 
   screens.live = readFileSync(join(FIXTURES, "codex-0.167.0/composer-empty-100.txt"), "utf8");
   await submit();
   expect(prompted()).toBeTrue();
-  expect(calls.filter((call) => call.method === "pane.read").map((call) => call.params["source"])).toEqual(["visible", "detection"]);
+  // read again while they disagree, a bounded number of times, then sent as before
+  expect(new Set(calls.filter((call) => call.method === "pane.read").map((call) => call.params["source"]))).toEqual(new Set(["visible", "detection"]));
+});
+
+it("reads again when text is typed between the viewport's read and the live one, and refuses over it", async () => {
+  pane = { agent: "pi", argv: ["pi"] };
+  screens.visible = recorded("pi/draft-empty-119.ansi");
+  const typedScreen = recorded("pi/draft-typed-119.ansi");
+  next = { visible: typedScreen };
+  expect((await refused()).code).toBe("input_draft");
+  expect(prompted()).toBeFalse();
 });
 
 it("takes nothing from a read without colour, where a placeholder looks typed", async () => {

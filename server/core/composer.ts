@@ -282,15 +282,24 @@ export async function freeHermesInput(paneId: string, identity?: PendingIdentity
  */
 export async function freeAgentInput(paneId: string, agent: string | null, identity?: PendingIdentity, codexScreens = false): Promise<void> {
   if (!readsTypedDraft(agent)) return;
-  const colors = (await paneRead({ paneId, source: "visible", format: "ansi" })).text;
-  const live = (await paneRead({ paneId, source: "detection", format: "text" })).text;
-  if (codexScreens && codexOwnScreenOpen(live)) throw new HerdrError("agent_blocked", CODEX_OWN_SCREEN_MESSAGE);
-  if (!colors.includes("\u001b[") || screenText(colors) !== screenText(live)) return;
-  const screen = screenFromAnsi(colors);
-  // herdr labels an OmO `pi`: OmO's box where it is drawn is the typing agent's, with no process read to tell them apart
-  const typing = agent === "pi" && inputRowState("omo", screen) !== "gone" ? "omo" : agent;
-  if (typedDraft(typing, screen)) throw new InputDraftError(null, identity, null, AGENT_INPUT_DRAFT_MESSAGE);
+  // reads that disagree (text typed or redrawn between them) are read again; a viewport that stays apart from the
+  // live screen (scrolled into the history) proves nothing, and the send goes as before
+  for (let round = 0; round < AGENT_BOX_READS; round++) {
+    const colors = (await paneRead({ paneId, source: "visible", format: "ansi" })).text;
+    const live = (await paneRead({ paneId, source: "detection", format: "text" })).text;
+    if (codexScreens && codexOwnScreenOpen(live)) throw new HerdrError("agent_blocked", CODEX_OWN_SCREEN_MESSAGE);
+    if (!colors.includes("\u001b[")) return;
+    if (screenText(colors) !== screenText(live)) continue;
+    const screen = screenFromAnsi(colors);
+    // herdr labels an OmO `pi`: OmO's box where it is drawn is the typing agent's, with no process read to tell them apart
+    const typing = agent === "pi" && inputRowState("omo", screen) !== "gone" ? "omo" : agent;
+    if (typedDraft(typing, screen)) throw new InputDraftError(null, identity, null, AGENT_INPUT_DRAFT_MESSAGE);
+    return;
+  }
 }
+
+/** How many times freeAgentInput reads the viewport and the live screen for a pair that agrees. */
+const AGENT_BOX_READS = 3;
 
 /** A screen read's rows as plain text, each row's and the screen's right edge trimmed. */
 const screenText = (text: string): string => stripVTControlCharacters(text).split(/\r?\n/).map((line) => line.trimEnd()).join("\n").trimEnd();

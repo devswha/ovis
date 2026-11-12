@@ -203,7 +203,9 @@ export const piInputRow: InputRowRecognizer = (screen, typed) => {
   if (upper === undefined) return "gone";
   const inner = Array.from({ length: lower - upper - 1 }, (_, offset) => text(upper + 1 + offset));
   if (inner.length === 1 && inner[0]!.trim() === "") return "ready";
-  if (inner.length > 0 && inner.length <= 6 && inner.every((row) => !row.startsWith("  "))
+  // the draft check (`typed` given) also takes rows typed with leading spaces (an indented snippet); the peek
+  // reads such rows as a dialog's, and keeps doing so
+  if (inner.length > 0 && inner.length <= 6 && (typed !== undefined || inner.every((row) => !row.startsWith("  ")))
     && inner.some((row) => row.trim() !== "") && !inner.some((row) => row.trim() === ">")) {
     for (let index = upper + 1; index < lower; index++) typed?.push(...screen.rows[index]!.cells);
     return "draft";
@@ -421,7 +423,14 @@ export function typedDraft(agent: string | null | undefined, screen: ScreenSnaps
 }
 
 const ESCAPE = /\u001b(?:\[([0-?]*)[ -/]*([@-~])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)|[@-Z\\-_])/g;
-const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** Made on first use, where the runtime has one: a browser this module is bundled for may not (Safari 14, Firefox before 125). */
+let graphemes: Intl.Segmenter | undefined;
+
+/** A row's characters as drawn: graphemes, or code points without Intl.Segmenter. */
+function characters(text: string): string[] {
+  if (typeof Intl.Segmenter === "function") graphemes ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  return graphemes ? Array.from(graphemes.segment(text), ({ segment }) => segment) : Array.from(text);
+}
 
 /**
  * A screen as herdr's `pane.read` gives it with `format: "ansi"` (one row per line, SGR only), as the
@@ -433,7 +442,7 @@ export function screenFromAnsi(text: string): ScreenSnapshot {
     const cells: ScreenCell[] = [];
     let dim = false, italic = false, inverse = false, fgDefault = true;
     const draw = (piece: string): void => {
-      for (const { segment } of graphemes.segment(piece.replace(/\r/g, ""))) cells.push({ char: segment, dim, italic, inverse, fgDefault });
+      for (const char of characters(piece.replace(/\r/g, ""))) cells.push({ char, dim, italic, inverse, fgDefault });
     };
     let offset = 0;
     for (const match of line.matchAll(ESCAPE)) {

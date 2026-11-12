@@ -471,6 +471,23 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typed("omo", "omo/draft-slash-119.ansi")).toBeFalse();
   });
 
+  test("pi's editor holding a line typed with leading spaces is a draft to the send, still a dialog's row to the peek", () => {
+    const indented = readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8").replace("leftover draft", "  indented snippet");
+    expect(typedDraft("pi", screenFromAnsi(indented))).toBeTrue();
+    expect(inputRowState("pi", screenFromAnsi(indented))).toBe("gone");
+  });
+
+  test("loads and reads a screen where the runtime has no Intl.Segmenter (Safari 14, Firefox before 125)", async () => {
+    const script = `delete Intl.Segmenter;
+      const row = await import(${JSON.stringify(join(import.meta.dir, "inputRow.ts"))});
+      const shared = await import(${JSON.stringify(join(import.meta.dir, "../../shared/input-row.ts"))});
+      console.log(typeof row.FrameGate, shared.screenFromAnsi("\\u276f typed").rows[0].text);`;
+    const child = Bun.spawn([process.execPath, "-e", script], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [out, err] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(await child.exited, err).toBe(0);
+    expect(out.trim()).toBe("function \u276f typed");
+  });
+
   test("only typed-looking cells count: the same words dim, grey or italic are no draft", () => {
     const omo = readFileSync(join(FIXTURES, "omo/draft-typed-119.ansi"), "utf8");
     const styled = (sgr: string) => typedDraft("omo", screenFromAnsi(omo.replace(" leftover draft", ` \u001b[${sgr}mleftover draft\u001b[0m`)));
