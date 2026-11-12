@@ -221,11 +221,11 @@ function steadyFields(agent: string, question: string | undefined, body: string 
 /**
  * Copilot's banner logo (Copilot 1.0.109), which it animates while a prompt of its waits: a drawing at the start of a
  * banner row, before the row's own words and the panel's `│` ("╰─╯╰─╯  Copilot v1.0.109 uses AI.  │  Use the tabs…").
- * Only that drawing, on a row shaped so, reads as one mark; the words after it stay. Drawing glyphs anywhere else are
+ * Only that drawing, on a row whose words are the banner's own (each of its four rows, as recorded), reads as one mark; the words after it stay. Drawing glyphs anywhere else are
  * read as written: a glyph may mark a menu's selected row ("██ Delete" against "░░ Keep"), and no rule tells it from a
  * drawing, so only an animation known to the letter is read as steady.
  */
-const COPILOT_LOGO_ROW_RE = /^[\u2500-\u259f\u2800-\u28ff](?:[\u2500-\u259f\u2800-\u28ff ]*[\u2500-\u259f\u2800-\u28ff])?(\s+(?:(?:Copilot v\S+ uses AI\.|Check for mistakes\.)\s+)?│.*)$/u;
+const COPILOT_LOGO_ROW_RE = /^[\u2500-\u259f\u2800-\u28ff](?:[\u2500-\u259f\u2800-\u28ff ]*[\u2500-\u259f\u2800-\u28ff])?(\s+(?:(?:Copilot v\S+ uses AI\.|Check for mistakes\.)\s+)?│(?:\s+(?:Getting started|Use the tabs above to explore your sessions and pull requests|\/model — Switch models across providers, or use Copilot Fusion))?)\s*$/u;
 
 /** A line as a fallback card's id reads it, apart from its question: Copilot's animated banner logo as one mark. */
 function tickless(agent: string, line: string): string {

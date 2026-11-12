@@ -141,6 +141,7 @@ const SWAPPED_MARKS: [string, [string, string], [string, string]][] = [
   ["a tree guide", ["\u251c \u2588 Delete", "\u2514 \u2591 Keep"], ["\u251c \u2591 Delete", "\u2514 \u2588 Keep"]],
   ["the row's end", ["Delete \u2588", "Keep \u2591"], ["Delete \u2591", "Keep \u2588"]],
   ["two glyphs", ["\u2588\u2588 Delete", "\u2591\u2591 Keep"], ["\u2591\u2591 Delete", "\u2588\u2588 Keep"]],
+  ["a column rule", ["\u2588 \u2502 Delete", "\u2591 \u2502 Keep"], ["\u2591 \u2502 Delete", "\u2588 \u2502 Keep"]],
 ];
 test.each(SWAPPED_MARKS.flatMap(([shape, before, after]) => ["copilot", "claude"].map((agent) => [agent, shape, before, after] as const)))(
   "still refuses %s's answer once a selection marked beside %s moved", async (agent, _shape, before, after) => {
