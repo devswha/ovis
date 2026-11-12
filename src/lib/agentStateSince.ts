@@ -6,8 +6,9 @@
  * time rather than a wrong one.
  *
  * A pane's ID is not the pane for good: herdr gives a pane it moves to another workspace a new ID,
- * and gives the ID of a pane that ended or moved away to another. A pane's terminal is its own for
- * as long as it lives, so a stamp names the terminal of the pane it tells of, and tells of no other.
+ * and an ID may come to name another pane (the server reckons with an ended pane's ID being given
+ * out again, server/finishes.ts). A pane's terminal is its own for as long as it lives, so a stamp
+ * names the terminal of the pane it tells of, and tells of no other.
  *
  * A kept stamp is trusted by a look that did not see its state begin only on proof that the state
  * held meanwhile. Two counters give it together: herdr's `state_change_seq`, which moves with every
@@ -219,13 +220,13 @@ function movedRows(rows: readonly SeenRow[], watched: PcSeen | undefined): Map<s
  *   bridges (lib/agentStateWatch.ts): sooner, it may be an agent the roster had not listed yet, or had lost sight of.
  *   A look that is not `dated` (the page cannot say when what it finds began) stamps no change.
  * - What the device keeps and the page remembers under an ID is a row's own only where it names the row's terminal:
- *   under an ID herdr gave out again, the row is a pane the page has not seen, with no stamp, and the stamp the last
- *   pane left there is kept as an unlisted pane's until the row has one of its own. A pane herdr moved
- *   under a new ID (`movedRows`) is the row the page was seeing under the old one: it is judged by what the page
- *   saw of it there, and by the stamp it had there, which goes with it. What was counted of its finishes under
- *   the ID it left is another count than the row's: it neither proves that stamp nor puts it ahead of the roster,
- *   and a pane seen to move is not held to it. A pane whose ID went to another while it was not listed stays one
- *   the page has seen: listed again, under whatever ID, it is no new pane.
+ *   under an ID that has come to name another pane, the row is a pane the page has not seen, with no stamp, and the
+ *   stamp the last pane left there is kept as an unlisted pane's until the row has one of its own. A pane herdr moved
+ *   under a new ID (`movedRows`) is the row the page was seeing under the old one: it is judged by what the page saw
+ *   of it there, and by the stamp it had there, which goes with it. What was counted of its finishes under the ID it
+ *   left is another count than the row's: it neither proves that stamp nor puts it ahead of the roster, and a pane
+ *   seen to move is not held to it. A pane whose ID went to another while it was not listed stays one the page has
+ *   seen: listed again, under whatever ID, it is no new pane.
  * - A state the page has been seeing keeps its stamp while the counters stand. A finish counted meanwhile, or
  *   herdr's counter moved, means the state was left and come back to out of sight (updates come together, a
  *   subscription has gaps), and the stamp goes. Two moves of herdr's counter are none of the state: the one that

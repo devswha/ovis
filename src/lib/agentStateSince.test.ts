@@ -447,7 +447,7 @@ describe("state stamps: when this device saw a state begin", () => {
     page.see(T, look({ "w2:p1": ["working", 2], "w1:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
     page.see(T + MIN, look({ "w2:p1": ["idle", 4, 1, DONE], "w1:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
     page.see(T + 2 * MIN, look({ "w1:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
-    // herdr gives the ended pane's ID to the one it moves: the stamp that pane left there stays that pane's
+    // the ended pane's ID comes to name the one that is moved: the stamp that pane left there stays that pane's
     const after = page.see(T + 3 * MIN, look({ "w2:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
     expect(page.since("w2:p1", "idle", "term-1")).toBeNull();
     expect(after["pc"]?.rows["w2:p1"]).toEqual({ state: "idle", at: T + MIN, terminal: "term-w2:p1", seq: 4, finish: 1, gone: T + 2 * MIN });
@@ -464,7 +464,7 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(atOnce.since("w2:p1", "working", "term-1")).toBe(T + 3 * MIN);
   });
 
-  it("takes a pane under an ID herdr gave out again for one it has not seen: neither the stamp there nor the page's memory of it is its own", () => {
+  it("takes another pane under an ID it knew for one it has not seen: neither the stamp there nor the page's memory of it is its own", () => {
     const page = device();
     page.see(T, look({ "w1:p1": ["working", 4, 0, { terminal: "term-1" }] }));
     page.see(T + MIN, look({ "w1:p1": ["idle", 5, 0, { terminal: "term-1" }] }));
@@ -497,7 +497,7 @@ describe("state stamps: when this device saw a state begin", () => {
     const behind = device(kept);
     ahead.see(T, look({ a: ["idle", 1], b: ["idle", 2] }));
     behind.see(T, look({ a: ["idle", 1], b: ["idle", 2] }));
-    // the pane ends and herdr gives its ID to another, whose agent the tab ahead sees appear
+    // the pane ends and its ID comes to name another, whose agent the tab ahead sees appear
     ahead.see(T + 5 * MIN, look({ a: ["idle", 7, 0, { terminal: "term-9" }], b: ["idle", 2] }));
     expect(ahead.since("a", "idle", "term-9")).toBe(T + 5 * MIN);
     // the tab behind looks at a roster from before that: the stamp under the ID is not its row's, nor its to drop
@@ -513,7 +513,7 @@ describe("state stamps: when this device saw a state begin", () => {
     const page = device();
     page.see(T, look({ x: ["working", 4, 0, { terminal: "term-1" }], still: ["idle", 9] }));
     page.see(T + MIN, look({ x: rests, still: ["idle", 9] }));
-    // three days on herdr loses sight of its agent, moves its pane, and gives the ID it left to another pane
+    // three days on herdr loses sight of its agent and moves its pane, and the ID it left comes to name another pane
     page.see(T + 3 * DAY, look({ still: ["idle", 9] }));
     page.see(T + 3 * DAY + 2000, look({ x: other, still: ["idle", 9] }));
     expect(page.since("x", "working", "term-9")).toBe(T + 3 * DAY + 2000);
