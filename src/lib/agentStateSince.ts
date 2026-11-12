@@ -267,8 +267,9 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       const there = from === undefined ? undefined : own(before[from.pane]);
       // a moved pane is judged by the stamp it had under its old ID, which this page judged at its last look. One under
       // its new ID was not this page's to judge then: it is another tab's, which followed the move first, where the
-      // counters say it tells of this state or of a later one, and else what the pane left when it last had this ID
-      const stamp = from === undefined || (here !== undefined && (ahead(here, row, counted) || proven(here, row, counted))) ? here : there;
+      // counters say it tells of a later state, or of this one and it carries no mark of leaving. Else it is what the
+      // pane left when it last had this ID: the counters stand through a state the server makes itself
+      const stamp = from === undefined || (here !== undefined && (ahead(here, row, counted) || (here.gone === undefined && proven(here, row, counted)))) ? here : there;
       const remembered = watched?.rows.get(row.pane);
       const known = from ?? (remembered !== undefined && remembered.terminal === row.terminal ? remembered : undefined);
       const saw = known !== undefined && known.left !== undefined && now - known.left > BLIND_MS ? undefined : known;

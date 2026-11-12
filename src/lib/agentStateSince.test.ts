@@ -529,6 +529,16 @@ describe("state stamps: when this device saw a state begin", () => {
     // moved back under its first ID, where the stamp of its work before that still lies
     page.see(T + 31 * MIN, look({ p1: term("working", 6, 1), other: ["idle", 9] }));
     expect(page.since("p1", "working", "term-1")).toBeNull();
+
+    // nor where the counters stand as that stamp has them: a rest the server makes itself, and work again, move neither
+    const derived = device();
+    derived.see(T, look({ p1: term("idle", 1), other: ["idle", 9] }));
+    derived.see(T + MIN, look({ p1: term("working", 2), other: ["idle", 9] }));
+    derived.see(T + 2 * MIN, look({ p2: term("working", 2), other: ["idle", 9] }));
+    derived.see(T + 3 * MIN, look({ p2: term("idle", 2), other: ["idle", 9] }));
+    derived.see(T + 4 * MIN, look({ p2: term("working", 2), other: ["idle", 9] }));
+    derived.see(T + 5 * MIN, look({ p1: term("working", 2), other: ["idle", 9] }));
+    expect(derived.since("p1", "working", "term-1")).toBe(T + 4 * MIN);
   });
 
   it("takes the stamp another tab carried to the new ID where the counters prove it, when the old ID's is gone", () => {
@@ -546,6 +556,23 @@ describe("state stamps: when this device saw a state begin", () => {
     second.see(T + 60 * MIN + 1000, look(moved));
     expect(second.since("w2:p1", "idle", "term-1")).toBe(T + MIN);
     expect(second.since("w1:p1", "working", "term-9")).toBe(T + 60 * MIN);
+
+    // where no counter proves the carried stamp, the tab that sees the move later says no time for the moved pane:
+    // the stamp under the ID it left is the other pane's, which waits since it appeared
+    const store = { stamps: {} as StateStamps };
+    const one = device(store);
+    const two = device(store);
+    const waits = (terminal: string): Row => ["blocked", undefined, 0, { terminal }];
+    one.see(T, look({ "w1:p1": ["working", undefined, 0, { terminal: "term-1" }] }));
+    two.see(T, look({ "w1:p1": ["working", undefined, 0, { terminal: "term-1" }] }));
+    one.see(T + MIN, look({ "w1:p1": waits("term-1") }));
+    two.see(T + MIN + 1000, look({ "w1:p1": waits("term-1") }));
+    const both = { "w2:p1": waits("term-1"), "w1:p1": waits("term-9") } satisfies Record<string, Row>;
+    one.see(T + 60 * MIN, look(both));
+    expect(one.since("w2:p1", "blocked", "term-1")).toBe(T + MIN);
+    two.see(T + 60 * MIN + 1000, look(both));
+    expect(two.since("w2:p1", "blocked", "term-1")).toBeNull();
+    expect(two.since("w1:p1", "blocked", "term-9")).toBe(T + 60 * MIN);
   });
 
   it("goes by a pane's ID alone where a terminal is named twice: nothing says which pane is which", () => {
