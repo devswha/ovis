@@ -274,8 +274,9 @@ export const gjcInputRow: InputRowRecognizer = (screen, typed) => {
     const cells = [cellsFrom(screen.rows[index]!, 4), ...rows.slice(position + 1, position + 1 + wrapped).map((row) => cellsFrom(screen.rows[row]!, 2))]
       .flat().filter((cell) => !blank(cell) && cell.char !== "│");
     const placeholder = body.startsWith("Type your message") && cells.every((cell) => !cell.fgDefault);
-    const after = rows.slice(position + 2);
-    if (body === "" || placeholder) return after.length === 0 ? "ready" : "covered";
+    const after = rows.slice(position + 2 + wrapped);
+    // with wrapped rows read, the box is empty only when all of them are (a draft may start with a blank line)
+    if ((wrapped === 0 ? body === "" : cells.length === 0) || placeholder) return after.length === 0 ? "ready" : "covered";
     typed?.push(...cells);
     return "draft";
   }

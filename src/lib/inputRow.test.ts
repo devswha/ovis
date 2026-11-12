@@ -529,6 +529,13 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typedDraft("gjc", screenFromAnsi(rows.join("\n")))).toBeTrue();
   });
 
+  test("a GJC draft that starts with a blank line is read from its wrapped rows", () => {
+    const rows = readFileSync(join(FIXTURES, "gjc/draft-typed-119.ansi"), "utf8").replace("leftover draft", "").split("\n");
+    const at = rows.findIndex((row) => row.includes("\u2502 \u001b") && row.includes(">"));
+    rows.splice(at + 1, 0, `\u2502   typed on the second row${" ".repeat(90)}\u2502\r`);
+    expect(typedDraft("gjc", screenFromAnsi(rows.join("\n")))).toBeTrue();
+  });
+
   test("a draft wrapped onto a second row of the box is read whole", () => {
     const rows = readFileSync(join(FIXTURES, "muse/draft-typed-119.ansi"), "utf8").replace("leftover draft", "").split("\n");
     const at = rows.findIndex((row) => row.includes("\u276f"));

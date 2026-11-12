@@ -240,20 +240,18 @@ export function claudeInputBoxContent(live: string): string | null {
 }
 
 /** Claude Code's placeholder for a paste or an image it folded, whole: `[Pasted text #1 +12 lines]`, `[Pasted text #1]`, `[Image #1]`. */
-const FOLDED_WHOLE = /\[(?:Pasted text #\d+(?: \+\d+ lines?)?|Image #\d+)\]/;
+const FOLDED_WHOLE = /\[(?:Pastedtext#\d+(?:\+\d+lines?)?|Image#\d+)\]/;
 /** its start, which the draft checks take as content whatever follows: the safer reading of a box */
-const FOLDED_START = /\[(?:Pasted text #\d+|Image #\d+)/;
+const FOLDED_START = /\[(?:Pastedtext#\d+|Image#\d+)/;
 
 /**
- * Whether box text, its rows as Claude Code drew them (`\n` between them), holds a paste or an image Claude folded
- * into a placeholder. Claude wraps its box at the pane's width, also inside a placeholder: between two words (read
- * with one space) or inside one (read with none); a continuation row's indent is not the user's. Only the whole
+ * Whether box text, its rows as Claude Code drew them, holds a paste or an image Claude folded into a placeholder.
+ * Claude wraps its box at the pane's width, also inside a placeholder, between words or inside one, any number of
+ * times: the text is read with every space and row break taken out, as are the placeholder patterns. Only the whole
  * placeholder counts (`whole`, for Send anyway: a typed `[Image #1` is not one); the draft checks take its start.
  */
 export function foldedPlaceholder(text: string, whole = false): boolean {
-  const rows = text.split("\n").map((row, index) => index === 0 ? row : row.trimStart());
-  const pattern = whole ? FOLDED_WHOLE : FOLDED_START;
-  return pattern.test(rows.join(" ")) || pattern.test(rows.join(""));
+  return (whole ? FOLDED_WHOLE : FOLDED_START).test(text.replace(/\s+/g, ""));
 }
 
 /**
