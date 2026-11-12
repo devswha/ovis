@@ -55,6 +55,8 @@ function fakeBrowser() {
     at: () => index,
     key: () => entries[index]!.key,
     drop: (on: boolean) => { dropping = on; },
+    /** a listener that hears each popstate before every other, the module's own included */
+    first: (listener: (event: Pop) => void) => { listeners.set("popstate", [listener, ...(listeners.get("popstate") ?? [])]); },
     /** a tap the browser counts as one */
     tap: () => { activation.isActive = true; for (const listener of listeners.get("pointerup") ?? []) listener({ state: null, stopImmediatePropagation: () => {} }); },
   };
@@ -330,5 +332,182 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     h.back(); await settled();
     expect(closed).toBe(1); expect(fake.at()).toBe(start);
     leave(); await settled();
+  });
+
+  it("keeps the app where it is when a sheet with no entry of its own refuses Back: the history goes again onto the entry it stood on, and both steps are held", async () => {
+    const start = fake.at();
+    fake.tap();
+    // the user moved from pane A to B to C, then pressed Back: C -> B
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    h.pushState({ pane: "c" }, "", "/?pane=c");
+    h.back(); await settled();
+    const entry = fake.key();
+    // a listener added after the module's, as the app's are: whether each step is held, whether it is the sheets' own, and the pane its entry names
+    const steps: Array<[boolean, boolean, unknown]> = [];
+    let listening = true;
+    fake.window.addEventListener("popstate", (event) => { if (listening) steps.push([sheetStep.holds(event as unknown as Event), sheetHistory.sheetSteppedOff(), (event.state as Record<string, unknown> | null)?.["pane"] ?? null]); });
+    // a request that shows by itself, with no tap since that Back: it has no entry, and answers nothing on Back
+    let asked = 0;
+    const entries = fake.entries.length;
+    const leave = enter(() => { asked += 1; return false; });
+    expect(fake.entries.length).toBe(entries); expect(fake.key()).toBe(entry);
+    h.back(); await settled();
+    expect(asked).toBe(1);
+    // on B again, by the browser's key, with no entry added: the landing on A and the way back were neither the app's
+    expect(fake.key()).toBe(entry); expect(fake.entries.length).toBe(entries);
+    expect(steps).toEqual([[true, true, null], [true, true, "b"]]);
+    // Forward is refused the same way
+    h.forward(); await settled();
+    expect(asked).toBe(2); expect(fake.key()).toBe(entry);
+    expect(steps.slice(2)).toEqual([[true, true, "c"], [true, true, "b"]]);
+    // the next tap gives the request its entry, and Back is refused on it as for any sheet that holds one:
+    // the entry it lands on shows what is shown, so nothing is held there
+    fake.tap();
+    expect(fake.at()).toBe(start + 2);
+    h.back(); await settled();
+    expect(asked).toBe(3); expect(fake.at()).toBe(start + 2);
+    expect(steps.slice(4).map(([held]) => held)).toEqual([false, false]);
+    listening = false;
+    // answered, it closes, and the next Back is the app's again
+    leave(); await settled();
+    expect(fake.at()).toBe(start + 1);
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("answers a listener that hears the event before its own does: the sheets are asked then, and once", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    h.pushState({ pane: "c" }, "", "/?pane=c");
+    h.back(); await settled();
+    const entry = fake.key();
+    // Settings' listener, when it was added before the module's
+    const held: boolean[] = [];
+    let listening = true;
+    fake.first((event) => { if (listening) held.push(sheetStep.holds(event as unknown as Event)); });
+    let asked = 0;
+    const leave = enter(() => { asked += 1; return false; });
+    h.back(); await settled();
+    expect(held).toEqual([true, true]);
+    expect(asked).toBe(1); expect(fake.key()).toBe(entry);
+    listening = false;
+    leave(); await settled();
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("asks the sheet opened last first, and one that refuses keeps Back from the sheets under it", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    h.pushState({ pane: "c" }, "", "/?pane=c");
+    h.back(); await settled();
+    const entry = fake.key();
+    // two sheets with no entry: one that would close, and over it a request that answers nothing on Back
+    let closed = 0;
+    const leaveUnder = enter(() => { closed += 1; });
+    const leaveOver = enter(() => false);
+    h.back(); await settled();
+    expect(closed).toBe(0); expect(fake.key()).toBe(entry);
+    // the request answered, Back reaches the sheet under it
+    leaveOver(); await settled();
+    h.back(); await settled();
+    expect(closed).toBe(1); expect(fake.at()).toBe(start);
+    leaveUnder(); await settled();
+  });
+
+  it("takes the way back again when another Back overtakes it: the history still ends on the entry it stood on", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    h.pushState({ pane: "c" }, "", "/?pane=c");
+    h.pushState({ pane: "d" }, "", "/?pane=d");
+    h.back(); await settled();
+    const entry = fake.key();
+    const leave = enter(() => false);
+    // the browser drops the way back onto C, as when the user's second Back overtakes it
+    fake.drop(true);
+    h.back(); await settled();
+    fake.drop(false);
+    expect(fake.at()).toBe(start + 1);
+    h.back(); await settled();
+    expect(fake.key()).toBe(entry);
+    // answered, the request closes: Back is the app's again, one entry at a time
+    leave(); await settled();
+    h.back(); await settled();
+    expect(fake.at()).toBe(start + 1); expect(sheetHistory.sheetSteppedOff()).toBe(false);
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+});
+
+describe("a phone's sheet where Back skips an entry made with no tap, and the browser gives no key for an entry (no Navigation API)", () => {
+  const api = fake.window.navigation;
+  beforeEach(() => { (fake.window as { navigation?: unknown }).navigation = undefined; });
+  afterEach(() => { fake.window.navigation = api; });
+
+  it("goes one step forward onto the drawer's entry when Back closes the menu over it, and the next Back closes the drawer alone", async () => {
+    const start = fake.at();
+    const own: boolean[] = [];
+    let listening = true;
+    fake.window.addEventListener("popstate", () => { if (listening) own.push(sheetHistory.sheetSteppedOff()); });
+    let drawerClosed = 0;
+    let menuClosed = 0;
+    fake.tap();
+    const leaveDrawer = enter(() => { drawerClosed += 1; });
+    fake.tap();
+    const leaveMenu = enter(() => { menuClosed += 1; });
+    const entries = fake.entries.length;
+    expect(fake.at()).toBe(start + 1);
+    h.back(); await settled();
+    // the menu went and the drawer stays, on a sheet's entry again with none added: both steps were the sheets' own
+    expect(menuClosed).toBe(1); expect(drawerClosed).toBe(0);
+    expect(fake.at()).toBe(start + 1); expect(fake.entries.length).toBe(entries);
+    expect(typeof (h.state as Record<string, unknown>)["ovis:sheet"]).toBe("string");
+    expect(own).toEqual([true, true]);
+    leaveMenu(); await settled();
+    // with no tap between: the second Back closes the drawer, and the app stays on its pane
+    h.back(); await settled();
+    expect(drawerClosed).toBe(1); expect(fake.at()).toBe(start);
+    expect(own).toEqual([true, true, false]);
+    listening = false;
+    leaveDrawer(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("goes one step forward onto the entry of a sheet that refuses Back", async () => {
+    const start = fake.at();
+    let busy = true;
+    let asked = 0;
+    fake.tap();
+    const leave = enter(() => { asked += 1; if (busy) return false; });
+    const entries = fake.entries.length;
+    h.back(); await settled();
+    expect(asked).toBe(1); expect(fake.at()).toBe(start + 1); expect(fake.entries.length).toBe(entries);
+    busy = false;
+    h.back(); await settled();
+    expect(asked).toBe(2); expect(fake.at()).toBe(start);
+    leave(); await settled();
+  });
+
+  it("hears a step forward that lands short of the entry as any other traversal: the sheets are asked again there", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    let drawerClosed = 0;
+    let menuClosed = 0;
+    fake.tap();
+    const leaveDrawer = enter(() => { drawerClosed += 1; });
+    fake.tap();
+    const leaveMenu = enter(() => { menuClosed += 1; });
+    // a jump two entries back (the browser's Back menu): one step forward lands on pane B's entry, not on the drawer's
+    h.go(-2); await settled();
+    expect(menuClosed).toBe(1); expect(drawerClosed).toBe(1);
+    expect(fake.at()).toBe(start + 1);
+    expect(sheetHistory.sheetSteppedOff()).toBe(false);
+    leaveMenu(); leaveDrawer(); await settled();
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
   });
 });

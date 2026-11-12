@@ -84,4 +84,13 @@ export const sheetStep: {
    * hears the event first.
    */
   taking: (event: Event) => boolean;
-} = { lands: () => false, goingBack: () => false, dropped: () => {}, taking: () => false };
+  /**
+   * Whether a popstate is a step of a Back or a Forward that a phone sheet with no history entry
+   * of its own refused (a device's request to join, up with no tap behind it): the traversal
+   * itself, which the history is about to leave again, or its way back onto the entry the app is
+   * on. Nothing under the sheet moves, so whoever keeps state by the history's entry (Settings, a
+   * file, a diff, a web page) asks first and leaves its state as it is. sheetHistory answers, and
+   * hears the event then if its own listener has not run yet.
+   */
+  holds: (event: Event) => boolean;
+} = { lands: () => false, goingBack: () => false, dropped: () => {}, taking: () => false, holds: () => false };
