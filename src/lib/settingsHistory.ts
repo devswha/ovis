@@ -237,6 +237,9 @@ if (typeof window !== "undefined") {
     }) as History["pushState"];
   }
   window.addEventListener("popstate", (event) => {
+    // a Back that a phone sheet with no entry refused, or its way back onto the entry the history
+    // stood on: the history is where it was once both have landed, and nothing of Settings moves
+    if (sheetStep.holds(event)) return;
     const previous = observed;
     observed = event.state;
     const entry = settingsEntry(event.state);
