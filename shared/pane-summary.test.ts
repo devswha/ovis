@@ -37,10 +37,64 @@ describe("summaryOf", () => {
     const text = `${"a".repeat(PANE_SUMMARY_TEXT_MAX - 1)}😀${"b".repeat(400 - PANE_SUMMARY_TEXT_MAX - 1)}`;
     expect(text).toHaveLength(400);
     const summary = summaryOf([assistant([{ kind: "text", text }], "2026-11-12T10:00:00Z")]);
-    expect(PANE_SUMMARY_TEXT_MAX).toBe(280);
     expect(summary!.text).toBe("a".repeat(279));
     const plain = summaryOf([assistant([{ kind: "text", text: "c".repeat(400) }], "2026-11-12T10:00:00Z")]);
     expect(plain!.text).toHaveLength(280);
+  });
+
+  it("cuts between graphemes: an emoji sequence or a letter with its combining marks is never split", () => {
+    const words = (text: string) => summaryOf([assistant([{ kind: "text", text }], "2026-11-12T10:00:00Z")])!.text;
+    const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
+    expect(words(`${"a".repeat(PANE_SUMMARY_TEXT_MAX - 5)}${family}b`)).toBe("a".repeat(PANE_SUMMARY_TEXT_MAX - 5));
+    expect(words(`${"a".repeat(PANE_SUMMARY_TEXT_MAX - 11)}${family}b`)).toBe(`${"a".repeat(PANE_SUMMARY_TEXT_MAX - 11)}${family}`);
+    const flag = "\u{1F1F0}\u{1F1F7}";
+    expect(words(`${"a".repeat(PANE_SUMMARY_TEXT_MAX - 3)}${flag}b`)).toBe("a".repeat(PANE_SUMMARY_TEXT_MAX - 3));
+    const marked = "e\u0301\u0323";
+    expect(words(`${"a".repeat(PANE_SUMMARY_TEXT_MAX - 2)}${marked}b`)).toBe("a".repeat(PANE_SUMMARY_TEXT_MAX - 2));
+    expect(words("a".repeat(PANE_SUMMARY_TEXT_MAX))).toHaveLength(PANE_SUMMARY_TEXT_MAX);
+  });
+
+  it("loads and cuts by code points where the runtime has no Intl.Segmenter, never inside a surrogate pair", async () => {
+    const segmenter = Object.getOwnPropertyDescriptor(Intl, "Segmenter");
+    Reflect.deleteProperty(Intl, "Segmenter");
+    try {
+      // a copy of the module of its own, loaded while the API is missing, as an older browser loads the bundle
+      const copy = "./pane-summary.ts?without-segmenter";
+      const bare = await import(copy) as typeof import("./pane-summary.ts");
+      const text = `${"a".repeat(PANE_SUMMARY_TEXT_MAX - 1)}\u{1F600}b`;
+      const words = bare.summaryOf([assistant([{ kind: "text", text }], "2026-11-12T10:00:00Z")])!.text;
+      expect(words).toBe("a".repeat(PANE_SUMMARY_TEXT_MAX - 1));
+      expect(bare.summaryOf([assistant([{ kind: "text", text: "c".repeat(400) }], "2026-11-12T10:00:00Z")])!.text).toHaveLength(PANE_SUMMARY_TEXT_MAX);
+    } finally {
+      if (segmenter) Object.defineProperty(Intl, "Segmenter", segmenter);
+    }
+    expect(typeof Intl.Segmenter).toBe("function");
+  });
+
+  it("leaves a call such as handlers[0](event) as written: a link's target names a path, a file or an address", () => {
+    const words = (text: string) => summaryOf([assistant([{ kind: "text", text }], "2026-11-12T10:00:00Z")])!.text;
+    expect(words("Then handlers[0](event) runs.")).toBe("Then handlers[0](event) runs.");
+    expect(words("Read [docs](https://example.com/a) and [here](./README.md), see [top](#top).")).toBe("Read docs and here, see top.");
+  });
+
+  it("leaves a label longer than a link's bound as written", () => {
+    const words = (text: string) => summaryOf([assistant([{ kind: "text", text }], "2026-11-12T10:00:00Z")])!.text;
+    const label = "x".repeat(201);
+    expect(words(`[${label}](https://example.com/a)`)).toBe(`[${label}](https://example.com/a)`);
+    expect(words(`[${"x".repeat(200)}](https://example.com/a)`)).toBe("x".repeat(200));
+  });
+
+  it("reads an inline link as its label before the cut", () => {
+    const words = (text: string) => summaryOf([assistant([{ kind: "text", text }], "2026-11-12T10:00:00Z")])!.text;
+    expect(words("See [the run](https://example.com/run) and [docs](https://example.com/d \"Docs\").")).toBe("See the run and docs.");
+    const url = `https://example.com/${"x".repeat(400)}`;
+    expect(words(`${"a".repeat(PANE_SUMMARY_TEXT_MAX - 10)} [the run](${url})`)).toBe(`${"a".repeat(PANE_SUMMARY_TEXT_MAX - 10)} the run`);
+  });
+
+  it("keeps a line that is only an inline code span as words, not a fence", () => {
+    const words = (text: string) => summaryOf([assistant([{ kind: "text", text }], "2026-11-12T10:00:00Z")])!.text;
+    expect(words("```npm test```")).toBe("```npm test```");
+    expect(words("Run\n```npm test```\nnow")).toBe("Run ```npm test``` now");
   });
 
   it("times asked_at by the newest user turn and is null when there is none", () => {

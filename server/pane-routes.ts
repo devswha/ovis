@@ -12,7 +12,7 @@ import { badRequest, conflictResponse, errorResponse, isCount, isJsonObject, jso
 import { conversationImage, ConversationReadPending, ConversationUnavailable, forgetPaneTranscriptState, HistoryChanged, paneConversation, paneProcessRoots, paneTranscript, toolOutput, type ConversationPage } from "./conversation.ts";
 import { copilotRecoverable, unavailableReason } from "./conversation-shared.ts";
 import { MAX_SEARCH_QUERY, searchPattern, type ConversationSearchResponse } from "../shared/conversation-search.ts";
-import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, summaryOf, type PaneSummaries } from "../shared/pane-summary.ts";
+import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, PANE_SUMMARY_PANE_MS, summaryOf, type PaneSummaries, type PaneSummary } from "../shared/pane-summary.ts";
 import { searchConversationPages } from "./conversation-search.ts";
 import { OPENCODE_TOOL_REF } from "./opencode.ts";
 import { openCodeFlagVersion, openCodeInstalledVersion } from "./opencode-service.ts";
@@ -27,6 +27,13 @@ import { expandedDirectory } from "./directories.ts";
 import { ConversationDiagnostics } from "./conversation-diagnostics.ts";
 
 const conversationDiagnostics = new ConversationDiagnostics();
+
+/**
+ * A pane's summary read still running, by pane, and when it began: a later request for the pane waits on it while it
+ * is younger than PANE_SUMMARY_DEADLINE_MS; an older one, begun perhaps under another state of the pane, is left to
+ * finish by itself and a new read takes its place.
+ */
+const summaryReads = new Map<string, { read: Promise<PaneSummary | null>; startedAt: number }>();
 
 /** The agents whose chat herdr's integration alone binds, by the session it reports (opencode.ts, grok-store.ts). */
 const INTEGRATION_BOUND = new Set(["opencode", "grok"]);
@@ -350,18 +357,41 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     // no prototype: a pane id such as `__proto__` is a key like any other
     const summaries: PaneSummaries["summaries"] = Object.create(null);
     const deadline = Date.now() + PANE_SUMMARY_DEADLINE_MS;
-    // one pane after another: a list row waits for none past the deadline or once the asker has gone, and a pane that cannot be read is null, never the list's failure
-    for (const paneId of paneIds) {
-      const left = deadline - Date.now();
-      if (left <= 0 || request.signal.aborted) break;
-      const read = paneConversation(paneId, options.codexHome, { prompts: 1 }, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData)
-        .then((conversation) => summaryOf(conversation.turns), () => null);
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), left); });
-      const summary = await Promise.race([read, late]);
-      clearTimeout(timer);
-      if (summary === "late") break;
-      summaries[paneId] = summary;
+    // the asker going away ends the wait at once
+    let leave = (): void => {};
+    const gone = new Promise<"gone">((resolve) => { leave = () => resolve("gone"); });
+    if (request.signal.aborted) leave(); else request.signal.addEventListener("abort", leave, { once: true });
+    // one pane after another, each given at most PANE_SUMMARY_PANE_MS of what is left: a pane read no faster is left out
+    // (its read goes on, for a request soon after to take up) and the next pane read, until the request's time is used up;
+    // a pane that cannot be read is null, never the list's failure
+    try {
+      for (const paneId of paneIds) {
+        const left = deadline - Date.now();
+        if (left <= 0 || request.signal.aborted) break;
+        const running = summaryReads.get(paneId);
+        let read: Promise<PaneSummary | null>;
+        if (running !== undefined && Date.now() - running.startedAt < PANE_SUMMARY_DEADLINE_MS) read = running.read;
+        else {
+          const entry: { read: Promise<PaneSummary | null>; startedAt: number } = {
+            read: paneConversation(paneId, options.codexHome, { prompts: 1 }, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData)
+              .then((conversation) => summaryOf(conversation.turns), () => null)
+              // a read replaced by a newer one leaves its successor in place
+              .finally(() => { if (summaryReads.get(paneId) === entry) summaryReads.delete(paneId); }),
+            startedAt: Date.now(),
+          };
+          summaryReads.set(paneId, entry);
+          read = entry.read;
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const late = new Promise<"late">((resolve) => { timer = setTimeout(() => resolve("late"), Math.min(PANE_SUMMARY_PANE_MS, left)); });
+        const summary = await Promise.race([read, late, gone]);
+        clearTimeout(timer);
+        if (summary === "gone") break;
+        if (summary === "late") continue;
+        summaries[paneId] = summary;
+      }
+    } finally {
+      request.signal.removeEventListener("abort", leave);
     }
     return jsonResponse({ server_time: new Date().toISOString(), summaries } satisfies PaneSummaries, 200, { "cache-control": "no-store" });
   }

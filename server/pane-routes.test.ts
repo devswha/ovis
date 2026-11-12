@@ -14,7 +14,7 @@ import { paneAgentOf, resolveAgent } from "./pane-context.ts";
 import { openCodeServiceOptions } from "./opencode-service.ts";
 import * as conversation from "./conversation.ts";
 import { requestIdContext } from "./http.ts";
-import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, type PaneSummaries } from "../shared/pane-summary.ts";
+import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, PANE_SUMMARY_PANE_MS, type PaneSummaries } from "../shared/pane-summary.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
 
 // The real RPC client against a unix socket this test owns; only herdr's answers are synthetic.
@@ -712,17 +712,23 @@ it("refuses a summary with no pane, too many panes or another method", async () 
 it("leaves out the panes it has no time left to read", async () => {
   let clock = 1_000_000;
   const now = spyOn(Date, "now").mockImplementation(() => clock);
+  const stuck = Promise.withResolvers<conversation.RecognizedConversation>();
   const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
-    // the first read takes all but a moment of the deadline, and the second never ends
-    if (paneId === "slow") return new Promise<never>(() => {});
+    // the first read takes all but a moment of the deadline, and the second outlasts that moment
+    if (paneId === "stuck") { clock += 5; return stuck.promise; }
     clock += PANE_SUMMARY_DEADLINE_MS - 5;
     return said("first", "2026-11-12T10:00:00Z");
   });
   try {
-    const body = await (await askSummary(["w:p1", "slow", "w:p3"]))!.json() as PaneSummaries;
+    const body = await (await askSummary(["w:p1", "stuck", "w:p3"]))!.json() as PaneSummaries;
     expect(Object.keys(body.summaries)).toEqual(["w:p1"]);
-    expect(read.mock.calls.map((call) => call[0])).toEqual(["w:p1", "slow"]);
-  } finally { read.mockRestore(); now.mockRestore(); }
+    expect(read.mock.calls.map((call) => call[0])).toEqual(["w:p1", "stuck"]);
+  } finally {
+    // settled, so no later request finds its read still running
+    stuck.resolve(said("late", "2026-11-12T10:00:00Z"));
+    await stuck.promise;
+    read.mockRestore(); now.mockRestore();
+  }
 });
 
 it("keeps a pane id such as __proto__ as an ordinary key", async () => {
@@ -734,16 +740,144 @@ it("keeps a pane id such as __proto__ as an ordinary key", async () => {
   } finally { read.mockRestore(); }
 });
 
-it("reads no further pane once the request is aborted", async () => {
+/**
+ * The route's timers as a case runs them: the timer set once a pane's read has started is that pane's, and it runs
+ * out at once for the pane named `late` and never for any other, whose read then answers first.
+ */
+function paneTimers(late: string) {
+  const set = globalThis.setTimeout;
+  const delays: [string, number][] = [];
+  let reading = "";
+  const timers = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms?: number) => {
+    delays.push([reading, ms ?? 0]);
+    return set(reading === late ? callback : () => {}, 0);
+  }) as unknown as typeof setTimeout);
+  return { delays, reads: (paneId: string) => { reading = paneId; }, restore: () => timers.mockRestore() };
+}
+
+it("leaves out a pane whose read runs past its share and reads the panes after it", async () => {
+  const slow = Promise.withResolvers<conversation.RecognizedConversation>();
+  const timers = paneTimers("slow");
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    timers.reads(paneId);
+    return paneId === "slow" ? slow.promise : said(`hello from ${paneId}`, "2026-11-12T10:00:00Z");
+  });
+  try {
+    const body = await (await askSummary(["slow", "w:p2", "w:p3"]))!.json() as PaneSummaries;
+    expect(Object.keys(body.summaries)).toEqual(["w:p2", "w:p3"]);
+    expect(timers.delays[0]).toEqual(["slow", PANE_SUMMARY_PANE_MS]);
+  } finally {
+    slow.resolve(said("late words", "2026-11-12T10:00:00Z"));
+    await slow.promise;
+    read.mockRestore(); timers.restore();
+  }
+});
+
+it("has a later request for a pane wait on the read still running for it, and starts a new read once it settled", async () => {
+  const slow = Promise.withResolvers<conversation.RecognizedConversation>();
+  const timers = paneTimers("running");
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    timers.reads(paneId);
+    return paneId === "running" ? slow.promise : said(`hello from ${paneId}`, "2026-11-12T10:00:00Z");
+  });
+  const slowReads = () => read.mock.calls.filter((call) => call[0] === "running").length;
+  try {
+    expect(Object.keys((await (await askSummary(["running", "w:p2"]))!.json() as PaneSummaries).summaries)).toEqual(["w:p2"]);
+    const second = askSummary(["running"]);
+    slow.resolve(said("late words", "2026-11-12T10:00:00Z"));
+    const body = await (await second)!.json() as PaneSummaries;
+    expect(slowReads()).toBe(1);
+    expect(body.summaries).toEqual({ running: { role: "user", text: "late words", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" } });
+    await askSummary(["running"]);
+    expect(slowReads()).toBe(2);
+  } finally {
+    slow.resolve(said("late words", "2026-11-12T10:00:00Z"));
+    read.mockRestore(); timers.restore();
+  }
+});
+
+it("shares a running read with a later request while it is younger than a request's time", async () => {
+  let clock = 1_000_000;
+  const now = spyOn(Date, "now").mockImplementation(() => clock);
+  const first = Promise.withResolvers<conversation.RecognizedConversation>();
+  const timers = paneTimers("aged");
+  let reads = 0;
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    timers.reads(paneId);
+    reads++;
+    // the first read is still running when the later requests come; the one started in its place answers at once
+    return reads === 1 ? first.promise : said("words after the turn", "2026-11-12T10:05:00Z");
+  });
+  try {
+    expect(Object.keys((await (await askSummary(["aged"]))!.json() as PaneSummaries).summaries)).toEqual([]);
+    // inside the age the running read is the one waited on
+    clock += PANE_SUMMARY_DEADLINE_MS - 1;
+    timers.reads("none");
+    const inside = askSummary(["aged"]);
+    first.resolve(said("words from mid-turn", "2026-11-12T10:00:00Z"));
+    expect((await (await inside)!.json() as PaneSummaries).summaries).toEqual({ aged: { role: "user", text: "words from mid-turn", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" } });
+    expect(reads).toBe(1);
+  } finally {
+    first.resolve(said("words from mid-turn", "2026-11-12T10:00:00Z"));
+    read.mockRestore(); timers.restore(); now.mockRestore();
+  }
+});
+
+it("starts a new read for a request that comes after the running one has aged past a request's time", async () => {
+  let clock = 1_000_000;
+  const now = spyOn(Date, "now").mockImplementation(() => clock);
+  const first = Promise.withResolvers<conversation.RecognizedConversation>();
+  const second = Promise.withResolvers<conversation.RecognizedConversation>();
+  const timers = paneTimers("old");
+  let reads = 0;
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    timers.reads(paneId);
+    reads++;
+    return reads === 1 ? first.promise : reads === 2 ? second.promise : said("words of a third read", "2026-11-12T10:09:00Z");
+  });
+  try {
+    expect(Object.keys((await (await askSummary(["old"]))!.json() as PaneSummaries).summaries)).toEqual([]);
+    // past the age a new read starts in the old one's place; it is still running when its request's share runs out
+    clock += PANE_SUMMARY_DEADLINE_MS;
+    expect(Object.keys((await (await askSummary(["old"]))!.json() as PaneSummaries).summaries)).toEqual([]);
+    expect(reads).toBe(2);
+    // the replaced read settles, past every microtask its settling queues: it leaves the read started in its place where it is
+    first.resolve(said("words from mid-turn", "2026-11-12T10:00:00Z"));
+    await first.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // a request inside the second read's age waits on it, starts no third, and is answered with its words
+    timers.reads("none");
+    const third = askSummary(["old"]);
+    second.resolve(said("words after the turn", "2026-11-12T10:05:00Z"));
+    const body = await (await third)!.json() as PaneSummaries;
+    expect(reads).toBe(2);
+    expect(body.summaries).toEqual({ old: { role: "user", text: "words after the turn", at: "2026-11-12T10:05:00Z", asked_at: "2026-11-12T10:05:00Z" } });
+  } finally {
+    first.resolve(said("words from mid-turn", "2026-11-12T10:00:00Z"));
+    second.resolve(said("words after the turn", "2026-11-12T10:05:00Z"));
+    await second.promise;
+    read.mockRestore(); timers.restore(); now.mockRestore();
+  }
+});
+
+it("ends the request at once when the asker goes away during a read, reading no further pane", async () => {
+  const held = Promise.withResolvers<conversation.RecognizedConversation>();
   const asker = new AbortController();
-  const read = spyOn(conversation, "paneConversation").mockImplementation(async () => {
-    asker.abort();
-    return said("first", "2026-11-12T10:00:00Z");
+  const timers = paneTimers("none");
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    timers.reads(paneId);
+    return held.promise;
   });
   try {
     const url = summaryUrl(["w:p1", "w:p2"]);
-    const body = await (await handlePaneRequest(new Request(url, { signal: asker.signal }), url, "/api/pane/summary", {}))!.json() as PaneSummaries;
-    expect(Object.keys(body.summaries)).toEqual(["w:p1"]);
+    const answer = handlePaneRequest(new Request(url, { signal: asker.signal }), url, "/api/pane/summary", {});
+    asker.abort();
+    const body = await (await answer)!.json() as PaneSummaries;
+    expect(Object.keys(body.summaries)).toEqual([]);
     expect(read).toHaveBeenCalledTimes(1);
-  } finally { read.mockRestore(); }
+  } finally {
+    held.resolve(said("first", "2026-11-12T10:00:00Z"));
+    await held.promise;
+    read.mockRestore(); timers.restore();
+  }
 });
