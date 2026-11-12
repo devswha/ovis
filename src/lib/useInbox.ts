@@ -97,7 +97,7 @@ export function useInbox({ setting, initialLink, drawerOpenRef }: { setting: boo
   const [query, setQuery] = useState("");
   /** the list's scroll offset, kept while a thread is open */
   const scroll = useRef(0);
-  /** the waiting agents' questions, read once for the page: the list unmounts whenever a thread opens */
+  /** the waiting agents' questions, kept for the page (the list unmounts whenever a thread opens) and read again at each mount */
   const [questionReads] = useState(newQuestionReads);
   /** each row's last words, read for the page as the questions are */
   const [summaryReads] = useState(newSummaryReads);

@@ -1,6 +1,7 @@
 /**
  * What each waiting agent of the inbox asks (components/AgentInbox.tsx): its prompt card read once per
- * wait through the read-only GET /api/pane/prompt, a few at a time. Nothing is answered from here.
+ * wait and each time the list is shown, through the read-only GET /api/pane/prompt, a few at a time.
+ * Nothing is answered from here.
  */
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
@@ -40,9 +41,12 @@ const NO_TEXTS: ReadonlyMap<string, string> = new Map();
 const readOf = (ask: Ask): string => `${ask.key}\n${ask.seq}\n${ask.language}`;
 
 /**
- * Each target's question, read once per key, seq and language, at most QUESTION_READS_AT_ONCE at a time; it
- * lives as long as the page, so a list mounted again reads nothing it read before. A read gets two attempts:
- * an empty answer is asked once more after QUESTION_RETRY_MS, a failed one at the next sync. A target's words
+ * Each target's question, read once per key, seq and language, at most QUESTION_READS_AT_ONCE at a time, and
+ * once more each time the list is shown (`shownAgain`): a seq is no prompt's identity (a bridge without one
+ * gives every wait 0, and two prompts can share a state), so the words kept from before are checked. The reader
+ * lives as long as the page: the words stay across mounts, shown until the new answer lands, and a read still
+ * on its way is not started twice. A read gets two attempts: an empty answer is asked once more after
+ * QUESTION_RETRY_MS, a failed one at the next sync; a second empty answer removes the words. A target's words
  * belong to the seq they were read for and go when it moves on or leaves. An answer for a target gone or
  * moved on since is dropped.
  */
@@ -56,6 +60,8 @@ export class QuestionReads {
   private readonly started = new Set<string>();
   private readonly retried = new Set<string>();
   private readonly waits = new Map<string, () => void>();
+  /** the reads whose answer is on its way */
+  private readonly reading = new Set<string>();
   private queue: Ask[] = [];
   private inFlight = 0;
 
@@ -73,6 +79,13 @@ export class QuestionReads {
   /** The words read for this target's own seq: none while its new wait is not read yet. */
   wordsFor(target: QuestionTarget): string | undefined {
     return this.readFor.get(target.key) === target.seq ? this.current.get(target.key) : undefined;
+  }
+
+  /** The list is shown again: every read done may be made once more at the next sync, its attempts afresh; one in flight, queued or waiting its retry is left as it is. */
+  shownAgain(): void {
+    const busy = new Set([...this.reading, ...this.waits.keys(), ...this.queue.map(readOf)]);
+    for (const read of [...this.started]) if (!busy.has(read)) this.started.delete(read);
+    for (const read of [...this.retried]) if (!busy.has(read)) this.retried.delete(read);
   }
 
   sync(targets: readonly QuestionTarget[], language: Language = "en"): void {
@@ -119,12 +132,16 @@ export class QuestionReads {
 
   private start(ask: Ask): void {
     this.inFlight++;
+    const read = readOf(ask);
+    this.reading.add(read);
     this.read(ask.paneId, ask.machineId).then(({ prompt }) => {
       this.inFlight--;
+      this.reading.delete(read);
       try { this.answered(ask, prompt); } catch { this.failed(ask); }
       this.pump();
     }, () => {
       this.inFlight--;
+      this.reading.delete(read);
       this.failed(ask);
       this.pump();
     });
@@ -139,7 +156,11 @@ export class QuestionReads {
       return;
     }
     const read = readOf(ask);
-    if (this.retried.has(read)) return;
+    if (this.retried.has(read)) {
+      // asked twice and no question: the words read before (a showing earlier, another language) are gone
+      if (this.current.has(ask.key)) this.change((texts) => { texts.delete(ask.key); this.readFor.delete(ask.key); });
+      return;
+    }
     this.retried.add(read);
     this.waits.set(read, this.wait(() => {
       this.waits.delete(read);
@@ -168,6 +189,8 @@ export function useInboxQuestions(reads: QuestionReads, targets: readonly Questi
   const { resolvedLanguage } = useSettings();
   const targetsRef = useRef(targets); targetsRef.current = targets;
   const signature = targets.map((target) => `${target.key}:${target.seq}`).join("\n");
+  // each mount of the list reads every waiting row's question once more, before its first sync
+  useEffect(() => { reads.shownAgain(); }, [reads]);
   useEffect(() => { reads.sync(targetsRef.current, resolvedLanguage); }, [reads, signature, resolvedLanguage]);
   const texts = useSyncExternalStore(reads.subscribe, reads.texts, reads.texts);
   // filtered here too, so a list mounted again never draws the words of a wait its row has left

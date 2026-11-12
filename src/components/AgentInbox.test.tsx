@@ -390,17 +390,30 @@ describe("AgentInbox", () => {
     expect(scroll.current).toBe(40);
   });
 
-  it("reads a waiting agent's question once for the page: not again when the list mounts again, again for a new wait", async () => {
+  it("reads a waiting agent's question again each time the list mounts, keeping its words until the answer lands, and again for a new wait", async () => {
     await draw(roster());
     expect(promptReads).toBe(1);
     await act(async () => { answerPrompt(question("Run the export tests?")); });
     await act(async () => { renderer?.unmount(); });
+    // the same wait and counter: a bridge with no counter, or a second prompt in the same state, looks the same
+    const root = await draw(roster());
+    expect(promptReads).toBe(2);
+    expect(byClass(item(root, "w1D:p1"), "inbox-words").map(text)).toEqual(["Run the export tests?"]);
+    await act(async () => { answerPrompt(question("Deploy to staging?")); });
+    expect(byClass(item(root, "w1D:p1"), "inbox-words").map(text)).toEqual(["Deploy to staging?"]);
+    await redraw({ activity: { ...activity, seqs: () => new Map([["w1D:p1", 5]]) } });
+    expect(promptReads).toBe(3);
+    expect(byClass(item(root, "w1D:p1"), "inbox-words").length).toBe(0);
+  });
+
+  it("starts no second read when the list mounts again while the first is on its way", async () => {
+    await draw(roster());
+    expect(promptReads).toBe(1);
+    await act(async () => { renderer?.unmount(); });
     const root = await draw(roster());
     expect(promptReads).toBe(1);
+    await act(async () => { answerPrompt(question("Run the export tests?")); });
     expect(byClass(item(root, "w1D:p1"), "inbox-words").map(text)).toEqual(["Run the export tests?"]);
-    await redraw({ activity: { ...activity, seqs: () => new Map([["w1D:p1", 5]]) } });
-    expect(promptReads).toBe(2);
-    expect(byClass(item(root, "w1D:p1"), "inbox-words").length).toBe(0);
   });
 
   /** answers the newest summary read: every pane it asked about, null where the case gives nothing */
@@ -544,12 +557,12 @@ describe("AgentInbox", () => {
     expect(words(root, "w1E:p1")).toEqual(["Fixed the jq quirk in the zsh prompt."]);
   });
 
-  it("shows at the next mount the question whose read landed after the list closed", async () => {
+  it("shows at the next mount the question whose read landed after the list closed, while it is read again", async () => {
     await draw(roster());
     await act(async () => { renderer?.unmount(); });
     await act(async () => { answerPrompt(question("Run the export tests?")); });
     const root = await draw(roster());
-    expect(promptReads).toBe(1);
+    expect(promptReads).toBe(2);
     expect(byClass(item(root, "w1D:p1"), "inbox-words").map(text)).toEqual(["Run the export tests?"]);
   });
 });

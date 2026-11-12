@@ -2062,8 +2062,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   focus, take a pane over, resize a pane, mark a finish as seen, or silence an alert for a pane it
   covers (it counts as covering the pane, as the open drawer does). Until a pane is opened nothing
   is attached or read for one; only a waiting agent's question is read, and each row's last words
-  and their time: one read-only request (GET /api/pane/summary) per PC for up to 24 rows, for the
-  first 60 rows of connected PCs in the list's order. A row is read again when its finish, its
+  and their time. A waiting row's question (GET /api/pane/prompt, two at a time) is read once for
+  each wait, and once more each time the list is shown, as a wait's counter does not tell one
+  question from the next; the row keeps the words it had until that answer lands, and an answer
+  with no question, asked twice, takes them away. The last words and their time are read with one
+  read-only request (GET /api/pane/summary) per PC for up to 24 rows, for the first 60 rows of connected PCs in the list's order. A row is read again when its finish, its
   activity or its shown state changes, and a working row whose new read repeats the words and time
   it had is read once more after two seconds (its agent may not have written the new turn yet). The
   server gives each pane's read at most 400 ms of the request's 1.5 s and leaves a slower pane out,
