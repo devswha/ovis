@@ -100,7 +100,8 @@ it("does not preview an unchanged pi screen after immediate delivery without a s
   });
   await submitter()(target.pane_id, "/myext", "/myext", now);
   expect(delivered).toHaveBeenCalledTimes(1);
-  expect(screen).not.toHaveBeenCalled();
+  // no screen baseline: only pi's box was read before the send (composer.ts freeAgentInput)
+  expect(screen.mock.calls.map(([options]) => options.format)).toEqual(["ansi"]);
   now++;
   const url = new URL(`http://localhost/api/pane/prompt?pane_id=${target.pane_id}`);
   const shown = await (await handlePromptRequest(new Request(url), url))?.json() as PanePromptResponse;
@@ -141,6 +142,8 @@ it("does not rewrite /model when the resolved pane agent is OmO", async () => {
   spyOn(client, "paneGet").mockResolvedValue(target);
   spyOn(client, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ pid: process.pid, argv: ["omo"], cwd: dir }] } } as never);
   spyOn(omo, "omoProcessIdentity").mockReturnValue({ agentDir, heldIds: ["session-1"], custom: true, held: true });
+  // OmO's box, read before the send (composer.ts freeAgentInput): empty
+  spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
   const deliver = spyOn(client, "agentPrompt").mockResolvedValue();
   try {
     await submitter()(target.pane_id, "/model", "/model", Date.now());
@@ -168,8 +171,9 @@ for (const dependency of ["process-info", "transcript", "catalog", "snapshot"] a
       if (dependency === "process-info") processInfo.mockImplementation(async () => { disrupt(); return roots; });
       if (dependency === "transcript") transcript.mockImplementation(async () => { disrupt(); return null; });
       if (dependency === "catalog") catalog.mockImplementation(() => { disrupt(); return []; });
-      if (dependency === "snapshot") snapshot.mockImplementation(async () => {
-        disrupt(); return screen;
+      // the outcome's screen reads, not the read of the agent's box before the send (format ansi, composer.ts freeAgentInput)
+      if (dependency === "snapshot") snapshot.mockImplementation(async (options) => {
+        if (options.format !== "ansi") disrupt(); return screen;
       });
       const result = await submitter()(pane.pane_id, "/myext", "/myext", now).then(() => "delivered", (error: unknown) => error);
       expect(result).toBe("delivered");

@@ -1415,7 +1415,7 @@ describe("WebSocket submit", () => {
     }
   }, 30_000);
 
-  it("preserves immediate non-Claude chat sends without reading the terminal input box", async () => {
+  it("preserves immediate non-Claude chat sends without reading Claude's input box: Codex's own screens and composer only", async () => {
     const socket = await Socket.connect();
     const originalRead = herdr.paneRead;
     const read = spyOn(herdr, "paneRead").mockImplementation((options, socketPath) => originalRead(options, socketPath));
@@ -1424,8 +1424,9 @@ describe("WebSocket submit", () => {
       socket.send({ type: "submit", id: 30, pane_id: codex.pane, text: "follow up", payload: paste("follow up") });
       expect(await socket.result(30)).toMatchObject({ ok: true, pane_id: codex.pane });
       expect(prompt).toHaveBeenCalledWith(codex.pane, "follow up", undefined, expect.any(Function));
-      // Codex's live screen once, for one of its own screens over the composer (composer.ts freeCodexInput); no box is read
-      expect(read.mock.calls.map(([options]) => [options.paneId, options.source])).toEqual([[codex.pane, "detection"]]);
+      // Codex's live screen once, for one of its own screens over the composer (composer.ts freeCodexInput), then its
+      // composer for typed text (freeAgentInput), read at the bottom of the scrollback as the viewport is
+      expect(read.mock.calls.map(([options]) => [options.paneId, options.source])).toEqual([[codex.pane, "detection"], [codex.pane, "visible"]]);
     } finally {
       prompt.mockRestore();
       read.mockRestore();
@@ -1571,9 +1572,9 @@ describe("WebSocket submit", () => {
       expect(await socket.result(21)).toMatchObject({ ok: true });
       await received(codex, from, 1);
       expect(typed(codex, from)).toBe(`${paste("follow up")}\r`);
-      // the live screen twice, never the viewport: before herdr is written to (one of Codex's own screens gets nothing),
-      // and after herdr's refusal, for the collapsed queue
-      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["detection", "detection"]);
+      // the live screen twice: before herdr is written to (one of Codex's own screens gets nothing), and after herdr's
+      // refusal, for the collapsed queue; between them its composer for typed text (freeAgentInput)
+      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["detection", "visible", "detection"]);
     } finally {
       read.mockRestore();
       socket.close();

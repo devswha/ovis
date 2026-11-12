@@ -92,21 +92,30 @@ it("refuses a Chat send while one of Codex's own screens is open, typing nothing
   }
 });
 
-it("sends into Codex's composer: at rest, after a screen closed, and with a draft in it", async () => {
+it("sends into Codex's composer: at rest and after a screen closed", async () => {
   for (const shown of ["permissions-idle-120", "permissions-idle-40", "permissions-closed-120", "permissions-closed-40", "rename-closed-40",
-    "diff-closed-q-120", "diff-closed-q-40", "cd-untrusted-repo-closed-120", "mention-closed-120"]) {
+    "diff-closed-q-120", "diff-closed-q-40", "cd-untrusted-repo-closed-120"]) {
     screen = recorded(shown);
     calls = [];
     expect(await send(), shown).toBeUndefined();
     expect(typed().map((call) => [call.method, call.params["text"]]), shown).toEqual([["agent.prompt", "hello from chat"]]);
   }
-  // Codex 0.167, also with its shortcuts shown, the slash commands' popup over a draft, and at Ultra reasoning effort
-  for (const shown of ["composer-empty-100", "composer-empty-40", "composer-draft-100", "composer-shortcuts-100", "composer-shortcuts-40", "slash-popup-100",
-    "composer-ultra-empty-100", "composer-ultra-empty-40", "composer-ultra-draft-100", "composer-ultra-shortcuts-40", "composer-ultra-banner-100"]) {
+  // Codex 0.167, also with its shortcuts shown and at Ultra reasoning effort
+  for (const shown of ["composer-empty-100", "composer-empty-40", "composer-shortcuts-100", "composer-shortcuts-40",
+    "composer-ultra-empty-100", "composer-ultra-empty-40", "composer-ultra-shortcuts-40", "composer-ultra-banner-100"]) {
     screen = recorded167(shown);
     calls = [];
     expect(await send(), shown).toBeUndefined();
     expect(typed().map((call) => [call.method, call.params["text"]]), shown).toEqual([["agent.prompt", "hello from chat"]]);
+  }
+});
+
+it("refuses a Chat send over text typed in Codex's composer, the slash commands' popup over it included, typing nothing", async () => {
+  for (const [shown, read] of [["mention-closed-120", recorded], ["composer-draft-100", recorded167], ["slash-popup-100", recorded167], ["composer-ultra-draft-100", recorded167]] as const) {
+    screen = read(shown);
+    calls = [];
+    expect(await send(), shown).toMatchObject({ code: "input_draft" });
+    expect(typed(), shown).toEqual([]);
   }
 });
 
