@@ -1751,7 +1751,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a state's colour stays its own; it takes no fill. The list's fold lines that stand in for rows
   (**+N background**, **+N resting**) keep a row's height and take the headings' type. A folded
   heading keeps its count and turns its caret. The folds are kept on
-  this device (`ovis:agent-state-folds`), as a named group's are. With none kept, **Idle** starts
+  this device (`ovis:agent-state-folds`), as a named group's are, and read anew at each press, so
+  a fold another tab made is kept. With none kept, **Idle** starts
   folded: the agents that need the reader, work or just finished stand first, and the resting ones
   are a press away. A folded group keeps the selected agent in sight, as the list's other folds
   that start folded do (the resting line, the background workspaces), so reading a finished agent
@@ -1777,19 +1778,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   is as tall as before and draws its words at the same height, with a time or without, at either
   density and at any interface type size.
   Beside the filter's **Selected** note a one-line row's time steps aside, as its place does.
-  herdr reports no time of change, so this device stamps a change when it sees one
-  and keeps the stamps (`ovis:agent-state-since`, lib/agentStateSince.ts) across reloads, where
-  herdr's `state_change_seq` proves that nothing changed meanwhile: a stamp is kept only where
-  it and the row carry the same counter, so with a herdr that counts nothing a time lasts until
-  the page is loaded again. A change is dated only while the page was being told of its PCs: its
-  roster stream open and the page running, or a roster read within the last minute and a half
+  herdr reports no time of change, so this device stamps a change when it sees one and keeps the
+  stamps (`ovis:agent-state-since`, lib/agentStateSince.ts) across reloads, where two counters
+  prove that nothing changed meanwhile: herdr's `state_change_seq`, and the server's count of the
+  pane's finishes (`finish_id`, in its `finish_epoch`), since the state Ovis shows is not always
+  herdr's (a Claude that rests while its subagent keeps herdr at working). A stamp is kept only
+  where it and the row carry the same two numbers. So a time lasts until the page is loaded again
+  with a herdr that counts nothing (herdr-core), once the server has started anew, and for the
+  agents whose state Ovis reads from their own session files (OmO, GJC, Letta), for which herdr's
+  counter stands still. While the page watches, a counter that moves under a state that reads the
+  same means the state was left and come back to, and its time goes; herdr's own turn from done,
+  the roster that brings the counter of a pushed status, and the end of a turn whose background
+  work holds the row at working are no such move. Two tabs of one device read the stamps anew at
+  each look: a tab keeps the time another stamped for a change both see, and leaves alone a stamp
+  of a change it has not seen yet. A change is dated only while the page was being told of its PCs:
+  its roster stream open and the page running, or a roster read within the last minute and a half
   (lib/agentStateWatch.ts). After a longer gap (a phone that slept, a laptop's lid shut, a server
-  out of reach) the next roster is read as a reload reads it: a time stands where the counter
-  proves it, and what changed meanwhile says no time. A roster read after the stream said nothing
-  for as long dates no change either, and keeps the times the page had. Done and idle are one state:
-  reading a finished agent does not reset its time. A state this device did not see begin says no
-  time rather than a wrong one, a PC that is away says none, and a pane gone from its roster for
-  thirty days is forgotten. The times are stamped in one place for the whole page
+  out of reach) the next roster is read as a reload reads it: a time stands where the counters
+  prove it, and what changed meanwhile says no time. A roster read after the stream said nothing
+  for as long dates no change either, and keeps the times the page had. Done and idle are one
+  state: reading a finished agent does not reset its time. A state this device did not see begin
+  says no time rather than a wrong one, a PC that is away says none, and a pane gone from its
+  roster for thirty days is forgotten. The times are stamped in one place for the whole page
   (lib/useAgentStateSince.ts) and every list reads them. They are redrawn every 30 seconds while
   the list is open, in steps, never as a running clock. The format and the done-and-idle rule are
   herdr-app's agents mod's.
