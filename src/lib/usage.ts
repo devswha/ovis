@@ -283,7 +283,7 @@ export function moveInOrder(shown: readonly string[], saved: readonly string[], 
 export function useUsage(enabled: boolean) {
   const [held, setHeld] = useState<HeldReport | null>(null);
   const [loading, setLoading] = useState(false);
-  /** when the server was last asked or last heard: the report in hand is aged up to then */
+  /** when the server was last asked: the report in hand is aged up to then, and one heard since is not aged at all */
   const [asOf, setAsOf] = useState(deviceTime);
   const visible = usePageVisible();
   const generation = useRef(0);
@@ -295,8 +295,8 @@ export function useUsage(enabled: boolean) {
     setAsOf(deviceTime());
     try {
       const next = await fetchUsage(refresh);
-      if (current === generation.current) { const heardAt = deviceTime(); setHeld((previous) => heldReport(previous, next, heardAt)); setAsOf(heardAt); }
-    } catch { if (current === generation.current) setAsOf(deviceTime()); /* offline or restarting: the last report stays, and ages */ }
+      if (current === generation.current) { const heardAt = deviceTime(); setHeld((previous) => heldReport(previous, next, heardAt)); }
+    } catch { /* offline or restarting: the last report stays, and ages with each ask */ }
     finally { if (current === generation.current) setLoading(false); }
   }, []);
 
