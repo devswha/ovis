@@ -239,14 +239,19 @@ const STATE_FOLDS_KEY = "ovis:agent-state-folds";
 /** with no fold kept, Idle starts folded: the agents that ask for a look or work stand first, and the resting ones are a press away */
 const FOLDED_AT_FIRST: readonly AgentGroup[] = ["idle"];
 
-function loadStateFolds(): AgentGroup[] {
+/** The folds this device keeps, or null where it keeps none (or its storage cannot be read). */
+function keptStateFolds(): AgentGroup[] | null {
   try {
     const kept = window.localStorage.getItem(STATE_FOLDS_KEY);
     const stored: unknown = kept === null ? null : JSON.parse(kept);
-    return Array.isArray(stored) ? AGENT_GROUPS.filter((group) => stored.includes(group)) : [...FOLDED_AT_FIRST];
+    return Array.isArray(stored) ? AGENT_GROUPS.filter((group) => stored.includes(group)) : null;
   } catch {
-    return [...FOLDED_AT_FIRST];
+    return null;
   }
+}
+
+function loadStateFolds(): AgentGroup[] {
+  return keptStateFolds() ?? [...FOLDED_AT_FIRST];
 }
 
 function loadOpenHelpers(): string[] {
@@ -386,7 +391,10 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   // the state groups this device folds (#3505): a folded group keeps its heading and its count
   const [stateFolds, setStateFolds] = useState(loadStateFolds);
   const toggleStateFold = (group: AgentGroup): void => {
-    const next = stateFolds.includes(group) ? stateFolds.filter((held) => held !== group) : [...stateFolds, group];
+    // read anew, so the folds another tab made are kept, as the helpers' are; where none is kept (a first press,
+    // private mode) the page goes by its own. The press folds or opens the group as this page shows it
+    const others = (keptStateFolds() ?? stateFolds).filter((held) => held !== group);
+    const next = stateFolds.includes(group) ? others : AGENT_GROUPS.filter((held) => held === group || others.includes(held));
     setStateFolds(next);
     try { window.localStorage.setItem(STATE_FOLDS_KEY, JSON.stringify(next)); } catch { /* private mode: this page keeps it */ }
   };

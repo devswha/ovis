@@ -513,6 +513,20 @@ describe("AgentSidebar fold memory", () => {
     expect(foldedRows()).toEqual([paneId]);
   });
 
+  it("keeps the fold another tab made when this one folds another group (#3505)", async () => {
+    // Given two tabs of one device with Idle open, and this one drawn before the other folds Working.
+    stored.set("ovis:agent-groups", "true");
+    stored.set("ovis:agent-state-folds", "[]");
+    await act(async () => { renderer = create(groupedList(inactive)); });
+    stored.set("ovis:agent-state-folds", JSON.stringify(["working"]));
+    // When this tab folds Idle.
+    await act(async () => { heading("idle").props.onClick(); });
+    // Then the device keeps both folds, and this tab shows both.
+    expect(JSON.parse(stored.get("ovis:agent-state-folds")!)).toEqual(["working", "idle"]);
+    expect(heading("working").props["aria-expanded"]).toBe(false);
+    expect(heading("idle").props["aria-expanded"]).toBe(false);
+  });
+
   it("keeps the selected agent in sight under its folded group, as the list's other folds do (#3505)", async () => {
     stored.set("ovis:agent-groups", "true");
     const selecting = (pane: string) => <SettingsProvider>
