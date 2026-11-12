@@ -911,6 +911,8 @@ describe("WebSocket submit", () => {
     ["a folded paste", "\u276f [Pasted text #1 +12 lines]", 120],
     ["a folded paste after typed words", "\u276f look at this [Pasted text #2 +40 lines] and fix it", 122],
     ["an image", "\u276f [Image #1]", 124],
+    // Claude wraps its box at the pane's width, also inside a placeholder
+    ["a folded paste wrapped over two rows", "\u276f look at this [Pasted text\r\n  #2 +40 lines] and fix it", 126],
   ] as const)("offers no send anyway over a box holding %s, whose lines the user cannot see, and refuses one (#3563)", async (_name, box, id) => {
     const socket = await Socket.connect();
     const screen = mockClaudeInput(agent.pane, claudeInputScreen(box));
@@ -923,8 +925,9 @@ describe("WebSocket submit", () => {
       expect(refused).toMatchObject({ ok: false, code: "input_draft" });
       expect(refused.box).toBeUndefined();
       expect(refused.draft).toBeUndefined();
+      // no refusal showed a box to send anyway over
       socket.send({ type: "submit", id: id + 1, pane_id: agent.pane, text: "chat", payload: "chat", send_anyway: true });
-      expect(await socket.result(id + 1)).toMatchObject({ ok: false });
+      expect(await socket.result(id + 1)).toMatchObject({ ok: false, code: "pending_target_changed" });
       expect(prompt).not.toHaveBeenCalled();
       expect(sendText).not.toHaveBeenCalled();
       expect(sendKeys).not.toHaveBeenCalled();
@@ -948,7 +951,7 @@ describe("WebSocket submit", () => {
       expect(refused).toMatchObject({ ok: false, code: "input_draft" });
       expect(refused.box).toBeUndefined();
       socket.send({ type: "submit", id: 115, pane_id: agent.pane, text: "chat", payload: "chat", send_anyway: true });
-      expect(await socket.result(115)).toMatchObject({ ok: false });
+      expect(await socket.result(115)).toMatchObject({ ok: false, code: "pending_target_changed" });
       expect(prompt).not.toHaveBeenCalled();
     } finally {
       prompt.mockRestore();
