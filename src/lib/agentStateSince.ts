@@ -171,8 +171,9 @@ function keptStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
  *   background work holds the row at working), and a move by exactly one, a single turn of herdr's own, which
  *   cannot have left a state that reads the same before and after it. That rest also counts one finish.
  * - A pane missing from a roster and back within the gap a page bridges (lib/agentStateWatch.ts) is the row the page
- *   was seeing: a look that missed it, an agent lost sight of for a moment. Back after longer, the page did not see
- *   what its state is now begin: it keeps a stamp only on proof, and has none otherwise.
+ *   was seeing where herdr's counter for it stands: a look that missed it, an agent lost sight of for a moment. Back
+ *   under another counter, or with none, another agent may have been started in the pane, and its time goes. Back
+ *   after longer, the page did not see what its state is now begin: it keeps a stamp only on proof.
  * - A row first seen by this page (a reload, a PC back from away, another herdr, a page that was not being told of
  *   its PCs) keeps its stamp only on proof, and has none otherwise: what happened, happened out of sight.
  * - A stamp that is not this look's to judge is left as it is: one ahead of this look's roster, or one of another
@@ -242,8 +243,11 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
         // and this pane's: it cannot have left a state that reads the same before and after it
         const single = saw.seq !== undefined && row.seq === saw.seq + 1;
         // a move of herdr's counter keeps the time only where the page can account for it: a pushed status told of it,
-        // or it is that single turn. Any other may hide a state left and come back to
-        if (!finished && (!counter || saw.owed || single)) {
+        // or it is that single turn. Any other may hide a state left and come back to. A row back from a look that
+        // missed it has more to answer for: an agent started anew in its pane reads the same, so only herdr's counter
+        // standing where it stood says it is the one the page was seeing
+        const stands = saw.left === undefined ? !counter || saw.owed || single : saw.seq !== undefined && row.seq === saw.seq;
+        if (!finished && stands) {
           const herdrs = counter ? row.seq : stamp.seq;
           rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), ...(herdrs === undefined ? {} : { seq: herdrs }), ...finish };
         }

@@ -313,6 +313,27 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(page.since("b", "working")).toBeNull();
   });
 
+  it("says no time for a pane back from a missed look in the state it left in where herdr's counter does not stand: another agent may have been started there", () => {
+    // herdr-core names no counter: an agent that rested, and one started in its pane a moment later, read the same
+    const uncounted = device();
+    uncounted.see(T, look({ a: ["working"] }));
+    uncounted.see(T + MIN, look({ a: ["idle"] }));
+    uncounted.see(T + 10 * MIN, look({}));
+    uncounted.see(T + 10 * MIN + 20_000, look({ a: ["idle"] }));
+    expect(uncounted.since("a", "idle")).toBeNull();
+
+    // herdr's moved by one: the one change in its session meanwhile was the new agent's first state
+    const counted = device();
+    counted.see(T, look({ a: ["working", 1] }));
+    counted.see(T + MIN, look({ a: ["idle", 2] }));
+    counted.see(T + 10 * MIN, look({}));
+    counted.see(T + 10 * MIN + 20_000, look({ a: ["idle", 3] }));
+    expect(counted.since("a", "idle")).toBeNull();
+    // from then on the page watches the row it has: its next change is dated
+    counted.see(T + 11 * MIN, look({ a: ["working", 4] }));
+    expect(counted.since("a", "working")).toBe(T + 11 * MIN);
+  });
+
   it("goes by proof alone for a pane back after longer than a page bridges", () => {
     const page = device();
     page.see(T, look({ a: ["idle", 1], b: ["idle", 5, 0, OWN] }));
