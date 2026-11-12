@@ -101,9 +101,13 @@ try {
 
           // the line sits under the title and the place, small and cut, its whole text in the tooltip
           const title = await box(page, panes.api, ".agent-title"), place = await box(page, panes.api, ".agent-context"), tokens = await box(page, panes.api, ".agent-tokens");
-          if (rows === "one") assert.ok(Math.abs(title.y + title.height - (place.y + place.height)) < 3, "One line keeps the place beside the title");
+          // a touch screen's One line row draws no place (#3505): it stays in the row for a screen reader, clipped to a dot
+          const placeDrawn = !(phone && rows === "one");
+          if (!placeDrawn) assert.ok(place.width <= 1 && place.height <= 1, `a phone's One line row draws no place (${place.width}x${place.height})`);
+          else if (rows === "one") assert.ok(Math.abs(title.y + title.height - (place.y + place.height)) < 3, "One line keeps the place beside the title");
           else assert.ok(place.y >= title.y + title.height - 1, "Two lines keeps the place under the title");
-          assert.ok(tokens.y >= place.y + place.height - 1, "the tokens have their own line, under the place");
+          const above = placeDrawn ? place : title;
+          assert.ok(tokens.y >= above.y + above.height - 1, `the tokens have their own line, under the ${placeDrawn ? "place" : "title"}`);
           assert.ok(await tokensOf(page, panes.api).evaluate((element) => element.scrollWidth > element.clientWidth), "a long value is cut");
           assert.match(await row(page, panes.api).locator(".agent-select").getAttribute("title") ?? "", new RegExp(LONG), "the tooltip says it whole");
           const sizes = await row(page, panes.api).evaluate((item) => ({
