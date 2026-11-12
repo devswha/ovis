@@ -1791,23 +1791,27 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   keep the time: the one owed to what a pushed status told of first (a change, herdr's own turn
   from done, the rest of a turn whose background work holds the row at working), and a move by
   exactly one, which is a single turn of herdr's own and cannot have left a state that reads the
-  same before and after it. Two tabs of one device read the stamps anew at each look: a tab keeps
-  the time another stamped for a change both see, and leaves alone a stamp of a change it has not
-  seen yet. A change is dated only while the page was being told of its PCs: its roster stream open
-  and the page running, or a roster read within the last minute and a half
+  same before and after it (a row that background work held at working is not forgiven it: that
+  work's end shows the rest, and moves no counter). Two tabs of one device read the stamps anew at
+  each look: a tab keeps the time another stamped for a change both see, and leaves alone a stamp
+  of a change it has not seen yet. A change is dated only while the page was being told of its PCs:
+  its roster stream open and the page running, or a roster read within the last minute and a half
   (lib/agentStateWatch.ts). After a longer gap (a phone that slept, a laptop's lid shut, a server
   out of reach) the next roster is read as a reload reads it: a time stands where the counters
   prove it, and what changed meanwhile says no time. A roster read after the stream said nothing
   for as long dates no change either, and keeps the times the page had. A pane missing from a
-  roster for no longer than that is, when it is back in the state it left in and under the counter
-  of herdr's it left with, the row the page was seeing. Otherwise another agent may have been
-  started in it: back in another state within that gap, its state began as it came back; else it
-  says no time unless the counters prove one. Done and idle are one state: reading a finished agent
-  does not reset its time. A state this device did not see begin says no time rather than a wrong
-  one, a PC that is away says none, and a pane gone from its roster for thirty days is forgotten.
-  The times are stamped in one place for the whole page (lib/useAgentStateSince.ts) and every list
-  reads them. They are redrawn every 30 seconds while the list is open, in steps, never as a
-  running clock. The format and the done-and-idle rule are herdr-app's agents mod's.
+  roster for no longer than that is the row the page was seeing when it is back in the state it
+  left in, under the counter of herdr's it left with, and its agent is one that counter tells of.
+  Otherwise another agent may have been started in it: back in another state within that gap, its
+  state began as it came back; else it says no time unless the counters prove one. A pane that
+  neither the page nor the device has seen is stamped as its agent appears, once the page has
+  looked at its PC for longer than that gap: sooner, the roster may not have listed the agent yet.
+  Done and idle are one state: reading a finished agent does not reset its time. A state this
+  device did not see begin says no time rather than a wrong one, a PC that is away says none, and a
+  pane gone from its roster for thirty days is forgotten. The times are stamped in one place for
+  the whole page (lib/useAgentStateSince.ts) and every list reads them. They are redrawn every 30
+  seconds while the list is open, in steps, never as a running clock. The format and the
+  done-and-idle rule are herdr-app's agents mod's.
 - Brief (the Agents list by state). Primary action: open the agent a row names. Priorities: who
   needs the reader, what works, what just finished; then how long each has been so. Required
   content: the Agents head with its fold; each state's heading with its word, count and caret;

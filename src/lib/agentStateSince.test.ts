@@ -49,12 +49,37 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(page.since("a", "working")).toBeNull();
   });
 
-  it("stamps a pane that appears in a roster the page was already watching", () => {
+  it("stamps a pane that appears in a roster the page has been looking at for longer than it bridges", () => {
     const page = device();
     page.see(T, look({ a: ["idle", 1] }));
-    page.see(T + MIN, look({ a: ["idle", 1], b: ["working", 2] }));
-    expect(page.since("b", "working")).toBe(T + MIN);
+    page.see(T + 2 * MIN, look({ a: ["idle", 1], b: ["working", 2] }));
+    expect(page.since("b", "working")).toBe(T + 2 * MIN);
     expect(page.since("a", "idle")).toBeNull();
+  });
+
+  it("says no time for a pane that appears soon after the page's first look: the roster may not have listed its agent yet", () => {
+    const page = device();
+    // the server's first roster is behind, or herdr had lost sight of the agent as the page was loaded
+    page.see(T, look({ a: ["idle", 1] }));
+    page.see(T + 1000, look({ a: ["idle", 1], b: ["working", 2] }));
+    expect(page.since("b", "working")).toBeNull();
+    // the page then has the row, and its next change is dated
+    page.see(T + MIN, look({ a: ["idle", 1], b: ["blocked", 3] }));
+    expect(page.since("b", "blocked")).toBe(T + MIN);
+
+    // a page that was not being told of its PCs starts over: its looks before the break do not count
+    page.see(T + 10 * MIN, look({ a: ["idle", 1], b: ["blocked", 3] }));
+    page.reload();
+    page.see(T + 11 * MIN, look({ a: ["idle", 1], b: ["blocked", 3] }));
+    page.see(T + 11 * MIN + 5000, look({ a: ["idle", 1], b: ["blocked", 3], c: ["working", 4] }));
+    expect(page.since("c", "working")).toBeNull();
+
+    // nor do its looks at the herdr another one replaced: that one finds its agents again over its first moments
+    const replaced = device();
+    replaced.see(T, look({ a: ["idle", 1] }));
+    replaced.see(T + 10 * MIN, look({ a: ["idle", 1] }, "herdr-2"));
+    replaced.see(T + 10 * MIN + 5000, look({ a: ["idle", 1], b: ["working", 2] }, "herdr-2"));
+    expect(replaced.since("b", "working")).toBeNull();
   });
 
   it("keeps a stamp across a reload while herdr's counter says nothing changed", () => {
@@ -248,6 +273,14 @@ describe("state stamps: when this device saw a state begin", () => {
       expect(page.since("a", "working")).toBe(T + MIN);
     }
 
+    // untold, a held row that works under a counter moved by one may have rested first: the work's end moves no counter
+    const rested = device();
+    rested.see(T, look({ a: ["idle", 1] }));
+    rested.see(T + MIN, look({ a: ["working", 2] }));
+    rested.see(T + 10 * MIN, look({ a: ["working", 3, 1, WAITING] }));
+    rested.see(T + 12 * MIN, look({ a: ["working", 4, 1] }));
+    expect(rested.since("a", "working")).toBeNull();
+
     // with no such wait, a finish counted under a row that goes on working is a turn that ended and another that began
     const missed = device();
     missed.see(T, look({ a: ["idle", 1] }));
@@ -303,11 +336,11 @@ describe("state stamps: when this device saw a state begin", () => {
 
   it("takes a pane back from a look that missed it for the row it was seeing: a kept time stands, and coming back is no beginning", () => {
     const page = device();
-    page.see(T, look({ a: ["idle", 5, 0, OWN], b: ["working", 6, 0, OWN] }));
-    page.see(T + MIN, look({ a: ["working", 5, 0, OWN], b: ["working", 6, 0, OWN] }));
-    // herdr loses sight of both agents for a look; nothing could prove their stamps
+    page.see(T, look({ a: ["idle", 5], b: ["working", 6] }));
+    page.see(T + MIN, look({ a: ["working", 7], b: ["working", 6] }));
+    // herdr loses sight of both agents for a look, and its counter for each stands where it stood
     page.see(T + 20 * MIN, look({}));
-    page.see(T + 21 * MIN, look({ a: ["working", 5, 0, OWN], b: ["working", 6, 0, OWN] }));
+    page.see(T + 21 * MIN, look({ a: ["working", 7], b: ["working", 6] }));
     expect(page.since("a", "working")).toBe(T + MIN);
     // the page never saw `b` begin to work
     expect(page.since("b", "working")).toBeNull();
@@ -332,6 +365,14 @@ describe("state stamps: when this device saw a state begin", () => {
     // from then on the page watches the row it has: its next change is dated
     counted.see(T + 11 * MIN, look({ a: ["working", 4] }));
     expect(counted.since("a", "working")).toBe(T + 11 * MIN);
+
+    // herdr's counter stands for an agent whose state Ovis reads itself whatever it did meanwhile
+    const own = device();
+    own.see(T, look({ a: ["idle", 5, 0, OWN] }));
+    own.see(T + MIN, look({ a: ["working", 5, 0, OWN] }));
+    own.see(T + 10 * MIN, look({}));
+    own.see(T + 10 * MIN + 20_000, look({ a: ["working", 5, 0, OWN] }));
+    expect(own.since("a", "working")).toBeNull();
   });
 
   it("goes by proof alone for a pane back after longer than a page bridges", () => {
@@ -417,9 +458,9 @@ describe("state stamps: when this device saw a state begin", () => {
     const first = device(kept), second = device(kept);
     first.see(T, look({ a: ["idle"] }));
     second.see(T, look({ a: ["idle"] }));
-    first.see(T + MIN, look({ a: ["idle"], b: ["working"] }));
-    second.see(T + MIN + 2000, look({ a: ["idle"], b: ["working"] }));
-    expect(second.since("b", "working")).toBe(T + MIN);
+    first.see(T + 2 * MIN, look({ a: ["idle"], b: ["working"] }));
+    second.see(T + 2 * MIN + 2000, look({ a: ["idle"], b: ["working"] }));
+    expect(second.since("b", "working")).toBe(T + 2 * MIN);
   });
 
   it("keeps another tab's time for a change that tab heard of by a pushed status, and takes the counter the roster brings", () => {
