@@ -4,12 +4,21 @@
  * idle are one state here: reading a finished agent turns done into idle, and looking is not the
  * agent doing anything. A state this device did not see begin has no stamp, and its row says no
  * time rather than a wrong one.
+ *
+ * A kept stamp is trusted by a look that did not see its state begin only on proof that the state
+ * held meanwhile. Two counters give it together: herdr's `state_change_seq`, which moves with every
+ * state of herdr's own, and the server's `finish_id`, which moves whenever the status Ovis shows
+ * turns done. The state Ovis shows is not always herdr's (a Claude whose turn ended while a
+ * subagent keeps herdr at working rests; server/core/status.ts), and every way back to a state
+ * left that way passes a finish. For the agents whose state Ovis reads from their own session
+ * files, herdr's counter stands still whatever they do, so nothing proves their stamps.
  */
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import { agentGroup, type AgentGroup } from "./agentRoster.ts";
 import { sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
 import { stateSeqs } from "./sidebarOrder.ts";
+import { knownStatus } from "./status.ts";
 
 /** the states a stamp tells apart: the list's groups, with done filed under idle */
 export type StampState = Exclude<AgentGroup, "done">;
@@ -22,38 +31,87 @@ export interface StateStamp {
   state: StampState;
   /** when the state began, as this device's clock said it */
   at: number;
-  /** herdr's `state_change_seq` when it was stamped: the same number later proves nothing changed meanwhile */
+  /**
+   * herdr's `state_change_seq` of the change that began the state. Absent while only a pushed status told of the
+   * change (the roster that carries its counter comes after), where the state changed and herdr's counter did not
+   * (a status Ovis makes itself), and where herdr gives none: nothing proves such a stamp after a reload.
+   */
   seq?: number;
+  /** the server's count of the pane's finishes (`finish_id`, counted in the PC's `epoch`) as the stamp last saw it */
+  finish?: number;
   /** when its pane was first missing from the roster, while it still is: the stamp is forgotten thirty days after */
   gone?: number;
 }
 
-/** one PC's stamps, by pane, under the herdr they were made on (the snapshot's `herdr_lifetime`): another herdr gives its pane ids to other panes */
-export interface PcStamps { lifetime: string | null; rows: Readonly<Record<string, StateStamp>> }
+/**
+ * One PC's stamps, by pane, under the herdr they were made on (the snapshot's `herdr_lifetime`: another herdr gives
+ * its pane ids to other panes) and the server's `finish_epoch` their `finish` counts in (a server that started anew
+ * counts from nothing).
+ */
+export interface PcStamps { lifetime: string | null; epoch: string | null; rows: Readonly<Record<string, StateStamp>> }
 export type StateStamps = Readonly<Record<string, PcStamps>>;
 
-export interface SeenRow { pane: string; state: StampState; seq: number | undefined }
+export interface SeenRow {
+  pane: string;
+  state: StampState;
+  /** herdr's `state_change_seq` as the roster has it: a pushed status changes the state before the roster that carries its counter */
+  seq: number | undefined;
+  /** the server's count of the pane's finishes (`finish_id`) */
+  finish: number | undefined;
+  /**
+   * The roster says done, whatever the row shows (a finish this device has read shows idle, lib/sidebarOrder.ts):
+   * herdr's own turn from done moves its counter, and is no change of a state that reads the same before and after.
+   */
+  done: boolean;
+  /** at rest while its turn's background work still runs (`background_wait`): the row goes on showing working */
+  wait: boolean;
+  /** an agent whose state Ovis reads from its own session files: herdr's counter says nothing of it */
+  own: boolean;
+}
 /** one look at a PC: its agent rows, or null while it is away or its roster has not come */
-export interface PcLook { id: string; lifetime: string | null; rows: readonly SeenRow[] | null }
-/** one PC at this page's last look: which herdr it was, and each pane's state */
-export interface PcSeen { lifetime: string | null; rows: ReadonlyMap<string, StampState> }
+export interface PcLook { id: string; lifetime: string | null; epoch: string | null; rows: readonly SeenRow[] | null }
+/** a pane's row as this page last saw it */
+export interface WatchedRow extends SeenRow {
+  /** when this page first saw the pane in this state */
+  since: number;
+  /** a pushed status told this page of the row's last change, or of its finish being read: herdr's counter for it comes with the next roster, and is no new change then */
+  owed: boolean;
+}
+/** one PC at this page's last look: which herdr and which server's count it was of, when, and each pane's row */
+export interface PcSeen { lifetime: string | null; epoch: string | null; at: number; rows: ReadonlyMap<string, WatchedRow> }
 /** what this page saw at its last look, by PC: a state that differs from it changed in sight */
 export type LastLook = ReadonlyMap<string, PcSeen>;
 /** what a page carries from one look to the next: the device's stamps, and the states it saw last */
 export interface SeenStamps { stamps: StateStamps; last: LastLook }
 
 /**
+ * The agents whose state Ovis reads from their own session files in place of herdr's: the trackers of
+ * server/omo-status.ts, server/gjc-status.ts and server/letta-status.ts name them so. herdr goes on calling such a
+ * pane what it took it for, so its counter stands still while the agent works, waits and rests.
+ */
+const OWN_STATE_AGENTS: ReadonlySet<string> = new Set(["omo", "gjc", "letta"]);
+
+/**
  * A look at every PC: the agent rows the Agents list draws for it (lib/sidebarAgents.ts), each with the state it
- * shows and herdr's counter. A PC that is away, or whose roster has not come, says nothing of its agents now.
+ * shows and the two counters. A PC that is away, or whose roster has not come, says nothing of its agents now.
  */
 export function stateLooks(machines: readonly Machine[], status: (machineId: string, pane: SidebarAgent["pane"]) => AgentStatus | undefined): PcLook[] {
   return machines.map((machine): PcLook => {
-    if (machine.state !== "connected" || machine.snapshot === null) return { id: machine.id, lifetime: null, rows: null };
+    if (machine.state !== "connected" || machine.snapshot === null) return { id: machine.id, lifetime: null, epoch: null, rows: null };
     const seqs = stateSeqs(machine.snapshot);
     return {
       id: machine.id,
       lifetime: machine.snapshot.herdr_lifetime ?? null,
-      rows: sidebarAgents(machine.snapshot).map(({ pane }) => ({ pane: pane.pane_id, state: stampState(agentGroup(status(machine.id, pane))), seq: seqs.get(pane.pane_id) })),
+      epoch: machine.snapshot.finish_epoch ?? null,
+      rows: sidebarAgents(machine.snapshot).map(({ pane }) => ({
+        pane: pane.pane_id,
+        state: stampState(agentGroup(status(machine.id, pane))),
+        seq: seqs.get(pane.pane_id),
+        finish: pane.finish_id,
+        done: knownStatus(pane.agent_status) === "done",
+        wait: pane.background_wait === true,
+        own: OWN_STATE_AGENTS.has(pane.agent ?? ""),
+      })),
     };
   });
 }
@@ -70,23 +128,50 @@ function unlisted(stamp: StateStamp, now: number): StateStamp | null {
 }
 
 /**
- * Whether a kept stamp still tells of the row as it is: the same state, and by herdr's counter no change since.
- * A herdr that counts nothing proves nothing: the state may have gone and come back out of sight.
+ * Whether a kept stamp is proven to tell of the row as it is, for a look that did not see the state begin: the same
+ * state, and by both counters nothing since. `counted` says the stamp's `finish` counts in this look's epoch. A
+ * herdr that counts nothing proves nothing, nor does anything for an agent whose state Ovis reads itself: the state
+ * may have gone and come back out of sight.
  */
-function stillTrue(stamp: StateStamp | undefined, row: SeenRow): stamp is StateStamp {
-  return stamp !== undefined && stamp.state === row.state && stamp.seq !== undefined && stamp.seq === row.seq;
+function proven(stamp: StateStamp | undefined, row: SeenRow, counted: boolean): stamp is StateStamp {
+  return stamp !== undefined && stamp.state === row.state && !row.own
+    && stamp.seq !== undefined && stamp.seq === row.seq
+    && counted && stamp.finish !== undefined && stamp.finish === row.finish;
 }
 
 /**
- * The stamps after a look at every PC. A row whose state changed since this page's last look, or
- * that appeared in a roster this page was watching, is stamped `now`, unless the kept stamp already
- * tells of it (another tab of this device stamped the change first). A row first seen by this
- * page (a reload, a PC back from away, a PC whose herdr was replaced) keeps its stamp only while it
- * still tells of it, and has none otherwise: the change happened out of sight. A PC that is away
- * keeps its stamps untouched, and a pane no longer listed keeps its stamp for thirty days from the
- * look that first missed it. A look that is not `dated` (the page cannot say when what it finds
- * began, lib/agentStateWatch.ts) stamps no change and keeps the times it had. Hands back the very
- * `stamps` it was given when nothing changed.
+ * Whether a kept stamp is of a later change than this look's roster shows. Both counters only grow, so a greater one
+ * is another tab's, ahead of this one: its stamp is not this look's to judge.
+ */
+function ahead(stamp: StateStamp, row: SeenRow, counted: boolean): boolean {
+  return (stamp.seq !== undefined && row.seq !== undefined && stamp.seq > row.seq)
+    || (counted && stamp.finish !== undefined && row.finish !== undefined && stamp.finish > row.finish);
+}
+
+/** A stamp as a look keeps it for a listed pane: no mark of leaving, never ahead of the clock, and no finish count of another epoch. */
+function keptStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp {
+  return { state: stamp.state, at: Math.min(stamp.at, now), ...(stamp.seq === undefined ? {} : { seq: stamp.seq }), ...(stamp.finish === undefined || !counted ? {} : { finish: stamp.finish }) };
+}
+
+/**
+ * The stamps after a look at every PC, each row by what the page saw of it at its last look.
+ *
+ * - A state that differs from the last look's, or a pane new to a roster the page was watching, began now and is
+ *   stamped so, unless the kept stamp already tells of it: another tab of this device stamped the change first (the
+ *   stamps are read anew at each look), or the pane only left the roster for a look. A look that is not `dated` (the
+ *   page cannot say when what it finds began, lib/agentStateWatch.ts) stamps no change.
+ * - A state the page has been seeing keeps its stamp while the counters stand. A finish counted meanwhile, or
+ *   herdr's counter moved, means the state was left and come back to out of sight (updates come together, a
+ *   subscription has gaps), and the stamp goes. Three moves are none of the state: herdr's own turn from done (a
+ *   finish read there, or a turn its background work started), the roster that brings the counter of what a pushed
+ *   status told of first, and the end of a turn whose background work holds the row at working.
+ * - A row first seen by this page (a reload, a PC back from away, another herdr, a page that was not being told of
+ *   its PCs) keeps its stamp only on proof, and has none otherwise: what happened, happened out of sight.
+ * - A stamp that is not this look's to judge is left as it is: one ahead of this look's roster, or one of another
+ *   state than the page has been seeing. Both are another tab's, which saw what this one has not yet.
+ *
+ * A PC that is away keeps its stamps untouched, and a pane no longer listed keeps its stamp for thirty days from the
+ * look that first missed it. Hands back the very `stamps` it was given when nothing changed.
  */
 export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly PcLook[], now: number, dated = true): SeenStamps {
   const next: Record<string, PcStamps> = {};
@@ -101,38 +186,65 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     }
     // another herdr: its pane ids start over, so no stamp of the old one tells of a pane of this one, and no state
     // this page saw on the old one is a state this one's pane was in: its rows are first seen
-    const before = kept !== undefined && kept.lifetime === look.lifetime ? kept.rows : {};
+    const sameHerdr = kept !== undefined && kept.lifetime === look.lifetime;
+    const before = sameHerdr ? kept.rows : {};
+    // the kept stamps' finishes count in this look's epoch: a server that started anew counts from nothing
+    const counted = sameHerdr && look.epoch !== null && kept.epoch === look.epoch;
     const lastSeen = last.get(look.id);
-    const watched = lastSeen !== undefined && lastSeen.lifetime === look.lifetime ? lastSeen.rows : undefined;
+    const watched = lastSeen !== undefined && lastSeen.lifetime === look.lifetime ? lastSeen : undefined;
+    const recount = watched !== undefined && watched.epoch !== look.epoch;
     const rows: Record<string, StateStamp> = {};
-    const listed = new Set<string>();
+    const memory = new Map<string, WatchedRow>();
     for (const row of look.rows) {
-      listed.add(row.pane);
       const stamp = before[row.pane];
-      const sawBefore = watched?.get(row.pane);
-      const seq = row.seq === undefined ? {} : { seq: row.seq };
-      // in a roster this page watches, a state that differs from the last look began now, unless the kept stamp
-      // already tells of the row as it is: another tab of this device stamped the change first (the stamps are
-      // read anew at each look), or the row only left the roster for a look
-      if (watched !== undefined && sawBefore !== row.state && !stillTrue(stamp, row)) {
-        if (dated) rows[row.pane] = { state: row.state, at: now, ...seq };
-        continue;
+      const saw = watched?.rows.get(row.pane);
+      const began = watched !== undefined && saw?.state !== row.state;
+      // herdr's counter moved: two numbers that differ. A roster that names none for a moment says nothing either way
+      const counter = saw !== undefined && saw.seq !== undefined && row.seq !== undefined && row.seq !== saw.seq;
+      // a pushed status tells of a change before the roster that carries its counter: until then herdr's counter
+      // here is the last change's, and says nothing of this one
+      const lags = began && saw !== undefined && !counter;
+      const read = !began && saw !== undefined && saw.done && !row.done;
+      memory.set(row.pane, { ...row, since: saw !== undefined && !began ? saw.since : now, owed: began ? lags : !counter && (read || saw?.owed === true) });
+      const finish = row.finish === undefined ? {} : { finish: row.finish };
+      const seq = row.seq === undefined || lags ? {} : { seq: row.seq };
+      if (stamp !== undefined && !lags && ahead(stamp, row, counted)) {
+        rows[row.pane] = keptStamp(stamp, now, counted);
+      } else if (watched === undefined) {
+        if (proven(stamp, row, counted)) rows[row.pane] = keptStamp(stamp, now, counted);
+      } else if (began) {
+        // the stamp was made while this page still had the pane in its last state, and no counter says it is of another
+        // change: another tab's, of this one. It takes the counter this look has for the change, where the tab had none yet
+        const told = stamp !== undefined && stamp.state === row.state && stamp.at >= (saw?.since ?? watched.at)
+          && (lags || stamp.seq === undefined || row.seq === undefined || stamp.seq === row.seq);
+        if (stamp !== undefined && told) rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), ...(lags && stamp.seq !== undefined ? { seq: stamp.seq } : seq), ...finish };
+        else if (proven(stamp, row, counted)) rows[row.pane] = keptStamp(stamp, now, counted);
+        else if (dated) rows[row.pane] = { state: row.state, at: now, ...seq, ...finish };
+      } else if (stamp !== undefined && stamp.state !== row.state) {
+        rows[row.pane] = keptStamp(stamp, now, counted);
+      } else if (stamp !== undefined && saw !== undefined) {
+        // the turn ended and its background work holds the row at working: herdr's counter moved, and one finish was counted
+        const held = row.wait && !saw.wait;
+        const finished = !recount && saw.finish !== undefined && row.finish !== undefined && row.finish !== saw.finish && !(held && row.finish === saw.finish + 1);
+        // herdr's counter moved for what this page saw already
+        if (!finished && (!counter || read || saw.owed || held)) {
+          const herdrs = counter ? row.seq : stamp.seq;
+          rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), ...(herdrs === undefined ? {} : { seq: herdrs }), ...finish };
+        }
       }
-      // a row this page was watching keeps its stamp through a counter that moved within one state (done read as
-      // idle); one it sees for the first time keeps it only while herdr's counter proves it
-      const held = watched !== undefined ? (stamp?.state === row.state ? stamp : undefined) : (stillTrue(stamp, row) ? stamp : undefined);
-      // a clock set back never leaves a stamp in the future
-      if (held !== undefined) rows[row.pane] = { state: held.state, at: Math.min(held.at, now), ...seq };
     }
     for (const [pane, stamp] of Object.entries(before)) {
-      const left = listed.has(pane) ? null : unlisted(stamp, now);
-      if (left !== null) rows[pane] = left;
+      if (memory.has(pane)) continue;
+      const left = unlisted(stamp, now);
+      if (left === null) continue;
+      if (counted || left.finish === undefined) rows[pane] = left;
+      else { const { finish: _old, ...uncounted } = left; rows[pane] = uncounted; }
     }
     // a PC with no stamp has no entry: a look that stamps nothing changes nothing, and is not written
-    if (kept !== undefined && kept.lifetime === look.lifetime && sameRows(kept.rows, rows)) next[look.id] = kept;
-    else if (Object.keys(rows).length > 0) { next[look.id] = { lifetime: look.lifetime, rows }; changed = true; }
+    if (sameHerdr && kept.epoch === look.epoch && sameRows(kept.rows, rows)) next[look.id] = kept;
+    else if (Object.keys(rows).length > 0) { next[look.id] = { lifetime: look.lifetime, epoch: look.epoch, rows }; changed = true; }
     else if (kept !== undefined) changed = true;
-    seen.set(look.id, { lifetime: look.lifetime, rows: new Map(look.rows.map((row) => [row.pane, row.state])) });
+    seen.set(look.id, { lifetime: look.lifetime, epoch: look.epoch, at: now, rows: memory });
   }
   // a PC no longer in the roster (removed, or hidden on this device) keeps its stamps as long as a pane that left a roster does
   for (const [id, kept] of Object.entries(stamps)) {
@@ -144,7 +256,7 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     }
     if (Object.keys(rows).length === 0) { changed = true; continue; }
     if (sameRows(kept.rows, rows)) next[id] = kept;
-    else { next[id] = { lifetime: kept.lifetime, rows }; changed = true; }
+    else { next[id] = { lifetime: kept.lifetime, epoch: kept.epoch, rows }; changed = true; }
   }
   return { stamps: changed ? next : stamps, last: seen };
 }
@@ -153,7 +265,7 @@ function sameRows(left: Readonly<Record<string, StateStamp>>, right: Readonly<Re
   const entries = Object.entries(left);
   return entries.length === Object.keys(right).length && entries.every(([pane, a]) => {
     const b = right[pane];
-    return b !== undefined && a.state === b.state && a.at === b.at && a.seq === b.seq && a.gone === b.gone;
+    return b !== undefined && a.state === b.state && a.at === b.at && a.seq === b.seq && a.finish === b.finish && a.gone === b.gone;
   });
 }
 
@@ -186,12 +298,12 @@ export function parseStateStamps(raw: string | null): StateStamps {
     if (rows === null) continue;
     const kept: Record<string, StateStamp> = {};
     for (const [pane, value] of Object.entries(rows)) {
-      const { state, at, seq, gone } = fieldsOf(value) ?? {};
+      const { state, at, seq, finish, gone } = fieldsOf(value) ?? {};
       if (!isStampState(state) || !isNumber(at)) continue;
-      kept[pane] = { state, at, ...(isNumber(seq) ? { seq } : {}), ...(isNumber(gone) ? { gone } : {}) };
+      kept[pane] = { state, at, ...(isNumber(seq) ? { seq } : {}), ...(isNumber(finish) ? { finish } : {}), ...(isNumber(gone) ? { gone } : {}) };
     }
-    const lifetime = fieldsOf(pc)?.["lifetime"];
-    stamps[id] = { lifetime: typeof lifetime === "string" ? lifetime : null, rows: kept };
+    const { lifetime, epoch } = fieldsOf(pc) ?? {};
+    stamps[id] = { lifetime: typeof lifetime === "string" ? lifetime : null, epoch: typeof epoch === "string" ? epoch : null, rows: kept };
   }
   return stamps;
 }

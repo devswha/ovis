@@ -599,27 +599,34 @@ describe("AgentSidebar fold memory", () => {
 
   it("counts an agent's time in its state from the change this device saw, through a read finish and a reload (#3505)", async () => {
     const start = 1_800_000_000_000;
-    const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
-      ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
+    // the roster as the server sends it: herdr's counter moves with each state of its own, and the server counts the finish
+    const at = (status: AgentStatus, seq: number, finishes: number) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
+      ...machine.snapshot, finish_epoch: "server-1",
+      panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status, finish_id: finishes } : pane),
+      agents: machine.snapshot.agents.map((agent) => agent.pane_id === paneId ? { ...agent, agent_status: status, state_change_seq: seq } : agent),
     } }));
     const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
       // Given an agent that finishes while this page watches.
-      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
-      await act(async () => { renderer!.update(groupedList(inactive, at("done"))); });
+      await act(async () => { renderer = create(groupedList(inactive, at("working", 50, 0))); });
+      await act(async () => { renderer!.update(groupedList(inactive, at("done", 51, 1))); });
       expect(since()).toEqual(["<1m"]);
       // When five minutes pass, its row says so at the list's next tick.
       jest.setSystemTime(new Date(start + 5 * 60_000));
       await act(async () => { jest.advanceTimersByTime(30_000); });
       expect(since()).toEqual(["5m"]);
-      // Then reading the finish (done turns idle) keeps the time, and so does loading the page again.
-      await act(async () => { renderer!.update(groupedList(inactive, at("idle"))); });
+      // Then reading the finish (done turns idle, and herdr's counter moves) keeps the time, and so does loading the page again.
+      await act(async () => { renderer!.update(groupedList(inactive, at("idle", 52, 1))); });
       expect(since()).toEqual(["5m"]);
       await act(async () => { renderer!.unmount(); });
-      await act(async () => { renderer = create(groupedList(inactive, at("idle"))); });
+      await act(async () => { renderer = create(groupedList(inactive, at("idle", 52, 1))); });
       expect(since()).toEqual(["5m"]);
+      // And a page loaded once the agent has ended another turn says no time: the server counted that finish.
+      await act(async () => { renderer!.unmount(); });
+      await act(async () => { renderer = create(groupedList(inactive, at("idle", 52, 2))); });
+      expect(since()).toEqual([]);
     } finally {
       await act(async () => { renderer?.unmount(); });
       renderer = undefined;

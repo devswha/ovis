@@ -40,7 +40,8 @@ export function useAgentStateStamps(): StateStamps {
  */
 export function useAgentStateStamping(machines: readonly Machine[], activity: SidebarActivity): void {
   const looks = useMemo(() => stateLooks(machines, (machineId, pane) => activity.status(machineId, pane)), [machines, activity]);
-  const signature = useMemo(() => looks.map((look) => `${look.id}|${look.lifetime ?? ""}|${look.rows === null ? "-" : look.rows.map((row) => `${row.pane}=${row.state}#${row.seq ?? ""}`).join(",")}`).join("\n"), [looks]);
+  // everything a look reads: a state, either counter, what the roster says beside them, and whose counts they are
+  const signature = useMemo(() => looks.map((look) => `${look.id}|${look.lifetime ?? ""}|${look.epoch ?? ""}|${look.rows === null ? "-" : look.rows.map((row) => `${row.pane}=${row.state}${row.done ? "!" : ""}${row.wait ? "~" : ""}${row.own ? "*" : ""}#${row.seq ?? ""}/${row.finish ?? ""}`).join(",")}`).join("\n"), [looks]);
   const latest = useRef(looks);
   latest.current = looks;
   // a roster that cannot date what it brings, told by the watch in the batch that draws it, so it is looked at even when it changed nothing

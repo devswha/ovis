@@ -4,9 +4,11 @@
  *
  * Settings → Group agents by state and the sidebar's filter are on. Two stamps are stored as this
  * device would have kept them, so their ages are known: the waiting agent's two hours and a
- * resting agent's 3 days (ages a slow run cannot carry over a unit's edge), each with the counter herdr gives its agent (read from the demo's own
- * session on a first load), which is what lets a later load trust it. A third is stored with no
- * counter and proves nothing. A row says its time only where a stamp tells of it; the agent that
+ * resting agent's 3 days (ages a slow run cannot carry over a unit's edge), each with the counter herdr gives its agent
+ * and the server's count of its finishes (read from the demo's own session on a first load), which is what lets a
+ * later load trust it. Every load names the same fictional server (`demo_finish_epoch`, site/demo/transport.ts): a
+ * page that is loaded again finds the server it left, as a real one does. A third is stored with no
+ * counter of herdr's and proves nothing. A row says its time only where a stamp tells of it; the agent that
  * finishes as the demo opens is stamped in sight and keeps its time when its finish is read. Idle
  * starts folded and the other groups open; a heading folds and opens its group by click, Enter and
  * Space and says the same count either way; a folded group keeps the selected agent in sight; what
@@ -30,6 +32,8 @@ import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
+/** one fictional server for every load of a run: the count of finishes a kept stamp goes by is that server's (site/demo/transport.ts) */
+const SERVER = "&demo_finish_epoch=kept";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 86_400_000;
@@ -62,27 +66,30 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
     await row(shown).waitFor();
   };
   const open = async (query = ""): Promise<void> => {
-    await page.goto(`${origin}?pane=${encodeURIComponent(panes.web)}${query}`);
+    await page.goto(`${origin}?pane=${encodeURIComponent(panes.web)}${SERVER}${query}`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
     await list();
   };
 
-  // A first load only to read the demo's one PC and its herdr (site/demo/transport.ts): the stamps are stored as the app
-  // stores them (lib/agentStateSince.ts), each with the counter herdr gives its agent now. The same counter on the next
-  // load proves that the state did not change meanwhile; the third stamp has none, so nothing proves it.
+  // A first load only to read the demo's one PC, its herdr and its server (site/demo/transport.ts): the stamps are stored
+  // as the app stores them (lib/agentStateSince.ts), each with the counter herdr gives its agent now and the server's
+  // count of its finishes. The same two numbers on the next load prove that the state did not change meanwhile; the
+  // third stamp has no counter of herdr's, so nothing proves it.
   await open();
   const counters = await page.evaluate(async ({ waiting, resting, uncounted, waited, rested }) => {
-    const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { herdr_lifetime?: string | null; agents: Array<{ pane_id: string; state_change_seq?: number }> } };
+    const { snapshot } = await (await fetch("/api/session")).json() as { snapshot: { herdr_lifetime?: string | null; finish_epoch?: string; panes: Array<{ pane_id: string; finish_id?: number }>; agents: Array<{ pane_id: string; state_change_seq?: number }> } };
     const counter = (pane: string): number | undefined => snapshot.agents.find((agent) => agent.pane_id === pane)?.state_change_seq;
+    const finishes = (pane: string): number | undefined => snapshot.panes.find((entry) => entry.pane_id === pane)?.finish_id;
     const now = Date.now();
-    localStorage.setItem("ovis:agent-state-since", JSON.stringify({ version: 1, pcs: { local: { lifetime: snapshot.herdr_lifetime, rows: {
-      [waiting]: { state: "blocked", at: now - waited, seq: counter(waiting) },
-      [resting]: { state: "idle", at: now - rested, seq: counter(resting) },
-      [uncounted]: { state: "idle", at: now - rested },
+    localStorage.setItem("ovis:agent-state-since", JSON.stringify({ version: 1, pcs: { local: { lifetime: snapshot.herdr_lifetime, epoch: snapshot.finish_epoch, rows: {
+      [waiting]: { state: "blocked", at: now - waited, seq: counter(waiting), finish: finishes(waiting) },
+      [resting]: { state: "idle", at: now - rested, seq: counter(resting), finish: finishes(resting) },
+      [uncounted]: { state: "idle", at: now - rested, finish: finishes(uncounted) },
     } } } }));
-    return [counter(waiting), counter(resting)];
+    return { epoch: snapshot.finish_epoch, numbers: [counter(waiting), counter(resting), finishes(waiting), finishes(resting)] };
   }, { waiting: panes.web, resting: panes.omp, uncounted: panes.cli, waited: 2 * HOUR + 5 * MINUTE, rested: 3 * DAY });
-  assert.ok(counters.every((counter) => Number.isSafeInteger(counter)), `${tag}: the demo's agents carry herdr's counter: ${JSON.stringify(counters)}`);
+  assert.ok(counters.numbers.every((number) => Number.isSafeInteger(number)), `${tag}: the demo's agents carry herdr's counter and the server's count of their finishes: ${JSON.stringify(counters)}`);
+  assert.equal(counters.epoch, "kept", `${tag}: every load of this check is under the one server it names`);
 
   await open();
   // a device that kept no fold: Idle starts folded, the other groups open, and a time shows where a stamp tells of it
@@ -191,7 +198,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   held.on("pageerror", (error) => errors.push(error.message));
   await held.clock.install({ time: new Date() });
   await held.clock.pauseAt(new Date(Date.now() + 1000));
-  await held.goto(`${origin}?pane=${encodeURIComponent(panes.web)}`);
+  await held.goto(`${origin}?pane=${encodeURIComponent(panes.web)}${SERVER}`);
   await held.clock.runFor(1500);
   await held.locator(".conn-live").waitFor({ state: "attached" });
   if (phone) {
@@ -216,7 +223,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   away.on("pageerror", (error) => errors.push(error.message));
   await away.clock.install({ time: new Date() });
   await away.clock.pauseAt(new Date(Date.now() + 1000));
-  await away.goto(`${origin}?pane=${encodeURIComponent(panes.web)}`);
+  await away.goto(`${origin}?pane=${encodeURIComponent(panes.web)}${SERVER}`);
   // past the demo's own end of this agent's turn (site/demo/transport.ts): from here its state is what this check says
   await away.clock.runFor(6000);
   await away.locator(".conn-live").waitFor({ state: "attached" });

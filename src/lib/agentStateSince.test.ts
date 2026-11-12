@@ -5,9 +5,17 @@ const MIN = 60_000;
 const DAY = 86_400_000;
 const T = 1_800_000_000_000;
 
-/** one PC's rows at a look: pane -> its state and herdr's counter */
-const look = (rows: Record<string, [StampState, number?]> | null, lifetime = "herdr-1", id = "pc"): PcLook =>
-  ({ id, lifetime, rows: rows === null ? null : Object.entries(rows).map(([pane, [state, seq]]) => ({ pane, state, seq })) });
+/** a row at a look: its state, herdr's counter, the server's count of its finishes (none yet unless said), and what else the look says of it */
+type Row = [state: StampState, seq?: number, finish?: number, more?: { done?: boolean; wait?: boolean; own?: boolean }];
+/** one PC's rows at a look, by pane, of one herdr and one server (its finishes' epoch) */
+const look = (rows: Record<string, Row> | null, lifetime = "herdr-1", id = "pc", epoch: string | null = "server-1"): PcLook =>
+  ({ id, lifetime, epoch, rows: rows === null ? null : Object.entries(rows).map(([pane, [state, seq, finish = 0, more]]) => ({ pane, state, seq, finish, done: more?.done ?? false, wait: more?.wait ?? false, own: more?.own ?? false })) });
+/** the roster says done: a finish herdr has not seen read */
+const DONE = { done: true };
+/** at rest while its turn's background work still runs: the roster says done, and the row shows working */
+const WAITING = { done: true, wait: true };
+/** an agent whose state Ovis reads from its own session files */
+const OWN = { own: true };
 
 /**
  * A page that looks at its PCs over time, reading the device's stamps anew at each look and writing them back, as the
@@ -104,14 +112,143 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(stampState("blocked")).toBe("blocked");
     const page = device();
     page.see(T, look({ a: ["working", 1] }));
-    page.see(T + MIN, look({ a: [stampState("done"), 2] }));
+    page.see(T + MIN, look({ a: [stampState("done"), 2, 1, DONE] }));
     // herdr moves its counter as the finish is read; the row is at rest all along
-    page.see(T + 3 * MIN, look({ a: [stampState("idle"), 3] }));
+    page.see(T + 3 * MIN, look({ a: [stampState("idle"), 3, 1] }));
     expect(page.since("a", "idle")).toBe(T + MIN);
 
     page.reload();
-    page.see(T + 4 * MIN, look({ a: ["idle", 3] }));
+    page.see(T + 4 * MIN, look({ a: ["idle", 3, 1] }));
     expect(page.since("a", "idle")).toBe(T + MIN);
+  });
+
+  it("drops a stamp on a reload when a turn ended meanwhile, though herdr's counter stands: the state Ovis shows is not always herdr's", () => {
+    const page = device();
+    page.see(T, look({ a: ["idle", 1] }));
+    page.see(T + MIN, look({ a: ["working", 2] }));
+    page.reload();
+    // a Claude whose turn ended while a subagent kept herdr at working, and that works again: one finish counted, herdr's counter where it was
+    page.see(T + 600 * MIN, look({ a: ["working", 2, 1] }));
+    expect(page.since("a", "working")).toBeNull();
+  });
+
+  it("trusts no kept stamp of an agent whose state Ovis reads itself: herdr's counter stands whatever it does", () => {
+    const page = device();
+    // here herdr's counter even moved with the change, as it may for what herdr takes the pane for
+    page.see(T, look({ a: ["idle", 5, 0, OWN] }));
+    page.see(T + MIN, look({ a: ["working", 6, 0, OWN] }));
+    // in sight its change is stamped as any other's
+    expect(page.since("a", "working")).toBe(T + MIN);
+
+    page.reload();
+    // it may have waited for an answer and worked on, with both counters where they were
+    page.see(T + 600 * MIN, look({ a: ["working", 6, 0, OWN] }));
+    expect(page.since("a", "working")).toBeNull();
+  });
+
+  it("drops a PC's kept stamps on a reload after its server started anew, and keeps them in a page that watched through it", () => {
+    const reloaded = device();
+    reloaded.see(T, look({ a: ["idle", 1] }));
+    reloaded.see(T + MIN, look({ a: ["working", 2, 4] }));
+    reloaded.reload();
+    // the new server counts its finishes from nothing: the same number is no proof
+    reloaded.see(T + 2 * MIN, look({ a: ["working", 2, 4] }, "herdr-1", "pc", "server-2"));
+    expect(reloaded.since("a", "working")).toBeNull();
+
+    const watching = device();
+    watching.see(T, look({ a: ["idle", 1] }));
+    watching.see(T + MIN, look({ a: ["working", 2, 4] }));
+    watching.see(T + 2 * MIN, look({ a: ["working", 2, 0] }, "herdr-1", "pc", "server-2"));
+    expect(watching.since("a", "working")).toBe(T + MIN);
+    // and from then on the new server's count proves it
+    watching.reload();
+    watching.see(T + 3 * MIN, look({ a: ["working", 2, 0] }, "herdr-1", "pc", "server-2"));
+    expect(watching.since("a", "working")).toBe(T + MIN);
+  });
+
+  it("drops the time of a state that was left and come back to between two looks", () => {
+    const waited = device();
+    waited.see(T, look({ a: ["working", 1] }));
+    waited.see(T + MIN, look({ a: ["blocked", 2] }));
+    // it worked and waits again before the page looked: the state reads the same, herdr's counter does not
+    waited.see(T + 5 * MIN, look({ a: ["blocked", 4] }));
+    expect(waited.since("a", "blocked")).toBeNull();
+
+    const rested = device();
+    rested.see(T, look({ a: ["working", 1] }));
+    rested.see(T + MIN, look({ a: ["idle", 2, 1] }));
+    // another turn began and ended: one more finish
+    rested.see(T + 5 * MIN, look({ a: ["idle", 2, 2] }));
+    expect(rested.since("a", "idle")).toBeNull();
+  });
+
+  it("drops no time for a roster that names no counter for a moment: only two numbers that differ are a move", () => {
+    const page = device();
+    page.see(T, look({ a: ["working", 1] }));
+    page.see(T + MIN, look({ a: ["blocked", 2] }));
+    page.see(T + 2 * MIN, { ...look({ a: ["blocked"] }), rows: [{ pane: "a", state: "blocked", seq: undefined, finish: undefined, done: false, wait: false, own: false }] });
+    page.see(T + 3 * MIN, look({ a: ["blocked", 2] }));
+    expect(page.since("a", "blocked")).toBe(T + MIN);
+  });
+
+  it("keeps a time through the roster that brings the counter of a change a pushed status told of first", () => {
+    const page = device();
+    page.see(T, look({ a: ["working", 1] }));
+    // a pushed status: the roster's counter is still the last change's
+    page.see(T + MIN, look({ a: ["blocked", 1] }));
+    page.see(T + MIN + 1000, look({ a: ["blocked", 2] }));
+    expect(page.since("a", "blocked")).toBe(T + MIN);
+
+    page.reload();
+    page.see(T + 9 * MIN, look({ a: ["blocked", 2] }));
+    expect(page.since("a", "blocked")).toBe(T + MIN);
+  });
+
+  it("keeps a rest's time when a pushed status says its finish was read, and the roster then brings herdr's counter", () => {
+    const page = device();
+    page.see(T, look({ a: ["working", 1] }));
+    page.see(T + MIN, look({ a: ["idle", 2, 1, DONE] }));
+    page.see(T + 2 * MIN, look({ a: ["idle", 2, 1] }));
+    page.see(T + 2 * MIN + 1000, look({ a: ["idle", 3, 1] }));
+    expect(page.since("a", "idle")).toBe(T + MIN);
+    // the debt is paid: a counter that moves again is a state left and come back to
+    page.see(T + 5 * MIN, look({ a: ["idle", 5, 1] }));
+    expect(page.since("a", "idle")).toBeNull();
+  });
+
+  it("keeps a working time through the end of a turn whose background work holds the row at working", () => {
+    const page = device();
+    page.see(T, look({ a: ["idle", 1] }));
+    page.see(T + MIN, look({ a: ["working", 2] }));
+    // the turn ends and its subagent runs on: herdr's counter moves, the server counts the finish, the row shows working
+    page.see(T + 10 * MIN, look({ a: ["working", 3, 1, WAITING] }));
+    expect(page.since("a", "working")).toBe(T + MIN);
+    // the subagent's notice starts the next turn: herdr turns from done to working
+    page.see(T + 12 * MIN, look({ a: ["working", 4, 1] }));
+    expect(page.since("a", "working")).toBe(T + MIN);
+
+    // with no such wait, a finish counted under a row that goes on working is a turn that ended and another that began
+    const missed = device();
+    missed.see(T, look({ a: ["idle", 1] }));
+    missed.see(T + MIN, look({ a: ["working", 2] }));
+    missed.see(T + 10 * MIN, look({ a: ["working", 4, 1] }));
+    expect(missed.since("a", "working")).toBeNull();
+
+    // and a wait found with two finishes counted holds a later turn than the one the page saw begin
+    const later = device();
+    later.see(T, look({ a: ["idle", 1] }));
+    later.see(T + MIN, look({ a: ["working", 2] }));
+    later.see(T + 10 * MIN, look({ a: ["working", 5, 2, WAITING] }));
+    expect(later.since("a", "working")).toBeNull();
+  });
+
+  it("drops a stamp on a reload that only a pushed status told of: its change's counter never came", () => {
+    const page = device();
+    page.see(T, look({ a: ["working", 1] }));
+    page.see(T + MIN, look({ a: ["blocked", 1] }));
+    page.reload();
+    page.see(T + 9 * MIN, look({ a: ["blocked", 2] }));
+    expect(page.since("a", "blocked")).toBeNull();
   });
 
   it("keeps the time of a pane that leaves the roster for a look and returns unchanged", () => {
@@ -198,6 +335,90 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(first.since("a", "idle")).toBe(T + 30 * MIN);
   });
 
+  it("keeps another tab's time for a change that tab heard of by a pushed status, and takes the counter the roster brings", () => {
+    const kept = { stamps: {} };
+    const first = device(kept), second = device(kept);
+    first.see(T, look({ a: ["working", 1] }));
+    second.see(T, look({ a: ["working", 1] }));
+    // the first tab stamps on the pushed status, with no counter of the change yet; the second sees it with its roster
+    first.see(T + MIN, look({ a: ["blocked", 1] }));
+    second.see(T + MIN + 2000, look({ a: ["blocked", 2] }));
+    expect(second.since("a", "blocked")).toBe(T + MIN);
+    first.see(T + MIN + 3000, look({ a: ["blocked", 2] }));
+    expect(first.since("a", "blocked")).toBe(T + MIN);
+
+    first.reload();
+    first.see(T + 9 * MIN, look({ a: ["blocked", 2] }));
+    expect(first.since("a", "blocked")).toBe(T + MIN);
+  });
+
+  it("keeps another tab's time for a change both see where herdr counts nothing: the stamp was made while this tab had the last state", () => {
+    const kept = { stamps: {} };
+    const first = device(kept), second = device(kept);
+    first.see(T, look({ a: ["idle"] }));
+    second.see(T, look({ a: ["idle"] }));
+    first.see(T + MIN, look({ a: ["working"] }));
+    second.see(T + 2 * MIN, look({ a: ["working"] }));
+    expect(second.since("a", "working")).toBe(T + MIN);
+  });
+
+  it("leaves another tab's stamp of a state this tab has not seen yet, and keeps its time when it sees it", () => {
+    for (const counts of [true, false]) {
+      const seq = (n: number): number | undefined => counts ? n : undefined;
+      const kept = { stamps: {} };
+      const ahead = device(kept), behind = device(kept);
+      ahead.see(T, look({ a: ["working", seq(1)], b: ["idle", seq(2)] }));
+      behind.see(T, look({ a: ["working", seq(1)], b: ["idle", seq(2)] }));
+      ahead.see(T + MIN, look({ a: ["blocked", seq(3)], b: ["idle", seq(2)] }));
+      // the tab behind hears of another agent first: in its roster `a` still works
+      behind.see(T + 2 * MIN, look({ a: ["working", seq(1)], b: ["working", seq(4)] }));
+      expect(ahead.since("a", "blocked")).toBe(T + MIN);
+      behind.see(T + 3 * MIN, look({ a: ["blocked", seq(3)], b: ["working", seq(4)] }));
+      expect(behind.since("a", "blocked")).toBe(T + MIN);
+      expect(behind.since("b", "working")).toBe(T + 2 * MIN);
+    }
+  });
+
+  it("leaves another tab's stamp alone when this tab's own counters move under a state it has been seeing", () => {
+    const kept = { stamps: {} };
+    const ahead = device(kept), behind = device(kept);
+    ahead.see(T, look({ a: ["working", 5, 0, OWN] }));
+    behind.see(T, look({ a: ["working", 5, 0, OWN] }));
+    // it ended a turn, worked again and waits: the tab ahead sees the wait begin
+    ahead.see(T + MIN, look({ a: ["blocked", 5, 1, OWN] }));
+    // the tab behind hears of the finish and of the work after it, not yet of the wait
+    behind.see(T + 2 * MIN, look({ a: ["working", 5, 1, OWN] }));
+    expect(ahead.since("a", "blocked")).toBe(T + MIN);
+  });
+
+  it("goes by what this tab saw: a stamp from before it saw the pane's last state is not the time of a change it is then told of", () => {
+    const kept = { stamps: {} };
+    const ahead = device(kept), late = device(kept);
+    ahead.see(T, look({ a: ["working", 5] }));
+    ahead.see(T + MIN, look({ a: ["blocked", 7] }));
+    // a tab opens on a roster in which the pane works, under a counter older than the stamp's: the stamp is left alone
+    late.see(T + 2 * MIN, look({ a: ["working", 5] }));
+    expect(ahead.since("a", "blocked")).toBe(T + MIN);
+    // a pushed status then says it waits, with no counter of that change yet: the tab saw it work after the stamp was made
+    late.see(T + 3 * MIN, look({ a: ["blocked", 5] }));
+    expect(late.since("a", "blocked")).toBe(T + 3 * MIN);
+  });
+
+  it("does not let a tab behind stamp its old news over a newer stamp", () => {
+    const kept = { stamps: {} };
+    const ahead = device(kept), behind = device(kept);
+    ahead.see(T, look({ a: ["idle", 1] }));
+    behind.see(T, look({ a: ["idle", 1] }));
+    ahead.see(T + MIN, look({ a: ["working", 2] }));
+    ahead.see(T + 2 * MIN, look({ a: ["blocked", 3] }));
+    // only now the tab behind hears that it worked, and only on a reload that it waits
+    behind.see(T + 3 * MIN, look({ a: ["working", 2] }));
+    expect(ahead.since("a", "blocked")).toBe(T + 2 * MIN);
+    behind.reload();
+    behind.see(T + 4 * MIN, look({ a: ["working", 2] }));
+    expect(ahead.since("a", "blocked")).toBe(T + 2 * MIN);
+  });
+
   it("never leaves a stamp ahead of a clock that was set back", () => {
     const page = device();
     page.see(T, look({ a: ["idle", 1] }));
@@ -210,7 +431,7 @@ describe("state stamps: when this device saw a state begin", () => {
 
     // nor the mark of when a pane left the roster
     page.see(T + 30 * MIN, look({}));
-    expect(page.see(T + 25 * MIN, look({}))).toEqual({ pc: { lifetime: "herdr-1", rows: { a: { state: "working", at: T + 4 * MIN, seq: 2, gone: T + 25 * MIN } } } });
+    expect(page.see(T + 25 * MIN, look({}))).toEqual({ pc: { lifetime: "herdr-1", epoch: "server-1", rows: { a: { state: "working", at: T + 4 * MIN, seq: 2, finish: 0, gone: T + 25 * MIN } } } });
   });
 
   it("forgets a pane thirty days after it left its PC's roster, however long it had been in its state, and no listed one", () => {
@@ -224,7 +445,7 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(page.since("a", "working")).toBe(T + MIN);
 
     const kept = page.see(T + 71 * DAY, look({ b: ["working", 4] }));
-    expect(kept).toEqual({ pc: { lifetime: "herdr-1", rows: { b: { state: "working", at: T + MIN, seq: 4 } } } });
+    expect(kept).toEqual({ pc: { lifetime: "herdr-1", epoch: "server-1", rows: { b: { state: "working", at: T + MIN, seq: 4, finish: 0 } } } });
   });
 
   it("keeps the time of a pane more than thirty days in its state that leaves the roster for a look", () => {
@@ -233,7 +454,7 @@ describe("state stamps: when this device saw a state begin", () => {
     page.see(T + MIN, look({ a: ["working", 2] }));
     page.see(T + 40 * DAY, look({}));
     // back, and listed again: the mark of its leaving goes
-    expect(page.see(T + 40 * DAY + MIN, look({ a: ["working", 2] }))).toEqual({ pc: { lifetime: "herdr-1", rows: { a: { state: "working", at: T + MIN, seq: 2 } } } });
+    expect(page.see(T + 40 * DAY + MIN, look({ a: ["working", 2] }))).toEqual({ pc: { lifetime: "herdr-1", epoch: "server-1", rows: { a: { state: "working", at: T + MIN, seq: 2, finish: 0 } } } });
   });
 
   it("keeps the stamps of a PC that left the roster for thirty days from the look that first missed it", () => {
@@ -260,21 +481,21 @@ describe("state stamps: when this device saw a state begin", () => {
 describe("stored state stamps", () => {
   it("reads what it wrote and drops every field that is not a stamp", () => {
     const stored = JSON.stringify({ version: 1, pcs: {
-      pc: { lifetime: "herdr-1", rows: {
-        good: { state: "blocked", at: T, seq: 4 },
-        unseq: { state: "idle", at: T + 1 },
+      pc: { lifetime: "herdr-1", epoch: "server-1", rows: {
+        good: { state: "blocked", at: T, seq: 4, finish: 2 },
+        unseq: { state: "idle", at: T + 1, finish: "two" },
         left: { state: "idle", at: T + 2, seq: 5, gone: T + 9 },
         leaving: { state: "idle", at: T + 3, gone: "soon" },
         done: { state: "done", at: T },
         undated: { state: "idle", at: "yesterday" },
         endless: { state: "working", at: Infinity },
       } },
-      nameless: { rows: { a: { state: "working", at: T, seq: "9" } } },
+      nameless: { epoch: 7, rows: { a: { state: "working", at: T, seq: "9" } } },
       broken: "rows",
     } });
     expect(parseStateStamps(stored)).toEqual({
-      pc: { lifetime: "herdr-1", rows: { good: { state: "blocked", at: T, seq: 4 }, unseq: { state: "idle", at: T + 1 }, left: { state: "idle", at: T + 2, seq: 5, gone: T + 9 }, leaving: { state: "idle", at: T + 3 } } },
-      nameless: { lifetime: null, rows: { a: { state: "working", at: T } } },
+      pc: { lifetime: "herdr-1", epoch: "server-1", rows: { good: { state: "blocked", at: T, seq: 4, finish: 2 }, unseq: { state: "idle", at: T + 1 }, left: { state: "idle", at: T + 2, seq: 5, gone: T + 9 }, leaving: { state: "idle", at: T + 3 } } },
+      nameless: { lifetime: null, epoch: null, rows: { a: { state: "working", at: T } } },
     });
   });
 
@@ -286,11 +507,11 @@ describe("stored state stamps", () => {
       setItem: (_key: string, value: string) => { text = value; },
     } } });
     try {
-      const mine: StateStamps = { pc: { lifetime: "herdr-1", rows: { a: { state: "idle", at: T, seq: 1 } } } };
+      const mine: StateStamps = { pc: { lifetime: "herdr-1", epoch: "server-1", rows: { a: { state: "idle", at: T, seq: 1, finish: 0 } } } };
       expect(saveStateStamps(mine)).toBe(true);
       expect(loadStateStamps()).toBe(mine);
 
-      const theirs: StateStamps = { pc: { lifetime: "herdr-1", rows: { a: { state: "working", at: T + MIN, seq: 2 } } } };
+      const theirs: StateStamps = { pc: { lifetime: "herdr-1", epoch: "server-1", rows: { a: { state: "working", at: T + MIN, seq: 2, finish: 0 } } } };
       text = JSON.stringify({ version: 1, pcs: theirs });
       const read = loadStateStamps();
       expect(read).toEqual(theirs);
