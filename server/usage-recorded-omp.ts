@@ -97,6 +97,9 @@ function storePath(ctx: RecordedContext): string {
  * Opens Oh My Pi's store for reading. While Oh My Pi has it open its write-ahead log lies beside it (`-wal`, `-shm`),
  * and the store is read through that log, so a report written a moment ago is read. Otherwise the file is opened as
  * one that does not change: SQLite then makes no `-wal` and `-shm` of its own, and the folder stays as Oh My Pi left it.
+ * That holds for a log left without its `-shm` too (a store copied or restored that way): SQLite would make the
+ * missing file to read it, so what only that log holds is not seen until Oh My Pi opens its store again, as with an
+ * agent's history (liveLog in session-history.ts).
  */
 function openForReading(path: string): Database {
   if (existsSync(`${path}-wal`) && existsSync(`${path}-shm`)) return new Database(path, { readonly: true, create: false });

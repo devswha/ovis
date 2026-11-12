@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { USAGE_PROVIDERS, UsageService, type UsageContext } from "./usage.ts";
@@ -258,6 +258,21 @@ describe("reading Oh My Pi's store", () => {
     } finally {
       running.close();
     }
+  });
+
+  it("reads the file alone where its log lies without the shared-memory file, and makes none to read the log", () => {
+    const path = store([{ at: NOW - 2 * HOUR, limit: "anthropic:5h", used: 0.2 }]);
+    const restored = join(home, "restored");
+    const running = new Database(path);
+    try {
+      insert(running, [latest("anthropic:5h", 0.6)]);
+      mkdirSync(restored);
+      for (const name of ["agent.db", "agent.db-wal"]) copyFileSync(join(dirname(path), name), join(restored, name));
+    } finally {
+      running.close();
+    }
+    expect(ompRecorded.read(recordedContext({ PI_CODING_AGENT_DIR: restored })).map((reading) => reading.readAt)).toEqual([NOW - 2 * HOUR]);
+    expect(readdirSync(restored).sort()).toEqual(["agent.db", "agent.db-wal"]);
   });
 });
 
