@@ -61,8 +61,9 @@ export function useWebPanel({ settings, filePanelAvailable }: { settings: Settin
 
   useEffect(() => {
     const onPop = (event: PopStateEvent): void => {
-      // a Back that a sheet with no entry refused, or its way back: the page under the sheet stays, and no entry is written for it
-      if (sheetStep.holds(event)) return;
+      // a Back that a sheet with no entry refused, or its way back: the page under the sheet stays, and no entry is
+      // written for it. Nor is an entry the page left, gone onto again by the sheet that takes it, a page to show again
+      if (sheetStep.holds(event) || sheetStep.taking(event)) return;
       closingWebPage.current = false;
       const next = webPanelFromState(event.state);
       const docked = isDocked(event.state);

@@ -79,8 +79,9 @@ export const sheetStep: {
   /**
    * Whether a popstate lands on the entry the user's Back left a moment ago, which a sheet that
    * came back in front is taking for its own (the file list, once Back closed the file opened from
-   * it): the entry still holds what the file or the diff wrote, is rewritten as the sheet's, and is
-   * nothing to show again. The file viewer and the diff viewer ask; sheetHistory answers, whichever
+   * it; a terminal peek, once Back closed Settings opened over it): the entry still holds what the
+   * file, the diff, Settings or the web page wrote, is rewritten as the sheet's, and is nothing to
+   * show again. Whoever keeps state by the history's entry asks; sheetHistory answers, whichever
    * hears the event first.
    */
   taking: (event: Event) => boolean;

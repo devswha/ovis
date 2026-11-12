@@ -42,6 +42,7 @@ function fakeBrowser() {
     get location() { return { href: entries[index]!.href }; },
     navigation: {
       get currentEntry() { return { key: entries[index]!.key, index }; },
+      entries() { return entries.map((entry, at) => ({ key: entry.key, index: at })); },
       traverseTo(key: string) {
         if (dropping) return { committed: Promise.reject(new Error("dropped")), finished: Promise.reject(new Error("dropped")) };
         land(entries.findIndex((entry) => entry.key === key));
@@ -439,6 +440,67 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     expect(fake.at()).toBe(start + 1); expect(sheetHistory.sheetSteppedOff()).toBe(false);
     h.back(); await settled();
     expect(fake.at()).toBe(start);
+  });
+});
+
+describe("a sheet that stays up under a navigation which took its entry", () => {
+  /** a sheet that stays under a navigation opened over it: a terminal peek */
+  const stay = (onBack: () => boolean | void): (() => void) => { const id = sheetHistory.enterSheet(onBack, null, true); return () => sheetHistory.leaveSheet(id); };
+
+  it("takes its entry back when the user's Back closes the navigation, and the next Back closes the sheet alone", async () => {
+    const start = fake.at();
+    const address = fake.window.location.href;
+    // Settings' listener, added after the module's: what each traversal lands on, unless told the entry is being taken
+    const shown: unknown[] = [];
+    let listening = true;
+    fake.window.addEventListener("popstate", (event) => { if (listening) shown.push(sheetStep.taking(event as unknown as Event) ? "taken" : (event.state as Record<string, unknown> | null)?.["settings"] ?? null); });
+    let closed = 0;
+    fake.tap();
+    const leave = stay(() => { closed += 1; });
+    const entry = fake.key();
+    // Settings opens from the peek: the navigation takes the peek's entry over
+    fake.tap();
+    h.pushState({ ...(h.state as object), settings: 1 }, "", "/?pane=a&settings=list");
+    expect(fake.key()).toBe(entry); expect((h.state as Record<string, unknown>)["ovis:sheet"]).toBeUndefined();
+    const entries = fake.entries.length;
+    h.back(); await settled();
+    // Settings is gone and the peek is on top: it is on its old entry again, as its own, with none added
+    expect(closed).toBe(0);
+    expect(fake.key()).toBe(entry); expect(fake.entries.length).toBe(entries);
+    expect(typeof (h.state as Record<string, unknown>)["ovis:sheet"]).toBe("string");
+    expect((h.state as Record<string, unknown>)["settings"]).toBeUndefined();
+    expect(fake.window.location.href).toBe(address);
+    expect(shown).toEqual([null, "taken"]);
+    // with no tap between: Back closes the peek, and goes no further
+    h.back(); await settled();
+    expect(closed).toBe(1); expect(fake.at()).toBe(start);
+    listening = false;
+    leave(); await settled();
+  });
+
+  it("stays under the navigation while Back moves between the navigation's own entries", async () => {
+    const start = fake.at();
+    let closed = 0;
+    fake.tap();
+    const leave = stay(() => { closed += 1; });
+    const entry = fake.key();
+    // Settings' list takes the peek's entry, and a page of it is one entry more
+    fake.tap();
+    h.pushState({ ...(h.state as object), settings: 1 }, "", "/?pane=a&settings=list");
+    fake.tap();
+    h.pushState({ ...(h.state as object), settings: 2 }, "", "/?pane=a&settings=page");
+    expect(fake.at()).toBe(start + 2);
+    // Back from the page to the list: the peek is still under Settings, and is not asked
+    h.back(); await settled();
+    expect(closed).toBe(0); expect(fake.key()).toBe(entry);
+    expect((h.state as Record<string, unknown>)["settings"]).toBe(1);
+    // Back from the list: Settings is gone, and the peek has its entry again
+    h.back(); await settled();
+    expect(closed).toBe(0); expect(fake.key()).toBe(entry);
+    expect(typeof (h.state as Record<string, unknown>)["ovis:sheet"]).toBe("string");
+    h.back(); await settled();
+    expect(closed).toBe(1); expect(fake.at()).toBe(start);
+    leave(); await settled();
   });
 });
 

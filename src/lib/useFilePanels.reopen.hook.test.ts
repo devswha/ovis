@@ -320,3 +320,22 @@ it("keeps a web page as it is, and writes no entry for it, while a Back that a s
   await act(async () => { window.history.go(-1); });
   expect(panels.webPage).toBeNull();
 });
+
+it("does not show again a web page whose entry a sheet goes onto to take for its own", async () => {
+  // Given a page in a narrow window's popup that the user's Back closed: its entry lies ahead, still naming the page.
+  await mount(false, false);
+  await act(async () => { expect(panels.openWebPage("http://localhost:3000/report", DEFAULT_SETTINGS.webLinks !== "panel", "local")).toBe(true); });
+  await act(async () => { window.history.go(-1); });
+  expect(panels.webPage).toBeNull();
+
+  // When a sheet that stayed under the page goes onto that entry (lib/sheetHistory.ts says so for the event).
+  const answering = sheetStep.taking;
+  sheetStep.taking = () => true;
+  try { await act(async () => { window.history.go(1); }); } finally { sheetStep.taking = answering; }
+
+  // Then the page stays closed; a Forward of the user's onto a page's entry still shows it.
+  expect(panels.webPage).toBeNull();
+  await act(async () => { window.history.go(-1); });
+  await act(async () => { window.history.go(1); });
+  expect(panels.webPage).not.toBeNull();
+});

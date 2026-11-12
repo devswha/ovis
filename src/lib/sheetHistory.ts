@@ -12,6 +12,8 @@
  * are a stack, Back closes the one on top, and that one's own close comes back to the one under
  * it. So does a sheet made to stay up under a navigation opened over it (a terminal peek under
  * Settings), whose entry the navigation took: the Back that leaves it does not close the sheet.
+ * While the history is on that entry or above it the navigation is still over the sheet, which is
+ * left as it is; the Back that goes below it gives the sheet its entry back.
  * Nor does a step back that another part of the app takes by itself (Settings, a file or a diff
  * closing by its own controls) close a sheet: one that opened as Settings closed (Add PC) gets its
  * entry where the step lands, and Files has its own again once a file opened from it has closed.
@@ -80,6 +82,7 @@ let returning: { entry: string; owner: string; href: string } | null = null;
 /** The Navigation API as this module uses it: the browser's own key and count for the entry the history is on, and the way onto an entry by its key. */
 interface NavigationApi {
   currentEntry?: { key: string; index: number } | null;
+  entries(): Array<{ key: string; index: number }>;
   traverseTo(key: string): { committed: Promise<unknown>; finished: Promise<unknown> };
 }
 const navigation = (): NavigationApi | undefined => (window as unknown as { navigation?: NavigationApi }).navigation;
@@ -113,6 +116,11 @@ const entryKeys = new Map<string, string>();
 function keep(id: string): void {
   const key = navigation()?.currentEntry?.key;
   if (key !== undefined) entryKeys.set(id, key);
+}
+/** where the entry a sheet held lies in the history, by the browser's count: -1 when the browser tells none, or the entry is gone */
+function placeOf(id: string): number {
+  const key = entryKeys.get(id);
+  return key === undefined ? -1 : navigation()?.entries().find((entry) => entry.key === key)?.index ?? -1;
 }
 /** the staying sheet whose entry `state` is, when it is still up: a navigation is about to take its entry over */
 function cover(state: unknown): void {
@@ -450,6 +458,9 @@ if (typeof window !== "undefined") {
     let refusal = false;
     for (const [id, onBack] of [...open].reverse()) {
       if (id === landed) continue;
+      // a sheet that stays under a navigation which took its entry (a terminal peek under Settings),
+      // with the history on that entry or above it: the navigation is still over it
+      if (here !== null && staying.has(id) && covered.has(id) && placeOf(id) >= 0 && here.index >= placeOf(id)) continue;
       open.delete(id);
       if (covered.delete(id)) again.unshift({ id, onBack, under: true, refused: false });
       else if (own || step?.has(id) || refusal) again.unshift({ id, onBack, under: false, refused: false });
@@ -508,6 +519,23 @@ if (typeof window !== "undefined") {
     }
     // a traversal no sheet refused is the app's to follow, from wherever a dropped way back left it
     if (!own && step === null) stood = null;
+    // a sheet that stays under a navigation (a terminal peek under Settings, a file or a web page),
+    // on top again now that the user's Back has left the entry the navigation took from it: where
+    // the browser skips an entry made now, the sheet goes onto that entry again and takes it back,
+    // as the file list takes the one Back left (climb). One still under it shares the entry, and stays under
+    const above = here === null ? -1 : here.index + 1;
+    const top = SKIPS && !own && step === null && from === null && above > 0 && climbing === null
+      ? [...again].reverse().find((kept) => kept.under && staying.has(kept.id) && placeOf(kept.id) === above) : undefined;
+    const onward = top === undefined ? undefined : entryKeys.get(top.id);
+    if (top !== undefined && onward !== undefined) {
+      for (const kept of again) {
+        if (kept.id === top.id) open.set(kept.id, kept.onBack);
+        else if (kept.under && entryKeys.get(kept.id) === onward) { open.set(kept.id, kept.onBack); covered.add(kept.id); }
+        else remake(kept.id, kept.onBack);
+      }
+      climb(top.id, onward);
+      return;
+    }
     // their entries are made again over where the history landed
     for (const kept of again) remake(kept.id, kept.onBack);
     if (retired && again.length === 0) window.history.forward();

@@ -603,6 +603,27 @@ describe("history traversal races", () => {
     expect(browser.settingsSteppedOff()).toBe(true);
   });
 
+  it("does not open again on an entry it left, when a phone sheet goes onto that entry to take it", async () => {
+    const browser = await delayedHistory([{ "ovis:nav": true }]);
+    browser.recordSettings(browser.settingsLevels(false, "appearance", false));
+    const moves: Array<[string | null, boolean]> = [];
+    browser.onSettingsHistory((entry, own) => moves.push([entry?.page ?? null, own]));
+    // the user's Back closes Settings: its entry lies ahead, still naming the page
+    await browser.move(-1);
+    browser.recordSettings([]);
+    expect(moves).toEqual([[null, false]]);
+    // a sheet that stayed under Settings (a terminal peek) goes onto that entry and takes it (lib/sheetHistory.ts says so for the event)
+    const answer = sheetStep.taking;
+    sheetStep.taking = () => true;
+    try { await browser.move(1); }
+    finally { sheetStep.taking = answer; }
+    expect(moves).toEqual([[null, false]]);
+    // a Forward of the user's onto an entry of Settings still opens it
+    await browser.move(-1);
+    await browser.move(1);
+    expect(moves.at(-1)).toEqual(["appearance", false]);
+  });
+
   it("lets go of its step back when a write on the same entry changes the Settings it holds", async () => {
     const browser = await delayedHistory();
     browser.recordSettings(browser.settingsLevels(false, "appearance", false));
