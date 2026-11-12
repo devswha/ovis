@@ -5,11 +5,14 @@ const MIN = 60_000;
 const DAY = 86_400_000;
 const T = 1_800_000_000_000;
 
-/** a row at a look: its state, herdr's counter, the server's count of its finishes (none yet unless said), and what else the look says of it */
-type Row = [state: StampState, seq?: number, finish?: number, more?: { done?: boolean; wait?: boolean; own?: boolean }];
+/**
+ * A row at a look: its state, herdr's counter, the server's count of its finishes (none yet unless said), and what else
+ * the look says of it. Its pane's terminal is named after the pane's ID unless said: one pane, as long as it keeps its ID.
+ */
+type Row = [state: StampState, seq?: number, finish?: number, more?: { done?: boolean; wait?: boolean; own?: boolean; terminal?: string }];
 /** one PC's rows at a look, by pane, of one herdr and one server (its finishes' epoch) */
 const look = (rows: Record<string, Row> | null, lifetime = "herdr-1", id = "pc", epoch: string | null = "server-1"): PcLook =>
-  ({ id, lifetime, epoch, rows: rows === null ? null : Object.entries(rows).map(([pane, [state, seq, finish = 0, more]]) => ({ pane, state, seq, finish, done: more?.done ?? false, wait: more?.wait ?? false, own: more?.own ?? false })) });
+  ({ id, lifetime, epoch, rows: rows === null ? null : Object.entries(rows).map(([pane, [state, seq, finish = 0, more]]) => ({ pane, terminal: more?.terminal ?? `term-${pane}`, state, seq, finish, done: more?.done ?? false, wait: more?.wait ?? false, own: more?.own ?? false })) });
 /** the roster says done: a finish herdr has not seen read */
 const DONE = { done: true };
 /** at rest while its turn's background work still runs: the roster says done, and the row shows working */
@@ -212,7 +215,7 @@ describe("state stamps: when this device saw a state begin", () => {
     const page = device();
     page.see(T, look({ a: ["working", 1] }));
     page.see(T + MIN, look({ a: ["blocked", 2] }));
-    page.see(T + 2 * MIN, { ...look({ a: ["blocked"] }), rows: [{ pane: "a", state: "blocked", seq: undefined, finish: undefined, done: false, wait: false, own: false }] });
+    page.see(T + 2 * MIN, { ...look({ a: ["blocked"] }), rows: [{ pane: "a", terminal: "term-a", state: "blocked", seq: undefined, finish: undefined, done: false, wait: false, own: false }] });
     page.see(T + 3 * MIN, look({ a: ["blocked", 2] }));
     expect(page.since("a", "blocked")).toBe(T + MIN);
   });
@@ -395,6 +398,97 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(page.since("a", "working")).toBe(T + MIN);
     // nothing says so of an agent Ovis reads itself, and the page did not see its return begin anything
     expect(page.since("b", "working")).toBeNull();
+  });
+
+  it("knows a pane herdr moved under a new ID by its terminal, and keeps its time there", () => {
+    const TERM = { done: true, terminal: "term-1" };
+    const page = device();
+    page.see(T, look({ "w1:p1": ["working", 4, 0, { terminal: "term-1" }] }));
+    page.see(T + MIN, look({ "w1:p1": ["idle", 5, 1, TERM] }));
+    // two hours on its pane is moved to another workspace: a new ID, the same terminal, and an agent that appears beside it
+    page.see(T + 121 * MIN, look({ "w2:p1": ["idle", 5, 1, TERM], "w3:p1": ["working", 8] }));
+    expect(page.since("w2:p1", "idle")).toBe(T + MIN);
+    // the other is a pane the page had not seen: its agent is a new one
+    expect(page.since("w3:p1", "working")).toBe(T + 121 * MIN);
+    // the moved pane is the row the page was seeing: a state left and come back to costs its time, as it did before the move
+    page.see(T + 122 * MIN, look({ "w2:p1": ["idle", 9, 2, TERM], "w3:p1": ["working", 8] }));
+    expect(page.since("w2:p1", "idle")).toBeNull();
+
+    // a reload after the move finds the stamp under the new ID, and proven
+    const reloaded = device();
+    reloaded.see(T, look({ "w1:p1": ["working", 4, 0, { terminal: "term-1" }] }));
+    reloaded.see(T + MIN, look({ "w1:p1": ["idle", 5, 1, TERM] }));
+    reloaded.see(T + 121 * MIN, look({ "w2:p1": ["idle", 5, 1, TERM] }));
+    reloaded.reload();
+    reloaded.see(T + 122 * MIN, look({ "w2:p1": ["idle", 5, 1, TERM] }));
+    expect(reloaded.since("w2:p1", "idle")).toBe(T + MIN);
+
+    // where no counter proves a stamp the time goes with the pane too: the page saw it all along
+    const core = device();
+    const term = (state: StampState): Row => [state, undefined, 0, { terminal: "term-1" }];
+    core.see(T, look({ "w1:p1": term("working"), other: ["idle"] }));
+    core.see(T + MIN, look({ "w1:p1": term("blocked"), other: ["idle"] }));
+    core.see(T + 2 * MIN, look({ "w1:p1": term("blocked"), other: ["working"] }));
+    core.see(T + 30 * MIN, look({ "w2:p1": term("blocked"), other: ["working"] }));
+    expect(core.since("w2:p1", "blocked")).toBe(T + MIN);
+    // a change on the way is one the page saw
+    core.see(T + 40 * MIN, look({ "w3:p1": term("working"), other: ["working"] }));
+    expect(core.since("w3:p1", "working")).toBe(T + 40 * MIN);
+    // and back under its first ID it is still the row the page was seeing
+    core.see(T + 41 * MIN, look({ "w3:p1": term("working"), other: ["idle"] }));
+    core.see(T + 50 * MIN, look({ "w1:p1": term("working"), other: ["idle"] }));
+    expect(core.since("w1:p1", "working")).toBe(T + 40 * MIN);
+  });
+
+  it("takes a moved pane's own stamp to its new ID, never the one another pane left there", () => {
+    const page = device();
+    // a pane that rested and left, and one the page saw resting from its first look: no time of its own
+    page.see(T, look({ "w2:p1": ["working", 2], "w1:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
+    page.see(T + MIN, look({ "w2:p1": ["idle", 4, 1, DONE], "w1:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
+    page.see(T + 2 * MIN, look({ "w1:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
+    // herdr gives the ended pane's ID to the one it moves
+    page.see(T + 3 * MIN, look({ "w2:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
+    expect(page.since("w2:p1", "idle")).toBeNull();
+
+    // and in the very look that misses the old pane: its stamp there carries no mark of leaving yet
+    const atOnce = device();
+    atOnce.see(T, look({ "w2:p1": ["working", 2], "w1:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
+    atOnce.see(T + MIN, look({ "w2:p1": ["idle", 4, 1, DONE], "w1:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
+    atOnce.see(T + 2 * MIN, look({ "w2:p1": ["idle", 3, 0, { terminal: "term-1" }] }));
+    expect(atOnce.since("w2:p1", "idle")).toBeNull();
+  });
+
+  it("goes by a pane's ID alone where a terminal is named twice: nothing says which pane is which", () => {
+    const SHARED = { done: true, terminal: "shared" };
+    const page = device();
+    page.see(T, look({ a: ["working", 1, 0, { terminal: "shared" }] }));
+    page.see(T + MIN, look({ a: ["idle", 3, 1, SHARED] }));
+    // a roster names the terminal for another pane too: that one is not the first, moved
+    page.see(T + 5 * MIN, look({ a: ["idle", 3, 1, SHARED], c: ["idle", 3, 1, SHARED] }));
+    expect(page.since("a", "idle")).toBe(T + MIN);
+    expect(page.since("c", "idle")).toBe(T + 5 * MIN);
+    // and a third is neither of the two the page remembers with it
+    page.see(T + 6 * MIN, look({ d: ["idle", 3, 1, SHARED] }));
+    expect(page.since("d", "idle")).toBe(T + 6 * MIN);
+  });
+
+  it("keeps a moved pane's time in a second tab that sees the move later", () => {
+    const kept = { stamps: {} as StateStamps };
+    const first = device(kept);
+    const second = device(kept);
+    const TERM = { done: true, terminal: "term-1" };
+    first.see(T, look({ "w1:p1": ["working", 4, 0, { terminal: "term-1" }] }));
+    second.see(T, look({ "w1:p1": ["working", 4, 0, { terminal: "term-1" }] }));
+    first.see(T + MIN, look({ "w1:p1": ["idle", 5, 1, TERM] }));
+    second.see(T + MIN + 1000, look({ "w1:p1": ["idle", 5, 1, TERM] }));
+    // the first tab follows the move, while the second still has the pane under its old ID
+    first.see(T + 60 * MIN, look({ "w2:p1": ["idle", 5, 1, TERM] }));
+    second.see(T + 60 * MIN + 500, look({ "w1:p1": ["idle", 5, 1, TERM], other: ["working", 9] }));
+    expect(second.since("w1:p1", "idle")).toBe(T + MIN);
+    second.see(T + 60 * MIN + 1000, look({ "w2:p1": ["idle", 5, 1, TERM], other: ["working", 9] }));
+    expect(second.since("w2:p1", "idle")).toBe(T + MIN);
+    first.see(T + 61 * MIN, look({ "w2:p1": ["idle", 5, 1, TERM], other: ["working", 9] }));
+    expect(first.since("w2:p1", "idle")).toBe(T + MIN);
   });
 
   it("forgets a pane it saw thirty days after it left the roster, as the device forgets its stamp", () => {

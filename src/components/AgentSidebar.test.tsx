@@ -696,6 +696,36 @@ describe("AgentSidebar fold memory", () => {
     }
   });
 
+  it("keeps an agent's time when herdr moves its pane to another workspace, under a new ID (#3505)", async () => {
+    const start = 1_800_000_000_000;
+    const at = (status: AgentStatus, id = paneId) => roster().map((machine) => {
+      if (machine.snapshot === null) return machine;
+      const snapshot = { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane) };
+      // herdr names the moved pane anew wherever it names it (the panes, the agents, the layouts) and leaves it its terminal
+      return { ...machine, snapshot: JSON.parse(JSON.stringify(snapshot).replaceAll(JSON.stringify(paneId), JSON.stringify(id))) as typeof snapshot };
+    });
+    const since = (id: string) => renderer!.root.findByProps({ "data-machine": "local", "data-pane": id }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(start));
+    try {
+      // Given a page that saw an agent begin to wait, two hours ago.
+      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
+      await act(async () => { stateWatch.subscription("opened"); stateWatch.pushed(); });
+      await act(async () => { renderer!.update(groupedList(inactive, at("blocked"))); });
+      await act(async () => { jest.advanceTimersByTime(120 * 60_000); });
+      expect(since(paneId)).toEqual(["2h"]);
+      // When its pane is moved to another workspace.
+      await act(async () => { renderer!.update(groupedList(inactive, at("blocked", "w9:p1"))); });
+      // Then the row goes on counting under its new ID, where nothing but its terminal says it is the same pane.
+      expect(since("w9:p1")).toEqual(["2h"]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+      renderer = undefined;
+      jest.useRealTimers();
+      setSystemTime();
+    }
+  });
+
   it("reads no time from a stamping that has ended: the page's stamps leave with it, and the device keeps them", async () => {
     const finished = roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "done" as const } : pane),

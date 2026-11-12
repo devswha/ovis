@@ -55,6 +55,8 @@ export type StateStamps = Readonly<Record<string, PcStamps>>;
 
 export interface SeenRow {
   pane: string;
+  /** the pane's terminal (`terminal_id`): herdr gives a pane it moves to another workspace a new ID, and leaves it this */
+  terminal: string;
   state: StampState;
   /** herdr's `state_change_seq` as the roster has it: a pushed status changes the state before the roster that carries its counter */
   seq: number | undefined;
@@ -112,6 +114,7 @@ export function stateLooks(machines: readonly Machine[], status: (machineId: str
       epoch: machine.snapshot.finish_epoch ?? null,
       rows: sidebarAgents(machine.snapshot).map(({ pane }) => ({
         pane: pane.pane_id,
+        terminal: pane.terminal_id,
         state: stampState(agentGroup(status(machine.id, pane))),
         seq: seqs.get(pane.pane_id),
         finish: pane.finish_id,
@@ -167,6 +170,26 @@ function leftStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
 }
 
 /**
+ * The rows of a look that are a pane this page remembers under another ID, each with its memory of it there. herdr
+ * gives a pane it moves to another workspace a new ID and leaves it its terminal (#1503), so a row whose terminal
+ * the page saw under another ID is that pane. Only where the roster names that terminal once, and the page
+ * remembers it once: a terminal named twice says nothing of which pane is which.
+ */
+function movedRows(rows: readonly SeenRow[], watched: PcSeen | undefined): Map<string, WatchedRow> {
+  const moved = new Map<string, WatchedRow>();
+  if (watched === undefined) return moved;
+  const listed = new Map<string, number>();
+  for (const row of rows) listed.set(row.terminal, (listed.get(row.terminal) ?? 0) + 1);
+  const remembered = new Map<string, WatchedRow | null>();
+  for (const old of watched.rows.values()) remembered.set(old.terminal, remembered.has(old.terminal) ? null : old);
+  for (const row of rows) {
+    const old = remembered.get(row.terminal);
+    if (old !== undefined && old !== null && old.pane !== row.pane && listed.get(row.terminal) === 1) moved.set(row.pane, old);
+  }
+  return moved;
+}
+
+/**
  * The stamps after a look at every PC, each row by what the page saw of it at its last look.
  *
  * - A state that differs from the last look's began now and is stamped so, unless the kept stamp already tells of
@@ -174,6 +197,9 @@ function leftStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
  *   of a pane new to this page and to the device, once the page has looked at its PC for longer than the gap a page
  *   bridges (lib/agentStateWatch.ts): sooner, it may be an agent the roster had not listed yet, or had lost sight of.
  *   A look that is not `dated` (the page cannot say when what it finds began) stamps no change.
+ * - A pane herdr moved under a new ID (`movedRows`) is the row the page was seeing under the old one: it is judged by
+ *   what the page saw of it there and by the stamp it had there, which goes with it. What the new ID held is another
+ *   pane's: herdr gives an ended pane's ID out again.
  * - A state the page has been seeing keeps its stamp while the counters stand. A finish counted meanwhile, or
  *   herdr's counter moved, means the state was left and come back to out of sight (updates come together, a
  *   subscription has gaps), and the stamp goes. Two moves of herdr's counter are none of the state: the one that
@@ -219,9 +245,11 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     const recount = watched !== undefined && watched.epoch !== look.epoch;
     const rows: Record<string, StateStamp> = {};
     const memory = new Map<string, WatchedRow>();
+    const moved = movedRows(look.rows, watched);
     for (const row of look.rows) {
-      const stamp = before[row.pane];
-      const known = watched?.rows.get(row.pane);
+      const from = moved.get(row.pane);
+      const stamp = before[from === undefined ? row.pane : from.pane];
+      const known = from ?? watched?.rows.get(row.pane);
       const saw = known !== undefined && known.left !== undefined && now - known.left > BLIND_MS ? undefined : known;
       const began = watched !== undefined && saw?.state !== row.state;
       // herdr's counter moved: two numbers that differ. A roster that names none for a moment says nothing either way
@@ -284,9 +312,10 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     else if (Object.keys(rows).length > 0) { next[look.id] = { lifetime: look.lifetime, epoch: look.epoch, rows }; changed = true; }
     else if (kept !== undefined) changed = true;
     // a pane missing from this roster stays in the page's memory, with when it was first missed, for as long as its
-    // stamp would be kept
+    // stamp would be kept; one that moved is remembered under its new ID alone
+    const carried = new Set([...moved.values()].map((old) => old.pane));
     if (watched !== undefined) for (const [pane, old] of watched.rows) {
-      if (memory.has(pane)) continue;
+      if (memory.has(pane) || carried.has(pane)) continue;
       if (old.left === undefined) memory.set(pane, { ...old, left: now });
       else if (now - old.left <= KEPT_UNLISTED_MS) memory.set(pane, old);
     }
