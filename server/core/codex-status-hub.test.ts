@@ -36,7 +36,7 @@ function codexHub(text: string) {
     await (lookups.mock.results.at(-1)?.value as Promise<unknown> | undefined)?.catch(() => undefined);
     await new Promise<void>((resolve) => setImmediate(resolve));
   };
-  return { ...h, lookups, read, failures, looked, settled, restore };
+  return { ...h, path, lookups, read, failures, looked, settled, restore };
 }
 
 describe("a Codex pane whose turn ended in an error", () => {
@@ -125,6 +125,23 @@ describe("a Codex pane whose turn ended in an error", () => {
       expect(h.last().status).toBe("idle");
       expect(h.failures).toEqual(["w1:p1"]);
     } finally { setSystemTime(); h.restore(); }
+  });
+
+  it("finishes the turn after a failure once its rollout says it answered", async () => {
+    const h = codexHub(failed);
+    try {
+      handlers.onStatus("w1:p1", "working", "codex");
+      handlers.onStatus("w1:p1", "done", "codex");
+      await h.looked();
+      expect(h.last().status).toBe("idle");
+      // the retry's end is written after herdr read the pane at rest: the next read finds it
+      writeFileSync(h.path, `${failed}${JSON.stringify({ type: "event_msg", timestamp: "2026-11-12T05:56:00.000Z", payload: { type: "task_started", turn_id: "retry" } })}\n${JSON.stringify({ type: "event_msg", timestamp: "2026-11-12T05:56:01.000Z", payload: { type: "task_complete", turn_id: "retry", last_agent_message: "Done", error: null } })}\n`);
+      h.herdrSays(pane("done"));
+      await h.snapshot();
+      await h.looked();
+      expect(h.last().status).toBe("done");
+      expect(h.alerts.at(-1)).toBe("done");
+    } finally { h.restore(); }
   });
 
   it("finishes a turn that answered", async () => {

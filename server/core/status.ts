@@ -681,8 +681,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // a Codex turn this server saw run is told DONE only once its rollout is read (codexRest), or CODEX_LOOK_MS on: a
     // turn that ended in an error is told at rest instead, and no browser plays a finish for it first
     if (agent === "codex" && status === "done" && !omo.runs(paneId) && !gjc.runs(paneId) && (codexTurns.get(paneId) ?? 0) > 0) {
-      void Promise.race([codexRest(paneId), new Promise<void>((resolve) => setTimeout(resolve, CODEX_LOOK_MS))])
-        .then(() => { if (completions.current(paneId) === status) tell(); });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      void Promise.race([codexRest(paneId), new Promise<void>((resolve) => { timer = setTimeout(resolve, CODEX_LOOK_MS); })])
+        .then(() => { clearTimeout(timer); if (completions.current(paneId) === status) tell(); });
     } else tell();
     // an OpenCode turn whose session is not known yet: its pane is looked up now, not at the next snapshot, so a
     // turn that ended on its subagents is held while the finish alert still waits (and is called off)
@@ -727,8 +728,17 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       return (codexTurns.get(paneId) ?? 0) === turn ? failed : null;
     })().then((failed) => {
       if (failed === null) return;
-      // read again after the rollout grew: no longer failed, herdr's word on the pane stands again
-      if (!failed) { codexFailed.delete(paneId); codexFailedAt.delete(paneId); return; }
+      if (!failed) {
+        if (!codexFailed.has(paneId)) return;
+        // read again after the rollout grew: the turn after the failure answered, which is a finish (#687's `answered`)
+        codexFailed.delete(paneId); codexFailedAt.delete(paneId);
+        const status = completions.observe(paneId, "idle", "codex", "answered");
+        pending.status(paneId, queueStatus(paneId, status)); drainPending(paneId);
+        waits.status(paneId, status);
+        broadcastAll(paneStatus(paneId, status));
+        push.onStatus(paneId, status).catch(logPushError);
+        return;
+      }
       const now = completions.current(paneId);
       if (now === "working" || now === "blocked" || codexFailed.has(paneId)) return;
       codexFailed.add(paneId);

@@ -264,7 +264,7 @@ export function createCodexTranscriptParser(state: CodexParseState = { turns: []
         }
         // a turn that failed (a usage limit, a refused request) records why on its end, and nothing else: no answer
         // of the turn read as running only, as its items are (a sub-agent's turn ends in its own record)
-        const failure = payload.type === "task_complete" && (!state.activeTurnId || !payload.turn_id || payload.turn_id === state.activeTurnId)
+        const failure = payload.type === "task_complete" && (!payload.turn_id || (state.activeTurnId ? payload.turn_id === state.activeTurnId : !payload.root_turn_id || payload.turn_id === payload.root_turn_id))
           ? string(record(payload.error).message) : "";
         if (failure) assistant(ts).parts.push({ kind: "text", text: `Error: ${failure}`, failed: true });
         if (payload.type === "task_complete" || payload.type === "turn_aborted") {
@@ -1273,7 +1273,9 @@ export function codexTurnFailed(rollout: string): boolean {
       const turn = string(entry.payload?.["turn_id"]) || undefined;
       if (type === "task_started") { active = turn; failed = false; continue; }
       if (type !== "task_complete" && type !== "turn_complete" && type !== "turn_aborted") continue;
-      if (active !== undefined && turn !== undefined && turn !== active) continue;
+      // an end of a turn begun before the read: a sub-agent's names another root than its own
+      const root = string(entry.payload?.["root_turn_id"]) || undefined;
+      if (active !== undefined ? turn !== undefined && turn !== active : turn !== undefined && root !== undefined && turn !== root) continue;
       failed = type === "task_complete" && string(record(entry.payload?.["error"]).message) !== "";
     } catch { /* a record cut by the tail read */ }
   }
@@ -1774,8 +1776,10 @@ function wordsEnding(text: string, length: number, between = /[^\p{L}\p{N}]+/u):
 }
 
 /** A conversation's answers among its turns, as written. */
+/** What the agent said, as a screen shows it: a failed request's error is Codex's own line on screen, not an answer, and reads differently there. */
+const spoken = (part: ConversationPart): part is Extract<ConversationPart, { kind: "text" }> => part.kind === "text" && part.failed !== true;
 const answersOf = (turns: ConversationTurn[]) => turns.filter((turn) => turn.role === "assistant")
-  .flatMap((turn) => turn.parts).filter((part) => part.kind === "text").map((part) => part.text);
+  .flatMap((turn) => turn.parts).filter(spoken).map((part) => part.text);
 
 /** Each candidate's turns as last parsed, so the matchers of one lookup parse a rollout's read once between them. */
 const parsedTurns = new WeakMap<object, { text: string; turns: ConversationTurn[] }>();
@@ -2107,7 +2111,7 @@ export function matchShortCodexAnswers(screen: string, candidates: { path: strin
   const exchanges = candidates.map((candidate) => {
     let prompt = "";
     return parseCodexTranscript(candidate.text, Infinity).flatMap((turn) => {
-      const texts = turn.parts.flatMap((part) => part.kind === "text" ? [part.text] : []);
+      const texts = turn.parts.flatMap((part) => spoken(part) ? [part.text] : []);
       if (turn.role === "user") prompt = promptKey(texts.join("\n"));
       return turn.role === "assistant" ? texts.map((text) => ({ text, prompt })) : [];
     });
@@ -2168,7 +2172,7 @@ function codexExchanges(text: string): CodexExchange[] {
     if (user !== null) exchanges.push({ user, assistant: assistant.join("\n") });
   };
   for (const turn of turns) {
-    const prose = turn.parts.flatMap((part) => part.kind === "text" ? [part.text] : []).join("\n");
+    const prose = turn.parts.flatMap((part) => spoken(part) ? [part.text] : []).join("\n");
     if (turn.role === "user") {
       finish();
       user = prose;

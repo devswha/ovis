@@ -917,6 +917,13 @@ describe("Codex rollout resolution", () => {
   const answered = (...texts: string[]) => jsonl(message("user", asked), ...texts.map((text) => message("assistant", text)));
   const bullets = (...texts: string[]) => [`› ${asked}`, ...texts.map((text) => `• ${text}`)].join("\n");
 
+  it("still ties a session to its screen after failed turns, whose errors Codex shows in its own words", () => {
+    const failedTurn = jsonl(message("user", "Retry"), event({ type: "task_complete", turn_id: "t", last_agent_message: null, error: { message: "You've hit your usage limit." } }));
+    const candidates = [{ path: "short", text: `${shortRollout}\n${failedTurn}\n${failedTurn}` }, { path: "other", text: jsonl(message("assistant", answer, "final_answer")) }];
+    const screen = [...shortScreen, "› Retry", "■ You've hit your usage limit.", "› Retry", "■ You've hit your usage limit."].join("\n\n");
+    expect(matchShortCodexAnswers(screen, candidates)).toBe("short");
+  });
+
   it("reads a session whose answers are all short by its newest answers shown together, in order", () => {
     const candidates = [
       { path: "short", text: shortRollout },
@@ -1769,6 +1776,11 @@ describe("a Codex turn that ended in an error", () => {
     expect(turns.map((turn) => turn.role)).toEqual(["user", "assistant"]);
     expect(turns[1]!.parts).toEqual([{ kind: "text", failed: true,
       text: "Error: You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 13th, 2026 6:05 PM." }]);
+  });
+
+  it("takes no error of a sub-agent's turn for this turn's, though the read began after this turn did", () => {
+    const sub = jsonl(event({ type: "task_complete", turn_id: "sub", root_turn_id: "main", last_agent_message: null, error: { message: "Sub-agent failed" } }));
+    expect(codexTurnFailed(`${sub}\n`)).toBe(false);
   });
 
   it("shows no error another turn's end recorded under this one", () => {
