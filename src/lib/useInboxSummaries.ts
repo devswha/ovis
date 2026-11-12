@@ -61,9 +61,6 @@ function timeOf(stamp: string | null, offset: number): number | null {
   return Number.isNaN(new Date(ms).getTime()) ? null : ms;
 }
 
-const same = (a: RowSummary | undefined, b: RowSummary): boolean => a !== undefined
-  && a.role === b.role && a.text === b.text && a.at === b.at && a.askedAt === b.askedAt && a.failed === b.failed;
-
 const stampOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
 /** An answer's summary as the wire types it: another PC's comes through the proxy unchecked. */
 function wellFormed(value: unknown): value is PaneSummary {
@@ -99,6 +96,8 @@ export class SummaryReads {
   /** the stamp each key's words were answered for, and the key-and-stamp reads already asked once more */
   private readonly answeredFor = new Map<string, string>();
   private readonly rechecked = new Set<string>();
+  /** each key's words as the answer gave them, before the clock correction: an answer repeats them when these match */
+  private readonly sources = new Map<string, string>();
 
   constructor(private readonly read: SummaryRead,
     private readonly wait: SummaryWait = (run, ms) => { const timer = setTimeout(run, ms); return () => clearTimeout(timer); },
@@ -128,6 +127,7 @@ export class SummaryReads {
     for (const [machineId, queue] of this.queues) this.queues.set(machineId, queue.filter((target) => this.isCurrent(target)));
     const gone = [...this.current.keys()].filter((key) => !this.targets.has(key));
     for (const key of [...this.answeredFor.keys()]) if (!this.targets.has(key)) this.answeredFor.delete(key);
+    for (const key of [...this.sources.keys()]) if (!this.targets.has(key)) this.sources.delete(key);
     // words carried to a new stamp until its read settles are carried without their failed mark, which held for the old state
     const unfailed = [...this.current].filter(([key, row]) => row.failed && this.answeredFor.get(key) !== this.targets.get(key)?.stamp).map(([key]) => key);
     if (unfailed.length > 0) this.change((summaries) => { for (const key of unfailed) summaries.set(key, { ...summaries.get(key)!, failed: false }); });
@@ -201,8 +201,14 @@ export class SummaryReads {
       this.answeredFor.set(target.key, target.stamp);
       if (!wellFormed(summary)) { if (this.current.has(target.key)) cleared.push(target.key); continue; }
       const row: RowSummary = { role: summary.role, text: summary.text, at: timeOf(summary.at, offset), askedAt: timeOf(summary.asked_at, offset), failed: summary.failed === true };
-      if (!same(this.current.get(target.key), row)) set.set(target.key, row);
-      else if (before !== undefined && before !== target.stamp) this.recheck(target);
+      // sameness is the answer's own values: two answers' clock corrections differ by the time between them
+      const source = JSON.stringify([summary.role, summary.text, summary.at, summary.asked_at, row.failed]);
+      const kept = this.current.get(target.key);
+      const repeated = kept !== undefined && this.sources.get(target.key) === source;
+      this.sources.set(target.key, source);
+      // words carried to a new stamp lost their failed mark: a repeat gives it back
+      if (!repeated || kept.failed !== row.failed) set.set(target.key, row);
+      if (repeated && before !== undefined && before !== target.stamp) this.recheck(target);
     }
     // the first pane left out is likeliest the one the PC was still reading: it goes behind the others
     for (const target of [...left.slice(1), ...left.slice(0, 1)]) this.again(target);

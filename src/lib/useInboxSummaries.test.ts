@@ -8,7 +8,7 @@ import type { SidebarActivity } from "./sidebarActivity.tsx";
 import { SUMMARY_RETRIES, SUMMARY_RETRY_MS, SummaryReads, summaryTargets, type SummaryTarget } from "./useInboxSummaries.ts";
 
 /** A read whose answers the test hands out one by one, in the order the reads started. */
-function harness(now = 0, subscribed = true) {
+function harness(now: number | (() => number) = 0, subscribed = true) {
   const calls: { machineId: string; paneIds: readonly string[]; resolve(answer: PaneSummaries | null): void; reject(error: Error): void }[] = [];
   const waits: { ms: number; run(): void; cancelled: boolean }[] = [];
   const reads = new SummaryReads(
@@ -18,7 +18,7 @@ function harness(now = 0, subscribed = true) {
       waits.push(wait);
       return () => { wait.cancelled = true; };
     },
-    () => now,
+    typeof now === "function" ? now : () => now,
   );
   let notified = 0;
   if (subscribed) reads.subscribe(() => { notified++; });
@@ -153,6 +153,20 @@ describe("SummaryReads", () => {
     await settled();
     expect(waits).toHaveLength(1);
     expect(calls).toHaveLength(3);
+  });
+
+  it("asks a row once more when its new stamp answers with the same source times, whatever the clock correction", async () => {
+    let deviceNow = Date.parse("2026-11-12T10:00:00.000Z");
+    const { reads, calls, waits } = harness(() => deviceNow);
+    reads.sync([target("a", "1")]);
+    calls[0]!.resolve(answer({ "pane-a": { ...said("Last turn", "2026-11-12T09:59:00.000Z"), asked_at: "2026-11-12T09:58:00.000Z" } }, "2026-11-12T10:00:00.000Z"));
+    await settled();
+    // the next answer's server clock is 50 ms further from this device's: the same source times correct 50 ms apart
+    deviceNow += 1000;
+    reads.sync([target("a", "2")]);
+    calls[1]!.resolve(answer({ "pane-a": { ...said("Last turn", "2026-11-12T09:59:00.000Z"), asked_at: "2026-11-12T09:58:00.000Z" } }, "2026-11-12T10:00:01.050Z"));
+    await settled();
+    expect(waits.map((wait) => wait.ms)).toEqual([SUMMARY_RETRY_MS]);
   });
 
   it("counts a corrected time a Date cannot hold as no time", async () => {
