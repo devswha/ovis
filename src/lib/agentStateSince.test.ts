@@ -9,17 +9,19 @@ const T = 1_800_000_000_000;
 const look = (rows: Record<string, [StampState, number?]> | null, lifetime = "herdr-1", id = "pc"): PcLook =>
   ({ id, lifetime, rows: rows === null ? null : Object.entries(rows).map(([pane, [state, seq]]) => ({ pane, state, seq })) });
 
-/** a page that looks at its PCs over time; `reload` is the same device opening the page again */
-function device(stored: StateStamps = {}) {
-  let stamps = stored;
+/**
+ * A page that looks at its PCs over time, reading the device's stamps anew at each look and writing them back, as the
+ * app does. `reload` is the same device opening the page again; a second page over the same `kept` is another tab of it.
+ */
+function device(kept: { stamps: StateStamps } = { stamps: {} }) {
   let last: LastLook = new Map();
   return {
     see(now: number, ...looks: PcLook[]): StateStamps {
-      ({ stamps, last } = advanceStateStamps({ stamps, last }, looks, now));
-      return stamps;
+      ({ stamps: kept.stamps, last } = advanceStateStamps({ stamps: kept.stamps, last }, looks, now));
+      return kept.stamps;
     },
     reload(): void { last = new Map(); },
-    since: (pane: string, state: StampState): number | null => stateSince(stamps, "pc", pane, state),
+    since: (pane: string, state: StampState): number | null => stateSince(kept.stamps, "pc", pane, state),
   };
 }
 
@@ -146,6 +148,36 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(page.since("a", "working")).toBeNull();
   });
 
+  it("gives the panes of another herdr no time when it replaces the one this page was watching", () => {
+    const page = device();
+    page.see(T, look({ a: ["working", 1], b: ["idle", 2] }));
+    // between two looks the PC's herdr was replaced: `a` and `b` name other panes now, and this page saw none of their states begin
+    page.see(T + MIN, look({ a: ["idle", 1], b: ["idle", 2], c: ["working", 3] }, "herdr-2"));
+    expect(page.since("a", "idle")).toBeNull();
+    expect(page.since("b", "idle")).toBeNull();
+    expect(page.since("c", "working")).toBeNull();
+
+    // from then on it watches the new one
+    page.see(T + 2 * MIN, look({ a: ["working", 4], b: ["idle", 2], c: ["working", 3] }, "herdr-2"));
+    expect(page.since("a", "working")).toBe(T + 2 * MIN);
+  });
+
+  it("keeps the time another tab of this device stamped for a change both see", () => {
+    const kept = { stamps: {} };
+    const first = device(kept), second = device(kept);
+    first.see(T, look({ a: ["idle", 1] }));
+    second.see(T, look({ a: ["idle", 1] }));
+    // the first tab sees the change as it happens; the second, held back in the background, learns of it later
+    first.see(T + MIN, look({ a: ["working", 2] }));
+    second.see(T + 20 * MIN, look({ a: ["working", 2] }));
+    expect(second.since("a", "working")).toBe(T + MIN);
+
+    // a change the kept stamp does not tell of is stamped by the tab that sees it, and the other keeps that
+    second.see(T + 30 * MIN, look({ a: ["idle", 3] }));
+    first.see(T + 31 * MIN, look({ a: ["idle", 3] }));
+    expect(first.since("a", "idle")).toBe(T + 30 * MIN);
+  });
+
   it("never leaves a stamp ahead of a clock that was set back", () => {
     const page = device();
     page.see(T, look({ a: ["idle", 1] }));
@@ -155,26 +187,43 @@ describe("state stamps: when this device saw a state begin", () => {
 
     page.see(T + 20 * MIN, look({ a: ["working", 2] }));
     expect(page.since("a", "working")).toBe(T + 4 * MIN);
+
+    // nor the mark of when a pane left the roster
+    page.see(T + 30 * MIN, look({}));
+    expect(page.see(T + 25 * MIN, look({}))).toEqual({ pc: { lifetime: "herdr-1", rows: { a: { state: "working", at: T + 4 * MIN, seq: 2, gone: T + 25 * MIN } } } });
   });
 
-  it("forgets a pane that has been gone from its PC's roster for thirty days, and no listed one", () => {
+  it("forgets a pane thirty days after it left its PC's roster, however long it had been in its state, and no listed one", () => {
     const page = device();
     page.see(T, look({ a: ["idle", 1], b: ["idle", 2] }));
     page.see(T + MIN, look({ a: ["working", 3], b: ["working", 4] }));
-    page.see(T + 29 * DAY, look({ b: ["working", 4] }));
+    // listed for forty days, then gone: the thirty days are counted from the look that first missed it
+    page.see(T + 40 * DAY, look({ a: ["working", 3], b: ["working", 4] }));
+    page.see(T + 40 * DAY + MIN, look({ b: ["working", 4] }));
+    page.see(T + 69 * DAY, look({ b: ["working", 4] }));
     expect(page.since("a", "working")).toBe(T + MIN);
 
-    const kept = page.see(T + 31 * DAY, look({ b: ["working", 4] }));
+    const kept = page.see(T + 71 * DAY, look({ b: ["working", 4] }));
     expect(kept).toEqual({ pc: { lifetime: "herdr-1", rows: { b: { state: "working", at: T + MIN, seq: 4 } } } });
   });
 
-  it("keeps the stamps of a PC that left the roster until they are thirty days old", () => {
+  it("keeps the time of a pane more than thirty days in its state that leaves the roster for a look", () => {
     const page = device();
     page.see(T, look({ a: ["idle", 1] }));
     page.see(T + MIN, look({ a: ["working", 2] }));
-    page.see(T + 29 * DAY);
+    page.see(T + 40 * DAY, look({}));
+    // back, and listed again: the mark of its leaving goes
+    expect(page.see(T + 40 * DAY + MIN, look({ a: ["working", 2] }))).toEqual({ pc: { lifetime: "herdr-1", rows: { a: { state: "working", at: T + MIN, seq: 2 } } } });
+  });
+
+  it("keeps the stamps of a PC that left the roster for thirty days from the look that first missed it", () => {
+    const page = device();
+    page.see(T, look({ a: ["idle", 1] }));
+    page.see(T + MIN, look({ a: ["working", 2] }));
+    page.see(T + 40 * DAY);
+    page.see(T + 69 * DAY);
     expect(page.since("a", "working")).toBe(T + MIN);
-    expect(page.see(T + 31 * DAY)).toEqual({});
+    expect(page.see(T + 71 * DAY)).toEqual({});
   });
 
   it("hands back the very stamps it was given when a look changes nothing, so nothing is written", () => {
@@ -194,6 +243,8 @@ describe("stored state stamps", () => {
       pc: { lifetime: "herdr-1", rows: {
         good: { state: "blocked", at: T, seq: 4 },
         unseq: { state: "idle", at: T + 1 },
+        left: { state: "idle", at: T + 2, seq: 5, gone: T + 9 },
+        leaving: { state: "idle", at: T + 3, gone: "soon" },
         done: { state: "done", at: T },
         undated: { state: "idle", at: "yesterday" },
         endless: { state: "working", at: Infinity },
@@ -202,7 +253,7 @@ describe("stored state stamps", () => {
       broken: "rows",
     } });
     expect(parseStateStamps(stored)).toEqual({
-      pc: { lifetime: "herdr-1", rows: { good: { state: "blocked", at: T, seq: 4 }, unseq: { state: "idle", at: T + 1 } } },
+      pc: { lifetime: "herdr-1", rows: { good: { state: "blocked", at: T, seq: 4 }, unseq: { state: "idle", at: T + 1 }, left: { state: "idle", at: T + 2, seq: 5, gone: T + 9 }, leaving: { state: "idle", at: T + 3 } } },
       nameless: { lifetime: null, rows: { a: { state: "working", at: T } } },
     });
   });

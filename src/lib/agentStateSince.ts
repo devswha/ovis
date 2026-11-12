@@ -24,6 +24,8 @@ export interface StateStamp {
   at: number;
   /** herdr's `state_change_seq` when it was stamped: the same number later proves nothing changed meanwhile */
   seq?: number;
+  /** when its pane was first missing from the roster, while it still is: the stamp is forgotten thirty days after */
+  gone?: number;
 }
 
 /** one PC's stamps, by pane, under the herdr they were made on (the snapshot's `herdr_lifetime`): another herdr gives its pane ids to other panes */
@@ -33,8 +35,10 @@ export type StateStamps = Readonly<Record<string, PcStamps>>;
 export interface SeenRow { pane: string; state: StampState; seq: number | undefined }
 /** one look at a PC: its agent rows, or null while it is away or its roster has not come */
 export interface PcLook { id: string; lifetime: string | null; rows: readonly SeenRow[] | null }
-/** the states this page saw at its last look, by PC and pane: a state that differs from them changed in sight */
-export type LastLook = ReadonlyMap<string, ReadonlyMap<string, StampState>>;
+/** one PC at this page's last look: which herdr it was, and each pane's state */
+export interface PcSeen { lifetime: string | null; rows: ReadonlyMap<string, StampState> }
+/** what this page saw at its last look, by PC: a state that differs from it changed in sight */
+export type LastLook = ReadonlyMap<string, PcSeen>;
 /** what a page carries from one look to the next: the device's stamps, and the states it saw last */
 export interface SeenStamps { stamps: StateStamps; last: LastLook }
 
@@ -54,8 +58,16 @@ export function stateLooks(machines: readonly Machine[], status: (machineId: str
   });
 }
 
-/** a stamp of a pane no longer listed is kept this long, so a pane that leaves the roster for a moment keeps its time */
+/** a stamp is kept this long after its pane left the roster, so a pane that leaves it for a moment keeps its time */
 const KEPT_UNLISTED_MS = 30 * 86_400_000;
+
+/** The stamp of a pane that is not listed, marked with when it first was not: null once that is thirty days ago. */
+function unlisted(stamp: StateStamp, now: number): StateStamp | null {
+  // a clock set back never leaves the mark in the future
+  const gone = Math.min(stamp.gone ?? now, now);
+  if (now - gone > KEPT_UNLISTED_MS) return null;
+  return gone === stamp.gone ? stamp : { ...stamp, gone };
+}
 
 /**
  * Whether a kept stamp still tells of the row as it is: the same state, and by herdr's counter no change since.
@@ -67,14 +79,16 @@ function stillTrue(stamp: StateStamp | undefined, row: SeenRow): stamp is StateS
 
 /**
  * The stamps after a look at every PC. A row whose state changed since this page's last look, or
- * that appeared in a roster this page was watching, is stamped `now`. A row first seen by this
- * page (a reload, a PC back from away) keeps its stamp only while it still tells of it, and has
- * none otherwise: the change happened out of sight. A PC that is away keeps its stamps untouched.
- * Hands back the very `stamps` it was given when nothing changed.
+ * that appeared in a roster this page was watching, is stamped `now`, unless the kept stamp already
+ * tells of it (another tab of this device stamped the change first). A row first seen by this
+ * page (a reload, a PC back from away, a PC whose herdr was replaced) keeps its stamp only while it
+ * still tells of it, and has none otherwise: the change happened out of sight. A PC that is away
+ * keeps its stamps untouched, and a pane no longer listed keeps its stamp for thirty days from the
+ * look that first missed it. Hands back the very `stamps` it was given when nothing changed.
  */
 export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly PcLook[], now: number): SeenStamps {
   const next: Record<string, PcStamps> = {};
-  const seen = new Map<string, ReadonlyMap<string, StampState>>();
+  const seen = new Map<string, PcSeen>();
   let changed = false;
   const looked = new Set(looks.map((look) => look.id));
   for (const look of looks) {
@@ -83,9 +97,11 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       if (kept !== undefined) next[look.id] = kept;
       continue;
     }
-    // another herdr: its pane ids start over, so no stamp of the old one tells of a pane of this one
+    // another herdr: its pane ids start over, so no stamp of the old one tells of a pane of this one, and no state
+    // this page saw on the old one is a state this one's pane was in: its rows are first seen
     const before = kept !== undefined && kept.lifetime === look.lifetime ? kept.rows : {};
-    const watched = last.get(look.id);
+    const lastSeen = last.get(look.id);
+    const watched = lastSeen !== undefined && lastSeen.lifetime === look.lifetime ? lastSeen.rows : undefined;
     const rows: Record<string, StateStamp> = {};
     const listed = new Set<string>();
     for (const row of look.rows) {
@@ -93,9 +109,10 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       const stamp = before[row.pane];
       const sawBefore = watched?.get(row.pane);
       const seq = row.seq === undefined ? {} : { seq: row.seq };
-      // in a roster this page watches, a state that differs from the last look began now; a row that only left the
-      // roster for a look is no such change, while its kept stamp still tells of it
-      if (watched !== undefined && sawBefore !== row.state && !(sawBefore === undefined && stillTrue(stamp, row))) {
+      // in a roster this page watches, a state that differs from the last look began now, unless the kept stamp
+      // already tells of the row as it is: another tab of this device stamped the change first (the stamps are
+      // read anew at each look), or the row only left the roster for a look
+      if (watched !== undefined && sawBefore !== row.state && !stillTrue(stamp, row)) {
         rows[row.pane] = { state: row.state, at: now, ...seq };
         continue;
       }
@@ -105,17 +122,24 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       // a clock set back never leaves a stamp in the future
       if (held !== undefined) rows[row.pane] = { state: held.state, at: Math.min(held.at, now), ...seq };
     }
-    for (const [pane, stamp] of Object.entries(before)) if (!listed.has(pane) && now - stamp.at <= KEPT_UNLISTED_MS) rows[pane] = stamp;
+    for (const [pane, stamp] of Object.entries(before)) {
+      const left = listed.has(pane) ? null : unlisted(stamp, now);
+      if (left !== null) rows[pane] = left;
+    }
     // a PC with no stamp has no entry: a look that stamps nothing changes nothing, and is not written
     if (kept !== undefined && kept.lifetime === look.lifetime && sameRows(kept.rows, rows)) next[look.id] = kept;
     else if (Object.keys(rows).length > 0) { next[look.id] = { lifetime: look.lifetime, rows }; changed = true; }
     else if (kept !== undefined) changed = true;
-    seen.set(look.id, new Map(look.rows.map((row) => [row.pane, row.state])));
+    seen.set(look.id, { lifetime: look.lifetime, rows: new Map(look.rows.map((row) => [row.pane, row.state])) });
   }
-  // a PC no longer in the roster (removed, or hidden on this device) keeps its stamps while any is recent enough to matter
+  // a PC no longer in the roster (removed, or hidden on this device) keeps its stamps as long as a pane that left a roster does
   for (const [id, kept] of Object.entries(stamps)) {
     if (looked.has(id)) continue;
-    const rows = Object.fromEntries(Object.entries(kept.rows).filter(([, stamp]) => now - stamp.at <= KEPT_UNLISTED_MS));
+    const rows: Record<string, StateStamp> = {};
+    for (const [pane, stamp] of Object.entries(kept.rows)) {
+      const left = unlisted(stamp, now);
+      if (left !== null) rows[pane] = left;
+    }
     if (Object.keys(rows).length === 0) { changed = true; continue; }
     if (sameRows(kept.rows, rows)) next[id] = kept;
     else { next[id] = { lifetime: kept.lifetime, rows }; changed = true; }
@@ -127,7 +151,7 @@ function sameRows(left: Readonly<Record<string, StateStamp>>, right: Readonly<Re
   const entries = Object.entries(left);
   return entries.length === Object.keys(right).length && entries.every(([pane, a]) => {
     const b = right[pane];
-    return b !== undefined && a.state === b.state && a.at === b.at && a.seq === b.seq;
+    return b !== undefined && a.state === b.state && a.at === b.at && a.seq === b.seq && a.gone === b.gone;
   });
 }
 
@@ -142,6 +166,7 @@ export const STATE_STAMPS_KEY = "ovis:agent-state-since";
 
 const STAMP_STATES = ["blocked", "working", "idle"] as const satisfies readonly StampState[];
 const isStampState = (value: unknown): value is StampState => STAMP_STATES.some((state) => state === value);
+const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 /** stored JSON read as an object of unknown fields, or null for anything else */
 const fieldsOf = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
 
@@ -159,9 +184,9 @@ export function parseStateStamps(raw: string | null): StateStamps {
     if (rows === null) continue;
     const kept: Record<string, StateStamp> = {};
     for (const [pane, value] of Object.entries(rows)) {
-      const { state, at, seq } = fieldsOf(value) ?? {};
-      if (!isStampState(state) || typeof at !== "number" || !Number.isFinite(at)) continue;
-      kept[pane] = { state, at, ...(typeof seq === "number" && Number.isFinite(seq) ? { seq } : {}) };
+      const { state, at, seq, gone } = fieldsOf(value) ?? {};
+      if (!isStampState(state) || !isNumber(at)) continue;
+      kept[pane] = { state, at, ...(isNumber(seq) ? { seq } : {}), ...(isNumber(gone) ? { gone } : {}) };
     }
     const lifetime = fieldsOf(pc)?.["lifetime"];
     stamps[id] = { lifetime: typeof lifetime === "string" ? lifetime : null, rows: kept };
