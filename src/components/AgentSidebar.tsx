@@ -672,9 +672,12 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // one menu for the ⋯ and a right-click, which opens it at the pointer and leaves the focus where it was
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void =>
       setMenu(menuOpen ? null : { key: pinKey, anchor, point, previousFocus });
+    // its group's heading already says this row's state; BG is filed under Working and is not what that heading says
+    const stateSaid = group !== undefined && agentGroup(status) === group && knownStatus(status) !== "waiting";
     return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}${filterContext ? " is-filter-context" : ""}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey} data-depth={depth > 0 ? depth : undefined} data-more={line?.more ? "" : undefined} data-through={line?.through ? "" : undefined} hidden={hidden || undefined}
-      // its group's heading already says this row's state; BG is filed under Working and is not what that heading says
-      data-state-said={group !== undefined && agentGroup(status) === group && knownStatus(status) !== "waiting" ? "" : undefined}
+      data-state-said={stateSaid ? "" : undefined}
+      // under a heading that does not say its state (a helper kept with its agent, BG) the row draws its own mark
+      data-state-own={group !== undefined && !stateSaid ? "" : undefined}
       onMouseDownCapture={(event) => { if (event.button === 2 || (event.button === 0 && event.ctrlKey)) event.preventDefault(); }}
       onContextMenu={(event) => onRowContextMenu(event, toggleMenu)}>
       <button type="button" className="agent-select agent-row" disabled={!online} aria-current={selected ? "true" : undefined} title={tooltip} onClick={() => onSelect(machine.id, pane.pane_id)}

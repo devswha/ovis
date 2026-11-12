@@ -666,9 +666,19 @@
   text-align: end;
 }
 
-/* b: under a pointer the row's ⋯ shows before the time, not over it */
+/* b, c: what ends a row and stays clear of its ⋯: the state's cell (--agent-tail), and the time where the row says one
+   (--agent-time). A row with no time, or whose time steps aside for the filter's note, keeps no room for one. */
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]) .agent-item {
+  --agent-tail: var(--space-6);
+  --agent-time: 0px;
+}
+
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]) .agent-item:has(.agent-since) { --agent-time: var(--agent-since-w); }
+.agents-sidebar:is([data-variant="b"], [data-variant="c"]).is-one-line .agent-item.is-filter-context.is-selected { --agent-time: 0px; }
+
+/* b, c: under a pointer the row's ⋯ shows before the time, not over it */
 @media (hover: hover) and (pointer: fine) and (min-width: 769px) {
-  .agents-sidebar[data-variant="b"].is-one-line .agent-item > .agent-actions { right: calc(var(--space-6) + var(--agent-since-w)); }
+  .agents-sidebar:is([data-variant="b"], [data-variant="c"]).is-one-line .agent-item > .agent-actions { right: calc(var(--agent-tail) + var(--agent-time)); }
 }
 
 /* b, c: a group's count over the rows' trailing cell, not beside it */
@@ -759,7 +769,11 @@
 /* c: under a state's heading a row does not say that state again. The heading carries it, in the state's colour and
    its word; the row's own mark is drawn only where its state differs from its group's (an agent kept with a helper
    that needs the reader), and stays in the row for a screen reader either way. The time then ends the row. */
-.agents-sidebar[data-variant="c"] .agent-item[data-state-said] { padding-right: var(--space-2); }
+.agents-sidebar[data-variant="c"] .agent-item[data-state-said] {
+  --agent-tail: var(--space-2);
+
+  padding-right: var(--space-2);
+}
 
 .agents-sidebar[data-variant="c"] .agent-item[data-state-said] .agent-row > .agent-row-state {
   width: var(--hairline);
@@ -771,10 +785,30 @@
 /* a mark that is not drawn does not breathe either */
 .agents-sidebar[data-variant="c"] .agent-item[data-state-said] .agent-row > .agent-row-state :is(.sidebar-status-dot, .sidebar-status-glyph) { animation: none; }
 
-@media (hover: hover) and (pointer: fine) and (min-width: 769px) {
-  .agents-sidebar[data-variant="c"].is-one-line .agent-item > .agent-actions { right: calc(var(--space-6) + var(--agent-since-w)); }
-  .agents-sidebar[data-variant="c"].is-one-line .agent-item[data-state-said] > .agent-actions { right: calc(var(--space-2) + var(--agent-since-w)); }
+/* c: a row whose state is not its group's keeps its mark (a helper kept with its agent, BG). The mark stands in the
+   row's flow, before the time, so the times of a group still end on one edge; a row with no time ends in its mark. */
+.agents-sidebar[data-variant="c"] .agent-item[data-state-own] {
+  --agent-tail: calc(var(--space-2) + var(--space-6));
+
+  padding-right: var(--space-2);
 }
+
+.agents-sidebar[data-variant="c"] .agent-item[data-state-own] .agent-row > .agent-row-state {
+  position: static;
+  flex: none;
+  order: 1;
+  width: var(--space-6);
+}
+
+.agents-sidebar[data-variant="c"] .agent-item[data-state-own] .agent-since { order: 2; }
+
+/* on two lines the mark ends the second line with the time, where the row's other marks end the first */
+.agents-sidebar[data-variant="c"]:not(.is-one-line) .agent-item[data-state-own]:not([data-depth]) .agent-row {
+  grid-template-areas: "mark title marks marks" "mark place state since";
+  grid-template-columns: var(--side-box) minmax(0, 1fr) auto auto;
+}
+
+.agents-sidebar[data-variant="c"]:not(.is-one-line) .agent-item[data-state-own]:not([data-depth]) .agent-row > .agent-row-state { grid-area: state; }
 
 /* c: the heading is the group's state said once: sentence case in the state's own colour, its count right after it */
 .agents-sidebar[data-variant="c"] .agent-group-toggle {
