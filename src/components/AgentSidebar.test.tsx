@@ -617,7 +617,8 @@ describe("AgentSidebar fold memory", () => {
       jest.setSystemTime(new Date(start + 5 * 60_000));
       await act(async () => { jest.advanceTimersByTime(30_000); });
       expect(since()).toEqual(["5m"]);
-      // Then reading the finish (done turns idle, and herdr's counter moves) keeps the time, and so does loading the page again.
+      // Then reading the finish keeps the time (a pushed status says done turned idle, the roster then brings the counter herdr moved), and so does loading the page again.
+      await act(async () => { renderer!.update(groupedList(inactive, at("idle", 51, 1))); });
       await act(async () => { renderer!.update(groupedList(inactive, at("idle", 52, 1))); });
       expect(since()).toEqual(["5m"]);
       await act(async () => { renderer!.unmount(); });

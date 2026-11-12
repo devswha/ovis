@@ -16,6 +16,7 @@
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import { agentGroup, type AgentGroup } from "./agentRoster.ts";
+import { BLIND_MS } from "./agentStateWatch.ts";
 import { sidebarAgents, type SidebarAgent } from "./sidebarAgents.ts";
 import { stateSeqs } from "./sidebarOrder.ts";
 import { knownStatus } from "./status.ts";
@@ -74,10 +75,12 @@ export interface PcLook { id: string; lifetime: string | null; epoch: string | n
 export interface WatchedRow extends SeenRow {
   /** when this page first saw the pane in this state */
   since: number;
-  /** a pushed status told this page of the row's last change, or of its finish being read: herdr's counter for it comes with the next roster, and is no new change then */
+  /** a pushed status told this page of a turn of herdr's own under this state: herdr's counter for it comes with the next roster, and is no new change then */
   owed: boolean;
+  /** when this page first found the pane missing from the roster, while it still is */
+  left?: number;
 }
-/** one PC at this page's last look: which herdr and which server's count it was of, when, and each pane's row */
+/** one PC at this page's last look: which herdr and which server's count it was of, when, and the row of each pane the page has seen there */
 export interface PcSeen { lifetime: string | null; epoch: string | null; at: number; rows: ReadonlyMap<string, WatchedRow> }
 /** what this page saw at its last look, by PC: a state that differs from it changed in sight */
 export type LastLook = ReadonlyMap<string, PcSeen>;
@@ -156,15 +159,19 @@ function keptStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
 /**
  * The stamps after a look at every PC, each row by what the page saw of it at its last look.
  *
- * - A state that differs from the last look's, or a pane new to a roster the page was watching, began now and is
- *   stamped so, unless the kept stamp already tells of it: another tab of this device stamped the change first (the
- *   stamps are read anew at each look), or the pane only left the roster for a look. A look that is not `dated` (the
- *   page cannot say when what it finds began, lib/agentStateWatch.ts) stamps no change.
+ * - A state that differs from the last look's began now and is stamped so, unless the kept stamp already tells of
+ *   it: another tab of this device stamped the change first (the stamps are read anew at each look). So is the state
+ *   of a pane new to this page and to the device. A look that is not `dated` (the page cannot say when what it finds
+ *   began, lib/agentStateWatch.ts) stamps no change.
  * - A state the page has been seeing keeps its stamp while the counters stand. A finish counted meanwhile, or
  *   herdr's counter moved, means the state was left and come back to out of sight (updates come together, a
- *   subscription has gaps), and the stamp goes. Three moves are none of the state: herdr's own turn from done (a
- *   finish read there, or a turn its background work started), the roster that brings the counter of what a pushed
- *   status told of first, and the end of a turn whose background work holds the row at working.
+ *   subscription has gaps), and the stamp goes. Two moves of herdr's counter are none of the state: the one that
+ *   comes for what a pushed status told of first (a change, herdr's own turn from done, the rest of a turn whose
+ *   background work holds the row at working), and a move by exactly one, a single turn of herdr's own, which
+ *   cannot have left a state that reads the same before and after it. That rest also counts one finish.
+ * - A pane missing from a roster and back within the gap a page bridges (lib/agentStateWatch.ts) is the row the page
+ *   was seeing: a look that missed it, an agent lost sight of for a moment. Back after longer, the page did not see
+ *   what its state is now begin: it keeps a stamp only on proof, and has none otherwise.
  * - A row first seen by this page (a reload, a PC back from away, another herdr, a page that was not being told of
  *   its PCs) keeps its stamp only on proof, and has none otherwise: what happened, happened out of sight.
  * - A stamp that is not this look's to judge is left as it is: one ahead of this look's roster, or one of another
@@ -197,15 +204,19 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     const memory = new Map<string, WatchedRow>();
     for (const row of look.rows) {
       const stamp = before[row.pane];
-      const saw = watched?.rows.get(row.pane);
+      const known = watched?.rows.get(row.pane);
+      const saw = known !== undefined && known.left !== undefined && now - known.left > BLIND_MS ? undefined : known;
       const began = watched !== undefined && saw?.state !== row.state;
       // herdr's counter moved: two numbers that differ. A roster that names none for a moment says nothing either way
       const counter = saw !== undefined && saw.seq !== undefined && row.seq !== undefined && row.seq !== saw.seq;
       // a pushed status tells of a change before the roster that carries its counter: until then herdr's counter
       // here is the last change's, and says nothing of this one
       const lags = began && saw !== undefined && !counter;
-      const read = !began && saw !== undefined && saw.done && !row.done;
-      memory.set(row.pane, { ...row, since: saw !== undefined && !began ? saw.since : now, owed: began ? lags : !counter && (read || saw?.owed === true) });
+      // two turns of herdr's own leave the state reading the same: from done (a finish read there, or the next turn its
+      // background work started), and into the rest of a turn whose background work holds the row at working
+      const undone = !began && saw !== undefined && saw.done && !row.done;
+      const held = !began && saw !== undefined && row.wait && !saw.wait;
+      memory.set(row.pane, { ...row, since: saw !== undefined && !began ? saw.since : now, owed: began ? lags : !counter && (undone || held || saw?.owed === true) });
       const finish = row.finish === undefined ? {} : { finish: row.finish };
       const seq = row.seq === undefined || lags ? {} : { seq: row.seq };
       if (stamp !== undefined && !lags && ahead(stamp, row, counted)) {
@@ -219,15 +230,19 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
           && (lags || stamp.seq === undefined || row.seq === undefined || stamp.seq === row.seq);
         if (stamp !== undefined && told) rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), ...(lags && stamp.seq !== undefined ? { seq: stamp.seq } : seq), ...finish };
         else if (proven(stamp, row, counted)) rows[row.pane] = keptStamp(stamp, now, counted);
-        else if (dated) rows[row.pane] = { state: row.state, at: now, ...seq, ...finish };
+        // a change in sight began now, and so did what a pane shows that neither this page nor the device has seen
+        else if (dated && (saw !== undefined || (known === undefined && stamp === undefined))) rows[row.pane] = { state: row.state, at: now, ...seq, ...finish };
       } else if (stamp !== undefined && stamp.state !== row.state) {
         rows[row.pane] = keptStamp(stamp, now, counted);
       } else if (stamp !== undefined && saw !== undefined) {
-        // the turn ended and its background work holds the row at working: herdr's counter moved, and one finish was counted
-        const held = row.wait && !saw.wait;
+        // the rest of a turn whose background work holds the row at working counts one finish
         const finished = !recount && saw.finish !== undefined && row.finish !== undefined && row.finish !== saw.finish && !(held && row.finish === saw.finish + 1);
-        // herdr's counter moved for what this page saw already
-        if (!finished && (!counter || read || saw.owed || held)) {
+        // herdr's counter counts every change of state in its session, so a move by one is a single turn of herdr's own,
+        // and this pane's: it cannot have left a state that reads the same before and after it
+        const single = saw.seq !== undefined && row.seq === saw.seq + 1;
+        // a move of herdr's counter keeps the time only where the page can account for it: a pushed status told of it,
+        // or it is that single turn. Any other may hide a state left and come back to
+        if (!finished && (!counter || saw.owed || single)) {
           const herdrs = counter ? row.seq : stamp.seq;
           rows[row.pane] = { state: stamp.state, at: Math.min(stamp.at, now), ...(herdrs === undefined ? {} : { seq: herdrs }), ...finish };
         }
@@ -244,6 +259,8 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
     if (sameHerdr && kept.epoch === look.epoch && sameRows(kept.rows, rows)) next[look.id] = kept;
     else if (Object.keys(rows).length > 0) { next[look.id] = { lifetime: look.lifetime, epoch: look.epoch, rows }; changed = true; }
     else if (kept !== undefined) changed = true;
+    // a pane missing from this roster stays in the page's memory, with when it was first missed
+    if (watched !== undefined) for (const [pane, old] of watched.rows) if (!memory.has(pane)) memory.set(pane, old.left === undefined ? { ...old, left: now } : old);
     seen.set(look.id, { lifetime: look.lifetime, epoch: look.epoch, at: now, rows: memory });
   }
   // a PC no longer in the roster (removed, or hidden on this device) keeps its stamps as long as a pane that left a roster does
