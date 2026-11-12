@@ -2065,18 +2065,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and their time. A waiting row's question (GET /api/pane/prompt, two at a time) is read once for
   each wait, and once more each time the list is shown, as a wait's counter does not tell one
   question from the next; the row keeps the words it had until that answer lands, and an answer
-  with no question, asked twice, takes them away. The last words and their time are read with one
-  read-only request (GET /api/pane/summary) per PC for up to 24 rows, for the first 60 rows of connected PCs in the list's order. A row is read again when its finish, its
-  activity or its shown state changes, and a working row whose new read repeats the words and time
-  it had is read once more after two seconds (its agent may not have written the new turn yet). The
-  server gives each pane's read at most 400 ms of the request's 1.5 s and leaves a slower pane out,
-  reading on; a later request for that pane waits on the read still running while it is younger
-  than 1.5 s, and starts a new one in place of an older one. A pane the answer left
-  out, or a request that failed, is asked again up to three times, the first pane an answer left out
-  behind the others, and an answer whose fields have the wrong type counts as none. A PC whose
-  server has no such route shows its rows without them until it goes away and comes back.
-  A pane once opened stays mounted under the list, hidden (`visibility: hidden`, inert, keeping
-  its size), so a message on its way is not cut.
+  with no question, asked twice, takes them away. A second prompt asked under an unchanged counter
+  while the list stays shown is not seen then: it is read when the list is next shown. The last
+  words and their time are read with one read-only request (GET /api/pane/summary) per PC for up
+  to 24 rows, for the first 60 rows of connected PCs in the list's order. A row is read again when
+  its finish, its activity or its shown state changes, and a working row whose new read repeats
+  the words and time it had is read once more after two seconds (its agent may not have written
+  the new turn yet). The server gives each pane's read at most 400 ms of the request's 1.5 s and
+  leaves a slower pane out, reading on; a later request for that pane waits on the read still
+  running while it is younger than 1.5 s, and starts a new one in place of an older one. A pane
+  the answer left out, or a request that failed, is asked again up to three times, the first pane
+  an answer left out behind the others, and an answer whose fields have the wrong type counts as
+  none. A PC whose server has no such route shows its rows without them until it goes away and
+  comes back. A pane once opened stays mounted under the list, hidden (`visibility: hidden`,
+  inert, keeping its size), so a message on its way is not cut.
 - It follows the herdr phone app's Inbox and T3 Code's phone session list: the first screen lists
   the agents, the ones that need the user first. It differs from them in keeping one flat list
   with state chips, in leaving the workspace tree in the drawer, one tap away
