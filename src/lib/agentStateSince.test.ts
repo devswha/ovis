@@ -542,6 +542,21 @@ describe("state stamps: when this device saw a state begin", () => {
     expect(late.since("a", "blocked")).toBe(T + 3 * MIN);
   });
 
+  it("leaves another tab's newer stamp alone when that tab's look missed the pane: the time is there when it is back", () => {
+    const kept = { stamps: {} as StateStamps };
+    const ahead = device(kept);
+    const behind = device(kept);
+    // a turn at rest while its background work runs: the row shows working until that work ends, which moves no counter
+    ahead.see(T, look({ a: ["working", 3, 1, WAITING] }));
+    behind.see(T, look({ a: ["working", 3, 1, WAITING] }));
+    ahead.see(T + MIN, look({ a: ["idle", 3, 1, DONE] }));
+    // the tab ahead then misses the pane for a look, and the one behind still has it at work
+    ahead.see(T + MIN + 1000, look({}));
+    behind.see(T + MIN + 2000, look({ a: ["working", 3, 1, WAITING] }));
+    ahead.see(T + MIN + 3000, look({ a: ["idle", 3, 1, DONE] }));
+    expect(ahead.since("a", "idle")).toBe(T + MIN);
+  });
+
   it("does not let a tab behind stamp its old news over a newer stamp", () => {
     const kept = { stamps: {} };
     const ahead = device(kept), behind = device(kept);

@@ -160,6 +160,12 @@ function keptStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
   return { state: stamp.state, at: Math.min(stamp.at, now), ...(stamp.seq === undefined ? {} : { seq: stamp.seq }), ...(stamp.finish === undefined || !counted ? {} : { finish: stamp.finish }) };
 }
 
+/** A stamp that is not this look's to judge, left as it is: with the mark of a look that missed its pane, which is that look's page's to lift. */
+function leftStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp {
+  const kept = keptStamp(stamp, now, counted);
+  return stamp.gone === undefined ? kept : { ...kept, gone: Math.min(stamp.gone, now) };
+}
+
 /**
  * The stamps after a look at every PC, each row by what the page saw of it at its last look.
  *
@@ -183,8 +189,9 @@ function keptStamp(stamp: StateStamp, now: number, counted: boolean): StateStamp
  *   state is now begin: it keeps a stamp only on proof.
  * - A row first seen by this page (a reload, a PC back from away, another herdr, a page that was not being told of
  *   its PCs) keeps its stamp only on proof, and has none otherwise: what happened, happened out of sight.
- * - A stamp that is not this look's to judge is left as it is: one ahead of this look's roster, or one of another
- *   state than the page has been seeing. Both are another tab's, which saw what this one has not yet.
+ * - A stamp that is not this look's to judge is left as it is, with its mark where a look missed its pane: one ahead
+ *   of this look's roster, or one of another state than the page has been seeing. Both are another tab's, which saw
+ *   what this one has not yet.
  *
  * A PC that is away keeps its stamps untouched, and a pane no longer listed keeps its stamp for thirty days from the
  * look that first missed it. Hands back the very `stamps` it was given when nothing changed.
@@ -229,7 +236,7 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
       const finish = row.finish === undefined ? {} : { finish: row.finish };
       const seq = row.seq === undefined || lags ? {} : { seq: row.seq };
       if (stamp !== undefined && !lags && ahead(stamp, row, counted)) {
-        rows[row.pane] = keptStamp(stamp, now, counted);
+        rows[row.pane] = leftStamp(stamp, now, counted);
       } else if (watched === undefined) {
         if (proven(stamp, row, counted)) rows[row.pane] = keptStamp(stamp, now, counted);
       } else if (began) {
@@ -244,8 +251,8 @@ export function advanceStateStamps({ stamps, last }: SeenStamps, looks: readonly
         // where the page has looked long enough to know that the pane was not there
         else if (dated && (saw !== undefined || (known === undefined && stamp === undefined && now - watched.first > BLIND_MS))) rows[row.pane] = { state: row.state, at: now, ...seq, ...finish };
       } else if (stamp !== undefined && stamp.state !== row.state) {
-        // another tab's, of a state this page has not seen the pane in yet; one marked as its pane left tells of nothing now
-        if (stamp.gone === undefined) rows[row.pane] = keptStamp(stamp, now, counted);
+        // another tab's, of a state this page has not seen the pane in yet
+        rows[row.pane] = leftStamp(stamp, now, counted);
       } else if (stamp !== undefined && saw !== undefined) {
         // the rest of a turn whose background work holds the row at working counts one finish
         const finished = !recount && saw.finish !== undefined && row.finish !== undefined && row.finish !== saw.finish && !(held && row.finish === saw.finish + 1);
