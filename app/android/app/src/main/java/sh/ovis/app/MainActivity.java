@@ -329,8 +329,9 @@ public class MainActivity extends BridgeActivity {
      * Keeps the PC `pc`, whose page `url` has loaded, unless it is not Ovis: a web server that is not
      * Ovis would otherwise be saved and opened at every start, with no Change PC and Back closing the
      * app. That page gives way to the error page, which has Change PC, and the PC is not kept (one
-     * kept before stays in the list until forgotten). A PC that could not be asked (no answer, a
-     * sign-in in front) is kept as before. A relay PC (a scope on the hosted app) is the hosted
+     * kept before stays in the list until forgotten). Only an answer that shows it is not Ovis (its
+     * page loads, its /api/health is not Ovis's) counts: a PC that could not be asked, or answered
+     * the question with 403 or 502, is kept as before, also when the activity ended meanwhile. A relay PC (a scope on the hosted app) is the hosted
      * app's, which the connect screen checked (relayLink in app/web/shell.js).
      */
     private void keepIfOvis(String pc, String url) {
@@ -342,14 +343,15 @@ public class MainActivity extends BridgeActivity {
         if (checked) return;
         checked = true;
         String cookies = CookieManager.getInstance().getCookie(url);
+        android.content.Context app = getApplicationContext();
         new Thread(() -> {
             PCStore.Check found = PCStore.check(url, cookies, PCStore.ANSWER_SECONDS * 1000L);
+            if (!found.kind.equals("not-ovis")) {
+                PCStore.remember(app, pc);
+                return;
+            }
             runOnUiThread(() -> {
                 if (isFinishing() || isDestroyed()) return;
-                if (!found.kind.equals("not-ovis")) {
-                    PCStore.remember(this, pc);
-                    return;
-                }
                 PCStore.fail(found.detail == null ? "It answered, but not as Ovis." : "It answered " + found.detail + ", not as Ovis.", "not-ovis");
                 bridge.getWebView().loadUrl(bridge.getErrorUrl());
             });

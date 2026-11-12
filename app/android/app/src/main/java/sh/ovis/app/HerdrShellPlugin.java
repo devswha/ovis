@@ -13,8 +13,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
  */
 @CapacitorPlugin(name = "HerdrShell")
 public class HerdrShellPlugin extends Plugin {
-    /** Counts opens and cancelOpen calls, so an open whose check comes back after a cancel or a newer open does nothing. */
-    private int opening;
+    /** Opens still being checked: one cancelled, replaced or outlived by its activity does nothing when its check comes back. */
+    private final PCStore.Openings openings = new PCStore.Openings();
     @PluginMethod
     public void getState(PluginCall call) {
         JSObject state = new JSObject();
@@ -55,10 +55,7 @@ public class HerdrShellPlugin extends Plugin {
             }
         }
         String name = call.getString("name");
-        int mine;
-        synchronized (this) {
-            mine = ++opening;
-        }
+        int mine = openings.start();
         if (!Boolean.TRUE.equals(call.getBoolean("check", false))) {
             openChecked(call, key, text, name, mine);
             return;
@@ -74,8 +71,9 @@ public class HerdrShellPlugin extends Plugin {
 
     /** Opens the PC `key`, unless another open or a cancelOpen came after this one (`mine`). Any thread. */
     private void openChecked(PluginCall call, String key, String text, String name, int mine) {
-        synchronized (this) {
-            if (mine != opening) {
+        synchronized (openings) {
+            android.app.Activity activity = getActivity();
+            if (!openings.current(mine) || activity == null || activity.isFinishing() || activity.isDestroyed()) {
                 call.reject("Cancelled", "cancelled");
                 return;
             }
@@ -91,10 +89,15 @@ public class HerdrShellPlugin extends Plugin {
     /** The connect screen's Cancel: an open still being checked does not go on. */
     @PluginMethod
     public void cancelOpen(PluginCall call) {
-        synchronized (this) {
-            opening++;
-        }
+        openings.cancel();
         call.resolve();
+    }
+
+    /** The connect screen is gone (Back, or the system ended it): an open still being checked does not start the app again. */
+    @Override
+    protected void handleOnDestroy() {
+        openings.cancel();
+        super.handleOnDestroy();
     }
 
     /**

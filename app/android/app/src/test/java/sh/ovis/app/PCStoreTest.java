@@ -147,7 +147,31 @@ public class PCStoreTest {
         assertEquals("not-ovis", missing.kind);
         assertEquals("HTTP 404", missing.detail);
         assertEquals("not-ovis", check(serve(200, null, "{\"ok\":true}") + "/").kind);
-        assertEquals("not-ovis", check(serve(502, null, "Bad Gateway") + "/").kind);
+    }
+
+    @Test
+    public void anAnswerThatDoesNotTellIsLeftToTheWebView() throws IOException {
+        // Ovis stopped behind tailscale serve (502), a proxy or WAF that turns the probe away, a rate limit
+        for (int status : new int[] {401, 403, 429, 500, 502, 503}) {
+            PCStore.Check found = check(serve(status, null, "") + "/");
+            assertEquals(status + "", "unsure", found.kind);
+            assertEquals("HTTP " + status, found.detail);
+            assertTrue(found.opens());
+        }
+        // no /api/health and no page either: the WebView shows that HTTP error itself
+        assertEquals("unsure", check(servePaths(null, null) + "/").kind);
+    }
+
+    @Test
+    public void onlyTheLatestOpenNotCancelledGoesOn() {
+        PCStore.Openings openings = new PCStore.Openings();
+        int first = openings.start();
+        int second = openings.start();
+        assertFalse(openings.current(first));
+        assertTrue(openings.current(second));
+        openings.cancel();
+        assertFalse(openings.current(second));
+        assertTrue(openings.current(openings.start()));
     }
 
     @Test

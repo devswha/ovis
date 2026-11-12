@@ -188,8 +188,10 @@ What is there:
 - On Android an address typed, scanned or picked from the list is first asked whether it is Ovis
   (`PCStore.check`, through the `check` option of `HerdrShell.open`): its
   `/api/health?scope=bridge`, which every Ovis since 0.1 answers with `ok` and `auth`, or the
-  hosted app's `<meta name="ovis-shell">` on that answer or on its page. A redirect is left to the
-  WebView (a sign-in in front of the PC). For up to 20 seconds the connect screen says what it
+  hosted app's `<meta name="ovis-shell">` on that answer or on its page. It is "not Ovis" only when
+  its page loads while its `/api/health` answers 200 or 404 with something else. A redirect (a
+  sign-in in front of the PC) and an answer that does not tell (401, 403 or 429 from a proxy or WAF,
+  502 from `tailscale serve` while Ovis is stopped) are left to the WebView, as before. For up to 20 seconds the connect screen says what it
   opens, with Cancel; an address that is not Ovis, refuses, is not found or does not answer stays
   on the connect screen with why (`openFailure()` in `shell.js`). A relay link and the account's
   front page open without it. The iOS app opens at once, as before.

@@ -361,13 +361,35 @@ final class PCStore {
             && ((BigInteger) version).compareTo(BigInteger.valueOf(MAX_BRIDGE_PROTOCOL)) <= 0;
     }
 
+    /**
+     * The connect screen's opens while they are checked (HerdrShellPlugin.open): each gets a ticket,
+     * and only the latest one, not cancelled since, may still open its PC. Lock it to act on a ticket.
+     */
+    static final class Openings {
+        private int last;
+
+        synchronized int start() {
+            return ++last;
+        }
+
+        /** Cancel, or the screen gone: no open started before this goes on. */
+        synchronized void cancel() {
+            last++;
+        }
+
+        synchronized boolean current(int ticket) {
+            return ticket == last;
+        }
+    }
+
     /** What check found an address to be. */
     static final class Check {
         /**
          * "ovis" (an Ovis server, of any version, or the hosted app), "in-front" (its /api/health
          * redirected: a sign-in in front of the PC or another address, which the WebView then judges),
-         * "not-ovis" (another web server answered), or why no answer came: "refused", "timeout",
-         * "unknown-host" or "no-answer".
+         * "unsure" (an answer that does not tell, such as 403 or 502, which the WebView then judges),
+         * "not-ovis" (a web server whose page loads while its /api/health is not Ovis's), or why no
+         * answer came: "refused", "timeout", "unknown-host" or "no-answer".
          */
         final String kind;
         /** The answer that was not Ovis ("HTTP 404"), or the error when no answer came; null otherwise. */
@@ -380,7 +402,7 @@ final class PCStore {
 
         /** Whether the app opens the address: it is Ovis, or something in front of it decides. */
         boolean opens() {
-            return kind.equals("ovis") || kind.equals("in-front");
+            return kind.equals("ovis") || kind.equals("in-front") || kind.equals("unsure");
         }
     }
 
@@ -407,13 +429,19 @@ final class PCStore {
         }
         if (health.status >= 300 && health.status < 400) return new Check("in-front", null);
         if (health.status == 200 && (answersAsServer(health.body) || hostedApp(health.body))) return new Check("ovis", null);
+        // only an answer that tells: Ovis stopped behind tailscale serve answers 502, a proxy or WAF may
+        // answer the probe 401, 403 or 429 where the WebView gets in
+        if (health.status != 200 && health.status != 404) return new Check("unsure", "HTTP " + health.status);
+        Answer page;
         try {
-            Answer page = fetch(origin + cleanStart(url), cookies, deadline);
-            if (page.status == 200 && hostedApp(page.body)) return new Check("ovis", null);
+            page = fetch(origin + cleanStart(url), cookies, deadline);
         } catch (IOException noPage) {
-            // the health answer decides
+            return new Check("unsure", null);
         }
-        return new Check("not-ovis", health.status == 200 ? null : "HTTP " + health.status);
+        if (page.status == 200 && hostedApp(page.body)) return new Check("ovis", null);
+        // a page that loads without being Ovis, beside a health answer that is not Ovis's
+        if (page.status == 200) return new Check("not-ovis", health.status == 200 ? null : "HTTP " + health.status);
+        return new Check("unsure", "HTTP " + health.status);
     }
 
     /** Whether `body` is /api/health as any Ovis server gives it: a JSON object with `ok` true and an `auth` object. */
