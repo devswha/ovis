@@ -1551,17 +1551,15 @@ export async function fetchPanePromptState(paneId: string, machineId = "local"):
   };
 }
 
-/** PCs whose bridge has no summary route (routeMissing): not asked again while the page lives. */
-const summaryRouteMissing = new Set<string>();
-
-/** GET /api/pane/summary: each pane's last words; null from a PC whose bridge predates the route. */
+/**
+ * GET /api/pane/summary: each pane's last words; null, each time it is asked, from a PC whose bridge predates the
+ * route (the reader, lib/useInboxSummaries.ts, remembers it). Another PC's answer comes through unchecked.
+ */
 export async function fetchPaneSummaries(machineId: string, paneIds: readonly string[]): Promise<PaneSummaries | null> {
-  if (summaryRouteMissing.has(machineId)) return null;
   const query = new URLSearchParams(paneIds.map((paneId) => ["pane_id", paneId]));
   try { return await getJson<PaneSummaries>(machinePath(machineId, `pane/summary?${query.toString()}`)); }
   catch (error) {
     if (!routeMissing(error)) throw error;
-    summaryRouteMissing.add(machineId);
     return null;
   }
 }

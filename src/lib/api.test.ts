@@ -160,7 +160,7 @@ it("treats a missing telemetry route as unavailable for reads and an API error f
   expect(error).toMatchObject({ status: 404, code: "not_found" });
 });
 
-it("asks a PC for its panes' summaries, and stops asking one whose bridge has no summary route", async () => {
+it("asks a PC for its panes' summaries, and answers null each time a bridge has no summary route", async () => {
   const requests: string[] = [];
   const summaries = { server_time: "2026-11-12T10:00:00.000Z", summaries: { "w1:p1": null } };
   globalThis.fetch = (async (url: string) => {
@@ -177,6 +177,7 @@ it("asks a PC for its panes' summaries, and stops asking one whose bridge has no
   expect(error).toMatchObject({ status: 500, code: "summary_failed" });
   expect(requests).toEqual([
     "/api/machines/summary-pc/pane/summary?pane_id=w1%3Ap1&pane_id=w2%3Ap3",
+    "/api/machines/old-pc/pane/summary?pane_id=w1%3Ap1",
     "/api/machines/old-pc/pane/summary?pane_id=w1%3Ap1",
     "/api/machines/broken-pc/pane/summary?pane_id=w1%3Ap1",
   ]);

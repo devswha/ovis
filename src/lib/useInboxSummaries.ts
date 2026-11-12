@@ -7,7 +7,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import { PANE_SUMMARY_MAX_IDS } from "../../shared/pane-summary.ts";
 import type { PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
 import { inboxKey, inboxStatus } from "./agentInbox.ts";
-import type { AgentRow } from "./agentRoster.ts";
+import { agentGroup, type AgentRow } from "./agentRoster.ts";
 import { fetchPaneSummaries } from "./api.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 
@@ -29,15 +29,19 @@ export interface RowSummary {
   failed: boolean;
 }
 
-/** A row whose summary is read: a new `stamp` (finish, activity or shown state changed) reads it again. */
-export interface SummaryTarget { key: string; machineId: string; paneId: string; stamp: string }
+/**
+ * A row whose summary is read: a new `stamp` (finish, activity or shown state changed) reads it again. A `working` row
+ * whose new stamp answers with the words it already had is read once more (its agent may not have written the turn yet).
+ */
+export interface SummaryTarget { key: string; machineId: string; paneId: string; stamp: string; working: boolean }
 
 /** The first SUMMARY_ROWS rows of a PC in reach, in the given order. */
 export function summaryTargets(rows: readonly AgentRow[], activity: SidebarActivity): SummaryTarget[] {
   return rows.filter((row) => row.machine.state === "connected").slice(0, SUMMARY_ROWS).map((row) => {
     const pane = row.entry.pane;
     const seq = activity.seqs(row.machine.id).get(pane.pane_id) ?? 0;
-    return { key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, stamp: `${pane.finish_id ?? ""}:${seq}:${inboxStatus(row, activity) ?? ""}` };
+    const status = inboxStatus(row, activity);
+    return { key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, stamp: `${pane.finish_id ?? ""}:${seq}:${status ?? ""}`, working: agentGroup(status) === "working" };
   });
 }
 
@@ -56,12 +60,24 @@ function timeOf(stamp: string | null, offset: number): number | null {
 const same = (a: RowSummary | undefined, b: RowSummary): boolean => a !== undefined
   && a.role === b.role && a.text === b.text && a.at === b.at && a.askedAt === b.askedAt && a.failed === b.failed;
 
+const stampOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
+/** An answer's summary as the wire types it: another PC's comes through the proxy unchecked. */
+function wellFormed(value: unknown): value is PaneSummary {
+  if (typeof value !== "object" || value === null) return false;
+  const summary = value as Record<string, unknown>;
+  return (summary.role === "assistant" || summary.role === "user") && typeof summary.text === "string"
+    && stampOrNull(summary.at) && stampOrNull(summary.asked_at);
+}
+
 /**
  * Each target's summary, read once per key and stamp: batches of at most PANE_SUMMARY_MAX_IDS per PC, one
  * request in flight per PC. A pane the answer left out, or a request that failed, is asked again after
- * SUMMARY_RETRY_MS, at most SUMMARY_RETRIES times per key and stamp; a PC whose bridge has no route (null) is
- * not asked again. A key's words outlive a stamp change until the new read settles: replaced or removed by
- * an answer naming the pane, removed when the read gives up. An answer for a target gone or moved on since
+ * SUMMARY_RETRY_MS, at most SUMMARY_RETRIES times per key and stamp, the first pane an answer left out behind the
+ * others it left out, so no pane heads every retry. A working target whose new stamp answers with the words it had
+ * is asked once more after SUMMARY_RETRY_MS. A PC whose bridge has no route (null) is not asked again until a sync
+ * holds none of its targets (it went away, and may come back updated). A summary of the wrong shape counts as
+ * none. A key's words outlive a stamp change until the new read settles, without their failed mark (it held for the
+ * state they were answered for): replaced or removed by an answer naming the pane, removed when the read gives up. An answer for a target gone or moved on since
  * is dropped, and a key that leaves the targets loses its summary. Made once per page, it never stops and
  * assumes no subscriber.
  */
@@ -76,6 +92,9 @@ export class SummaryReads {
   private readonly queues = new Map<string, SummaryTarget[]>();
   private readonly busy = new Set<string>();
   private readonly missing = new Set<string>();
+  /** the stamp each key's words were answered for, and the key-and-stamp reads already asked once more */
+  private readonly answeredFor = new Map<string, string>();
+  private readonly rechecked = new Set<string>();
 
   constructor(private readonly read: SummaryRead,
     private readonly wait: SummaryWait = (run, ms) => { const timer = setTimeout(run, ms); return () => clearTimeout(timer); },
@@ -92,15 +111,22 @@ export class SummaryReads {
   sync(targets: readonly SummaryTarget[]): void {
     this.targets = new Map(targets.map((target) => [target.key, target]));
     const live = new Set(targets.map(readOf));
+    const machines = new Set(targets.map((target) => target.machineId));
+    for (const machineId of [...this.missing]) if (!machines.has(machineId)) this.missing.delete(machineId);
     for (const read of [...this.started]) {
       if (live.has(read)) continue;
       this.started.delete(read);
       this.retries.delete(read);
+      this.rechecked.delete(read);
       this.waits.get(read)?.();
       this.waits.delete(read);
     }
     for (const [machineId, queue] of this.queues) this.queues.set(machineId, queue.filter((target) => this.isCurrent(target)));
     const gone = [...this.current.keys()].filter((key) => !this.targets.has(key));
+    for (const key of [...this.answeredFor.keys()]) if (!this.targets.has(key)) this.answeredFor.delete(key);
+    // words carried to a new stamp until its read settles are carried without their failed mark, which held for the old state
+    const unfailed = [...this.current].filter(([key, row]) => row.failed && this.answeredFor.get(key) !== this.targets.get(key)?.stamp).map(([key]) => key);
+    if (unfailed.length > 0) this.change((summaries) => { for (const key of unfailed) summaries.set(key, { ...summaries.get(key)!, failed: false }); });
     if (gone.length > 0) this.change((summaries) => { for (const key of gone) summaries.delete(key); });
     for (const target of targets) {
       const read = readOf(target);
@@ -166,16 +192,33 @@ export class SummaryReads {
     for (const target of batch) {
       if (!this.isCurrent(target)) continue;
       if (!Object.hasOwn(answer.summaries, target.paneId)) { left.push(target); continue; }
-      const summary: PaneSummary | null | undefined = answer.summaries[target.paneId];
-      if (summary == null) { if (this.current.has(target.key)) cleared.push(target.key); continue; }
+      const summary: unknown = answer.summaries[target.paneId];
+      const before = this.answeredFor.get(target.key);
+      this.answeredFor.set(target.key, target.stamp);
+      if (!wellFormed(summary)) { if (this.current.has(target.key)) cleared.push(target.key); continue; }
       const row: RowSummary = { role: summary.role, text: summary.text, at: timeOf(summary.at, offset), askedAt: timeOf(summary.asked_at, offset), failed: summary.failed === true };
       if (!same(this.current.get(target.key), row)) set.set(target.key, row);
+      else if (target.working && before !== undefined && before !== target.stamp) this.recheck(target);
     }
-    for (const target of left) this.again(target);
+    // the first pane left out is likeliest the one the PC was still reading: it goes behind the others
+    for (const target of [...left.slice(1), ...left.slice(0, 1)]) this.again(target);
     if (set.size > 0 || cleared.length > 0) this.change((summaries) => {
       for (const key of cleared) summaries.delete(key);
       for (const [key, row] of set) summaries.set(key, row);
     });
+  }
+
+  /** Asks a working target once more after the wait, its answer having repeated the words of an earlier stamp. */
+  private recheck(target: SummaryTarget): void {
+    const read = readOf(target);
+    if (this.rechecked.has(read)) return;
+    this.rechecked.add(read);
+    this.waits.set(read, this.wait(() => {
+      this.waits.delete(read);
+      if (!this.isCurrent(target)) return;
+      this.enqueue(target);
+      this.pump(target.machineId);
+    }, SUMMARY_RETRY_MS));
   }
 
   /** Asks the target again after the wait; once its retries are used, removes words kept from an earlier stamp. */
@@ -202,7 +245,7 @@ export const newSummaryReads = (): SummaryReads => new SummaryReads(fetchPaneSum
 /** Each target's last words by its key, from the page's reader. */
 export function useInboxSummaries(reads: SummaryReads, targets: readonly SummaryTarget[]): ReadonlyMap<string, RowSummary> {
   const targetsRef = useRef(targets); targetsRef.current = targets;
-  const signature = targets.map((target) => `${target.key}:${target.machineId}:${target.paneId}:${target.stamp}`).join("\n");
+  const signature = targets.map((target) => `${target.key}:${target.machineId}:${target.paneId}:${target.stamp}:${target.working}`).join("\n");
   useEffect(() => { reads.sync(targetsRef.current); }, [reads, signature]);
   return useSyncExternalStore(reads.subscribe, reads.summaries, reads.summaries);
 }
