@@ -123,6 +123,78 @@ async function checkPhoneRow(browser: Browser, origin: string, first: string, pa
   }
 }
 
+/**
+ * Tabs on a phone at In the header: a press held 450ms on another tab opens that tab's menu and the click
+ * lifting it sends does not switch tabs; a press that moves more than 8px opens nothing; a tap still switches.
+ * The page's clock is the script's (page.clock), so the 450ms is stepped, not waited for.
+ */
+async function checkHeaderLongPress(browser: Browser, origin: string, first: string): Promise<void> {
+  const context = await browser.newContext({ viewport: { width: 360, height: 780 }, isMobile: true, hasTouch: true, locale: "en-US" });
+  try {
+    await context.addInitScript(() => {
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+      localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
+    });
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.clock.install();
+    await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
+    await page.locator(".conn-live").waitFor();
+    const row = page.locator(".app-header .header-tabs .tab-strip");
+    const second = row.getByRole("tab", { name: "second", exact: true });
+    await second.waitFor();
+    const selected = (): Promise<string | null> => row.locator('[role="tab"][aria-selected="true"] .tab-strip-label').textContent();
+    assert.equal(await selected(), "Tab 1", "the first tab is open");
+    // a point on the second tab that is inside the row, not under its faded end
+    const point = async (): Promise<{ x: number; y: number }> => {
+      const tab = (await second.boundingBox())!;
+      const strip = (await row.boundingBox())!;
+      return { x: Math.min(tab.x + tab.width / 2, strip.x + strip.width - 24), y: tab.y + tab.height / 2 };
+    };
+    const cdp = await context.newCDPSession(page);
+    const touch = (type: "touchStart" | "touchMove" | "touchEnd", at?: { x: number; y: number }) =>
+      cdp.send("Input.dispatchTouchEvent", { type, touchPoints: at ? [{ x: at.x, y: at.y }] : [] });
+    const menu = page.getByRole("dialog", { name: "second", exact: true });
+
+    // held: the tab's menu, and no switch when the finger lifts
+    const at = await point();
+    await touch("touchStart", at);
+    await page.clock.runFor(600);
+    await menu.waitFor();
+    await touch("touchEnd");
+    assert.equal(await selected(), "Tab 1", "a long press opens the tab's menu and does not open the tab");
+    // the lift sent no click or focus that closes it: the menu is still there to use
+    await menu.getByRole("button", { name: "Cancel", exact: true }).tap();
+    await menu.waitFor({ state: "detached" });
+
+    // a tap still opens the tab
+    await second.tap();
+    await row.locator('[role="tab"][aria-selected="true"] .tab-strip-label', { hasText: "second" }).waitFor();
+
+    // moved past the slop: no menu once the 450ms have passed, and no tab opened (Tab 1, now beside the open one).
+    // Last: under the page's clock the press's own events can leave the next tap unanswered, which a real clock does not
+    const tab1 = row.getByRole("tab", { name: /^Tab 1/ });
+    const box1 = (await tab1.boundingBox())!;
+    const strip1 = (await row.boundingBox())!;
+    const from = { x: Math.min(Math.max(box1.x + box1.width / 2, strip1.x + 12), strip1.x + strip1.width - 24), y: box1.y + box1.height / 2 };
+    await touch("touchStart", from);
+    await touch("touchMove", { x: from.x, y: from.y + 20 });
+    await page.clock.runFor(600);
+    await touch("touchEnd");
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    assert.equal(await page.getByRole("dialog").count(), 0, "a press that moves opens no menu");
+    assert.equal(await selected(), "second", "and opens no tab");
+    // the open split tab says its pane in words, the digits hidden: its name is never "Tab 11/2"
+    await page.goto(`${origin}/?pane=${encodeURIComponent(first)}`);
+    const position = row.locator('[role="tab"][aria-selected="true"] .tab-strip-position');
+    await position.waitFor();
+    assert.match((await position.locator('[aria-hidden="true"]').textContent()) ?? "", /^[12]\/2$/, "the digits are drawn, hidden from the tab's name");
+    assert.match((await position.locator(".visually-hidden").textContent()) ?? "", /^, Pane [12] of 2$/, "and said in words");
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+}
+
 /** A phone's header and its list of a workspace's tabs, and a tablet's strip of more tabs than fit. */
 export async function checkMobileTabs(browser: Browser, origin: string): Promise<void> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-mobile-tabs-")));
@@ -143,6 +215,7 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     await herdrRpc("pane.report_agent", { pane_id: first, source: "manual", agent: "claude", state: "idle" });
 
     await checkPhoneRow(browser, origin, first, panes);
+    await checkHeaderLongPress(browser, origin, first);
     await context.addInitScript(() => {
       if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
       if (localStorage.getItem("ovis:phone-tabs") === null) localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));

@@ -98,6 +98,8 @@ export interface TabStripProps {
 /** a press held this long on a tab of the header's row opens its menu, as a long press does a phone's list row; moving further than the slop is a scroll */
 const LONG_PRESS_MS = 450;
 const LONG_PRESS_SLOP = 8;
+/** the click a lifted long press still sends is the press's, not a pick; a later one (a key, a mouse) is a pick again */
+const LONG_PRESS_CLICK_MS = 600;
 
 export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNewTab, onNewTerminal, onMoveToWorkspace, paneActions, panelId = PANE_TABPANEL_ID, splitDrag = false, renameRequest = null, onRenameHandled, end, inHeader = false, sheet = null, onSheetClose, browserTabs = false, closable = true, phoneRow = false }: TabStripProps) {
   const t = useT();
@@ -146,9 +148,19 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   latest.current = { machineId, workspaceId: workspace.workspace_id, tabId: selectedPane.tab_id };
   const owner = JSON.stringify([machineId, workspace.workspace_id]);
   const previousOwner = useRef(owner);
+  // a press held on a tab of the header's row (`phoneRow`): its menu opens when the timer fires, for the PC and
+  // workspace it was pressed on; `until` is when the click that lifting it sends stops being the press's
+  const longPress = useRef<{ timer: number; x: number; y: number; owner: string; tabId: string; fired: boolean; until: number } | null>(null);
+  const cancelLongPress = (): void => {
+    if (longPress.current) window.clearTimeout(longPress.current.timer);
+    longPress.current = null;
+  };
+  useEffect(() => () => { if (longPress.current) window.clearTimeout(longPress.current.timer); }, []);
   useLayoutEffect(() => {
     if (previousOwner.current === owner) return;
     previousOwner.current = owner;
+    // a press held across the change (an alert opening another PC) would open the previous PC's tab menu over this one's
+    cancelLongPress();
     // Native IDs can repeat on another PC. A pending dialog never changes its target PC.
     setPicker(null); setEditing(null); setConfirm(null); setSent(null); setError(null);
     renameDrafts.current.clear();
@@ -303,8 +315,24 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   // React's own onWheel is passive, so the listener is the strip's own; `end` coming or going (a
   // split opened or closed) draws the strip as a new node, which needs it again.
   const tabsHidden = !phoneRow && tabRowHidden(cramped, tabs.length, inHeader);
-  const longPress = useRef<{ timer: number; x: number; y: number; fired: boolean } | null>(null);
-  const endLongPress = (): void => { if (longPress.current) window.clearTimeout(longPress.current.timer); };
+  const currentTabs = useRef(tabs);
+  currentTabs.current = tabs;
+  // the held press's menu, once: only while its PC and workspace are still the strip's and its tab still here
+  const openLongPress = (pressed: NonNullable<typeof longPress.current>, anchor: HTMLElement, tab: HerdrTab, active: boolean): void => {
+    window.clearTimeout(pressed.timer);
+    if (longPress.current !== pressed || pressed.fired) return;
+    if (pressed.owner !== previousOwner.current || !anchor.isConnected || !currentTabs.current.some((entry) => entry.tab_id === pressed.tabId)) { longPress.current = null; return; }
+    pressed.fired = true;
+    pressed.until = Infinity;
+    setPicker({ anchor, tab, previousFocus: anchor, touch: active });
+  };
+  // a lifted press: the pending one ends; a fired one keeps its claim on the click it sends, briefly
+  const liftLongPress = (): void => {
+    const pressed = longPress.current;
+    if (!pressed) return;
+    if (pressed.fired) pressed.until = performance.now() + LONG_PRESS_CLICK_MS;
+    else cancelLongPress();
+  };
   // a row that goes (a phone turned narrow) takes the menu it opened with it
   useLayoutEffect(() => {
     if (tabsHidden && editing === null) setPicker(null);
@@ -632,15 +660,12 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   tabIndex={active ? 0 : -1}
                   title={tabTitle}
                   onPointerDown={(event) => {
+                    cancelLongPress();
                     if (phoneRow && event.pointerType !== "mouse") {
-                      endLongPress();
                       const anchor = event.currentTarget;
-                      const pressed = { x: event.clientX, y: event.clientY, fired: false, timer: 0 };
-                      pressed.timer = window.setTimeout(() => {
-                        pressed.fired = true;
-                        setPicker({ anchor, tab, previousFocus: anchor, touch: active });
-                      }, LONG_PRESS_MS);
+                      const pressed = { x: event.clientX, y: event.clientY, owner, tabId: tab.tab_id, fired: false, until: Infinity, timer: 0 };
                       longPress.current = pressed;
+                      pressed.timer = window.setTimeout(() => openLongPress(pressed, anchor, tab, active), LONG_PRESS_MS);
                     }
                     reorder.onPointerDown(event, tab.tab_id);
                     // the chat of the tab pressed starts reading before the click picks it
@@ -649,23 +674,35 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                   }}
                   onPointerMove={(event) => {
                     const pressed = longPress.current;
-                    if (pressed && Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > LONG_PRESS_SLOP) endLongPress();
+                    if (pressed && !pressed.fired && Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > LONG_PRESS_SLOP) cancelLongPress();
                     reorder.onPointerMove(event);
                   }}
-                  onPointerUp={(event) => { endLongPress(); reorder.onPointerUp(event); }}
-                  onPointerCancel={() => { endLongPress(); reorder.cancelDrag(); }}
+                  onPointerUp={(event) => { liftLongPress(); reorder.onPointerUp(event); }}
+                  // the lift of a held press sends no mouse events or click: the focus they move would close the menu it opened
+                  onTouchEnd={(event) => { if (longPress.current?.fired) event.preventDefault(); }}
+                  onPointerCancel={() => { liftLongPress(); reorder.cancelDrag(); }}
                   onLostPointerCapture={reorder.cancelDrag}
                   onDragStart={(event) => event.preventDefault()}
                   onMouseDown={(event) => { if (event.button === 2 || (event.button === 0 && event.ctrlKey)) event.preventDefault(); }}
                   onClick={(event) => {
-                    if (longPress.current?.fired) { longPress.current = null; return; }
+                    const pressed = longPress.current;
+                    if (pressed?.fired) {
+                      longPress.current = null;
+                      if (performance.now() <= pressed.until) return;
+                    }
                     if (reorder.consumeClick(event.detail) || event.ctrlKey) return;
                     event.currentTarget.focus({ preventScroll: true });
                     const pane = paneFor(tab);
                     if (pane && pane.pane_id !== selectedPane.pane_id) onSelectPane(pane.pane_id);
                   }}
                   onDoubleClick={!renameOffered || !closable ? undefined : () => beginRename(tab)}
-                  onContextMenu={(event) => { event.preventDefault(); if (!longPress.current?.fired) openPicker(event, tab); }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    // Android's own long-press contextmenu can come before the timer: one path opens the menu, once
+                    const pressed = longPress.current;
+                    if (phoneRow && pressed && pressed.tabId === tab.tab_id) { openLongPress(pressed, event.currentTarget, tab, active); return; }
+                    openPicker(event, tab);
+                  }}
                   // the middle button closes a tab, as it does a browser's
                   onAuxClick={(event) => { if (event.button === 1 && closable) { event.preventDefault(); requestClose(tab); } }}
                 >
@@ -675,7 +712,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
                     : (browserTabs || phoneRow) && <span className="tab-strip-agent is-shell" aria-hidden="true"><Terminal /></span>}
                   <span className="tab-strip-label">{name}</span>
                   {/* a split tab's open pane, as the title's 1/2 says it: the header's row stands in the title's place */}
-                  {phoneRow && active && own.length > 1 && <span className="tab-strip-position">{own.findIndex((pane) => pane.pane_id === selectedPane.pane_id) + 1}/{own.length}</span>}
+                  {phoneRow && active && own.length > 1 && (() => {
+                    const index = own.findIndex((pane) => pane.pane_id === selectedPane.pane_id) + 1;
+                    // the digits are seen, the words heard, as the title's own 1/2 does: never "deploy1/2"
+                    return <span className="tab-strip-position"><span aria-hidden="true">{index}/{own.length}</span><span className="visually-hidden">{", "}{t("Pane {index} of {count}", { index, count: own.length })}</span></span>;
+                  })()}
                 </button>
               )}
               {/* beside the tab, not in it: inside, its words would join the tab's name ("Tab 1Shell") */}

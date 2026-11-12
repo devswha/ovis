@@ -479,3 +479,17 @@
   width: var(--icon-size-sm);
   height: var(--icon-size-sm);
 }
+
+/* the connection, lost and back, in words before the chevron (App.tsx): the tabs give it the room it needs */
+.header-tabs-connection {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-inline: var(--space-1);
+  overflow: hidden;
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-tabs-connection.is-reconnecting { color: var(--status-reconnecting); }
+.header-tabs-connection.is-connected { color: var(--status-done); }

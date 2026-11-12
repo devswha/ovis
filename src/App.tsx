@@ -951,6 +951,8 @@ export function App() {
                 }} />
             </PanePressContext.Provider>
             </RenderBoundary>
+            {/* lost and back, the connection in words where the crumb would say it: the row has no line under it */}
+            {phoneTabRow && headerConnection !== null && <span className={`header-tabs-connection is-${headerConnection}`}>{t(headerConnection === "connected" ? "Connected" : "Reconnecting…")}</span>}
             {/* a watching phone says so where its crumb would (G-004): the row has no line under it */}
             {phoneTabRow && auth?.role === "watch" && <span className="header-tabs-watch" title={t("View only")}><Eye aria-hidden="true" /><span className="visually-hidden">{t("View only")}</span></span>}
             {/* how many tabs the workspace has, beside the list of them: the row shows about one at a phone's width */}
@@ -1036,7 +1038,7 @@ export function App() {
           {!guideShown && !inbox.shown && <ConnectionChip
             connected={connected}
             word={connWord}
-            quiet={(headerConnection === "reconnecting" && note === null && crumb !== null && !stripInHeader) || statusBarShown}
+            quiet={(headerConnection === "reconnecting" && note === null && ((crumb !== null && !stripInHeader) || phoneTabRow)) || statusBarShown}
             title={[connected ? null : connWord, shownHerdr ? (shownHerdr.runtime === "herdr-core" ? t("herdr-core {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol }) : t("herdr {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol })) : null].filter((part) => part !== null).join(" · ") || undefined}
           />}
           {/* the Host's herdr is away: the step to take is on that PC (the sidebar's state line says the same) */}

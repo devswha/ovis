@@ -103,6 +103,20 @@ describe("saved theme migration", () => {
     expect(loadSettings().uiFontFamily).toBe("");
   });
 
+  it("keeps Tabs on a phone in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().phoneTabs).toBe("row");
+    saveSettings(sanitizeSettings({ phoneTabs: "header" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("phoneTabs");
+    expect(records.get("ovis:phone-tabs")).toBe(JSON.stringify("header"));
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().phoneTabs).toBe("header");
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), phoneTabs: "row" });
+    expect(loadSettings().phoneTabs).toBe("row");
+    records.set("ovis:phone-tabs", "not json");
+    expect(loadSettings().phoneTabs).toBe("row");
+  });
+
   it("keeps Wrap to screen / Original width in its own key, out of an old tab's whole-record save", () => {
     saveSettings(sanitizeSettings({ terminalMirrorWrap: false }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalMirrorWrap");

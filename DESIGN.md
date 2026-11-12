@@ -1413,16 +1413,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   that scrolls sideways (`touch-action: pan-x`, `overscroll-behavior-x: contain`, so the edge swipe
   still opens the drawer) and fades out under its end: each tab a 44px target with its agent's mark
   (a shell's glyph) and name, the open one a pill capped at 7rem so the next tab's mark shows beside
-  it and the row reads as tabs, not a title, a split tab's open pane (`1/2`) after its name, and the open tab
-  always scrolled into view. A tap opens a tab where it was left; a press held 450ms (moving no more
-  than 8px) opens that tab's menu, as a long press does a phone's list row. No `+` or `⋯` is drawn
+  it and the row reads as tabs, not a title, a split tab's open pane (`1/2`, heard as "Pane 1 of 2", the
+  digits hidden from the tab's name) after its name, and the open tab always scrolled into view. A tap
+  opens a tab where it was left; a press held 450ms (moving no more than 8px) opens that tab's menu, as
+  a long press does a phone's list row, and the click lifting it opens no tab; Android's own long-press
+  `contextmenu` opens the same menu once, and a press still held when the PC or workspace changes opens
+  nothing. No `+` or `⋯` is drawn
   in that row: a `ChevronDown` after it, led by the workspace's tab count ("Tabs of {workspace}",
   `aria-haspopup="dialog"`, `aria-expanded`), opens the workspace's tabs as a bottom sheet: each
   tab with its state dot (hollow at rest), its agent's mark and a Close of its own ("Close {tab}",
   its own stop after the tab in the arrow order), the open tab marked current, its state word for a
   state; then the open tab's Move tab left / right, then New terminal and New tab with agent…. A
   pick opens the tab where it was left; Close asks first as the row's does. A watching phone shows an
-  `Eye` ("View only") before the chevron, where the crumb would say it. Such a phone's More
+  `Eye` ("View only") before the chevron, and a lost connection says Reconnecting… there in words,
+  then Connected, where the crumb would say them. The title's crumb (workspace, PC, folder) is not
+  drawn in this choice: the chevron's sheet is titled with the workspace, and the drawer says the rest.
+  A header note (herdr's prefix, a copied link) takes its own width beside the row, as from 769px. Such a phone's More
   carries the open tab's other actions as below, less the two new-tab items its tab sheet holds.
   A lone tab with no row (a phone at most 700px tall, including the iPhone Duo's 678-point outer
   display, landscape or a screen made short by its keyboard) draws no pane ellipsis either: a second
