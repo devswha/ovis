@@ -21,7 +21,7 @@ function harness(now = 0, subscribed = true) {
   return { reads, calls, waits, notified: () => notified };
 }
 
-const target = (key: string, stamp = "1", machineId = "local", working = false): SummaryTarget => ({ key, machineId, paneId: `pane-${key}`, stamp, working });
+const target = (key: string, stamp = "1", machineId = "local"): SummaryTarget => ({ key, machineId, paneId: `pane-${key}`, stamp });
 const said = (text: string, at: string | null = null): PaneSummary => ({ role: "assistant", text, at, asked_at: null });
 const answer = (summaries: Record<string, PaneSummary | null>, server_time = "1970-01-01T00:00:00.000Z"): PaneSummaries => ({ server_time, summaries });
 const settled = () => new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => undefined);
@@ -118,13 +118,14 @@ describe("SummaryReads", () => {
     expect([...reads.summaries().keys()]).toEqual(["f"]);
   });
 
-  it("asks a working row once more after the wait when its new stamp answers with the words and time it had", async () => {
+  it("asks a row once more after the wait when its new stamp answers with the words and time it had, whatever its state", async () => {
     const { reads, calls, waits } = harness();
-    reads.sync([target("a", "1", "local", true)]);
+    // a stamp's state is in the stamp alone: working, then done
+    reads.sync([target("a", "1:4:working")]);
     calls[0]!.resolve(answer({ "pane-a": said("Last turn", "1970-01-01T00:00:01.000Z") }));
     await settled();
     expect(waits).toHaveLength(0);
-    reads.sync([target("a", "2", "local", true)]);
+    reads.sync([target("a", "2:5:done")]);
     calls[1]!.resolve(answer({ "pane-a": said("Last turn", "1970-01-01T00:00:01.000Z") }));
     await settled();
     expect(waits.map((wait) => wait.ms)).toEqual([SUMMARY_RETRY_MS]);
@@ -137,16 +138,29 @@ describe("SummaryReads", () => {
     expect(calls).toHaveLength(3);
   });
 
-  it("asks no row again for the same words when it is not working or its words changed", async () => {
+  it("asks no row again when its words changed", async () => {
     const { reads, calls, waits } = harness();
-    reads.sync([target("a"), target("b", "1", "local", true)]);
-    calls[0]!.resolve(answer({ "pane-a": said("Same"), "pane-b": said("Old") }));
+    reads.sync([target("b")]);
+    calls[0]!.resolve(answer({ "pane-b": said("Old") }));
     await settled();
-    reads.sync([target("a", "2"), target("b", "2", "local", true)]);
-    calls[1]!.resolve(answer({ "pane-a": said("Same"), "pane-b": said("New") }));
+    reads.sync([target("b", "2")]);
+    calls[1]!.resolve(answer({ "pane-b": said("New") }));
     await settled();
     expect(waits).toHaveLength(0);
     expect(calls).toHaveLength(2);
+  });
+
+  it("cancels the once-more ask of a row whose target moved on or left", async () => {
+    const { reads, calls, waits } = harness();
+    reads.sync([target("a"), target("b")]);
+    calls[0]!.resolve(answer({ "pane-a": said("Same"), "pane-b": said("Same") }));
+    await settled();
+    reads.sync([target("a", "2"), target("b", "2")]);
+    calls[1]!.resolve(answer({ "pane-a": said("Same"), "pane-b": said("Same") }));
+    await settled();
+    expect(waits.map((wait) => wait.cancelled)).toEqual([false, false]);
+    reads.sync([target("a", "3")]);
+    expect(waits.map((wait) => wait.cancelled)).toEqual([true, true]);
   });
 
   it("asks a PC that has no route only once", async () => {

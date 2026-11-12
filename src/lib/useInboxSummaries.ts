@@ -7,7 +7,7 @@ import { useEffect, useRef, useSyncExternalStore } from "react";
 import { PANE_SUMMARY_MAX_IDS } from "../../shared/pane-summary.ts";
 import type { PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
 import { inboxKey, inboxStatus } from "./agentInbox.ts";
-import { agentGroup, type AgentRow } from "./agentRoster.ts";
+import type { AgentRow } from "./agentRoster.ts";
 import { fetchPaneSummaries } from "./api.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 
@@ -30,10 +30,11 @@ export interface RowSummary {
 }
 
 /**
- * A row whose summary is read: a new `stamp` (finish, activity or shown state changed) reads it again. A `working` row
- * whose new stamp answers with the words it already had is read once more (its agent may not have written the turn yet).
+ * A row whose summary is read: a new `stamp` (finish, activity or shown state changed) reads it again. A row whose new
+ * stamp answers with the words it already had is read once more (its agent may not have written the turn yet, or the
+ * answer came from a read started before the change).
  */
-export interface SummaryTarget { key: string; machineId: string; paneId: string; stamp: string; working: boolean }
+export interface SummaryTarget { key: string; machineId: string; paneId: string; stamp: string }
 
 /** The first SUMMARY_ROWS rows of a PC in reach, in the given order. */
 export function summaryTargets(rows: readonly AgentRow[], activity: SidebarActivity): SummaryTarget[] {
@@ -41,7 +42,7 @@ export function summaryTargets(rows: readonly AgentRow[], activity: SidebarActiv
     const pane = row.entry.pane;
     const seq = activity.seqs(row.machine.id).get(pane.pane_id) ?? 0;
     const status = inboxStatus(row, activity);
-    return { key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, stamp: `${pane.finish_id ?? ""}:${seq}:${status ?? ""}`, working: agentGroup(status) === "working" };
+    return { key: inboxKey(row), machineId: row.machine.id, paneId: pane.pane_id, stamp: `${pane.finish_id ?? ""}:${seq}:${status ?? ""}` };
   });
 }
 
@@ -73,7 +74,7 @@ function wellFormed(value: unknown): value is PaneSummary {
  * Each target's summary, read once per key and stamp: batches of at most PANE_SUMMARY_MAX_IDS per PC, one
  * request in flight per PC. A pane the answer left out, or a request that failed, is asked again after
  * SUMMARY_RETRY_MS, at most SUMMARY_RETRIES times per key and stamp, the first pane an answer left out behind the
- * others it left out, so no pane heads every retry. A working target whose new stamp answers with the words it had
+ * others it left out, so no pane heads every retry. A target whose new stamp answers with the words it had
  * is asked once more after SUMMARY_RETRY_MS. A PC whose bridge has no route (null) is not asked again until a sync
  * holds none of its targets (it went away, and may come back updated). A summary of the wrong shape counts as
  * none. A key's words outlive a stamp change until the new read settles, without their failed mark (it held for the
@@ -198,7 +199,7 @@ export class SummaryReads {
       if (!wellFormed(summary)) { if (this.current.has(target.key)) cleared.push(target.key); continue; }
       const row: RowSummary = { role: summary.role, text: summary.text, at: timeOf(summary.at, offset), askedAt: timeOf(summary.asked_at, offset), failed: summary.failed === true };
       if (!same(this.current.get(target.key), row)) set.set(target.key, row);
-      else if (target.working && before !== undefined && before !== target.stamp) this.recheck(target);
+      else if (before !== undefined && before !== target.stamp) this.recheck(target);
     }
     // the first pane left out is likeliest the one the PC was still reading: it goes behind the others
     for (const target of [...left.slice(1), ...left.slice(0, 1)]) this.again(target);
@@ -208,7 +209,7 @@ export class SummaryReads {
     });
   }
 
-  /** Asks a working target once more after the wait, its answer having repeated the words of an earlier stamp. */
+  /** Asks a target once more after the wait, its answer having repeated the words of an earlier stamp. */
   private recheck(target: SummaryTarget): void {
     const read = readOf(target);
     if (this.rechecked.has(read)) return;
@@ -245,7 +246,7 @@ export const newSummaryReads = (): SummaryReads => new SummaryReads(fetchPaneSum
 /** Each target's last words by its key, from the page's reader. */
 export function useInboxSummaries(reads: SummaryReads, targets: readonly SummaryTarget[]): ReadonlyMap<string, RowSummary> {
   const targetsRef = useRef(targets); targetsRef.current = targets;
-  const signature = targets.map((target) => `${target.key}:${target.machineId}:${target.paneId}:${target.stamp}:${target.working}`).join("\n");
+  const signature = targets.map((target) => `${target.key}:${target.machineId}:${target.paneId}:${target.stamp}`).join("\n");
   useEffect(() => { reads.sync(targetsRef.current); }, [reads, signature]);
   return useSyncExternalStore(reads.subscribe, reads.summaries, reads.summaries);
 }

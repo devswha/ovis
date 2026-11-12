@@ -2070,9 +2070,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   while the list stays shown is not seen then: it is read when the list is next shown. The last
   words and their time are read with one read-only request (GET /api/pane/summary) per PC for up
   to 24 rows, for the first 60 rows of connected PCs in the list's order. A row is read again when
-  its finish, its activity or its shown state changes, and a working row whose new read repeats
-  the words and time it had is read once more after two seconds (its agent may not have written
-  the new turn yet). The server gives each pane's read at most 400 ms of the request's 1.5 s and
+  its finish, its activity or its shown state changes, and a row whose new read repeats the words
+  and time it had is read once more after two seconds (its agent may not have written the new
+  turn yet, or the answer came from a read started before the change). The server gives each pane's read at most 400 ms of the request's 1.5 s and
   leaves a slower pane out, reading on; a later request for that pane waits on the read still
   running while it is younger than 1.5 s, and starts a new one in place of an older one. A pane
   with nothing said or no conversation to read answers null, which the row keeps for its state; a
