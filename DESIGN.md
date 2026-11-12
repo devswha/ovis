@@ -5142,6 +5142,12 @@ until then the card's hairline is its edge in light.
   selected pane's tabs in the strip's order, or this PC's workspace rows as the sidebar draws them
   (pins first, a folded group's worktrees and the rows a filter leaves out passed over), wraps around, and opens the pane a click there opens. A draft gives the key back at its edge, as
   for the pane steps.
+  Close pane (a shortcut and a palette row, #3286) follows iTerm2's Close, which ends the current
+  split pane, with no default key: that close's ⌘W (Ctrl+W) closes the browser tab and Record
+  refuses it, as its Settings row says. It runs the selected pane's menu Close itself, so a busy
+  pane or a workspace's last one asks first, a locked one offers none, and a watching device has
+  none. One close per press (a held key's repeats close nothing), and none while a dialog, sheet or
+  menu, its own confirmation included, is open. There is no undo: herdr ends the pane's processes.
 - Text-field selection and IME composition keep their keys. Focus-local list/tab navigation and
   reordering are separate from global bindings; they must not intercept terminal input.
   Global actions target the selected pane, and the original handled chord must never also reach its PTY.
