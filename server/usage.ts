@@ -30,7 +30,7 @@ import { installStatusline, removeStatusline, StatuslineInstallError, statusline
 import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
-import { recordedUsages, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
+import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
 import { ompRecorded } from "./usage-recorded-omp.ts";
 
 export const FRESH_MS = 5 * 60_000;
@@ -1112,6 +1112,8 @@ export class UsageService {
   private readonly backoffs = new Map<string, number>();
   private pending: Promise<UsageReport> | null = null;
   private pendingRefresh = false;
+  /** what each tool's store held when it was last read, and when: every report pass asks, also one answered from the cache */
+  private readonly records = new Map<RecordedSource, { readAt: number; readings: RecordedReading[] }>();
   /** the keys of the accounts hidden or removed from Ovis (skipAccounts) */
   private skipped: () => ReadonlySet<string> = () => new Set();
   /** what `skipped` gave the last pass: an account no longer in it was shown again */
@@ -1179,7 +1181,7 @@ export class UsageService {
     // an account another tool on this PC recorded is listed once too: after this PC's accounts when it is known from
     // the record alone, else in the numbers of this PC's own sign-in of it while those are not current. No sign-in is
     // read for a record, so a hidden account's is read as well
-    for (const record of this.providers.flatMap((provider) => recordedUsages(provider.id, provider.recorded ?? [], this.ctx))) {
+    for (const record of this.providers.flatMap((provider) => recordedUsages(provider.id, provider.recorded ?? [], this.ctx, (source) => this.recordOf(source, now)))) {
       const own = byKey.get(record.key);
       if (!own) byKey.set(record.key, record);
       else if (!ownStands(own, record, now)) byKey.set(record.key, standingIn(own, record));
@@ -1197,6 +1199,15 @@ export class UsageService {
   }
 
   /** `incomplete`: a command it looks with is missing, so the search is not kept: the next report looks again, finding a sign-in once it is installed */
+  /** What `source` recorded: its store is read when the last read is MIN_REFRESH_MS old, not once for every report. */
+  private recordOf(source: RecordedSource, now: number): RecordedReading[] {
+    const kept = this.records.get(source);
+    if (kept && now - kept.readAt < MIN_REFRESH_MS) return kept.readings;
+    const readings = source.read(this.ctx);
+    this.records.set(source, { readAt: now, readings });
+    return readings;
+  }
+
   private async collectProvider(provider: UsageProvider, now: number, refresh: boolean, incomplete: boolean): Promise<ProviderUsage[]> {
     const search = this.searches.get(provider.id);
     // an account's readAt is never later than its provider's, so a forced search may ask each again

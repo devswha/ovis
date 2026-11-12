@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderUsage, UsageProblem } from "../shared/protocol.ts";
-import { FRESH_MS, UsageHttpError, UsageService, type UsageContext, type UsageProvider } from "./usage.ts";
+import { FRESH_MS, MIN_REFRESH_MS, UsageHttpError, UsageService, type UsageContext, type UsageProvider } from "./usage.ts";
 import type { RecordedReading, RecordedSource, RecordedWindow } from "./usage-recorded.ts";
 
 const NOW = Date.parse("2026-09-29T12:00:00Z");
@@ -104,6 +104,28 @@ describe("an account another tool recorded", () => {
     expect((await listed(provider))[0]?.recorded).toEqual({ by: "omp", stale: false, signed_in: false });
     now += 1;
     expect((await listed(provider))[0]?.recorded).toEqual({ by: "omp", stale: true, signed_in: false });
+  });
+
+  it("reads a tool's store once for the reports of half a minute, and again after that", async () => {
+    let reads = 0;
+    const service = new UsageService(context(), [recordedOnly(recordedBy(() => { reads += 1; return [record(NOW)]; }))]);
+    await service.report();
+    now = NOW + MIN_REFRESH_MS - 1;
+    expect((await service.report()).providers.map((usage) => usage.key)).toEqual(["claude:acct-1"]);
+    expect(reads).toBe(1);
+    now = NOW + MIN_REFRESH_MS;
+    await service.report();
+    expect(reads).toBe(2);
+  });
+
+  it("judges a record it keeps from its last read by the time of each report", async () => {
+    let reads = 0;
+    const service = new UsageService(context(), [recordedOnly(recordedBy(() => { reads += 1; return [record(NOW)]; }, 15 * MINUTE))]);
+    now = NOW + 15 * MINUTE;
+    expect((await service.report()).providers[0]?.recorded).toMatchObject({ stale: false });
+    now += 1;
+    expect((await service.report()).providers[0]?.recorded).toMatchObject({ stale: true });
+    expect(reads).toBe(1);
   });
 
   it("loses a limit whose window has turned over, and one that names no reset once it is older than its window", async () => {

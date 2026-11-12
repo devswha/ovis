@@ -71,14 +71,16 @@ function current(window: RecordedWindow, readAt: number, now: number): UsageWind
  * without the limits whose window is over, and not at all once none is left. In the order of their keys, so an
  * account keeps its place whichever was read last. A reader that fails gives no accounts: it is no failure of the report.
  * Each is given as known from its record alone (`signed_in` false): whether this PC also signs in to it is the caller's to say.
+ * `read` gives what a tool's store holds: the store itself, unless the caller keeps what it read between two reports.
  */
-export function recordedUsages(provider: UsageProviderId, sources: readonly RecordedSource[], ctx: RecordedContext): RecordedUsage[] {
+export function recordedUsages(provider: UsageProviderId, sources: readonly RecordedSource[], ctx: RecordedContext,
+  read: (source: RecordedSource) => RecordedReading[] = (source) => source.read(ctx)): RecordedUsage[] {
   const now = ctx.now();
   const latest = new Map<string, RecordedUsage>();
   for (const source of sources) {
     let readings: RecordedReading[];
     try {
-      readings = source.read(ctx);
+      readings = read(source);
     } catch (error) {
       console.warn(`usage: ${source.by}'s record could not be read: ${error instanceof Error ? error.message : String(error)}`);
       continue;
