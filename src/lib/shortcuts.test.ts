@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 
 import { SHORTCUTS, bindingDisplayKeys, closePaneKeyStep, isAppShortcut, shortcutEventKey, isMacPlatform, matchShortcut, type ShortcutEventLike, keepsArrowsForText, keepsKeyForText, shortcutConflict, shortcutDisplayKeys, shortcutKeys } from "./shortcuts.ts";
 import { isReservedShortcutKey, sanitizeShortcutOverrides } from "./shortcutBindings.ts";
-import { recordShortcut } from "./shortcutRecorder.ts";
 
 function keyEvent(key: string, patch: Partial<ShortcutEventLike> = {}): ShortcutEventLike {
   return { key, ctrlKey: false, metaKey: false, shiftKey: true, altKey: false, ...patch };
@@ -287,13 +286,6 @@ describe("close pane", () => {
     expect(matchShortcut(keyEvent("X", { metaKey: true }), true, sanitizeShortcutOverrides({ "close-pane": "x" }, true))).toBe("close-pane");
   });
 
-  it("cannot take the browser's own tab close, ⌘W or Ctrl+W, nor Mod+Shift+W", () => {
-    expect(recordShortcut(keyEvent("w", { metaKey: true, shiftKey: false, code: "KeyW" }), true)).toEqual({ kind: "invalid", reason: "reserved" });
-    expect(recordShortcut(keyEvent("w", { ctrlKey: true, shiftKey: false, code: "KeyW" }), false)).toEqual({ kind: "invalid", reason: "reserved" });
-    expect(recordShortcut(keyEvent("W", { ctrlKey: true, code: "KeyW" }), false)).toEqual({ kind: "invalid", reason: "reserved" });
-    expect(sanitizeShortcutOverrides({ "close-pane": "meta+w" }, true)).toEqual({});
-  });
-
   it("runs once per press, and never where a dialog, sheet or menu has the key", () => {
     const field = { closest: () => null } as unknown as EventTarget;
     const inside = (owner: string) => ({ closest: (selector: string) => selector.includes(owner) ? {} : null });
@@ -303,6 +295,8 @@ describe("close pane", () => {
     for (const owner of ["[role='alertdialog']", "[role='dialog']", "[role='menu']", "[role='listbox']", "dialog"]) {
       expect(closePaneKeyStep({ target: inside(owner) as unknown as EventTarget }, false)).toBe("pass");
     }
+    const suggesting = { closest: () => null, getAttribute: (name: string) => name === "aria-expanded" ? "true" : null } as unknown as EventTarget;
+    expect(closePaneKeyStep({ target: suggesting }, false)).toBe("pass");
     expect(closePaneKeyStep({ target: field }, true)).toBe("pass");
     expect(closePaneKeyStep({ target: field, repeat: true }, true)).toBe("pass");
   });

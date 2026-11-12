@@ -8,7 +8,7 @@ import { useShortcuts } from "./shortcuts.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 
 /** an element as the key handler reads it: what its nearest dialog, sheet or menu ancestor would match */
-const element = (within: string | null = null) => ({ tagName: "TEXTAREA", classList: { contains: () => false }, closest: (selector: string) => within !== null && selector.includes(within) ? {} : null });
+const element = (within: string | null = null, expanded = false) => ({ tagName: "TEXTAREA", classList: { contains: () => false }, closest: (selector: string) => within !== null && selector.includes(within) ? {} : null, getAttribute: (name: string) => name === "aria-expanded" ? String(expanded) : null });
 
 describe("the Close pane shortcut", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -37,7 +37,8 @@ describe("the Close pane shortcut", () => {
     });
     define("document", {
       activeElement: null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: (selector: string) => modalOpen && selector.includes("aria-modal") ? {} : null,
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => modalOpen && selector.includes("aria-modal") ? [{}] : [],
       addEventListener() {}, removeEventListener() {},
     });
     define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
@@ -86,6 +87,14 @@ describe("the Close pane shortcut", () => {
     expect(press({ target: element(owner) })).toBe(false);
     expect(press({ target: element(owner), repeat: true })).toBe(false);
     expect(closes).toBe(0);
+  });
+
+  it("leaves the key to the message box while its slash or file suggestions are open, the focus staying in the box beside its list", async () => {
+    await mount();
+    expect(press({ target: element(null, true) })).toBe(false);
+    expect(closes).toBe(0);
+    expect(press({ target: element(null, false) })).toBe(true);
+    expect(closes).toBe(1);
   });
 
   it("does nothing while a modal is open over the page, its own confirmation included, wherever the focus is", async () => {
