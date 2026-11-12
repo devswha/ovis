@@ -13,6 +13,7 @@ export const ENTRIES = {
   machine: { file: "server/herdr-core/machine-entry.ts", run: () => import("./herdr-core/machine-entry.ts") },
   plugin: { file: "scripts/plugin.ts", run: () => import("../scripts/plugin.ts").then((entry) => entry.runPlugin()) },
   askpass: { file: "server/ssh-askpass.ts", run: () => import("./ssh-askpass.ts") },
+  "windows-launch": { file: "server/windows-launch.ts", run: () => import("./windows-launch.ts") },
 } as const;
 
 export type EntryName = keyof typeof ENTRIES;
@@ -21,10 +22,16 @@ export type EntryName = keyof typeof ENTRIES;
 export const COMPILED = /^(\/\$bunfs\/|[A-Za-z]:[\\/]~BUN[\\/])/.test(import.meta.path);
 
 /** The checkout when run from source; the binary's own folder when compiled. */
-export const ROOT = COMPILED ? dirname(process.execPath) : join(import.meta.dir, "..");
+export function serverRoot(compiled = COMPILED): string {
+  return compiled ? dirname(process.execPath) : join(import.meta.dir, "..");
+}
+export const ROOT = serverRoot();
 
-/** Where `dist/` is read from: OVIS_ASSETS when set, else ROOT. */
-export const ASSETS = process.env["OVIS_ASSETS"] || ROOT;
+/** Where `dist/` is read from: OVIS_ASSETS when set, else the server's root. */
+export function assetsRoot(env: Record<string, string | undefined> = process.env, root = ROOT): string {
+  return env["OVIS_ASSETS"] || root;
+}
+export const ASSETS = assetsRoot();
 
 /**
  * The environment that makes process.execPath run as Bun itself (`-e`, a script file): the compiled
@@ -33,6 +40,6 @@ export const ASSETS = process.env["OVIS_ASSETS"] || ROOT;
 export const BUN_ENV: Record<string, string> = COMPILED ? { BUN_BE_BUN: "1" } : {};
 
 /** The command that starts entry `name`: its file under `root` from source, the binary with the entry's name when compiled. */
-export function entryCommand(name: EntryName, root = ROOT): [string, string] {
-  return [process.execPath, COMPILED ? name : join(root, ENTRIES[name].file)];
+export function entryCommand(name: EntryName, root = ROOT, compiled = COMPILED): [string, string] {
+  return [process.execPath, compiled ? name : join(root, ENTRIES[name].file)];
 }
