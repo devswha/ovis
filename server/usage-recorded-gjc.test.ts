@@ -334,3 +334,78 @@ describe("Claude's meter with Gajae Code's record", () => {
     expect(answer).not.toContain(SIGN_IN_SECRET);
   });
 });
+
+describe("the report gjc 0.18.12 wrote itself", () => {
+  // captured from the real binary (`gjc accounts check anthropic --json`), signed in to a made-up account, a stand-in answering for Anthropic
+  const row = JSON.parse(readFileSync(new URL("./fixtures/gjc-0.18.12-usage-cache-row.json", import.meta.url), "utf8")) as { key: string; value: string; expires_at: number };
+  const wrote = (JSON.parse(row.value) as { value: { fetchedAt: number; limits: { window: { resetsAt: number } }[] } }).value;
+  const OWN = "0b0b0b0b-1111-4222-8333-444444444444";
+  let reply: { status: number; body: unknown };
+
+  function context(): UsageContext {
+    return {
+      ...recordedContext({ USER: "me" }),
+      async fetch(url) {
+        if (url !== CLAUDE_USAGE) throw new Error(`unexpected request ${url}`);
+        return new Response(JSON.stringify(reply.body), { status: reply.status });
+      },
+      keychain: async () => ({ status: "missing" }),
+      run: async () => null,
+      has: () => true,
+    };
+  }
+
+  /** Oh My Pi's record of the same account, read at `readAt` */
+  function ompRecord(readAt: number, used: number): void {
+    const path = join(home, ".omp", "agent", "agent.db");
+    mkdirSync(dirname(path), { recursive: true });
+    const db = new Database(path, { create: true });
+    db.exec(`
+      CREATE TABLE usage_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, recorded_at INTEGER NOT NULL, provider TEXT NOT NULL, account_key TEXT NOT NULL,
+        email TEXT, account_id TEXT, limit_id TEXT NOT NULL, label TEXT NOT NULL, window_label TEXT, used_fraction REAL, status TEXT, resets_at INTEGER
+      );
+      INSERT INTO usage_history (recorded_at, provider, account_key, email, account_id, limit_id, label, used_fraction, status, resets_at)
+        VALUES (${readAt}, 'anthropic', 'oauth|account:${OWN}', 'gjc-own@example.test', '${OWN}', 'anthropic:5h', 'Claude 5 Hour', ${used}, 'ok', ${now + 3 * HOUR});
+    `);
+    db.close();
+  }
+
+  const write = (path: string, value: unknown): void => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(value)); };
+  const claude = USAGE_PROVIDERS.filter((provider) => provider.id === "claude");
+  const shown = async () => (await new UsageService(context(), claude).report()).providers
+    .map((usage) => ({ key: usage.key, problem: usage.problem, recorded: usage.recorded ? { by: usage.recorded.by, signed_in: usage.recorded.signed_in } : null, session: usage.windows.find((window) => window.kind === "session")?.used_percent }));
+
+  beforeEach(() => {
+    now = wrote.fetchedAt + 4 * MINUTE;
+    const db = new Database(store([]));
+    db.run("INSERT INTO cache (key, value, expires_at) VALUES (?, ?, ?)", [row.key, row.value, row.expires_at]);
+    db.close();
+    reply = { status: 200, body: { five_hour: { utilization: 10, resets_at: new Date(now + 2 * HOUR).toISOString() } } };
+  });
+
+  it("is read as it stands: the account its key names, not the organization its report names, and its three limits", () => {
+    expect(gjcRecorded.read(recordedContext())).toEqual([{
+      accountId: OWN, label: "gjc-own@example.test", readAt: wrote.fetchedAt,
+      windows: [
+        { kind: "session", scope: null, seconds: 5 * 3600, usedPercent: 37.5, resetsAt: wrote.limits[0]?.window.resetsAt ?? null },
+        { kind: "week", scope: null, seconds: 7 * 86400, usedPercent: 25, resetsAt: wrote.limits[1]?.window.resetsAt ?? null },
+        { kind: "week", scope: "Opus", seconds: 7 * 86400, usedPercent: 12.5, resetsAt: wrote.limits[2]?.window.resetsAt ?? null },
+      ],
+    }]);
+  });
+
+  it("is one row with Claude Code's own sign-in of the account and Oh My Pi's record of it: Claude Code's reading while it answers, the record read last once it is refused", async () => {
+    write(join(home, ".claude", ".credentials.json"), { claudeAiOauth: { accessToken: "claude-code-token", expiresAt: now + HOUR, subscriptionType: "max" } });
+    write(join(home, ".claude.json"), { oauthAccount: { accountUuid: OWN, emailAddress: "gjc-own@example.test" } });
+    ompRecord(wrote.fetchedAt - 5 * MINUTE, 0.6);
+    expect(await shown()).toEqual([{ key: `claude:${OWN}`, problem: null, recorded: null, session: 10 }]);
+    reply = { status: 401, body: {} };
+    expect(await shown()).toEqual([{ key: `claude:${OWN}`, problem: "expired", recorded: { by: "gjc", signed_in: true }, session: 37.5 }]);
+  });
+
+  it("is one row with Oh My Pi's record of the account, which stands once Oh My Pi has read it later", async () => {
+    ompRecord(wrote.fetchedAt + 2 * MINUTE, 0.6);
+    expect(await shown()).toEqual([{ key: `claude:${OWN}`, problem: null, recorded: { by: "omp", signed_in: false }, session: 60 }]);
+  });
+});
