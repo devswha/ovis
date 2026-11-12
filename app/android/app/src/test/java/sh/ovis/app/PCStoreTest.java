@@ -163,6 +163,20 @@ public class PCStoreTest {
     }
 
     @Test
+    public void aConnectionThatFailsAtOnceIsRefusedUnlessTheHostCannotBeReached() {
+        long later = System.nanoTime() + 60_000_000_000L;
+        // Android's HttpURLConnection, for a closed port: no errno in the message, no cause
+        assertEquals("refused", PCStore.failureKind(new java.net.ConnectException("Failed to connect to /192.168.0.10:7317"), later));
+        // a PC that is off on the same network
+        IOException off = new java.net.ConnectException("Failed to connect to /192.168.0.11:7317");
+        off.initCause(new java.net.NoRouteToHostException("connect failed: EHOSTUNREACH (No route to host)"));
+        assertEquals("no-answer", PCStore.failureKind(off, later));
+        assertEquals("no-answer", PCStore.failureKind(new java.net.ConnectException("connect failed: ENETUNREACH (Network is unreachable)"), later));
+        assertEquals("timeout", PCStore.failureKind(new java.net.SocketTimeoutException("timeout"), later));
+        assertEquals("unknown-host", PCStore.failureKind(new java.net.UnknownHostException("my-pc"), later));
+    }
+
+    @Test
     public void onlyTheLatestOpenNotCancelledGoesOn() {
         PCStore.Openings openings = new PCStore.Openings();
         int first = openings.start();

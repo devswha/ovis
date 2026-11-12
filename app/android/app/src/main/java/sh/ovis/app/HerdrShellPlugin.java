@@ -57,20 +57,25 @@ public class HerdrShellPlugin extends Plugin {
         String name = call.getString("name");
         int mine = openings.start();
         if (!Boolean.TRUE.equals(call.getBoolean("check", false))) {
-            openChecked(call, key, text, name, mine);
+            openChecked(call, key, text, name, mine, 0);
             return;
         }
         String pc = key;
         String cookies = android.webkit.CookieManager.getInstance().getCookie(PCStore.origin(text));
+        // one limit from Open to the PC's first page: the cover gets what the check left (PCStore.answerBy)
+        long answerBy = android.os.SystemClock.elapsedRealtime() + PCStore.ANSWER_SECONDS * 1000L;
         new Thread(() -> {
             PCStore.Check found = PCStore.check(text, cookies, PCStore.ANSWER_SECONDS * 1000L);
-            if (found.opens()) openChecked(call, pc, text, name, mine);
+            if (found.opens()) openChecked(call, pc, text, name, mine, answerBy);
             else call.reject(found.detail == null ? found.kind : found.detail, found.kind);
         }, "ovis-check").start();
     }
 
-    /** Opens the PC `key`, unless another open or a cancelOpen came after this one (`mine`). Any thread. */
-    private void openChecked(PluginCall call, String key, String text, String name, int mine) {
+    /**
+     * Opens the PC `key`, unless another open or a cancelOpen came after this one (`mine`), with the
+     * first page due by `answerBy` (0: ANSWER_SECONDS from the new activity). Any thread.
+     */
+    private void openChecked(PluginCall call, String key, String text, String name, int mine, long answerBy) {
         synchronized (openings) {
             android.app.Activity activity = getActivity();
             if (!openings.current(mine) || activity == null || activity.isFinishing() || activity.isDestroyed()) {
@@ -81,9 +86,21 @@ public class HerdrShellPlugin extends Plugin {
             PCStore.open(getContext(), key, text);
             PCStore.fail(null, null);
             PCStore.redirects = 0;
+            PCStore.answerBy = answerBy;
         }
         call.resolve();
-        reopen();
+        // a Cancel that lands before the switch still wins: the connect screen stays, opening nothing at the next start
+        android.app.Activity activity = getActivity();
+        activity.runOnUiThread(() -> {
+            synchronized (openings) {
+                if (!openings.current(mine)) {
+                    PCStore.setCurrent(getContext(), null);
+                    PCStore.answerBy = 0;
+                    return;
+                }
+            }
+            ((MainActivity) activity).reopen();
+        });
     }
 
     /** The connect screen's Cancel: an open still being checked does not go on. */

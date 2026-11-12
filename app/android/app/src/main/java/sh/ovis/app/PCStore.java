@@ -92,8 +92,18 @@ final class PCStore {
         failureKind = kind;
     }
 
-    /** How long the connect screen waits for an address to answer (check), and an opening PC for its first page (MainActivity's cover), as the iOS app's cover waits. */
+    /** How long the app waits for an address to answer, from Open on the connect screen to the PC's first page (MainActivity's cover), as the iOS app's cover waits. */
     static final int ANSWER_SECONDS = 20;
+
+    /**
+     * When (SystemClock.elapsedRealtime) the open being checked on the connect screen runs out of
+     * ANSWER_SECONDS, which MainActivity's cover takes over so the check and the first page share one
+     * limit; 0 for an open that started in the activity.
+     */
+    static volatile long answerBy;
+
+    /** The least the first page gets after a check that used most of the limit: an Ovis that answered is given time to send its page. */
+    static final long PAGE_FLOOR_MS = 5000;
 
     /** Redirects in a row that made another origin the PC (MainActivity), so two servers that redirect to each other stop. */
     static volatile int redirects;
@@ -192,14 +202,30 @@ final class PCStore {
     }
 
     /** Puts the PC `key` first in the saved PCs: a page of it has loaded, so an address that never answered is not kept. */
-    static void remember(Context context, String key) {
+    static synchronized void remember(Context context, String key) {
         List<String> list = saved(context);
         list.remove(key);
         list.add(0, key);
         setSaved(context, list);
     }
 
-    static void forget(Context context, String key) {
+    /** Counts forgets, and when each PC was forgotten last, so a check that began before a forget does not save that PC again. */
+    private static long forgets;
+    private static final Map<String, Long> forgottenAt = new java.util.HashMap<>();
+
+    /** The forget count now, for rememberUnlessForgotten. */
+    static synchronized long forgetCount() {
+        return forgets;
+    }
+
+    /** remember, unless the PC `key` was forgotten after the count `since` (forgetCount) was taken. */
+    static synchronized void rememberUnlessForgotten(Context context, String key, long since) {
+        Long at = forgottenAt.get(key);
+        if (at == null || at <= since) remember(context, key);
+    }
+
+    static synchronized void forget(Context context, String key) {
+        forgottenAt.put(key, ++forgets);
         List<String> list = saved(context);
         list.remove(key);
         setSaved(context, list);
@@ -469,14 +495,18 @@ final class PCStore {
     }
 
     /** Why no answer came: the connection refused, no answer before the deadline, a name not found, or anything else. */
-    private static String failureKind(IOException failed, long deadline) {
+    static String failureKind(IOException failed, long deadline) {
         if (failed instanceof java.net.UnknownHostException) return "unknown-host";
         if (failed instanceof java.net.SocketTimeoutException || System.nanoTime() >= deadline) return "timeout";
         // a connection that fails before the timeout was refused: Android's HttpURLConnection says only
-        // "Failed to connect to /host:port", with no cause; a route that does not exist says so
-        String message = String.valueOf(failed.getMessage());
-        if (failed instanceof java.net.ConnectException && !message.contains("UNREACH") && !message.contains("No route")) return "refused";
-        return "no-answer";
+        // "Failed to connect to /host:port", with no cause; a host or network that cannot be reached (a
+        // PC that is off) says so here or in a cause
+        if (!(failed instanceof java.net.ConnectException)) return "no-answer";
+        for (Throwable cause = failed; cause != null; cause = cause.getCause()) {
+            String message = String.valueOf(cause.getMessage());
+            if (cause instanceof java.net.NoRouteToHostException || message.contains("UNREACH") || message.contains("No route")) return "no-answer";
+        }
+        return "refused";
     }
 
     private static final class Answer {

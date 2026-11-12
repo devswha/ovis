@@ -344,10 +344,12 @@ public class MainActivity extends BridgeActivity {
         checked = true;
         String cookies = CookieManager.getInstance().getCookie(url);
         android.content.Context app = getApplicationContext();
+        long since = PCStore.forgetCount();
         new Thread(() -> {
             PCStore.Check found = PCStore.check(url, cookies, PCStore.ANSWER_SECONDS * 1000L);
             if (!found.kind.equals("not-ovis")) {
-                PCStore.remember(app, pc);
+                // the check may outlive this activity: a PC forgotten meanwhile stays forgotten
+                PCStore.rememberUnlessForgotten(app, pc, since);
                 return;
             }
             runOnUiThread(() -> {
@@ -412,7 +414,19 @@ public class MainActivity extends BridgeActivity {
             PCStore.fail(host + " did not answer within " + PCStore.ANSWER_SECONDS + " seconds.", "timeout");
             bridge.getWebView().stopLoading();
             bridge.getWebView().loadUrl(bridge.getErrorUrl());
-        }, PCStore.ANSWER_SECONDS * 1000L);
+        }, answerDelay());
+    }
+
+    /**
+     * How long the cover waits: what is left of the limit the connect screen's check started
+     * (PCStore.answerBy), at least PAGE_FLOOR_MS, or ANSWER_SECONDS for an open that started here (a
+     * saved PC at launch, Try again, a redirect to Ovis). The limit is taken once.
+     */
+    private static long answerDelay() {
+        long by = PCStore.answerBy;
+        PCStore.answerBy = 0;
+        if (by == 0) return PCStore.ANSWER_SECONDS * 1000L;
+        return Math.max(PCStore.PAGE_FLOOR_MS, by - android.os.SystemClock.elapsedRealtime());
     }
 
     private void hideOpening() {
@@ -539,7 +553,8 @@ public class MainActivity extends BridgeActivity {
             String ovis = tooMany ? null : PCStore.ovisOrigin(target, PCStore.PROBE_BUDGET_MS, path);
             String insecure = tooMany ? null : PCStore.refusedHop(from, target, ovis, path);
             runOnUiThread(() -> {
-                if (isFinishing() || isDestroyed()) return;
+                // after the time limit the error page has the screen: a late answer changes nothing
+                if (isFinishing() || isDestroyed() || gaveUp) return;
                 if (tooMany) {
                     PCStore.fail("Too many redirects", null);
                     bridge.getWebView().loadUrl(bridge.getErrorUrl());

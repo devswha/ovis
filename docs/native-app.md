@@ -393,7 +393,8 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   Opening or leaving a PC starts the activity again, so the next page is a first load and the
   old WebView goes with the old activity.
 - Until the PC answers, a native cover over the WebView says which PC is opening and offers
-  Change PC, as on iOS. After 20 seconds (`PCStore.ANSWER_SECONDS`) the app stops the load and
+  Change PC, as on iOS. After 20 seconds (`PCStore.ANSWER_SECONDS`, counted from Open on the connect
+  screen when it checked the address first, with at least 5 s left for the page) the app stops the load and
   shows `error.html`, which says the PC did not answer and that a home network address does not
   open over mobile data or another Wi-Fi; Chromium alone waits about two minutes. The first page
   of a PC saved by its origin is checked once more (`PCStore.check`, with the WebView's cookies):
