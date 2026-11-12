@@ -2075,7 +2075,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the new turn yet). The server gives each pane's read at most 400 ms of the request's 1.5 s and
   leaves a slower pane out, reading on; a later request for that pane waits on the read still
   running while it is younger than 1.5 s, and starts a new one in place of an older one. A pane
-  the answer left out, or a request that failed, is asked again up to three times, the first pane
+  with nothing said or no conversation to read answers null, which the row keeps for its state; a
+  pane whose read failed for now (a read still pending, a busy disk, herdr not answering) is left
+  out like a slow one. A pane the answer left out, or a request that failed, is asked again up to three times, the first pane
   an answer left out behind the others, and an answer whose fields have the wrong type counts as
   none. A PC whose server has no such route shows its rows without them until it goes away and
   comes back. A pane once opened stays mounted under the list, hidden (`visibility: hidden`,

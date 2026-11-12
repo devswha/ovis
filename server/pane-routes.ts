@@ -33,7 +33,7 @@ const conversationDiagnostics = new ConversationDiagnostics();
  * is younger than PANE_SUMMARY_DEADLINE_MS; an older one, begun perhaps under another state of the pane, is left to
  * finish by itself and a new read takes its place.
  */
-const summaryReads = new Map<string, { read: Promise<PaneSummary | null>; startedAt: number }>();
+const summaryReads = new Map<string, { read: Promise<PaneSummary | null | undefined>; startedAt: number }>();
 
 /** The agents whose chat herdr's integration alone binds, by the session it reports (opencode.ts, grok-store.ts). */
 const INTEGRATION_BOUND = new Set(["opencode", "grok"]);
@@ -363,18 +363,19 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     if (request.signal.aborted) leave(); else request.signal.addEventListener("abort", leave, { once: true });
     // one pane after another, each given at most PANE_SUMMARY_PANE_MS of what is left: a pane read no faster is left out
     // (its read goes on, for a request soon after to take up) and the next pane read, until the request's time is used up;
-    // a pane that cannot be read is null, never the list's failure
+    // a pane with no conversation to read is null; one whose read failed for now (undefined) is left out, for the client
+    // to ask again; neither is the list's failure
     try {
       for (const paneId of paneIds) {
         const left = deadline - Date.now();
         if (left <= 0 || request.signal.aborted) break;
         const running = summaryReads.get(paneId);
-        let read: Promise<PaneSummary | null>;
+        let read: Promise<PaneSummary | null | undefined>;
         if (running !== undefined && Date.now() - running.startedAt < PANE_SUMMARY_DEADLINE_MS) read = running.read;
         else {
-          const entry: { read: Promise<PaneSummary | null>; startedAt: number } = {
+          const entry: { read: Promise<PaneSummary | null | undefined>; startedAt: number } = {
             read: paneConversation(paneId, options.codexHome, { prompts: 1 }, options.devinDbPath, options.opencodeDb, options.hermesHome, options.grokHome, options.museData)
-              .then((conversation) => summaryOf(conversation.turns), () => null)
+              .then((conversation) => summaryOf(conversation.turns), (error: unknown) => error instanceof ConversationUnavailable ? null : undefined)
               // a read replaced by a newer one leaves its successor in place
               .finally(() => { if (summaryReads.get(paneId) === entry) summaryReads.delete(paneId); }),
             startedAt: Date.now(),
@@ -387,7 +388,7 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
         const summary = await Promise.race([read, late, gone]);
         clearTimeout(timer);
         if (summary === "gone") break;
-        if (summary === "late") continue;
+        if (summary === "late" || summary === undefined) continue;
         summaries[paneId] = summary;
       }
     } finally {

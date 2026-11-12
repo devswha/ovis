@@ -34,7 +34,11 @@ export interface PaneSummary {
 export interface PaneSummaries {
   /** the server's clock when it answered, so a client can tell its own offset */
   server_time: string;
-  /** by pane id; null for a pane with nothing said or no readable conversation; a pane left out was not read this time */
+  /**
+   * by pane id; null for a pane with nothing said or no conversation to read (the chat's scrollback fallback), a final
+   * answer for its state; a pane left out was not read this time (no time left for it, or its read failed for now) and
+   * may be asked again
+   */
   summaries: Record<string, PaneSummary | null>;
 }
 

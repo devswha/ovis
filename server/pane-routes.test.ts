@@ -4,7 +4,8 @@ import { closeSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { commandScansSettled, paneCommands, scanPaneCommands, setCommandsWait } from "./commands.ts";
-import { filePoolSize, setFilePoolOptions } from "./file-pool.ts";
+import { FileBusyError, filePoolSize, setFilePoolOptions } from "./file-pool.ts";
+import { HerdrError } from "./herdr/client.ts";
 import { HERMES_ECHO_RE } from "./dialogs/hermes.ts";
 import { registry } from "./dialogs/registry.ts";
 import { findLastIndex } from "./dialogs/shared.ts";
@@ -685,15 +686,31 @@ it("answers each pane's last words once, reading one prompt of each", async () =
   } finally { read.mockRestore(); }
 });
 
-it("gives null for a pane it cannot read, beside the panes it can", async () => {
+it("gives null for a pane with no conversation to read, beside the panes it can", async () => {
   const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
-    if (paneId === "gone") throw new Error("pane_not_found");
     if (paneId === "shell") throw new conversation.ConversationUnavailable("no_session_path");
+    if (paneId === "fresh") throw new conversation.ConversationNotStarted("s1");
     return said("fine", "2026-11-12T10:00:00Z");
   });
   try {
-    const body = await (await askSummary(["gone", "w:p1", "shell"]))!.json() as PaneSummaries;
-    expect(body.summaries).toEqual({ gone: null, "w:p1": { role: "user", text: "fine", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" }, shell: null });
+    const body = await (await askSummary(["shell", "w:p1", "fresh"]))!.json() as PaneSummaries;
+    expect(body.summaries).toEqual({ shell: null, "w:p1": { role: "user", text: "fine", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" }, fresh: null });
+  } finally { read.mockRestore(); }
+});
+
+it("leaves out a pane whose read failed for now, beside the panes it can, and reads it anew for the next request", async () => {
+  const read = spyOn(conversation, "paneConversation").mockImplementation(async (paneId) => {
+    if (paneId === "pending") throw new conversation.ConversationReadPending();
+    if (paneId === "busy") throw new FileBusyError("every file thread is busy");
+    if (paneId === "herdr") throw new HerdrError("timeout", "herdr did not answer");
+    if (paneId === "changed") throw new conversation.HistoryChanged();
+    return said("fine", "2026-11-12T10:00:00Z");
+  });
+  try {
+    const body = await (await askSummary(["pending", "busy", "w:p1", "herdr", "changed"]))!.json() as PaneSummaries;
+    expect(body.summaries).toEqual({ "w:p1": { role: "user", text: "fine", at: "2026-11-12T10:00:00Z", asked_at: "2026-11-12T10:00:00Z" } });
+    await askSummary(["pending"]);
+    expect(read.mock.calls.filter((call) => call[0] === "pending")).toHaveLength(2);
   } finally { read.mockRestore(); }
 });
 
