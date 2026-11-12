@@ -335,6 +335,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // the window the chat's ring takes for a Claude session (conversation.ts)
     claudeWindow: (path, model) => readStatuslineContext(userHome(), basename(path, ".jsonl"), model, path),
   });
+  /** how long a Codex finish waits for its rollout to be read, and how soon a failed look is tried again */
+  const CODEX_LOOK_MS = 1000;
+  const CODEX_RETRY_MS = 2000;
   /** Codex panes whose last turn ended in an error, until the next one starts (codexRest) */
   const codexFailed = new Set<string>();
   /**
@@ -343,7 +346,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * a new turn overtook keeps nothing
    */
   const codexLooked = new Map<string, { path: string; size: number } | null>();
-  const codexLooking = new Set<string>();
+  const codexLooking = new Map<string, Promise<void>>();
+  /** when a Codex pane whose rollout look failed may be looked at again */
+  const codexRetryAt = new Map<string, number>();
   const codexTurns = new Map<string, number>();
   /** snapshot reads begun, and the count when each pane's failure was found: a read begun before it tells no new turn */
   let codexReads = 0;
@@ -357,6 +362,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     codexFailed.delete(paneId);
     codexFailedAt.delete(paneId);
     codexLooked.delete(paneId);
+    codexRetryAt.delete(paneId);
     if (began) codexTurns.set(paneId, (codexTurns.get(paneId) ?? 0) + 1);
   };
   /** herdr calls such a pane's rest DONE as it calls any finish it did not see: it is at rest, and READY */
@@ -381,7 +387,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (pane.agent !== "codex") continue;
       // reads overlap: one begun before a failure was found is no turn after it
       if (pane.agent_status === "working") { if ((codexFailedAt.get(pane.pane_id) ?? -1) < codexRead) codexWorking(pane.pane_id, true); }
-      else if (pane.agent_status === "done" && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) codexRest(pane.pane_id, snapshot);
+      else if (pane.agent_status === "done" && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) void codexRest(pane.pane_id, snapshot);
     }
     const named = codexRests(letta.apply(gjc.apply(omo.apply(snapshot))));
     // reads overlap (the collector's, each client's): only one newer than every read applied before tells title turns
@@ -668,8 +674,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       if (claudeAgents.loopTold(paneId) !== resumed) tellQueue(paneId);
       waits.status(paneId, status);
     } else waits.forget(paneId);
-    broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));
-    push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+    const tell = (): void => {
+      broadcastAll(paneStatus(paneId, status, tracker !== null ? { background_tasks: tracker.countOf(paneId) } : {}));
+      push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+    };
+    // a Codex turn this server saw run is told DONE only once its rollout is read (codexRest), or CODEX_LOOK_MS on: a
+    // turn that ended in an error is told at rest instead, and no browser plays a finish for it first
+    if (agent === "codex" && status === "done" && !omo.runs(paneId) && !gjc.runs(paneId) && (codexTurns.get(paneId) ?? 0) > 0) {
+      void Promise.race([codexRest(paneId), new Promise<void>((resolve) => setTimeout(resolve, CODEX_LOOK_MS))])
+        .then(() => { if (completions.current(paneId) === status) tell(); });
+    } else tell();
     // an OpenCode turn whose session is not known yet: its pane is looked up now, not at the next snapshot, so a
     // turn that ended on its subagents is held while the finish alert still waits (and is called off)
     if (tracker === opencodeAgents && opencodeAgents.sessionOf(paneId)?.live !== true) {
@@ -678,8 +692,6 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
     // so is an agy or grok one, or one whose session was looked up a while ago: the agent may have restarted there
     if (tracker === taskAgents && taskAgents.stale(paneId)) void paneGet(paneId).then((pane) => taskAgents.track(pane)).catch(() => undefined);
-    // a turn that ended in an error reads DONE only until the rollout says so; once it reads READY, nothing is told again
-    if (agent === "codex" && status === "done" && !omo.runs(paneId) && !gjc.runs(paneId)) codexRest(paneId);
   }
 
   /**
@@ -687,23 +699,29 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * refused request), which is at rest, not finished (#687's rule, on Codex's own record). The rollout is looked at again
    * only once it grew; a rollout not read, or its end not written yet, leaves herdr's word.
    */
-  function codexRest(paneId: string, snapshot?: SessionSnapshot): void {
+  function codexRest(paneId: string, snapshot?: SessionSnapshot): Promise<void> {
     const known = codexLooked.get(paneId);
     const turn = codexTurns.get(paneId) ?? 0;
-    // a pane already at a failed rest is looked at again only once its rollout grew (a retry's end written late)
-    if (turn === 0 || codexLooking.has(paneId) || known === null) return;
-    codexLooking.add(paneId);
+    // a pane already at a failed rest is looked at again only once its rollout grew (a retry's end written late);
+    // a look that failed (herdr or the store not answering) is tried again, not more often than CODEX_RETRY_MS
+    if (turn === 0 || known === null || (codexRetryAt.get(paneId) ?? 0) > Date.now()) return Promise.resolve();
+    const looking = codexLooking.get(paneId);
+    if (looking !== undefined) return looking;
     const look = (found: { path: string; size: number } | null): void => { if ((codexTurns.get(paneId) ?? 0) === turn) codexLooked.set(paneId, found); };
-    void (async () => {
+    const retry = (): null => { codexRetryAt.set(paneId, Date.now() + CODEX_RETRY_MS); return null; };
+    const done = (async () => {
       let path = known?.path;
       let size = path === undefined ? -1 : await stat(path).then((file) => file.size, () => -1);
       if (size < 0) {
-        const transcript = await paneTranscript(paneId, options.codexHome, snapshot).catch(() => null);
-        if (transcript?.source !== "codex-transcript") { look(null); return null; }
+        const transcript = await paneTranscript(paneId, options.codexHome, snapshot).catch(() => undefined);
+        if (transcript === undefined) return retry();
+        // no Codex rollout for this pane at all: none is looked for again until it works
+        if (transcript.source !== "codex-transcript") { look(null); return null; }
         path = transcript.path;
         size = await stat(path).then((file) => file.size, () => -1);
-        if (size < 0) { look(null); return null; }
+        if (size < 0) return retry();
       } else if (known!.size === size) return null;
+      codexRetryAt.delete(paneId);
       const failed = await codexLastTurnFailed(path!);
       look({ path: path!, size });
       return (codexTurns.get(paneId) ?? 0) === turn ? failed : null;
@@ -723,6 +741,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       push.onStatus(paneId, status).catch(logPushError);
       push.onFailed(paneId).catch(logPushError);
     }, () => undefined).finally(() => codexLooking.delete(paneId));
+    codexLooking.set(paneId, done);
+    return done;
   }
 
   // Process proof belongs to this exact snapshot, so the collector's newer-event guards

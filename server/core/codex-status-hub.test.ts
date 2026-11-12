@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as codex from "../codex.ts";
@@ -31,22 +31,27 @@ function codexHub(text: string) {
     await new Promise<void>((resolve) => setImmediate(resolve));
   };
   const restore = () => { lookups.mockRestore(); read.mockRestore(); };
-  return { ...h, lookups, read, failures, looked, restore };
+  /** the lookup a status event set off has answered, and what it found is told */
+  const settled = async () => {
+    await (lookups.mock.results.at(-1)?.value as Promise<unknown> | undefined)?.catch(() => undefined);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  return { ...h, lookups, read, failures, looked, settled, restore };
 }
 
 describe("a Codex pane whose turn ended in an error", () => {
-  it("reads at rest, calls the finish off and tells the failure once, for a turn this server saw run", async () => {
+  it("reads at rest and tells the failure once, never DONE first, for a turn this server saw run", async () => {
     const h = codexHub(failed);
     try {
       h.herdrSays(pane("working"));
       handlers.onStatus("w1:p1", "working", "codex");
       h.herdrSays(pane("idle"));
       handlers.onStatus("w1:p1", "idle", "codex");
-      expect(h.last().status).toBe("done");
+      // no finish is told while the rollout is read: a browser would play its sound for it
+      expect(h.last().status).toBe("working");
       await h.looked();
       expect(h.last().status).toBe("idle");
-      // the finish alert told first is followed by the rest that calls it off, and the failure alert
-      expect(h.alerts).toEqual(["working", "done", "idle"]);
+      expect(h.alerts).toEqual(["working", "idle"]);
       expect(h.failures).toEqual(["w1:p1"]);
       // herdr's own DONE for the pane, in a snapshot or an event, changes nothing and tells nothing again
       h.herdrSays(pane("done"));
@@ -99,6 +104,27 @@ describe("a Codex pane whose turn ended in an error", () => {
       expect(h.last().status).toBe("done");
       expect(h.failures).toEqual([]);
     } finally { h.restore(); }
+  });
+
+  it("looks again at a rollout a look could not find, a while later", async () => {
+    const h = codexHub(failed);
+    try {
+      h.lookups.mockRejectedValueOnce(new Error("herdr did not answer"));
+      handlers.onStatus("w1:p1", "working", "codex");
+      handlers.onStatus("w1:p1", "done", "codex");
+      await h.settled();
+      expect(h.read).not.toHaveBeenCalled();
+      // too soon: not again
+      h.herdrSays(pane("done"));
+      await h.snapshot();
+      expect(h.lookups).toHaveBeenCalledTimes(1);
+      setSystemTime(new Date(Date.now() + 2_001));
+      await h.snapshot();
+      await h.looked();
+      expect(h.lookups).toHaveBeenCalledTimes(2);
+      expect(h.last().status).toBe("idle");
+      expect(h.failures).toEqual(["w1:p1"]);
+    } finally { setSystemTime(); h.restore(); }
   });
 
   it("finishes a turn that answered", async () => {
