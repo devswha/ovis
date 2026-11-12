@@ -279,7 +279,7 @@ export function App() {
   // a diff's line notes go to its own pane: none while this window only watches that pane
   const diffPaneObserving = usePaneObserving(diffViewing?.paneId ? paneStorageId(diffViewing.machineId, diffViewing.paneId) : null);
   const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, setSettingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
-  const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory, worktreeFor, setWorktreeFor } = useNewSessionState({ initialLink, watching: auth?.role === "watch" });
+  const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newSessionPending, newTab, setNewTab, sessionHistory, setSessionHistory, worktreeFor, setWorktreeFor } = useNewSessionState({ initialLink, watching: auth?.role === "watch" });
   const { connected, setConnected, connectedBefore, setConnectedBefore, paneLost, outputStopped, setOutputStopped, reportedBy, setReportedBy } = useConnectionChip();
   const { notifications, setNotifications, pushOn, setPushOn, pushOnRef } = useNotificationState();
   // the shared settings and pins, the same in every browser of this server, once the app is in
@@ -481,8 +481,9 @@ export function App() {
   const { splitOn, others, shownSlots, rects, follows, activateSlot, closeSlot, selectInSlot, dockSide, splitDragOn, paneDragOver, paneDragLeave, paneDrop, dividers, resizeDivider, gridPreview } = useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, gridDrop, gridDropRef, clearDropPreview, tabDrag, showGridDrop, hideDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, markMove, swapPanes, movePanes, followPaneMove, arrangeRefused: (machineId) => !appLayoutOn(machineId).arrange });
 
   // the New workspace dialog over a phone's list is a sheet: Back closes it onto the list instead of
-  // leaving the app. Its entry is made before the address bar writes the dialog's address over it
-  usePhoneSheetBack(() => closeNewSession(), newSessionOpen && inbox.shown);
+  // leaving the app. Its entry is made before the address bar writes the dialog's address over it.
+  // While its create is in flight Back refuses, as the dialog's own ways out do: what comes of it lands in the dialog
+  usePhoneSheetBack(() => { if (newSessionPending.current) return false; closeNewSession(); }, newSessionOpen && inbox.shown);
   useAddressBar({ inbox, newSessionOpen, newSessionMachineId, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, setHeaderNote, selectionRef });
 
 
@@ -1330,6 +1331,7 @@ export function App() {
         prefill={newPrefill}
         onDraft={setNewFields}
         onClose={closeNewSession}
+        onPending={(pending) => { newSessionPending.current = pending; }}
         onOpenPane={(paneId) => { closeNewSession(); selectTarget(newSessionMachineId, paneId, "terminal"); void load(); }}
         watching={auth?.role === "watch"}
         groupKept={(groupOf) => liveGroupKeys(groupOf, machines, hiddenMachines)}
