@@ -215,3 +215,18 @@ test.each([
     expect(await card()).toBeNull();
   });
 });
+
+// Copilot 1.0.109 draws its numbered menus in a box (`│ ❯ 1. Yes │`): read through the box, each row is an option
+// answered by its number, as Copilot takes it (answered live: "1" ran the command)
+test.each([
+  ["copilot-1.0.109-run-command", "Do you want to run this command?", ["Yes", "No, and tell Copilot what to do differently (Esc to stop)"]],
+  ["copilot-1.0.109-trust-logo-a", "Do you trust the files in this folder?", ["Yes", "Yes, and remember this folder for future sessions", "No (Esc)"]],
+])("offers each row of Copilot's boxed menu (%s)", async (name, question, rows) => {
+  await withPane("copilot", "blocked", recorded(name), async (pane) => {
+    const prompt = (await card())!;
+    expect(prompt.question).toBe(question);
+    expect(labels(prompt)).toEqual([...rows, "Enter", "Esc"]);
+    expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+    expect(pane.sent).toEqual(["text:1"]);
+  });
+});

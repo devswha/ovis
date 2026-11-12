@@ -121,7 +121,7 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
   const steady = steadyReader(agent, shown.map((index) => cleanLine(lines[index]!)));
   // GJC's exact selector first: a label of its that starts with a number is still moved to, never typed
   const selectionMenu = fallbackGjcSelectionMenu(agent, lines, shown);
-  const menu = selectionMenu ? null : fallbackMenu(lines, shown);
+  const menu = selectionMenu ? null : fallbackMenu(lines.map(unboxed), shown);
   if (menu) {
     const above = shown.filter((index) => index < menu.start).map((index) => cleanLine(lines[index]!));
     const question = [...above].reverse().find((line) => ASKED_RE.test(line)) ?? above.at(-1);
@@ -352,6 +352,19 @@ export function agentPickerOwnsScreen(screen: string): boolean {
   if (hint < 0) return false;
   const end = shown.length - 2 + hint;
   return shown.slice(Math.max(0, end - 8), end).some((line) => PICKER_CURSOR_ROW_RE.test(line));
+}
+
+/**
+ * A line with the side borders of the boxes it is drawn in taken off, the indentation inside kept ("│   2. No  │" is
+ * "  2. No"): a numbered menu Copilot draws in a box (its folder trust, its command and edit approvals) reads as the
+ * same menu drawn bare, its rows' numbers and the lines they wrap onto where they are.
+ */
+function unboxed(line: string): string {
+  for (let inner = line; ;) {
+    const box = inner.match(/^(\s*)│ ?(.*?)\s*│\s*$/);
+    if (!box) return inner;
+    inner = `${box[1]}${box[2]}`;
+  }
 }
 
 /** The same framed question must still own the inline Other editor before any text is sent. */
