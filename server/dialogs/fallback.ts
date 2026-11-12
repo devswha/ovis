@@ -76,7 +76,8 @@ const OMP_STATUS_ROW_RE = /^((?:[\ue0b0-\ue0d4] |╭─+ )?)(?:[⠋⠙⠹⠸⠼�
  * "Deleting production…".
  */
 function steadyReader(agent: string, shown: string[]): SteadyReader {
-  const pattern = agent === "claude" ? WORKING_LINE_RE : agent === "omp" ? OMP_STATUS_ROW_RE : null;
+  const waiting = WAITING_LINES[agent];
+  const pattern = agent === "claude" ? WORKING_LINE_RE : agent === "omp" ? OMP_STATUS_ROW_RE : waiting?.pattern ?? null;
   // omp draws its status row last, under the panel: a status-shaped line anywhere else is read as written, and a
   // row whose exact text another shown line also has is not blanked at all, as `read` goes by the text (#3412)
   const last = shown.at(-1);
@@ -89,9 +90,22 @@ function steadyReader(agent: string, shown: string[]): SteadyReader {
   const steady = agent === "omp"
     // the spinner and the elapsed time, or the resting π, are omp's ticking part; the model, folder and context stay (#3412)
     ? line.replace(OMP_STATUS_ROW_RE, (_all, lead: string, braille: string | undefined, gauged: string | undefined) => `${lead}<status>${braille ?? gauged}`)
+    : waiting ? line.replace(waiting.pattern, waiting.steady)
     : line.replace(WORKING_LINE_RE, (_all, doing: string, hint: string | undefined) => `* ${doing} (<time> · <tokens>${hint ?? ""})`);
   return { read: (other) => other === line ? steady : other, working: at };
 }
+
+/**
+ * The line other agents with no reader redraw every second while a prompt of theirs waits, to the letter, and what
+ * it reads as in the id: the time and the token count blanked, every word kept ("Waiting on answers for <the
+ * question>"). Like Claude's working line it is blanked only when exactly one shown line has the shape.
+ * Copilot 1.0.109's running tool row: "○ Asking user Waiting for response      36s".
+ * Grok 1.0.77's waiting row: "◆ Waiting on answers for Option A or option B?      7.4s ⇣21.5k [stop]".
+ */
+const WAITING_LINES: Readonly<Record<string, { pattern: RegExp; steady: string }>> = {
+  copilot: { pattern: /^(○ \S(?:.*\S)?) {2,}(?:\d+h )?(?:\d+m )?\d+s$/u, steady: "$1 <time>" },
+  grok: { pattern: /^(◆ Waiting on answers for \S(?:.*\S)?) {2,}(?:\d+m )?\d+(?:\.\d+)?s [⇣↓][\d.]+[kKmM]? \[stop\]$/u, steady: "$1 <time> <tokens> [stop]" },
+};
 
 interface SteadyReader {
   read(line: string): string;
@@ -201,7 +215,23 @@ export function parseFallbackPrompt(agent: string, screen: string): InteractiveP
 
 /** A fallback card's question and body as its id reads them: with the working line's ticking parts blanked. */
 function steadyFields(question: string | undefined, body: string | null, steady: (line: string) => string): Partial<Pick<InteractivePrompt, "question" | "body">> {
-  return { ...(question === undefined ? {} : { question: steady(question) }), body: body === null ? null : body.split("\n").map(steady).join("\n") };
+  return { ...(question === undefined ? {} : { question: steady(question) }), body: body === null ? null : body.split("\n").map((line) => tickless(steady(line))).join("\n") };
+}
+
+/**
+ * A run of drawing glyphs: box drawing, block elements and braille, with the spaces between them. They draw borders,
+ * logos, scroll bars and spinners, and say nothing of what a prompt asks or offers, yet some agents animate them
+ * while the prompt stands (Copilot's logo, Grok's scroll bar thumb, braille spinners).
+ */
+const DRAWING_RUN_RE = /[\u2500-\u259f\u2800-\u28ff](?:[\u2500-\u259f\u2800-\u28ff ]*[\u2500-\u259f\u2800-\u28ff])?/g;
+
+/**
+ * A line as a fallback card's id reads it, apart from its question: each run of drawing glyphs is one mark, whatever
+ * frame of an animation it shows. Every word and number stays, so a changed command, file, path, time or option is
+ * still another card.
+ */
+function tickless(line: string): string {
+  return line.replace(DRAWING_RUN_RE, "▒");
 }
 
 const gjcMenuIdentities = new WeakMap<ParsedPrompt, string>();
@@ -219,7 +249,9 @@ function screenCard(lines: string[], shown: number[], steady: SteadyReader, pars
   const screen = parsed.agent === "cmd" ? lines.join("\n") : shown.map((index) => {
     const line = cleanLine(lines[index]!);
     // GJC moves its cursor within the same menu; the selectedIndex is checked separately on reread.
-    return steady.read(cursorRows?.has(index) ? line.replace(GJC_SELECTED_RE, "") : line);
+    const read = steady.read(cursorRows?.has(index) ? line.replace(GJC_SELECTED_RE, "") : line);
+    // the question is kept as it is asked; every other line without what ticks (tickless)
+    return read === parsed.question ? read : tickless(read);
   }).join("\n");
   parsed.id = createHash("sha256").update(JSON.stringify({ card: parsed.id, screen, ...(steady.working === null ? {} : { working: steady.working }) })).digest("hex").slice(0, 12);
   return publicPrompt(parsed);
