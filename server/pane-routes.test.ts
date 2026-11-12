@@ -20,6 +20,7 @@ let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
 let panes: Record<string, { agent?: string; session?: string; cwd?: string; process: { pid: number; argv: string[]; cwd: string }[] }>;
+let integrations: { target: string; label: string; command: string; available: boolean; state: string }[] = [];
 
 const paneInfo = (id: string) => ({
   pane_id: id, workspace_id: "w", tab_id: "w:t1", terminal_id: id, cwd: panes[id]?.cwd ?? root, focused: false, revision: 0,
@@ -30,6 +31,7 @@ const paneInfo = (id: string) => ({
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ovis-pane-routes-"));
   panes = {};
+  integrations = [];
   socketBefore = process.env["HERDR_SOCKET"];
   const socket = join(root, "herdr.sock");
   process.env["HERDR_SOCKET"] = socket;
@@ -47,6 +49,7 @@ beforeEach(() => {
           : request.method === "session.snapshot" ? { snapshot: { panes: Object.keys(panes).map(paneInfo), agents: [] } }
           // an agent with no session yet (a Claude pane's commands route asks which transcript it writes)
           : request.method === "agent.get" ? { agent: {} }
+          : request.method === "integration.list" ? { integrations }
           : null;
         if (result === null) throw new Error(`unexpected RPC ${request.method}`);
         socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
@@ -81,7 +84,7 @@ it("diagnoses fallback and recovery without changing the conversation or 304 res
   try {
     const fallback = (await ask())!;
     expect(fallback.status).toBe(200);
-    expect(await fallback.json()).toEqual({ source: "scrollback", turns: [] });
+    expect(await fallback.json()).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
     const recovered = (await ask({ "if-none-match": 'W/"fixture"' }))!;
     expect(recovered.status).toBe(304);
     expect(recovered.headers.get("etag")).toBe('W/"fixture"');
@@ -125,13 +128,13 @@ it("asks a chat showing a history to wait only when Copilot's rejection may be w
   };
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   try {
-    expect(await ask("copilot_log_truncated", true)).toEqual({ source: "scrollback", turns: [], recovery: "waiting" });
-    expect(await ask("copilot_log_truncated", false)).toEqual({ source: "scrollback", turns: [] });
-    expect(await ask("copilot_session_unregistered", true)).toEqual({ source: "scrollback", turns: [] });
+    expect(await ask("copilot_log_truncated", true)).toEqual({ source: "scrollback", turns: [], recovery: "waiting", unavailable: "not_found" });
+    expect(await ask("copilot_log_truncated", false)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+    expect(await ask("copilot_session_unregistered", true)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
     // a --ui-server API that timed out may answer later; one that names no or another foreground session settled it
-    expect(await ask("copilot_api_rpc_timeout", true)).toEqual({ source: "scrollback", turns: [], recovery: "waiting" });
-    expect(await ask("copilot_api_no_foreground", true)).toEqual({ source: "scrollback", turns: [] });
-    expect(await ask("copilot_api_foreground_changed", true)).toEqual({ source: "scrollback", turns: [] });
+    expect(await ask("copilot_api_rpc_timeout", true)).toEqual({ source: "scrollback", turns: [], recovery: "waiting", unavailable: "not_found" });
+    expect(await ask("copilot_api_no_foreground", true)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+    expect(await ask("copilot_api_foreground_changed", true)).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
   } finally { warn.mockRestore(); }
 });
 
@@ -143,8 +146,54 @@ it("passes on what the user could change for a Copilot pane to be read, beside a
   const warn = spyOn(console, "warn").mockImplementation(() => {});
   try {
     expect(await (await handlePaneRequest(new Request(url), url, "/api/pane/conversation", {}))!.json())
-      .toEqual({ source: "scrollback", turns: [], recovery: "waiting", hint: "copilot_ui_server" });
+      .toEqual({ source: "scrollback", turns: [], recovery: "waiting", hint: "copilot_ui_server", unavailable: "not_found" });
   } finally { read.mockRestore(); warn.mockRestore(); }
+});
+
+it("says why a conversation could not be read, in the few words the chat can explain", async () => {
+  // one pane: a failure episode it keeps open logs once, and leaves the log's budget to the tests after this one
+  const pane = crypto.randomUUID();
+  const ask = async (error: conversation.ConversationUnavailable) => {
+    const url = new URL(`http://x/api/pane/conversation?pane_id=${pane}`);
+    const read = spyOn(conversation, "paneConversation").mockRejectedValue(error);
+    try { return await (await handlePaneRequest(new Request(url), url, "/api/pane/conversation", {}))!.json(); }
+    finally { read.mockRestore(); }
+  };
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const { ConversationUnavailable: Unavailable } = conversation;
+    expect(await ask(new Unavailable("no_session_id"))).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+    expect(await ask(new Unavailable("no_session_path"))).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+    expect(await ask(new Unavailable("transcript_missing"))).toEqual({ source: "scrollback", turns: [], unavailable: "missing" });
+    expect(await ask(new Unavailable("transcript_unreadable"))).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
+    expect(await ask(new Unavailable("branch_unreadable"))).toEqual({ source: "scrollback", turns: [], unavailable: "unreadable" });
+    expect(await ask(new Unavailable("no_recognized_transcript", undefined, "agent_cwd_missing"))).toEqual({ source: "scrollback", turns: [], unavailable: "no_folder" });
+    // a plain shell's scrollback is its expected view, and an agent with no reader reads the same: the chat tells them apart by the pane's agent
+    expect(await ask(new Unavailable("no_recognized_transcript"))).toEqual({ source: "scrollback", turns: [], unavailable: "no_reader" });
+    // a reason the chat has no words for says nothing rather than something wrong
+    expect(await ask(new Unavailable("pane_not_found"))).toEqual({ source: "scrollback", turns: [] });
+    expect(await ask(new Unavailable("dsh_transcript_unavailable"))).toEqual({ source: "scrollback", turns: [] });
+  } finally { warn.mockRestore(); }
+});
+
+it("names herdr's missing integration as the reason an OpenCode or Grok pane has no conversation", async () => {
+  const ask = async (paneId: string) => {
+    const url = new URL(`http://x/api/pane/conversation?pane_id=${paneId}`);
+    const read = spyOn(conversation, "paneConversation").mockRejectedValue(new conversation.ConversationUnavailable("no_session_id"));
+    try { return await (await handlePaneRequest(new Request(url), url, "/api/pane/conversation", {}))!.json(); }
+    finally { read.mockRestore(); }
+  };
+  const integration = (target: string, state: string) => ({ target, label: target, command: target, available: true, state });
+  panes = { opencode: { agent: "opencode", process: [] }, grok: { agent: "grok", process: [] }, claude: { agent: "claude", process: [] } };
+  integrations = [integration("opencode", "not_installed"), integration("grok", "current"), integration("claude", "not_installed")];
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(await ask("opencode")).toEqual({ source: "scrollback", turns: [], unavailable: "no_integration" });
+    // installed: the session is simply not reported yet
+    expect(await ask("grok")).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+    // Claude Code's chat is read from its files, integration or not
+    expect(await ask("claude")).toEqual({ source: "scrollback", turns: [], unavailable: "not_found" });
+  } finally { warn.mockRestore(); }
 });
 
 it("diagnoses pending reads while preserving the retry response", async () => {
