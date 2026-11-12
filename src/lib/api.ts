@@ -1555,12 +1555,21 @@ export async function fetchPanePromptState(paneId: string, machineId = "local"):
  * GET /api/pane/summary: each pane's last words; null, each time it is asked, from a PC whose bridge predates the
  * route (the reader, lib/useInboxSummaries.ts, remembers it). Another PC's answer comes through unchecked.
  */
+/** How long a summary request may take: the PC answers within PANE_SUMMARY_DEADLINE_MS, the rest is the way there and back. */
+export const SUMMARY_REQUEST_MS = 8_000;
+
 export async function fetchPaneSummaries(machineId: string, paneIds: readonly string[]): Promise<PaneSummaries | null> {
   const query = new URLSearchParams(paneIds.map((paneId) => ["pane_id", paneId]));
-  try { return await getJson<PaneSummaries>(machinePath(machineId, `pane/summary?${query.toString()}`)); }
+  // bounded by hand, as fetchAgentCatalog's (AbortSignal.timeout needs Safari 16): a stalled PC fails the request, and
+  // the reader asks again under its own retry rules
+  const bounded = new AbortController();
+  const timer = setTimeout(() => bounded.abort(), SUMMARY_REQUEST_MS);
+  try { return await getJson<PaneSummaries>(machinePath(machineId, `pane/summary?${query.toString()}`), { signal: bounded.signal }); }
   catch (error) {
     if (!routeMissing(error)) throw error;
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

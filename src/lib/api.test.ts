@@ -1,7 +1,7 @@
 import { afterEach, expect, it, jest } from "bun:test";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { NOTICE_VERSION } from "../../shared/telemetry.ts";
-import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, fetchAgentCatalog, fetchAgentKinds, fetchPaneSummaries, fetchTelemetry, movePaneBeside, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, fetchAgentCatalog, fetchAgentKinds, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
 import { movingHerdrFocusOn } from "./followFocus.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "./settings.ts";
 
@@ -158,6 +158,18 @@ it("treats a missing telemetry route as unavailable for reads and an API error f
   const error = await changeTelemetry({ enabled: true }).catch((failure: unknown) => failure);
   expect(error).toBeInstanceOf(ApiError);
   expect(error).toMatchObject({ status: 404, code: "not_found" });
+});
+
+it("gives up a summary request a stalled PC holds after SUMMARY_REQUEST_MS, as a failed request", async () => {
+  jest.useFakeTimers();
+  try {
+    const requests = heldFetch();
+    const answer = fetchPaneSummaries("stalled-pc", ["w1:p1"]).catch((error: unknown) => error);
+    jest.advanceTimersByTime(SUMMARY_REQUEST_MS - 1);
+    expect(requests[0]!.signal.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(await answer).toMatchObject({ name: "AbortError" });
+  } finally { jest.useRealTimers(); }
 });
 
 it("asks a PC for its panes' summaries, and answers null each time a bridge has no summary route", async () => {
