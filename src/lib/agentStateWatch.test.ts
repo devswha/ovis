@@ -172,6 +172,35 @@ describe("the watch the state stamps go by", () => {
     expect(unseen).toEqual([]);
   });
 
+  it("dates nothing at the first roster of a stream that took over from one that had said nothing for long", () => {
+    streams();
+    runs(10 * MIN);
+    // the terminal's socket takes the events over from the event stream, which is stopped with no word of its end
+    stateWatch.subscription("opened");
+    stateWatch.pushed();
+    expect(unseen).toEqual(["undated"]);
+    // from there on it tells as any stream does: what it brings after a quiet while is dated
+    runs(10 * MIN);
+    stateWatch.pushed();
+    expect(unseen).toEqual(["undated"]);
+
+    // it vouched for nothing before its first roster: its end soon after takes nothing back
+    runs(10 * MIN);
+    stateWatch.subscription("opened");
+    stateWatch.pushed();
+    runs(5 * SEC);
+    stateWatch.subscription("lost");
+    expect(unseen).toEqual(["undated", "undated"]);
+
+    // one that takes over from a stream heard from a moment ago finds what the page knew
+    streams();
+    runs(10 * MIN);
+    stateWatch.heard();
+    stateWatch.subscription("opened");
+    stateWatch.pushed();
+    expect(unseen).toEqual(["undated", "undated"]);
+  });
+
   it("keeps what a read left standing once the silent stream has spoken, or has outlived its socket's verdict", () => {
     streams();
     runs(10 * MIN);

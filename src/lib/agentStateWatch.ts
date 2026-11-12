@@ -22,6 +22,8 @@
  * takes the stream's silence at its word for now: it dates no change it finds and keeps the times
  * the page had. If the stream then ends within the time its socket takes to find a dead
  * connection, the page was not being told after all, and that roster is read as after a long gap.
+ * A stream that takes over from another (the terminal's socket from the event stream) stops that
+ * one with no word of its end, so its first roster is read as that read is: it dates nothing.
  *
  * The roster loader tells the watch what it learns (lib/useMachineRoster.ts) and the stamping asks
  * it at each look (lib/useAgentStateSince.ts). A page told of no roster yet has lost nothing.
@@ -72,14 +74,17 @@ function beat(): number {
   return now;
 }
 
-/** The roster as it is now reached the page: a read's answer, or what a stream that vouches pushed. */
-function whole(now: number, by: "read" | "stream"): void {
+/** The roster as it is now reached the page: a read's answer, a stream's own first roster (`opening`), or what a stream that vouches pushed. */
+function whole(now: number, by: "read" | "opening" | "stream"): void {
   const look: UnseenLook | null = knownAt !== null && now - knownAt > BLIND_MS ? "first"
-    // the stream said nothing for as long: nothing changed, or it is dead, which its socket finds out only later (lib/ws.ts)
-    : by === "read" && heardAt !== null && now - heardAt > BLIND_MS ? "undated" : null;
+    // the page held itself told by a stream that said nothing for as long: nothing changed, or it was dead. Of the
+    // stream a read finds silent, its socket finds that out only later (lib/ws.ts). Of one that the stream now
+    // opening took over from, nothing does: it was stopped with no word of its end, or the page would not hold itself told
+    : by !== "stream" && heardAt !== null && now - heardAt > BLIND_MS ? "undated" : null;
   knownAt = now;
   heardAt = now;
-  trustedUntil = look === "undated" ? now + VERDICT_MS : by === "stream" ? null : trustedUntil;
+  // only a stream that is still open can prove dead: the one a read trusted
+  trustedUntil = by !== "read" ? null : look === "undated" ? now + VERDICT_MS : trustedUntil;
   if (look !== null) unseen?.(look);
 }
 
@@ -97,7 +102,7 @@ export const stateWatch = {
     // a stream still open tells of what changes from here on: its socket drops a dead connection by itself
     if (subscribed && stream === "none") stream = "live";
   },
-  /** The roster stream's subscription opened, or ended (`lost`, `closed`). */
+  /** The roster stream's subscription opened, or ended (`lost`, `closed`). One that opens while another is open takes over from it. */
   subscription(update: "opened" | "lost" | "closed"): void {
     const now = beat();
     if (update !== "opened") {
@@ -121,8 +126,9 @@ export const stateWatch = {
   pushed(): void {
     const now = beat();
     if (stream === "none") return;
+    const by = stream === "opening" ? "opening" : "stream";
     stream = "live";
-    whole(now, "stream");
+    whole(now, by);
   },
   /** Whether a look now cannot say when a change began: the page's knowledge was not current a moment ago. */
   blind(): boolean {
