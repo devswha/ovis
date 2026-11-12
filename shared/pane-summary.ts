@@ -27,7 +27,7 @@ export interface PaneSummary {
   text: string;
   /** the turn's `end_ts ?? ts` */
   at: string | null;
-  /** the newest user turn's `ts`; null when the user never wrote */
+  /** the `ts` of the newest turn the user wrote (not one the runtime put in their seat); null when there is none */
   asked_at: string | null;
   /** the words are a request the agent recorded as failed */
   failed?: true;
@@ -111,10 +111,14 @@ function wordsOf(turn: ConversationTurn): Words | undefined {
   return texts[texts.length - 1];
 }
 
+/** parts the agent's runtime puts in the user's seat: a turn holding one is drawn as the runtime's (ChatView.tsx), nobody typed it */
+const RUNTIME_PARTS = new Set<ConversationPart["kind"]>(["compact", "notice", "task_result", "goal_wait"]);
+const userWrote = (turn: ConversationTurn): boolean => turn.role === "user" && !turn.parts.some((part) => RUNTIME_PARTS.has(part.kind));
+
 /** The newest turn's words that has any, or null when no turn has text. */
 export function summaryOf(turns: readonly ConversationTurn[]): PaneSummary | null {
   let newestUser = turns.length - 1;
-  while (newestUser >= 0 && turns[newestUser]!.role !== "user") newestUser--;
+  while (newestUser >= 0 && !userWrote(turns[newestUser]!)) newestUser--;
   const asked = newestUser >= 0 ? turns[newestUser]!.ts : null;
   for (let index = turns.length - 1; index >= 0; index--) {
     const turn = turns[index]!;

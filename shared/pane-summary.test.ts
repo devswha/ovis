@@ -103,6 +103,21 @@ describe("summaryOf", () => {
     expect(summaryOf([assistant([{ kind: "text", text: "hi" }], "2026-11-12T09:00:01Z")])!.asked_at).toBeNull();
   });
 
+  it("times asked_at by the newest turn the user wrote, past the turns the runtime put in the user's seat", () => {
+    const runtime = (parts: ConversationPart[], ts: string): ConversationTurn => ({ role: "user", ts, parts });
+    const turns = [
+      user("Fix the build", "2026-11-12T10:00:00Z"),
+      assistant([{ kind: "text", text: "On it" }], "2026-11-12T10:00:05Z"),
+      runtime([{ kind: "compact", text: "Earlier: the build" }], "2026-11-12T10:20:00Z"),
+      runtime([{ kind: "notice", text: "model unavailable", source: "informational" }], "2026-11-12T10:21:00Z"),
+      runtime([{ kind: "task_result", tasks: [] }], "2026-11-12T10:22:00Z"),
+      runtime([{ kind: "goal_wait", due_at: "2026-11-12T10:30:00Z", waiting_on: { tasks: 1, monitors: 0, terminals: 0, dags: 0, cells: 0 } }], "2026-11-12T10:23:00Z"),
+      assistant([{ kind: "text", text: "Still on it" }], "2026-11-12T10:24:00Z"),
+    ];
+    expect(summaryOf(turns)!.asked_at).toBe("2026-11-12T10:00:00Z");
+    expect(summaryOf(turns.slice(2))!.asked_at).toBeNull();
+  });
+
   it("drops Markdown block marks and fence lines, keeping marks inside a line", () => {
     const words = (text: string) => summaryOf([assistant([{ kind: "text", text }], "2026-11-12T10:00:00Z")])!.text;
     expect(words("## 2.0\n### Added\n- --retries retries a failed upload (#48)\n- Flags can live in cli-tools.toml"))

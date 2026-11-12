@@ -23,7 +23,7 @@ export interface RowSummary {
   text: string;
   /** when the words were said: the turn's end, else its start */
   at: number | null;
-  /** the newest user turn's time; null when the user never wrote */
+  /** the time of the newest turn the user wrote; null when there is none */
   askedAt: number | null;
   /** the words are a request the agent recorded as failed */
   failed: boolean;
