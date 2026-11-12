@@ -1566,7 +1566,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const settled = read?.settled ? parsedByPublicPrompt.get(read.settled) ?? null : null;
         // an agent no reader knows (Grok, Copilot, Antigravity, Devin...) gets no screen from readKnownPrompt: a card
         // checked on the screen alone reads it here, as fallbackCard drew it, or it would be compared with nothing
-        const screen = read?.screen ?? (read && screenOnly ? await liveScreen(body.pane_id).catch(() => null) : null);
+        const screen = read?.screen ?? (read && screenOnly
+          ? await Promise.race([liveScreen(body.pane_id).catch(() => null), Bun.sleep(Math.max(0, readUntil - Date.now())).then(() => null)])
+          : null);
         if (!read || read.inputUnverified || Date.now() > readUntil || !same(shown, screen ?? "", settled)) throw new KeyRefused();
         // pi's select and confirm compare by the dialog drawn, which pi leaves on the screen when it ends, and a
         // dialog moved off its first row has no card to compare: pi must still hold the pane after this read too

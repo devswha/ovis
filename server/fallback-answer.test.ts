@@ -4,7 +4,7 @@ import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt } from "../shared/protocol.ts";
-import { handlePromptRequest } from "./prompt.ts";
+import { handlePromptRequest, parseFallbackPrompt } from "./prompt.ts";
 
 /** A herdr holding one pane whose screen the test sets; every key the answer route sends is kept. */
 interface Pane { agent: string; screen: string; sent: string[] }
@@ -111,4 +111,11 @@ test.each([
     expect(await answer(prompt.id, { option_index: labels(prompt).indexOf("Enter") })).toEqual({ status: 409, code: "prompt_changed" });
     expect(pane.sent).toEqual([]);
   });
+});
+
+test("reads a drawing glyph inside a word or path as written, and only one standing apart as a drawing", () => {
+  const screen = recorded("copilot-1.0.109-ask-32s");
+  const id = (option: string) => parseFallbackPrompt("copilot", screen.replace("   blue", `   ${option}`)).id;
+  expect(id("./\u2588.txt")).not.toBe(id("./\u2591.txt"));
+  expect(id("blue \u2588")).toBe(id("blue \u2591"));
 });

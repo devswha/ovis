@@ -219,11 +219,12 @@ function steadyFields(question: string | undefined, body: string | null, steady:
 }
 
 /**
- * A run of drawing glyphs: box drawing, block elements and braille, with the spaces between them. They draw borders,
- * logos, scroll bars and spinners, and say nothing of what a prompt asks or offers, yet some agents animate them
- * while the prompt stands (Copilot's logo, Grok's scroll bar thumb, braille spinners).
+ * A run of drawing glyphs: box drawing, block elements and braille, with the spaces between them, standing apart from
+ * any other text (a space or the line's end on both sides). They draw borders, logos, scroll bars and spinners, and say
+ * nothing of what a prompt asks or offers, yet some agents animate them while the prompt stands (Copilot's logo,
+ * Grok's scroll bar thumb, braille spinners). A glyph inside a word, path or command ("./█.txt") is read as written.
  */
-const DRAWING_RUN_RE = /[\u2500-\u259f\u2800-\u28ff](?:[\u2500-\u259f\u2800-\u28ff ]*[\u2500-\u259f\u2800-\u28ff])?/g;
+const DRAWING_RUN_RE = /(?<=^|\s)[\u2500-\u259f\u2800-\u28ff](?:[\u2500-\u259f\u2800-\u28ff ]*[\u2500-\u259f\u2800-\u28ff])?(?=\s|$)/g;
 
 /**
  * A line as a fallback card's id reads it, apart from its question: each run of drawing glyphs is one mark, whatever
