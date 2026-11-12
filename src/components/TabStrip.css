@@ -412,7 +412,7 @@
 }
 
 .header-tabs.is-phone .tab-strip-item.is-active {
-  max-width: 7rem;
+  max-width: min(7rem, 100%);
   background: transparent;
   border: 0;
 }
