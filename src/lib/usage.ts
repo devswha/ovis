@@ -28,7 +28,7 @@ export const WINDOW_LABEL: Readonly<Record<UsageWindow["kind"], string>> = {
 };
 
 /** The tools whose own record of an account's limits the server reads, as their users know them. */
-export const RECORDER_NAME: Readonly<Record<UsageRecorder, string>> = { omp: "Oh My Pi" };
+export const RECORDER_NAME: Readonly<Record<UsageRecorder, string>> = { omp: "Oh My Pi", gjc: "Gajae Code" };
 
 /** A pane's agent selects a provider, not an inferred active account. */
 export function providerForAgent(agent: string | null | undefined): UsageProviderId | null {

@@ -31,6 +31,7 @@ import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageR
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
+import { gjcRecorded } from "./usage-recorded-gjc.ts";
 import { ompRecorded } from "./usage-recorded-omp.ts";
 
 export const FRESH_MS = 5 * 60_000;
@@ -378,7 +379,7 @@ function claudeCredits(value: unknown): UsageCredits | null {
 
 const claude: UsageProvider = {
   id: "claude",
-  recorded: [ompRecorded],
+  recorded: [ompRecorded, gjcRecorded],
   async signIns(ctx) {
     return (await Promise.all(claudeHomes(ctx).map((home) => claudeFound(ctx, home)))).flat();
   },

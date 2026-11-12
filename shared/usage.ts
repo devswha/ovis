@@ -40,8 +40,8 @@ export type UsageCredits =
  */
 export type UsageProblem = "expired" | "rate_limited" | "failed" | "locked";
 
-/** A tool on the server's PC whose own record of an account's limits the server reads: Oh My Pi. */
-export type UsageRecorder = "omp";
+/** A tool on the server's PC whose own record of an account's limits the server reads: Oh My Pi, Gajae Code. */
+export type UsageRecorder = "omp" | "gjc";
 
 /**
  * Numbers the server did not read itself: another tool on its PC read them with that tool's own sign-in and kept
