@@ -579,7 +579,9 @@ export function App() {
         setNewTab(null);
         setNewSessionOpen(true);
       },
+      // a tab beside the pane hidden under the phone's list is not made by a key; a named workspace's is
       openNewTab: (target) => {
+        if (target === undefined && inbox.shown) return;
         const found = newTabTarget(target);
         if (!found) return;
         const { machineId, workspace, cwd } = found;
@@ -590,11 +592,12 @@ export function App() {
       },
       renameTab: () => {
         // a PC whose herdr renames no tab (lib/machineContext.tsx AppLayoutContext)
-        if (selectedPaneId === null || !tabStripMounted || !appLayout.rename) return;
+        if (selectedPaneId === null || !tabStripMounted || !appLayout.rename || inbox.shown) return;
         setDrawerOpen(false);
         requestRename(selectedMachineId, selectedPaneId);
       },
       openTerminalTab: async (target) => {
+        if (target === undefined && inbox.shown) return;
         const found = newTabTarget(target);
         if (!found) return;
         const asked = selectionRef.current;

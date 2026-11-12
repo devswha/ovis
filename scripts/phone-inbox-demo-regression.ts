@@ -482,11 +482,18 @@ try {
           pass(19, "in a thread from the list More has Open workspace list, which opens the drawer, and the focus goes back to More when it closes");
         });
 
-        await withPage(browser, base, { ...on, shortcutOverrides: { "close-pane": "ctrl+alt+x" } }, "/", async (page) => {
+        await withPage(browser, base, { ...on, shortcutOverrides: { "close-pane": "ctrl+alt+x", "new-tab": "ctrl+alt+u" } }, "/", async (page) => {
           await rowCount(page, 6);
           await openThread(page, WORKING);
           await page.locator(".pane-slot").first().waitFor();
           const blur = () => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+          // a key bound to New tab asks for a tab in the thread's workspace
+          const newTab = page.locator(".new-session-modal");
+          await blur();
+          await page.keyboard.press("Control+Alt+u");
+          await newTab.waitFor();
+          await page.keyboard.press("Escape");
+          await newTab.waitFor({ state: "detached" });
           // the key is bound: in the thread it asks to close the working agent's pane
           const confirm = page.locator(".confirm-dialog");
           await blur();
@@ -500,7 +507,10 @@ try {
           await frames(page);
           assert.equal(await confirm.count(), 0, "the key asks nothing of the pane under the list");
           assert.equal(await page.locator(`.inbox-item[data-pane="${WORKING}"]`).count(), 1, "the pane under the list is still in the roster");
-          pass(20, "a key bound to Close pane closes the thread's pane, and nothing while the list covers it");
+          await page.keyboard.press("Control+Alt+u");
+          await frames(page);
+          assert.equal(await newTab.count(), 0, "New tab's key makes no tab beside the pane under the list");
+          pass(20, "keys bound to Close pane and New tab act on the thread's pane, and do nothing while the list covers it");
         });
 
         await withPage(browser, base, { ...on, keepScreenOn: true }, "/", async (page) => {
