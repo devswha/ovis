@@ -2057,7 +2057,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   as it would without the list.
 - **New workspace** opens the existing New workspace dialog on the PC chosen: with one connected PC
   directly, with several a sheet of the PCs first (`RowMenu`). A watching device, or one with no
-  connected PC, is not offered the button. The system Back closes that dialog over the list.
+  connected PC, is not offered the button. The system Back closes that dialog over the list, and
+  leaves it open, its address kept, while its creation is in flight.
 - What the list never does: send input, answer a prompt, press a key for the agent, move herdr's
   focus, take a pane over, resize a pane, mark a finish as seen, or silence an alert for a pane it
   covers (it counts as covering the pane, as the open drawer does). Until a pane is opened nothing
