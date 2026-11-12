@@ -1256,15 +1256,24 @@ function lastFinishedAnswer(rollout: string): string | null {
   return last;
 }
 
-/** Whether a rollout's last ended turn (task_complete, turn_complete, turn_aborted) failed: Codex recorded an error on its end. */
+/**
+ * Whether a rollout's last turn failed: Codex recorded an error on its end (task_complete), and no turn began after it
+ * (task_started: a retry still under way, whose end is not written yet, is no failure). An end that names another turn
+ * than the one begun last (a sub-agent's) is not this turn's, as the chat reads it (createCodexTranscriptParser).
+ */
 export function codexTurnFailed(rollout: string): boolean {
   let failed = false;
+  let active: string | undefined;
   for (const line of rollout.split("\n")) {
-    if (!line.includes('"task_complete"') && !line.includes('"turn_complete"') && !line.includes('"turn_aborted"')) continue;
+    if (!line.includes('"task_started"') && !line.includes('"task_complete"') && !line.includes('"turn_complete"') && !line.includes('"turn_aborted"')) continue;
     try {
       const entry = JSON.parse(line) as { type?: unknown; payload?: Record<string, unknown> };
       const type = entry.payload?.["type"];
-      if (entry.type !== "event_msg" || (type !== "task_complete" && type !== "turn_complete" && type !== "turn_aborted")) continue;
+      if (entry.type !== "event_msg") continue;
+      const turn = string(entry.payload?.["turn_id"]) || undefined;
+      if (type === "task_started") { active = turn; failed = false; continue; }
+      if (type !== "task_complete" && type !== "turn_complete" && type !== "turn_aborted") continue;
+      if (active !== undefined && turn !== undefined && turn !== active) continue;
       failed = type === "task_complete" && string(record(entry.payload?.["error"]).message) !== "";
     } catch { /* a record cut by the tail read */ }
   }

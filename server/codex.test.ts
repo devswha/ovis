@@ -1789,8 +1789,11 @@ describe("a Codex turn that ended in an error", () => {
     // a later turn that answered, or was interrupted, is no failure
     expect(codexTurnFailed(`${recorded}${done}\n`)).toBe(false);
     expect(codexTurnFailed(`${recorded}${jsonl(event({ type: "turn_aborted", reason: "interrupted" }))}\n`)).toBe(false);
-    // a new turn under way after the failure: the last ended turn is still the failed one
-    expect(codexTurnFailed(`${recorded}${jsonl(event({ type: "task_started", turn_id: "next" }))}\n`)).toBe(true);
+    // a retry under way after the failure, its end not written yet: no failure (yet)
+    expect(codexTurnFailed(`${recorded}${jsonl(event({ type: "task_started", turn_id: "next" }))}\n`)).toBe(false);
+    // another turn's end after this one's (a sub-agent's) is not this turn's
+    const started = jsonl(event({ type: "task_started", turn_id: "main" }), event({ type: "task_complete", turn_id: "main", last_agent_message: "Done", error: null }));
+    expect(codexTurnFailed(`${started}\n${jsonl(event({ type: "task_complete", turn_id: "sub", last_agent_message: null, error: { message: "Sub-agent failed" } }))}\n`)).toBe(false);
     const dir = mkdtempSync(join(tmpdir(), "codex-failed-"));
     try {
       const path = join(dir, "rollout.jsonl");

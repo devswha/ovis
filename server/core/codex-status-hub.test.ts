@@ -90,6 +90,17 @@ describe("a Codex pane whose turn ended in an error", () => {
     } finally { h.restore(); }
   });
 
+  it("takes no failure from the turn before while a retry's end is not written yet", async () => {
+    const h = codexHub(`${failed}${JSON.stringify({ type: "event_msg", timestamp: "2026-11-12T05:56:00.000Z", payload: { type: "task_started", turn_id: "retry" } })}\n`);
+    try {
+      handlers.onStatus("w1:p1", "working", "codex");
+      handlers.onStatus("w1:p1", "done", "codex");
+      await h.looked();
+      expect(h.last().status).toBe("done");
+      expect(h.failures).toEqual([]);
+    } finally { h.restore(); }
+  });
+
   it("finishes a turn that answered", async () => {
     const h = codexHub(`${failed}${answered}`);
     try {

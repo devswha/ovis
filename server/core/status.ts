@@ -690,7 +690,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   function codexRest(paneId: string, snapshot?: SessionSnapshot): void {
     const known = codexLooked.get(paneId);
     const turn = codexTurns.get(paneId) ?? 0;
-    if (turn === 0 || codexFailed.has(paneId) || codexLooking.has(paneId) || known === null) return;
+    // a pane already at a failed rest is looked at again only once its rollout grew (a retry's end written late)
+    if (turn === 0 || codexLooking.has(paneId) || known === null) return;
     codexLooking.add(paneId);
     const look = (found: { path: string; size: number } | null): void => { if ((codexTurns.get(paneId) ?? 0) === turn) codexLooked.set(paneId, found); };
     void (async () => {
@@ -698,17 +699,20 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       let size = path === undefined ? -1 : await stat(path).then((file) => file.size, () => -1);
       if (size < 0) {
         const transcript = await paneTranscript(paneId, options.codexHome, snapshot).catch(() => null);
-        if (transcript?.source !== "codex-transcript") { look(null); return false; }
+        if (transcript?.source !== "codex-transcript") { look(null); return null; }
         path = transcript.path;
         size = await stat(path).then((file) => file.size, () => -1);
-        if (size < 0) { look(null); return false; }
-      } else if (known!.size === size) return false;
+        if (size < 0) { look(null); return null; }
+      } else if (known!.size === size) return null;
       const failed = await codexLastTurnFailed(path!);
       look({ path: path!, size });
-      return failed && (codexTurns.get(paneId) ?? 0) === turn;
+      return (codexTurns.get(paneId) ?? 0) === turn ? failed : null;
     })().then((failed) => {
+      if (failed === null) return;
+      // read again after the rollout grew: no longer failed, herdr's word on the pane stands again
+      if (!failed) { codexFailed.delete(paneId); codexFailedAt.delete(paneId); return; }
       const now = completions.current(paneId);
-      if (!failed || now === "working" || now === "blocked" || codexFailed.has(paneId)) return;
+      if (now === "working" || now === "blocked" || codexFailed.has(paneId)) return;
       codexFailed.add(paneId);
       codexFailedAt.set(paneId, codexReads);
       const status = completions.observe(paneId, "idle", "codex", "failed");
