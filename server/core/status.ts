@@ -337,11 +337,20 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   });
   /** Codex panes whose last turn ended in an error, until the next one starts (codexRest) */
   const codexFailed = new Set<string>();
-  /** each Codex pane's rollout as codexRest last looked at it, and the panes it is looking at now */
-  const codexLooked = new Map<string, { path: string; size: number }>();
+  /**
+   * each Codex pane's rollout as codexRest last looked at it (null: none was found, and none is looked for
+   * again until the pane works), the panes it is looking at now, and each pane's turns begun, so a look that
+   * a new turn overtook keeps nothing
+   */
+  const codexLooked = new Map<string, { path: string; size: number } | null>();
   const codexLooking = new Set<string>();
+  const codexTurns = new Map<string, number>();
   /** a Codex pane at work again: its last turn is no longer the failed one, and its rollout may be another */
-  const codexWorking = (paneId: string): void => { codexFailed.delete(paneId); codexLooked.delete(paneId); };
+  const codexWorking = (paneId: string): void => {
+    codexFailed.delete(paneId);
+    codexLooked.delete(paneId);
+    codexTurns.set(paneId, (codexTurns.get(paneId) ?? 0) + 1);
+  };
   /** herdr calls such a pane's rest DONE as it calls any finish it did not see: it is at rest, and READY */
   const codexRests = (snapshot: SessionSnapshot): SessionSnapshot => {
     if (codexFailed.size === 0) return snapshot;
@@ -362,7 +371,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     for (const pane of snapshot.panes) {
       if (pane.agent !== "codex") continue;
       if (pane.agent_status === "working") codexWorking(pane.pane_id);
-      else if (pane.agent_status === "done" && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) codexRest(pane.pane_id);
+      else if (pane.agent_status === "done" && !omo.runs(pane.pane_id) && !gjc.runs(pane.pane_id)) codexRest(pane.pane_id, snapshot);
     }
     const named = codexRests(letta.apply(gjc.apply(omo.apply(snapshot))));
     // reads overlap (the collector's, each client's): only one newer than every read applied before tells title turns
@@ -668,22 +677,25 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * refused request), which is at rest, not finished (#687's rule, on Codex's own record). The rollout is looked at again
    * only once it grew; a rollout not read, or its end not written yet, leaves herdr's word.
    */
-  function codexRest(paneId: string): void {
-    if (codexFailed.has(paneId) || codexLooking.has(paneId)) return;
+  function codexRest(paneId: string, snapshot?: SessionSnapshot): void {
+    const known = codexLooked.get(paneId);
+    if (codexFailed.has(paneId) || codexLooking.has(paneId) || known === null) return;
     codexLooking.add(paneId);
+    const turn = codexTurns.get(paneId) ?? 0;
+    const look = (found: { path: string; size: number } | null): void => { if ((codexTurns.get(paneId) ?? 0) === turn) codexLooked.set(paneId, found); };
     void (async () => {
-      const known = codexLooked.get(paneId);
       let path = known?.path;
       let size = path === undefined ? -1 : await stat(path).then((file) => file.size, () => -1);
       if (size < 0) {
-        const transcript = await paneTranscript(paneId, options.codexHome);
-        if (transcript.source !== "codex-transcript") return false;
+        const transcript = await paneTranscript(paneId, options.codexHome, snapshot).catch(() => null);
+        if (transcript?.source !== "codex-transcript") { look(null); return false; }
         path = transcript.path;
-        size = (await stat(path)).size;
+        size = await stat(path).then((file) => file.size, () => -1);
+        if (size < 0) { look(null); return false; }
       } else if (known!.size === size) return false;
       const failed = await codexLastTurnFailed(path!);
-      codexLooked.set(paneId, { path: path!, size });
-      return failed;
+      look({ path: path!, size });
+      return failed && (codexTurns.get(paneId) ?? 0) === turn;
     })().then((failed) => {
       const now = completions.current(paneId);
       if (!failed || now === "working" || now === "blocked" || codexFailed.has(paneId)) return;
@@ -703,6 +715,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   // (a program that ended and whose pane then closed)
   function paneGone(paneId: string): void {
     codexWorking(paneId);
+    codexTurns.delete(paneId);
     omo.ended(paneId);
     gjc.ended(paneId);
     letta.ended(paneId);
