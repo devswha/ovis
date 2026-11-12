@@ -1296,7 +1296,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a grip, the row's name and place, 48px rows and a Cancel button; Tab stays among them. A row
   whose agent waits says what it waits for on a line of its own under the place
   (`.row-sheet-alert`, `--status-blocked`, `--fs-sm`, wrapped and whole): a one-line row has no
-  room for it, and the sheet is where a thumb reads it without opening the pane. The popover a
+  room for it, and the sheet is where a thumb reads it without opening the pane. The words are
+  the agent's own, of any length: past a fifth of the screen they scroll in their own box, so the
+  name, the actions and Cancel stay in reach. The popover a
   wider screen opens says it too, under its header (`.row-menu-alert`, `--fs-meta`, wrapped and
   whole): a touch screen too wide for the sheet has no tooltip either. The
   rows scroll between the head and Cancel (`.row-sheet-items`), which stay put, when the sheet's
@@ -1756,7 +1758,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   never makes its row vanish. Under the filter every group stands open and no heading folds, as
   the other folds do, and a heading that cannot fold draws no caret (a named group's neither);
   the kept folds return with the filter's end. A row with the keyboard's focus
-  whose new state files it under a folded group hands the focus to that group's heading. The
+  whose new state files it under a folded group hands the focus to that group's heading, and
+  only then: a focus the reader has put anywhere else is never taken. The
   headings follow herdr-app's agents mod, whose priority sections fold from a header in the
   state's colour with a dim count beside it, and whose rows under such a header say the state
   only in short; here they do not say it at all.
@@ -1778,7 +1781,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and keeps the stamps (`ovis:agent-state-since`, lib/agentStateSince.ts) across reloads, where
   herdr's `state_change_seq` proves that nothing changed meanwhile: a stamp is kept only where
   it and the row carry the same counter, so with a herdr that counts nothing a time lasts until
-  the page is loaded again. Done and idle are one state:
+  the page is loaded again. A change is dated only while the page was being told of its PCs: its
+  roster stream open and the page running, or a roster read within the last minute and a half
+  (lib/agentStateWatch.ts). After a longer gap (a phone that slept, a laptop's lid shut, a server
+  out of reach) the next roster is read as a reload reads it: a time stands where the counter
+  proves it, and what changed meanwhile says no time. A roster read after the stream said nothing
+  for as long dates no change either, and keeps the times the page had. Done and idle are one state:
   reading a finished agent does not reset its time. A state this device did not see begin says no
   time rather than a wrong one, a PC that is away says none, and a pane gone from its roster for
   thirty days is forgotten. The times are stamped in one place for the whole page

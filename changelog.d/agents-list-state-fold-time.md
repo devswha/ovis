@@ -5,7 +5,8 @@
 - Every agent row says how long its agent has been in its state (`<1m`, `5m`, `2h`, `3d`). The
   device notes each change it sees, and keeps a time across reloads while herdr's own change
   counter shows that nothing changed meanwhile; reading a finished agent does not reset its time,
-  and a state the device did not see begin shows no time.
+  and a state the device did not see begin, one that changed while it slept included, shows no
+  time.
 
 ### Changed
 - Agents list, grouped by state: a heading says its state once, in the state's colour with the
