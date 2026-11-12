@@ -159,6 +159,19 @@ try {
   // screen and moves the anchor), one column short of the edge, wherever this PC's font puts the columns:
   // the cell width is read from the long prompt's run of P's.
   await pan(0);
+  // the mirrored rows are redrawn from herdr's read, so the prompt's run of P's can be between draws here: it is
+  // measured once it is drawn again, not at whatever instant this step comes
+  await host.evaluate((element, drawn) => new Promise<void>((resolve, reject) => {
+    const drawnRun = () => {
+      const walker = document.createTreeWalker(element.querySelector(drawn)!, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.textContent?.startsWith("P".repeat(100))) return true;
+      return false;
+    };
+    if (drawnRun()) { resolve(); return; }
+    const observer = new MutationObserver(() => { if (drawnRun()) { observer.disconnect(); clearTimeout(timer); resolve(); } });
+    const timer = setTimeout(() => { observer.disconnect(); reject(new Error("the long prompt's run of P's was not drawn again within 15 s")); }, 15_000);
+    observer.observe(element, { childList: true, subtree: true, characterData: true });
+  }), shownRows());
   const { cellWidth, visibleWidth } = await host.evaluate((element, drawn) => {
     const walker = document.createTreeWalker(element.querySelector(drawn)!, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
