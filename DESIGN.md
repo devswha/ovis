@@ -1763,6 +1763,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and the row's marks (plan, helpers, context) end the first, so the times of a list stand in one
   column and a row with no marks gives its title the whole first line; there the `⋯` takes its
   room from the row under the pointer, as it always did, and the time moves with the place.
+  Beside the filter's **Selected** note a one-line row's time steps aside, as its place does.
   herdr reports no time of change, so this device stamps a change when it sees one
   and keeps the stamps (`ovis:agent-state-since`, lib/agentStateSince.ts) across reloads, where
   herdr's `state_change_seq` proves that nothing changed meanwhile. Done and idle are one state:
@@ -1786,10 +1787,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (<https://github.com/changeroa/StyleGallery/blob/main/patterns/in-line-grouping/badge-list.md>,
   <https://github.com/changeroa/StyleGallery/blob/main/patterns/stacking/feed.md>); scroll owner:
   `.agent-list-contents`, the Agents section's one scroller, beside the PCs' own (`.machine-list`);
-  a group, a heading and a row scroll nothing of their own; anti-patterns: a row that wraps to a
-  second line or scrolls sideways to fit its place, a trailing time whose column moves with the
-  title's length, a heading that sticks over its rows or scrolls apart from them, a scroller
-  inside a group.
+  a group, a heading and a row scroll nothing of their own; anti-patterns: a One line row that
+  shows a second line or scrolls sideways to fit its place, a trailing time whose column moves
+  with the title's length, a heading that sticks over its rows or scrolls apart from them, a
+  scroller inside a group.
 - Panes a launcher tags `role=background` (`herdr pane report-metadata --token`, any case),
   and the helpers they start (`parent_pane_id`), stand after the Agents list's other unpinned
   rows, under a **Background agents** heading styled like a group's (`.agent-background-toggle`)
