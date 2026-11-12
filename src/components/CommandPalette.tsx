@@ -58,6 +58,8 @@ interface CommandPaletteProps {
   actions: AppActions;
   /** this device may only watch: the PCs refuse it their checkouts, so no branch is read (#2250) */
   watching?: boolean;
+  /** a phone's agent list covers the selected pane: New tab, which would make a tab beside it, is not offered */
+  inboxShown?: boolean;
 }
 
 interface PaletteAction {
@@ -156,7 +158,7 @@ function ShortcutHint({ shortcutId }: { shortcutId?: ShortcutId }) {
   return <span className="palette-shortcut" aria-label={keys.join(" + ")}>{keys.map((key) => <kbd className="kbd" key={key}>{key}</kbd>)}</span>;
 }
 
-export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false }: CommandPaletteProps) {
+export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false, inboxShown = false }: CommandPaletteProps) {
   const t = useT();
   const { settings } = useSettings();
   const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
@@ -333,7 +335,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const paletteActions = useMemo<PaletteAction[]>(() => [
     { id: "new", label: t("New workspace"), icon: MessageSquarePlus, shortcut: "new-session", run: actions.openNewSession },
     // in the selected pane's workspace: nothing to add a tab to without one
-    ...(selectedPaneId !== null ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
+    ...(selectedPaneId !== null && !inboxShown ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
     ...(worktreeHere ? [
       { id: "new-worktree", label: t("New worktree"), icon: GitBranch, run: () => actions.openWorktree?.("create") },
       { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => actions.openWorktree?.("open") },
@@ -365,7 +367,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     // starts the address a page this PC serves is typed as (below), the port left to type
     ...(actions.openLocalPage ? [{ id: "local-page", label: t("Open a page on this PC…"), icon: Globe, keepOpen: true, run: () => { setQuery("localhost:"); setFilter("all"); setSelection(NO_SELECTION); inputRef.current?.focus(); } }] : []),
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, run: actions.refresh },
-  ], [actions, overDialog, surface, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, tabShown, renameOffered, worktreeHere, historyHere, online, browseTo, browseStart, home]);
+  ], [actions, overDialog, surface, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, inboxShown, tabShown, renameOffered, worktreeHere, historyHere, online, browseTo, browseStart, home]);
 
   // Settings pages and groups are found by a query only, and open on the page itself, a group's
   // scrolled to and focused: the dialog reads the request as it mounts

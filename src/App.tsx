@@ -1411,7 +1411,7 @@ export function App() {
       {unsentFor && <UnsentTextDialog machines={machines} target={unsentFor} canRecover={unsentFor.pane.agent != null} onClose={closeUnsent} onRecover={recover} />}
       <CommandPalette key={selectedMachineId} machines={sidebarMachines} onSelect={selectTarget} open={paletteOpen} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} snapshot={snapshot} online={selectedMachine?.state === "connected"} selectedPaneId={selectedPaneId}
         // a peek shows the terminal: its toggle says Switch to chat, which ends the peek
-        view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={auth?.role === "watch"} />
+        view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={auth?.role === "watch"} inboxShown={inbox.shown} />
       <MarkdownLinkMenu />
     </div></AppLayoutContext.Provider></MachineContext.Provider></MachineSessionsProvider>
   );
