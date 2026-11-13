@@ -2241,7 +2241,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   inbox") and nothing drawn says what the list is.
 - On a phone, and in any window under 769px, the list is the screen: one flat `--bg` surface
   from the top safe area down, with no header bar and no rule. Two round controls float at its
-  top, `calc(var(--space-4) + var(--space-1) / 2)` (18px) from the side edges: **More** at the
+  top, `--space-2` under the top safe area (`--inbox-top-gap`: they touch no edge, under a
+  status bar or with none over them, as in a browser tab or a narrow desktop window) and
+  `calc(var(--space-4) + var(--space-1) / 2)` (18px) from the side edges: **More** at the
   start, **New workspace** (a plus; with several connected PCs it opens the sheet of PCs, a
   `RowMenu`) at the end; the header's note (Link copied, Opening link…) stands between them.
   The first row starts `--space-4` under them. At its foot, `--space-3` above the bottom safe

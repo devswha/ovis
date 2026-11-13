@@ -355,6 +355,8 @@ try {
           const [more, add, filter, search] = await Promise.all([box(page, ".inbox-more"), box(page, ".inbox-add"), box(page, ".inbox-filter-toggle"), box(page, ".inbox-search-input")]);
           for (const [name, control] of [["More", more], ["New workspace", add], ["the filter", filter]] as const) assert.deepEqual([control.w, control.h], [44, 44], `${name} is 44 by 44`);
           near(more.x, 18, 2, "More's inset"); near(width - add.right, 18, 2, "New workspace's inset");
+          // with no safe area over them the two controls still touch no edge
+          near(more.y, 8, 0.5, "More under the top edge"); near(add.y, 8, 0.5, "New workspace under the top edge");
           near(filter.x, 18, 2, "the filter's inset"); near(width - search.right, 18, 2, "the search field's inset");
           assert.equal(search.h, 44, "the search field is 44 tall");
           near(search.x - filter.right, 12, 2, "between the filter and the search field");

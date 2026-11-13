@@ -10,6 +10,9 @@
   --inbox-gutter: calc(var(--space-4) + var(--space-1) / 2);
   --inbox-inset: calc(var(--inbox-gutter) + var(--space-1));
   --inbox-avatar: var(--touch-target);
+  /* how far under the top safe area a phone's two floating controls start: they touch no edge, under a status bar
+     or with none over them (a browser tab, a narrow desktop window) */
+  --inbox-top-gap: var(--space-2);
   position: absolute;
   inset: 0;
   z-index: 1;
@@ -48,8 +51,8 @@
   inset: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-block: calc(var(--inbox-control) + var(--space-4)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
-  scroll-padding-block: calc(var(--inbox-control) + var(--space-2)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
+  padding-block: calc(var(--inbox-top-gap) + var(--inbox-control) + var(--space-4)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
+  scroll-padding-block: calc(var(--inbox-top-gap) + var(--inbox-control) + var(--space-2)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
 }
 
 /* only the controls take a press: between and beside them the rows under the band do */
@@ -70,7 +73,7 @@
 }
 
 .mode-inbox .inbox-top {
-  top: 0;
+  top: var(--inbox-top-gap);
   justify-content: space-between;
   gap: var(--space-2);
 }
