@@ -1086,6 +1086,38 @@ try {
         }, { width: 1440, height: 900 });
       }
 
+      // ---- a classic split's thread is one pane at the pane area's width ----
+      // Entered from a classic split, a row's thread is drawn at the whole pane area's width, not at the half's
+      // rectangle the slot had in classic, and its terminal is sized to that box.
+      await withPage(browser, base, { language: "en", theme: "light" }, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "a classic split's thread at the pane area's width", async (page) => {
+        await page.evaluate((other) => sessionStorage.setItem("ovis:split", JSON.stringify({ other: { machineId: "local", paneId: other }, bSide: "right", active: "a" })), BLOCKED);
+        await page.reload();
+        await page.locator(".app-header.is-zoned").waitFor();
+        await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2, undefined, { timeout: 15_000 });
+        // fixed wait: the halves' own attach and first sizing have gone out
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const half = await page.evaluate((pane) => window.inboxFixture.frames.filter((frame) => frame.pane === pane && (frame.type === "attach" || frame.type === "resize")).at(-1)!, WORKING);
+        await page.locator(".header-more-button").click();
+        await page.locator('.row-menu [data-item="enter-inbox"]').click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 1, undefined, { timeout: 5_000 });
+        const [slot, area] = await Promise.all([box(page, ".pane-slot"), box(page, ".pane-split")]);
+        sameBox(slot, area, "the thread's slot is the pane area's box");
+        const before = (await page.evaluate(() => window.inboxFixture.frames.length));
+        await page.locator(".thread-top .lens-toggle").click();
+        await page.locator('.thread-top .lens-toggle[data-view="terminal"]').waitFor();
+        const thread = await terminalBox(page);
+        near(thread.w, area.w, 1, "the thread's terminal is as wide as the pane area");
+        await page.waitForFunction((count) => window.inboxFixture.frames.slice(count).some((frame) => frame.type === "resize"), before, { timeout: 10_000 });
+        const asked = await page.evaluate((count) => window.inboxFixture.frames.slice(count).filter((frame) => frame.type === "resize").at(-1)!, before);
+        assert.equal(asked.pane, WORKING, "the thread's pane is the one sized");
+        assert.ok(asked.cols! > half.cols! * 1.8, `the grid asked for is the whole area's: ${asked.cols} columns, the half had ${half.cols}`);
+        console.log(`PASS a row's thread opened from a classic split is drawn at the pane area's width (${Math.round(area.w)}px) and its terminal sized to it (${asked.cols} by ${asked.rows})`);
+      }, { width: 1440, height: 900 });
+
       // ---- a thread that shows its terminal sizes its pty to the thread's box ----
       // Entering the mode, and leaving it from the list, size nothing (above), and a thread opens on its chat, which
       // sizes nothing either. Showing the terminal there sizes the pty to the thread's box, as showing it after the
