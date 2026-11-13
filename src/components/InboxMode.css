@@ -1,0 +1,60 @@
+/* The inbox mode's shell (App.tsx, InboxMode.tsx; the list is InboxList.css). Every value is one of the app's tokens. */
+
+/* The list is the screen on a phone: the shell draws no header over it, so the pane column takes the top safe
+   area the header would have, on the list's own surface. */
+.app.is-inbox .pane-column {
+  background: var(--bg);
+}
+
+.app.is-inbox-list .pane-column {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* A phone thread's title: the mark, then the name over the state, both lines inside the header's height (the
+   classic header's two lines on a phone, styles.css .context.has-connection). */
+.thread-title {
+  --inbox-avatar: var(--avatar-size);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1 1 auto;
+  min-width: 0;
+  /* the name never touches the monitor button */
+  margin-inline-end: var(--space-1);
+}
+
+.thread-title-words {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: var(--lh-tight);
+}
+
+.thread-name,
+.thread-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-name {
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.thread-state {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+}
+
+/* the connection's word takes the state's place in its own colour, as it does under a classic title */
+.thread-state.is-reconnecting {
+  color: var(--status-reconnecting);
+}
+
+.thread-state.is-connected {
+  color: var(--status-done);
+}

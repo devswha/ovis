@@ -70,11 +70,11 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer), shown = snapshot, online = false, inboxShown = false): Promise<string[]> {
+  async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer), shown = snapshot, online = false, inboxShown = false, inboxMode = false): Promise<string[]> {
     await act(async () => { renderer?.unmount(); });
     await act(async () => {
       renderer = create(createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
-        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online, selectedPaneId, view: "chat", actions, inboxShown }))));
+        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online, selectedPaneId, view: "chat", actions, inboxShown, inboxMode }))));
     });
     return renderer!.root.findAll((node) => node.props.className === "menu-item-main" && typeof node.props.children === "string").map((node) => node.props.children as string);
   }
@@ -129,6 +129,15 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     const shown = await rows(TUI, "p1", ">");
     expect(shown).toContain("New tab");
     expect(shown).toContain("Rename tab");
+  });
+
+  it("offers nothing the inbox mode's shell has no place for: no New tab, Rename tab or sidebar row, in a thread as on the list", async () => {
+    const SHELL_ROWS = ["New tab", "Rename tab", "Toggle sidebar", "Filter workspaces and agents"];
+    const thread = await rows(TUI, "p1", ">", undefined, snapshot, false, false, true);
+    for (const row of SHELL_ROWS) expect(thread).not.toContain(row);
+    for (const row of ["New workspace", "Switch to terminal", "Settings", "Toggle theme"]) expect(thread).toContain(row);
+    const classic = await rows(TUI, "p1", ">");
+    for (const row of SHELL_ROWS) expect(classic).toContain(row);
   });
 
   it("lists a core PC's rename, split, zoom and move rows where Ovis keeps its layout", async () => {
