@@ -124,5 +124,9 @@ describe("the way into the mode at the sidebar's foot", () => {
     expect(markup.match(/<button/g)).toHaveLength(1);
     expect(markup).toContain('class="btn btn-ghost sidebar-footer-action sidebar-footer-pc inbox-foot-entry"');
     expect(markup).toContain('<span class="sidebar-footer-pc-name">Open agent inbox</span>');
+    // one glyph, the inbox's, before its words: no chevron after them, which the Agents row above it starts with
+    expect(markup.match(/<svg/g)).toHaveLength(1);
+    expect(markup).toMatch(/<svg[^>]*lucide-inbox[^>]*>.*<\/svg><span class="sidebar-footer-pc-name">/s);
+    expect(markup).toMatch(/Open agent inbox<\/span><\/button>$/);
   });
 });

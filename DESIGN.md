@@ -2181,7 +2181,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   as the Claude web app keeps getting its apps in the account menu rather than a sidebar row.
 - The footer's first row, above every other, is **Open agent inbox** (`.inbox-foot-entry`, a
   full-width `.sidebar-footer-action` as the Change PC row is: lucide `Inbox` in the icon's
-  column, the words, a chevron at its end): the way into the inbox mode (Inbox mode, below), in
+  column, then the words, and no chevron at its end: the Agents disclosure row above it starts
+  with one, and one foot does not draw two with two meanings): the way into the inbox mode
+  (Inbox mode, below), in
   the drawer on a phone and in the sidebar from `769px`. The setup guide's shell does not draw
   it.
 - Above that row, only where the page is one PC of a phone's list (a PC's page on the hosted
