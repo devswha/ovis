@@ -365,15 +365,30 @@ describe("InboxList", () => {
     expect(queries).toEqual([""]);
   });
 
-  it("says why it draws no row: loading, none running, none matching", async () => {
+  it("says why it draws no row, and what to do next where there is something to do", async () => {
+    const empty = (): Machine[] => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && { ...machine.snapshot, panes: [] } }));
     const loading = await draw([]);
-    expect(byClass(loading, "inbox-empty").map(text)).toEqual(["Loading agents…"]);
+    expect(byClass(loading, "inbox-empty").map(text)).toEqual(["Loading…"]);
     await act(async () => { renderer?.unmount(); });
-    const none = await draw(roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && { ...machine.snapshot, panes: [] } })));
-    expect(byClass(none, "inbox-empty").map(text)).toEqual(["No agents running"]);
+
+    // nothing runs, and the round plus is there to start a workspace with
+    const none = await draw(empty());
+    expect(byClass(none, "inbox-add").length).toBe(1);
+    expect(byClass(none, "inbox-empty").map(text)).toEqual(["Nothing is running yet. Use + to start a workspace."]);
     await act(async () => { renderer?.unmount(); });
+
+    // no plus is offered to a watching device, nor with no PC connected: the line names none
+    const watching = await draw(empty(), { watching: true });
+    expect(byClass(watching, "inbox-add").length).toBe(0);
+    expect(byClass(watching, "inbox-empty").map(text)).toEqual(["Nothing is running yet"]);
+    await act(async () => { renderer?.unmount(); });
+    const away = await draw(empty().map((machine) => ({ ...machine, state: "disconnected" as const })));
+    expect(byClass(away, "inbox-add").length).toBe(0);
+    expect(byClass(away, "inbox-empty").map(text)).toEqual(["Nothing is running yet"]);
+    await act(async () => { renderer?.unmount(); });
+
     const unmatched = await draw(roster(), { query: "nothing is called this" });
-    expect(byClass(unmatched, "inbox-empty").map(text)).toEqual(["No agents match"]);
+    expect(byClass(unmatched, "inbox-empty").map(text)).toEqual(["No results"]);
     expect(byClass(unmatched, "inbox-rows").length).toBe(0);
   });
 

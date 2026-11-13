@@ -457,7 +457,7 @@ const SURFACES: Surface[] = [
   { id: "drawer-open", only: "phone", pane: panes.api, run: openDrawer },
   {
     id: "phone-inbox", only: "phone", plain: true, ready: ".mode-inbox", storage: { "ovis:phone-inbox": "true" },
-    // the inbox mode's list also stands while it says Loading agents…: measured once a row is drawn
+    // the inbox mode's list also stands while it says Loading…: measured once a row is drawn
     run: async (page) => { await page.locator(".mode-inbox .inbox-item").first().waitFor(); await settle(page); },
   },
   {

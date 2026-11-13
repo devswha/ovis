@@ -208,7 +208,11 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   // the sheet of PCs is for a choice among two or more: it closes when that choice goes, and stays closed if it comes back
   useEffect(() => { if (connected.length < 2) setPcMenu(null); }, [connected.length]);
   const emptyWhy = inboxEmpty(machines, all.length, rows.length);
-  const empty = emptyWhy === "loading" ? t("Loading agents…") : emptyWhy === "none" ? t("No agents running") : emptyWhy === "no-match" ? t("No agents match") : null;
+  // The mode's own three lines, each saying what happened and, where there is something to do, what: the round plus
+  // starts a workspace, and is named only where it is drawn. None says what the rows are: the mode's chrome does not.
+  const empty = emptyWhy === "loading" ? t("Loading…")
+    : emptyWhy === "none" ? (offerNew ? t("Nothing is running yet. Use + to start a workspace.") : t("Nothing is running yet"))
+    : emptyWhy === "no-match" ? t("No results") : null;
 
   /** a state's mark as the Agents list's rows end with it (Sidebar.tsx): drawn only for the states that have one */
   const drawsMark = (status: AgentStatus | undefined): boolean => statusIndicators !== "classic" || agentGroup(status) !== "idle";

@@ -416,10 +416,10 @@ try {
           assert.equal(await field.inputValue(), "");
           await field.fill("zzqq no such agent");
           await page.locator(".inbox-empty").waitFor();
-          assert.equal(await page.locator(".inbox-empty").textContent(), "No agents match");
+          assert.equal(await page.locator(".inbox-empty").textContent(), "No results");
           await page.locator(".inbox-search-clear").tap();
           await rowCount(page, 6);
-          pass(4, "search: export leaves one row, clearing it draws six, a query with no match says No agents match");
+          pass(4, "search: export leaves one row, clearing it draws six, a query with no match says No results");
 
           await pickFilter(page, "blocked");
           await rowCount(page, 1);

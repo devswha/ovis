@@ -2320,9 +2320,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   narrows the list to the words a row shows: the labels the sidebar's filter matches with the
   command palette's fuzzy match (lib/sidebarFilter.ts), and the agent's own words on the row
   when they hold the query as typed, in any letter case; never a working directory or a
-  transcript. Loading, no agents and no match are one centred `--text-dim` line where the rows
-  would be (**Loading agents…**, **No agents running**, **No agents match**). The filter, the
-  query and the scroll offset are kept while a thread is open.
+  transcript. Loading, nothing running and no match are one centred `--text-dim` line where
+  the rows would be, each saying what happened and, where there is something to do, what:
+  **Loading…**; **Nothing is running yet. Use + to start a workspace.**, without its second
+  sentence where the plus is not drawn (a watching device, no connected PC); **No results**.
+  None says what the rows are, as nothing else in the mode's chrome does; the classic Agents
+  list keeps its own lines. The filter, the query and the scroll offset are kept while a thread
+  is open.
 - A phone's thread is the agent's existing chat under the app's glass header (`--header-h`),
   with its prompt card docked above the composer and nothing restyled. The header holds
   **Back** (`#inbox-back`, a chevron), the thread's title (`.thread-title`), the monitor button
