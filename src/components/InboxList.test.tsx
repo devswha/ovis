@@ -937,11 +937,17 @@ describe("InboxList", () => {
       // with words in it, Escape takes the words and the field stays; empty, Escape puts it away
       await redraw({ query: "export" });
       const field = () => root.findByProps({ type: "search" });
-      await act(async () => { field().props.onKeyDown({ key: "Escape", preventDefault() {} }); });
+      const escape = (isComposing = false) => ({ key: "Escape", nativeEvent: { isComposing }, preventDefault() {} });
+      // an Escape that ends an IME's composition is the composition's: the words and the field stay
+      await act(async () => { field().props.onKeyDown(escape(true)); });
+      expect(queries).toEqual([]);
+      await act(async () => { field().props.onKeyDown(escape()); });
       expect(queries).toEqual([""]);
       await redraw({ query: "" });
       expect(byClass(root, "inbox-search").length).toBe(1);
-      await act(async () => { field().props.onKeyDown({ key: "Escape", preventDefault() {} }); });
+      await act(async () => { field().props.onKeyDown(escape(true)); });
+      expect(byClass(root, "inbox-search").length).toBe(1);
+      await act(async () => { field().props.onKeyDown(escape()); });
       expect(byClass(root, "inbox-search").length).toBe(0);
       // the field went from under the focus: the button that opened it has it, not nothing
       expect(focused.at(-1)?.node).toBe("inbox-search-toggle");

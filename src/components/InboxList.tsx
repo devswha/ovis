@@ -268,7 +268,8 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   );
 
   const closeSearch = (event: KeyboardEvent<HTMLInputElement>): void => {
-    if (event.key !== "Escape" || !wide) return;
+    // an Escape that ends an IME's composition is the composition's
+    if (event.key !== "Escape" || !wide || event.nativeEvent.isComposing || event.keyCode === 229) return;
     // a first Escape takes the words away, the next one the field
     event.preventDefault();
     if (query !== "") onQuery("");
