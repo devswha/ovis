@@ -137,7 +137,7 @@ import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks 
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
-import { useInbox, useInboxShell, useInboxWaits } from "./lib/useInbox.ts";
+import { useInbox, useInboxShell } from "./lib/useInbox.ts";
 import { INBOX_MODE_OFFERED, pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
@@ -769,7 +769,6 @@ export function App() {
   // use of the roster keeps them all, so a link, an alert or a split still reaches a hidden PC's pane
   const sidebarMachines = useShownMachines({ machines, selectedMachineRef, selectTargetRef, picks, restored: !linkSelects(initialLink) });
   // when each inbox row began to wait, observed whether the list is shown or not, where it is enabled
-  useInboxWaits(inbox.waits, sidebarMachines, activity, inbox.enabled);
   // every connected PC's sessions as its sidebar draws them, so the "waiting for you" count and its next jump
   // triage the same set the Agents list shows (G-002), and the selected PC's even when the sidebar hides it (lib/headerSessions.ts)
   const waitingRosters = useWaitingRosters(sidebarMachines, machines.find((machine) => machine.id === selectedMachineId), activity.status);
@@ -966,7 +965,7 @@ export function App() {
     <InboxList machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
       current={column && !inbox.shown && selectedPaneId !== null ? sidebarPinKey(selectedMachineId, selectedPaneId) : null}
       onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
-      onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads} waits={inbox.waits}
+      onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads}
       more={{ label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
       onExit={leaveMode}
       note={column ? undefined : <HeaderNote note={listNote} />} connection={column || listNote === null ? headerConnection : null} />

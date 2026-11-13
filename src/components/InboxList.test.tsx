@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest, mock, setSystemTime, spyOn } from "bun:test";
 import * as ReactDom from "react-dom";
 import { act, type ReactElement, type ReactNode } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
@@ -32,7 +32,13 @@ await mock.module("./RowMenu.tsx", () => ({ ...rowMenu, RowMenu }));
 const { InboxList } = await import("./InboxList.tsx");
 const { newQuestionReads } = await import("../lib/useInboxQuestions.ts");
 const { SummaryReads } = await import("../lib/useInboxSummaries.ts");
-const { InboxWaits } = await import("../lib/useInbox.ts");
+const { useAgentStateStamping } = await import("../lib/useAgentStateSince.ts");
+
+/** App's part in a waiting row's time: it stamps the state changes the list reads (lib/useAgentStateSince.ts) */
+function Stamping({ machines, activity }: { machines: Machine[]; activity: SidebarActivity }) {
+  useAgentStateStamping(machines, activity);
+  return null;
+}
 
 // the summary reads the page's reader makes: each case answers them itself
 type SummaryCall = { machineId: string; paneIds: readonly string[]; resolve(answer: PaneSummaries | null): void };
@@ -70,8 +76,6 @@ describe("InboxList", () => {
   // the page's reader (lib/useInbox.ts), which outlives each mount of the list
   let questionReads: ReturnType<typeof newQuestionReads>;
   let summaryReads: InstanceType<typeof SummaryReads>;
-  // when the page saw each wait begin (lib/useInbox.ts), which outlives the list too
-  let waits: InstanceType<typeof InboxWaits>;
   /** whether the window is a phone's (the sheets' width) */
   let phone: boolean;
   /** the animation frames asked for and not run yet: a case that waits for a status line's words runs them */
@@ -82,7 +86,6 @@ describe("InboxList", () => {
     promptReads = 0;
     phone = true;
     frames = [];
-    waits = new InboxWaits();
     // no case runs a reader's retry: their waits never fire, so no timer outlives a case to read into the next one
     const never = () => () => {};
     questionReads = newQuestionReads(never);
@@ -143,9 +146,10 @@ describe("InboxList", () => {
   let scrollMax = Number.POSITIVE_INFINITY;
   let drawn: { machines: Machine[]; options: DrawOptions } = { machines: [], options: {} };
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
+    <Stamping machines={machines} activity={options.activity ?? activity} />
     <InboxList machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
       filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} focus={{ opening: options.opening ?? 1, taken, row: options.returnTo ?? null }}
-      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} waits={waits} more={options.more} note={options.note} onExit={options.onExit} connection={options.connection ?? null} />
+      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} more={options.more} note={options.note} onExit={options.onExit} connection={options.connection ?? null} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -592,26 +596,48 @@ describe("InboxList", () => {
     expect(words(root, "w1F:p1")).toEqual(["You: Run the export tests again"]);
   });
 
-  it("keeps a waiting agent's question as its words and says how long it has waited since the page saw the wait begin", async () => {
-    waits.observe([["local:w1D:p1", "working"]], Date.now() - 40 * 60_000);
-    waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 3.5 * 60_000);
-    const root = await draw(roster());
-    await act(async () => { answerPrompt(question("Run the export tests?")); });
-    // the agent last spoke before it worked for half an hour: its words' time is not its wait's
-    await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(40.5)) });
+  // A wait is timed as the Agents list times a state: from the stamp this device made when it saw the state begin
+  // (lib/agentStateSince.ts), which App takes for as long as the page lives. The clock is set, so a stamp is where a case puts it.
+  const NOW = 1_800_000_000_000;
+  const atClock = async (minutesAgo: number, run: () => Promise<void>): Promise<void> => { jest.setSystemTime(new Date(NOW - minutesAgo * 60_000)); await run(); };
+  /** the list's own clock ticks (every thirty seconds while a row shows a time): its rows' ages are drawn again */
+  const tick = (): Promise<void> => atClock(0.5, () => act(async () => { jest.advanceTimersByTime(30_000); }));
+  const withClock = async (run: () => Promise<void>): Promise<void> => {
+    jest.useFakeTimers();
+    try { await run(); } finally {
+      await act(async () => { renderer?.unmount(); });
+      renderer = undefined;
+      jest.useRealTimers();
+      setSystemTime();
+    }
+  };
+
+  it("keeps a waiting agent's question as its words and says how long it has waited since this device saw the wait begin", () => withClock(async () => {
+    // Given the agent at work forty minutes ago, as the page saw it, and waiting since three and a half minutes ago.
+    let root!: ReactTestInstance;
+    await atClock(40, async () => { root = await draw(roster(), { activity: statusOf({ "w1D:p1": "working" }) }); });
+    await atClock(3.5, () => redraw({ activity }));
+    await atClock(1, async () => {
+      await act(async () => { answerPrompt(question("Run the export tests?")); });
+      // the agent last spoke before it worked for half an hour: its words' time is not its wait's
+      await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(39.5)) });
+    });
+    await tick();
     expect(words(root, "w1D:p1")).toEqual(["Run the export tests?"]);
     expect(age(root, "w1D:p1")).toEqual(["3m"]);
-  });
+  }));
 
-  it("says nothing of how long a row has waited when it was already waiting as the page opened, and draws a wait seen to begin", async () => {
-    waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 3.5 * 60_000);
-    const root = await draw(roster());
-    await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(40.5)) });
+  it("says nothing of how long a row has waited when it was already waiting as the page opened, and draws a wait seen to begin", () => withClock(async () => {
+    let root!: ReactTestInstance;
+    await atClock(3.5, async () => { root = await draw(roster()); });
+    await atClock(0, () => answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(40.5)) }));
     expect(times(root, "w1D:p1")).toEqual([]);
-    await act(async () => { waits.observe([["local:w1D:p1", "working"]], Date.now() - 10 * 60_000); });
-    await act(async () => { waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 2.5 * 60_000); });
+    // it goes back to work, and waits again two and a half minutes ago: that wait this device saw begin
+    await atClock(10, () => redraw({ activity: statusOf({ "w1D:p1": "working" }) }));
+    await atClock(2.5, () => redraw({ activity }));
+    await tick();
     expect(age(root, "w1D:p1")).toEqual(["2m"]);
-  });
+  }));
 
   it("marks a done row whose last words are a failed request with the failed mark and says Turn failed, never Done", async () => {
     const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done", "w1F:p1": "done" }) });

@@ -2277,9 +2277,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     one line with an ellipsis, `--fs-lg`, `--fw-medium`, `--text-strong`, `--lh-heading`. At the
     end of its line, on its middle, how long the agent has been in its state (`time.inbox-time`,
     `--fs-meta`, `--text-dim`, tabular figures; **<1m**, **6m**, **2h**, **3d**; the full local
-    time is its title): a waiting agent since this page saw it begin to wait, as the Agents list
-    times a wait, and no time when the page did not see it begin (a row already waiting when the
-    page opened or when the mode was entered: waits are watched only while the mode is on); a
+    time is its title): a waiting agent since this device saw it begin to wait, read from the
+    stamps the Agents list reads (lib/agentStateSince.ts): the app stamps every state change it
+    sees for as long as a page lives, in the classic app as in the mode, and keeps the stamps on
+    the device, so a wait that began before the mode was entered has its time, and one kept
+    from before a reload has it again where herdr's counters prove the state held. No time
+    where no page of this device saw the wait begin (herdr tells no time of a state change, and
+    the summary knows when an agent last spoke, not when it began to wait): a row already
+    waiting when the device first sees it says none, rather than a wrong one; a
     working agent since the user last asked it; any other since its last words. It ticks every
     30 seconds while a row shows one; a row with no last words, and no wait seen to begin, has
     none. Under the name, `--space-half` lower, exactly one line of words (`.inbox-words`,

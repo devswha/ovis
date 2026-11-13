@@ -1048,6 +1048,26 @@ try {
         console.log("PASS Search panes and actions in the list's More opens the command palette over the list on a phone, and Back closes it");
       });
 
+      // ---- which waits a row can time ----
+      // herdr tells no time of a state change: a wait is timed from when this device saw it begin (the stamps the
+      // Agents list reads, lib/agentStateSince.ts). The agent that already waited when the page of a fresh device
+      // opened draws no time; one that begins to wait while the page is open, in the classic app before the mode
+      // is entered, draws its own.
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(DONE)}&view=chat`, "the time of a wait the page saw begin", async (page) => {
+        await page.locator(".context-title-text").waitFor();
+        const seen = await page.evaluate(() => window.inboxFixture.rosters);
+        await page.evaluate((pane) => window.inboxFixture.set(pane, "blocked"), WORKING);
+        await page.waitForFunction((count) => window.inboxFixture.rosters > count, seen);
+        await enterFromMore(page);
+        await rowCount(page, 6);
+        await page.waitForFunction((pane) => document.querySelector(`.mode-inbox .inbox-item[data-pane="${pane}"]`)?.getAttribute("data-state") === "blocked", WORKING);
+        const waiting = (await rows(page)).filter((item) => item.state === "blocked");
+        assert.deepEqual(new Set(waiting.map((item) => item.pane)), new Set([BLOCKED, WORKING]), "two agents wait");
+        assert.match(waiting.find((item) => item.pane === WORKING)?.time ?? "", /^(<1m|\d+[mhd])$/, "the wait this page saw begin, in the classic app, is timed");
+        assert.equal(waiting.find((item) => item.pane === BLOCKED)?.time ?? null, null, "the wait that began before the page opened has no time: nothing tells when it began");
+        console.log("PASS a row times the wait this page saw begin, in the classic app before the mode was entered, and draws no time for one that began before the page opened");
+      });
+
       // ---- the list says when the connection is lost ----
       for (const viewport of [PHONE, desktop]) {
         const wide = viewport.width >= 769;

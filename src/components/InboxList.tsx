@@ -1,10 +1,11 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import { heldOrder, INBOX_FILTERS, inboxEmpty, inboxFiltered, inboxKey, inboxOrder, inboxSearched, inboxSinceAt, inboxStatus, inboxWords, plainWords, type InboxFilter } from "../lib/agentInbox.ts";
 import { agentGroup, type AgentRow } from "../lib/agentRoster.ts";
+import { stateSince } from "../lib/agentStateSince.ts";
 import type { HeaderConnection } from "../lib/headerConnection.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { inboxAsks, inboxRowLine, inboxStateWord } from "../lib/inboxRow.ts";
@@ -15,7 +16,7 @@ import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
-import type { InboxWaits } from "../lib/useInbox.ts";
+import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
 import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/useInboxQuestions.ts";
 import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -60,8 +61,6 @@ export interface InboxListProps {
   questionReads: QuestionReads;
   /** the page's reader of each row's last words (lib/useInbox.ts), which outlives this list */
   summaryReads: SummaryReads;
-  /** when the page saw each agent begin to wait (lib/useInbox.ts), which outlives this list */
-  waits: InboxWaits;
   more?: InboxMore;
   /** the way out of the mode, drawn at the column's foot where the classic sidebar's foot has the way in */
   onExit?: () => void;
@@ -100,7 +99,7 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
  * The inbox mode's list: every shown PC's agents, the ones that need the reader first, each a row of two lines.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, waits, more, onExit, note, connection = null }: InboxListProps) {
+export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, onExit, note, connection = null }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
@@ -115,7 +114,9 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
   const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity));
-  const waitStarts = useSyncExternalStore(waits.subscribe, waits.current, waits.current);
+  // when this device saw each agent's state begin: App stamps the changes for as long as the page lives, the Agents
+  // list reads them, and a waiting row's time is read from the same stamps (lib/useAgentStateSince.ts)
+  const stamps = useAgentStateStamps();
   // the rows' times age on a clock that ticks only while one is drawn (AgentSidebar.tsx); the time is read in the
   // render that draws new words, a new wait or another set of timed rows, so their landing costs no second render
   const [tick, setTick] = useState(0);
@@ -204,14 +205,14 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
     const line = inboxRowLine({ online, group, words: wordsOf(row), place, machine: severalPcs ? machine.name : null, failed }, t);
     return {
       key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state,
-      asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, waitStarts.get(key)) : null,
+      asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, group === "blocked" ? stateSince(stamps, machine.id, pane.pane_id, pane.terminal_id, "blocked") : null) : null,
     };
   });
   const timed = rows.some((row) => row.since !== null);
   // read again whenever the clock ticks, new words or a new wait land, or the rows that draw a time change (a filter
   // that drew none while the clock stood still brings one back)
   const timedRows = rows.flatMap((row) => row.since === null ? [] : [row.key]).join("\n");
-  const now = useMemo(() => Date.now(), [tick, summaries, waitStarts, timedRows]);
+  const now = useMemo(() => Date.now(), [tick, summaries, stamps, timedRows]);
   useEffect(() => {
     if (!timed) return;
     const timer = setInterval(() => setTick((count) => count + 1), CLOCK_MS);
