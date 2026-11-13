@@ -68,12 +68,16 @@ export function useInboxWaits(waits: InboxWaits, machines: readonly Machine[], a
 /** The history entry's mark that it was pushed on leaving the list: Back on such an entry returns to it. */
 export const INBOX_FROM_KEY = "ovis:from-inbox";
 
-export function useInbox({ setting, initialLink, drawerOpenRef }: { setting: boolean; initialLink: AppLink | null; drawerOpenRef: RefObject<boolean> }) {
+export function useInbox({ setting, initialLink, drawerOpenRef, anyWidth = false }: {
+  setting: boolean; initialLink: AppLink | null; drawerOpenRef: RefObject<boolean>;
+  /** the list is a place at every width (the inbox mode, lib/inboxMode.ts), not a phone's screen alone */
+  anyWidth?: boolean;
+}) {
   const phone = useMediaQuery(SHEET_QUERY);
-  const enabled = setting && phone;
+  const enabled = setting && (anyWidth || phone);
   // open from a start whose address names no pane until a pane is picked (a window widened and narrowed
   // again before then shows it again); a setting turned on later opens it from the header's Back (back)
-  const [open, setOpen] = useState(() => inboxStartsOpen(setting && typeof window !== "undefined" && window.matchMedia?.(SHEET_QUERY).matches === true, initialLink));
+  const [open, setOpen] = useState(() => inboxStartsOpen(setting && (anyWidth || (typeof window !== "undefined" && window.matchMedia?.(SHEET_QUERY).matches === true)), initialLink));
   const shown = open && enabled;
   const shownRef = useRef(shown);
   shownRef.current = shown;

@@ -96,9 +96,9 @@ describe("useInbox", () => {
     descriptors.clear();
   });
 
-  async function mount(setting: boolean, initialLink: AppLink | null = null): Promise<void> {
+  async function mount(setting: boolean, initialLink: AppLink | null = null, anyWidth = false): Promise<void> {
     function Probe() {
-      inbox = useInbox({ setting, initialLink, drawerOpenRef });
+      inbox = useInbox({ setting, initialLink, drawerOpenRef, anyWidth });
       return null;
     }
     await act(async () => { renderer = create(createElement(Probe)); });
@@ -162,6 +162,24 @@ describe("useInbox", () => {
     phone = true;
     await mount(false);
     await act(async () => { inbox.show(); });
+    expect([inbox.enabled, inbox.shown]).toEqual([false, false]);
+  });
+
+  it("is a place at every width when asked to be: offered and open in a window wider than a phone", async () => {
+    phone = false;
+    await mount(true, null, true);
+    expect([inbox.enabled, inbox.shown, inbox.cold]).toEqual([true, true, true]);
+    await act(async () => { inbox.leave(); });
+    expect([inbox.enabled, inbox.shown]).toEqual([true, false]);
+    await act(async () => { renderer?.unmount(); });
+
+    // a link to a pane opens on it, as on a phone
+    await mount(true, paneLink, true);
+    expect([inbox.enabled, inbox.shown]).toEqual([true, false]);
+    await act(async () => { renderer?.unmount(); });
+
+    // the setting still decides: off, no width shows it
+    await mount(false, null, true);
     expect([inbox.enabled, inbox.shown]).toEqual([false, false]);
   });
 

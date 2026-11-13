@@ -195,6 +195,25 @@ it("Back with nothing waiting selects the entry's pane and writes nothing", asyn
   expect(addresses()).toEqual([P1, P2]);
 });
 
+it("keeps a parameter it does not own through a move between panes, a lens change and Back", async () => {
+  // Given p1 shown at an address that also says the inbox mode (lib/inboxMode.ts), a parameter of that module's own.
+  place = { ...place, paneId: "p1" };
+  await mount([`?app=inbox&${P1.slice(1)}`]);
+
+  // When p2 is selected.
+  await act(async () => { place.paneId = "p2"; draw(); });
+
+  // Then the move is pushed with the parameter still in its address.
+  expect(writes).toEqual([`pushState 1 ?app=inbox&${P2.slice(1)}`]);
+
+  // When Back lands on p1's entry.
+  await back();
+
+  // Then p1 is selected and neither entry is rewritten.
+  expect(asked).toEqual(["p1"]);
+  expect(addresses()).toEqual([`?app=inbox&${P1.slice(1)}`, `?app=inbox&${P2.slice(1)}`]);
+});
+
 it("Back selects the entry's pane while a roster is waiting to be drawn", async () => {
   // Given p2 shown on its entry, and a roster that has arrived and is not drawn yet.
   await mount([P1, P2]);
