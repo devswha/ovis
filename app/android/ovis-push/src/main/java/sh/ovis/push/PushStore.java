@@ -88,6 +88,21 @@ final class PushStore {
         return new Endpoint(entry.optString("endpoint"), entry.optString("token"), entry.optString("vapidKey"));
     }
 
+    /** The origin `endpoint` was made for (the key saveEndpoint kept it under), or null when no PC has it. */
+    static synchronized String originOf(Context context, String endpoint) {
+        return originOf(endpoints(context), endpoint);
+    }
+
+    static String originOf(JSONObject all, String endpoint) {
+        if (endpoint == null) return null;
+        for (java.util.Iterator<String> keys = all.keys(); keys.hasNext(); ) {
+            String origin = keys.next();
+            JSONObject entry = all.optJSONObject(origin);
+            if (entry != null && endpoint.equals(entry.optString("endpoint", null))) return origin;
+        }
+        return null;
+    }
+
     static synchronized void saveEndpoint(Context context, String origin, String endpoint, String token, String vapidKey) throws JSONException {
         JSONObject all = endpoints(context);
         all.put(origin, new JSONObject().put("endpoint", endpoint).put("token", token).put("vapidKey", vapidKey));

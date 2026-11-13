@@ -1,5 +1,6 @@
 package sh.ovis.app;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -446,6 +447,37 @@ public class PCStoreTest {
             "ovis://account/callback?code=1",
             "https://app.ovis.sh/s/ bad",
         }) assertNull(other, PCStore.appLink("android.intent.action.VIEW", other));
+    }
+
+    @Test
+    public void opensATappedAlertOnItsPaneInThePcThatSentIt() {
+        String scope = "https://app.ovis.sh/s/0123456789abcdef0123456789abcdef/";
+        String id = "0123456789abcdef0123456789abcdef";
+        String home = "http://desktop.lan:7317";
+        java.util.List<String> saved = java.util.Arrays.asList(home, scope, "https://laptop.example.ts.net");
+        // a PC at its own address: the origin its endpoint was kept under, with the pane in the query
+        assertArrayEquals(new String[] { home, home + "/?machine=local&ws=w1&pane=w1%3Ap1&view=chat" },
+            PCStore.alertLink(saved, home, id, null, "w1", "w1:p1"));
+        // another PC of the roster, and a name that needs escaping
+        assertArrayEquals(new String[] { home, home + "/?machine=build%20box&pane=w2%3Ap3&view=chat" },
+            PCStore.alertLink(saved, home, null, "build box", null, "w2:p3"));
+        // a relay PC shares the hosted shell's origin with every other: its relay ID names it, the pane in the fragment
+        assertArrayEquals(new String[] { scope, scope + "#machine=local&ws=w1&pane=w1%3Ap1&view=chat" },
+            PCStore.alertLink(saved, "https://app.ovis.sh", id, "local", "w1", "w1:p1"));
+        // no endpoint found for it on this phone: the relay ID alone still names a saved relay PC
+        assertArrayEquals(new String[] { scope, scope + "#machine=local&pane=w1%3Ap1&view=chat" },
+            PCStore.alertLink(saved, null, id, null, null, "w1:p1"));
+        // a direct PC that also has a relay ID opens at the address that subscribed, not through the relay
+        assertEquals("https://laptop.example.ts.net", PCStore.alertLink(saved, "https://laptop.example.ts.net", id, null, null, "w1:p1")[0]);
+        // nothing to open: no pane, a PC this phone does not keep, or no PC named at all (an older PC)
+        assertNull(PCStore.alertLink(saved, home, id, null, null, null));
+        assertNull(PCStore.alertLink(saved, home, id, null, null, ""));
+        assertNull(PCStore.alertLink(saved, "http://forgotten.lan:7317", null, null, null, "w1:p1"));
+        assertNull(PCStore.alertLink(saved, null, "fedcba9876543210fedcba9876543210", null, null, "w1:p1"));
+        assertNull(PCStore.alertLink(saved, null, "../evil", null, null, "w1:p1"));
+        assertNull(PCStore.alertLink(saved, null, null, null, null, "w1:p1"));
+        // a relay ID never moves an alert from a saved address to the hosted shell
+        assertNull(PCStore.alertLink(java.util.Collections.singletonList(scope), "http://forgotten.lan:7317", id, null, null, "w1:p1"));
     }
 
     @Test

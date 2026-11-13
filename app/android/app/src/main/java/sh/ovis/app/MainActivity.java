@@ -50,6 +50,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import sh.ovis.push.OvisMessagingService;
 
 /**
  * Capacitor's activity with the chosen PC as the WebView's first page, as HerdrBridgeViewController
@@ -187,6 +188,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(OvisDirectPlugin.class);
         String link = takeAppLink(getIntent(), savedInstanceState == null);
         if (link != null) openAppLink(link);
+        else openAlert(getIntent(), savedInstanceState == null);
         // the PC's key: its origin, or its scope on the hosted shell's origin for a relay PC. An
         // app link waiting for the connect screen shows that screen first
         String pc = PCStore.link != null ? null : PCStore.current(this);
@@ -857,7 +859,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onNewIntent(Intent intent) {
         String link = takeAppLink(intent, true);
-        if (link != null && openAppLink(link)) {
+        if ((link != null && openAppLink(link)) || openAlert(intent, true)) {
             reopen();
             return;
         }
@@ -897,6 +899,32 @@ public class MainActivity extends BridgeActivity {
         intent.setData(null);
         boolean fromRecents = (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
         return fresh && !fromRecents ? link : null;
+    }
+
+    /**
+     * Readies a tapped alert's pane for the next first load (PCStore.alertLink): the PC that sent it,
+     * on that pane in its chat, switching PC when another is open. False, leaving the open page alone,
+     * for any other intent, an alert that names no saved PC, and one the system hands back with the
+     * activity restored or started from Recents, which was opened before. The alert is taken out of
+     * the intent, so it opens once.
+     */
+    private boolean openAlert(Intent intent, boolean fresh) {
+        if (intent == null || !OvisMessagingService.ACTION_OPEN_ALERT.equals(intent.getAction())) return false;
+        String[] alert = PCStore.alertLink(
+            PCStore.saved(this),
+            intent.getStringExtra(OvisMessagingService.EXTRA_ORIGIN),
+            intent.getStringExtra(OvisMessagingService.EXTRA_SERVER_ID),
+            intent.getStringExtra(OvisMessagingService.EXTRA_MACHINE),
+            intent.getStringExtra(OvisMessagingService.EXTRA_WORKSPACE),
+            intent.getStringExtra(OvisMessagingService.EXTRA_PANE)
+        );
+        intent.setAction(Intent.ACTION_MAIN);
+        boolean fromRecents = (intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0;
+        if (alert == null || !fresh || fromRecents) return false;
+        PCStore.open(this, alert[0], alert[1]);
+        PCStore.fail(null, null);
+        PCStore.redirects = 0;
+        return true;
     }
 
     /** Opens the current PC again from its first page. */

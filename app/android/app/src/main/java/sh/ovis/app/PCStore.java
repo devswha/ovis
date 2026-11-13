@@ -69,6 +69,39 @@ final class PCStore {
         return hostedShell && scope.matches() ? "https://app.ovis.sh/s/" + scope.group(1) + "/" : null;
     }
 
+    private static final Pattern SERVER_ID = Pattern.compile("[0-9a-f]{32}");
+
+    /**
+     * Where a tapped alert opens (OvisMessagingService): {the saved PC's key, the address of its pane},
+     * as the browser's worker opens it (public/sw.js notificationclick), or null when the alert names
+     * no pane or no saved PC, and the app opens as it was. The PC is the one the alert's endpoint was
+     * made for (`origin`, the push module's key for it) when that origin is a saved PC; a relay PC,
+     * which shares the hosted shell's origin with every other, is named by its relay ID (`serverId`)
+     * instead. Its pane rides in the scope's fragment there, as the hosted shell's host never hears it.
+     */
+    static String[] alertLink(List<String> saved, String origin, String serverId, String machine, String workspace, String pane) {
+        if (pane == null || pane.isEmpty()) return null;
+        String query = "machine=" + encoded(machine == null || machine.isEmpty() ? "local" : machine)
+            + (workspace == null || workspace.isEmpty() ? "" : "&ws=" + encoded(workspace))
+            + "&pane=" + encoded(pane) + "&view=chat";
+        String key = origin(origin);
+        if (key != null && saved.contains(key) && !scoped(key)) return new String[] { key, key + "/?" + query };
+        if (serverId != null && SERVER_ID.matcher(serverId).matches()) {
+            String scope = "https://app.ovis.sh/s/" + serverId + "/";
+            // an endpoint kept for the hosted shell, or none found: then the relay ID alone names the PC
+            if (saved.contains(scope) && (key == null || sameOrigin(key, scope))) return new String[] { scope, scope + "#" + query };
+        }
+        return null;
+    }
+
+    private static String encoded(String text) {
+        try {
+            return java.net.URLEncoder.encode(text, "UTF-8").replace("+", "%20");
+        } catch (java.io.UnsupportedEncodingException never) {
+            throw new IllegalStateException(never);
+        }
+    }
+
     /**
      * Whether an app link is one to pair from: the PC's scope alone or with its pairing offer, which
      * the connect screen checks as it does a scanned QR code (app/web/shell.js relayLink). Any other

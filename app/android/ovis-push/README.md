@@ -11,7 +11,7 @@ nor Google can read a push.
 | File | Does |
 |---|---|
 | `OvisPushPlugin` | the `OvisPush` Capacitor plugin the client calls: `checkPermissions()`, `requestPermissions()`, `subscribe()`, `getSubscription()`, `unsubscribe()` |
-| `OvisMessagingService` | receives FCM data messages, decrypts the `ovis` field, shows the notification (the fallback line "herdr needs you" when it cannot) |
+| `OvisMessagingService` | receives FCM data messages, decrypts the `ovis` field, shows the notification (the fallback line "herdr needs you" when it cannot); a pane's alert taps through to that pane on the PC whose endpoint it came to (`MainActivity.openAlert`) |
 | `WebPushDecrypt`, `PushKeys` | RFC 8291 / RFC 8188 (`aes128gcm`) decryption and the phone's P-256 keys, tested against RFC 8291's own example |
 | `PushStore` | the keys and each PC's relay endpoint, in the app's private preferences |
 | `OvisPushInitializer` | a startup provider that registers the plugin with the app's `BridgeActivity` |

@@ -32,6 +32,14 @@ export interface PushPayload {
    */
   prompt_id?: string;
   actions?: PushAction[];
+  /**
+   * The subscription endpoint this push was sent to, and this PC's relay ID where it has one. A
+   * browser's worker knows its PC by its own scope and ignores them; the phone app keeps one
+   * endpoint per PC, so its tap opens the PC that sent the alert (app/android/ovis-push
+   * OvisMessagingService). Added per delivery; absent from an older server.
+   */
+  endpoint?: string;
+  server_id?: string;
 }
 
 /** One answer button on an alert: the prompt's option it picks, and that option's label. */

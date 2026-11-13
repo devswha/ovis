@@ -664,7 +664,11 @@ export function createPushService(options: PushServiceOptions): PushService {
     // registered again by another owner or with other keys, and that subscription is not told
     const identity = identityOf(subscription);
     const { publicKey, privateKey } = keysFor(subscription.endpoint);
-    const details = webpush.generateRequestDetails(subscription, JSON.stringify(message), {
+    // which PC sent it, for the phone app's tap (shared/push.ts endpoint): a pane alert only
+    const serverId = message.pane_id === null ? undefined : options.serverId?.();
+    const sealed: PushPayload = message.pane_id === null ? message
+      : { ...message, endpoint: subscription.endpoint, ...(serverId ? { server_id: serverId } : {}) };
+    const details = webpush.generateRequestDetails(subscription, JSON.stringify(sealed), {
       vapidDetails: { subject, publicKey, privateKey },
       TTL: PUSH_TTL_SECONDS,
       urgency,

@@ -219,6 +219,7 @@ describe("push delivery", () => {
       body: "waiting for your input",
       tag: "herdr-pane-w1:p1",
       kind: "input",
+      endpoint: fake.subscription.endpoint,
     });
     expect(received!.urgency).toBe("high");
     expect(received!.ttl).toBe(12 * 60 * 60);
@@ -299,7 +300,21 @@ describe("push delivery", () => {
       body: "terminal ended",
       tag: "herdr-pane-w1:p1",
       kind: "ended",
+      endpoint: fake.subscription.endpoint,
     });
+  });
+
+  it("names the PC in a pane alert, by the endpoint it went to and its relay ID, for the phone app's tap", async () => {
+    const serverId = "0123456789abcdef0123456789abcdef";
+    const push = subscribed({ serverId: () => serverId });
+    push.seed([pane("w1:p1", "working", "claude: fix the build")]);
+    await push.onStatus("w1:p1", "blocked");
+    expect(fake.received[0]!.payload).toMatchObject({ pane_id: "w1:p1", endpoint: fake.subscription.endpoint, server_id: serverId });
+    // the test push is about no pane: nothing to open, so it names no PC
+    fake.received.length = 0;
+    await push.sendTest(fake.subscription.endpoint);
+    expect(fake.received[0]!.payload).not.toHaveProperty("endpoint");
+    expect(fake.received[0]!.payload).not.toHaveProperty("server_id");
   });
 
   it("counts a pane alert a device took, never the test push or one the push service refused", async () => {
