@@ -2502,10 +2502,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   server has no such route shows its rows without them until it goes away and comes back. A
   pane once opened stays mounted under the list, hidden (`visibility: hidden`, inert), so a
   message on its way is not cut.
-- No terminal is sized by entering or leaving the mode. The list takes the shell's bars away,
-  from 769px it draws its column whether or not the classic sidebar was open, and a classic
-  split becomes one pane, so a pane laid out again under the list would have another box than
-  the one its pty was sized to. A covered pane therefore keeps the box it was shown in
+- Entering the mode, and leaving it from the list, size no terminal; showing the terminal in a
+  thread sizes it to the thread's box. The list takes the shell's bars away, from 769px it
+  draws its column whether or not the classic sidebar was open, and a classic split becomes one
+  pane, so a pane laid out again under the list would have another box than the one its pty
+  was sized to. A covered pane therefore keeps the box it was shown in
   (lib/coveredPane.ts reads each pane's box as the list is about to cover it, and at no other
   time, so the classic app reads and watches nothing for it; it holds the pane there,
   `.pane-slot[data-kept-box]`) and sizes nothing (`PaneCoveredContext`, as a split pane a phone
@@ -2517,11 +2518,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the list keeps the row it had, hidden with it, and a phone thread that shows its terminal
   keeps that row's room free above it, on the terminal's surface (`.app.is-inbox-tab-room`:
   `--touch-target` and the row's hairline), where classic would draw the row. A thread opens
-  on its chat (a
-  row, the next waiting agent), so its terminal is sized only when it is shown there. With the
-  classic sidebar collapsed, or from a classic split, a thread's pane is not classic's (the
-  column stands beside it, and it is one pane), so its terminal, once shown, has the thread's
-  own grid and takes classic's again when the mode is left.
+  on its chat (a row, the next waiting agent), which sizes nothing: as the chat does in the
+  classic app, it lets go of the pty's size. Showing the terminal there (the monitor button)
+  sizes the pty to the thread's box, as showing it after the chat, zooming a pane or hiding the
+  sidebar does in the classic app, and Back to Ovis from that thread sizes it to classic's box.
+  Where the thread's box is classic's, both ask for the grid the pty already had. It is not
+  classic's in three cases, where the terminal has the thread's own grid once it is shown and
+  takes classic's again as the mode is left: the classic sidebar was collapsed (the column
+  stands beside the thread, so its pane is narrower); the pane was one half of a classic split
+  (a thread is one pane); the tab is split by herdr on a wide window (the mode shows one pane
+  at the full canvas).
 - It follows a messenger app's conversation list, the reference the maintainer chose, on a
   phone and on a desktop: two-line rows with a round mark, one muted line of last words and a
   single dot, round controls in place of a header bar, a search pill at the foot of a phone,

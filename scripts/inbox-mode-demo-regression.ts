@@ -1002,6 +1002,70 @@ try {
         }, setup.viewport);
       }
 
+      // ---- a thread that shows its terminal sizes its pty to the thread's box ----
+      // Entering the mode, and leaving it from the list, size nothing (above), and a thread opens on its chat, which
+      // sizes nothing either. Showing the terminal there sizes the pty to the thread's box, as showing it after the
+      // chat or hiding the sidebar does in the classic app. With the classic sidebar collapsed the column stands
+      // beside the thread, so that grid is narrower than classic's, and Back to Ovis from the thread asks for
+      // classic's again: exactly those two sizes are sent, and none while the list covers the pane.
+      await withPage(browser, base, { language: "en", theme: "light" }, `${terminalAt}&sidebar=hidden`, "a thread's terminal is sized to the thread's box", async (page) => {
+        const sized = (): Promise<Window["inboxFixture"]["resizes"]> => page.evaluate(() => window.inboxFixture.resizes.slice());
+        /** the sizes sent after the first `count`, once one has come */
+        const sizedAfter = async (count: number, what: string): Promise<Window["inboxFixture"]["resizes"]> => {
+          const came = await page.waitForFunction((sent) => window.inboxFixture.resizes.length > sent, count, { timeout: 10_000 }).then(() => true, () => false);
+          assert.ok(came, `${what}: no size was sent to the pane's pty`);
+          // fixed wait: no second size may follow the one that came
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          return (await sized()).slice(count);
+        };
+        /** how wide the shown terminal's screen is: as many cells as its grid has columns */
+        const screenWidth = (): Promise<number> => page.locator(".terminal-stack:not(.is-chat) .pane-terminal .xterm-screen").evaluate((node) => node.getBoundingClientRect().width);
+        await page.locator(".app-header.is-zoned").waitFor();
+        const classic = await terminalBox(page);
+        assert.equal(classic.x, 0, "the classic sidebar is collapsed: the pane begins at the window's edge");
+        // fixed wait: the page's own first sizing of the pane has gone out
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const atLoad = await sized();
+        const grid = atLoad.filter((size) => size.pane === BLOCKED).at(-1);
+        assert.ok(grid, "the classic app sized the pane's pty as the page loaded");
+        const cell = await screenWidth() / grid.cols;
+        const before = atLoad.length;
+
+        // into the mode, and the pane's row: the list over the pane, then its thread on the chat, size nothing
+        await page.locator(".header-more-button").click();
+        await page.locator('.row-menu [data-item="enter-inbox"]').click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await paneHiddenUnderList(page, "the pane is mounted under the list, hidden");
+        // fixed wait: no size may be sent for the pane under the list
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        assert.deepEqual((await sized()).slice(before), [], "the list over the pane sends its pty no size");
+        await row(page, BLOCKED).click();
+        await page.locator(".thread-chip").waitFor();
+        // fixed wait: no size may be sent for a thread that shows its chat
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        assert.deepEqual((await sized()).slice(before), [], "a thread opened on its chat sends its pty no size");
+
+        // the monitor button shows the terminal beside the column: one size, the thread's
+        await page.locator(".thread-top .lens-toggle").click();
+        await page.locator('.thread-top .lens-toggle[data-view="terminal"]').waitFor();
+        const thread = await terminalBox(page);
+        const column = await box(page, ".inbox-column");
+        near(thread.w, classic.w - column.w, 1, "the thread's terminal is narrower than classic's by the column");
+        const shown = await sizedAfter(before, "the terminal shown in the thread");
+        const threadGrid = { pane: BLOCKED, cols: Math.round(await screenWidth() / cell), rows: grid.rows };
+        assert.ok(threadGrid.cols < grid.cols, `the thread's grid has fewer columns than classic's: ${threadGrid.cols}, classic ${grid.cols}`);
+        assert.deepEqual(shown, [threadGrid], "showing the terminal in the thread asks once, for the grid the thread draws");
+
+        // Back to Ovis from that thread: one size, classic's again
+        await page.locator(".inbox-exit").click();
+        await page.locator(".mode-inbox").waitFor({ state: "detached" });
+        await page.locator(".app-header.is-zoned").waitFor();
+        assert.deepEqual(await sizedAfter(before + 1, "the classic app after the thread"), [grid], "Back to Ovis from the thread asks once, for classic's grid");
+        sameBox(await terminalBox(page), classic, "back in the classic app the terminal has the box it had");
+        console.log(`PASS with the classic sidebar collapsed, a thread's terminal is sized to the thread's box (${threadGrid.cols} by ${threadGrid.rows}) when the monitor button shows it and to classic's (${grid.cols} by ${grid.rows}) on Back to Ovis; the list over the pane and the thread's chat send no size`);
+      }, { width: 1440, height: 900 });
+
       // ---- where a phone that starts in the inbox stays ----
       const phoneOn: Settings = { language: "en", theme: "light", phoneInbox: true };
       await withPage(browser, base, phoneOn, "/", "a phone that starts in the inbox and went back to Ovis", async (page) => {
