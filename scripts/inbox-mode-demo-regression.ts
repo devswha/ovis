@@ -1121,19 +1121,37 @@ try {
       // ---- a classic split through a thread and back ----
       // A row's thread takes the split's other half off the page; Back mounts it again under the list (it attaches once
       // more, keeping the pty's size) held at its classic box, and the mode left from there sends no size or release.
-      await withPage(browser, base, { language: "en", theme: "light" }, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "a classic split through a thread and back", async (page) => {
-        await page.evaluate((other) => sessionStorage.setItem("ovis:split", JSON.stringify({ other: { machineId: "local", paneId: other }, bSide: "right", active: "a" })), BLOCKED);
-        await page.reload();
+      // The app's own split, made as a user makes it (a sidebar row dropped on the pane area's right side, whose half is
+      // then the active one), through the row of either half: the half that shows the row's pane takes the pick, so
+      // each half shows its own pane at the end and none keeps another's mounted hidden.
+      for (const opened of [WORKING, BLOCKED]) {
+      await withPage(browser, base, { language: "en", theme: "light" }, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, `a classic split through a thread of ${opened} and back`, async (page) => {
+        /** the pane frames each half of the split holds, by its slot */
+        const halves = (): Promise<Record<string, string>> => page.evaluate(() => Object.fromEntries([...document.querySelectorAll(".pane-slot")].map((slot) => [slot.getAttribute("data-slot"), [...slot.querySelectorAll("[data-layout-pane]")].map((frame) => `${frame.getAttribute("data-layout-pane")}${frame.classList.contains("is-hidden") ? " (hidden)" : ""}`).join(" + ")])));
         await page.locator(".app-header.is-zoned").waitFor();
+        const area = page.locator(".pane-split");
+        const areaBox = (await area.boundingBox())!;
+        const right = { clientX: areaBox.x + areaBox.width * 0.75, clientY: areaBox.y + areaBox.height / 2 };
+        const data = await page.evaluateHandle(() => new DataTransfer());
+        await page.locator(`.pane-select[title^="${BLOCKED} —"]`).dispatchEvent("dragstart", { dataTransfer: data });
+        await page.locator(".split-drop.is-visible").waitFor({ state: "attached" });
+        await area.dispatchEvent("dragover", { dataTransfer: data, ...right });
+        await page.locator('.split-drop.is-visible[data-edge="right"]').waitFor({ state: "attached" });
+        await area.dispatchEvent("drop", { dataTransfer: data, ...right });
+        await data.dispose();
         await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2, undefined, { timeout: 15_000 });
         // fixed wait: the halves' own attach and first sizing have gone out
         await page.waitForTimeout(NO_RESIZE_WAIT_MS);
-        const other = await box(page, `[data-layout-pane="${BLOCKED}"] .xterm-screen`);
+        const classicBoxes = new Map<string, Box>();
+        for (const slot of ["a", "b"]) classicBoxes.set(slot, await box(page, `.pane-slot[data-slot="${slot}"]`));
+        const classicHalves = await halves();
+        assert.deepEqual(classicHalves, { a: WORKING, b: BLOCKED }, "classic draws the split's two halves, each its own pane");
+        assert.equal(await page.locator(".pane-slot.is-active").getAttribute("data-slot"), "b", "the dropped half is the active one");
         await page.locator(".header-more-button").click();
         await page.locator('.row-menu [data-item="enter-inbox"]').click();
         await page.locator(".inbox-column .mode-inbox").waitFor();
         await rowCount(page, 6);
-        await row(page, WORKING).click();
+        await row(page, opened).click();
         await page.locator(".thread-chip").waitFor();
         const before = await page.evaluate(() => window.inboxFixture.frames.length);
         await page.goBack();
@@ -1146,9 +1164,11 @@ try {
         await page.waitForTimeout(NO_RESIZE_WAIT_MS);
         const sent = (await page.evaluate((count) => window.inboxFixture.frames.slice(count), before)).filter((frame) => frame.type === "resize" || frame.type === "release-size");
         assert.deepEqual(sent, [], "after the Back, nothing sends a size or a release");
-        sameBox(await box(page, `[data-layout-pane="${BLOCKED}"] .xterm-screen`), other, "the split's other half has the box, and the grid, it had before the mode");
-        console.log("PASS a classic split through a row's thread and Back: its other half comes back under the list held at its classic box, and Back to Ovis sends no size or release");
+        assert.deepEqual(await halves(), classicHalves, "each half shows its own pane, as before the mode, and holds no other");
+        for (const [slot, was] of classicBoxes) sameBox(await box(page, `.pane-slot[data-slot="${slot}"]`), was, `half ${slot} has the box it had before the mode`);
+        console.log(`PASS a classic split through the thread of ${opened} and Back: each half shows its own pane after Back to Ovis, both halves keep their classic boxes, and nothing sends a size or release`);
       }, { width: 1440, height: 900 });
+      }
 
       // ---- a thread that shows its terminal sizes its pty to the thread's box ----
       // Entering the mode, and leaving it from the list, size nothing (above), and a thread opens on its chat, which

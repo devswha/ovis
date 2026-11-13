@@ -277,6 +277,17 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     const change = activatedSlot(split, current, slot);
     if (change) applySplit(change, keepFocus);
   };
+  /**
+   * A pick of a pane another slot shows, where the pick is not the active slot's to take (the inbox mode's row: a
+   * thread is one pane, and the mode left from it shows the split as it was): that slot becomes the active one and
+   * the active slot keeps its pane. The layout only; the pick is the caller's.
+   */
+  const activateSlotOf = (target: SplitTarget): void => {
+    if (!splitOn || current === null) return;
+    const slot = Object.entries(split.panes).find(([, pane]) => sameTarget(pane, target))?.[0];
+    const change = slot === undefined ? null : activatedSlot(split, current, slot);
+    if (change?.split) setSplit(change.split);
+  };
   const closeSlot = (slot: SplitSlot): void => {
     if (!splitOn || current === null) return;
     // another slot closes alone; the active one's place and the selection go to its nearest slot
@@ -445,5 +456,5 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
       window.removeEventListener("keydown", cancel);
     };
   }, [splitDragOn, clearDropPreview, hideDropTarget]);
-  return { splitOn, others, shownSlots, rects, follows, activateSlot, closeSlot, selectInSlot, dockSide, splitDragOn, paneDragOver, paneDragLeave, paneDrop, dividers, resizeDivider, gridPreview };
+  return { splitOn, others, shownSlots, rects, follows, activateSlot, activateSlotOf, closeSlot, selectInSlot, dockSide, splitDragOn, paneDragOver, paneDragLeave, paneDrop, dividers, resizeDivider, gridPreview };
 }
