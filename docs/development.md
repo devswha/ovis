@@ -934,9 +934,12 @@ so CI's hashes differ from ones built with another Bun.
 An install from source (a git checkout started with `bun run start`, the herdr plugin's source path, an older
 `install.sh`) updates in the app ([server/updater.ts](../server/updater.ts)). Up to the bridge release that update
 fetched `v*` tags and built them; from the bridge release on it reads releases of the compiled server instead
-([server/update-artifact.ts](../server/update-artifact.ts)): the newest release named `ovis-<version>` at
-`OVIS_RELEASES_URL` (GitHub's releases, listed through its API, or a `file://` folder; the beta channel also takes
-`ovis-<version>-beta.<n>`), offered only when it is newer than the version that runs. Its `ovis-server.json` must be
+([server/update-artifact.ts](../server/update-artifact.ts)): the newest release at `OVIS_RELEASES_URL` (GitHub's
+releases, listed through its API, or a `file://` folder laid out as GitHub's downloads), under the names the release
+workflows publish: `v<version>` (release.yml), `beta/v<version>-beta.<n>` (beta.yml's tags, on the beta channel) or
+`ovis-<version>`. It is offered only when it is newer than the version that runs (for a source build, the tag its
+commit carries: a beta's package.json names only its base version). A release that ships no `ovis-server.json` is
+passed over for an older one. Its `ovis-server.json` must be
 signed by `RELEASE_PUBLIC_KEY` and name that very version before any other file is downloaded; then the binary and the
 client are checked against it and staged as `<update state>/release-*`: `bin/` holds the server, and
 `server/supervisor.ts` is a few lines that every launcher since updates replaced the supervisor runs with its Bun
@@ -951,9 +954,11 @@ installs and `current.json`, and a check that finds nothing newer names the runn
 the checkout or the app's state changes, and a release that fails a check leaves the running one as it was. The
 compiled supervisor runs only the binary release it was started from and never builds from source.
 
-The bridge is one release: a `v*` tag on a commit that still holds the whole source tree and this updater, made
-the usual way. Every install from before reaches it by its own update; its next update is the first
-`ovis-<version>` release. After it, no `v*` or `beta/*` tag is made again.
+The bridge is one release: the first `v*` release made the usual way from a commit that holds this updater and still
+the whole source tree. Every install from before reaches it by its own update; its next update installs the next
+release's compiled server, under the same `v<version>` name. A beta tag is offered once beta.yml publishes it as a
+release with a signed `ovis-server.json`; until then the beta channel takes the stable releases. The offer's notes
+are its tag's `CHANGELOG.md`, read through the checkout's origin, and kept beside the installed release.
 
 ### The server binary's signing key
 

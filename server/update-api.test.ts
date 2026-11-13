@@ -194,7 +194,6 @@ describe("a manual install", () => {
     const under020 = connect({ OVIS_MANAGED: "1", HERDR_WEB_MANAGED: "1" });
     deliver({ type: "update-status", status: { ...older, available: false } });
     expect(under020.status()).toMatchObject({ available: false, blocked_reason: OLD_LAUNCHER_REASON });
-    expect(OLD_LAUNCHER_REASON).toContain("git pull");
     const refused = await handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", under020);
     expect(refused.status).toBe(409);
     expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(OLD_LAUNCHER_REASON);

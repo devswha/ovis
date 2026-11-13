@@ -181,7 +181,11 @@ async function followOwn(options: OwnUpdateOptions, state: { last: Partial<Updat
       // away: its server restarts on the new release, so the install ran
       if (!options.endpoint()) { started = true; options.onStep(`This PC's own Ovis is restarting${to}…`); }
     } else {
-      if (typeof revision === "string" && status.current_revision === revision && !installing(status)) return;
+      // done once it runs what was offered, idle: on the offered revision (a build of the sources), or on the offered
+      // version, as a binary release reports the commit of its build there, never the manifest id it was offered by
+      const arrived = (typeof revision === "string" && status.current_revision === revision)
+        || (typeof offer?.latest_version === "string" && status.current_version === offer.latest_version);
+      if (arrived && !installing(status)) return;
       if (installing(status)) {
         started = true;
         options.onStep(`This PC's own Ovis is updating itself${to}: ${STEPS[status.step ?? ""] ?? status.phase}…`);

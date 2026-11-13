@@ -65,6 +65,18 @@ describe("followOwnUpdate", () => {
     expect(steps).toContain("This PC's own Ovis is updating itself to v0.5.1: building…");
   });
 
+  it("ends a binary release's install once the PC runs the offered version, which it tells by its build's commit", async () => {
+    // offered by its manifest's id (64 hex); once installed the PC reports the 40-hex commit its client was built from
+    const manifestId = "e".repeat(64), built = "f".repeat(40);
+    const pc = remote(offered({ latest_revision: manifestId }), [{ phase: "building", step: "download" },
+      { phase: "idle", available: false, current_version: "0.5.1", current_revision: built, latest_version: "0.5.1", latest_revision: built }]);
+    await followOwnUpdate({ endpoint: () => pc.endpoint, revision: manifestId, signal: AbortSignal.timeout(5_000), onStep: () => {}, ...fast });
+    expect(pc.installs).toEqual([{ expected_revision: manifestId }]);
+    // a PC still on the version before is not done, whatever else it says
+    const stuck = remote(offered({ latest_revision: manifestId }), [{ phase: "idle", available: false, current_version: "0.5.0", current_revision: built }]);
+    await expect(followOwnUpdate({ endpoint: () => stuck.endpoint, revision: manifestId, signal: AbortSignal.timeout(300), onStep: () => {}, ...fast })).rejects.toThrow();
+  });
+
   it("waits while the PC is away restarting, and ends once it answers again on the new revision", async () => {
     const pc = remote(offered(), [{ phase: "restarting", step: "restart" }, { phase: "idle", available: false, current_revision: OFFERED }]);
     let away = 0;

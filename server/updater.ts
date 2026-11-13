@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { CHECKOUT_CHANGED_REASON, noInstalledNotes, readUpdateChannel, type UpdateChannel, noUpdateNotes, unmanagedUpdateStatus, type InstalledNotes, type UpdateCommand, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
 import { compareVersions, releaseNotes, releaseSummaries, SUMMARIES_FILE } from "./release-notes.ts";
 import { releaseIn } from "./update-state.ts";
-import { buildCommit, newerVersion, offeredRelease, stagedRelease, stageBinaryRelease, type BinaryOffer } from "./update-artifact.ts";
+import { buildCommit, newerVersion, offeredRelease, releaseNameVersion, stagedRelease, stageBinaryRelease, type BinaryOffer } from "./update-artifact.ts";
 import type { ServerPlatform } from "../scripts/server-manifest.ts";
 
 export interface Release {
@@ -512,8 +512,9 @@ export class Updater {
 
   /**
    * From the bridge release on: the newest release of the compiled server the channel takes (server/update-artifact.ts),
-   * offered only when it is newer than the version that runs, so neither a signed older release nor the one running
-   * comes back. Its id is its manifest's SHA-256; tags are never read.
+   * under the names the release workflows publish, offered only when it is newer than the version that runs, so
+   * neither a signed older release nor the one running comes back. Its id is its manifest's SHA-256; its notes are
+   * its tag's changelog, read through the checkout's origin as an update from source reads them.
    */
   private async discoverRelease(channel: UpdateChannel) {
     const { releases } = this.options;
@@ -523,16 +524,44 @@ export class Updater {
       this.patch({ latest_revision: null, latest_version: null, checked_at, available: false, blocked_reason: "No release of Ovis has a compiled server for this platform." });
       return;
     }
-    const offer = await offeredRelease({ base: releases.base, channel, publicKey: releases.publicKey, fetchFile: releases.fetchFile });
-    const running = this.status.current_version;
-    const available = offer !== null && running !== null && offer.revision !== this.release!.revision && newerVersion(offer.version, running);
+    const running = await this.runningVersion();
+    const offer = running === null ? null : await offeredRelease({ base: releases.base, channel, publicKey: releases.publicKey, newerThan: running, fetchFile: releases.fetchFile });
+    const available = offer !== null && offer.revision !== this.release!.revision;
     this.offer = available ? offer : null;
-    this.notes = available ? { ...noUpdateNotes(), revision: offer.revision } : noUpdateNotes();
+    this.notes = available ? await this.tagNotes(offer.tag, offer.revision, offer.version) : noUpdateNotes();
     // nothing newer: the latest is the release that runs, told as pages compare it (its build commit, as current_revision),
-    // never as its manifest's id, which a page would take for another release on offer
+    // never as a manifest's id, which a page would take for another release on offer
     const latest = available ? { latest_revision: offer.revision, latest_version: offer.version }
-      : offer ? { latest_revision: reportedRevision(this.release!), latest_version: running } : { latest_revision: null, latest_version: null };
+      : running !== null ? { latest_revision: reportedRevision(this.release!), latest_version: this.status.current_version } : { latest_revision: null, latest_version: null };
     this.patch({ ...latest, checked_at, blocked_reason: null, available });
+  }
+
+  /**
+   * The version the running release is, as offers compare it: a binary release's own; for a build of the sources the
+   * tag its commit carries, since a beta's package.json names only its base version (a build of `beta/v0.6.0-beta.1`
+   * says 0.6.0, and would never take `0.6.0-beta.2`); a stable tag over a beta, and package.json where none is told.
+   */
+  private async runningVersion(): Promise<string | null> {
+    const release = this.release!;
+    const version = this.status.current_version;
+    if (release.distribution === "binary" || version === null) return version;
+    let tags: string[] = [];
+    try { tags = (await this.git("tag", "--points-at", release.revision, "--list", "v*", "beta/v*")).split("\n").map((tag) => tag.trim()); }
+    catch { return version; }
+    const versions = tags.map(releaseNameVersion).filter((told): told is string => told !== null && told.replace(/-beta\.\d+$/, "") === version);
+    if (versions.includes(version)) return version;
+    return versions.reduce<string | null>((best, told) => (best === null || newerVersion(told, best) ? told : best), null) ?? version;
+  }
+
+  /**
+   * What a binary release brings, from its tag's own CHANGELOG.md fetched from the checkout's origin (the release
+   * workflows tag the commit they publish); nothing where that tag cannot be fetched. Display only: what is installed
+   * is checked against the signed manifest alone.
+   */
+  private async tagNotes(tag: string, revision: string, version: string): Promise<UpdateNotes> {
+    try { await this.fetchInto(() => this.git("fetch", "--no-tags", "--no-write-fetch-head", "origin", `+refs/tags/${tag}:refs/tags/${tag}`)); }
+    catch { return { ...noUpdateNotes(), revision }; }
+    return { ...(await this.changes(`refs/tags/${tag}`, version.replace(/-beta\.\d+$/, ""))), revision };
   }
 
   /**
@@ -663,6 +692,10 @@ export class Updater {
             fetchFile: this.options.releases.fetchFile, ptyRuns: this.options.releases.ptyRuns });
           stage = staged.directory;
           console.log(`Ovis ${offer.version}: ${staged.host}`);
+          // its notes beside it, from its tag as the offer read them: what the installed update told is read from there
+          for (const file of ["CHANGELOG.md", SUMMARIES_FILE]) {
+            try { writeFileSync(join(stage, file), await this.git("show", `refs/tags/${offer.tag}:${file}`)); } catch { /* told without them */ }
+          }
         } else {
           stage = mkdtempSync(join(this.options.stateDir, "release-"));
           // Network filesystems and low-memory builds can take minutes even without a network fetch.

@@ -949,18 +949,19 @@ describe("managed source updates with real Git repositories and builds", () => {
     // is no failed release: current.json stays, and the next start runs that release again
     const root = mkdtempSync(join(directory, "stop-root-"));
     const appState = mkdtempSync(join(directory, "stop-state-"));
-    const port = 59997;
+    // a port nothing listens on: Bun.spawn and fetch are stand-ins, so nothing binds it, but it keys the update state
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const port = listener.port;
+    listener.stop(true);
     const updates = updateStateDir(root, port, appState);
     mkdirSync(updates, { recursive: true });
     const release = join(updates, "release-installed");
     mkdirSync(release);
     const record = JSON.stringify({ directory: release, revision: "1".repeat(40), source_revision: "0".repeat(40) });
     writeFileSync(join(updates, "current.json"), record);
-    const spawned = join(appState, "spawned");
     const script = join(appState, "stop-stand-in.ts");
     writeFileSync(script, `
       import { mock } from "bun:test";
-      import { writeFileSync } from "node:fs";
       const updater = ${JSON.stringify(join(import.meta.dir, "updater.ts"))};
       const real = await import(updater);
       class Saved extends real.Updater {
@@ -973,7 +974,7 @@ describe("managed source updates with real Git repositories and builds", () => {
         const exited = new Promise<number>((resolve) => { done = resolve; });
         const child = { exitCode: null as number | null, exited, send() {},
           kill() { setTimeout(() => { child.exitCode = 0; done(0); }, 1500); } };
-        writeFileSync(${JSON.stringify(spawned)}, "");
+        console.log("spawned");
         return child;
       }) as unknown as typeof Bun.spawn;
       globalThis.fetch = (async () => { throw new Error("not up yet"); }) as unknown as typeof fetch;
@@ -981,16 +982,21 @@ describe("managed source updates with real Git repositories and builds", () => {
     `);
     const child = Bun.spawn([process.execPath, script], { env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", OVIS_STATE_DIR: appState,
       XDG_CONFIG_HOME: join(appState, "config"), HERDR_SOCKET: join(appState, "no-herdr.sock"), OVIS_AUTO_UPDATE: "0" }, stdout: "pipe", stderr: "pipe" });
-    const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    const errors = new Response(child.stderr).text();
     const timer = setTimeout(() => child.kill("SIGKILL"), 15_000); // a wedged stand-in must not hang the run
     try {
-      for (const deadline = Date.now() + 10_000; !existsSync(spawned);) {
-        if (Date.now() > deadline || child.exitCode !== null) throw new Error(`the release's bridge was never started:\n${(await output).join("\n")}`);
-        await Bun.sleep(20);
+      // the stand-in says when the release's bridge is started, and is stopped while that start still waits
+      const reader = child.stdout.getReader();
+      let said = "";
+      while (!said.includes("spawned")) {
+        const { done, value } = await reader.read();
+        if (done) throw new Error(`the release's bridge was never started:\n${await errors}`);
+        said += new TextDecoder().decode(value);
       }
+      reader.releaseLock();
       child.kill("SIGTERM");
       await child.exited;
-      expect(existsSync(join(updates, "current.json")), (await output).join("\n")).toBe(true);
+      expect(existsSync(join(updates, "current.json")), await errors).toBe(true);
       expect(readFileSync(join(updates, "current.json"), "utf8")).toBe(record);
     } finally {
       clearTimeout(timer);

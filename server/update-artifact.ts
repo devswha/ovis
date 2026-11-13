@@ -1,10 +1,11 @@
 /**
  * Updates that install the release's compiled server (todo 7), from a source checkout as from a release of it. The
- * bridge release (the last `v*` tag, a full-source commit, which every older install builds as it always did) brings
- * the updater that reads releases instead of tags: a release named `ovis-<version>` (the beta channel also takes
- * `ovis-<version>-beta.<n>`), whose `ovis-server.json` is signed by the committed key (RELEASE_PUBLIC_KEY) and names that
- * very version, and whose files match it. A schema-1 manifest is the binary distribution: every such release ships
- * the compiled server, so no other field says so.
+ * bridge release (the first `v*` release carrying this updater, a full-source commit, which every older install builds
+ * as it always did) brings the updater that reads releases instead of building tags: the newest release the channel
+ * takes, under the names the release workflows publish (`v<version>`, beta.yml's `beta/v<version>-beta.<n>`, or
+ * `ovis-<version>`), whose `ovis-server.json` is signed by the committed key (RELEASE_PUBLIC_KEY) and names that very
+ * version, and whose files match it. A schema-1 manifest is the binary distribution: every such release ships the
+ * compiled server, so no other field says so; a release without one is passed over.
  *
  * A binary release is staged where every launcher since updates replaced the supervisor looks for a release
  * (server/managed.ts: `<update state>/release-*`, recorded in current.json with the checkout's revision):
@@ -24,8 +25,16 @@ import { REVISION, type UpdateChannel } from "../shared/update.ts";
 import { fetchRelease, NoBinaryRelease, releasesBase, signedManifest, type SignedManifest } from "../scripts/server-install.ts";
 import { binaryName, checkManifest, MANIFEST, type ServerPlatform, SIGNATURE } from "../scripts/server-manifest.ts";
 
-/** A release of the compiled server: `ovis-0.6.0`, or on the beta channel `ovis-0.6.0-beta.3`. */
-const RELEASE_NAME = /^ovis-(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/;
+/**
+ * The version a release name gives, under the names the publishers use: `v<version>` (release.yml's stable releases),
+ * `beta/v<version>-beta.<n>` (beta.yml's tags), `ovis-<version>` (either), or the bare version; null for any other
+ * name (`remote-v47`, `pty-sidecar-…`, `desktop-beta`). A name is only where to look: a release is taken once its
+ * signed manifest names that very version.
+ */
+export function releaseNameVersion(name: string): string | null {
+  return /^v(\d+\.\d+\.\d+)$/.exec(name)?.[1] ?? /^beta\/v(\d+\.\d+\.\d+-beta\.\d+)$/.exec(name)?.[1]
+    ?? /^(?:ovis-)?(\d+\.\d+\.\d+(?:-beta\.\d+)?)$/.exec(name)?.[1] ?? null;
+}
 
 /** A version's order: X.Y.Z, then its beta number, a release after every beta of it; null for anything else. */
 function versionKey(version: string): number[] | null {
@@ -41,16 +50,18 @@ export function newerVersion(a: string, b: string): boolean {
   return i !== -1 && first[i]! > second[i]!;
 }
 
-/** The newest release name the channel takes, by version: a release outranks every beta of its version; stable takes no beta. */
+/** The release names the channel takes, newest version first: a release outranks every beta of its version; stable takes no beta. */
+export function releaseCandidates(names: string[], channel: UpdateChannel): { tag: string; version: string }[] {
+  const found = names.flatMap((tag) => {
+    const version = releaseNameVersion(tag);
+    return version === null || (version.includes("-beta.") && channel !== "beta") ? [] : [{ tag, version }];
+  });
+  return found.sort((x, y) => (newerVersion(x.version, y.version) ? -1 : newerVersion(y.version, x.version) ? 1 : 0));
+}
+
+/** The newest release name the channel takes. */
 export function latestRelease(names: string[], channel: UpdateChannel): { tag: string; version: string } | undefined {
-  let best: { tag: string; version: string } | undefined;
-  for (const tag of names) {
-    const match = RELEASE_NAME.exec(tag);
-    if (!match || (match[4] !== undefined && channel !== "beta")) continue;
-    const version = tag.slice("ovis-".length);
-    if (!best || newerVersion(version, best.version)) best = { tag, version };
-  }
-  return best;
+  return releaseCandidates(names, channel)[0];
 }
 
 const GITHUB_DOWNLOADS = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/releases\/download$/;
@@ -61,7 +72,10 @@ const GITHUB_DOWNLOADS = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/releases
  */
 export async function releaseNames(base: string, fetchFile: typeof fetch = fetch): Promise<string[]> {
   if (base.startsWith("file://")) {
-    return readdirSync(fileURLToPath(base), { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    // laid out as GitHub's downloads are: a beta tag's folder is beta/v<version>-beta.<n>
+    const folder = fileURLToPath(base);
+    return readdirSync(folder, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => entry.name !== "beta" ? [entry.name]
+      : readdirSync(join(folder, "beta"), { withFileTypes: true }).filter((inner) => inner.isDirectory()).map((inner) => `beta/${inner.name}`));
   }
   const github = GITHUB_DOWNLOADS.exec(base);
   if (!github) throw new Error(`the updater lists releases only on GitHub or in a file:// folder, and ${base} is neither`);
@@ -79,22 +93,26 @@ export interface BinaryOffer { tag: string; version: string; at: string; revisio
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
 /**
- * The newest release the channel takes at `base`, once its manifest is signed by `publicKey` and names the version its
- * name gives (an older manifest, also signed, put under a newer name is refused); null where there is none. Only the
- * manifest and its signature are read: no file it names is downloaded here.
+ * The newest release the channel takes at `base` that is newer than `newerThan`, once its manifest is signed by
+ * `publicKey` and names the version its name gives (an older manifest, also signed, put under a newer name is refused);
+ * null where there is none. Names are tried newest first: one whose release ships no compiled server (no
+ * ovis-server.json, or one of the shape from before schema 1: a release from before it, or a beta tag beta.yml made
+ * without a release) is passed over for the next; any other failure (another key, another version, a server error) is
+ * an error, never a reason to take an older one. Only manifests and their signatures are read here.
  */
-export async function offeredRelease(options: { base: string | undefined; channel: UpdateChannel; publicKey: string; fetchFile?: typeof fetch }): Promise<BinaryOffer | null> {
+export async function offeredRelease(options: { base: string | undefined; channel: UpdateChannel; publicKey: string; newerThan: string; fetchFile?: typeof fetch }): Promise<BinaryOffer | null> {
   const base = releasesBase(options.base);
-  const latest = latestRelease(await releaseNames(base, options.fetchFile), options.channel);
-  if (!latest) return null;
-  const at = `${base}/${latest.tag}`;
-  let signed: SignedManifest;
-  try { signed = await signedManifest(at, latest.tag, latest.version, options.publicKey, options.fetchFile); }
-  catch (error) {
-    // a release of this name with no manifest is not one the updater can take: a failure, never a source build
-    throw error instanceof NoBinaryRelease ? new Error(error.message) : error;
+  for (const candidate of releaseCandidates(await releaseNames(base, options.fetchFile), options.channel)) {
+    if (!newerVersion(candidate.version, options.newerThan)) return null;
+    const at = `${base}/${candidate.tag}`;
+    try {
+      const signed = await signedManifest(at, candidate.tag, candidate.version, options.publicKey, options.fetchFile);
+      return { tag: candidate.tag, version: candidate.version, at, revision: sha256(signed.bytes), signed };
+    } catch (error) {
+      if (!(error instanceof NoBinaryRelease)) throw error;
+    }
   }
-  return { tag: latest.tag, version: latest.version, at, revision: sha256(signed.bytes), signed };
+  return null;
 }
 
 /**
@@ -157,7 +175,7 @@ export async function stageBinaryRelease(offer: BinaryOffer, options: { stateDir
     const bin = join(directory, "bin");
     mkdirSync(bin);
     options.signal?.throwIfAborted();
-    const host = await fetchRelease(offer.at, offer.signed, options.platform, bin, { fetchFile: options.fetchFile, ptyRuns: options.ptyRuns });
+    const host = await fetchRelease(offer.at, offer.signed, options.platform, bin, { fetchFile: options.fetchFile, ptyRuns: options.ptyRuns, signal: options.signal });
     options.signal?.throwIfAborted();
     mkdirSync(join(directory, "server"));
     writeFileSync(join(directory, "server", "supervisor.ts"), releaseSupervisor(options.publicKey, offer.version));

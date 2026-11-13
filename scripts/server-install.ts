@@ -58,8 +58,9 @@ export class NoBinaryRelease extends Error {}
  * null where there is no such file (HTTP 404). Redirects are followed by hand: one to anything but https is refused
  * before a request is made to it.
  */
-export async function download(url: string, limit: number, name: string, fetchFile: typeof fetch = fetch): Promise<Uint8Array | null> {
+export async function download(url: string, limit: number, name: string, fetchFile: typeof fetch = fetch, signal?: AbortSignal): Promise<Uint8Array | null> {
   const tooLarge = () => new Error(`${name} is larger than the ${limit} bytes ${MANIFEST} names; nothing was changed`);
+  signal?.throwIfAborted();
   if (url.startsWith("file://")) {
     const path = fileURLToPath(url);
     if (!existsSync(path)) return null;
@@ -69,7 +70,9 @@ export async function download(url: string, limit: number, name: string, fetchFi
   let response: Response;
   let at = url;
   for (let hops = 0; ; hops++) {
-    response = await fetchFile(at, { redirect: "manual", signal: AbortSignal.timeout(600_000) });
+    // a cancel stops the download where it is, not only once it has ended
+    const timeout = AbortSignal.timeout(600_000);
+    response = await fetchFile(at, { redirect: "manual", signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
     if (response.status < 300 || response.status > 399) break;
     const next = new URL(response.headers.get("location") ?? "", at).href;
     if (!next.startsWith("https://")) throw new Error(`${url} redirected to ${next}, which is not https; nothing was changed`);
@@ -94,12 +97,16 @@ export async function download(url: string, limit: number, name: string, fetchFi
  * only after its size and SHA-256 match the manifest and it runs here: no other file's word for a host is taken. Any
  * failure leaves no host, and terminals mirrored; it never fails the install. What it did, in a few words.
  */
-async function ptyHost(at: string, hosts: Record<string, ReleaseAsset>, platform: ServerPlatform, version: string, bin: string, options: Pick<InstallServerOptions, "fetchFile" | "ptyRuns">): Promise<string> {
+async function ptyHost(at: string, hosts: Record<string, ReleaseAsset>, platform: ServerPlatform, version: string, bin: string, options: Pick<InstallServerOptions, "fetchFile" | "ptyRuns"> & { signal?: AbortSignal }): Promise<string> {
   const build = ptyAssetFor(platform);
   if (!build) return "no Rust PTY host on this platform";
   let bytes: Uint8Array;
-  try { bytes = await checked(at, hosts[build]!, options.fetchFile); }
-  catch (error) { return `the Rust PTY host was not taken (${(error as Error).message}), so terminals are mirrored`; }
+  try { bytes = await checked(at, hosts[build]!, options.fetchFile, options.signal); }
+  catch (error) {
+    // a cancel ends the install, never only its host
+    options.signal?.throwIfAborted();
+    return `the Rust PTY host was not taken (${(error as Error).message}), so terminals are mirrored`;
+  }
   mkdirSync(bin, { recursive: true });
   const target = join(bin, "ovis-pty-sidecar");
   writeFileSync(target, bytes, { mode: 0o755 });
@@ -112,8 +119,8 @@ async function ptyHost(at: string, hosts: Record<string, ReleaseAsset>, platform
   return "the Rust PTY host checked against ovis-server.json";
 }
 
-async function checked(at: string, asset: ReleaseAsset, fetchFile?: typeof fetch): Promise<Uint8Array> {
-  const bytes = await download(`${at}/${asset.file}`, asset.size, asset.file, fetchFile);
+async function checked(at: string, asset: ReleaseAsset, fetchFile?: typeof fetch, signal?: AbortSignal): Promise<Uint8Array> {
+  const bytes = await download(`${at}/${asset.file}`, asset.size, asset.file, fetchFile, signal);
   if (!bytes) throw new Error(`${at}/${asset.file} does not exist; nothing was changed`);
   if (bytes.length !== asset.size) throw new Error(`${asset.file} is ${bytes.length} bytes, not the ${asset.size} ${MANIFEST} names; nothing was changed`);
   const digest = sha256(bytes);
@@ -402,11 +409,12 @@ export async function signedManifest(at: string, tag: string, version: string, p
  * PTY host the manifest names (bin/), where it runs here. Throws on the first check that fails, leaving `into` to the
  * caller to remove; says in a few words what became of the PTY host.
  */
-export async function fetchRelease(at: string, signed: SignedManifest, platform: ServerPlatform, into: string, options: Pick<InstallServerOptions, "fetchFile" | "ptyRuns"> = {}): Promise<string> {
+export async function fetchRelease(at: string, signed: SignedManifest, platform: ServerPlatform, into: string, options: Pick<InstallServerOptions, "fetchFile" | "ptyRuns"> & { signal?: AbortSignal } = {}): Promise<string> {
   const { manifest } = signed;
-  writeFileSync(join(into, binaryName(platform)), await checked(at, manifest.assets[platform], options.fetchFile), { mode: 0o755 });
+  writeFileSync(join(into, binaryName(platform)), await checked(at, manifest.assets[platform], options.fetchFile, options.signal), { mode: 0o755 });
   chmodSync(join(into, binaryName(platform)), 0o755);
-  writeFileSync(join(into, DIST_ARCHIVE), await checked(at, manifest.dist, options.fetchFile));
+  writeFileSync(join(into, DIST_ARCHIVE), await checked(at, manifest.dist, options.fetchFile, options.signal));
+  options.signal?.throwIfAborted();
   unpack(join(into, DIST_ARCHIVE), join(into, "dist"));
   rmSync(join(into, DIST_ARCHIVE));
   writeFileSync(join(into, MANIFEST), signed.bytes);

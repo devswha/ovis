@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,11 +6,16 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { announcesUpdate, notesOffer, reloadReason } from "../src/lib/updateNotes.ts";
 import { releaseSupervisor } from "./managed.ts";
-import { latestRelease, newerVersion, offeredRelease, releaseNames, stagedRelease } from "./update-artifact.ts";
+import { latestRelease, newerVersion, offeredRelease, releaseCandidates, releaseNames, stagedRelease } from "./update-artifact.ts";
 import { updateStateDir } from "./update-state.ts";
 import { COMPILED_RELEASE_REASON, runCommand, Updater } from "./updater.ts";
 import { releaseSupervisor as shimOf } from "./update-artifact.ts";
 import { hostPlatform } from "../scripts/server-install.ts";
+import type { Machine, PcUpdateOffer } from "../shared/machines.ts";
+import type { CompletionTracker } from "./completion.ts";
+import { MachineManager, OWN_UPDATES_AT_ONCE } from "./machines.ts";
+import { offerFromStatus } from "./pc-update.ts";
+import type { PushService } from "./push.ts";
 import { DIST_ARCHIVE, generateKeyPair, MANIFEST, PTY_ASSETS, ptyFile, releaseFile, SERVER_PLATFORMS, type ServerPlatform, signManifest, writeManifest } from "../scripts/server-manifest.ts";
 
 /**
@@ -38,12 +43,12 @@ const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes
 const git = (cwd: string, ...args: string[]) => runCommand(cwd, ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args]);
 
 /** `<base>/ovis-<version>/`: the host's binary `binary`, stand-ins for the others, the client, the manifest and its signature */
-function publish(base: string, version: string, privateKeyPem: string, binary = `#!/bin/sh\necho ovis-server ${version}\n`, build?: string): string {
-  const dir = join(base, `ovis-${version}`);
+function publish(base: string, version: string, privateKeyPem: string, binary = `#!/bin/sh\necho ovis-server ${version}\n`, build?: string, name = `ovis-${version}`): string {
+  const dir = join(base, name);
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), platform === PLATFORM ? binary : `other ${platform}\n`);
   for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
-  const client = join(base, `.client-${version}`);
+  const client = join(base, `.client-${name.replaceAll("/", "-")}`);
   mkdirSync(client, { recursive: true });
   writeFileSync(join(client, "index.html"), `<!doctype html><title>${version}</title>`);
   // the commit the client was built from, as vite writes it (vite.config.ts)
@@ -94,14 +99,19 @@ function updater(fixture: Awaited<ReturnType<typeof checkout>>, extra: Partial<C
 }
 
 describe("which release of the compiled server is on offer", () => {
-  it("orders ovis-<version> names by version, a release after its betas, and keeps betas off stable", () => {
-    const names = ["v9.9.9", "ovis-1.2.0", "ovis-1.10.0-beta.2", "ovis-1.10.0-beta.10", "ovis-1.9.0", "remote-v47", "ovis-1.10.0-rc.1"];
-    expect(latestRelease(names, "stable")).toEqual({ tag: "ovis-1.9.0", version: "1.9.0" });
-    expect(latestRelease(names, "beta")).toEqual({ tag: "ovis-1.10.0-beta.10", version: "1.10.0-beta.10" });
-    expect(latestRelease([...names, "ovis-1.10.0"], "beta")?.tag).toBe("ovis-1.10.0");
-    expect(latestRelease(["v1.0.0", "beta/v1.0.0-beta.1"], "beta")).toBeUndefined();
+  it("takes the names the release workflows publish, orders them by version, and keeps betas off stable", () => {
+    // release.yml: gh release create "v$RELEASE_VERSION"; beta.yml: the tag beta/v$version-beta.$n; and ovis-<version>
+    expect(latestRelease(["v0.6.0"], "stable")).toEqual({ tag: "v0.6.0", version: "0.6.0" });
+    expect(latestRelease(["0.6.0"], "stable")).toEqual({ tag: "0.6.0", version: "0.6.0" });
+    expect(latestRelease(["beta/v0.6.0-beta.2"], "beta")).toEqual({ tag: "beta/v0.6.0-beta.2", version: "0.6.0-beta.2" });
+    expect(latestRelease(["beta/v0.6.0-beta.2"], "stable")).toBeUndefined();
+    const names = ["remote-v47", "pty-sidecar-0123abc", "desktop-beta", "v0.5.3", "beta/v0.6.0-beta.10", "beta/v0.6.0-beta.2", "ovis-0.5.9", "v0.6.0-beta.1", "beta/v0.6.0", "ovis-0.6.0-rc.1"];
+    expect(releaseCandidates(names, "stable").map((release) => release.tag)).toEqual(["ovis-0.5.9", "v0.5.3"]);
+    expect(releaseCandidates(names, "beta").map((release) => release.tag)).toEqual(["beta/v0.6.0-beta.10", "beta/v0.6.0-beta.2", "ovis-0.5.9", "v0.5.3"]);
+    expect(latestRelease([...names, "v0.6.0"], "beta")?.tag).toBe("v0.6.0");
     expect(newerVersion("1.0.1", "1.0.0")).toBe(true);
     expect(newerVersion("1.0.0", "1.0.0-beta.9")).toBe(true);
+    expect(newerVersion("0.6.0-beta.2", "0.6.0-beta.1")).toBe(true);
     expect(newerVersion("1.0.0", "1.0.0")).toBe(false);
     expect(newerVersion("0.9.9", "1.0.0")).toBe(false);
     expect(newerVersion("1.0.1", "nonsense")).toBe(false);
@@ -132,7 +142,7 @@ describe("which release of the compiled server is on offer", () => {
       const file = join(dir, String(url).split("/").at(-1)!);
       return existsSync(file) ? new Response(readFileSync(file)) : new Response(null, { status: 404 });
     }) as unknown as typeof fetch;
-    await expect(offeredRelease({ base: "https://github.com/devswha/ovis/releases/download", channel: "stable", publicKey: key.publicKey, fetchFile: served }))
+    await expect(offeredRelease({ base: "https://github.com/devswha/ovis/releases/download", channel: "stable", publicKey: key.publicKey, newerThan: "1.0.0", fetchFile: served }))
       .rejects.toThrow("is not a signature of this ovis-server.json");
     expect(asked.map((url) => url.split("/").at(-1))).toEqual(["releases?per_page=100", MANIFEST, `${MANIFEST}.sig`]);
   });
@@ -142,7 +152,7 @@ describe("which release of the compiled server is on offer", () => {
     const dir = publish(releases, "1.0.1", key.privateKeyPem);
     writeManifest(dir, { version: "1.0.0", sources: { server: "a".repeat(40), shared: "b".repeat(40) } });
     signManifest(dir, key.privateKeyPem);
-    await expect(offeredRelease({ base: pathToFileURL(releases).href, channel: "stable", publicKey: key.publicKey })).rejects.toThrow("is for version 1.0.0, not the expected 1.0.1");
+    await expect(offeredRelease({ base: pathToFileURL(releases).href, channel: "stable", publicKey: key.publicKey, newerThan: "1.0.0" })).rejects.toThrow("is for version 1.0.0, not the expected 1.0.1");
   });
 });
 
@@ -269,19 +279,164 @@ describe.skipIf(process.platform === "win32" || !hostPlatform())("crossing from 
     expect(Object.keys(snapshot(fixture.appState)).filter((path) => !(path in before.app))).toEqual([`/updates/${fixture.stateDir.split("/").at(-1)}/failed.json`]);
   });
 
-  it("offers nothing older or equal, and never a release when no manifest of it checks", async () => {
+  it("offers nothing older or equal, and passes over a release that ships no compiled server", async () => {
     const fixture = await checkout("1.0.1");
     publish(fixture.releases, "1.0.1", fixture.key.privateKeyPem);
     const update = updater(fixture);
     await update.initialize();
     await update.request("check", true);
     expect(update.status.available).toBe(false);
+    // a release with no ovis-server.json (one from before the compiled server) is no binary release: nothing is offered
     mkdirSync(join(fixture.releases, "ovis-1.0.2"));
     await update.request("check", true);
-    expect(update.status.phase).toBe("error");
-    expect(update.status.error).toContain("ships no compiled server");
+    expect(update.status).toMatchObject({ phase: "idle", error: null, available: false });
+  });
+
+  it("takes the releases the workflows publish now: a stable v<version>, a beta tag's name, the newest whose manifest checks", async () => {
+    const fixture = await checkout("1.0.0");
+    // release.yml's v1.0.1, and v1.0.2 as a release from before the compiled server (no manifest), which is passed over
+    const stable = publish(fixture.releases, "1.0.1", fixture.key.privateKeyPem, undefined, undefined, "v1.0.1");
+    mkdirSync(join(fixture.releases, "v1.0.2"));
+    const update = updater(fixture);
+    await update.initialize();
+    await update.request("check", true);
+    expect(update.status).toMatchObject({ available: true, latest_version: "1.0.1", latest_revision: sha256(readFileSync(join(stable, MANIFEST))) });
+    // a beta under beta.yml's tag name, published with a signed manifest, is taken on the beta channel only
+    const beta = publish(fixture.releases, "1.0.2-beta.3", fixture.key.privateKeyPem, undefined, undefined, "beta/v1.0.2-beta.3");
+    await update.request("check", true);
+    expect(update.status.latest_version).toBe("1.0.1");
+    const onBeta = updater(fixture, { channel: () => "beta" });
+    await onBeta.initialize();
+    await onBeta.request("check", true);
+    expect(onBeta.status).toMatchObject({ available: true, latest_version: "1.0.2-beta.3", latest_revision: sha256(readFileSync(join(beta, MANIFEST))) });
+    await onBeta.request("install", true, onBeta.status.latest_revision!);
+    expect(onBeta.status).toMatchObject({ phase: "idle", error: null, current_version: "1.0.2-beta.3" });
+  });
+
+  it("takes the next beta of the same version for a source build of a beta tag, whose package.json names only its base", async () => {
+    const fixture = await checkout("1.0.1");
+    await git(fixture.root, "tag", "beta/v1.0.1-beta.1");
+    publish(fixture.releases, "1.0.1-beta.2", fixture.key.privateKeyPem, undefined, undefined, "beta/v1.0.1-beta.2");
+    const update = updater(fixture, { channel: () => "beta" });
+    await update.initialize();
+    await update.request("check", true);
+    expect(update.status).toMatchObject({ available: true, latest_version: "1.0.1-beta.2" });
+    // once the same commit is the stable release of that version, no beta of it is newer
+    await git(fixture.root, "tag", "v1.0.1");
+    await update.request("check", true);
     expect(update.status.available).toBe(false);
   });
+
+  it("tells what a binary release brings from its tag's changelog, before and after the install", async () => {
+    const fixture = await checkout("1.0.0");
+    // the checkout's origin carries the release tag, as GitHub does: the commit release.yml published, with its changelog
+    const origin = join(fixture.dir, "origin.git");
+    await git(fixture.dir, "clone", "-q", "--bare", fixture.root, origin);
+    await git(fixture.root, "remote", "add", "origin", origin);
+    const tree = join(fixture.dir, "release-tree");
+    await git(fixture.dir, "clone", "-q", origin, tree);
+    writeFileSync(join(tree, "CHANGELOG.md"), "# Changelog\n\n## [1.0.1] - 2026-11-14\n\n### Added\n- Updates take the compiled server.\n\n## [1.0.0] - 2026-11-01\n\n### Added\n- First.\n");
+    await git(tree, "add", ".");
+    await git(tree, "commit", "-qm", "1.0.1");
+    await git(tree, "tag", "v1.0.1");
+    await git(tree, "push", "-q", "origin", "v1.0.1");
+    publish(fixture.releases, "1.0.1", fixture.key.privateKeyPem, undefined, undefined, "v1.0.1");
+    const update = updater(fixture);
+    await update.initialize();
+    await update.request("check", true);
+    expect(update.notes.revision).toBe(update.status.latest_revision);
+    expect(JSON.stringify(update.notes.releases)).toContain("Updates take the compiled server.");
+    await update.request("install", true, update.status.latest_revision!);
+    expect(update.installed).toMatchObject({ version: "1.0.1", previous_version: "1.0.0" });
+    expect(JSON.stringify(update.installed.releases)).toContain("Updates take the compiled server.");
+  });
+
+  it("stops an install cancelled while its download hangs, and leaves nothing staged", async () => {
+    const fixture = await checkout("1.0.0");
+    const dir = publish(fixture.releases, "1.0.1", fixture.key.privateKeyPem, undefined, undefined, "v1.0.1");
+    const hanging = Promise.withResolvers<void>();
+    // GitHub stand-in: the list and the manifest answer; the binary's download never does until its request is stopped
+    const fetchFile = (async (url: string | URL | Request, init?: RequestInit) => {
+      const name = String(url).split("/").at(-1)!;
+      if (String(url).startsWith("https://api.github.com/")) return Response.json([{ tag_name: "v1.0.1" }]);
+      if (name === releaseFile(PLATFORM)) {
+        hanging.resolve();
+        return await new Promise<Response>((_, reject) => { init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true }); });
+      }
+      return new Response(readFileSync(join(dir, name)));
+    }) as unknown as typeof fetch;
+    const update = updater(fixture, { releases: { base: "https://github.com/devswha/ovis/releases/download", publicKey: fixture.key.publicKey, platform: PLATFORM, fetchFile, ptyRuns: () => false } });
+    await update.initialize();
+    await update.request("check", true);
+    const id = "00000000-0000-4000-8000-000000000001";
+    const install = update.request("install", true, update.status.latest_revision!, id);
+    await hanging.promise;
+    expect(update.cancel(id)).toBe(true);
+    // the download itself is stopped: the install ends now, not when its 10-minute timeout would
+    await install;
+    expect(update.status).toMatchObject({ phase: "error", error_code: "update_cancelled", current_version: "1.0.0" });
+    expect(readdirSync(fixture.stateDir).filter((name) => name.startsWith("release-"))).toEqual([]);
+  });
+
+  it("updates connected PCs to a binary release through Update all, each done once it runs the offered version", async () => {
+    // each PC's own Ovis is this updater on a checkout of its own, behind a loopback answer of its update routes; the
+    // controller's Update all runs one PC more than it updates at once, so a PC whose update never ended would hold the
+    // last one back
+    const count = OWN_UPDATES_AT_ONCE + 1;
+    const pcs = await Promise.all(Array.from({ length: count }, async (_, i) => {
+      // below this app's own version: a PC is never offered a release newer than the app that updates it
+      const fixture = await checkout("0.5.0");
+      publish(fixture.releases, "0.5.1", fixture.key.privateKeyPem, undefined, "b".repeat(39) + String(i), "v0.5.1");
+      const update = updater(fixture);
+      await update.initialize();
+      await update.request("check", true);
+      const installId = `00000000-0000-4000-8000-0000000000a${i}`;
+      const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+        if (request.headers.get("authorization") !== "Bearer pc-token") return new Response(null, { status: 401 });
+        const path = new URL(request.url).pathname;
+        if (path === "/api/updates") return Response.json({ ...update.status, revision_bound_install: true });
+        if (path === "/api/updates/install" && request.method === "POST") {
+          const { expected_revision } = await request.json() as { expected_revision: string };
+          void update.request("install", true, expected_revision, installId);
+          return Response.json({ accepted: true, install_id: installId }, { status: 202 });
+        }
+        return new Response(null, { status: 404 });
+      } });
+      return { update, server };
+    }));
+    const dir = scratch();
+    const ids = pcs.map((_, i) => `00000000-0000-4000-8000-0000000002${String(i).padStart(2, "0")}`);
+    writeFileSync(join(dir, "machines.json"), JSON.stringify(ids.map((id, i) => ({ id, name: `PC ${i}`, target: { destination: `me@pc${i}.invalid` }, enabled: true }))));
+    const reconnect = spyOn(MachineManager.prototype as unknown as { reconnect(): Promise<void> }, "reconnect").mockImplementation(async () => {});
+    const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); }, { ownUpdate: { pollMs: 5 } });
+    try {
+      const machines = (manager as unknown as { machines: Map<string, { machine: Machine; endpoint?: { url: string; token: string }; ownOffer?: PcUpdateOffer | null; offerRevision?: string }> }).machines;
+      ids.forEach((id, i) => {
+        const runtime = machines.get(id)!;
+        Object.assign(runtime.machine, { state: "connected", action_required: null, error: null });
+        runtime.endpoint = { url: `http://127.0.0.1:${pcs[i]!.server.port}`, token: "pc-token" };
+        runtime.ownOffer = offerFromStatus({ ...pcs[i]!.update.status, revision_bound_install: true });
+        runtime.offerRevision = pcs[i]!.update.status.latest_revision!;
+        // offered by its manifest's id (64 hex), where the PC reports the 40-hex commit of its build once it runs it
+        expect(runtime.offerRevision).toMatch(/^[0-9a-f]{64}$/);
+      });
+      const all = manager.updateAll();
+      expect(all.started).toHaveLength(OWN_UPDATES_AT_ONCE);
+      expect(all.queued).toHaveLength(1);
+      const ours = () => manager.list().filter((machine) => ids.includes(machine.id));
+      for (const deadline = Date.now() + 20_000; ;) {
+        if (ours().every((machine) => !machine.updating) && pcs.every((pc) => pc.update.status.current_version === "0.5.1")) break;
+        if (Date.now() > deadline) throw new Error(`Update all did not end: ${JSON.stringify(ours().map((machine) => [machine.updating, machine.update_error]))}`);
+        await Bun.sleep(20);
+      }
+      for (const machine of ours()) expect(machine.update_error ?? null).toBeNull();
+      expect(pcs.map((pc) => pc.update.status.current_revision)).toEqual(pcs.map((_, i) => "b".repeat(39) + String(i)));
+    } finally {
+      manager.stop();
+      reconnect.mockRestore();
+      for (const pc of pcs) pc.server.stop(true);
+    }
+  }, 30_000);
 
   it("in the compiled server, runs only the binary release it was started from, never a build of the sources", async () => {
     const fixture = await checkout();
