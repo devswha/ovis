@@ -1048,6 +1048,47 @@ try {
         console.log("PASS Search panes and actions in the list's More opens the command palette over the list on a phone, and Back closes it");
       });
 
+      // ---- a press is a step past hover on a wide window ----
+      for (const theme of ["light", "dark"]) {
+        await withPage(browser, base, { language: "en", theme }, "/?app=inbox", `${theme}: a press is a step past hover on a wide window`, async (page) => {
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          await row(page, WORKING).click();
+          await page.locator(".thread-chip").waitFor();
+          /** a token's colour as the browser computes it, and a control's fill once it is that colour */
+          const token = (value: string) => page.evaluate((css) => {
+            const probe = document.createElement("span");
+            probe.style.background = css;
+            document.querySelector(".inbox-column")!.append(probe);
+            const colour = getComputedStyle(probe).backgroundColor;
+            probe.remove();
+            return colour;
+          }, value);
+          const fills = (selector: string, colour: string, what: string) => page.waitForFunction(({ selector, colour }) =>
+            getComputedStyle(document.querySelector(selector)!).backgroundColor === colour, { selector, colour }, { timeout: 5_000 }).catch(() => { throw new Error(`${what}: ${selector} is not ${colour}`); });
+          const sideHover = await token("var(--side-hover)"), sideSelected = await token("var(--side-selected)");
+          const hover = await token("var(--bg-hover)"), strong = await token("var(--border-strong)");
+          assert.ok(new Set([sideHover, sideSelected]).size === 2 && new Set([hover, strong]).size === 2, "each press token is another colour than its hover token");
+          for (const [selector, over, pressed] of [
+            [`.mode-inbox .inbox-item[data-pane="${BLOCKED}"] .inbox-row`, sideHover, sideSelected],
+            [".inbox-exit", sideHover, sideSelected],
+            [".inbox-column .inbox-search-toggle", hover, strong],
+            [".thread-top .header-more-button", hover, strong],
+          ] as const) {
+            const at = await box(page, selector);
+            await page.mouse.move(at.x + at.w / 2, at.y + at.h / 2);
+            await fills(selector, over, "under the pointer");
+            await page.mouse.down();
+            await fills(selector, pressed, "under a press");
+            // let go off it: no click lands
+            await page.mouse.move(at.x + at.w / 2, 450);
+            await page.mouse.up();
+          }
+          await addressIs(page, { app: "inbox", pane: WORKING }, "no press opened anything");
+          console.log(`PASS ${theme}: on a wide window a row and Back to Ovis fill with the open row's fill under a press, a round control with its strong edge's colour, each a step past its hover`);
+        }, desktop);
+      }
+
       // ---- which waits a row can time ----
       // herdr tells no time of a state change: a wait is timed from when this device saw it begin (the stamps the
       // Agents list reads, lib/agentStateSince.ts). The agent that already waited when the page of a fresh device

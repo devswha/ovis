@@ -119,16 +119,22 @@
   color: var(--text-strong);
 }
 
-@media (hover: hover) {
-  .icon-button.inbox-round:hover:not(:disabled) {
-    background: var(--bg-hover);
-  }
-}
-
 .icon-button.inbox-round:active,
 .icon-button.inbox-round[aria-expanded="true"] {
   background: var(--bg-hover);
   border-color: var(--border-strong);
+}
+
+/* Under a pointer that hovers, hover already fills the disc: a press goes one step past it, the disc filled with
+   its own strong edge's colour, so a click is answered by more than the pointer's resting look. */
+@media (hover: hover) {
+  .icon-button.inbox-round:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+
+  .icon-button.inbox-round:active:not(:disabled) {
+    background: var(--border-strong);
+  }
 }
 
 /* a phone's top controls start at the top safe area, which is the screen's own edge where there is none: a ring
@@ -150,6 +156,12 @@
   .icon-button.inbox-filter-toggle.is-on:hover:not(:disabled) {
     background: var(--text);
     border-color: var(--text);
+  }
+
+  /* pressed, the filled button is its resting fill again: a step from its hover, as every round control's press is */
+  .icon-button.inbox-filter-toggle.is-on:active:not(:disabled) {
+    background: var(--text-strong);
+    border-color: var(--text-strong);
   }
 }
 
@@ -528,14 +540,18 @@
   border-radius: var(--radius-lg);
 }
 
-.mode-inbox.is-wide .inbox-row:active {
-  background: var(--side-hover);
-}
-
 @media (hover: hover) {
   .mode-inbox.is-wide .inbox-row:hover:not(:disabled) {
     background: var(--side-hover);
   }
+}
+
+/* A press is one step past hover: the open row's own fill, which a pressed row is about to have. After the hover
+   rule, which it must outweigh under a pointer that is over the row it presses. Back to Ovis at the foot answers a
+   press the same way. */
+.mode-inbox.is-wide .inbox-row:active:not(:disabled),
+.mode-inbox.is-wide .inbox-exit:active:not(:disabled) {
+  background: var(--side-selected);
 }
 
 .mode-inbox.is-wide .inbox-name {
@@ -551,10 +567,15 @@
   margin-inline-start: var(--space-half);
 }
 
-/* the open thread's row: the sidebar's own selection, a tonal fill and a heavier name */
+/* the open thread's row: the sidebar's own selection, a tonal fill and a heavier name. Hover adds nothing to it; a
+   press, which shows its chat again where its terminal was shown, takes it half way to the strong edge's colour */
 .mode-inbox.is-wide .inbox-item.is-current .inbox-row,
 .mode-inbox.is-wide .inbox-item.is-current .inbox-row:hover {
   background: var(--side-selected);
+}
+
+.mode-inbox.is-wide .inbox-item.is-current .inbox-row:active:not(:disabled) {
+  background: color-mix(in srgb, var(--side-selected), var(--border-strong));
 }
 
 .mode-inbox.is-wide .inbox-item.is-current .inbox-name {

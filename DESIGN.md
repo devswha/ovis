@@ -2258,9 +2258,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--bg-elevated`, a hairline `--border`, `--radius-pill`, a `--text-strong` glyph, and
   `--shadow-card` where it floats over the rows. `--touch-target` (44px) at a phone's width and
   under a coarse pointer at any width, `--control-h` under a fine pointer on the wide layout,
-  where it rests on its surface with no shadow and a `--icon-size-md` glyph. Hover and press
-  fill it with `--bg-hover` and its edge takes `--border-strong`; it never takes the icon
-  button's accent edge. The filter's button is filled (`--text-strong` behind a `--bg` glyph)
+  where it rests on its surface with no shadow and a `--icon-size-md` glyph. Hover fills it
+  with `--bg-hover`; a press, and its open menu, fill it so and give its edge
+  `--border-strong`. Under a pointer that hovers a press goes one step past hover: the disc is
+  filled with `--border-strong`, so a click is answered by more than the pointer's resting
+  look. It never takes the icon button's accent edge. The filter's button is filled
+  (`--text-strong` behind a `--bg` glyph, `--text` under a hovering pointer and its resting
+  fill again under a press)
   while a filter other than All is on, and its name says which. On the phone's screen its
   focus ring is drawn inside it (`--ring-inset-offset`), as a row's is: the top controls start
   at the top safe area, which is the screen's own edge where there is none, and a ring round
@@ -2381,10 +2385,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     the row's box. A wide row draws no time; its tooltip says the name and the words whole and
     the time, with the full local time. The open thread's row has the sidebar's selection
     (`--side-selected`, the name at `--fw-selected`, `aria-current="true"`), with no border,
-    stripe or outline; no row is open while no agent is chosen.
+    stripe or outline; no row is open while no agent is chosen. A row fills with the sidebar's
+    `--side-hover` under a hovering pointer and, one step past it, with `--side-selected`
+    under a press: the fill it is about to have. The open row, which hover does not change,
+    goes half way to `--border-strong` under a press (a press on it shows its chat again where
+    its terminal was shown).
   - The column's foot is one line, `--space-3` above the window's edge: at its start **Back to
     Ovis** beside the Ovis mark (the sidebar foot's own action, where the classic sidebar has
-    the way in), at its end the state filter and **More** as round controls, `--space-2`
+    the way in; `--side-hover` under a hovering pointer, `--side-selected` under a press), at
+    its end the state filter and **More** as round controls, `--space-2`
     apart. Nothing in the foot is filled but the filter's button while a filter other than All
     is on, the round control's own rule (above).
   - Over the pane (`.thread-top`) a name chip (`.thread-chip`) stands on the pane's middle: an
