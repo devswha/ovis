@@ -165,9 +165,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     const handoff = renameHandoff;
     renameHandoff = null;
     const mountedIn = stripLayout();
-    if (handoff && handoff.owner === owner && handoff.layout !== stripLayout() && performance.now() - handoff.at < FOCUS_HANDOFF_MS) {
-      setEditing({ tabId: handoff.tabId, value: renameDraftStore.get(JSON.stringify([owner, handoff.tabId])) ?? "" });
-    }
+    // the names being typed are this PC's and workspace's: those another one left are not offered at a later rename
+    for (const key of renameDraftStore.keys()) if ((JSON.parse(key) as [string, string])[0] !== owner) renameDraftStore.delete(key);
+    const handed = handoff && handoff.owner === owner && handoff.layout !== stripLayout() && performance.now() - handoff.at < FOCUS_HANDOFF_MS
+      ? currentTabs.current.find((tab) => tab.tab_id === handoff.tabId) : undefined;
+    if (handed) setEditing({ tabId: handed.tab_id, value: renameDraftStore.get(JSON.stringify([owner, handed.tab_id])) ?? savedName(handed) });
     return () => {
       const open = editingNow.current;
       if (open) renameHandoff = { owner, tabId: open.tabId, layout: mountedIn, at: performance.now() };
@@ -398,9 +400,11 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (row) scroll.current = stripScrolled(scroll.current, row.scrollLeft, row.scrollWidth - row.clientWidth);
   };
 
+  // the name a rename starts from: the one just sent until herdr's snapshot carries it, else the tab's own
+  const savedName = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "";
   const beginRename = (tab: HerdrTab): void => {
     setError(null);
-    const saved = sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "";
+    const saved = savedName(tab);
     const draft = renameDrafts.current.get(tab.tab_id);
     setEditing({ tabId: tab.tab_id, value: draft !== undefined ? draft : saved });
   };

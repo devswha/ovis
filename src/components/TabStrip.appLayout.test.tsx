@@ -73,11 +73,10 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function draw(offer: LayoutOffer): Promise<void> {
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
-        createElement(TabStrip, { snapshot, workspace: snapshot.workspaces[0]!, selectedPane: snapshot.panes[0]!, onSelectPane: () => {}, onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {} }))), { createNodeMock: node });
-    });
+  async function draw(offer: LayoutOffer, workspace = snapshot.workspaces[0]!): Promise<void> {
+    const tree = createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
+        createElement(TabStrip, { snapshot, workspace, selectedPane: snapshot.panes[0]!, onSelectPane: () => {}, onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {} })));
+    await act(async () => { if (renderer) renderer.update(tree); else renderer = create(tree, { createNodeMock: node }); });
   }
   const tab = () => renderer!.root.findByProps({ "data-tab-id": "w1:t1" });
   const strip = () => renderer!.root.findByProps({ role: "tablist" });
@@ -187,5 +186,20 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
       expect(renameFields()).toBe(0);
       expect(requested).toEqual(["/api/tab/rename"]);
     });
+  });
+
+  it("leaves a tab's unfinished name behind when the strip moves to another workspace", async () => {
+    await draw(TUI);
+    const input = () => renderer!.root.findByProps({ className: "input tab-strip-rename" });
+    await act(async () => tab().props.onDoubleClick());
+    const saved = input().props.value as string;
+    await act(async () => input().props.onChange({ target: { value: "left behind" } }));
+    await act(async () => input().props.onKeyDown({ key: "Escape", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 27 } }));
+
+    await draw(TUI, { ...snapshot.workspaces[0]!, workspace_id: "w-other" });
+    await draw(TUI);
+
+    await act(async () => tab().props.onDoubleClick());
+    expect(input().props.value).toBe(saved);
   });
 });
