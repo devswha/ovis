@@ -221,11 +221,12 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   /** a state's mark as the Agents list's rows end with it (Sidebar.tsx): drawn only for the states that have one */
   const drawsMark = (status: AgentStatus | undefined): boolean => statusIndicators !== "classic" || agentGroup(status) !== "idle";
   // a failed turn has a mark of its own, the warning a pane herdr could not restore draws in the sidebar: its shape
-  // tells it from a finish, not its colour alone
-  const stateMark = (status: AgentStatus | undefined, failed: boolean) => failed ? (
+  // tells it from a finish, not its colour alone. Any other mark is named by the row's own state word (`word`), the
+  // one the thread's chip and the filters say: the mode has one vocabulary for a state
+  const stateMark = (status: AgentStatus | undefined, failed: boolean, word: string) => failed ? (
     <span className="inbox-state is-drawn"><span className="badge badge-blocked sidebar-status" data-status="failed" role="status" aria-label={t("Turn failed")} title={t("Turn failed")}><TriangleAlert aria-hidden="true" /></span></span>
   ) : (
-    <span className={`inbox-state${drawsMark(status) ? " is-drawn" : ""}`}><StatusBadge compact status={status} /></span>
+    <span className={`inbox-state${drawsMark(status) ? " is-drawn" : ""}`}><StatusBadge compact status={status} label={word} /></span>
   );
 
   const closeSearch = (event: KeyboardEvent<HTMLInputElement>): void => {
@@ -316,9 +317,9 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
                         <span className="inbox-name">{row.title}</span>
                         {!wide && at !== null && <time className="inbox-time" dateTime={at.toISOString()} title={at.toLocaleString(resolvedLanguage)}>{age}</time>}
                       </span>
-                      {wide ? words : <span className="inbox-sub">{words}{stateMark(row.status, row.failed)}</span>}
+                      {wide ? words : <span className="inbox-sub">{words}{stateMark(row.status, row.failed, row.state)}</span>}
                     </span>
-                    {wide && stateMark(row.status, row.failed)}
+                    {wide && stateMark(row.status, row.failed, row.state)}
                   </button>
                 </li>
               );
@@ -345,7 +346,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       {filterMenu !== null && <RowMenu anchor={filterMenu} title={t("Filter by state")} choice onClose={() => setFilterMenu(null)}
         items={INBOX_FILTERS.map((value) => ({
           id: value, label: filterWord(value), icon: ListFilter, checked: filter === value, run: () => onFilter(value),
-          ...(value === "all" ? {} : { glyph: <span className="inbox-filter-mark" aria-hidden="true"><StatusBadge compact status={value} /></span> }),
+          ...(value === "all" ? {} : { glyph: <span className="inbox-filter-mark" aria-hidden="true"><StatusBadge compact status={value} label={filterWord(value)} /></span> }),
         }))} />}
     </section>
   );

@@ -2296,7 +2296,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     status mark (Badge, above), so each state keeps the shape and colour it has in the Agents
     list (a waiting agent's question mark, a working agent's breathing dot, the ring of one
     waiting on background work, an unread finish's check), and Settings → Status indicators
-    changes it here as there. It is only as wide as what it draws: an agent at rest draws
+    changes it here as there. Its name and its tooltip are the row's own state word, the one
+    the thread's chip and the filters say (**Needs you**, **Working**, **Done**, **Ready**; a
+    turn that waits on background work is Working under its own ring): the mode has one
+    vocabulary for a state, and the sidebar's badge keeps its own label in the classic app. It
+    is only as wide as what it draws: an agent at rest draws
     nothing and its words take the whole line. A finished turn whose last words are a request
     the agent recorded as failed draws the warning triangle a pane herdr could not restore has
     (`--status-blocked`) in the mark's place and is named **Turn failed**, never Done. The row's

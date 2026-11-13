@@ -384,7 +384,7 @@ try {
           assert.deepEqual(drawn.map((item) => item.pane), [BLOCKED, WORKING, DONE, ...drawn.slice(3).map((item) => item.pane)]);
           assert.deepEqual(new Set(drawn.slice(3).map((item) => item.pane)), new Set(IDLE));
           assert.deepEqual(drawn.map((item) => item.mark), ["blocked", "working", "done", null, null, null], "each state its own mark, none for a ready agent");
-          assert.deepEqual(drawn.slice(0, 3).map((item) => item.markLabel), ["Agent INPUT", "Agent RUN", "Agent DONE"]);
+          assert.deepEqual(drawn.slice(0, 3).map((item) => item.markLabel), ["Needs you", "Working", "Done"], "a state's mark is named in the words its chip and the filters use");
           assert.deepEqual(drawn.map((item) => item.asking), [true, false, true, false, false, false], "the rows that ask for a look draw their words stronger");
           assert.deepEqual(drawn.map((item) => item.buttons), [1, 1, 1, 1, 1, 1], "a row is one button and holds no other");
           assert.match(drawn[0]!.words ?? "", /Allow command\?/);

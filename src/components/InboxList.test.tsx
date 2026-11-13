@@ -186,6 +186,8 @@ describe("InboxList", () => {
   const mark = (root: ReactTestInstance, paneId: string) => {
     const [slot] = byClass(item(root, paneId), "inbox-state");
     const [badge] = byClass(slot!, "sidebar-status");
+    // the mark's name and its tooltip are one word: a pointer and a screen reader are told the same
+    expect(badge!.props.title).toBe(badge!.props["aria-label"]);
     return { state: badge!.props["data-status"] as string, label: badge!.props["aria-label"] as string, drawn: String(slot!.props.className).split(" ").includes("is-drawn") };
   };
   const question = (asked: string, body: string | null = null) => ({
@@ -217,17 +219,18 @@ describe("InboxList", () => {
     }
   });
 
-  it("ends a row with its state's mark and label, and draws none for an agent at rest", async () => {
+  it("ends a row with its state's mark, named in the words the chip and the filters use, and draws none for an agent at rest", async () => {
     // the fixture: w1C works, w1D waits for the user; w1E is made done and not looked at, w1F waits on background work
     const machines = roster((pane) => pane.pane_id === "w1F:p1" ? { ...pane, background_wait: true } as HerdrPane : pane);
     const waiting: SidebarActivity = { seqs: () => new Map(), status: (_machineId, pane) => pane.pane_id === "w1E:p1" ? "done" : pane.pane_id === "w1F:p1" ? "waiting" : pane.agent_status as AgentStatus | undefined };
     const root = await draw(machines, { activity: waiting });
-    expect(mark(root, "w1D:p1")).toEqual({ state: "blocked", label: "Agent INPUT", drawn: true });
-    expect(mark(root, "w1C:p1")).toEqual({ state: "working", label: "Agent RUN", drawn: true });
-    expect(mark(root, "w1F:p1")).toEqual({ state: "waiting", label: "Agent waiting on background work", drawn: true });
-    expect(mark(root, "w1E:p1")).toEqual({ state: "done", label: "Agent DONE", drawn: true });
+    expect(mark(root, "w1D:p1")).toEqual({ state: "blocked", label: "Needs you", drawn: true });
+    expect(mark(root, "w1C:p1")).toEqual({ state: "working", label: "Working", drawn: true });
+    // a turn that waits on background work is Working in the mode's words, under its own mark
+    expect(mark(root, "w1F:p1")).toEqual({ state: "waiting", label: "Working", drawn: true });
+    expect(mark(root, "w1E:p1")).toEqual({ state: "done", label: "Done", drawn: true });
     await redraw({ activity });
-    expect(mark(root, "w1E:p1")).toEqual({ state: "idle", label: "Agent READY", drawn: false });
+    expect(mark(root, "w1E:p1")).toEqual({ state: "idle", label: "Ready", drawn: false });
   });
 
   it("draws a mark for every state when the device asks for herdr's indicators", async () => {
@@ -586,7 +589,7 @@ describe("InboxList", () => {
     const failed = byClass(item(root, "w1E:p1"), "sidebar-status")[0]!;
     expect([failed.props["data-status"], failed.props["aria-label"], failed.props.className]).toEqual(["failed", "Turn failed", "badge badge-blocked sidebar-status"]);
     expect(label(root, "w1E:p1")).toBe("Gajae Code, Why did the backup fail?, Turn failed, Error: rate limited, 1m");
-    expect(mark(root, "w1F:p1")).toEqual({ state: "done", label: "Agent DONE", drawn: true });
+    expect(mark(root, "w1F:p1")).toEqual({ state: "done", label: "Done", drawn: true });
     expect(String(item(root, "w1E:p1").props.className).split(" ")).toContain("is-asking");
   });
 
