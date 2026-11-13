@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
-import { heldOrder, inboxChip, inboxEmpty, inboxFiltered, inboxOrder, inboxSearched, inboxSinceAt, inboxStartsOpen, inboxStatus, inboxWords, questionWords } from "./agentInbox.ts";
+import { heldOrder, inboxEmpty, inboxFiltered, inboxOrder, inboxSearched, inboxSinceAt, inboxStartsOpen, inboxStatus, inboxWords, questionWords } from "./agentInbox.ts";
 import type { AgentRow } from "./agentRoster.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 
@@ -171,17 +171,3 @@ describe("inboxSinceAt", () => {
   });
 });
 
-describe("inboxChip", () => {
-  const failed = { role: "assistant" as const, text: "Error: rate limited", at: 5_000, askedAt: null, failed: true };
-  it("draws a done row whose last words are a failed request as a failed turn", () => {
-    expect(inboxChip("done", "done", failed)).toBe("failed");
-  });
-  it("changes nothing else about chips", () => {
-    expect(inboxChip("done", "done", { ...failed, failed: false })).toBe("done");
-    expect(inboxChip("done", "done", undefined)).toBe("done");
-    expect(inboxChip("working", "working", failed)).toBe("working");
-    expect(inboxChip("working", "waiting", failed)).toBe("waiting");
-    expect(inboxChip("blocked", "blocked", failed)).toBe("blocked");
-    expect(inboxChip("idle", "idle", failed)).toBeNull();
-  });
-});

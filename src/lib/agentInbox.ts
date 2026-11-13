@@ -13,7 +13,6 @@ import type { AgentGroupSort } from "./settings.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
 import type { RowSummary } from "./useInboxSummaries.ts";
 import { capped } from "./promptText.ts";
-import { knownStatus, type KnownStatus } from "./status.ts";
 import { machineFilter, sidebarFilter } from "./sidebarFilter.ts";
 import { sidebarPinKey } from "./sidebarPins.ts";
 
@@ -105,12 +104,6 @@ export function inboxSinceAt(group: AgentGroup, summary: RowSummary | null | und
   if (group === "blocked") return waitStart;
   if (!summary) return null;
   return group === "working" ? summary.askedAt ?? summary.at : summary.at;
-}
-
-/** A row's chip: its state's badge, `failed` for a done row whose last words are a failed request; a resting row has none. */
-export function inboxChip(group: AgentGroup, status: AgentStatus | undefined, summary: RowSummary | undefined): KnownStatus | "failed" | null {
-  if (group === "idle") return null;
-  return group === "done" && summary?.failed === true ? "failed" : knownStatus(status);
 }
 
 /** Whether the inbox mode opens on its list: the address names no pane, workspace or file. */
