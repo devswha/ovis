@@ -490,6 +490,7 @@ try {
           await openSheet(page, ".inbox-more");
           assert.deepEqual(await page.locator(".row-sheet .row-sheet-item").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["exit-inbox", "palette", "alerts", "settings"], "the list's More begins with the way out and the palette, and holds the app's items");
           assert.equal((await page.locator('.row-sheet [data-item="exit-inbox"] .row-sheet-label').textContent())?.trim(), "Back to Ovis");
+          assert.equal(await page.locator('.row-sheet [data-item="exit-inbox"] img.ovis-mark').count(), 1, "Back to Ovis is drawn with the app's own mark, as at the column's foot");
           await shot(page, `inbox-mode-more-390-${theme}.png`);
           const inModeEntries = await historyLength(page);
           await page.locator('.row-sheet [data-item="exit-inbox"]').tap();
@@ -889,7 +890,7 @@ try {
             await page.locator(".row-menu").waitFor({ state: "detached" });
             await page.locator(".inbox-column .inbox-more").click();
             await page.locator(".row-menu").waitFor();
-            assert.deepEqual(await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["exit-inbox", "palette", "alerts", "settings"], "the column's More holds the app's items");
+            assert.deepEqual(await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["palette", "alerts", "settings"], "the column's More holds the app's items, without the way out its foot holds");
             await page.keyboard.press("Escape");
             await page.locator(".row-menu").waitFor({ state: "detached" });
 

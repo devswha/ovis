@@ -141,6 +141,7 @@ import { useInbox, useInboxShell, useInboxWaits } from "./lib/useInbox.ts";
 import { INBOX_MODE_OFFERED, pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
+import { OvisMark } from "./components/OvisMark.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
 
@@ -890,9 +891,14 @@ export function App() {
     ...fromMore("files"), ...fromMore("copy-link"),
     ...paneMoreItems.filter((item) => item.id === "mirror-width" || item.id === "recover-unsent"),
   ].map((item) => ({ ...item, divider: false }));
-  // the way out first: the mode has no drawer or sidebar to leave by. Then the palette, as near the top as in the
-  // classic More and for its reason: the mode's shell has no palette button, and a touch screen no shortcut
-  const modeLeadItems: RowMenuItem[] = [{ id: "exit-inbox", label: t("Back to Ovis"), icon: PanelsTopLeft, run: leaveMode }, ...fromMore("palette")];
+  // The way out first on a phone, whose shell has no drawer or sidebar to leave by. On a wide window the column's
+  // foot is the way out (InboxList.tsx), 40px under this menu, and More does not say it twice. The app's own mark
+  // stands for it wherever it is drawn. Then the palette, as near the top as in the classic More and for its
+  // reason: the mode's shell has no palette button, and a touch screen no shortcut
+  const modeLeadItems: RowMenuItem[] = [
+    ...(inboxWide ? [] : [{ id: "exit-inbox", label: t("Back to Ovis"), icon: PanelsTopLeft, glyph: <OvisMark />, run: leaveMode }]),
+    ...fromMore("palette"),
+  ];
   const modeEndItems: RowMenuItem[] = [
     ...fromMore("alerts").map((item) => ({ ...item, divider: false })),
     { id: "settings", label: t("Settings"), icon: SettingsGlyph, divider: true, run: actions.openSettings },

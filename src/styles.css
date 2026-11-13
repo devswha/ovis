@@ -3710,6 +3710,13 @@ button {
   color: var(--text-dim);
 }
 
+/* the app's own mark in an item's icon place (OvisMark.tsx: Back to Ovis), in the icon's box */
+.menu-item .ovis-mark {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+  flex: 0 0 auto;
+}
+
 .menu-item[aria-selected="true"] {
   background: var(--bg-hover);
   color: var(--text-strong);

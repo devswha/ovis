@@ -138,6 +138,9 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
     const out = actionsOf(TUI, { inboxMode: { on: true, go: () => { went.push("out"); } } });
     expect(await rows(TUI, "p1", ">back to ovis", out, snapshot, false, true)).toEqual(["Back to Ovis"]);
+    // the way back is drawn with the app's own mark here as at the column's foot and in a phone's More: one glyph for it
+    const glyphs = renderer!.root.find((node) => node.props.id === "palette-item-0").findAll((node) => node.type === "img");
+    expect(glyphs.map((node) => node.props.className)).toEqual(["ovis-mark"]);
     await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
     expect(went).toEqual(["in", "out"]);
   });

@@ -20,6 +20,7 @@ import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/u
 import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AgentMark } from "./AgentMark.tsx";
+import { OvisMark } from "./OvisMark.tsx";
 import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";
@@ -341,7 +342,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       <div className="inbox-foot">
         {wide ? <>
           {onExit ? <button type="button" className="btn btn-ghost sidebar-footer-action inbox-exit" onClick={onExit}>
-            <img src="/icons/icon-192.png?v=sheep1" alt="" width="22" height="22" className="inbox-exit-mark" />
+            <OvisMark width="22" height="22" className="inbox-exit-mark" />
             <span className="inbox-exit-label">{t("Back to Ovis")}</span>
           </button> : null}
           <span className="inbox-foot-start" />

@@ -2203,8 +2203,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and only a build with test hooks reads the address.
 - **Open agent inbox** enters it: More's last group in the classic header at every width, a row
   at the sidebar's foot (the drawer's on a phone; Sidebar roster row and footer), and a row of
-  the command palette. **Back to Ovis** leaves it: first in the mode's More, at the column's
-  foot on a wide window, and in the palette. Entering leaves a file open over the pane behind,
+  the command palette. **Back to Ovis** leaves it: first in a phone's More, at the column's
+  foot on a wide window (whose More does not say it a second time 40px above: one fact, one
+  place), and in the palette, the app's own mark (`OvisMark`) standing for it in each. Entering leaves a file open over the pane behind,
   as a move to another pane does: its viewer closes, its own entry stays under the mode's, and
   Back shows the pane with its file again. The setup guide has the classic shell to itself
   and shows no entry. A watching device may use the mode and is offered no New workspace.
@@ -2416,8 +2417,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   between the first two and the last two, the next waiting agent, Find, **Browse files**,
   **Copy link** and what the pane's menu adds for what it shows (Search conversation, the
   mirror's width, unsent text), under More's header of the pane's title, place and path. On a
-  wide window each side has a More of its own: the column's holds the list's four items, the
-  pane's the thread's. A More whose button leaves the screen closes with it: the system Back
+  wide window each side has a More of its own: the column's holds the list's items but Back to
+  Ovis, which stands in the foot under it, and the pane's the thread's. A More whose button leaves the screen closes with it: the system Back
   from a wide thread takes the pane's More away, and its open menu goes too (lib/moreMenu.ts).
 - What More counts in the mode. Over a phone's thread its dot and its name count the sessions
   that wait other than the thread's own, whose question is on the screen in its prompt card,

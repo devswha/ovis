@@ -17,6 +17,7 @@ import { Ownership, runPluginActionToEnd } from "../lib/pluginRun.ts";
 import { modalOpenBesides, shortcutDisplayKeys, formatKeys, type ShortcutId } from "../lib/shortcuts.ts";
 import { useSettings } from "../lib/settings.ts";
 import { AgentMark } from "./AgentMark.tsx";
+import { OvisMark } from "./OvisMark.tsx";
 import { displayPaneTitle, StatusBadge } from "./Sidebar.tsx";
 import { PAGES } from "./SettingsDialog.tsx";
 import { folderName, taskRowLines, unsaidLine } from "../lib/paneName.ts";
@@ -361,7 +362,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       { id: "filter-sidebar", label: t("Filter workspaces and agents"), icon: ListFilter, run: actions.openSidebarFilter },
     ] satisfies PaletteAction[]),
     // the agent inbox as a mode of its own (lib/inboxMode.ts): the way in, and the way back while in it
-    ...(actions.inboxMode ? [{ id: "inbox-mode", label: t(actions.inboxMode.on ? "Back to Ovis" : "Open agent inbox"), icon: Inbox, run: actions.inboxMode.go }] satisfies PaletteAction[] : []),
+    ...(actions.inboxMode ? [{ id: "inbox-mode", label: t(actions.inboxMode.on ? "Back to Ovis" : "Open agent inbox"), icon: actions.inboxMode.on ? OvisMark : Inbox, run: actions.inboxMode.go }] satisfies PaletteAction[] : []),
     { id: "theme", label: t("Toggle theme"), icon: SunMoon, run: actions.toggleTheme },
     { id: "settings", label: t("Settings"), icon: Settings, shortcut: "settings", run: actions.openSettings },
     { id: "add-pc", label: t("Add PC"), icon: Monitor, run: () => actions.openAddPc() },
