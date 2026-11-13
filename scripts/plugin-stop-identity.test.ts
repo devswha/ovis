@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readProcessBirth } from "../server/process-owner.ts";
@@ -26,17 +26,18 @@ async function runStop(scratch: string, body: string): Promise<{ code: number; o
   return { code, out, err };
 }
 
-function scratchWithRecord(pid: number, birth: { platform: string; value: string }): string {
+function scratchWithRecord(pid: number, birth?: { platform: string; value: string }): string {
   const scratch = mkdtempSync(join(tmpdir(), "ovis stop identity "));
   mkdirSync(join(scratch, "state")); mkdirSync(join(scratch, "config"));
   writeFileSync(join(scratch, "state", "server.pid"), `${pid}\n`);
-  writeFileSync(join(scratch, "state", "server.owner"), `${JSON.stringify({ pid, birth })}\n`);
+  writeFileSync(join(scratch, "state", "server.owner"), `${JSON.stringify(birth ? { pid, birth } : { pid, birth_unknown: true })}\n`);
   return scratch;
 }
 
 // The Windows path with the process table it is handed: on every platform, so Linux and macOS check it too.
 const windowsCase = (rowStarted: number, commandLine: string) => `
-  const pid = Number((await Bun.file(process.env.HERDR_PLUGIN_STATE_DIR + "/server.pid").text()).trim()), rows = [{ pid, parent: 0, path: process.execPath, commandLine: ${JSON.stringify(commandLine)}, started: ${rowStarted} }];
+  const own = '"' + process.execPath + '" "' + ${JSON.stringify(join(root, "server", "managed.ts"))}.replace(${JSON.stringify(root)}, process.env.HERDR_PLUGIN_ROOT) + '"';
+  const pid = Number((await Bun.file(process.env.HERDR_PLUGIN_STATE_DIR + "/server.pid").text()).trim()), rows = [{ pid, parent: 0, path: process.execPath, commandLine: ${JSON.stringify(commandLine)} === "OWN" ? own : ${JSON.stringify(commandLine)}, started: ${rowStarted} }];
   let target = 0, terminated = false;
   const result = await stop({ isWindows: true, isAlive: () => !terminated, processTable: async () => terminated ? [] : rows,
     terminateTree: (p) => { target = p; terminated = true; return { status: 0, error: undefined, stderr: "" }; } });
@@ -67,18 +68,43 @@ it("refuses a process that only holds the recorded pid, even one whose command l
 
 it("stops a real process recorded the way start records it, from another folder, on this platform", async () => {
   const server = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { detached: true, stdio: "ignore", windowsHide: true });
-  const exited = new Promise<void>((resolve) => server.once("exit", () => resolve()));
-  const pid = server.pid!;
-  const birth = readProcessBirth(pid);
-  if (birth.state !== "identified") throw new Error(`no birth for ${pid}: ${birth.state}`);
-  const scratch = scratchWithRecord(pid, birth.birth);
+  let scratch = "";
   try {
+    const exited = new Promise<void>((resolve) => server.once("exit", () => resolve()));
+    const pid = server.pid!;
+    const birth = readProcessBirth(pid);
+    if (birth.state !== "identified") throw new Error(`no birth for ${pid}: ${birth.state}`);
+    scratch = scratchWithRecord(pid, birth.birth);
     const { code, out, err } = await runStop(scratch, "process.exitCode = await stop();");
     expect(code, `${out}\n${err}`).toBe(0);
     await exited;
     expect(existsSync(join(scratch, "state", "server.pid"))).toBe(false);
   } finally {
-    try { process.kill(pid); } catch { /* stopped */ }
-    rmSync(scratch, { recursive: true, force: true });
+    // the child ends whatever failed above, before or after its record was written
+    if (server.exitCode === null && server.signalCode === null) server.kill("SIGKILL");
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("stops a server whose creation time matches exactly, though its pid record is older than its start", async () => {
+  const scratch = scratchWithRecord(process.pid, { platform: "win32", value: "1700000000000" });
+  try {
+    utimesSync(join(scratch, "state", "server.pid"), new Date(0), new Date(0));
+    const { code, out, err } = await runStop(scratch, windowsCase(1700000000000, oldFolderServer));
+    expect(code, err).toBe(0);
+    expect(JSON.parse(out.trim().split("\n").at(-1)!), err).toEqual({ result: 0, stopped: true });
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}, 30_000);
+
+it("with no creation time recorded, stops this folder's server form only when its pid record is not older than its start", async () => {
+  for (const aged of [false, true]) {
+    const scratch = scratchWithRecord(process.pid);
+    try {
+      if (aged) utimesSync(join(scratch, "state", "server.pid"), new Date(0), new Date(0));
+      const { code, out, err } = await runStop(scratch, windowsCase(1700000000000, "OWN"));
+      expect(code, err).toBe(0);
+      expect(JSON.parse(out.trim().split("\n").at(-1)!), `aged: ${aged}\n${err}`).toEqual(aged ? { result: 1, stopped: false } : { result: 0, stopped: true });
+      expect(existsSync(join(scratch, "state", "server.pid"))).toBe(aged);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
   }
 }, 60_000);

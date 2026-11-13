@@ -41,7 +41,8 @@
 # Run it again at any time: what is already there is kept, and step 3 is repeated.
 #   OVIS_REF=<branch or tag>   install that ref instead of the latest release (a branch: from source)
 #   OVIS_RELEASES_URL=<https:// address or file:// folder>   where releases are downloaded from,
-#     laid out as GitHub's (<url>/v<version>/<file>); the pinned key checks them all the same
+#     laid out as GitHub's (<url>/v<version>/<file>); the pinned key checks the server and its client from
+#     any of them, but the Rust PTY host only against that release's own unsigned ovis-pty-sidecar.json
 #   OVIS_FROM_SOURCE=1   install from source as before the compiled server
 #   OVIS_RUNTIME=herdr|herdr-core   pick the runtime instead of going by what is installed
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
@@ -363,6 +364,9 @@ if [ -x "$ovis_home/bin/ovis-server" ]; then
       export HERDR_PLUGIN_STATE_DIR
     fi
   fi
+  # herdr where the installer puts it, for a shell whose PATH lacks it: the plugin finds its config dir through herdr
+  PATH="$PATH:$HOME/.local/bin"
+  export PATH
   exec "$ovis_home/bin/ovis-server" plugin "$@"
 fi
 EOF
@@ -1012,7 +1016,8 @@ install_unlock() {
 binary_current() {
   [ "$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$OVIS_HOME/bin/ovis-server.json" 2>/dev/null)" = "$version" ] || return 1
   manifest_entry "$OVIS_HOME/bin/ovis-server.json" "$platform"
-  [ -n "$entry_sha" ] && [ -f "$OVIS_HOME/bin/ovis-server" ] && [ "$(sha256 "$OVIS_HOME/bin/ovis-server")" = "$entry_sha" ]
+  [ -n "$entry_sha" ] && [ -f "$OVIS_HOME/bin/ovis-server" ] && [ "$(sha256 "$OVIS_HOME/bin/ovis-server")" = "$entry_sha" ] &&
+    [ -f "$OVIS_HOME/bin/dist/index.html" ] # the client it serves too: one gone missing is installed again
 }
 
 # install_binary <version>: the release's server for $platform into OVIS_HOME, unless that version runs

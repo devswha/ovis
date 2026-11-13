@@ -232,11 +232,15 @@ it.skipIf(process.platform !== "win32")("starts after its launcher exits, stops 
     for (let attempt = 0; attempt < 3; attempt++) await run("start"); // fast successful exits keep their exit code
     expect(Number(readFileSync(join(state, "server.pid"), "utf8"))).toBe(pid);
     const record = statSync(join(state, "server.pid"));
+    const owner = readFileSync(join(state, "server.owner"), "utf8");
     try {
+      // with no creation time recorded, a matching app started after an old PID record is not its owner
+      // (a recorded creation time that matches decides alone: plugin-stop-identity.test.ts)
+      writeFileSync(join(state, "server.owner"), `${JSON.stringify({ pid, birth_unknown: true })}\n`);
       utimesSync(join(state, "server.pid"), record.atime, new Date(0));
-      await run("stop", 1); // a matching app started after an old PID record is not its owner
+      await run("stop", 1);
       expect((await fetch(`http://127.0.0.1:${port}/api/health`)).ok).toBe(true);
-    } finally { utimesSync(join(state, "server.pid"), record.atime, record.mtime); }
+    } finally { writeFileSync(join(state, "server.owner"), owner); utimesSync(join(state, "server.pid"), record.atime, record.mtime); }
     await run("stop");
     const deadline = Date.now() + 10_000;
     const stillOwned = () => [...owned].filter(member => {

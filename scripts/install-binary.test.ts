@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
@@ -332,6 +332,33 @@ exec "${Bun.which("tar")}" "$@"`);
     expect(result.stdout.toString()).toBe("ovis-server 1.2.3 plugin status --json\n");
     expect(result.exitCode).toBe(0);
     expect(Bun.spawnSync(["find", ovis, "-name", "*.ts"]).stdout.toString()).toBe("");
+  });
+
+  it("installs again a release whose client went missing, and brings the client back", () => {
+    const { releases, key, run, ovis } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    expect(run("install_binary 1.2.3").code).toBe(0);
+    rmSync(join(ovis, "bin", "dist", "index.html"));
+    const again = run("install_binary 1.2.3");
+    expect(again.code).toBe(0);
+    expect(again.out).toContain("installed Ovis 1.2.3");
+    expect(readFileSync(join(ovis, "bin", "dist", "index.html"), "utf8")).toContain("1.2.3");
+  });
+
+  it("gives the installed binary a PATH with ~/.local/bin, where the installer puts herdr", () => {
+    const { releases, key, run, home, ovis } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    expect(run("install_binary 1.2.3").code).toBe(0);
+    mkdirSync(join(home, ".local", "bin"), { recursive: true });
+    writeFileSync(join(home, ".local", "bin", "herdr"), "#!/bin/sh\n", { mode: 0o755 });
+    // the binary the launcher runs reports the herdr it finds, as herdrConfigDir() asks Bun.which
+    const binary = realpathSync(join(ovis, "bin", "ovis-server"));
+    rmSync(binary);
+    writeFileSync(binary, "#!/bin/sh\ncommand -v herdr || echo none\n", { mode: 0o755 });
+    const launcher = join(home, "ovis");
+    expect(run(`launcher_text > "${launcher}" && chmod 755 "${launcher}"`).code).toBe(0);
+    const result = Bun.spawnSync([launcher, "status"], { env: { HOME: home, PATH: "/usr/bin:/bin" }, stdout: "pipe", stderr: "pipe" });
+    expect(result.stdout.toString().trim()).toBe(join(home, ".local", "bin", "herdr"));
   });
 
   it("replaces nothing that is not its own: a bin folder someone made stays", () => {
