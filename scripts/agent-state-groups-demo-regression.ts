@@ -41,7 +41,8 @@ const DAY = 86_400_000;
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark"): Promise<void> {
   const phone = width === 390;
   const tag = `${width} ${theme}`;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", colorScheme: theme });
+  const device = { viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", colorScheme: theme } as const;
+  const context = await browser.newContext(device);
   await context.addInitScript(({ settings }) => {
     // seeded once, so a reload keeps what the page itself stored
     if (localStorage.getItem("ovis:settings") !== null) return;
@@ -194,9 +195,17 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await row(panes.omp).waitFor({ state: "hidden" });
 
   // a row with the keyboard's focus whose new state files it under a folded group hands the focus to that group's
-  // heading. This page's clock is held from its first moment, so the demo agent's turn ends when the check runs it
-  await page.evaluate(() => localStorage.setItem("ovis:agent-state-folds", JSON.stringify(["done", "idle"])));
-  const held = await context.newPage();
+  // heading. On a device of its own, with Done folded: the device above has read this agent's first finish under the
+  // server every load names, and a finish that was read files its row under Idle at once. This page's clock is held
+  // from its first moment, so the demo agent's turn ends when the check runs it
+  const other = await browser.newContext(device);
+  await other.addInitScript(({ settings }) => {
+    localStorage.setItem("ovis:settings", settings);
+    localStorage.setItem("ovis:agent-groups", "true");
+    localStorage.setItem("ovis:agents-collapsed", "0");
+    localStorage.setItem("ovis:agent-state-folds", JSON.stringify(["done", "idle"]));
+  }, { settings: JSON.stringify({ language: "en", theme }) });
+  const held = await other.newPage();
   held.on("pageerror", (error) => errors.push(error.message));
   await held.clock.install({ time: new Date() });
   await held.clock.pauseAt(new Date(Date.now() + 1000));
@@ -213,7 +222,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await held.clock.runFor(4000);
   await working.waitFor({ state: "hidden" });
   assert.equal(await held.evaluate(() => document.activeElement?.closest("li")?.getAttribute("data-group") ?? null), "done", `${tag}: a focused row that moves under a folded group hands its focus to the heading`);
-  await held.close();
+  await other.close();
 
   // The focus the list places is only one a row held as the row went out of sight. A row moved lower in the list (its
   // new state files it under an open group) is taken out and put back: its main control gets the focus back, but its
