@@ -270,7 +270,7 @@ describe("InboxList", () => {
     }
     expect(presses).toEqual([]);
     expect(opened).toEqual([]);
-    expect(byClass(root, "inbox-new").length).toBe(0);
+    expect(byClass(root, "inbox-add").length).toBe(0);
   });
 
   it("says Offline after the name of a PC that is away when several PCs are shown", async () => {
@@ -299,7 +299,7 @@ describe("InboxList", () => {
   it("offers the four state filters as one choice behind its round button, and tells the chosen one", async () => {
     const asked: InboxFilter[] = [];
     const root = await draw(roster(), { onFilter: (filter) => asked.push(filter) });
-    const button = () => byClass(root, "inbox-filter")[0]!;
+    const button = () => byClass(root, "inbox-filter-toggle")[0]!;
     expect(button().props["aria-label"]).toBe("Filter by state");
     expect(String(button().props.className).split(" ")).not.toContain("is-on");
     expect(menus(root).length).toBe(0);
@@ -320,11 +320,11 @@ describe("InboxList", () => {
 
   it("says its menus are sheets at a phone's width and popovers beyond it", async () => {
     const root = await draw(twoPcs());
-    expect([byClass(root, "inbox-filter")[0]!.props["aria-haspopup"], byClass(root, "inbox-new")[0]!.props["aria-haspopup"]]).toEqual(["dialog", "dialog"]);
+    expect([byClass(root, "inbox-filter-toggle")[0]!.props["aria-haspopup"], byClass(root, "inbox-add")[0]!.props["aria-haspopup"]]).toEqual(["dialog", "dialog"]);
     await act(async () => { renderer?.unmount(); });
     phone = false;
     const wide = await draw(twoPcs(), { wide: true });
-    expect([byClass(wide, "inbox-filter")[0]!.props["aria-haspopup"], byClass(wide, "inbox-new")[0]!.props["aria-haspopup"]]).toEqual(["menu", "menu"]);
+    expect([byClass(wide, "inbox-filter-toggle")[0]!.props["aria-haspopup"], byClass(wide, "inbox-add")[0]!.props["aria-haspopup"]]).toEqual(["menu", "menu"]);
   });
 
   it("narrows the list to the rows a query matches, by name and by the words a row shows", async () => {
@@ -360,17 +360,17 @@ describe("InboxList", () => {
   it("offers New workspace on the one connected PC, and none to a watching device", async () => {
     const asked: string[] = [];
     const root = await draw(roster(), { onNew: (machineId) => asked.push(machineId) });
-    await act(async () => { byClass(root, "inbox-new")[0]!.props.onClick({ currentTarget: anchor }); });
+    await act(async () => { byClass(root, "inbox-add")[0]!.props.onClick({ currentTarget: anchor }); });
     expect(asked).toEqual(["local"]);
     expect(menus(root).length).toBe(0);
     await act(async () => { renderer?.unmount(); });
-    expect(byClass(await draw(roster(), { watching: true }), "inbox-new").length).toBe(0);
+    expect(byClass(await draw(roster(), { watching: true }), "inbox-add").length).toBe(0);
   });
 
   it("asks which PC first when two are connected, starts on the one picked, and closes the sheet when the choice goes", async () => {
     const asked: string[] = [];
     const root = await draw(twoPcs(), { onNew: (machineId) => asked.push(machineId) });
-    await act(async () => { byClass(root, "inbox-new")[0]!.props.onClick({ currentTarget: anchor }); });
+    await act(async () => { byClass(root, "inbox-add")[0]!.props.onClick({ currentTarget: anchor }); });
     const [menu] = menus(root);
     expect(menu!.props.items.map((entry: { id: string; label: string }) => `${entry.id}:${entry.label}`)).toEqual(["local:workstation", "laptop:Laptop"]);
     expect(asked).toEqual([]);
@@ -436,8 +436,8 @@ describe("InboxList", () => {
     const root = await draw(roster(), { more: { label: "More", expanded: false, popup: "dialog", onPress: (node) => pressed.push(node) }, note: <span className="test-note">Link copied</span> });
     const top = byClass(root, "inbox-top")[0]!;
     const classes = (node: ReactTestInstance) => node.findAll((inner) => typeof inner.type === "string" && inner.parent === node).map((inner) => String(inner.props.className).split(" ").find((name) => name.startsWith("inbox-") && name !== "inbox-round") ?? String(inner.props.className));
-    expect(classes(top)).toEqual(["inbox-more", "test-note", "inbox-new"]);
-    expect(classes(byClass(root, "inbox-foot")[0]!)).toEqual(["inbox-filter", "inbox-search"]);
+    expect(classes(top)).toEqual(["inbox-more", "test-note", "inbox-add"]);
+    expect(classes(byClass(root, "inbox-foot")[0]!)).toEqual(["inbox-filter-toggle", "inbox-search"]);
     const more = byClass(root, "inbox-more")[0]!;
     expect([more.props["aria-label"], more.props["aria-haspopup"], more.props["aria-expanded"]]).toEqual(["More", "dialog", false]);
     await act(async () => { more.props.onClick({ currentTarget: anchor }); });
@@ -466,8 +466,8 @@ describe("InboxList", () => {
     it("draws Search and New workspace in its top row and the filter and More at its foot, the state's mark at each row's end", async () => {
       const root = await draw(roster(), { wide: true, more: { label: "More", expanded: true, popup: "menu", onPress() {} } });
       const buttons = (zone: string) => byClass(root, zone)[0]!.findAll((node) => node.type === "button").map((node) => String(node.props.className).split(" ").find((name) => name.startsWith("inbox-") && name !== "inbox-round"));
-      expect(buttons("inbox-top")).toEqual(["inbox-search-toggle", "inbox-new"]);
-      expect(buttons("inbox-foot")).toEqual(["inbox-filter", "inbox-more"]);
+      expect(buttons("inbox-top")).toEqual(["inbox-search-toggle", "inbox-add"]);
+      expect(buttons("inbox-foot")).toEqual(["inbox-filter-toggle", "inbox-more"]);
       expect(byClass(root, "inbox-more")[0]!.props["aria-expanded"]).toBe(true);
       const row = byClass(item(root, "w1D:p1"), "inbox-row")[0]!;
       // the mark is the row's last child, after the two lines, not on the words' line

@@ -189,7 +189,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
     </div>
   );
   const newButton = offerNew && (
-    <button type="button" className="icon-button inbox-round inbox-new" aria-label={t("New workspace")} title={t("New workspace")}
+    <button type="button" className="icon-button inbox-round inbox-add" aria-label={t("New workspace")} title={t("New workspace")}
       aria-haspopup={connected.length > 1 ? popup : undefined} aria-expanded={connected.length > 1 ? pcMenu !== null : undefined}
       onClick={(event) => {
         if (connected.length === 1) onNew(connected[0]!.id);
@@ -201,7 +201,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   const filterWord = (value: InboxFilter): string => value === "all" ? t("All") : inboxStateWord(value, t);
   const filterLabel = filter === "all" ? t("Filter by state") : t("Filter by state: {state}", { state: filterWord(filter) });
   const filterButton = (
-    <button type="button" className={`icon-button inbox-round inbox-filter${filter === "all" ? "" : " is-on"}`} aria-label={filterLabel} title={filterLabel}
+    <button type="button" className={`icon-button inbox-round inbox-filter-toggle${filter === "all" ? "" : " is-on"}`} aria-label={filterLabel} title={filterLabel}
       aria-haspopup={popup} aria-expanded={filterMenu !== null} onClick={(event) => setFilterMenu(filterMenu === null ? event.currentTarget : null)}>
       <ListFilter aria-hidden="true" />
     </button>
@@ -214,7 +214,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   );
 
   return (
-    <section className={`inbox-list${wide ? " is-wide" : ""}`} aria-label={t("Agent inbox")} tabIndex={-1} ref={root}
+    <section className={`mode-inbox${wide ? " is-wide" : ""}`} aria-label={t("Agent inbox")} tabIndex={-1} ref={root}
       onWheel={stopRestoring} onTouchStart={stopRestoring} onPointerDown={stopRestoring} onKeyDown={stopRestoring}>
       <div className="inbox-top">
         {wide ? <>
