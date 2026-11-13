@@ -57,10 +57,10 @@ describe("useInboxMode", () => {
     descriptors.clear();
   });
 
-  async function mount(addresses: string[], read = true, startsIn = false): Promise<void> {
+  async function mount(addresses: string[], startsIn = false): Promise<void> {
     entries = addresses.map((address) => ({ state: null, url: new URL(`http://localhost:7317${address}`) }));
     index = entries.length - 1;
-    function Probe() { mode = useInboxMode({ read, startsIn: () => startsIn }); return null; }
+    function Probe() { mode = useInboxMode({ startsIn: () => startsIn }); return null; }
     await act(async () => { renderer = create(createElement(Probe)); });
     window.addEventListener("popstate", () => { heardAfter += 1; });
     loadWrites = writes;
@@ -89,7 +89,7 @@ describe("useInboxMode", () => {
     // reloaded on an entry of the app's own: nothing is written on it
     entries = [{ state: { [NAV_KEY]: true }, url: new URL("http://localhost:7317/?app=inbox") }];
     index = 0;
-    function Probe() { mode = useInboxMode({ read: true }); return null; }
+    function Probe() { mode = useInboxMode({}); return null; }
     await act(async () => { renderer = create(createElement(Probe)); });
     expect(writes).toEqual([]);
     expect(entries[0]!.state).toEqual({ [NAV_KEY]: true });
@@ -188,21 +188,8 @@ describe("useInboxMode", () => {
     expect(mode.on).toBe(false);
   });
 
-  it("with the gate closed, ignores an address that says inbox and leaves it as it is", async () => {
-    await mount(["/?app=inbox&pane=p1"], false);
-    expect([mode.on, mode.at()]).toEqual([false, false]);
-
-    await act(async () => { mode.enter(); });
-    await act(async () => { mode.leave(); });
-
-    expect(mode.on).toBe(false);
-    expect(writes).toEqual([]);
-    expect(searches()).toEqual(["?app=inbox&pane=p1"]);
-    expect(listeners).toHaveLength(1);
-  });
-
   it("starts in the mode on a device that says so, its address taking the mark by a replace with nothing pushed", async () => {
-    await mount(["/"], true, true);
+    await mount(["/"], true);
     expect([mode.on, mode.at()]).toEqual([true, true]);
     // one replace says the mode and marks the entry
     expect(loadWrites).toEqual(["replaceState 0 ?app=inbox"]);
@@ -210,18 +197,14 @@ describe("useInboxMode", () => {
     await act(async () => { renderer?.unmount(); });
 
     // a tapped alert's address keeps its pane: the mode opens on that thread
-    await mount(["/?pane=p1&view=chat"], true, true);
+    await mount(["/?pane=p1&view=chat"], true);
     expect(mode.on).toBe(true);
     expect(loadWrites).toEqual(["replaceState 0 ?pane=p1&view=chat&app=inbox"]);
     await act(async () => { renderer?.unmount(); });
 
-    // an address already the mode's is left as it is, and a build that does not read the mode starts nowhere and writes nothing
-    await mount(["/?app=inbox"], true, true);
+    // an address already the mode's is left as it is
+    await mount(["/?app=inbox"], true);
     expect(loadWrites).toEqual(["replaceState 0 ?app=inbox"]);
-    await act(async () => { renderer?.unmount(); });
-    await mount(["/"], false, true);
-    expect(mode.on).toBe(false);
-    expect(loadWrites).toEqual([]);
   });
 
   it("hands the shell one ref for its blocked drawer, set from the mode the page loads in", async () => {

@@ -64,7 +64,7 @@ describe("the inbox mode in the history", () => {
   /** how the browser says the page was loaded; undefined where it does not say */
   let navigation: string | undefined;
   function Probe({ link }: { link: AppLink | null }) {
-    const mode = useInboxMode({ read: true, startsIn: () => pageStartsInInbox(setting, true, link) });
+    const mode = useInboxMode({ startsIn: () => pageStartsInInbox(setting, true, link) });
     const inbox = useInbox({ on: mode.on, initialLink: link, drawerOpenRef: refs.drawerOpen });
     shell = { mode, inbox };
     const machine = { id: "local", name: "workstation", kind: "local", enabled: true, state: "connected", error: null, snapshot } as Machine;

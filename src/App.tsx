@@ -138,7 +138,7 @@ import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitVi
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
 import { useInbox, useInboxShell } from "./lib/useInbox.ts";
-import { INBOX_MODE_OFFERED, pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
+import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
@@ -358,7 +358,7 @@ export function App() {
     thread: inMode && !inbox.shown && selectedPaneId !== null && linkLanded ? sidebarPinKey(selectedMachineId, selectedPaneId) : null,
     focusInput: () => paneControls.current?.focusInput() });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself
-  const modeOffered = INBOX_MODE_OFFERED && !guideShown;
+  const modeOffered = !guideShown;
 
 
   const unlock = useCallback(() => {
@@ -770,7 +770,6 @@ export function App() {
   // the PCs this device shows in its sidebar, Agents list and palette (Settings → Devices and PCs); every other
   // use of the roster keeps them all, so a link, an alert or a split still reaches a hidden PC's pane
   const sidebarMachines = useShownMachines({ machines, selectedMachineRef, selectTargetRef, picks, restored: !linkSelects(initialLink) });
-  // when each inbox row began to wait, observed whether the list is shown or not, where it is enabled
   // every connected PC's sessions as its sidebar draws them, so the "waiting for you" count and its next jump
   // triage the same set the Agents list shows (G-002), and the selected PC's even when the sidebar hides it (lib/headerSessions.ts)
   const waitingRosters = useWaitingRosters(sidebarMachines, machines.find((machine) => machine.id === selectedMachineId), activity.status);

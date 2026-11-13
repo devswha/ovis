@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { readLink } from "./deepLink.ts";
-import { freshNavigation, inboxAddress, inboxModeRead, paneAddressStartsInInbox, startsInInbox, withInboxAddress } from "./inboxMode.ts";
+import { freshNavigation, inboxAddress, paneAddressStartsInInbox, startsInInbox, withInboxAddress } from "./inboxMode.ts";
 import { pageAddress, pageSearch } from "./pageQuery.ts";
 
 describe("the inbox mode's address", () => {
@@ -34,11 +34,6 @@ describe("the inbox mode's address", () => {
 });
 
 describe("the gate on the mode's address", () => {
-  it("reads the address when the mode is offered, or in a build with test hooks", () => {
-    expect(inboxModeRead(true, false)).toBe(true);
-    expect(inboxModeRead(false, true)).toBe(true);
-    expect(inboxModeRead(false, false)).toBe(false);
-  });
 });
 
 describe("where a device that starts in the inbox starts", () => {

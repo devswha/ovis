@@ -13,23 +13,9 @@ import { NAV_KEY, type AppLink } from "./deepLink.ts";
 import { SEEN_KEY } from "./historyKeys.ts";
 import { pageAddress, pageSearch } from "./pageQuery.ts";
 
-declare const __HERDR_TEST_HOOKS__: boolean | undefined;
-
-/**
- * Whether the mode is offered: its entries are drawn (More's Open agent inbox, the sidebar's foot) and every build
- * reads its address. While false only a build with test hooks reads the address (the browser lane's demo build, as
- * lib/crashProbe.ts has it), so the browser scripts can open the mode and a shipped build or the published demo
- * ignores it.
- */
-export const INBOX_MODE_OFFERED: boolean = true;
 
 const PARAM = "app";
 const INBOX = "inbox";
-
-/** Whether a build reads the mode's address at all. */
-export function inboxModeRead(offered: boolean = INBOX_MODE_OFFERED, hooks: boolean = typeof __HERDR_TEST_HOOKS__ === "boolean" && __HERDR_TEST_HOOKS__): boolean {
-  return offered || hooks;
-}
 
 /** Whether an address is the inbox mode's. */
 export function inboxAddress(search: string): boolean {
@@ -116,16 +102,14 @@ export interface InboxMode {
  * The mode the address names, kept in step with Back and Forward. Its popstate listener only reads: every
  * listener after it hears the same event (src/conventions.test.ts).
  */
-export function useInboxMode({ read = inboxModeRead(), startsIn }: {
-  read?: boolean;
+export function useInboxMode({ startsIn }: {
   /** whether this device starts in the mode whatever its address says: asked once, as the page loads */
   startsIn?: () => boolean;
 } = {}): InboxMode {
-  const [starts] = useState(() => read && startsIn?.() === true);
-  const [on, setOn] = useState(() => starts || (read && inboxAddress(pageSearch())));
+  const [starts] = useState(() => startsIn?.() === true);
+  const [on, setOn] = useState(() => starts || inboxAddress(pageSearch()));
   const drawerBlocked = useRef(on);
   useEffect(() => {
-    if (!read) return;
     // a device that starts in the mode says so in its address, at load only: where it starts, not where it stays
     const address = starts && !inboxAddress(pageSearch()) ? pageAddress(window.location.pathname, withInboxAddress(pageSearch(), true), window.location.hash) : undefined;
     // An entry the app has stood on carries a state (freshNavigation): the one the page loaded on from here, and one
@@ -143,19 +127,17 @@ export function useInboxMode({ read = inboxModeRead(), startsIn }: {
     };
   }, []);
   useEffect(() => {
-    if (!read) return;
     const onPop = (): void => setOn(inboxAddress(pageSearch()));
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
-  }, [read]);
+  }, []);
   const go = useCallback((next: boolean): void => {
-    if (!read) return;
     const search = withInboxAddress(pageSearch(), next);
     if (search !== pageSearch()) window.history.pushState({ [NAV_KEY]: true }, "", pageAddress(window.location.pathname, search, window.location.hash));
     setOn(next);
-  }, [read]);
+  }, []);
   const enter = useCallback((): void => go(true), [go]);
   const leave = useCallback((): void => go(false), [go]);
-  const at = useCallback((): boolean => read && inboxAddress(pageSearch()), [read]);
+  const at = useCallback((): boolean => inboxAddress(pageSearch()), []);
   return { on, at, enter, leave, drawerBlocked };
 }
