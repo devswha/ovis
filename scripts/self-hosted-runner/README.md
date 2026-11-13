@@ -399,9 +399,10 @@ vm-runner.sh supervise                              # forever: one container per
   Docker API on 2375 among them). `vm-runner.sh` drops all traffic from the job containers to the VM itself and to
   private and link-local ranges; a job reaches the internet and the resolver only.
 - Fork PRs never run here, as on every runner of this image (`job-started.sh`).
-- **Order**: the variable below moves Fast checks too, and on these VMs (Linux 6.12, 4 vCPUs) Fast checks fails until
-  the coarse-file-clock and SIGTERM fixes of #3808 are on main. Set it only after that, and after a manual run
-  (`self_hosted_labels`, below) on the VM runners is green.
+- **Fast checks**: on these VMs (Linux 6.12, 4 vCPUs) Fast checks fails until the coarse-file-clock and SIGTERM fixes
+  of #3808 are on main. Until then keep it on this PC's runners while the rest moves:
+  `gh variable set CI_FAST_SELF_HOSTED_LABELS --body '["self-hosted","self-hosted-ovis"]'`. It applies only while
+  the Linux jobs go to `ovis-vm` (never to a fork's run); delete it once #3808 is in to move Fast checks too.
 - Routing: `gh variable set CI_LINUX_SELF_HOSTED_LABELS --body '["self-hosted","ovis-vm"]'` moves ci.yml's Linux jobs
   of pull requests and branch pushes to them (main keeps `CI_MAIN_SELF_HOSTED_LABELS`; pages.yml and release.yml keep
   `CI_SELF_HOSTED_LABELS`). With `ovis-vm` the browser scripts run as five jobs. A manual run takes
