@@ -2384,11 +2384,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (lib/focus.ts). Where something took it meanwhile it stays there: the pane's composer on a
   desktop when the list uncovers the pane, More's button when a phone's thread is left.
 - More in the mode holds what still means something in its shell. On the list: **Back to
-  Ovis**, **Alerts**, **Settings**. In a phone's thread also, between the first and the last
-  two, the next waiting agent, Find, **Browse files**, **Copy link** and what the pane's menu
-  adds for what it shows (Search conversation, the mirror's width, unsent text), under More's
-  header of the pane's title, place and path. On a wide window each side has a More of its own:
-  the column's holds the list's three items, the pane's the thread's.
+  Ovis**, **Search panes and actions** (the command palette: the mode's shell has no button for
+  it, and a touch screen no shortcut), **Alerts**, **Settings**. In a phone's thread also,
+  between the first two and the last two, the next waiting agent, Find, **Browse files**,
+  **Copy link** and what the pane's menu adds for what it shows (Search conversation, the
+  mirror's width, unsent text), under More's header of the pane's title, place and path. On a
+  wide window each side has a More of its own: the column's holds the list's four items, the
+  pane's the thread's.
 - What More counts in the mode. Over a phone's thread its dot and its name count the sessions
   that wait other than the thread's own, whose question is on the screen in its prompt card,
   and the next waiting agent is offered only when there is another. From 769px no More carries

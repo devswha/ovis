@@ -481,7 +481,7 @@ try {
 
           await page.setViewportSize(PHONE);
           await openSheet(page, ".inbox-more");
-          assert.deepEqual(await page.locator(".row-sheet .row-sheet-item").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["exit-inbox", "alerts", "settings"], "the list's More begins with the way out and holds the app's items");
+          assert.deepEqual(await page.locator(".row-sheet .row-sheet-item").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["exit-inbox", "palette", "alerts", "settings"], "the list's More begins with the way out and the palette, and holds the app's items");
           assert.equal((await page.locator('.row-sheet [data-item="exit-inbox"] .row-sheet-label').textContent())?.trim(), "Back to Ovis");
           await shot(page, `inbox-mode-more-390-${theme}.png`);
           const inModeEntries = await historyLength(page);
@@ -562,8 +562,8 @@ try {
           assert.match(await page.locator(".header-more-button").getAttribute("aria-label") ?? "", /1 waiting for you/);
           await openSheet(page, ".header-more-button");
           const items = await page.locator(".row-sheet .row-sheet-item").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-item")));
-          assert.equal(items[0], "exit-inbox", `a thread's More begins with the way out: ${items.join()}`);
-          assert.equal(items[1], "next-waiting", `then the next agent that waits: ${items.join()}`);
+          assert.deepEqual(items.slice(0, 2), ["exit-inbox", "palette"], `a thread's More begins with the way out and the palette: ${items.join()}`);
+          assert.equal(items[2], "next-waiting", `then the next agent that waits: ${items.join()}`);
           assert.ok(!items.includes("open-drawer"), `the mode has no drawer to open: ${items.join()}`);
           assert.deepEqual(items.slice(-2), ["alerts", "settings"], `the app's items end a thread's More: ${items.join()}`);
           await shot(page, `inbox-mode-thread-more-390-${theme}.png`);
@@ -874,12 +874,12 @@ try {
             await page.locator(".row-menu").waitFor();
             const threadItems = await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item")));
             assert.ok(threadItems.includes("copy-link") && threadItems.includes("files"), `the pane's More holds the thread's items: ${threadItems.join()}`);
-            for (const item of ["exit-inbox", "settings", "alerts", "next-waiting"]) assert.ok(!threadItems.includes(item), `the pane's More has no ${item}: ${threadItems.join()}`);
+            for (const item of ["exit-inbox", "palette", "settings", "alerts", "next-waiting"]) assert.ok(!threadItems.includes(item), `the pane's More has no ${item}: ${threadItems.join()}`);
             await page.keyboard.press("Escape");
             await page.locator(".row-menu").waitFor({ state: "detached" });
             await page.locator(".inbox-column .inbox-more").click();
             await page.locator(".row-menu").waitFor();
-            assert.deepEqual(await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["exit-inbox", "alerts", "settings"], "the column's More holds the app's items");
+            assert.deepEqual(await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["exit-inbox", "palette", "alerts", "settings"], "the column's More holds the app's items");
             await page.keyboard.press("Escape");
             await page.locator(".row-menu").waitFor({ state: "detached" });
 
@@ -1018,6 +1018,23 @@ try {
         await page.waitForFunction(() => document.activeElement?.classList.contains("sidebar-toggle") === true, undefined, { timeout: 5_000 });
         console.log("PASS Back to Ovis leaves the focus on the classic header's toggle: the drawer's on a phone, the sidebar's on a wide window");
       }, desktop);
+
+      // ---- the command palette from the mode's More ----
+      await withPage(browser, base, light, "/?app=inbox", "the command palette from the list's More", async (page) => {
+        await listScreen(page);
+        await rowCount(page, 6);
+        await openSheet(page, ".inbox-more");
+        assert.equal((await page.locator('.row-sheet [data-item="palette"] .row-sheet-label').textContent())?.trim(), "Search panes and actions");
+        await page.locator('.row-sheet [data-item="palette"]').tap();
+        await page.locator(".command-palette").waitFor();
+        await page.locator(".row-sheet").waitFor({ state: "detached" });
+        assert.equal(await page.locator(".mode-inbox").count(), 1, "the palette opens over the list");
+        // the system Back puts the palette away and the list is the screen again
+        await page.goBack();
+        await page.locator(".command-palette").waitFor({ state: "detached" });
+        await listScreen(page);
+        console.log("PASS Search panes and actions in the list's More opens the command palette over the list on a phone, and Back closes it");
+      });
 
       if (errors.length > 0) {
         failures.push("page errors after the themes");

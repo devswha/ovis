@@ -883,15 +883,17 @@ export function App() {
     ...fromMore("files"), ...fromMore("copy-link"),
     ...paneMoreItems.filter((item) => item.id === "mirror-width" || item.id === "recover-unsent"),
   ].map((item) => ({ ...item, divider: false }));
-  const modeAppItems: RowMenuItem[] = [
-    // the way out first: the mode has no drawer or sidebar to leave by
-    { id: "exit-inbox", label: t("Back to Ovis"), icon: PanelsTopLeft, run: leaveMode },
+  // the way out first: the mode has no drawer or sidebar to leave by. Then the palette, as near the top as in the
+  // classic More and for its reason: the mode's shell has no palette button, and a touch screen no shortcut
+  const modeLeadItems: RowMenuItem[] = [{ id: "exit-inbox", label: t("Back to Ovis"), icon: PanelsTopLeft, run: leaveMode }, ...fromMore("palette")];
+  const modeEndItems: RowMenuItem[] = [
     ...fromMore("alerts").map((item) => ({ ...item, divider: false })),
     { id: "settings", label: t("Settings"), icon: SettingsGlyph, divider: true, run: actions.openSettings },
   ];
-  // a phone's thread has the one More: the way out, then the thread's items, then the app's
+  const modeAppItems: RowMenuItem[] = [...modeLeadItems, ...modeEndItems];
+  // a phone's thread has the one More: the way out and the palette, then the thread's items, then the rest of the app's
   const modeMoreItems: RowMenuItem[] = moreOnList ? modeAppItems : inboxWide ? modeThreadItems
-    : [modeAppItems[0]!, ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item), ...modeAppItems.slice(1)];
+    : [...modeLeadItems, ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item), ...modeEndItems];
 
   // the chat's surface is what the pane column shows: the header's pane zone and the tab strip
   // take it (from 769px). A pane herdr could not restore draws a placeholder, not the chat.
