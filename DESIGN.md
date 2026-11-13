@@ -2372,7 +2372,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   - The column's foot is one line, `--space-3` above the window's edge: at its start **Back to
     Ovis** beside the Ovis mark (the sidebar foot's own action, where the classic sidebar has
     the way in), at its end the state filter and **More** as round controls, `--space-2`
-    apart. Nothing in the foot is filled.
+    apart. Nothing in the foot is filled but the filter's button while a filter other than All
+    is on, the round control's own rule (above).
   - Over the pane (`.thread-top`) a name chip (`.thread-chip`) stands on the pane's middle: an
     opaque pill, `--control-h` tall, `--bg-elevated` inside a hairline `--border`, holding the
     agent's round mark at `--mark-size`, the name (`--fs-md`, `--fw-medium`) and, after it, the
