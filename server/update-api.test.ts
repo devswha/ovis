@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DESKTOP_APP_UPDATES, noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type UpdateRequest, type UpdateStatus, INSTALL_ID } from "../shared/update.ts";
-import { connectUpdater, handleUpdateRequest, servedRevision, type UpdateService, OLD_LAUNCHER_REASON } from "./update-api.ts";
+import { connectUpdater, handleUpdateRequest, servedRevision, type UpdateService, oldLauncherReason } from "./update-api.ts";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -186,17 +186,30 @@ describe("a manual install", () => {
   });
 
   it("tells a bridge the launcher of 0.2.0 started to update its checkout, the only way on from there", async () => {
-    // that launcher is its own supervisor and starts the bridge with no source root; every later one hands it down
+    // that launcher is its own supervisor and starts the bridge with no source root, in a release it cloned from the
+    // checkout: git's reflog there names the checkout, which the commands to run then name
     let deliver: (message: unknown) => void = () => {};
-    const connect = (env: Record<string, string | undefined>) =>
-      connectUpdater({ send() {}, onMessage: (listener) => { deliver = listener; } }, env);
+    const connect = (env: Record<string, string | undefined>, cwd = process.cwd()) =>
+      connectUpdater({ send() {}, onMessage: (listener) => { deliver = listener; } }, env, cwd);
     const { revision_bound_install: _, ...older } = offer();
-    const under020 = connect({ OVIS_MANAGED: "1", HERDR_WEB_MANAGED: "1" });
-    deliver({ type: "update-status", status: { ...older, available: false } });
-    expect(under020.status()).toMatchObject({ available: false, blocked_reason: OLD_LAUNCHER_REASON });
-    const refused = await handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", under020);
-    expect(refused.status).toBe(409);
-    expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(OLD_LAUNCHER_REASON);
+    const release = mkdtempSync(join(tmpdir(), "ovis-020-release-"));
+    mkdirSync(join(release, ".git", "logs"), { recursive: true });
+    writeFileSync(join(release, ".git", "logs", "HEAD"), `${"0".repeat(40)} ${"1".repeat(40)} t <t@t> 1700000000 +0000\tclone: from /home/me/herdr-web-ui\n`);
+    try {
+      const under020 = connect({ OVIS_MANAGED: "1", HERDR_WEB_MANAGED: "1" }, release);
+      deliver({ type: "update-status", status: { ...older, available: false } });
+      expect(under020.status()).toMatchObject({ available: false, blocked_reason: oldLauncherReason("/home/me/herdr-web-ui") });
+      expect(under020.status().blocked_reason).toContain('"/home/me/herdr-web-ui"');
+      const refused = await handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", under020);
+      expect(refused.status).toBe(409);
+      expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(oldLauncherReason("/home/me/herdr-web-ui"));
+      // a release whose clone cannot be told gives the same commands, with the folder left for the person to fill in
+      const unknown = connect({ OVIS_MANAGED: "1" }, mkdtempSync(join(tmpdir(), "ovis-020-bare-")));
+      deliver({ type: "update-status", status: { ...older, available: false } });
+      expect(unknown.status().blocked_reason).toBe(oldLauncherReason(null));
+    } finally {
+      rmSync(release, { recursive: true, force: true });
+    }
     // a later launcher's old supervisor (a source root handed down) keeps the restart advice, which helps there
     for (const env of [{ OVIS_MANAGED: "1", OVIS_SOURCE_ROOT: "/checkout" }, { OVIS_MANAGED: "1", HERDR_WEB_SOURCE_ROOT: "/checkout" }]) {
       const later = connect(env);

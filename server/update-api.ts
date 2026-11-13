@@ -1,6 +1,7 @@
 import { INSTALL_ID, noInstalledNotes, noUpdateNotes, readInstalledNotes, readUpdateNotes, REVISION, unmanagedUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateRequest, type UpdateStatus } from "../shared/update.ts";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { ASSETS, COMPILED } from "./entries.ts";
 
@@ -48,7 +49,24 @@ export interface SupervisorChannel {
  * `v*` tags and never runs a newer one, so after the last of them it installs nothing more and a restart changes
  * nothing: only its checkout, updated, brings a launcher that moves on to the compiled server.
  */
-export const OLD_LAUNCHER_REASON = "This Ovis runs under the launcher of version 0.2.0, which installs no further update. Update its checkout (git pull on main there, or herdr plugin update devswha.ovis), then restart Ovis.";
+const OLD_LAUNCHER_OPENING = "This Ovis runs under the launcher of version 0.2.0";
+export function oldLauncherReason(checkout: string | null): string {
+  const folder = checkout ?? "<the folder Ovis was installed in>";
+  return `${OLD_LAUNCHER_OPENING}, which installs no further update. To move on, run: git -C "${folder}" pull --ff-only origin main (or, for the herdr plugin: herdr plugin update devswha.ovis). Then restart Ovis: herdr's Stop Ovis, then Start Ovis (or stop it and run bun run start in "${folder}").`;
+}
+
+/**
+ * The checkout the launcher of 0.2.0 runs from, for a bridge it started in a release folder: that launcher's updater
+ * cloned the release from it, and git keeps where from in the clone's first reflog line ("clone: from <folder>").
+ * Null when it cannot be told.
+ */
+export function checkoutOfRelease(release: string): string | null {
+  try {
+    const first = readFileSync(join(release, ".git", "logs", "HEAD"), "utf8").split("\n")[0] ?? "";
+    const from = /\tclone: from (.+)$/.exec(first)?.[1]?.trim();
+    return from && isAbsolute(from) ? from : null;
+  } catch { return null; }
+}
 
 /**
  * Whether this bridge was started by the launcher of 0.2.0: managed, and no source root handed down. Every launcher
@@ -58,7 +76,9 @@ export const oldLauncher = (env: Record<string, string | undefined>): boolean =>
   env["OVIS_MANAGED"] === "1" && !env["OVIS_SOURCE_ROOT"] && !env["HERDR_WEB_SOURCE_ROOT"];
 
 /** Only the managed entrypoint connects IPC; importing createServer in tests does not. */
-export function connectUpdater(channel?: SupervisorChannel, env: Record<string, string | undefined> = process.env): UpdateService {
+export function connectUpdater(channel?: SupervisorChannel, env: Record<string, string | undefined> = process.env, cwd = process.cwd()): UpdateService {
+  // what the launcher of 0.2.0's bridge says instead of an install: the exact commands, in the checkout it runs from
+  const oldReason = oldLauncher(env) ? oldLauncherReason(checkoutOfRelease(cwd)) : null;
   // the desktop app starts its server itself (app/electron/src/children.ts) and updates it with the app
   let status = unmanagedUpdateStatus(process.env["OVIS_DESKTOP_APP"] === "1");
   let notes = noUpdateNotes();
@@ -74,7 +94,7 @@ export function connectUpdater(channel?: SupervisorChannel, env: Record<string, 
       const { revision_bound_install: bound, ...told } = value.status;
       // under the launcher of 0.2.0 no update is ever installed again: what to do instead is said in its place
       status = bound === true ? { ...told, revision_bound_install: true }
-        : oldLauncher(env) ? { ...told, available: false, blocked_reason: told.blocked_reason ?? OLD_LAUNCHER_REASON } : told;
+        : oldReason !== null ? { ...told, available: false, blocked_reason: told.blocked_reason ?? oldReason } : told;
       // a supervisor older than the notes sends none: the one being replaced, or a fallback
       notes = readUpdateNotes(value.notes);
       installed = readInstalledNotes(value.installed);
@@ -207,7 +227,7 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
     if (expected === null) return fail("invalid_update_install", "Name the expected_revision of the update on offer.", 400);
     const now = service.status();
     if (running(now)) return busy();
-    if (now.revision_bound_install !== true) return fail("update_restart_required", now.blocked_reason === OLD_LAUNCHER_REASON ? OLD_LAUNCHER_REASON : "Restart the app before installing an update from here.", 409);
+    if (now.revision_bound_install !== true) return fail("update_restart_required", now.blocked_reason?.startsWith(OLD_LAUNCHER_OPENING) ? now.blocked_reason : "Restart the app before installing an update from here.", 409);
     if (now.blocked_reason || !now.available) return fail("update_unavailable", now.blocked_reason ?? "No update is available. Check again first.", 409);
     if (now.latest_revision !== expected) return fail("update_offer_changed", "A different update is on offer now. Review it, then update again.", 409);
     // its own id, for a cancel by the one that asked for it

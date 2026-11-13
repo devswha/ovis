@@ -3,6 +3,11 @@
   and the client, checks them against the release's signed manifest, and switches over without
   changing the checkout or the app's state. A release that fails a check is not installed, and one whose
   files changed after it was installed is not run.
+- An install still started by the launcher of Ovis 0.2.0 installs no further update by itself, and its
+  Settings now say so. To move on, update its folder and restart Ovis:
+  `git -C <the folder Ovis was installed in> pull --ff-only origin main` (for the herdr plugin:
+  `herdr plugin update devswha.ovis`), then herdr's Stop Ovis and Start Ovis (or stop it and run
+  `bun run start` in that folder). From then on it updates itself again.
 
 ### Fixed
 - Stopping Ovis while an installed update was still starting no longer drops that update, so the next
