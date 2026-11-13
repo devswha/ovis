@@ -719,7 +719,7 @@
 .agents-sidebar .agent-item[data-state-said] .agent-row > .agent-row-state :is(.sidebar-status-dot, .sidebar-status-glyph) { animation: none; }
 
 /* A row whose state is not its group's keeps its mark (an agent kept with a helper that needs the reader, a helper
-   in another state, BG). The mark stands in the row's flow, before the time, so the times of a group still end on
+   in another state, BG under Working, a state nobody knows under Idle). The mark stands in the row's flow, before the time, so the times of a group still end on
    one edge; a row with no time ends in its mark. Its padding too stands after the one-line row's own on purpose:
    the same specificity, and this one wins. */
 .agents-sidebar .agent-item[data-state-own] {

@@ -900,6 +900,34 @@ describe("AgentSidebar fold memory", () => {
     expect(mounted.root.findAllByProps({ className: "agent-list" })).toHaveLength(0);
   });
 
+  it("keeps a row's own mark where its heading says another state than its own: BG under Working, a state nobody knows under Idle (#3505)", async () => {
+    // Given grouping on, an agent at rest while its turn's background work still runs, and one that reports no state.
+    stored.set("ovis:agent-groups", "true");
+    const machines = roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) =>
+        pane.pane_id === "w1D:p1" ? { ...pane, agent_status: "idle" as const, background_wait: true as const }
+          : pane.pane_id === "w1E:p1" ? { ...pane, agent_status: "unknown" as const }
+            : pane) },
+    }));
+    await act(async () => { renderer = create(groupedList(inactive, machines)); });
+    // each row: the heading it stands under, and whether it leaves its state to that heading or draws its own mark
+    const drawn: Record<string, { under: string | undefined; said: boolean; own: boolean }> = {};
+    let under: string | undefined;
+    for (const child of renderer!.root.findByProps({ className: "agent-list agent-list-grouped" }).children) {
+      if (typeof child === "string") continue;
+      if (child.props.className === "agent-group-label") under = child.props["data-group"];
+      else if (child.props["data-pane"] !== undefined) drawn[child.props["data-pane"]] = { under, said: child.props["data-state-said"] === "", own: child.props["data-state-own"] === "" };
+    }
+    // Then a heading speaks only for the rows in its own state.
+    expect(drawn).toEqual({
+      [paneId]: { under: "working", said: true, own: false },
+      "w1D:p1": { under: "working", said: false, own: true },
+      "w1F:p1": { under: "idle", said: true, own: false },
+      "w1E:p1": { under: "idle", said: false, own: true },
+    });
+  });
+
   it("hands a row's focus to its group's heading when its new state files it under a folded group, and takes no focus the reader has put elsewhere (#3505)", async () => {
     // Given grouping on, Idle folded as it starts, and the agent at work.
     stored.set("ovis:agent-groups", "true");

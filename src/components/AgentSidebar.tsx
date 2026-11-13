@@ -680,8 +680,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     // one menu for the ⋯ and a right-click, which opens it at the pointer and leaves the focus where it was
     const toggleMenu = (anchor: HTMLElement, point?: { x: number; y: number }, previousFocus?: HTMLElement | null): void =>
       setMenu(menuOpen ? null : { key: pinKey, anchor, point, previousFocus });
-    // its group's heading already says this row's state; BG is filed under Working and is not what that heading says
-    const stateSaid = group !== undefined && agentGroup(status) === group && knownStatus(status) !== "waiting";
+    // its group's heading already says this row's state. BG is filed under Working and a state nobody knows under
+    // Idle: neither is what its heading says, so such a row draws its own mark
+    const stateSaid = group !== undefined && knownStatus(status) === group;
     return <li className={`agent-item${selected ? " is-selected" : ""}${online ? "" : " is-offline"}${filterContext ? " is-filter-context" : ""}`} key={paneStorageId(machine.id, pane.pane_id)} data-machine={machine.id} data-pane={pane.pane_id} data-pin-key={pinKey} data-depth={depth > 0 ? depth : undefined} data-more={line?.more ? "" : undefined} data-through={line?.through ? "" : undefined} hidden={hidden || undefined}
       data-state-said={stateSaid ? "" : undefined}
       // under a heading that does not say its state (a helper kept with its agent, BG) the row draws its own mark

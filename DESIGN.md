@@ -1729,7 +1729,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   its count beside the word in `--text-dim`. A row under a heading that says its state draws no
   state mark of its own, a working row's breathing dot included (the mark stays in the row for a
   screen reader); a row whose state differs from
-  its group's (an agent kept with a helper that needs the reader, a BG ring) keeps its mark, drawn
+  its group's (an agent kept with a helper that needs the reader, a BG ring under Working, a state
+  nobody knows under Idle) keeps its mark, drawn
   before its time so that the times of a group still end on one edge. An
   empty group is left out, and
   the pinned card stays first. **Within a state** orders each group: **Longest wait** (the
