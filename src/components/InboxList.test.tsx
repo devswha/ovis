@@ -941,6 +941,9 @@ describe("InboxList", () => {
       // an Escape that ends an IME's composition is the composition's: the words and the field stay
       await act(async () => { field().props.onKeyDown(escape(true)); });
       expect(queries).toEqual([]);
+      // Safari reports a composition's Escape by its keyCode alone
+      await act(async () => { field().props.onKeyDown({ ...escape(), keyCode: 229 }); });
+      expect(queries).toEqual([]);
       await act(async () => { field().props.onKeyDown(escape()); });
       expect(queries).toEqual([""]);
       await redraw({ query: "" });
