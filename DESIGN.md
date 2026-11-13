@@ -2199,8 +2199,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   lib/agentInbox.ts, lib/useInbox.ts). Its address says so (`?app=inbox`, a parameter
   lib/deepLink.ts leaves in place while the app moves between panes, carried in the hosted
   shell's fragment with the rest of the page's query), so a reload, a link, Back and Forward
-  agree on the mode. `INBOX_MODE_OFFERED` is the one switch: while it is false no entry is drawn
-  and only a build with test hooks reads the address.
+  agree on the mode. Every build offers it, its entries drawn and its address read, except while
+  the setup guide has the classic shell to itself: then no entry is drawn and the mode is not shown.
 - The first paint. A page that opens on the mode's address draws the mode's own shell before
   it has connected (`InboxConnecting`): the list's surface with one `--text-dim` line where
   its rows will be (**Connecting to Ovis…**, a status line), the screen on a phone and the
