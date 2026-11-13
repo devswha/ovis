@@ -228,12 +228,14 @@ export async function withInstallLock<T>(home: string, run: () => Promise<T>, wa
     try {
       mkdirSync(breaker);
       try {
-        if (stale(lock)) {
+        // removed only while it still holds the record judged stale: a fresh holder's lock is never taken
+        const judged = holderOf(lock);
+        if (stale(lock) && holderOf(lock) === judged) {
           rmSync(lock, { recursive: true, force: true });
           broke = true;
         }
       } finally {
-        rmdirSync(breaker);
+        try { rmdirSync(breaker); } catch { /* another waiter cleared it as unclaimed */ }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;

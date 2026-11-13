@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIST_ARCHIVE, generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
@@ -264,6 +264,24 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     bytes[bytes.length - 2] ^= 1;
     writeFileSync(binary, bytes);
     utimesSync(binary, new Date(), new Date(Date.now() + 5_000));
+    expect(verifiedInstall(home, "1.2.3", PLATFORM, key.publicKey)).toBeNull();
+  });
+
+  it("hashes the binary again after a rename puts other bytes of the same size and mtime in its place", async () => {
+    const { install, home, key, binary } = fixture();
+    await install();
+    // a whole-millisecond mtime the replacement can carry exactly, found whole and remembered with it
+    const mtime = new Date(1_700_000_000_000), atime = mtime;
+    utimesSync(binary, atime, mtime);
+    expect(verifiedInstall(home, "1.2.3", PLATFORM, key.publicKey)).toBe(binary);
+    const bytes = readFileSync(binary);
+    bytes[bytes.length - 2] ^= 1;
+    const other = `${binary}.other`;
+    writeFileSync(other, bytes, { mode: 0o755 });
+    utimesSync(other, atime, mtime);
+    renameSync(other, binary);
+    expect(statSync(binary).size).toBe(bytes.length);
+    expect(statSync(binary).mtimeMs).toBe(mtime.getTime());
     expect(verifiedInstall(home, "1.2.3", PLATFORM, key.publicKey)).toBeNull();
   });
 

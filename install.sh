@@ -978,17 +978,21 @@ install_lock() {
   # The claim is the pid file, created only where none is (noclobber opens it O_EXCL in the shell itself): mkdir's
   # exit alone does not exclude, as some mkdir commands report success to two callers at once (uutils coreutils)
   while ! { mkdir "$lock" 2>/dev/null; (set -C; printf '%s\n' "$$" >"$lock/pid") 2>/dev/null; }; do
-    if mkdir "$lock.break" 2>/dev/null; then
+    # the breaker is claimed as the lock is, by a file created only where none is
+    if (set -C; printf '%s\n' "$$" >"$lock.break") 2>/dev/null; then
       lock_holder=$(cat "$lock/pid" 2>/dev/null || true)
+      lock_stale=0
       if [ -n "$lock_holder" ] && ! kill -0 "$lock_holder" 2>/dev/null; then
-        rm -rf "$lock"
+        lock_stale=1
       elif [ -z "$lock_holder" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-        rm -rf "$lock"
+        lock_stale=1
       fi
-      rmdir "$lock.break"
+      # removed only while it still holds the record judged stale: a fresh holder's lock is never taken
+      if [ "$lock_stale" = 1 ] && [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$lock_holder" ]; then rm -rf "$lock" || true; fi
+      rm -rf "$lock.break" 2>/dev/null || true
       [ -e "$lock" ] || continue
     elif [ -n "$(find "$lock.break" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-      rmdir "$lock.break" 2>/dev/null || true
+      rm -rf "$lock.break" 2>/dev/null || true
     fi
     if [ "$lock_waited" -ge "$INSTALL_LOCK_WAIT" ]; then
       fail "another install is running in $OVIS_HOME (pid $(cat "$lock/pid" 2>/dev/null || echo unknown)); run this again once it ends. Nothing was changed"

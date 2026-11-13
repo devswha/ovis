@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
@@ -257,6 +257,85 @@ exec "${Bun.which("tar")}" "$@"`);
     expect(existsSync(join(sync, "second-in"))).toBe(true);
     expect(readFileSync(join(ovis, "bin", "ovis-server.json"), "utf8")).toContain('"version": "1.2.4"');
   });
+
+  it("lets six waiters take a dead holder's lock one at a time, with a mkdir that never refuses", async () => {
+    const { releases, key, start, standIn, ovis, home } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    release(releases, "1.2.4", key.privateKeyPem);
+    standIn("mkdir", `exec "${Bun.which("mkdir")}" -p "$@"`);
+    const sync = join(home, "sync");
+    mkdirSync(sync);
+    // inside the locked section (the archive is read there): a second run inside at once marks an overlap
+    standIn("tar", `if [ "$1" = -tzf ]; then
+  if (set -C; : > "${sync}/inside") 2>/dev/null; then sleep 0.05; rm -f "${sync}/inside"; else : > "${sync}/overlap"; fi
+fi
+exec "${Bun.which("tar")}" "$@"`);
+    const dead = Bun.spawn(["sh", "-c", "exit 0"]);
+    await dead.exited;
+    mkdirSync(join(ovis, ".install.lock"), { recursive: true });
+    writeFileSync(join(ovis, ".install.lock", "pid"), `${dead.pid}\n`);
+    const barrier = join(home, "barrier");
+    const runs = [0, 1, 2, 3, 4, 5].map((n) => start(`while [ ! -e "${barrier}" ]; do sleep 0.01; done; install_binary ${n % 2 ? "1.2.4" : "1.2.3"}`));
+    writeFileSync(barrier, "");
+    const results = await Promise.all(runs);
+    for (const result of results) expect(result.code, result.out).toBe(0);
+    expect(existsSync(join(sync, "overlap")), "two installs inside the lock at once").toBe(false);
+    expect(existsSync(join(ovis, ".install.lock"))).toBe(false);
+    expect(existsSync(join(ovis, ".install.lock.break"))).toBe(false);
+    expect(readFileSync(join(ovis, "bin", "dist", "index.html"), "utf8")).toMatch(/1\.2\.[34]/);
+  }, 60_000);
+
+  it("lets one waiter at a time break a stale lock, with a mkdir that never refuses", async () => {
+    const { releases, key, start, standIn, ovis, home } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    standIn("mkdir", `exec "${Bun.which("mkdir")}" -p "$@"`);
+    const sync = join(home, "sync");
+    mkdirSync(sync);
+    const lock = join(ovis, ".install.lock");
+    // a lock naming no holder, older than a minute: the breaker asks find its age, so a second breaker at once shows there
+    standIn("find", `if [ "$1" = "${lock}" ]; then
+  if (set -C; : > "${sync}/breaking") 2>/dev/null; then sleep 0.1; rm -f "${sync}/breaking"; else : > "${sync}/two-breakers"; fi
+fi
+exec "${Bun.which("find")}" "$@"`);
+    // an empty pid file: nobody can claim the lock, and nobody is named as its holder, so only breaking it frees it
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, "pid"), "");
+    utimesSync(lock, new Date(Date.now() - 300_000), new Date(Date.now() - 300_000));
+    const barrier = join(home, "barrier");
+    const runs = [0, 1, 2, 3, 4, 5].map(() => start(`while [ ! -e "${barrier}" ]; do sleep 0.01; done; install_binary 1.2.3`));
+    writeFileSync(barrier, "");
+    const results = await Promise.all(runs);
+    for (const result of results) expect(result.code, result.out).toBe(0);
+    expect(existsSync(join(sync, "two-breakers")), "two waiters broke the lock at once").toBe(false);
+  }, 60_000);
+
+  it("leaves a fresh holder's lock to it when a slow breaker judged the lock before it stale", async () => {
+    const { releases, key, start, standIn, ovis, home } = pc({ lockWait: 1 });
+    release(releases, "1.2.3", key.privateKeyPem);
+    standIn("mkdir", `exec "${Bun.which("mkdir")}" -p "$@"`);
+    const sync = join(home, "sync");
+    mkdirSync(sync);
+    const lockPid = join(ovis, ".install.lock", "pid");
+    // the breaker's first read of the holder pauses, after it, until the test has put a fresh holder in place
+    standIn("cat", `if [ "$1" = "${lockPid}" ] && [ ! -e "${sync}/judged" ]; then
+  "${Bun.which("cat")}" "$1"; : > "${sync}/judged"
+  until [ -e "${sync}/fresh" ]; do sleep 0.01; done; exit 0
+fi
+exec "${Bun.which("cat")}" "$@"`);
+    const dead = Bun.spawn(["sh", "-c", "exit 0"]);
+    await dead.exited;
+    mkdirSync(join(ovis, ".install.lock"), { recursive: true });
+    writeFileSync(lockPid, `${dead.pid}\n`);
+    const breaker = start("install_binary 1.2.3");
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(join(sync, "judged"))) { if (Date.now() > deadline) throw new Error("the breaker never read the holder"); await Bun.sleep(10); }
+    writeFileSync(lockPid, `${process.pid}\n`);
+    writeFileSync(join(sync, "fresh"), "");
+    const result = await breaker;
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out).toContain(`(pid ${process.pid})`);
+    expect(readFileSync(lockPid, "utf8")).toBe(`${process.pid}\n`);
+  }, 60_000);
 
   it("takes over the lock of an install that died, and waits out a live one's, then says who holds it", () => {
     const { releases, key, run, ovis } = pc();

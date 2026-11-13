@@ -2,6 +2,8 @@ import { afterEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { layout } from "../app/electron/src/children.ts";
+import { BUNDLE_DIR, WINDOWS_BUNDLE_BASE } from "./remote-host.ts";
 import { INSTALLED_BINARY_REASON, installedBinaryAt, PLUGIN_BINARY_REASON, pluginBinaryOf, Updater } from "./updater.ts";
 
 // A herdr plugin checkout that scripts/plugin-launch.ts runs as the release's binary: the server's root is the release
@@ -61,4 +63,11 @@ it("knows where the installers put a compiled server, and nothing else for one",
   expect(installedBinaryAt("/home/me/.local/share/ovis/releases/0.5.4-abcd", false)).toBe(false);
   expect(installedBinaryAt("/home/me/plugins/checkout/.ovis/server/releases/0.5.4-abcd", true)).toBe(false);
   expect(installedBinaryAt("/Applications/Ovis.app/Contents/Resources/server", true)).toBe(false);
+  // the desktop app runs <resources>/server/ovis-server (app/electron/src/children.ts layout), on every platform
+  for (const resources of ["/opt/Ovis/resources", "C:\\Users\\me\\AppData\\Local\\Programs\\Ovis\\resources", "/tmp/.mount_OvisAb12/resources"]) {
+    expect(installedBinaryAt(layout(resources).server, true)).toBe(false);
+  }
+  // a remote bundle runs from ~/<BUNDLE_DIR>, or %LOCALAPPDATA%\herdr-web-ui\remote-v<N> on Windows (server/remote-host.ts)
+  expect(installedBinaryAt(join("/home/me", BUNDLE_DIR), true)).toBe(false);
+  expect(installedBinaryAt(`${WINDOWS_BUNDLE_BASE.replace("$env:LOCALAPPDATA", "C:\\Users\\me\\AppData\\Local")}\\remote-v47`, true)).toBe(false);
 });

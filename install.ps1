@@ -251,21 +251,22 @@ function Enter-InstallLock([string]$Lock, [int]$WaitSeconds = 600) {
     $breaker = "$Lock.break"
     $waited = 0
     while ($true) {
-        try { New-Item -ItemType Directory -Path $Lock -ErrorAction Stop | Out-Null; break }
-        catch { if (-not (Test-Path -LiteralPath $Lock)) { throw } }
+        # the claim is the pid file, created only where none is (New-Item makes a folder that is there already no
+        # error to every caller at once): the folder alone does not exclude
+        New-Item -ItemType Directory -Force -Path $Lock -ErrorAction SilentlyContinue | Out-Null
+        if (New-ExclusiveFile (Join-Path $Lock 'pid') "$PID") { break }
         $broke = $false
-        if (-not (Test-Path -LiteralPath $breaker)) {
+        if (New-ExclusiveFile $breaker "$PID") {
             try {
-                New-Item -ItemType Directory -Path $breaker -ErrorAction Stop | Out-Null
-                try {
-                    $holder = Get-Content -LiteralPath (Join-Path $Lock 'pid') -ErrorAction SilentlyContinue | Select-Object -First 1
-                    $stale = if ($holder -match '^\d+$') { -not (Get-Process -Id ([int]$holder) -ErrorAction SilentlyContinue) }
-                        else { ((Get-Date) - (Get-Item -LiteralPath $Lock -ErrorAction SilentlyContinue).LastWriteTime).TotalSeconds -gt 60 }
-                    if ($stale) { Remove-Item -LiteralPath $Lock -Recurse -Force -ErrorAction SilentlyContinue; $broke = $true }
-                } finally { Remove-Item -LiteralPath $breaker -Force -ErrorAction SilentlyContinue }
-            } catch { } # another waiter breaks it
+                $holder = Get-Content -LiteralPath (Join-Path $Lock 'pid') -ErrorAction SilentlyContinue | Select-Object -First 1
+                $stale = if ($holder -match '^\d+$') { -not (Get-Process -Id ([int]$holder) -ErrorAction SilentlyContinue) }
+                    else { ((Get-Date) - (Get-Item -LiteralPath $Lock -ErrorAction SilentlyContinue).LastWriteTime).TotalSeconds -gt 60 }
+                # removed only while it still holds the record judged stale: a fresh holder's lock is never taken
+                $now = Get-Content -LiteralPath (Join-Path $Lock 'pid') -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($stale -and "$now" -eq "$holder") { Remove-Item -LiteralPath $Lock -Recurse -Force -ErrorAction SilentlyContinue; $broke = $true }
+            } finally { Remove-Item -LiteralPath $breaker -Recurse -Force -ErrorAction SilentlyContinue }
         } elseif (((Get-Date) - (Get-Item -LiteralPath $breaker -ErrorAction SilentlyContinue).LastWriteTime).TotalSeconds -gt 60) {
-            Remove-Item -LiteralPath $breaker -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $breaker -Recurse -Force -ErrorAction SilentlyContinue
         }
         if ($broke) { continue }
         if ($waited -ge $WaitSeconds) {
@@ -276,7 +277,12 @@ function Enter-InstallLock([string]$Lock, [int]$WaitSeconds = 600) {
         Start-Sleep -Seconds 1
         $waited++
     }
-    Set-Content -LiteralPath (Join-Path $Lock 'pid') -Value $PID -Encoding Ascii
+}
+# Creates $Path holding $Text only where no file is (CreateNew, one winner); $false when one is there, or it cannot
+function New-ExclusiveFile([string]$Path, [string]$Text) {
+    try { $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write) } catch { return $false }
+    try { $bytes = [Text.Encoding]::ASCII.GetBytes("$Text`r`n"); $stream.Write($bytes, 0, $bytes.Length) } finally { $stream.Close() }
+    return $true
 }
 function Exit-InstallLock([string]$Lock) {
     $holder = Get-Content -LiteralPath (Join-Path $Lock 'pid') -ErrorAction SilentlyContinue | Select-Object -First 1
