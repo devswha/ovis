@@ -722,10 +722,10 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
     // folder runs this stop: herdr plugin update builds the new version in a new one while the old server runs on. A
     // record without a birth (none could be read) falls back to the server's form and folder.
     const birth = recordedWindowsBirth(pid);
-    const identified = birth !== null
-      ? owner?.started !== undefined && owner.started === birth
-      : owner !== undefined && startedByThisPlugin(owner.path ?? "", windowsArgv(owner.commandLine ?? ""))
-        && owner.started !== undefined && owner.started <= recordedAt;
+    // Either way the process must have started before its record was written (a pid record older than it is not its own).
+    const identified = owner?.started !== undefined && owner.started <= recordedAt && (birth !== null
+      ? owner.started === birth
+      : startedByThisPlugin(owner.path ?? "", windowsArgv(owner.commandLine ?? "")));
     if (!owner || !identified
       || !existsSync(PID_FILE) || statSync(PID_FILE).mtimeMs !== recordedAt
       || Number(readFileSync(PID_FILE, "utf8").trim()) !== pid) {
