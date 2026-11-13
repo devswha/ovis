@@ -92,6 +92,12 @@
   border-color: var(--border-strong);
 }
 
+/* a phone's top controls start at the top safe area, which is the screen's own edge where there is none: a ring
+   round them would be cut there, so the screen's round controls draw it inside, as its rows do */
+.mode-inbox:not(.is-wide) .icon-button.inbox-round:focus-visible {
+  outline-offset: var(--ring-inset-offset);
+}
+
 /* a filter other than All is on: the button is filled, as a chosen choice is */
 .icon-button.inbox-filter-toggle.is-on,
 .icon-button.inbox-filter-toggle.is-on:active,

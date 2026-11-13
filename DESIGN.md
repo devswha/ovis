@@ -2251,7 +2251,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   where it rests on its surface with no shadow and a `--icon-size-md` glyph. Hover and press
   fill it with `--bg-hover` and its edge takes `--border-strong`; it never takes the icon
   button's accent edge. The filter's button is filled (`--text-strong` behind a `--bg` glyph)
-  while a filter other than All is on, and its name says which.
+  while a filter other than All is on, and its name says which. On the phone's screen its
+  focus ring is drawn inside it (`--ring-inset-offset`), as a row's is: the top controls start
+  at the top safe area, which is the screen's own edge where there is none, and a ring round
+  them would be cut there.
 - A row (`.inbox-item` > `.inbox-row`, one button, nothing else pressable inside it) is the
   whole width and `--touch-target` plus twice the gutter tall (80px), with no rule and no gap
   between two rows; `--bg-hover` under a press and under a hovering pointer, the focus ring
