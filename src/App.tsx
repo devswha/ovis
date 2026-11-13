@@ -355,7 +355,8 @@ export function App() {
   // own part (the drawer put away, the list shown for a mode with no pane) is lib/useInbox.ts useInboxShell.
   const { leave: leaveMode } = inboxMode;
   const { enterInbox, returnTo } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded,
-    thread: inMode && !inbox.shown && selectedPaneId !== null && linkLanded ? sidebarPinKey(selectedMachineId, selectedPaneId) : null });
+    thread: inMode && !inbox.shown && selectedPaneId !== null && linkLanded ? sidebarPinKey(selectedMachineId, selectedPaneId) : null,
+    focusInput: () => paneControls.current?.focusInput() });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself
   const modeOffered = INBOX_MODE_OFFERED && !guideShown;
 

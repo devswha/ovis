@@ -19,7 +19,7 @@ import { newSummaryReads } from "./useInboxSummaries.ts";
  * header's workspace-list toggle, as it does whenever the control that had it is gone (lib/focus.ts). A row's thread
  * takes the list off a phone's screen the same way, and the focus goes to the thread's Back.
  */
-export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded, thread }: {
+export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded, thread, focusInput }: {
   /** the mode's shell stands: the mode is on and the setup guide does not hold the classic shell */
   inMode: boolean;
   shown: boolean;
@@ -32,6 +32,8 @@ export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideF
   linkLanded: boolean;
   /** the thread the mode shows, by its row's key (lib/agentInbox.ts inboxKey); none on the list and in the classic app */
   thread: string | null;
+  /** puts the focus in the shown pane's input (its composer), where a fine pointer's typing goes */
+  focusInput?: () => void;
 }): { enterInbox(): void; returnTo: string | null } {
   useEffect(() => { if (inMode) setDrawerOpen(false); }, [inMode, setDrawerOpen]);
   useEffect(() => { if (inMode && !shown && selectedPaneId === null && linkLanded) show(); }, [inMode, shown, selectedPaneId, linkLanded, show]);
@@ -43,16 +45,23 @@ export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideF
   }, [inMode]);
   // A row's thread takes the list off a phone's screen, and the row that had the focus with it: a focus left nowhere
   // goes to the thread's Back, which stands in the drawer toggle's place (lib/focus.ts) and raises no keyboard on a
-  // touch screen. Where the pointer is fine the pane the row picked has taken the typing by then
-  // (components/PaneTerminal.tsx), and on a wide window the row is still there: a focus that is somewhere stays.
+  // touch screen. Where the pointer is fine it goes to the thread's input, as a pick does on a wide window: a row
+  // whose pane was the one under the list (the classic app's, entered from) is no new pick, and nothing else gives
+  // it there. On a wide window the row is still there: a focus that is somewhere stays.
   // Only a thread the list opened: a page that opens on one, and a thread that takes another's place, move no focus.
   const listed = useRef(false);
+  const focusInputRef = useRef(focusInput); focusInputRef.current = focusInput;
   useEffect(() => {
     if (!inMode) { listed.current = false; return; }
     if (shown) { listed.current = true; return; }
     if (thread === null || !listed.current) return;
     listed.current = false;
-    focusWorkspaceListToggle("lost");
+    window.requestAnimationFrame(() => {
+      if (document.activeElement !== null && document.activeElement !== document.body) return;
+      if (window.matchMedia?.("(pointer: coarse)").matches !== true) focusInputRef.current?.();
+      // the input could not take it (the terminal shown, a modal): Back
+      focusWorkspaceListToggle("lost");
+    });
   }, [inMode, shown, thread]);
   const enterInbox = useCallback((): void => { setDrawerOpen(false); hideFile(); enter(); show(); }, [setDrawerOpen, hideFile, enter, show]);
   // The row a list opened by Back from a thread gives the focus to (components/InboxList.tsx): the thread that was

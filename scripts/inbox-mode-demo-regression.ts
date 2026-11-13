@@ -1273,6 +1273,30 @@ try {
         }, viewport, touch);
       }
 
+      // the same rule where the mode was entered from the classic app and the row opened is the pane classic showed:
+      // no new pick, the row leaves with the list, and the focus still goes to the composer or to Back by the pointer
+      for (const [pointer, viewport, touch] of [["fine", { width: 480, height: 900 }, false], ["coarse", PHONE, true]] as const) {
+        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, `the focus after Enter on the row of the pane classic showed, at ${viewport.width} under a ${pointer} pointer`, async (page) => {
+          const press = (selector: string) => touch ? page.locator(selector).tap() : page.locator(selector).click();
+          await page.locator(".app-header.is-zoned").waitFor();
+          await press(".header-more-button");
+          await press('.row-sheet [data-item="enter-inbox"]');
+          await sheetClosed(page);
+          await listScreen(page);
+          await rowCount(page, 6);
+          await row(page, WORKING).focus();
+          await page.keyboard.press("Enter");
+          await page.locator("#inbox-back").waitFor();
+          const inThread = (coarse: boolean) => coarse ? document.activeElement?.id === "inbox-back" : document.activeElement?.classList.contains("composer-text") === true;
+          const landed = await page.waitForFunction(inThread, touch, { timeout: 5_000 }).then(() => true, () => false);
+          // fixed wait: nothing takes the focus away again
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          const at = await page.evaluate(() => `${document.activeElement?.tagName.toLowerCase()}#${document.activeElement?.id}.${document.activeElement?.className}`);
+          assert.ok(landed && await page.evaluate(inThread, touch), `the focus is on ${touch ? "the thread's Back" : "the composer"} and stays: it is on ${at}`);
+          console.log(`PASS entered from the classic app at ${viewport.width} under a ${pointer} pointer, Enter on the row of the pane classic showed puts the focus on ${touch ? "the thread's Back" : "the composer"}`);
+        }, viewport, touch);
+      }
+
       // ---- the command palette from the mode's More ----
       await withPage(browser, base, light, "/?app=inbox", "the command palette from the list's More", async (page) => {
         await listScreen(page);

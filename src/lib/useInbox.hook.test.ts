@@ -11,7 +11,7 @@ describe("useInboxShell", () => {
   let reactAct: PropertyDescriptor | undefined;
   let calls: string[];
   let shell: ReturnType<typeof useInboxShell>;
-  interface Place { inMode: boolean; shown: boolean; selectedPaneId: string | null; linkLanded: boolean; thread?: string | null }
+  interface Place { inMode: boolean; shown: boolean; selectedPaneId: string | null; linkLanded: boolean; thread?: string | null; focusInput?: () => void }
 
   beforeEach(() => {
     reactAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
@@ -149,6 +149,45 @@ describe("useInboxShell", () => {
       page.activeElement = {};
       await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
       expect(calls).toEqual([]);
+    } finally {
+      for (const [key, descriptor] of Object.entries(saved)) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    }
+  });
+
+  it("gives the focus to the thread's input under a fine pointer, and to Back under a coarse one, for a row whose pane classic was showing", async () => {
+    const saved = { document: Object.getOwnPropertyDescriptor(globalThis, "document"), window: Object.getOwnPropertyDescriptor(globalThis, "window") };
+    const body = {}, composer = {};
+    let coarse = false;
+    const page = { activeElement: body as unknown, back: [{ getClientRects: () => [{}], focus: () => { calls.push("focus back"); page.activeElement = {}; } }] };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      get activeElement() { return page.activeElement; }, body,
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => selector.includes(".inbox-back") ? page.back : [],
+    } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: {
+      requestAnimationFrame: (run: () => void) => { run(); return 0; },
+      matchMedia: (query: string) => ({ matches: query === "(pointer: coarse)" && coarse }),
+    } });
+    const focusInput = (): void => { calls.push("focus input"); page.activeElement = composer; };
+    try {
+      for (const pointer of ["fine", "coarse"] as const) {
+        coarse = pointer === "coarse";
+        // Given the classic app on p1, entered into the mode: p1 stays the app's pane, under the list.
+        await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true, focusInput });
+        await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true, focusInput });
+        calls = [];
+        page.activeElement = body;
+
+        // When the keyboard opens p1's own row: the same pane, so nothing is picked anew, and the row left with the list.
+        await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1", focusInput });
+
+        // Then the focus is in the thread: its input under a fine pointer, its Back under a coarse one.
+        expect(calls).toEqual(pointer === "fine" ? ["focus input"] : ["focus back"]);
+        await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true, focusInput });
+      }
     } finally {
       for (const [key, descriptor] of Object.entries(saved)) {
         if (descriptor) Object.defineProperty(globalThis, key, descriptor);
