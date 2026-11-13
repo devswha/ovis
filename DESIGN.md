@@ -2295,11 +2295,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     stamps the Agents list reads (lib/agentStateSince.ts): the app stamps every state change it
     sees for as long as a page lives, in the classic app as in the mode, and keeps the stamps on
     the device, so a wait that began before the mode was entered has its time, and one kept
-    from before a reload has it again where herdr's counters prove the state held. No time
-    where no page of this device saw the wait begin (herdr tells no time of a state change, and
-    the summary knows when an agent last spoke, not when it began to wait): a row already
-    waiting when the device first sees it says none, rather than a wrong one; a
-    working agent since the user last asked it; any other since its last words. It ticks every
+    from before a reload has it again where herdr's counters prove the state held. Where no page
+    of this device saw the wait begin (herdr tells no time of a state change), the row draws the
+    time of the agent's last message instead, the summary's time of its last words that a done
+    or ready row draws too, so the row that needs the user is never the one row without a time.
+    There the row differs from the Agents list, which keeps its own rule and says no time rather
+    than one that is not the wait's. A working agent since the user last asked it; any other since
+    its last words. It ticks every
     30 seconds while a row shows one; a row with no last words, and no wait seen to begin, has
     none. Under the name, `--space-half` lower, exactly one line of words (`.inbox-words`,
     `--fs-row-sub`, `--lh-base`, an ellipsis; a line break in the words reads as a space;

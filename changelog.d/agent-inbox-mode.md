@@ -5,6 +5,8 @@
   the terminal is behind the thread's monitor button. **Back to Ovis** returns to the
   workspaces, and the mode has an address of its own (`?app=inbox`), so a reload or a link keeps
   it.
+- A row that needs you says how long it has waited where this device saw the wait begin, and
+  otherwise the time of the agent's last message, so every row of the list has a time.
 
 ### Changed
 - More's header keeps its fixed lines still and scrolls only a long path, so a phone's sheet no

@@ -741,14 +741,21 @@ describe("InboxList", () => {
     expect(age(root, "w1D:p1")).toEqual(["3m"]);
   }));
 
-  it("says nothing of how long a row has waited when it was already waiting as the page opened, and draws a wait seen to begin", () => withClock(async () => {
+  it("times a waiting row from the wait this device saw begin, else from the agent's last message, and draws none with neither", () => withClock(async () => {
+    // Given a page that opened on two agents already waiting, no page of this device having seen either wait begin: one
+    // whose last message is forty minutes old, and one with no message at all.
+    const both = statusOf({ "w1E:p1": "blocked" });
     let root!: ReactTestInstance;
-    await atClock(3.5, async () => { root = await draw(roster()); });
+    await atClock(3.5, async () => { root = await draw(roster(), { activity: both }); });
     await atClock(0, () => answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(40.5)) }));
-    expect(times(root, "w1D:p1")).toEqual([]);
-    // it goes back to work, and waits again two and a half minutes ago: that wait this device saw begin
-    await atClock(10, () => redraw({ activity: statusOf({ "w1D:p1": "working" }) }));
-    await atClock(2.5, () => redraw({ activity }));
+
+    // Then the first draws the time of its last message, and the second, with neither, no time.
+    expect([age(root, "w1D:p1"), times(root, "w1E:p1")]).toEqual([["40m"], []]);
+
+    // When the first goes back to work and waits again two and a half minutes ago: a wait this device saw begin, whose
+    // own time it draws, not its last message's.
+    await atClock(10, () => redraw({ activity: statusOf({ "w1D:p1": "working", "w1E:p1": "blocked" }) }));
+    await atClock(2.5, () => redraw({ activity: both }));
     await tick();
     expect(age(root, "w1D:p1")).toEqual(["2m"]);
   }));

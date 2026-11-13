@@ -156,10 +156,12 @@ describe("inboxSinceAt", () => {
     expect(inboxSinceAt("working", summary, null)).toBe(2_000);
     expect(inboxSinceAt("working", { ...summary, askedAt: null }, null)).toBe(5_000);
   });
-  it("times a waiting agent only from when this page saw it begin to wait, never from its last words", () => {
+  it("times a waiting agent from when this page saw it begin to wait, else from its last message, and not at all with neither", () => {
     expect(inboxSinceAt("blocked", summary, 7_000)).toBe(7_000);
     expect(inboxSinceAt("blocked", undefined, 7_000)).toBe(7_000);
-    expect(inboxSinceAt("blocked", summary, null)).toBeNull();
+    expect(inboxSinceAt("blocked", summary, null)).toBe(5_000);
+    expect(inboxSinceAt("blocked", { ...summary, at: null }, null)).toBeNull();
+    expect(inboxSinceAt("blocked", undefined, null)).toBeNull();
   });
   it("times a done or resting agent from its last words", () => {
     for (const group of ["done", "idle"] as const) expect(inboxSinceAt(group, summary, 7_000)).toBe(5_000);

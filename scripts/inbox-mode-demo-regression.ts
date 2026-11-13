@@ -1599,12 +1599,23 @@ try {
 
       // ---- which waits a row can time ----
       // herdr tells no time of a state change: a wait is timed from when this device saw it begin (the stamps the
-      // Agents list reads, lib/agentStateSince.ts). The agent that already waited when the page of a fresh device
-      // opened draws no time; one that begins to wait while the page is open, in the classic app before the mode
-      // is entered, draws its own.
+      // Agents list reads, lib/agentStateSince.ts), and one no page of the device saw begin from the agent's last
+      // message (the summary's time of its last words). The agent that already waited when the page of a fresh device
+      // opened draws its last message's time; one that begins to wait while the page is open, in the classic app
+      // before the mode is entered, draws its wait's own.
+      /** when an agent last spoke, as the summary the rows read says it */
+      const lastMessageAt = (page: Page, pane: string): Promise<string | null> => page.evaluate(async (id) => {
+        const answer = await (await fetch(`/api/pane/summary?pane_id=${encodeURIComponent(id)}`)).json() as { summaries: Record<string, { at: string | null } | null> };
+        return answer.summaries[id]?.at ?? null;
+      }, pane);
+      /** a row's time is that message's: the list puts the summary's time on this device's clock (the server's offset, a
+       *  few ms here, taken out), and a wait's own stamp would be minutes from it */
+      const spokeThen = (drawn: string | null | undefined, spoke: string | null): boolean =>
+        drawn !== null && drawn !== undefined && spoke !== null && Math.abs(Date.parse(drawn) - Date.parse(spoke)) <= 2_000;
       await withPage(browser, base, light, `/?pane=${encodeURIComponent(DONE)}&view=chat`, "the time of a wait the page saw begin", async (page) => {
         await page.locator(".context-title-text").waitFor();
         const seen = await page.evaluate(() => window.inboxFixture.rosters);
+        const began = await page.evaluate(() => Date.now());
         await page.evaluate((pane) => window.inboxFixture.set(pane, "blocked"), WORKING);
         await page.waitForFunction((count) => window.inboxFixture.rosters > count, seen);
         await enterFromMore(page);
@@ -1612,9 +1623,28 @@ try {
         await page.waitForFunction((pane) => document.querySelector(`.mode-inbox .inbox-item[data-pane="${pane}"]`)?.getAttribute("data-state") === "blocked", WORKING);
         const waiting = (await rows(page)).filter((item) => item.state === "blocked");
         assert.deepEqual(new Set(waiting.map((item) => item.pane)), new Set([BLOCKED, WORKING]), "two agents wait");
-        assert.match(waiting.find((item) => item.pane === WORKING)?.time ?? "", /^(<1m|\d+[mhd])$/, "the wait this page saw begin, in the classic app, is timed");
-        assert.equal(waiting.find((item) => item.pane === BLOCKED)?.time ?? null, null, "the wait that began before the page opened has no time: nothing tells when it began");
-        console.log("PASS a row times the wait this page saw begin, in the classic app before the mode was entered, and draws no time for one that began before the page opened");
+        const own = waiting.find((item) => item.pane === WORKING);
+        assert.ok(own?.datetime !== null && own?.datetime !== undefined && Date.parse(own.datetime) >= began - 1_000, `the wait this page saw begin, in the classic app, is timed from its beginning: ${JSON.stringify(own)}`);
+        await page.waitForFunction((pane) => document.querySelector(`.mode-inbox .inbox-item[data-pane="${pane}"] time.inbox-time`) !== null, BLOCKED, { timeout: 15_000 });
+        const before = (await rows(page)).find((item) => item.pane === BLOCKED);
+        const spoke = await lastMessageAt(page, BLOCKED);
+        assert.ok(spokeThen(before?.datetime, spoke), `the wait that began before the page opened is timed from the agent's last message (${spoke}): ${JSON.stringify(before)}`);
+        console.log(`PASS a row times the wait this page saw begin from its beginning (${own!.time}), and one that began before the page opened from the agent's last message (${before!.time})`);
+      });
+
+      // ---- every row has a time on a cold load ----
+      // A fresh device opens the list while an agent already waits: no page of it saw the wait begin, so that row is
+      // timed from the agent's last message, as a done or ready row is, and no row of the list is without a time.
+      await withPage(browser, base, light, "/?app=inbox", "every row's time on a cold load", async (page) => {
+        await listScreen(page);
+        await rowCount(page, 6);
+        const timed = await page.waitForFunction(() => [...document.querySelectorAll(".mode-inbox .inbox-item")].every((item) => item.querySelector("time.inbox-time") !== null), undefined, { timeout: 15_000 }).then(() => true, () => false);
+        const drawn = await rows(page);
+        assert.ok(timed, `every row draws a time: ${JSON.stringify(drawn.map((item) => [item.pane, item.time]))}`);
+        const waiting = drawn.find((item) => item.pane === BLOCKED);
+        const spoke = await lastMessageAt(page, BLOCKED);
+        assert.ok(waiting?.state === "blocked" && spokeThen(waiting.datetime, spoke), `the waiting row is timed from its last message (${spoke}): ${JSON.stringify(waiting)}`);
+        console.log(`PASS on a cold load every row draws a time, the waiting row its last message's (${waiting!.time})`);
       });
 
       // ---- the list says when the connection is lost ----
