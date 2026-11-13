@@ -949,7 +949,9 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
 
     // where no room is left beside the control of the row above, the sentence lies on that control's near end.
     // There the pointer is the control's: the sentence goes as the pointer comes onto that part, so a press
-    // reaches the control. The first row of the page whose sentence lies on another row's control shows it
+    // reaches the control. The first row of the page whose sentence lies on another row's control shows it.
+    // Density is asked first, and again: Escape closed its sentence with the pointer on the sentence, which sends
+    // the row no leave, and a row hovered again still shows its sentence
     const withSentence = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".settings-body:not([hidden]) .settings-row")]
       .filter((row) => row.checkVisibility() && row.querySelector(":scope > .settings-row-text > .visually-hidden[id]") !== null)
       .map((row) => row.querySelector(".settings-label")?.textContent ?? ""));

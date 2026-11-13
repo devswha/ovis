@@ -283,7 +283,10 @@ function useRowSentence(on: boolean): {
       onPointerEnter: (event) => {
         if (event.pointerType === "touch" || opened) return;
         window.clearTimeout(rest.current);
-        if (dismissed.current || shown !== null) return;
+        // entering means the pointer had left, also where no leave came: Escape with the pointer on the sentence
+        // removes it under the pointer, and a row hovered again is asked again
+        dismissed.current = false;
+        if (shown !== null) return;
         rest.current = window.setTimeout(() => setShown("hover"), performance.now() - sentenceClosedAt < SENTENCE_FOLLOW_MS ? 0 : SENTENCE_REST_MS);
       },
       // the sentence is drawn elsewhere but is this row's child: the pointer on it has not left the row, so it stays to be read
