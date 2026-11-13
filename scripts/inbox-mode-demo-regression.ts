@@ -1511,9 +1511,15 @@ try {
       }
 
       // ---- one word for a lost connection beside a wide thread ----
-      await withPage(browser, base, light, `/?app=inbox&pane=${encodeURIComponent(WORKING)}&view=chat&demo_connection=switch`, "one word for a lost connection beside a wide thread", async (page) => {
-        await page.locator(".thread-chip").waitFor();
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat&demo_connection=switch`, "one word for a lost connection beside a wide thread", async (page) => {
+        // the pane's own connection is up (the classic header's mark) before the mode is entered and its row opened
         await page.locator(".conn-live").waitFor({ state: "attached" });
+        await page.locator(".header-more-button").click();
+        await page.locator('.row-menu [data-item="enter-inbox"]').click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
         await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
         await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
         await page.locator(".thread-chip-state.is-reconnecting").waitFor();
