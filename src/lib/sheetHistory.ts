@@ -65,6 +65,11 @@ const staying = new Set<string>();
  * the next traversal leaves what covered them, not them, so it does not ask them to close.
  */
 const covered = new Set<string>();
+/**
+ * Of those, the ones under a navigation: it took their entry, or the entry of a sheet opened over
+ * them. Until they hold an entry again; the rest are under a sheet alone.
+ */
+const underNavigation = new Set<string>();
 /** the sheet still up under each sheet, whose entry it took: straight, or through a sheet that closed as it opened */
 const heirs = new Map<string, string>();
 /**
@@ -176,7 +181,9 @@ let stood: string | null = null;
 let holding = false;
 /** each sheet's entry by that key, where the browser gives one */
 const entryKeys = new Map<string, string>();
+/** The sheet holds the entry the history is on: the entry's key is kept, and the sheet is under no navigation. */
 function keep(id: string): void {
+  underNavigation.delete(id);
   const key = navigation()?.currentEntry?.key;
   if (key !== undefined) entryKeys.set(id, key);
 }
@@ -185,10 +192,14 @@ function placeOf(id: string): number {
   const key = entryKeys.get(id);
   return key === undefined ? -1 : navigation()?.entries().find((entry) => entry.key === key)?.index ?? -1;
 }
-/** the staying sheet whose entry `state` is, when it is still up: a navigation is about to take its entry over */
+/**
+ * A navigation is about to take over the entry `state` is: the staying sheet whose entry it is, and
+ * each one still up under a sheet whose entry it is, is under that navigation from here.
+ */
 function cover(state: unknown): void {
-  const id = sheetOf(state);
-  if (id !== null && open.has(id) && staying.has(id)) covered.add(id);
+  for (let id = sheetOf(state) ?? undefined; id !== undefined; id = heirs.get(id)) {
+    if (open.has(id) && staying.has(id)) { covered.add(id); underNavigation.add(id); }
+  }
 }
 let pushing = false;
 /**
@@ -349,6 +360,7 @@ function remake(id: string, onBack: () => boolean | void): void {
 /** Steps off the sheet's entry once the closing click's effects are through (RowMenu's effect on unmount). */
 export function leaveSheet(id: string): void {
   covered.delete(id);
+  underNavigation.delete(id);
   staying.delete(id);
   waiting.delete(id);
   if (!open.delete(id)) return;
@@ -544,8 +556,9 @@ if (typeof window !== "undefined") {
     for (const [id, onBack] of [...open].reverse()) {
       if (id === landed) continue;
       // a sheet that stays under a navigation which took its entry (a terminal peek under Settings),
-      // with the history on that entry or above it: the navigation is still over it
-      if (here !== null && staying.has(id) && covered.has(id) && placeOf(id) >= 0 && here.index >= placeOf(id)) continue;
+      // with the history on that entry or above it: the navigation is still over it. One under a
+      // sheet alone is no such sheet: what the traversal left is the sheet over it
+      if (here !== null && covered.has(id) && underNavigation.has(id) && placeOf(id) >= 0 && here.index >= placeOf(id)) continue;
       open.delete(id);
       if (covered.delete(id)) again.unshift({ id, onBack, under: true, refused: false });
       else if (own || step?.has(id) || refusal) again.unshift({ id, onBack, under: false, refused: false });
