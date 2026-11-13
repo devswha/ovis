@@ -1089,6 +1089,38 @@ try {
         }, desktop);
       }
 
+      // ---- a scrollbar that takes room ----
+      // Playwright hides Chrome's scrollbars in headless, and overlay scrollbars take no room: this browser keeps
+      // Chrome's own, as a mouse user's Chrome on Windows and Linux shows them.
+      const withBars = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"], ignoreDefaultArgs: ["--hide-scrollbars"] });
+      try {
+        await withPage(withBars, base, light, "/?app=inbox", "the column's rows under a scrollbar that takes room", async (page) => {
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          const measure = () => page.evaluate(() => {
+            const column = document.querySelector(".inbox-column")!.getBoundingClientRect();
+            const scroller = document.querySelector<HTMLElement>(".inbox-column .inbox-scroll")!;
+            const rows = [...scroller.querySelectorAll(".inbox-row")].map((node) => node.getBoundingClientRect());
+            return {
+              bar: scroller.offsetWidth - scroller.clientWidth, scrolls: scroller.scrollHeight > scroller.clientHeight, sideways: scroller.scrollWidth - scroller.clientWidth,
+              start: rows.map((rect) => rect.left - column.left), end: rows.map((rect) => column.right - rect.right), width: rows.map((rect) => rect.width),
+            };
+          });
+          const tall = await measure();
+          assert.deepEqual([tall.scrolls, tall.bar], [false, 0], "six rows do not scroll in a 900px window");
+          await page.setViewportSize({ width: desktop.width, height: 400 });
+          await page.waitForFunction(() => { const scroller = document.querySelector(".inbox-column .inbox-scroll")!; return scroller.scrollHeight > scroller.clientHeight; });
+          const short = await measure();
+          assert.ok(short.bar > 0, `this browser's scrollbar takes room: ${short.bar}px`);
+          for (const [name, facts] of [["without a scrollbar", tall], ["under a scrollbar", short]] as const) {
+            for (const inset of [...facts.start, ...facts.end]) near(inset, 12, 0.5, `a row's inset from the column's edge ${name}`);
+          }
+          assert.deepEqual(short.width, tall.width, "the rows are as wide under the scrollbar as without it");
+          assert.equal(short.sideways, 0, "nothing scrolls sideways");
+          console.log(`PASS under a scrollbar that takes room (${short.bar}px) the column's rows keep their 12px insets and their width (${Math.round(tall.width[0]!)}px): the scrollbar stands in the end inset`);
+        }, desktop);
+      } finally { await withBars.close(); }
+
       // ---- which waits a row can time ----
       // herdr tells no time of a state change: a wait is timed from when this device saw it begin (the stamps the
       // Agents list reads, lib/agentStateSince.ts). The agent that already waited when the page of a fresh device

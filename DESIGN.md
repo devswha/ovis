@@ -2390,6 +2390,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     under a press: the fill it is about to have. The open row, which hover does not change,
     goes half way to `--border-strong` under a press (a press on it shows its chat again where
     its terminal was shown).
+  - A row is as wide as the list, never as wide as what a scrollbar leaves of it
+    (`.inbox-rows` reads the list's width in `cqi`): under a scrollbar that takes room
+    (Chrome's own on Windows and Linux) the rows keep their `--space-3` insets and their place,
+    nothing moves when the list begins to scroll, and the scrollbar, thin and in the theme's
+    colours as the transcript's is, stands in the end inset beside them. The classic sidebar's
+    lists give a scrollbar its width out of their rows; the mode's does not. In a window
+    narrower than 769px the same rule keeps a row's time and mark where they are.
   - The column's foot is one line, `--space-3` above the window's edge: at its start **Back to
     Ovis** beside the Ovis mark (the sidebar foot's own action, where the classic sidebar has
     the way in; `--side-hover` under a hovering pointer, `--side-selected` under a press), at

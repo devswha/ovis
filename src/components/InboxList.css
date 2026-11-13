@@ -47,8 +47,13 @@
 .mode-inbox .inbox-scroll {
   position: absolute;
   inset: 0;
+  /* the rows are sized from the list, not from what a scrollbar leaves of it (.inbox-rows): where a scrollbar takes
+     room they end in its place's own room, and nothing here scrolls sideways */
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* thin as a document's, in the theme's colours (html, styles.css), as the transcript's is */
+  scrollbar-width: thin;
   padding-block: calc(var(--inbox-top-gap) + var(--inbox-control) + var(--space-4)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
   scroll-padding-block: calc(var(--inbox-top-gap) + var(--inbox-control) + var(--space-2)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
 }
@@ -235,7 +240,15 @@
   height: var(--icon-size);
 }
 
+/* A row is as wide as the list, whatever the scroller's own scrollbar takes: under a scrollbar that takes room
+   (Chrome's own on Windows and Linux) the rows keep their width and their place, and the scrollbar stands in the
+   end inset beside them. The list is the size container its rows read (cqi). */
+.mode-inbox {
+  container-type: inline-size;
+}
+
 .mode-inbox .inbox-rows {
+  width: 100cqi;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -522,15 +535,18 @@
   position: static;
   flex: 1 1 auto;
   min-height: 0;
-  padding: var(--space-1) calc(var(--space-3) - var(--hairline)) var(--space-3) var(--space-3);
+  /* no end padding: the rows' own width leaves the end inset (below), and a scrollbar stands in it */
+  padding: var(--space-1) 0 var(--space-3) var(--space-3);
   scroll-padding-block: var(--space-1);
-  scrollbar-width: thin;
 }
 
+/* --space-3 in from each of the column's edges (the end one counted from the column's edge, seam included): the
+   column's width less its two insets, with or without a scrollbar in the end one */
 .mode-inbox.is-wide .inbox-rows {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  width: calc(100cqi - var(--space-3) * 2 + var(--hairline));
 }
 
 .mode-inbox.is-wide .inbox-row {
