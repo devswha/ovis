@@ -1036,7 +1036,7 @@ try {
         { name: "a classic split", path: `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, split: { other: { machineId: "local", paneId: BLOCKED }, bSide: "right", active: "a" }, panes: 2 },
         { name: "a tab herdr split", path: `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, split: null, panes: 2 },
       ]) {
-        await withPage(browser, base, light, setup.path, `a split under the list: ${setup.name}`, async (page) => {
+        await withPage(browser, base, { language: "en", theme: "light" }, setup.path, `a split under the list: ${setup.name}`, async (page) => {
           const frames = (): Promise<Window["inboxFixture"]["frames"]> => page.evaluate(() => window.inboxFixture.frames.slice());
           /** each drawn pane's terminal screen, by pane: its box is its grid of cells */
           const screens = (): Promise<Record<string, Box>> => page.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-layout-pane]")].flatMap((frame) => {
