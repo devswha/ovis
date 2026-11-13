@@ -1595,6 +1595,57 @@ try {
           assert.equal(short.sideways, 0, "nothing scrolls sideways");
           console.log(`PASS under a scrollbar that takes room (${short.bar}px) the column's rows keep their 12px insets and their width (${Math.round(tall.width[0]!)}px): the scrollbar stands in the end inset`);
         }, desktop);
+
+        // The column's resize grip is the sidebar's own (SidebarResizer), over the column's edge where its list's
+        // scrollbar is drawn: a mouse resting on that scrollbar is let through to it, so a drag on the thumb scrolls the
+        // list and leaves the column's width, and the strip beside it, over the pane's edge, still resizes the column.
+        await withPage(withBars, base, light, "/?app=inbox", "the column's scrollbar under the resize grip", async (page) => {
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          await page.setViewportSize({ width: desktop.width, height: 400 });
+          await page.waitForFunction(() => { const list = document.querySelector<HTMLElement>(".inbox-column .inbox-scroll"); return list !== null && list.scrollHeight > list.clientHeight; });
+          const edge = () => page.evaluate(() => {
+            const list = document.querySelector<HTMLElement>(".inbox-column .inbox-scroll")!;
+            const box = list.getBoundingClientRect();
+            const border = parseFloat(getComputedStyle(list).borderRightWidth) || 0;
+            const grip = document.querySelector(".inbox-column .sidebar-resizer")!.getBoundingClientRect();
+            return {
+              top: box.top, right: box.right - border, bar: list.offsetWidth - list.clientWidth - list.clientLeft - border, scrolled: list.scrollTop,
+              column: Math.round(document.querySelector(".inbox-column")!.getBoundingClientRect().width), grip: { left: grip.left, right: grip.right },
+            };
+          });
+          /** what a press at (x, y) lands on: the grip, the column's list, or something else */
+          const landsOn = (x: number, y: number, want: "grip" | "list") => page.waitForFunction(([px, py, target]) => {
+            const element = document.elementFromPoint(px as number, py as number);
+            const on = element?.closest(".sidebar-resizer") ? "grip" : element?.closest(".inbox-column .inbox-scroll") ? "list" : "other";
+            return on === target;
+          }, [x, y, want] as const, { timeout: 5_000 }).then(() => true, () => false);
+          const start = await edge();
+          assert.ok(start.bar > 0 && start.grip.left < start.right - start.bar, `the grip's box reaches over the list's ${start.bar}px scrollbar (grip from ${start.grip.left}px, scrollbar ${start.right - start.bar}-${start.right}px)`);
+          // the thumb, at the top of a list scrolled to its top: the mouse resting on it is let through, and a drag scrolls
+          const barX = start.right - start.bar / 2;
+          const barY = start.top + start.bar + 10;
+          await page.mouse.move(barX - 60, barY);
+          await page.mouse.move(barX, barY, { steps: 4 });
+          assert.ok(await landsOn(barX, barY, "list"), "a mouse resting on the list's scrollbar under the grip reaches the list");
+          await page.mouse.down();
+          await page.mouse.move(barX, barY + 60, { steps: 6 });
+          await page.mouse.up();
+          await page.waitForFunction(() => document.querySelector<HTMLElement>(".inbox-column .inbox-scroll")!.scrollTop > 0, undefined, { timeout: 5_000 });
+          const scrolled = await edge();
+          assert.equal(scrolled.column, start.column, "dragging the scrollbar leaves the column's width");
+          // the strip beside the scrollbar, over the pane's edge: a press there resizes the column
+          const stripX = start.right + (start.grip.right - start.right) / 2;
+          await page.mouse.move(stripX, barY, { steps: 3 });
+          assert.ok(await landsOn(stripX, barY, "grip"), "the strip beside the scrollbar is the grip's");
+          await page.mouse.down();
+          await page.mouse.move(stripX + 30, barY, { steps: 3 });
+          await page.mouse.up();
+          await page.waitForFunction((was) => Math.round(document.querySelector(".inbox-column")!.getBoundingClientRect().width) !== was, start.column, { timeout: 5_000 });
+          const resized = await edge();
+          assert.equal(resized.column, start.column + 30, "the strip beside the scrollbar resizes the column");
+          console.log(`PASS the column's list scrollbar (${start.bar}px) under the resize grip scrolls the list by a drag (column stays ${start.column}px), and the strip beside it resizes the column to ${resized.column}px`);
+        }, desktop);
       } finally { await withBars.close(); }
 
       // ---- which waits a row can time ----

@@ -2405,7 +2405,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   terminal is not there yet, no take-over, no change of herdr's focus.
 - From 769px the list is the column beside the thread (`.mode-inbox.is-wide` in
   `.sidebar.inbox-column`), on `--bg-nav`, at the sidebar's own width (`--sidebar-shown-w`,
-  with the sidebar's resizer), so the pane is as wide in the mode as in the classic shell. No
+  with the sidebar's resizer, which lets a mouse on the list's drawn scrollbar under it through
+  to that scrollbar as it does in the sidebar), so the pane is as wide in the mode as in the
+  classic shell. No
   bar crosses the window: the column's top row and the zone over the pane are one band,
   `--control-h` plus twice `--space-3` tall, and the seam between the panes (`--divider`) runs
   from the window's top.
