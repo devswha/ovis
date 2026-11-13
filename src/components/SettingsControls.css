@@ -228,11 +228,12 @@
 
 /* a sentence that lies on another row's control (no room beside it) is cut out over that control (a clip-path
    in SettingsControls.tsx RowSentence), so the pointer there is the control's. This copy lies under it at the
-   same place and size, takes no pointer, and draws what was cut */
+   same place and size, takes no pointer, and draws what was cut. It scrolls as the sentence does, with a scroll
+   bar where the sentence has one, so its lines break where the sentence's do. Every theme's elevated background
+   and strong border are opaque, so the two layers read as one */
 .settings-help-copy {
   max-width: none;
   max-height: none;
-  overflow: hidden;
   pointer-events: none;
   user-select: none;
 }

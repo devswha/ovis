@@ -1017,6 +1017,37 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     }, covered), covered.row, "under the keyboard's sentence too, a press on the covered part lands on the control");
     await page.keyboard.press("Escape");
     await sentence.waitFor({ state: "detached" });
+    // a sentence taller than its room (a short window, a high zoom) scrolls under the wheel and stays, and the copy
+    // drawn under it where it lies on a control follows. No window is short enough to cut the room of a row that
+    // is still in view, so a style cuts it here, by less than the sentence lies on the control
+    const lyingName = rowOf(page, lyingRow).locator(".settings-label").first();
+    await lyingName.hover();
+    await page.waitForFunction((was) => document.querySelector(".settings-help")?.textContent === was, lying);
+    const natural = await sentence.evaluate((tip: HTMLElement) => tip.offsetHeight);
+    await page.mouse.move(2, 2);
+    await sentence.waitFor({ state: "detached" });
+    const cut = await page.addStyleTag({ content: `.settings-help { max-height: ${natural - 14}px !important; }` });
+    await lyingName.hover();
+    await page.waitForFunction((was) => document.querySelector(".settings-help")?.textContent === was, lying);
+    await page.locator(".settings-help-copy").waitFor();
+    const tall = await sentence.evaluate((tip: HTMLElement, { x, beside }) => {
+      const box = tip.getBoundingClientRect();
+      const on = ([[box.left + 10, (box.top + box.bottom) / 2], [x, beside]] as const).find(([px, py]) => document.elementFromPoint(px, py)?.closest(".settings-help") === tip);
+      return { on: on ?? null, scrolls: tip.scrollHeight > tip.clientHeight };
+    }, covered);
+    assert.ok(tall.scrolls, "a sentence with less room than its words need scrolls");
+    assert.ok(tall.on !== null, "and has a part that lies on no control, where the pointer is its own");
+    await page.mouse.move(tall.on[0], tall.on[1], { steps: 4 });
+    await page.mouse.wheel(0, 40);
+    await page.waitForFunction(() => {
+      const tip = document.querySelector(".settings-help");
+      const copy = document.querySelector(".settings-help-copy");
+      return tip !== null && copy !== null && tip.scrollTop > 0 && copy.scrollTop === tip.scrollTop;
+    });
+    assert.equal(await sentence.textContent(), lying, "the wheel over it scrolls it and keeps it, and the copy under it follows");
+    await cut.evaluate((node) => node.remove());
+    await page.mouse.move(2, 2);
+    await sentence.waitFor({ state: "detached" });
 
     // a search hides a row while its sentence shows: the row is removed under a still pointer, which sends no
     // leave, and the sentence does not come back with the row once the pointer is elsewhere
@@ -1205,7 +1236,7 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
   } finally {
     await phone.close();
   }
-  console.log("PASS a row's sentence: over the page on a resting mouse and on keyboard focus, off its control and the row below, closed alone by Escape and by a press on its control, gone when the pointer comes onto another row's control under it or a search hides its row, none for a click or a tap into a field, waiting for a row out of view, describing a row's button and field, opened in the row by a finger's or a pen's tap, inside the card and closed by Escape, and the same on a watching device");
+  console.log("PASS a row's sentence: over the page on a resting mouse and on keyboard focus, off its control and the row below, closed alone by Escape and by a press on its control, gone when the pointer comes onto another row's control under it or a search hides its row, scrolled by the wheel where it has less room than its words need, none for a click or a tap into a field, waiting for a row out of view, describing a row's button and field, opened in the row by a finger's or a pen's tap, inside the card and closed by Escape, and the same on a watching device");
 }
 
 async function mergedRows(browser: import("playwright-core").Browser, url: string): Promise<void> {

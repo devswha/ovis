@@ -4317,7 +4317,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   room than that (the row under a font row's field) it keeps its width and lies on that control's
   near end. There the pointer is the control's, not the sentence's: the sentence is cut out over
   exactly that control (a `clip-path`, which cuts the pointer's reach with what is drawn, and a copy
-  under it, `.settings-help-copy`, that takes no pointer and draws what was cut). A press there
+  under it, `.settings-help-copy`, that takes no pointer, scrolls with it and draws what was cut). A press there
   reaches the control itself, a finger's or a pen's too, and the mouse that moves onto it has left
   the row, which closes a hover's sentence. Everywhere else the sentence keeps the pointer, its words
   can be selected and it scrolls. It is drawn only while
