@@ -952,18 +952,22 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     await page.keyboard.press("Tab");
     await sentence.waitFor();
     assert.equal(await sentence.textContent(), text, "the keyboard on the control shows the same sentence");
-    // past the row's second choice, onto the first thing of the next row that takes the focus
+    // past the row's second choice, onto the first thing of the row after it, whichever row that is: its own
+    // sentence takes the first one's place
     await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
     const focusedRow = () => page.evaluate(() => document.activeElement?.closest(".settings-row")?.querySelector(".settings-label")?.textContent ?? null);
-    const languageText = await describes(page.locator("#settings-language"));
-    assert.ok(languageText !== null && languageText !== text);
-    await page.waitForFunction((want) => document.querySelector(".settings-help")?.textContent === want, languageText);
-    assert.equal(await focusedRow(), "Language");
+    const next = await page.evaluate(() => {
+      const row = document.activeElement?.closest(".settings-row");
+      return { name: row?.querySelector(".settings-label")?.textContent ?? null, text: row?.querySelector(":scope > .settings-row-text > .visually-hidden[id]")?.textContent ?? null };
+    });
+    assert.ok(next.name !== null && next.name !== "Density", "Tab left Density for the row after it");
+    assert.ok(next.text !== null && next.text !== text, "the row after Density has a sentence of its own");
+    await page.waitForFunction((want) => document.querySelector(".settings-help")?.textContent === want, next.text);
     await page.keyboard.press("Escape");
     await sentence.waitFor({ state: "detached" });
     assert.equal(await page.locator(".settings-dialog").count(), 1, "Escape closed the sentence, not Settings");
-    assert.equal(await focusedRow(), "Language", "and left the focus where it was");
+    assert.equal(await focusedRow(), next.name, "and left the focus where it was");
     await page.keyboard.press("Escape");
     await page.locator(".settings-dialog").waitFor({ state: "detached" });
 
