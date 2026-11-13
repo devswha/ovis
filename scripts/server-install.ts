@@ -257,13 +257,36 @@ export async function withInstallLock<T>(home: string, run: () => Promise<T>, wa
  * manifest kept beside it is signed by `publicKey` and names `version`, and the binary has its SHA-256. A folder that
  * fails any of these is never run.
  */
+/**
+ * Whether `binary` has the SHA-256 `digest`. Hashing a whole binary costs about 100 ms, on every plugin command, so a
+ * match is remembered in <home>/.verified.json with the file's size, mtime and inode: the hash is taken again whenever
+ * any of them, or the digest asked for, differs.
+ */
+function binaryMatches(home: string, binary: string, digest: string): boolean {
+  const { size, mtimeMs, ino } = statSync(binary);
+  const seen = join(home, ".verified.json");
+  const stamp = JSON.stringify({ digest, size, mtimeMs, ino });
+  try { if (readFileSync(seen, "utf8") === stamp) return true; } catch { /* none remembered */ }
+  if (sha256(readFileSync(binary)) !== digest) return false;
+  remember(home, binary, digest);
+  return true;
+}
+
+/** Notes that `binary`, as it is now, has the SHA-256 `digest` (binaryMatches); a failure only costs a hash later. */
+function remember(home: string, binary: string, digest: string): void {
+  try {
+    const { size, mtimeMs, ino } = statSync(binary);
+    writeFileSync(join(home, ".verified.json"), JSON.stringify({ digest, size, mtimeMs, ino }));
+  } catch { /* hashed again next time */ }
+}
+
 export function verifiedInstall(home: string, version: string, platform: ServerPlatform, publicKey = RELEASE_PUBLIC_KEY): string | null {
   const current = join(home, "bin");
   try {
     const manifest = checkManifest(readFileSync(join(current, MANIFEST)), readFileSync(join(current, SIGNATURE), "utf8"), publicKey, { version });
     const binary = join(current, binaryName(platform));
     // the client it serves too: a release whose dist/ went missing is installed again
-    if (typeof manifest !== "string" && sha256(readFileSync(binary)) === manifest.assets[platform].sha256 && existsSync(join(current, "dist", "index.html"))) return binary;
+    if (typeof manifest !== "string" && binaryMatches(home, binary, manifest.assets[platform].sha256) && existsSync(join(current, "dist", "index.html"))) return binary;
   } catch { /* nothing installed there, or not whole */ }
   return null;
 }
@@ -351,6 +374,8 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
     renameSync(stage, join(releases, name));
     try {
       swap(home, name);
+      // just checked: the next command need not hash it again
+      remember(home, join(home, "bin", binaryName(platform)), manifest.assets[platform].sha256);
     } catch (error) {
       rmSync(join(releases, name), { recursive: true, force: true });
       throw error;

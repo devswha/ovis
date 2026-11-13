@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIST_ARCHIVE, generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
@@ -215,6 +215,19 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     expect(second.message).toContain("the Rust PTY host was not taken");
     expect(ran).toEqual(["the signed host\n"]);
     expect(existsSync(join(root, "other", "bin", "bin", "ovis-pty-sidecar"))).toBe(false);
+  });
+
+  it("hashes the binary again whenever its size, mtime or inode changed since it was last found whole", async () => {
+    const { install, home, key, binary } = fixture();
+    await install();
+    expect(verifiedInstall(home, "1.2.3", PLATFORM, key.publicKey)).toBe(binary);
+    expect(existsSync(join(home, ".verified.json"))).toBe(true);
+    // the same length, other bytes, and a newer mtime: the remembered match no longer holds
+    const bytes = readFileSync(binary);
+    bytes[bytes.length - 2] ^= 1;
+    writeFileSync(binary, bytes);
+    utimesSync(binary, new Date(), new Date(Date.now() + 5_000));
+    expect(verifiedInstall(home, "1.2.3", PLATFORM, key.publicKey)).toBeNull();
   });
 
   it("runs an installed release only while its kept manifest still verifies and the binary matches it", async () => {
