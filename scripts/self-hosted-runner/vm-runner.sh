@@ -25,9 +25,12 @@ firewall() {
   for d in 169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
     ipt -C DOCKER-USER -i docker0 -d "$d" -j DROP 2>/dev/null || ipt -I DOCKER-USER -i docker0 -d "$d" -j DROP || return 1
   done
-  # DNS to the resolvers docker hands the containers (the host's, unless those are loopback: then public ones),
-  # inserted above the drops, port 53 only
-  for ns in $(awk '/^nameserver/ {print $2}' /etc/resolv.conf | grep -vE '^(127\.|::1)'); do
+  # an any-address port 53 rule from an earlier version of this script goes
+  for pr in udp tcp; do
+    while ipt -C DOCKER-USER -i docker0 -p "$pr" --dport 53 -j ACCEPT 2>/dev/null; do ipt -D DOCKER-USER -i docker0 -p "$pr" --dport 53 -j ACCEPT || return 1; done
+  done
+  # DNS to the resolvers a job container is actually given (read from one), IPv4 ones, port 53 only, above the drops
+  for ns in $(sudo -n docker run --rm --network "$NET" --entrypoint awk "$IMAGE" '/^nameserver/ {print $2}' /etc/resolv.conf | grep -E '^[0-9]+(\.[0-9]+){3}$'); do
     for pr in udp tcp; do
       ipt -C DOCKER-USER -i docker0 -d "$ns" -p "$pr" --dport 53 -j ACCEPT 2>/dev/null || ipt -I DOCKER-USER -i docker0 -d "$ns" -p "$pr" --dport 53 -j ACCEPT || return 1
     done
