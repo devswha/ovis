@@ -135,7 +135,11 @@ function installInboxFixture(): void {
 // the exit, the list as a phone's screen (its rows, state marks, filter and search), a thread with the terminal behind
 // its monitor button, the history (Back, Forward, reloads, a cold address), New workspace, a watching device, the
 // device setting that starts a phone in the mode, the two panes of a wide window with the boxes classic has, and a
-// pane that shows its terminal while the mode is entered and left: its pty is sent no size and its box stays. All
+// pane that shows its terminal while the mode is entered and left: its pty is sent no size and its box stays. After
+// the two themes, once each: a phone that left the mode stays out of it over a reload, the focus after Back to
+// Ovis, the palette from More, the first paint of a cold load, the pressed fills, the rows under a scrollbar that
+// takes room, which waits a row can time, the list's word while the connection is lost, entering with a file
+// open, the system Back with More open, and an address whose pane is gone. All
 // files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const BLOCKED = "w1D:p1";      // Codex, waiting: "Allow command?"
 const WORKING = "w1C:p1";      // Claude
@@ -914,7 +918,7 @@ try {
             await page.locator("#inbox-back").waitFor();
             assert.equal((await page.locator(".thread-name").textContent())?.replace(/^Claude Code: /, ""), WORKING_TITLE);
             assert.equal(await page.locator(".mode-inbox").count(), 0);
-            await page.locator("textarea.composer-text").click();
+            await page.locator("textarea.composer-text").first().click();
             await page.waitForFunction(() => document.activeElement?.classList.contains("composer-text") === true);
             await page.setViewportSize(viewport);
             await page.locator(".thread-chip").waitFor();
@@ -1195,16 +1199,15 @@ try {
           const drawn = await line.evaluate((node) => {
             const box = node.getBoundingClientRect();
             const style = getComputedStyle(node);
-            const dim = getComputedStyle(document.documentElement).getPropertyValue("--text-dim").trim();
+            // the two tokens as the browser computes them where the line stands
             const probe = document.createElement("span");
-            probe.style.color = dim;
-            document.body.append(probe);
-            const want = getComputedStyle(probe).color;
+            probe.style.cssText = "color: var(--text-dim); font-size: var(--fs-xs)";
+            node.parentElement!.append(probe);
+            const want = { color: getComputedStyle(probe).color, size: getComputedStyle(probe).fontSize };
             probe.remove();
-            return { centre: box.left + box.width / 2, left: box.left, size: style.fontSize, color: style.color, want, xs: getComputedStyle(document.documentElement).getPropertyValue("--fs-xs").trim() };
+            return { centre: box.left + box.width / 2, left: box.left, size: style.fontSize, color: style.color, want };
           });
-          assert.equal(drawn.color, drawn.want, "the line is --text-dim");
-          assert.equal(drawn.size, drawn.xs, "the line is --fs-xs");
+          assert.deepEqual([drawn.color, drawn.size], [drawn.want.color, drawn.want.size], "the line is --text-dim at --fs-xs");
           if (wide) near(drawn.left, 16, 1, "the line leads the column's top row");
           else near(drawn.centre, viewport.width / 2, 1, "the line is centred between the two top controls");
           // Connected is said for two seconds: caught in the mutation that draws it, so a slow run cannot miss it
