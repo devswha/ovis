@@ -23,7 +23,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runsHere } from "./pty-sidecar.ts";
-import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, ptyAssetFor, RELEASE_PUBLIC_KEY, type ReleaseAsset, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
+import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, oldShapeRelease, ptyAssetFor, RELEASE_PUBLIC_KEY, type ReleaseAsset, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
 
 export const DEFAULT_RELEASES = "https://github.com/devswha/ovis/releases/download";
 const MANIFEST_LIMIT = 64 * 1024;
@@ -348,7 +348,12 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
   const signature = await download(`${at}/${SIGNATURE}`, SIGNATURE_LIMIT, SIGNATURE, options.fetchFile);
   if (!signature) throw new Error(`${at}/${SIGNATURE} does not exist; nothing was changed`);
   const manifest = checkManifest(Buffer.from(manifestBytes), new TextDecoder().decode(signature), publicKey, { version });
-  if (typeof manifest === "string") throw new Error(`${manifest}; nothing was changed`);
+  if (typeof manifest === "string") {
+    if (oldShapeRelease(Buffer.from(manifestBytes), new TextDecoder().decode(signature), publicKey, version)) {
+      throw new NoBinaryRelease(`the release v${version} ships no compiled server this installer runs (its signed ${MANIFEST} has the shape from before schema 1)`);
+    }
+    throw new Error(`${manifest}; nothing was changed`);
+  }
   // a checkout of another commit with the same version (a branch, main between releases) runs its own sources
   const sources = options.sources;
   if (sources && ("error" in sources || sources.server !== manifest.sources.server || sources.shared !== manifest.sources.shared)) {

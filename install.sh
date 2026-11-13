@@ -1447,6 +1447,22 @@ install_plugin() {
 # (a branch has no release to fetch), an install from source that is here already (herdr's plugin checkout,
 # or herdr-core's in APP_DIR: Settings → Updates keeps those current), or a release that ships no
 # ovis-server.json yet (one from before the compiled server). Nothing is installed here.
+# old_shape_valid <manifest>: the release's ovis-server.json.sig is a valid signature of it by RELEASE_PUBLIC_KEY, and
+# it names $version (a checker needs a folder of its own: made and removed here)
+old_shape_valid() {
+  verify_dir=$(mktemp -d) || return 1
+  old_ok=1
+  if fetch "$releases/$ref/ovis-server.json.sig" "$verify_dir/manifest.sig" 1024 2>/dev/null &&
+    grep -Eqx '[A-Za-z0-9+/]{86}==' "$verify_dir/manifest.sig" && pick_checker &&
+    "$checker" "$RELEASE_PUBLIC_KEY" "$1" "$verify_dir/manifest.sig" &&
+    [ "$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$1")" = "$version" ]; then
+    old_ok=0
+  fi
+  rm -rf "$verify_dir"
+  verify_dir=""
+  return "$old_ok"
+}
+
 # A source install asked for over the release's binary would find the plugin this installer linked "already
 # installed", build nothing and report a start that never came: say before anything is installed how to move instead.
 refuse_source_over_binary() {
@@ -1485,12 +1501,20 @@ pick_install() {
   probe=$(mktemp) || fail "could not make a temporary file"
   probe_status=0
   fetch "$releases/$ref/ovis-server.json" "$probe" 65536 2>/dev/null || probe_status=$?
+  old_shape=0
+  if [ "$probe_status" = 0 ] && ! grep -q '^  "schema": ' "$probe"; then
+    # a manifest without a schema is of the shape releases had before this installer (todo 5's): signed, for this
+    # version, it ships no compiled server this installer runs, as a release without one; the signature comes first
+    old_shape_valid "$probe" || { rm -f "$probe"; fail "$releases/$ref/ovis-server.json is not signed by the key $RELEASE_PUBLIC_KEY for version $version; nothing was changed"; }
+    old_shape=1 probe_status=37
+  fi
   rm -f "$probe"
   case "$probe_status" in
     0) binary=1 ;;
     # any HTTP error (curl -f's 22) or no such file (37) reads as a release from before the compiled server: the source
     # of the same tag over TLS. Todo 7 (the updater) narrows this to 404 only, as scripts/plugin-launch.ts has it
     22 | 37)
+      [ "$old_shape" = 0 ] || say "Ovis $ref's signed ovis-server.json has the shape from before this installer"
       if [ "$binary_home" = 1 ]; then
         # an explicit tag without the binary asks for source; the latest release unreachable keeps what runs
         [ -z "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ] || refuse_source_over_binary "Ovis $ref ships no compiled server, so it would be a source install"

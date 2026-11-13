@@ -455,6 +455,22 @@ for (const version of ["1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7"]) {
   writeManifest(dir, { version: version === "1.2.6" ? "1.2.2" : version, sources: { server: "a".repeat(40), shared: "b".repeat(40) } });
   signManifest(dir, version === "1.2.5" ? generateKeyPair().privateKeyPem : key.privateKeyPem);
 }
+// v1.2.8 to v1.3.0 as main's release step (todo 5) writes them: version, sources and assets only; v1.2.9 signed by
+// another key, v1.3.0 with "schema": 2
+const { createHash, createPrivateKey, sign } = await import("node:crypto");
+for (const [version, signer, schema] of [["1.2.8", key.privateKeyPem, null], ["1.2.9", generateKeyPair().privateKeyPem, null], ["1.3.0", key.privateKeyPem, 2]]) {
+  const dir = join(releases, `v${version}`);
+  mkdirSync(dir, { recursive: true });
+  const assets = {};
+  for (const platform of SERVER_PLATFORMS) {
+    writeFileSync(join(dir, releaseFile(platform)), `old binary ${platform}\n`);
+    assets[platform] = { file: releaseFile(platform), sha256: createHash("sha256").update(`old binary ${platform}\n`).digest("hex") };
+  }
+  const manifest = schema === null ? { version, sources: { server: "a".repeat(40), shared: "b".repeat(40) }, assets } : { schema, version, sources: { server: "a".repeat(40), shared: "b".repeat(40) }, assets };
+  const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(dir, "ovis-server.json"), bytes);
+  writeFileSync(join(dir, "ovis-server.json.sig"), `${sign(null, bytes, createPrivateKey(signer)).toString("base64")}\n`);
+}
 console.log(key.publicKey);
 '@
     $releaseDir = Join-Path $binaryScratch 'release'
@@ -498,9 +514,24 @@ console.log(key.publicKey);
     $message = ''
     try { & $installer -Ref 'v1.2.4' 6>&1 | Out-Null } catch { $message = $_.Exception.Message }
     Assert ($message -match 'not a valid signature') "The shipped installer must refuse a release its pinned key did not sign: $message"
+    # a release whose signed manifest has the shape from before schema 1 ships no compiled server this installer runs;
+    # with no plugin listed, as on a PC where the binary is what herdr runs, so the release is probed
+    $kept = (Get-FileHash $exe).Hash
+    $before = @($state.installed, $state.running, $state.linkedRoot)
+    $state.installed = $false; $state.running = $false; $state.linkedRoot = ''
+    $old = & { try { & $copy -Ref 'v1.2.8' } catch { "THREW $($_.Exception.Message)" } } *>&1 | Out-String
+    Assert ($old -match "v1\.2\.8's signed ovis-server\.json has the shape from before this installer" -and $old -match 'ships no compiled server, so it is installed from source') "An old-shape release must go to source: $old"
+    Assert ((Get-FileHash $exe).Hash -eq $kept) 'An old-shape release must not touch the installed binary'
+    $message = ''; $state.installed = $false; $state.linkedRoot = ''
+    try { & $copy -Ref 'v1.2.9' } catch { $message = $_.Exception.Message }
+    Assert ($message -match 'is not signed by the key') "An old-shape release signed by another key must be refused: $message"
+    $message = ''; $state.installed = $false; $state.linkedRoot = ''
+    try { & $copy -Ref 'v1.3.0' } catch { $message = $_.Exception.Message }
+    Assert ($message -match 'schema this installer does not know') "A manifest of schema 2 must be refused: $message"
+    $state.installed, $state.running, $state.linkedRoot = $before
     $env:OVIS_FROM_SOURCE = '1'; $env:LOCALAPPDATA = $originalLocalAppData; Remove-Item Env:\OVIS_RELEASES_URL
     $state.linkedRoot = ''; $state.running = $true
-    Write-Host 'PASS the release binary: installed and linked once checked, nothing to do again; a corrupt binary, another key, another version and plain http refused, leaving the install as it was'
+    Write-Host 'PASS the release binary: installed and linked once checked, nothing to do again; a release of the old manifest shape goes to source; a corrupt binary, another key, another version and plain http refused, leaving the install as it was'
 
     # One install at a time: a live holder's lock is waited out (the copy waits 2 s, not 600) and named, a dead holder's is
     # taken over, and two installs started together in two processes never leave bin without a whole release.

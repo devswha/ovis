@@ -157,8 +157,11 @@ function canonicalManifest(bytes: Buffer): ServerManifest | string {
   } catch {
     return `${MANIFEST} is not JSON`;
   }
+  // a manifest of another schema is of a newer release (or not one at all): said before the fields it holds
+  if (typeof parsed === "object" && parsed !== null && "schema" in parsed && (parsed as Record<string, unknown>)["schema"] !== MANIFEST_SCHEMA) {
+    return `${MANIFEST} is schema ${JSON.stringify((parsed as Record<string, unknown>)["schema"])}, and this reader knows only schema ${MANIFEST_SCHEMA}; a newer installer reads it`;
+  }
   if (!sameKeys(parsed, ["schema", "version", "sources", "assets", "dist", "pty"])) return `${MANIFEST} must hold exactly schema, version, sources, assets, dist and pty`;
-  if (parsed["schema"] !== MANIFEST_SCHEMA) return `${MANIFEST} is schema ${JSON.stringify(parsed["schema"])}, and this reader knows only schema ${MANIFEST_SCHEMA}`;
   if (typeof parsed["version"] !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(parsed["version"])) return `${MANIFEST} names no version`;
   const sources = parsed["sources"];
   if (!sameKeys(sources, ["server", "shared"]) || !Object.values(sources).every((tree) => typeof tree === "string" && /^[0-9a-f]{40}$/.test(tree))) return `${MANIFEST} must name exactly the git trees of server and shared`;
@@ -182,6 +185,23 @@ function canonicalManifest(bytes: Buffer): ServerManifest | string {
  * they are in their canonical form, and, when `expected.version` is given, for that version; else the one line that
  * says why not. What an installer checks before it reads a single file the manifest names.
  */
+/**
+ * Whether `bytes` is a manifest of the shape releases had before schema 1 (todo 5's ovis-server.json: no "schema"), for
+ * `version` and signed by `publicKey`: a release whose binaries no installer of this shape runs, so it ships no compiled
+ * server for it, as a release without ovis-server.json. The signature is checked first; a manifest with any schema is
+ * never one of these.
+ */
+export function oldShapeRelease(bytes: Buffer, signatureText: string, publicKey: string, version: string): boolean {
+  try {
+    const signature = signatureText.endsWith("\n") ? strictBase64(signatureText.slice(0, -1), 64) : null;
+    if (!signature || !verify(null, bytes, publicKeyObject(publicKey), signature)) return false;
+    const parsed: unknown = JSON.parse(bytes.toString("utf8"));
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) && !("schema" in parsed) && (parsed as { version?: unknown }).version === version;
+  } catch {
+    return false;
+  }
+}
+
 export function checkManifest(bytes: Buffer, signatureText: string, publicKey: string, expected: { version?: string } = {}): ServerManifest | string {
   try {
     const key = publicKeyObject(publicKey);

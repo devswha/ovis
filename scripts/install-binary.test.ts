@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,6 +45,24 @@ function release(base: string, version: string, privateKeyPem: string, host?: st
 }
 
 /** One PC: a HOME, a release folder, and a bin of stand-ins put before the system's on PATH */
+/** `<base>/v<version>/` as main's release step (todo 5) writes it: ovis-server.json holds only version, sources and
+ * assets, signed by `privateKeyPem`; `edit` changes the manifest before it is signed */
+function oldShape(base: string, version: string, privateKeyPem: string, edit: (manifest: Record<string, unknown>) => void = () => {}): string {
+  const dir = join(base, `v${version}`);
+  mkdirSync(dir, { recursive: true });
+  const assets: Record<string, { file: string; sha256: string }> = {};
+  for (const platform of SERVER_PLATFORMS) {
+    writeFileSync(join(dir, releaseFile(platform)), `old binary ${platform}\n`);
+    assets[platform] = { file: releaseFile(platform), sha256: createHash("sha256").update(`old binary ${platform}\n`).digest("hex") };
+  }
+  const manifest: Record<string, unknown> = { version, sources: { server: "a".repeat(40), shared: "b".repeat(40) }, assets };
+  edit(manifest);
+  const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(dir, "ovis-server.json"), bytes);
+  writeFileSync(join(dir, "ovis-server.json.sig"), `${sign(null, bytes, createPrivateKey(privateKeyPem)).toString("base64")}\n`);
+  return dir;
+}
+
 function pc({ lockWait }: { lockWait?: number } = {}) {
   const scratch = mkdtempSync(join(tmpdir(), "ovis-install-binary-"));
   dirs.push(scratch);
@@ -392,6 +410,25 @@ exec "${Bun.which("tar")}" "$@"`);
     expect(existsSync(ranAt)).toBe(false);
     expect(existsSync(join(ovis, "bin", "bin", "ovis-pty-sidecar"))).toBe(false);
     expect(existsSync(join(ovis, "bin", "ovis-server"))).toBe(true);
+  });
+
+  it("installs from source a release whose signed manifest has the shape from before schema 1, and refuses one badly signed or of an unknown schema", () => {
+    const { releases, key, run, ovis } = pc();
+    oldShape(releases, "0.5.4", key.privateKeyPem);
+    oldShape(releases, "0.5.5", generateKeyPair().privateKeyPem);
+    oldShape(releases, "0.5.6", key.privateKeyPem, (manifest) => { manifest["schema"] = 2; });
+    const old = run('pick_install; echo "binary=$binary"', { OVIS_REF: "v0.5.4" });
+    expect(old.code, old.out).toBe(0);
+    expect(old.out).toContain("v0.5.4's signed ovis-server.json has the shape from before this installer");
+    expect(old.out).toContain("ships no compiled server, so it is installed from source");
+    expect(old.out).toContain("binary=0");
+    const bad = run('pick_install; echo "binary=$binary"', { OVIS_REF: "v0.5.5" });
+    expect(bad.code).not.toBe(0);
+    expect(bad.out).toContain("is not signed by the key");
+    const newer = run('pick_install && install_binary "$version"', { OVIS_REF: "v0.5.6" });
+    expect(newer.code).not.toBe(0);
+    expect(newer.out).toContain("of a schema this installer does not know");
+    expect(existsSync(join(ovis, "bin"))).toBe(false);
   });
 
   it("refuses a source install over the release's binary before installing anything, and says how to move", () => {

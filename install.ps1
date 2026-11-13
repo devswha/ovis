@@ -443,7 +443,22 @@ if (-not $fromSource) {
     if ($wanted -match '^v(\d+\.\d+\.\d+)$') {
         $version = $Matches[1]
         $probe = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
-        try { $shipped = Save-ReleaseFile "$releases/$wanted/ovis-server.json" $probe 65536 'ovis-server.json' }
+        try {
+            $shipped = Save-ReleaseFile "$releases/$wanted/ovis-server.json" $probe 65536 'ovis-server.json'
+            # a manifest without a schema is of the shape releases had before this installer (todo 5's): signed, for this
+            # version, it ships no compiled server this installer runs, as a release without one; the signature comes first
+            if ($shipped -and -not (([IO.File]::ReadAllText($probe) | ConvertFrom-Json).PSObject.Properties.Name -contains 'schema')) {
+                $sigFile = "$probe.sig"
+                $signature = if (Save-ReleaseFile "$releases/$wanted/ovis-server.json.sig" $sigFile 1024 'ovis-server.json.sig') { [IO.File]::ReadAllText($sigFile) } else { '' }
+                Remove-Item -LiteralPath $sigFile -Force -ErrorAction SilentlyContinue
+                if ($signature -cnotmatch '^[A-Za-z0-9+/]{86}==\n$' -or -not (Test-Ed25519 ([Convert]::FromBase64String($releasePublicKey)) ([IO.File]::ReadAllBytes($probe)) ([Convert]::FromBase64String($signature.TrimEnd("`n")))) -or
+                    (([IO.File]::ReadAllText($probe) | ConvertFrom-Json).version -cne $version)) {
+                    throw "$releases/$wanted/ovis-server.json is not signed by the key $releasePublicKey for version $version; nothing was changed"
+                }
+                Write-Host "Ovis: Ovis $wanted's signed ovis-server.json has the shape from before this installer"
+                $shipped = $false
+            }
+        }
         finally { Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue }
         if ($shipped) {
             $changed = Install-OvisBinary $version

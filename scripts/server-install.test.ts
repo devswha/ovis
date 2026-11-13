@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,6 +38,24 @@ function release(base: string, version: string, privateKeyPem: string, client: R
   rmSync(tree, { recursive: true });
   writeManifest(dir, { version, sources });
   signManifest(dir, privateKeyPem);
+  return dir;
+}
+
+/** `<base>/v<version>/` as main's release step (todo 5) writes it: ovis-server.json holds only version, sources and
+ * assets, signed by `privateKeyPem`; `edit` changes the manifest before it is signed */
+function oldShape(base: string, version: string, privateKeyPem: string, edit: (manifest: Record<string, unknown>) => void = () => {}): string {
+  const dir = join(base, `v${version}`);
+  mkdirSync(dir, { recursive: true });
+  const assets: Record<string, { file: string; sha256: string }> = {};
+  for (const platform of SERVER_PLATFORMS) {
+    writeFileSync(join(dir, releaseFile(platform)), `old binary ${platform}\n`);
+    assets[platform] = { file: releaseFile(platform), sha256: createHash("sha256").update(`old binary ${platform}\n`).digest("hex") };
+  }
+  const manifest: Record<string, unknown> = { version, sources: { server: "a".repeat(40), shared: "b".repeat(40) }, assets };
+  edit(manifest);
+  const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(dir, "ovis-server.json"), bytes);
+  writeFileSync(join(dir, "ovis-server.json.sig"), `${sign(null, bytes, createPrivateKey(privateKeyPem)).toString("base64")}\n`);
   return dir;
 }
 
@@ -183,6 +201,25 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     expect(verifiedInstall(home, "1.2.3", PLATFORM, key.publicKey)).toBeNull();
     expect((await install()).installed).toBe(true);
     expect(existsSync(join(home, "bin", "dist", "index.html"))).toBe(true);
+  });
+
+  it("reads a signed manifest of the shape before schema 1 as no binary release, and refuses a bad signature or an unknown schema", async () => {
+    const root = scratch();
+    const releases = join(root, "release");
+    const key = generateKeyPair();
+    oldShape(releases, "0.5.4", key.privateKeyPem);
+    oldShape(releases, "0.5.5", generateKeyPair().privateKeyPem);
+    oldShape(releases, "0.5.6", key.privateKeyPem, (manifest) => { manifest["schema"] = 2; });
+    const install = (version: string) => installServer({ home: join(root, "home"), version, platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey });
+    await expect(install("0.5.4")).rejects.toBeInstanceOf(NoBinaryRelease);
+    await expect(install("0.5.4")).rejects.toThrow("ships no compiled server this installer runs");
+    const badSignature = await install("0.5.5").catch((error: unknown) => error);
+    expect(badSignature).not.toBeInstanceOf(NoBinaryRelease);
+    expect(String(badSignature)).toContain("not a signature");
+    const newer = await install("0.5.6").catch((error: unknown) => error);
+    expect(newer).not.toBeInstanceOf(NoBinaryRelease);
+    expect(String(newer)).toContain("schema 2");
+    expect(existsSync(join(root, "home", "bin"))).toBe(false);
   });
 
   it("takes the binary only for the sources it was built from: another checkout's trees, or uncommitted changes, are no binary release", async () => {
