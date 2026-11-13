@@ -157,7 +157,7 @@ describe("a pending answer sends once, keeps its place, and offers Retry on fail
 });
 
 /** A card for `prompt` whose answers fail with a 500 until `settle` is called with nothing. */
-async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: PromptAnswer[]; root: () => ReactTestRenderer["root"]; settle: (error?: unknown) => Promise<void> }) => Promise<void>, props: Partial<PromptCardProps> = {}): Promise<void> {
+async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: PromptAnswer[]; root: () => ReactTestRenderer["root"]; settle: (error?: unknown) => Promise<void>; update: (next: Partial<PromptCardProps>) => Promise<void> }) => Promise<void>, props: Partial<PromptCardProps> = {}): Promise<void> {
   const sent: PromptAnswer[] = [];
   let pending: ((error?: unknown) => void) | null = null;
   const answerSpy = spyOn(machineContext, "useMachineApi").mockReturnValue({
@@ -184,7 +184,8 @@ async function withFailingCard(prompt: InteractivePrompt, run: (card: { sent: Pr
     await act(async () => {
       renderer = create(createElement(PromptCard, { paneId: "w1D:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {}, ...props }));
     });
-    await run({ sent, root: () => renderer!.root, settle: (error) => act(async () => { pending!(error); }) });
+    const update = (next: Partial<PromptCardProps>) => act(async () => { renderer!.update(createElement(PromptCard, { paneId: "w1D:p1", prompt, onPromptChanged: () => {}, onAnswered: () => {}, ...props, ...next })); });
+    await run({ sent, root: () => renderer!.root, settle: (error) => act(async () => { pending!(error); }), update });
   } finally {
     await act(async () => { renderer?.unmount(); });
     settingsSpy.mockRestore();
@@ -272,6 +273,21 @@ describe("a device that may only watch sees the card's answers as unavailable an
       // a press that reaches a button anyway sends nothing
       for (const button of answers) await act(async () => { button.props.onClick(click); });
       expect(sent).toEqual([]);
+    }, { watching: true });
+  });
+
+  it("takes the device's permission as it is now: answers come back when it may drive again, and go when it may only watch", async () => {
+    await withFailingCard(prompts[0]!, async ({ sent, root, update }) => {
+      const option = () => root().findAll((node) => node.type === "button" && String(node.props.className).startsWith("prompt-card-option"))[0]!;
+      const reasons = () => root().findAll((node) => node.type === "p" && node.children.includes(REASON));
+      expect([option().props.disabled, reasons().length]).toEqual([true, 1]);
+      await update({ watching: false });
+      expect([option().props.disabled, option().props.title, reasons().length]).toEqual([false, undefined, 0]);
+      await update({ watching: true });
+      expect([option().props.disabled, reasons().length]).toEqual([true, 1]);
+      await update({ watching: false });
+      await act(async () => { option().props.onClick(click); });
+      expect(sent.map((answer) => answer.option_index)).toEqual([0]);
     }, { watching: true });
   });
 });

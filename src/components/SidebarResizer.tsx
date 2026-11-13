@@ -60,16 +60,41 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    const onPointerMove = (event: globalThis.PointerEvent): void => {
-      if (event.buttons !== 0 || event.pointerType === "touch") return;
+    // where the mouse rests, at rest: a scroll, a wheel or a resize moves what lies under it with no move of its own
+    let mouse: { x: number; y: number } | null = null;
+    let buttons = 0;
+    const check = (): void => {
       const grip = ref.current;
-      if (!grip) return;
+      if (!grip || mouse === null || buttons !== 0) return;
       const box = grip.getBoundingClientRect();
-      const over = event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom;
-      setYielding(over && onListScrollbar(grip.parentElement, event.clientX, event.clientY));
+      const over = mouse.x >= box.left && mouse.x < box.right && mouse.y >= box.top && mouse.y < box.bottom;
+      setYielding(over && onListScrollbar(grip.parentElement, mouse.x, mouse.y));
     };
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
-    return () => window.removeEventListener("pointermove", onPointerMove);
+    const onPointer = (event: globalThis.PointerEvent): void => {
+      // a finger or a pen resizes from the whole grip: only a mouse is let through to a scrollbar
+      if (event.pointerType !== "mouse") { mouse = null; setYielding(false); return; }
+      mouse = { x: event.clientX, y: event.clientY };
+      buttons = event.buttons;
+      check();
+    };
+    window.addEventListener("pointermove", onPointer, { passive: true });
+    window.addEventListener("pointerdown", onPointer, { capture: true, passive: true });
+    window.addEventListener("pointerup", onPointer, { capture: true, passive: true });
+    window.addEventListener("scroll", check, { capture: true, passive: true });
+    window.addEventListener("wheel", check, { passive: true });
+    window.addEventListener("resize", check);
+    const sidebar = ref.current?.parentElement;
+    const observer = sidebar && typeof ResizeObserver !== "undefined" ? new ResizeObserver(check) : null;
+    if (sidebar) observer?.observe(sidebar);
+    return () => {
+      window.removeEventListener("pointermove", onPointer);
+      window.removeEventListener("pointerdown", onPointer, { capture: true });
+      window.removeEventListener("pointerup", onPointer, { capture: true });
+      window.removeEventListener("scroll", check, { capture: true });
+      window.removeEventListener("wheel", check);
+      window.removeEventListener("resize", check);
+      observer?.disconnect();
+    };
   }, []);
   useEffect(() => {
     const onWindowResize = (): void => { measure(); };
