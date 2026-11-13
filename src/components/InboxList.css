@@ -426,7 +426,9 @@
   text-align: center;
 }
 
-/* a load that failed: its cause in the danger's words, and Retry under it, where the rows would be */
+/* a load that failed, where the rows would be: what happened in the app's words and the danger's colour, the read's
+   own message smaller and dim under it (often the browser's English: it is the detail, not the sentence), and Retry
+   under them */
 .mode-inbox .inbox-failed {
   display: flex;
   flex-direction: column;
@@ -436,10 +438,25 @@
   text-align: center;
 }
 
-.mode-inbox .inbox-failed-cause {
+.mode-inbox .inbox-failed-words {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.mode-inbox .inbox-failed-line {
   margin: 0;
   color: var(--danger-text);
   font-size: var(--fs-md);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.mode-inbox .inbox-failed-cause {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-sm);
   overflow-wrap: anywhere;
   text-wrap: balance;
 }

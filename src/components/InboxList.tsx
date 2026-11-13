@@ -315,7 +315,11 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       <div className="inbox-scroll" ref={scroller} onScroll={(event) => { if (restoring.current === null) scroll.current = event.currentTarget.scrollTop; }}>
         {failed !== null ? (
           <div className="inbox-failed" role="alert">
-            <p className="inbox-failed-cause">{failed.error}</p>
+            {/* what happened, in the app's words; the read's own message, where it has one, smaller under it */}
+            <div className="inbox-failed-words">
+              <p className="inbox-failed-line">{t("Couldn't load the list.")}</p>
+              {failed.error !== "" && <p className="inbox-failed-cause" dir="auto">{failed.error}</p>}
+            </div>
             <button type="button" className="btn" onClick={failed.retry}>{t("Retry")}</button>
           </div>
         ) : empty !== null ? <p className="inbox-empty" role="status">{empty.flatMap((line, at) => [...(at > 0 ? [" "] : []), <span key={line}>{line}</span>])}</p> : (

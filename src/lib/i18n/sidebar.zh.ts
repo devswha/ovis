@@ -35,6 +35,7 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "No agents running": "没有运行中的代理",
   "Clear search": "清除搜索",
   "Nothing is running yet": "还没有任何内容在运行",
+  "Couldn't load the list.": "无法加载列表。",
   "Use + to start a workspace": "使用 + 新建工作区",
   "No results": "无结果",
   "You: {text}": "我：{text}",

@@ -9,6 +9,7 @@ import { chromePath } from "./chrome-path.ts";
 import type { Machine } from "../shared/machines.ts";
 import type { AgentStatus } from "../shared/protocol.ts";
 import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
+import { KO } from "../src/lib/i18n.ko.ts";
 
 declare global {
   interface Window {
@@ -1572,17 +1573,23 @@ try {
       }, desktop);
 
       // ---- a list whose load failed ----
-      // A cold list whose roster could not be read says so, with the cause and a Retry, never Loading… for ever; Retry
-      // loads it again.
-      for (const viewport of [PHONE, desktop]) {
+      // A cold list whose roster could not be read says so in the app's words and the page's language, with the read's
+      // own message smaller under it and a Retry, never Loading… for ever; Retry loads it again.
+      for (const [viewport, language] of [[PHONE, "en"], [desktop, "en"], [desktop, "ko"]] as const) {
         const wide = viewport.width >= 769;
-        const at = wide ? "a wide window" : "a phone";
-        await withPage(browser, base, light, "/?app=inbox&inbox_fail=roster", `the list whose load failed, on ${at}`, async (page) => {
+        const at = `${wide ? "a wide window" : "a phone"}${language === "en" ? "" : ` in ${language}`}`;
+        await withPage(browser, base, { ...light, language }, "/?app=inbox&inbox_fail=roster", `the list whose load failed, on ${at}`, async (page) => {
           const failure = page.locator('.mode-inbox [role="alert"]');
           await failure.waitFor();
           assert.equal(await page.locator(".mode-inbox .inbox-empty").count(), 0, "a failed load is not said to be loading");
-          const cause = (await failure.locator(".inbox-failed-cause").textContent())?.trim() ?? "";
-          assert.ok(cause.length > 0, "the failure says its cause");
+          const said = await failure.evaluate((alert) => [".inbox-failed-line", ".inbox-failed-cause"].map((selector) => {
+            const line = alert.querySelector(selector);
+            return { words: line?.textContent?.trim() ?? "", size: line ? parseFloat(getComputedStyle(line).fontSize) : 0 };
+          }));
+          const [line, own] = said as [{ words: string; size: number }, { words: string; size: number }];
+          assert.equal(line.words, language === "ko" ? KO["Couldn't load the list."] : "Couldn't load the list.", "the failure says what happened in the app's words");
+          assert.ok(own.words.length > 0 && own.size < line.size, `the read's own message is under it, smaller (${own.size}px under ${line.size}px)`);
+          const cause = own.words;
           const retry = failure.getByRole("button");
           assert.equal(await retry.count(), 1, "the failure holds one button");
           if (!wide) assert.ok((await box(page, '.mode-inbox [role="alert"] button')).h >= 44, "Retry is a touch target on a phone");

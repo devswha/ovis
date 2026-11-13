@@ -438,13 +438,19 @@ describe("InboxList", () => {
       const failed = await draw([], { wide, failure });
       const [alert, ...others] = alerts(failed);
       expect([others.length, byClass(failed, "inbox-empty").length, byClass(failed, "inbox-rows").length]).toEqual([0, 0, 0]);
-      expect(byClass(alert!, "inbox-failed-cause").map(text)).toEqual(["Failed to fetch"]);
+      // what happened in the app's words, and the read's own message under it
+      expect([byClass(alert!, "inbox-failed-line").map(text), byClass(alert!, "inbox-failed-cause").map(text)]).toEqual([["Couldn't load the list."], ["Failed to fetch"]]);
       const [retry, ...more] = buttons(alert!);
       expect([more.length, retry!.props.type, retry!.props.className]).toEqual([0, "button", "btn"]);
       await act(async () => { retry!.props.onClick(); });
       expect(retries).toEqual(wide ? ["retry", "retry"] : ["retry"]);
       await act(async () => { renderer?.unmount(); });
     }
+
+    // a read that failed with no message of its own: the app's words alone
+    const silent = await draw([], { failure: { ...failure, error: "" } });
+    expect([byClass(silent, "inbox-failed-line").length, byClass(silent, "inbox-failed-cause").length]).toEqual([1, 0]);
+    await act(async () => { renderer?.unmount(); });
 
     // a roster that lists PCs and nothing running, then fails to load again: the failure, not the empty line
     const empty = roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && { ...machine.snapshot, panes: [] } }));
