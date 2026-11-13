@@ -2408,7 +2408,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   opened by its own address stands on the page's first entry: the header's Back opens the list
   in its place, and the system Back leaves as it would without the list. The list's address
   names no pane, so a reload keeps it; a reload in a thread keeps the thread. A Back or a
-  Forward that lands reads the mode from the address it lands on.
+  Forward that lands reads the mode from the address it lands on. An address or a tapped alert
+  whose pane is no longer there opens the list, under the header's note that says why (**That
+  link's chat is closed**; a closed workspace and a PC not set up here in the classic app's
+  words): the pane the classic app selects in its place is another agent's, and the mode opens
+  no thread that was not asked for.
 - **New workspace** opens the existing New workspace dialog on the PC chosen. The system Back
   closes that dialog over the list, and leaves it open, its address kept, while its creation
   is in flight.

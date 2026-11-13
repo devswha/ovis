@@ -199,6 +199,7 @@ const BASE: Record<string, string> = {
   "That agent has closed: its workspace is open": "그 에이전트는 닫혔습니다. 대신 워크스페이스를 열었습니다",
   "That link's workspace is closed": "그 링크의 워크스페이스는 닫혔습니다",
   "That link's PC is not set up here": "그 링크의 PC는 여기에 설정되어 있지 않습니다",
+  "That link's chat is closed": "그 링크의 채팅은 닫혔습니다",
   "Could not sign out. Try again.": "로그아웃하지 못했습니다. 다시 시도해 주세요.",
   "Retry": "다시 시도",
   "On, pushed to this device": "켜짐, 이 기기로 푸시",

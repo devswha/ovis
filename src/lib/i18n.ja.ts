@@ -201,6 +201,7 @@ const BASE: Record<string, string> = {
   "That agent has closed: its workspace is open": "そのエージェントは閉じられました。代わりにワークスペースを開きました",
   "That link's workspace is closed": "そのリンクのワークスペースは閉じられています",
   "That link's PC is not set up here": "そのリンクの PC はここに設定されていません",
+  "That link's chat is closed": "そのリンクのチャットは閉じられています",
   "Could not sign out. Try again.": "サインアウトできませんでした。もう一度お試しください。",
   "Retry": "再試行",
   "On, pushed to this device": "オン、この端末にプッシュ",

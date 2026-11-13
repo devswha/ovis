@@ -1036,6 +1036,30 @@ try {
         console.log("PASS Search panes and actions in the list's More opens the command palette over the list on a phone, and Back closes it");
       });
 
+      // ---- an address of the mode whose pane is gone ----
+      // A pane that closed in a workspace still open (the classic app opens that workspace's pane in its place), and
+      // one whose workspace is gone too (the classic app opens its usual pane): the mode opens the list under the
+      // note, never another agent's thread.
+      for (const gone of [
+        { what: "its workspace still open", path: `/?app=inbox&ws=w1C-checkout-api&pane=${encodeURIComponent("w1C:p9")}&view=chat`, note: "That link's chat is closed" },
+        { what: "its workspace closed too", path: `/?app=inbox&pane=${encodeURIComponent("w9Z:p9")}&view=chat`, note: "That link's workspace is closed" },
+      ]) {
+        for (const viewport of [PHONE, desktop]) {
+          const at = viewport.width >= 769 ? "a wide window" : "a phone";
+          await withPage(browser, base, light, gone.path, `a thread's address whose pane is gone, ${gone.what}, on ${at}`, async (page) => {
+            await page.locator(".header-note").getByText(gone.note).waitFor();
+            await page.locator(".mode-inbox").waitFor();
+            await rowCount(page, 6);
+            if (viewport.width >= 769) {
+              await page.locator(".inbox-unchosen").waitFor();
+              assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is the open one");
+            } else assert.equal(await page.locator(".app-header").count(), 0, "the list is the screen: no thread's header");
+            await addressIs(page, { app: "inbox", pane: null }, "the address is the list's");
+            console.log(`PASS an address of the mode whose pane is gone (${gone.what}) opens the list on ${at}, under the note "${gone.note}"`);
+          }, viewport);
+        }
+      }
+
       if (errors.length > 0) {
         failures.push("page errors after the themes");
         console.log(`FAIL page errors after the themes: ${errors.join("; ")}`);

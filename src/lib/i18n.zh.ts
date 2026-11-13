@@ -203,6 +203,7 @@ const BASE: Record<string, string> = {
   "That agent has closed: its workspace is open": "该 Agent 已关闭，已改为打开其工作区",
   "That link's workspace is closed": "该链接的工作区已关闭",
   "That link's PC is not set up here": "该链接的电脑未在此处设置",
+  "That link's chat is closed": "该链接的聊天已关闭",
   "Could not sign out. Try again.": "无法退出登录，请重试。",
   "Retry": "重试",
   "On, pushed to this device": "已开启，推送到此设备",
