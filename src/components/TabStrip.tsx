@@ -58,7 +58,7 @@ let focusHandoff: { workspaceId: string; wide: boolean; at: number } | null = nu
  *  header and the pane) leaves its draft for the strip that takes its place, and an open name field reopens there
  *  within FOCUS_HANDOFF_MS */
 const renameDraftStore = new Map<string, string>();
-let renameHandoff: { owner: string; tabId: string; layout: string; at: number } | null = null;
+let renameHandoff: { owner: string; tabId: string; value: string; layout: string; at: number } | null = null;
 /** which side of the widths that move the strip (the header's row from 769px, a phone's sheets to 640px) the window is on */
 const stripLayout = (): string => typeof window === "undefined" || !window.matchMedia ? "" : `${window.matchMedia(HEADER_TABS_QUERY).matches}|${window.matchMedia(SHEET_QUERY).matches}`;
 const FOCUS_HANDOFF_MS = 500;
@@ -164,15 +164,14 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   useLayoutEffect(() => {
     const handoff = renameHandoff;
     renameHandoff = null;
-    const mountedIn = stripLayout();
-    // the names being typed are this PC's and workspace's: those another one left are not offered at a later rename
-    for (const key of renameDraftStore.keys()) if ((JSON.parse(key) as [string, string])[0] !== owner) renameDraftStore.delete(key);
-    const handed = handoff && handoff.owner === owner && handoff.layout !== stripLayout() && performance.now() - handoff.at < FOCUS_HANDOFF_MS
-      ? currentTabs.current.find((tab) => tab.tab_id === handoff.tabId) : undefined;
-    if (handed) setEditing({ tabId: handed.tab_id, value: renameDraftStore.get(JSON.stringify([owner, handed.tab_id])) ?? savedName(handed) });
+    // the strip moves with the window's width and with the phone's tab placement (chosen here or in another tab)
+    const mountedIn = `${stripLayout()}|${settings.phoneTabs}`;
+    // the field reopens with what it held: a draft, or the name just sent that herdr has not confirmed yet
+    if (handoff && handoff.owner === owner && handoff.layout !== mountedIn && performance.now() - handoff.at < FOCUS_HANDOFF_MS
+      && currentTabs.current.some((tab) => tab.tab_id === handoff.tabId)) setEditing({ tabId: handoff.tabId, value: handoff.value });
     return () => {
       const open = editingNow.current;
-      if (open) renameHandoff = { owner, tabId: open.tabId, layout: mountedIn, at: performance.now() };
+      if (open) renameHandoff = { owner, tabId: open.tabId, value: open.value, layout: mountedIn, at: performance.now() };
     };
   }, [owner]);
   const previousOwner = useRef(owner);
@@ -186,6 +185,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   useEffect(() => () => { if (longPress.current) window.clearTimeout(longPress.current.timer); }, []);
   useLayoutEffect(() => {
     if (previousOwner.current === owner) return;
+    // the names left unfinished in the workspace this strip leaves are not offered at a later rename there; another
+    // strip's (a split view's other half) stay
+    for (const key of renameDraftStore.keys()) if ((JSON.parse(key) as [string, string])[0] === previousOwner.current) renameDraftStore.delete(key);
     previousOwner.current = owner;
     // a press held across the change (an alert opening another PC) would open the previous PC's tab menu over this one's
     cancelLongPress();
@@ -400,11 +402,9 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     if (row) scroll.current = stripScrolled(scroll.current, row.scrollLeft, row.scrollWidth - row.clientWidth);
   };
 
-  // the name a rename starts from: the one just sent until herdr's snapshot carries it, else the tab's own
-  const savedName = (tab: HerdrTab): string => sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "";
   const beginRename = (tab: HerdrTab): void => {
     setError(null);
-    const saved = savedName(tab);
+    const saved = sent?.tabId === tab.tab_id ? sent.label : customTabLabel(tab, tabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1) ?? "";
     const draft = renameDrafts.current.get(tab.tab_id);
     setEditing({ tabId: tab.tab_id, value: draft !== undefined ? draft : saved });
   };

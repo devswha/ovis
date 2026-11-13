@@ -41,6 +41,7 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   const stored = new Map<string, string>();
   let renderer: ReactTestRenderer | undefined;
+  let media: { matches: boolean; addEventListener(): void; removeEventListener(): void };
   let requested: string[];
   let activeTab: { dataset: { tabId: string } };
 
@@ -51,7 +52,7 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     activeTab = { dataset: { tabId: "w1:t1" } };
     const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
     const events = new EventTarget();
-    const media = { matches: false, addEventListener() {}, removeEventListener() {} };
+    media = { matches: false, addEventListener() {}, removeEventListener() {} };
     const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
     define("IS_REACT_ACT_ENVIRONMENT", true);
     define("HTMLElement", class HTMLElement {});
@@ -73,9 +74,10 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function draw(offer: LayoutOffer, workspace = snapshot.workspaces[0]!): Promise<void> {
+  async function draw(offer: LayoutOffer, workspace: WorkspaceInfo | null = snapshot.workspaces[0]!, beside?: WorkspaceInfo): Promise<void> {
+    const strip = (shown: WorkspaceInfo) => createElement(TabStrip, { snapshot, workspace: shown, selectedPane: snapshot.panes[0]!, onSelectPane: () => {}, onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {} });
     const tree = createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
-        createElement(TabStrip, { snapshot, workspace, selectedPane: snapshot.panes[0]!, onSelectPane: () => {}, onNewTab: () => {}, onNewTerminal: async () => {}, onMoveToWorkspace: async () => {} })));
+      workspace && strip(workspace), beside && strip(beside)));
     await act(async () => { if (renderer) renderer.update(tree); else renderer = create(tree, { createNodeMock: node }); });
   }
   const tab = () => renderer!.root.findByProps({ "data-tab-id": "w1:t1" });
@@ -185,6 +187,40 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
       await act(async () => input().props.onKeyDown({ key: "Enter", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 13 } }));
       expect(renameFields()).toBe(0);
       expect(requested).toEqual(["/api/tab/rename"]);
+    });
+  });
+
+  it("keeps one half's unfinished name when the split view's other half opens another workspace", async () => {
+    await draw(TUI);
+    const input = () => renderer!.root.findByProps({ className: "input tab-strip-rename" });
+    await act(async () => tab().props.onDoubleClick());
+    await act(async () => input().props.onChange({ target: { value: "keep me" } }));
+    await act(async () => input().props.onKeyDown({ key: "Escape", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 27 } }));
+
+    await draw(TUI, snapshot.workspaces[0]!, { ...snapshot.workspaces[0]!, workspace_id: "w-other" });
+
+    await act(async () => tab().props.onDoubleClick());
+    expect(input().props.value).toBe("keep me");
+    await withFetch(async () => act(async () => input().props.onKeyDown({ key: "Enter", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 13 } })));
+  });
+
+  it("reopens a field moved by a turn with the name just sent, before herdr confirms it", async () => {
+    await withFetch(async () => {
+      await draw(TUI);
+      const input = () => renderer!.root.findByProps({ className: "input tab-strip-rename" });
+      await act(async () => tab().props.onDoubleClick());
+      await act(async () => input().props.onChange({ target: { value: "Sent name" } }));
+      await act(async () => input().props.onKeyDown({ key: "Enter", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 13 } }));
+      await act(async () => tab().props.onDoubleClick());
+      expect(input().props.value).toBe("Sent name");
+
+      await draw(TUI, null);
+      media.matches = true;
+      await draw(TUI);
+
+      expect(input().props.value).toBe("Sent name");
+      await act(async () => input().props.onKeyDown({ key: "Enter", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 13 } }));
+      expect(renameFields()).toBe(0);
     });
   });
 
