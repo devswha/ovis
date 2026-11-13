@@ -904,9 +904,14 @@ async function linkCommand(): Promise<number> {
     // Ctrl+C reaches the release's link too, which takes its code back; this one waits for it.
     // Always "link", whichever name it was run by: a release from before `add` and `login` knows only that one
     process.on("SIGINT", () => undefined);
-    const child = Bun.spawn([process.execPath, active, "link", ...process.argv.slice(3)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-    // a SIGTERM or SIGHUP sent to this process alone is passed on, so the release takes its code back too
-    for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => child.kill(signal));
+    // a SIGTERM or SIGHUP sent to this process alone is passed on, so the release takes its code back too.
+    // Listening starts before the release does: one that comes while it starts is passed on once it runs,
+    // where it would otherwise end this process and leave the release running without it.
+    let child: ReturnType<typeof Bun.spawn> | undefined;
+    let pending: "SIGTERM" | "SIGHUP" | undefined;
+    for (const signal of ["SIGTERM", "SIGHUP"] as const) process.on(signal, () => { if (child) child.kill(signal); else pending = signal; });
+    child = Bun.spawn([process.execPath, active, "link", ...process.argv.slice(3)], { cwd: ROOT, windowsHide: true, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    if (pending) child.kill(pending);
     return await child.exited;
   }
   if (!(await health())) {
