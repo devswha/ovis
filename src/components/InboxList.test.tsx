@@ -119,6 +119,8 @@ describe("InboxList", () => {
 
   interface DrawOptions {
     wide?: boolean; current?: string | null; filter?: InboxFilter; query?: string; watching?: boolean; activity?: SidebarActivity; scrollTop?: number;
+    /** how many times the list has opened (lib/useInbox.ts), and the opening it last took the focus for: a fresh opening unless a case says not */
+    opening?: number; focusTaken?: number;
     /** how far the scroller can scroll at first: a scrollTop past it is clamped, as a browser does */
     scrollMax?: number;
     more?: Parameters<typeof InboxList>[0]["more"]; note?: ReactNode; onExit?: () => void;
@@ -129,17 +131,19 @@ describe("InboxList", () => {
   let nodes = new Map<string, { scrollTop: number; focus(options?: FocusOptions): void }>();
   let focused: { node: string; options?: FocusOptions }[] = [];
   let scroll = { current: 0 };
+  let taken = { current: 0 };
   let scrollMax = Number.POSITIVE_INFINITY;
   let drawn: { machines: Machine[]; options: DrawOptions } = { machines: [], options: {} };
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <InboxList machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
-      filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll}
+      filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} focus={{ opening: options.opening ?? 1, taken }}
       onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} waits={waits} more={options.more} note={options.note} onExit={options.onExit} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
     focused = [];
     scroll = { current: options.scrollTop ?? 0 };
+    taken = { current: options.focusTaken ?? 0 };
     scrollMax = options.scrollMax ?? Number.POSITIVE_INFINITY;
     drawn = { machines, options };
     await act(async () => {
@@ -423,6 +427,28 @@ describe("InboxList", () => {
     expect(focused).toEqual([{ node: "section", options: { preventScroll: true } }]);
     await act(async () => { byClass(root, "inbox-scroll")[0]!.props.onScroll({ currentTarget: { scrollTop: 610 } }); });
     expect(scroll.current).toBe(610);
+  });
+
+  it("takes the focus once for each time it opens, and none when it is only drawn again for another width", async () => {
+    // Given a list that has just opened: it took the focus, and says which opening that was for.
+    await draw(roster());
+    expect(focused.map((call) => call.node)).toEqual(["section"]);
+    expect(taken.current).toBe(1);
+
+    // When a window widened past a phone's draws the list again, beside the thread the reader is typing in.
+    await act(async () => { renderer?.unmount(); });
+    await draw(roster(), { wide: true, current: "local:w1C:p1", focusTaken: 1 });
+
+    // Then the list leaves the focus where it is.
+    expect(focused).toEqual([]);
+
+    // When the list opens again while it is drawn (Back from the thread to the pane with none chosen).
+    await redraw({ current: null, opening: 2 });
+
+    // Then it takes the focus, once.
+    expect(focused.map((call) => call.node)).toEqual(["section"]);
+    await redraw({ query: "export" });
+    expect(focused.map((call) => call.node)).toEqual(["section"]);
   });
 
   it("reaches the kept scroll place once the waiting row's question is back, unless the reader scrolled meanwhile", async () => {

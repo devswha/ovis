@@ -98,6 +98,17 @@ export function useInbox({ on, initialLink, drawerOpenRef }: {
   const shown = open && enabled;
   const shownRef = useRef(shown);
   shownRef.current = shown;
+  // How many times the list has opened: the page's start on it, a way in, a Back onto it. The list takes the focus
+  // once for each (components/InboxList.tsx notes which in `taken`), so one only drawn again for another width (a
+  // window widened past a phone's with a thread open) takes none and the thread's composer keeps the focus. Counted
+  // in the render that shows the list, so the list drawn by that render already sees it.
+  const [opening, setOpening] = useState(shown ? 1 : 0);
+  const [wasShown, setWasShown] = useState(shown);
+  if (wasShown !== shown) {
+    setWasShown(shown);
+    if (shown) setOpening(opening + 1);
+  }
+  const focusTaken = useRef(0);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   // no pane was opened since the page loaded: nothing is mounted for one under the list
@@ -140,5 +151,5 @@ export function useInbox({ on, initialLink, drawerOpenRef }: {
   const [waits] = useState(() => new InboxWaits());
   /** whether the drawer or the list covers the selected pane: its finishes are not read, its alerts not held back */
   const coveredRef = useMemo(() => ({ get current(): boolean { return drawerOpenRef.current === true || shownRef.current; } }) as RefObject<boolean>, [drawerOpenRef]);
-  return { enabled, shown, cold, shownRef, enabledRef, coveredRef, show, leave, back, filter, setFilter, query, setQuery, scroll, questionReads, summaryReads, waits };
+  return { enabled, shown, cold, shownRef, enabledRef, coveredRef, show, leave, back, filter, setFilter, query, setQuery, scroll, questionReads, summaryReads, waits, focus: { opening, taken: focusTaken } };
 }

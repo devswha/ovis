@@ -2372,6 +2372,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   - A pane with no agent chosen says so in one centred `--text-dim` line (`.inbox-unchosen`,
     `role="status"`): "Choose one from the list to open its chat here." It names no agent: the word is
     drawn nowhere in the mode's own chrome.
+- The focus. The list takes the keyboard focus, on its own section, each time it opens: the
+  page's start on it, a way in, a Back onto it. A change of width that only draws it again
+  takes none: a window widened past a phone's with a thread open leaves the focus in the
+  thread's composer.
 - More in the mode holds what still means something in its shell. On the list: **Back to
   Ovis**, **Alerts**, **Settings**. In a phone's thread also, between the first and the last
   two, the next waiting agent, Find, **Browse files**, **Copy link** and what the pane's menu

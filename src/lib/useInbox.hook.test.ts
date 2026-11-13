@@ -205,6 +205,29 @@ describe("useInbox", () => {
     expect(inbox.summaryReads).toBe(reads);
   });
 
+  it("counts each time the list opens, and keeps one note of the opening it took the focus for", async () => {
+    // the page opens on the list
+    await mount(true);
+    const taken = inbox.focus.taken;
+    expect(inbox.focus.opening).toBe(1);
+    // a thread, then Back onto the list
+    await act(async () => { inbox.leave(); });
+    expect(inbox.focus.opening).toBe(1);
+    await act(async () => { inbox.show(); });
+    expect(inbox.focus.opening).toBe(2);
+    // asked to show while it shows: nothing opened
+    await act(async () => { inbox.show(); });
+    expect(inbox.focus.opening).toBe(2);
+    expect(inbox.focus.taken).toBe(taken);
+  });
+
+  it("has opened no list on a page that opens on a thread", async () => {
+    await mount(true, paneLink);
+    expect(inbox.focus.opening).toBe(0);
+    await act(async () => { inbox.back(); });
+    expect(inbox.focus.opening).toBe(1);
+  });
+
   it("starts closed on a link naming a pane", async () => {
     await mount(true, paneLink);
 

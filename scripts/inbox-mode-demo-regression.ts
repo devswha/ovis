@@ -894,14 +894,18 @@ try {
             await page.keyboard.press("Escape");
             await page.locator(".inbox-search-input").waitFor({ state: "detached" });
 
-            // a narrowed window is the phone layout with the thread kept, and back
+            // a narrowed window is the phone layout with the thread kept, and back: the column's list, drawn again for
+            // the wider window, leaves the focus in the composer the reader is typing in
             await page.setViewportSize({ width: 600, height: viewport.height });
             await page.locator("#inbox-back").waitFor();
             assert.equal((await page.locator(".thread-name").textContent())?.replace(/^Claude Code: /, ""), WORKING_TITLE);
             assert.equal(await page.locator(".mode-inbox").count(), 0);
+            await page.locator("textarea.composer-text").click();
+            await page.waitForFunction(() => document.activeElement?.classList.contains("composer-text") === true);
             await page.setViewportSize(viewport);
             await page.locator(".thread-chip").waitFor();
             await page.locator(".inbox-column .mode-inbox").waitFor();
+            assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("composer-text") === true), true, "a list drawn again for a wider window takes no focus from the composer");
             await addressIs(page, { app: "inbox", pane: WORKING }, "a window narrowed and widened keeps the thread");
 
             // Back from a thread is the list with no agent chosen; Back to Ovis at the foot opens the thread's pane in classic

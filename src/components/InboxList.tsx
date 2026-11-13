@@ -44,6 +44,8 @@ export interface InboxListProps {
   query: string;
   onQuery(query: string): void;
   scroll: RefObject<number>;
+  /** how many times the list has opened, and the opening it last took the focus for (lib/useInbox.ts) */
+  focus: { opening: number; taken: RefObject<number> };
   /** the row (inboxKey) whose thread shows beside the list */
   current?: string | null;
   onOpen(machineId: string, paneId: string): void;
@@ -90,7 +92,7 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
  * The inbox mode's list: every shown PC's agents, the ones that need the reader first, each a row of two lines.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, current = null, onOpen, onNew, questionReads, summaryReads, waits, more, onExit, note }: InboxListProps) {
+export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, waits, more, onExit, note }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
@@ -149,7 +151,14 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
     node.scrollTop = restoring.current;
     if (node.scrollTop === restoring.current) restoring.current = null;
   }, [questions, summaries]);
-  useLayoutEffect(() => { root.current?.focus({ preventScroll: true }); }, []);
+  // The list takes the focus once for each time it opens. One only drawn again for another width finds its opening's
+  // focus taken, and leaves the focus where it is: in the composer of the thread it now stands beside.
+  const { opening, taken } = focus;
+  useLayoutEffect(() => {
+    if (taken.current === opening) return;
+    taken.current = opening;
+    root.current?.focus({ preventScroll: true });
+  }, [opening, taken]);
 
   const [pcMenu, setPcMenu] = useState<HTMLElement | null>(null);
   const [filterMenu, setFilterMenu] = useState<HTMLElement | null>(null);
