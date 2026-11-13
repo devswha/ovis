@@ -943,6 +943,60 @@ describe("managed source updates with real Git repositories and builds", () => {
     }
   }, 60_000);
 
+  it("keeps an installed release's record when Ovis is stopped while that release still starts", async () => {
+    // runSupervisor in a stand-in child, as above: the installed release's bridge never passes its health check and
+    // takes 1.5 s to stop, as a busy one does; the supervisor is stopped while its first start still waits for it. A stop
+    // is no failed release: current.json stays, and the next start runs that release again
+    const root = mkdtempSync(join(directory, "stop-root-"));
+    const appState = mkdtempSync(join(directory, "stop-state-"));
+    const port = 59997;
+    const updates = updateStateDir(root, port, appState);
+    mkdirSync(updates, { recursive: true });
+    const release = join(updates, "release-installed");
+    mkdirSync(release);
+    const record = JSON.stringify({ directory: release, revision: "1".repeat(40), source_revision: "0".repeat(40) });
+    writeFileSync(join(updates, "current.json"), record);
+    const spawned = join(appState, "spawned");
+    const script = join(appState, "stop-stand-in.ts");
+    writeFileSync(script, `
+      import { mock } from "bun:test";
+      import { writeFileSync } from "node:fs";
+      const updater = ${JSON.stringify(join(import.meta.dir, "updater.ts"))};
+      const real = await import(updater);
+      class Saved extends real.Updater {
+        override async initialize() { return JSON.parse(${JSON.stringify(record)}); }
+        override start() {}
+      }
+      mock.module(updater, () => ({ ...real, Updater: Saved }));
+      Bun.spawn = (() => {
+        let done = (_code: number) => {};
+        const exited = new Promise<number>((resolve) => { done = resolve; });
+        const child = { exitCode: null as number | null, exited, send() {},
+          kill() { setTimeout(() => { child.exitCode = 0; done(0); }, 1500); } };
+        writeFileSync(${JSON.stringify(spawned)}, "");
+        return child;
+      }) as unknown as typeof Bun.spawn;
+      globalThis.fetch = (async () => { throw new Error("not up yet"); }) as unknown as typeof fetch;
+      await (await import(${JSON.stringify(join(import.meta.dir, "supervisor.ts"))})).runSupervisor(${JSON.stringify(root)});
+    `);
+    const child = Bun.spawn([process.execPath, script], { env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", OVIS_STATE_DIR: appState,
+      XDG_CONFIG_HOME: join(appState, "config"), HERDR_SOCKET: join(appState, "no-herdr.sock"), OVIS_AUTO_UPDATE: "0" }, stdout: "pipe", stderr: "pipe" });
+    const output = Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    const timer = setTimeout(() => child.kill("SIGKILL"), 15_000); // a wedged stand-in must not hang the run
+    try {
+      for (const deadline = Date.now() + 10_000; !existsSync(spawned);) {
+        if (Date.now() > deadline || child.exitCode !== null) throw new Error(`the release's bridge was never started:\n${(await output).join("\n")}`);
+        await Bun.sleep(20);
+      }
+      child.kill("SIGTERM");
+      await child.exited;
+      expect(existsSync(join(updates, "current.json")), (await output).join("\n")).toBe(true);
+      expect(readFileSync(join(updates, "current.json"), "utf8")).toBe(record);
+    } finally {
+      clearTimeout(timer);
+    }
+  }, 20_000);
+
   it("holds the timer off after a user's own failed unshallow fetch too", async () => {
     // a user's Check skips the backoff, but its failure still starts one: the timer that comes
     // next does not fetch the history again (#1252)

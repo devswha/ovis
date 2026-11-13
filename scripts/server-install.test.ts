@@ -403,20 +403,19 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     const releases = join(root, "release");
     const home = join(root, "home");
     const key = generateKeyPair();
-    // a binary that runs until it is stopped (a copy of the shell, waiting on a child): the server started from release A
-    const sleeper = readFileSync(realpathSync("/bin/sh"));
-    const version = (v: string) => {
-      const dir = release(releases, v, key.privateKeyPem);
-      writeFileSync(join(dir, releaseFile(PLATFORM)), sleeper);
-      writeManifest(dir, { version: v, sources });
-      signManifest(dir, key.privateKeyPem);
-    };
+    // the server started from release A: a binary that runs until it is stopped, on Linux and macOS alike (a copy of Bun)
+    for (const v of ["1.0.0", "1.0.1", "1.0.2", "1.0.3"]) release(releases, v, key.privateKeyPem);
+    const a = join(releases, "v1.0.0");
+    writeFileSync(join(a, releaseFile(PLATFORM)), readFileSync(process.execPath), { mode: 0o755 });
+    writeManifest(a, { version: "1.0.0", sources });
+    signManifest(a, key.privateKeyPem);
     const install = (v: string) => installServer({ home, version: v, platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey, ptyRuns: () => false });
     const named = () => readdirSync(join(home, "releases")).filter((name) => !name.startsWith(".")).map((name) => name.split("-")[0]).sort();
-    for (const v of ["1.0.0", "1.0.1", "1.0.2", "1.0.3"]) version(v);
     await install("1.0.0");
-    const server = Bun.spawn([join(home, "bin", "ovis-server"), "-c", "sleep 30; :"]);
+    const server = Bun.spawn([join(home, "bin", "ovis-server"), "-e", "console.log('up'); setTimeout(() => {}, 30_000)"], { env: { ...process.env, BUN_BE_BUN: "1" }, stdout: "pipe" });
     try {
+      // running from A, as a process list shows it, once it says so (on macOS a spawn returns before its exec is seen)
+      expect(new TextDecoder().decode((await server.stdout.getReader().read()).value)).toBe("up\n");
       await install("1.0.1");
       await install("1.0.2");
       expect(named()).toEqual(["1.0.0", "1.0.1", "1.0.2"]);

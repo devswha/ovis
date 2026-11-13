@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { UpdateChannel } from "../shared/update.ts";
+import { REVISION, type UpdateChannel } from "../shared/update.ts";
 import { fetchRelease, NoBinaryRelease, releasesBase, signedManifest, type SignedManifest } from "../scripts/server-install.ts";
 import { binaryName, checkManifest, MANIFEST, type ServerPlatform, SIGNATURE } from "../scripts/server-manifest.ts";
 
@@ -99,15 +99,36 @@ export async function offeredRelease(options: { base: string | undefined; channe
 
 /**
  * The few lines every launcher runs as a release's supervisor (`<Bun> <release>/server/supervisor.ts`, its cwd the
- * source checkout): they run the release's binary as the supervisor, pass its IPC messages ("ready") up to the launcher
- * and the launcher's stop signals down, and exit as it does, HANDOVER_EXIT included. A launcher
- * from before the rename names the checkout HERDR_WEB_SOURCE_ROOT. Plain JavaScript a Bun of any version runs.
+ * source checkout). Before anything of the release runs, they check what lies in bin/ now: the manifest's signature by
+ * `publicKey` (the key the release was checked with when it was staged) and the binary's SHA-256 in that manifest. A
+ * file changed since then makes them exit before the supervisor is ready, so the launcher falls back to the checkout's
+ * own supervisor. Then they run the release's binary as the supervisor, pass its IPC messages ("ready") up to the
+ * launcher and the launcher's stop signals down, and exit as it does, HANDOVER_EXIT included. A launcher from before
+ * the rename names the checkout HERDR_WEB_SOURCE_ROOT. Plain JavaScript a Bun of any version runs.
  */
-export const RELEASE_SUPERVISOR = `// Written by the update that installed this compiled release (server/update-artifact.ts): the launcher of the source
-// checkout runs this file with its Bun, and this runs the release's binary as the supervisor.
+export function releaseSupervisor(publicKey: string): string {
+  return `// Written by the update that installed this compiled release (server/update-artifact.ts): the launcher of the source
+// checkout runs this file with its Bun, and this runs the release's binary as the supervisor, once it still checks.
+import { createHash, createPublicKey, verify } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+const KEY = ${JSON.stringify(publicKey)};
+const windows = process.platform === "win32";
+const bin = join(import.meta.dir, "..", "bin");
+const binary = join(bin, windows ? "ovis-server.exe" : "ovis-server");
+try {
+  const manifest = readFileSync(join(bin, "ovis-server.json"));
+  const signature = Buffer.from(readFileSync(join(bin, "ovis-server.json.sig"), "utf8").trim(), "base64");
+  const key = createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(KEY, "base64")]), format: "der", type: "spki" });
+  if (!verify(null, manifest, key, signature)) throw new Error("ovis-server.json is not signed by the release key");
+  const platform = (windows ? "windows" : process.platform) + "-" + process.arch;
+  const expected = JSON.parse(manifest.toString("utf8")).assets?.[platform]?.sha256;
+  if (createHash("sha256").update(readFileSync(binary)).digest("hex") !== expected) throw new Error(binary + " does not match its SHA-256 in ovis-server.json");
+} catch (error) {
+  console.error("Ovis: this update's server was not run (" + (error instanceof Error ? error.message : String(error)) + "); the launcher falls back to the source checkout.");
+  process.exit(3);
+}
 const root = process.env.OVIS_SOURCE_ROOT || process.env.HERDR_WEB_SOURCE_ROOT || process.cwd();
-const binary = join(import.meta.dir, "..", "bin", process.platform === "win32" ? "ovis-server.exe" : "ovis-server");
 const env = { ...process.env, OVIS_SOURCE_ROOT: root };
 delete env.BUN_BE_BUN;
 const child = Bun.spawn([binary, "supervisor"], {
@@ -118,13 +139,14 @@ for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => { try { chi
 const code = await child.exited;
 process.exit(child.signalCode ? 1 : code ?? 1);
 `;
+}
 
 /**
  * Stages the offered release for `platform` in a new `<stateDir>/release-*`: every file checked against the manifest
  * before it is kept, then the supervisor launchers run. The folder is returned only whole; on any failure it is
  * removed and the error says why. `signal` stops it between files.
  */
-export async function stageBinaryRelease(offer: BinaryOffer, options: { stateDir: string; platform: ServerPlatform; signal?: AbortSignal; fetchFile?: typeof fetch; ptyRuns?: (path: string) => boolean }): Promise<{ directory: string; host: string }> {
+export async function stageBinaryRelease(offer: BinaryOffer, options: { stateDir: string; platform: ServerPlatform; publicKey: string; signal?: AbortSignal; fetchFile?: typeof fetch; ptyRuns?: (path: string) => boolean }): Promise<{ directory: string; host: string }> {
   const directory = mkdtempSync(join(options.stateDir, "release-"));
   try {
     const bin = join(directory, "bin");
@@ -133,7 +155,7 @@ export async function stageBinaryRelease(offer: BinaryOffer, options: { stateDir
     const host = await fetchRelease(offer.at, offer.signed, options.platform, bin, { fetchFile: options.fetchFile, ptyRuns: options.ptyRuns });
     options.signal?.throwIfAborted();
     mkdirSync(join(directory, "server"));
-    writeFileSync(join(directory, "server", "supervisor.ts"), RELEASE_SUPERVISOR);
+    writeFileSync(join(directory, "server", "supervisor.ts"), releaseSupervisor(options.publicKey));
     return { directory, host };
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });
@@ -146,7 +168,7 @@ export async function stageBinaryRelease(offer: BinaryOffer, options: { stateDir
  * that manifest's SHA-256, the binary still what the manifest names, its client and its supervisor there; else null.
  * What a supervisor checks before it runs a release current.json names.
  */
-export function stagedRelease(directory: string, publicKey: string, version: string, platform: ServerPlatform): { revision: string; version: string } | null {
+export function stagedRelease(directory: string, publicKey: string, version: string, platform: ServerPlatform): { revision: string; version: string; build_revision?: string } | null {
   try {
     const bin = join(directory, "bin");
     const bytes = readFileSync(join(bin, MANIFEST));
@@ -154,8 +176,23 @@ export function stagedRelease(directory: string, publicKey: string, version: str
     if (typeof manifest === "string") return null;
     if (sha256(readFileSync(join(bin, binaryName(platform)))) !== manifest.assets[platform].sha256) return null;
     if (!existsSync(join(bin, "dist", "index.html")) || !existsSync(join(directory, "server", "supervisor.ts"))) return null;
-    return { revision: sha256(bytes), version: manifest.version };
+    const build = buildCommit(directory);
+    return { revision: sha256(bytes), version: manifest.version, ...(build ? { build_revision: build } : {}) };
   } catch {
     return null;
+  }
+}
+
+/**
+ * The commit the release's client was built from (the build.json vite writes into dist/), or undefined. A page compares
+ * its own build's commit with the revision the server reports (src/lib/updateNotes.ts reloadReason): reported as the
+ * manifest's SHA-256, a binary release would ask for a reload that never helps.
+ */
+export function buildCommit(directory: string): string | undefined {
+  try {
+    const revision = (JSON.parse(readFileSync(join(directory, "bin", "dist", "build.json"), "utf8")) as { revision?: unknown }).revision;
+    return typeof revision === "string" && REVISION.test(revision) ? revision : undefined;
+  } catch {
+    return undefined;
   }
 }

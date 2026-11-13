@@ -3,10 +3,13 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { reloadReason } from "../src/lib/updateNotes.ts";
 import { releaseSupervisor } from "./managed.ts";
 import { latestRelease, newerVersion, offeredRelease, releaseNames, stagedRelease } from "./update-artifact.ts";
 import { updateStateDir } from "./update-state.ts";
 import { COMPILED_RELEASE_REASON, runCommand, Updater } from "./updater.ts";
+import { releaseSupervisor as shimOf } from "./update-artifact.ts";
 import { hostPlatform } from "../scripts/server-install.ts";
 import { DIST_ARCHIVE, generateKeyPair, MANIFEST, PTY_ASSETS, ptyFile, releaseFile, SERVER_PLATFORMS, type ServerPlatform, signManifest, writeManifest } from "../scripts/server-manifest.ts";
 
@@ -16,6 +19,13 @@ import { DIST_ARCHIVE, generateKeyPair, MANIFEST, PTY_ASSETS, ptyFile, releaseFi
  * committed key), reached as a file:// address; a git checkout at version N; its update state in a folder of the test.
  */
 const PLATFORM = hostPlatform() as ServerPlatform;
+/** a port nothing listens on: the system's pick for a listener, given back */
+const freePort = (): number => {
+  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  const { port } = listener;
+  listener.stop(true);
+  return port;
+};
 const REPO = resolve(import.meta.dir, "..");
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -28,7 +38,7 @@ const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes
 const git = (cwd: string, ...args: string[]) => runCommand(cwd, ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args]);
 
 /** `<base>/ovis-<version>/`: the host's binary `binary`, stand-ins for the others, the client, the manifest and its signature */
-function publish(base: string, version: string, privateKeyPem: string, binary = `#!/bin/sh\necho ovis-server ${version}\n`): string {
+function publish(base: string, version: string, privateKeyPem: string, binary = `#!/bin/sh\necho ovis-server ${version}\n`, build?: string): string {
   const dir = join(base, `ovis-${version}`);
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), platform === PLATFORM ? binary : `other ${platform}\n`);
@@ -36,6 +46,8 @@ function publish(base: string, version: string, privateKeyPem: string, binary = 
   const client = join(base, `.client-${version}`);
   mkdirSync(client, { recursive: true });
   writeFileSync(join(client, "index.html"), `<!doctype html><title>${version}</title>`);
+  // the commit the client was built from, as vite writes it (vite.config.ts)
+  if (build !== undefined) writeFileSync(join(client, "build.json"), `${JSON.stringify({ revision: build, dirty: false })}\n`);
   expect(Bun.spawnSync(["tar", "-czf", join(dir, DIST_ARCHIVE), "-C", client, "."]).exitCode).toBe(0);
   rmSync(client, { recursive: true });
   writeManifest(dir, { version, sources: { server: "a".repeat(40), shared: "b".repeat(40) } });
@@ -78,7 +90,7 @@ async function checkout(version = "1.0.0") {
 function updater(fixture: Awaited<ReturnType<typeof checkout>>, extra: Partial<ConstructorParameters<typeof Updater>[0]> = {}) {
   return new Updater({ root: fixture.root, stateDir: fixture.stateDir, autoUpdate: false, publish() {},
     activate: async (_next, commit) => commit(),
-    releases: { base: `file://${fixture.releases}`, publicKey: fixture.key.publicKey, platform: PLATFORM, ptyRuns: () => false }, ...extra });
+    releases: { base: pathToFileURL(fixture.releases).href, publicKey: fixture.key.publicKey, platform: PLATFORM, ptyRuns: () => false }, ...extra });
 }
 
 describe("which release of the compiled server is on offer", () => {
@@ -98,7 +110,7 @@ describe("which release of the compiled server is on offer", () => {
   it("lists releases in a file:// folder or through GitHub's API, and nowhere else", async () => {
     const { releases, key } = await checkout();
     publish(releases, "1.0.1", key.privateKeyPem);
-    expect(await releaseNames(`file://${releases}`)).toEqual(["ovis-1.0.1"]);
+    expect(await releaseNames(pathToFileURL(releases).href)).toEqual(["ovis-1.0.1"]);
     const asked: string[] = [];
     const github = (async (url: string) => {
       asked.push(String(url));
@@ -130,7 +142,7 @@ describe("which release of the compiled server is on offer", () => {
     const dir = publish(releases, "1.0.1", key.privateKeyPem);
     writeManifest(dir, { version: "1.0.0", sources: { server: "a".repeat(40), shared: "b".repeat(40) } });
     signManifest(dir, key.privateKeyPem);
-    await expect(offeredRelease({ base: `file://${releases}`, channel: "stable", publicKey: key.publicKey })).rejects.toThrow("is for version 1.0.0, not the expected 1.0.1");
+    await expect(offeredRelease({ base: pathToFileURL(releases).href, channel: "stable", publicKey: key.publicKey })).rejects.toThrow("is for version 1.0.0, not the expected 1.0.1");
   });
 });
 
@@ -164,6 +176,60 @@ describe.skipIf(process.platform === "win32" || !hostPlatform())("crossing from 
     const restarted = updater(fixture);
     expect((await restarted.initialize())?.directory).toBe(current.directory);
     expect(restarted.status.current_version).toBe("1.0.1");
+  });
+
+  it("tells pages the commit the release's client was built from, so a reload after the crossing asks for no other", async () => {
+    const fixture = await checkout();
+    const build = "e".repeat(40);
+    const dir = publish(fixture.releases, "1.0.1", fixture.key.privateKeyPem, undefined, build);
+    const update = updater(fixture);
+    await update.initialize();
+    await update.request("check", true);
+    // the offer and the install name the release by its manifest, which a commit could not bind
+    const id = sha256(readFileSync(join(dir, MANIFEST)));
+    expect(update.status.latest_revision).toBe(id);
+    await update.request("install", true, id);
+    expect(update.status).toMatchObject({ phase: "idle", error: null, current_revision: build, current_version: "1.0.1" });
+    expect(JSON.parse(readFileSync(join(fixture.stateDir, "current.json"), "utf8"))).toMatchObject({ revision: id, build_revision: build });
+    // a page built from that client, reloaded once: no notice (src/lib/updateNotes.ts)
+    expect(reloadReason(build, { current_revision: update.status.current_revision, served_revision: null }, false, false)).toBeNull();
+    // a page of the version before still asks to reload, as after any update
+    expect(reloadReason(fixture.revision, { current_revision: update.status.current_revision, served_revision: null }, false, false)).toBe("updated");
+    // a supervisor that starts now, source or compiled, tells the same commit
+    for (const extra of [{}, { compiled: { ownRelease: JSON.parse(readFileSync(join(fixture.stateDir, "current.json"), "utf8")).directory } }]) {
+      const restarted = updater(fixture, extra);
+      await restarted.initialize();
+      expect(restarted.status.current_revision).toBe(build);
+    }
+  });
+
+  it("runs a staged release only while its binary still checks: one changed after staging leaves the launcher to fall back", async () => {
+    const fixture = await checkout();
+    const ran = join(fixture.dir, "ran");
+    publish(fixture.releases, "1.0.1", fixture.key.privateKeyPem, `#!/bin/sh\necho "$1" > "${ran}"\n`);
+    const update = updater(fixture);
+    await update.initialize();
+    await update.request("check", true);
+    await update.request("install", true, update.status.latest_revision!);
+    const { directory } = JSON.parse(readFileSync(join(fixture.stateDir, "current.json"), "utf8"));
+    const shim = (key = fixture.key.publicKey) => {
+      writeFileSync(join(directory, "server", "supervisor.ts"), shimOf(key));
+      const result = Bun.spawnSync([process.execPath, join(directory, "server", "supervisor.ts")], { cwd: fixture.root, env: { ...process.env, OVIS_SOURCE_ROOT: fixture.root }, stdout: "pipe", stderr: "pipe" });
+      return { code: result.exitCode, out: result.stderr.toString() };
+    };
+    expect(shim().code).toBe(0);
+    expect(readFileSync(ran, "utf8")).toBe("supervisor\n");
+    rmSync(ran);
+    // a manifest that another key signed is not the release's either
+    const other = shim(generateKeyPair().publicKey);
+    expect(other.code).toBe(3);
+    expect(other.out).toContain("not signed by the release key");
+    const binary = join(directory, "bin", "ovis-server");
+    writeFileSync(binary, readFileSync(binary).map((byte, index) => (index === 5 ? byte ^ 1 : byte)));
+    const changed = shim();
+    expect(changed.code).toBe(3);
+    expect(changed.out).toContain("does not match its SHA-256 in ovis-server.json");
+    expect(existsSync(ran)).toBe(false);
   });
 
   it("leaves version N as it was when the binary fails its checksum, and says so", async () => {
@@ -269,7 +335,7 @@ describe.skipIf(process.platform === "win32" || !hostPlatform() || !historyHere)
       await git(root, "init", "-q", "-b", "main");
       await git(root, "add", ".");
       await git(root, "commit", "-qm", "N");
-      const port = 10_000 + Math.floor(Math.random() * 10_000);
+      const port = freePort();
       const home = join(dir, "home");
       const appState = join(dir, "state");
       mkdirSync(appState, { recursive: true });

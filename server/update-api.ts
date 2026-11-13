@@ -43,8 +43,22 @@ export interface SupervisorChannel {
   onMessage(listener: (message: unknown) => void): void;
 }
 
+/**
+ * Said by a bridge that the launcher of Ovis 0.2.0 started itself. That launcher is its own supervisor, follows only
+ * `v*` tags and never runs a newer one, so after the last of them it installs nothing more and a restart changes
+ * nothing: only its checkout, updated, brings a launcher that moves on to the compiled server.
+ */
+export const OLD_LAUNCHER_REASON = "This Ovis runs under the launcher of version 0.2.0, which installs no further update. Update its checkout (git pull on main there, or herdr plugin update devswha.ovis), then restart Ovis.";
+
+/**
+ * Whether this bridge was started by the launcher of 0.2.0: managed, and no source root handed down. Every launcher
+ * since passes OVIS_SOURCE_ROOT (or HERDR_WEB_SOURCE_ROOT) to its supervisor, which hands its environment to the bridge.
+ */
+export const oldLauncher = (env: Record<string, string | undefined>): boolean =>
+  env["OVIS_MANAGED"] === "1" && !env["OVIS_SOURCE_ROOT"] && !env["HERDR_WEB_SOURCE_ROOT"];
+
 /** Only the managed entrypoint connects IPC; importing createServer in tests does not. */
-export function connectUpdater(channel?: SupervisorChannel): UpdateService {
+export function connectUpdater(channel?: SupervisorChannel, env: Record<string, string | undefined> = process.env): UpdateService {
   // the desktop app starts its server itself (app/electron/src/children.ts) and updates it with the app
   let status = unmanagedUpdateStatus(process.env["OVIS_DESKTOP_APP"] === "1");
   let notes = noUpdateNotes();
@@ -58,7 +72,9 @@ export function connectUpdater(channel?: SupervisorChannel): UpdateService {
       // installs are offered only where the supervisor says itself that it installs the exact
       // revision asked for: an older one would install whatever its own check finds
       const { revision_bound_install: bound, ...told } = value.status;
-      status = bound === true ? { ...told, revision_bound_install: true } : told;
+      // under the launcher of 0.2.0 no update is ever installed again: what to do instead is said in its place
+      status = bound === true ? { ...told, revision_bound_install: true }
+        : oldLauncher(env) ? { ...told, available: false, blocked_reason: told.blocked_reason ?? OLD_LAUNCHER_REASON } : told;
       // a supervisor older than the notes sends none: the one being replaced, or a fallback
       notes = readUpdateNotes(value.notes);
       installed = readInstalledNotes(value.installed);
@@ -191,7 +207,7 @@ export function handleUpdateRequest(request: Request, pathname: string, service?
     if (expected === null) return fail("invalid_update_install", "Name the expected_revision of the update on offer.", 400);
     const now = service.status();
     if (running(now)) return busy();
-    if (now.revision_bound_install !== true) return fail("update_restart_required", "Restart the app before installing an update from here.", 409);
+    if (now.revision_bound_install !== true) return fail("update_restart_required", now.blocked_reason === OLD_LAUNCHER_REASON ? OLD_LAUNCHER_REASON : "Restart the app before installing an update from here.", 409);
     if (now.blocked_reason || !now.available) return fail("update_unavailable", now.blocked_reason ?? "No update is available. Check again first.", 409);
     if (now.latest_revision !== expected) return fail("update_offer_changed", "A different update is on offer now. Review it, then update again.", 409);
     // its own id, for a cancel by the one that asked for it

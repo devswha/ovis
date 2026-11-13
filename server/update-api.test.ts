@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DESKTOP_APP_UPDATES, noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type UpdateRequest, type UpdateStatus, INSTALL_ID } from "../shared/update.ts";
-import { connectUpdater, handleUpdateRequest, servedRevision, type UpdateService } from "./update-api.ts";
+import { connectUpdater, handleUpdateRequest, servedRevision, type UpdateService, OLD_LAUNCHER_REASON } from "./update-api.ts";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -183,6 +183,31 @@ describe("a manual install", () => {
     expect(updates.status().revision_bound_install).toBeUndefined();
     expect(await answer(handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", updates))).toEqual({ status: 409, code: "update_restart_required" });
     expect(sent).toEqual([{ type: "update-status-request" }]);
+  });
+
+  it("tells a bridge the launcher of 0.2.0 started to update its checkout, the only way on from there", async () => {
+    // that launcher is its own supervisor and starts the bridge with no source root; every later one hands it down
+    let deliver: (message: unknown) => void = () => {};
+    const connect = (env: Record<string, string | undefined>) =>
+      connectUpdater({ send() {}, onMessage: (listener) => { deliver = listener; } }, env);
+    const { revision_bound_install: _, ...older } = offer();
+    const under020 = connect({ OVIS_MANAGED: "1", HERDR_WEB_MANAGED: "1" });
+    deliver({ type: "update-status", status: { ...older, available: false } });
+    expect(under020.status()).toMatchObject({ available: false, blocked_reason: OLD_LAUNCHER_REASON });
+    expect(OLD_LAUNCHER_REASON).toContain("git pull");
+    const refused = await handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", under020);
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(OLD_LAUNCHER_REASON);
+    // a later launcher's old supervisor (a source root handed down) keeps the restart advice, which helps there
+    for (const env of [{ OVIS_MANAGED: "1", OVIS_SOURCE_ROOT: "/checkout" }, { OVIS_MANAGED: "1", HERDR_WEB_SOURCE_ROOT: "/checkout" }]) {
+      const later = connect(env);
+      deliver({ type: "update-status", status: older });
+      expect(later.status().blocked_reason).toBe(older.blocked_reason);
+    }
+    // a supervisor that installs the revision asked for is not the launcher of 0.2.0's, whatever the environment says
+    const current = connect({ OVIS_MANAGED: "1" });
+    deliver({ type: "update-status", status: offer() });
+    expect(current.status().blocked_reason).toBe(offer().blocked_reason);
   });
 });
 

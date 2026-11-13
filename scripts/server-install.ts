@@ -301,21 +301,29 @@ export async function withInstallLock<T>(home: string, run: () => Promise<T>, wa
 }
 
 /**
- * The folders of `folders` that a running process was started from: its executable lies inside one (Linux: every
- * /proc/<pid>/exe; macOS: the full paths ps prints). Elsewhere (Windows), none is told: removing a running .exe fails,
+ * The folders of `folders` that a running process was started from, or still holds a file of: Linux reads every
+ * /proc/<pid>/exe (the file it runs, as it was when it started); macOS asks lsof for the processes with a file open
+ * under the folder, its running binary included (ps would give the path it was started by, through bin's link, which
+ * names another release once bin was swapped). Elsewhere (Windows), none is told: removing a running .exe fails,
  * which the prune already leaves for the next install.
  */
 export function foldersInUse(folders: string[]): Set<string> {
   const used = new Set<string>();
-  let executables: string[] = [];
+  if (process.platform === "darwin") {
+    for (const folder of folders) {
+      try {
+        const listed = Bun.spawnSync(["lsof", "-t", "+D", realpathSync(folder)], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 10_000 });
+        if (listed.stdout.toString().trim() !== "") used.add(folder);
+      } catch { /* none told */ }
+    }
+    return used;
+  }
+  if (process.platform !== "linux") return used;
+  const executables: string[] = [];
   try {
-    if (process.platform === "linux") {
-      for (const pid of readdirSync("/proc")) {
-        if (!/^\d+$/.test(pid)) continue;
-        try { executables.push(readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "")); } catch { /* gone, or another user's */ }
-      }
-    } else if (process.platform === "darwin") {
-      executables = Bun.spawnSync(["ps", "-axo", "comm="], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 5_000 }).stdout.toString().split("\n").map((line) => line.trim());
+    for (const pid of readdirSync("/proc")) {
+      if (!/^\d+$/.test(pid)) continue;
+      try { executables.push(readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "")); } catch { /* gone, or another user's */ }
     }
   } catch { /* none told */ }
   for (const folder of folders) {

@@ -1,7 +1,8 @@
 ### Changed
 - An install from source now updates to the release's compiled server: the update downloads the binary
   and the client, checks them against the release's signed manifest, and switches over without
-  changing the checkout or the app's state. A release that fails a check is not installed.
+  changing the checkout or the app's state. A release that fails a check is not installed, and one whose
+  files changed after it was installed is not run.
 
 ### Fixed
 - Stopping Ovis while an installed update was still starting no longer drops that update, so the next

@@ -18,7 +18,7 @@ import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
 import { COMPILED, ENTRIES, entryCommand, ROOT } from "./entries.ts";
 import { installedBinaryAt, pluginBinaryOf } from "./updater.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
-import { runCommand, updateChannel, Updater, type Release } from "./updater.ts";
+import { reportedRevision, runCommand, updateChannel, Updater, type Release } from "./updater.ts";
 
 /** After a try at the Rust PTY host, the next supervisor start waits this long before another (as the unshallow fetch does, #1252). */
 const RUST_HOST_RETRY_MS = 6 * 60 * 60_000;
@@ -133,7 +133,7 @@ export async function runSupervisor(root = ROOT, { fromTags = false }: { fromTag
     if (stopping) throw new Error("Server is stopping");
     const bootId = crypto.randomUUID();
     // OVIS_RUNTIME_SWITCH: this launcher restarts the bridge on a runtime chosen in Settings (restartForRuntime)
-    const settings = { OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release?.revision ?? "" };
+    const settings = { OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release ? reportedRevision(release) : "" };
     // a binary release runs its own binary, serving the client beside it, whatever this supervisor is: a compiled one
     // never starts its own code under a release's revision. From source the path is relative to the release it runs in
     // (its cwd), as the bridge's argv always was

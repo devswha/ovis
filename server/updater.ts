@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { CHECKOUT_CHANGED_REASON, noInstalledNotes, readUpdateChannel, type UpdateChannel, noUpdateNotes, unmanagedUpdateStatus, type InstalledNotes, type UpdateCommand, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
 import { compareVersions, releaseNotes, releaseSummaries, SUMMARIES_FILE } from "./release-notes.ts";
 import { releaseIn } from "./update-state.ts";
-import { newerVersion, offeredRelease, stagedRelease, stageBinaryRelease, type BinaryOffer } from "./update-artifact.ts";
+import { buildCommit, newerVersion, offeredRelease, stagedRelease, stageBinaryRelease, type BinaryOffer } from "./update-artifact.ts";
 import type { ServerPlatform } from "../scripts/server-manifest.ts";
 
 export interface Release {
@@ -13,6 +13,8 @@ export interface Release {
   directory: string; revision: string; source_revision: string;
   /** a release of the compiled server (server/update-artifact.ts), and its version; absent for a build of the sources */
   distribution?: "binary"; version?: string;
+  /** a binary release's client build commit (its dist/build.json): the revision reported to pages, which compare it with their own */
+  build_revision?: string;
   /**
    * The version this release replaced and when, written by the supervisor that installed it.
    * Absent from a release installed by a supervisor older than these fields.
@@ -126,6 +128,12 @@ function packageVersion(directory: string): string | null {
 }
 /** The version a release runs: a binary release's own record, a build's package.json. */
 const releaseVersion = (release: Release): string | null => release.distribution === "binary" ? release.version ?? null : packageVersion(release.directory);
+/**
+ * The revision a release is told by (status current_revision, OVIS_REVISION, its installed notes): the commit its client
+ * was built from, which a page compares with its own build. For a binary release that is its build commit when it has
+ * one; its id (the manifest's SHA-256) stays what offers, installs and current.json name.
+ */
+export const reportedRevision = (release: Release): string => release.build_revision ?? release.revision;
 
 /** Shown by a compiled supervisor that does not run from a binary release installed for this checkout. */
 export const COMPILED_RELEASE_REASON = "This compiled server does not run from an update installed for this source checkout. Restart Ovis from its source checkout (the herdr plugin's Stop, then Start, or bun run start there) to update.";
@@ -332,7 +340,7 @@ export class Updater {
         } catch { /* missing/stale release: use the source checkout */ }
       }
       this.installed = this.brought(this.release);
-      this.patch({ current_revision: this.release.revision, current_version: releaseVersion(this.release), blocked_reason: reason });
+      this.patch({ current_revision: reportedRevision(this.release), current_version: releaseVersion(this.release), blocked_reason: reason });
     } catch {
       this.patch({ managed: false, blocked_reason: "Updates require a Git checkout on the main branch." });
     }
@@ -344,7 +352,9 @@ export class Updater {
     const { releases } = this.options;
     if (!releases?.platform || typeof saved.version !== "string") return null;
     const staged = stagedRelease(directory, releases.publicKey, saved.version, releases.platform);
-    return staged && staged.revision === saved.revision ? { ...saved, directory, distribution: "binary", version: staged.version } : null;
+    if (!staged || staged.revision !== saved.revision) return null;
+    const { build_revision: _recorded, ...rest } = saved;
+    return { ...rest, directory, distribution: "binary", version: staged.version, ...(staged.build_revision ? { build_revision: staged.build_revision } : {}) };
   }
 
   /**
@@ -373,11 +383,13 @@ export class Updater {
     const { releases } = this.options;
     const staged = releases?.platform && typeof version === "string" ? stagedRelease(directory, releases.publicKey, version, releases.platform) : null;
     if (!staged) return unmanaged();
-    this.release = { ...saved, directory, revision: staged.revision, source_revision: this.sourceRevision, distribution: "binary", version: staged.version };
+    const { build_revision: _recorded, ...rest } = saved;
+    this.release = { ...rest, directory, revision: staged.revision, source_revision: this.sourceRevision, distribution: "binary", version: staged.version,
+      ...(staged.build_revision ? { build_revision: staged.build_revision } : {}) };
     this.installed = this.brought(this.release);
     let reason: string | null;
     try { reason = await this.sourceBlock(); } catch { reason = "Updates require a Git checkout on the main branch."; }
-    this.patch({ current_revision: this.release.revision, current_version: staged.version, blocked_reason: reason });
+    this.patch({ current_revision: reportedRevision(this.release), current_version: staged.version, blocked_reason: reason });
     return this.release;
   }
 
@@ -389,7 +401,7 @@ export class Updater {
    * here, since an install keeps the release it replaces and the source checkout stays.
    */
   private brought(release: Release): InstalledNotes {
-    const none = { ...noInstalledNotes(), revision: release.revision };
+    const none = { ...noInstalledNotes(), revision: reportedRevision(release) };
     if (release.directory === this.options.root) return none;
     const version = releaseVersion(release);
     if (!version) return none;
@@ -422,7 +434,7 @@ export class Updater {
       try { summaries = read(SUMMARIES_FILE); } catch { /* none */ }
       notes = releaseNotes(changelog, previous, version, undefined, releaseSummaries(summaries));
     } catch { /* a release without a changelog: the update is told without notes */ }
-    return { revision: release.revision, version, previous_version: previous, installed_at, ...notes };
+    return { revision: reportedRevision(release), version, previous_version: previous, installed_at, ...notes };
   }
 
   private async sourceBlock(): Promise<string | null> {
@@ -643,7 +655,7 @@ export class Updater {
         // (in the compiled server, process.execPath is the server itself, not a Bun to build with)
         if (binary || this.options.compiled) {
           if (!offer || offer.revision !== revision || !this.options.releases?.platform) throw new Error("The release on offer was not checked, so nothing was installed. Check again first.");
-          const staged = await stageBinaryRelease(offer, { stateDir: this.options.stateDir, platform: this.options.releases.platform, signal,
+          const staged = await stageBinaryRelease(offer, { stateDir: this.options.stateDir, platform: this.options.releases.platform, publicKey: this.options.releases.publicKey, signal,
             fetchFile: this.options.releases.fetchFile, ptyRuns: this.options.releases.ptyRuns });
           stage = staged.directory;
           console.log(`Ovis ${offer.version}: ${staged.host}`);
@@ -684,7 +696,7 @@ export class Updater {
         // a binary release's record keeps the shape every launcher reads (directory, source_revision), and says what it is
         const next: Release = { directory: stage, revision, source_revision: this.sourceRevision,
           previous_version: previous ? releaseVersion(previous) : null, installed_at: new Date().toISOString(),
-          ...(binary || this.options.compiled ? { distribution: "binary" as const, version: offer!.version } : {}) };
+          ...(binary || this.options.compiled ? { distribution: "binary" as const, version: offer!.version, ...(buildCommit(stage) ? { build_revision: buildCommit(stage)! } : {}) } : {}) };
         this.patch({ phase: "restarting", step: "restart" });
         await this.options.activate(next, () => {
           const file = join(this.options.stateDir, "current.json");
@@ -697,7 +709,7 @@ export class Updater {
         this.notes = noUpdateNotes();
         // a supervisor that stays (one run directly, without the launcher) tells it from here on
         this.installed = this.brought(next);
-        this.patch({ current_revision: revision, current_version: releaseVersion(next), available: false });
+        this.patch({ current_revision: reportedRevision(next), current_version: releaseVersion(next), available: false });
         this.failedRevision = null;
         rmSync(join(this.options.stateDir, "failed.json"), { force: true });
         // every release held here is named under this state dir (initialize names a resumed one so), so a
