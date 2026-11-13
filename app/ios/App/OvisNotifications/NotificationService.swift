@@ -16,6 +16,12 @@ final class NotificationService: UNNotificationServiceExtension {
         let title: String?
         let body: String?
         let tag: String?
+        // what a tap opens (OvisPushPlugin didReceive): the pane, and the PC that sent it
+        let pane_id: String?
+        let machine_id: String?
+        let workspace_id: String?
+        let endpoint: String?
+        let server_id: String?
     }
 
     override func didReceive(_ request: UNNotificationRequest,
@@ -42,6 +48,14 @@ final class NotificationService: UNNotificationServiceExtension {
                     content.title = payload.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Ovis"
                     content.body = payload.body ?? ""
                     content.threadIdentifier = payload.tag.flatMap { $0.isEmpty ? nil : $0 } ?? "herdr"
+                    // kept with the notification for its tap; the ciphertext stays as it came
+                    var tap: [String: String] = [:]
+                    tap["pane_id"] = payload.pane_id
+                    tap["machine_id"] = payload.machine_id
+                    tap["workspace_id"] = payload.workspace_id
+                    tap["endpoint"] = payload.endpoint
+                    tap["server_id"] = payload.server_id
+                    if !tap.isEmpty { content.userInfo["ovis_tap"] = tap }
                 }
             } catch {
                 // A missing key, damaged push or old subscription still gets a visible alert.

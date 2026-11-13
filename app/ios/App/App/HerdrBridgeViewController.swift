@@ -133,6 +133,26 @@ enum PCStore {
         key.hasSuffix("/") ? key : key + "/"
     }
 
+    /// The saved relay PC a relay ID names (`https://app.ovis.sh/s/<server_id>/`), or nil.
+    static func relayKey(_ serverId: String?, in saved: [String]) -> String? {
+        guard let id = serverId, id.range(of: "^[0-9a-f]{32}$", options: .regularExpression) != nil else { return nil }
+        let scope = "https://app.ovis.sh/s/\(id)/"
+        return saved.contains(scope) ? scope : nil
+    }
+
+    /// The address of a pane on the PC `key`, as a browser's alert opens it (public/sw.js
+    /// notificationclick): in the query on a PC's own origin, in the fragment within a relay PC's
+    /// scope, whose host never hears it.
+    static func alertPage(_ key: String, machine: String?, workspace: String?, pane: String) -> String {
+        var unreserved = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        unreserved.insert(charactersIn: "-._~")
+        func encoded(_ text: String) -> String { text.addingPercentEncoding(withAllowedCharacters: unreserved) ?? "" }
+        let machineId = machine.flatMap { $0.isEmpty ? nil : $0 } ?? "local"
+        let ws = workspace.map { $0.isEmpty ? "" : "&ws=" + encoded($0) } ?? ""
+        let query = "machine=\(encoded(machineId))\(ws)&pane=\(encoded(pane))&view=chat"
+        return key.hasSuffix("/") ? key + "#" + query : key + "/?" + query
+    }
+
     /// Whether `url` is a page of the PC `key`: on its origin, and for a relay PC within its scope, path
     /// segment by path segment and only as a browser would load it (ScopePath): `<scope>../<other>/`
     /// resolves to another PC. A PC saved by its origin takes any page of it.
