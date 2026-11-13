@@ -4,8 +4,8 @@
  * (`?app=inbox`), in a parameter of its own that lib/deepLink.ts leaves in place while the app moves between panes,
  * so a reload, a link, Back and Forward agree on where the app is. A change of mode is one history entry in either
  * direction, and Back undoes it; a page that opened in the mode has nothing of the app under it. A phone whose
- * device setting says so (Settings → Agent inbox on a phone) starts in the mode: its address takes the mark by a
- * replace, so Back on its list still leaves the app.
+ * device setting says so (Settings → Agent inbox on a phone) starts in the mode on a fresh navigation: its address
+ * takes the mark by a replace, so Back on its list still leaves the app.
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { inboxStartsOpen } from "./agentInbox.ts";
@@ -45,13 +45,45 @@ export function withInboxAddress(search: string, inbox: boolean): string {
 }
 
 /**
- * Whether a page starts in the mode on this device (Settings → Agent inbox on a phone): a phone-width window whose
- * address is the app's own start, which opens the list, or names a pane (a tapped alert, a link), which opens that
- * pane's thread with the list behind its Back. An address that names only a workspace or a file opens as it always
- * did, and so does every wider window.
+ * Whether a page load is a fresh navigation: an address opened, typed, pasted or tapped. Not a reload, not a step
+ * through the history onto the page, and not an entry the app itself wrote, which carries a state (a move between
+ * panes, a change of mode, a sheet's or a dialog's entry) where a fresh one carries none. `type` is how the browser
+ * says the page was loaded (pageNavigation), undefined where it does not say: the entry's state alone tells then.
  */
-export function startsInInbox(setting: boolean, phone: boolean, link: AppLink | null): boolean {
-  return setting && phone && (inboxStartsOpen(true, link) || Boolean(link?.pane));
+export function freshNavigation(type: string | undefined, state: unknown): boolean {
+  return type !== "reload" && type !== "back_forward" && state === null;
+}
+
+/** How the browser says this page was loaded: navigate, reload, back_forward or prerender; undefined where it does not say. */
+export function pageNavigation(): string | undefined {
+  const [entry] = window.performance?.getEntriesByType?.("navigation") ?? [];
+  return (entry as { type?: string } | undefined)?.type;
+}
+
+/**
+ * Whether a fresh navigation to an address that names a pane (a tapped notification, a pasted link) starts in the
+ * mode on a device that starts in the inbox: that pane's thread, with the list one Back under it. Yes, as the list
+ * inside the classic shell opened such an address before the mode; kept on its own because the maintainer decides
+ * this case.
+ */
+export function paneAddressStartsInInbox(link: AppLink | null): boolean {
+  return Boolean(link?.pane);
+}
+
+/**
+ * Whether a page starts in the mode on this device (Settings → Agent inbox on a phone): a phone-width window that a
+ * fresh navigation opened on the app's own start, which opens the list, or on a pane's address
+ * (paneAddressStartsInInbox). An address that names only a workspace or a file opens as it always did, and so does
+ * every wider window. The setting says where the phone starts, not where it stays: a reload and a restored page
+ * open where their address says, so a phone that went Back to Ovis is still there afterwards.
+ */
+export function startsInInbox(setting: boolean, phone: boolean, link: AppLink | null, fresh: boolean): boolean {
+  return setting && phone && fresh && (inboxStartsOpen(true, link) || paneAddressStartsInInbox(link));
+}
+
+/** startsInInbox for the page load this is. */
+export function pageStartsInInbox(setting: boolean, phone: boolean, link: AppLink | null): boolean {
+  return startsInInbox(setting, phone, link, freshNavigation(pageNavigation(), window.history.state));
 }
 
 export interface InboxMode {

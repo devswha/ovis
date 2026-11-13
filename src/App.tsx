@@ -138,7 +138,7 @@ import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitVi
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
 import { useInbox, useInboxShell, useInboxWaits } from "./lib/useInbox.ts";
-import { INBOX_MODE_OFFERED, startsInInbox, useInboxMode } from "./lib/inboxMode.ts";
+import { INBOX_MODE_OFFERED, pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
@@ -254,9 +254,9 @@ export function App() {
   const { otherRecheck, otherRosterTick, setOtherRosterTick } = useSplitRecheck();
   const { rosterIn, pendingFile, selectionHint, setHeaderNote, note, autoSelected, setAutoSelected } = useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, pendingLink, rosterSeq, setRosterTick, linkLanded, t });
   // the inbox mode (lib/inboxMode.ts): the list and the thread a row opens in the shell's place, which then has no drawer.
-  // Settings → Agent inbox on a phone: this device starts in it at a phone's width (lib/inboxMode.ts startsInInbox),
-  // and is free to leave it for the rest of the page's life
-  const inboxMode = useInboxMode({ startsIn: () => startsInInbox(phoneInboxOn(settings), window.matchMedia?.(SHEET_QUERY).matches === true, initialLink) });
+  // Settings → Agent inbox on a phone: a fresh navigation starts this device in it at a phone's width (lib/inboxMode.ts
+  // startsInInbox); a reload opens where its address says, so a phone that left the mode stays out of it
+  const inboxMode = useInboxMode({ startsIn: () => pageStartsInInbox(phoneInboxOn(settings), window.matchMedia?.(SHEET_QUERY).matches === true, initialLink) });
   const { drawerOpen, setDrawerOpen, drawerOpenRef, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink, drawerBlocked: inboxMode.drawerBlocked });
   // the mode's list: it stands in the pane's place until a pane is picked (lib/useInbox.ts)
   const inbox = useInbox({ on: inboxMode.on, initialLink, drawerOpenRef });

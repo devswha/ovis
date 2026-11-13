@@ -4,7 +4,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane, HerdrWorkspace } from "../../shared/protocol.ts";
 import { linksSomewhere, readLink, type AppLink, type CreateDraft } from "./deepLink.ts";
-import { useInboxMode, type InboxMode } from "./inboxMode.ts";
+import { pageStartsInInbox, useInboxMode, type InboxMode } from "./inboxMode.ts";
 import type { SelectionMark } from "./selectionMark.ts";
 import * as settingsHistory from "./settingsHistory.ts";
 import * as sheetHistory from "./sheetHistory.ts";
@@ -59,10 +59,12 @@ describe("the inbox mode in the history", () => {
     drawerOpen: { current: false } as RefObject<boolean>,
   };
 
-  /** whether the device starts in the mode (Settings → Agent inbox on a phone) */
-  let startsIn: boolean;
+  /** Settings → Agent inbox on a phone, on a phone-width window */
+  let setting: boolean;
+  /** how the browser says the page was loaded; undefined where it does not say */
+  let navigation: string | undefined;
   function Probe({ link }: { link: AppLink | null }) {
-    const mode = useInboxMode({ read: true, startsIn: () => startsIn });
+    const mode = useInboxMode({ read: true, startsIn: () => pageStartsInInbox(setting, true, link) });
     const inbox = useInbox({ on: mode.on, initialLink: link, drawerOpenRef: refs.drawerOpen });
     shell = { mode, inbox };
     const machine = { id: "local", name: "workstation", kind: "local", enabled: true, state: "connected", error: null, snapshot } as Machine;
@@ -90,7 +92,8 @@ describe("the inbox mode in the history", () => {
     for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     listeners = [];
-    startsIn = false;
+    setting = false;
+    navigation = "navigate";
     // the app picks a pane as its selection does (lib/useSelection.ts): a pick leaves the list
     refs.selectTarget.current = (_machineId, picked) => { if (picked !== null) { paneId = picked; shell.inbox.leave(); draw(); } };
     const write = (method: "pushState" | "replaceState") => (state: unknown, _unused: string, url?: string): void => {
@@ -110,6 +113,7 @@ describe("the inbox mode in the history", () => {
       event: undefined as Event | undefined,
       get location() { return entries[index]!.url; },
       matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+      performance: { getEntriesByType: (kind: string) => kind === "navigation" && navigation !== undefined ? [{ type: navigation }] : [] },
       history: { get state() { return entries[index]!.state; }, pushState: write("pushState"), replaceState: write("replaceState"), go, back: () => go(-1) },
       addEventListener: (type: string, listener: (event: Event) => void) => { listeners.push({ type, listener }); },
       removeEventListener: (type: string, listener: (event: Event) => void) => { listeners = listeners.filter((other) => other.type !== type || other.listener !== listener); },
@@ -127,10 +131,11 @@ describe("the inbox mode in the history", () => {
     descriptors.clear();
   });
 
-  /** opens the page at the last of `addresses`, the others under it in the history, with `selected` as the app's pane */
-  async function open(addresses: string[], selected: string | null): Promise<void> {
+  /** opens the page at the last of `addresses`, the others under it in the history, with `selected` as the app's pane; `state` is what that last entry carries */
+  async function open(addresses: string[], selected: string | null, state: unknown = null): Promise<void> {
     entries = addresses.map((search) => ({ state: null, url: new URL(`http://localhost:7317/${search}`) }));
     index = entries.length - 1;
+    entries[index]!.state = state;
     paneId = selected;
     const search = entries[index]!.url.search;
     link = linksSomewhere(search) ? readLink(search) : null;
@@ -248,7 +253,7 @@ describe("the inbox mode in the history", () => {
   });
 
   it("a device that starts in the inbox opens the app's start on the list by a replace, with nothing under it", async () => {
-    startsIn = true;
+    setting = true;
     await open([""], "p1");
 
     expect(screen()).toBe("list:p1");
@@ -262,7 +267,7 @@ describe("the inbox mode in the history", () => {
   });
 
   it("a device that starts in the inbox opens a pane's address as that pane's thread, the list behind its Back", async () => {
-    startsIn = true;
+    setting = true;
     await open([P1], "p1");
 
     expect(screen()).toBe("thread:p1");
@@ -271,6 +276,43 @@ describe("the inbox mode in the history", () => {
     await act(async () => { shell.inbox.back(); });
     expect(screen()).toBe("list:p1");
     expect(addresses()).toEqual([LIST]);
+  });
+
+  it("a device that starts in the inbox stays in the classic app it went back to, over a reload and a restored page", async () => {
+    // Given a phone with the setting on that started in the mode and went Back to Ovis, onto p1.
+    setting = true;
+    await open([""], "p1");
+    await leave();
+    expect(screen()).toBe("app:p1");
+    const left = addresses();
+    expect(left).toEqual([LIST, P1]);
+    await act(async () => { renderer?.unmount(); });
+
+    // When the page is reloaded there.
+    navigation = "reload";
+    await open(left, "p1", entries[index]!.state);
+
+    // Then it is the classic app still, and nothing was written.
+    expect(screen()).toBe("app:p1");
+    expect(addresses()).toEqual(left);
+    await act(async () => { renderer?.unmount(); });
+
+    // When the system restores the page later, on that same entry, without saying how.
+    navigation = undefined;
+    await open(left, "p1", { "ovis:nav": true });
+
+    // Then the entry the app wrote keeps it classic.
+    expect(screen()).toBe("app:p1");
+    expect(addresses()).toEqual(left);
+    await act(async () => { renderer?.unmount(); });
+
+    // When the first entry of a page, which carries no state, is reloaded on a pane's address.
+    navigation = "reload";
+    await open([P1], "p1");
+
+    // Then it is classic too: a reload never starts the mode.
+    expect(screen()).toBe("app:p1");
+    expect(addresses()).toEqual([P1]);
   });
 
   it("a reload keeps the mode and what it showed", async () => {

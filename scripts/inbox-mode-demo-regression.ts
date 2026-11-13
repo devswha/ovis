@@ -983,6 +983,28 @@ try {
         }, setup.viewport);
       }
 
+      // ---- where a phone that starts in the inbox stays ----
+      const phoneOn: Settings = { language: "en", theme: "light", phoneInbox: true };
+      await withPage(browser, base, phoneOn, "/", "a phone that starts in the inbox and went back to Ovis", async (page) => {
+        await listScreen(page);
+        await openSheet(page, ".inbox-more");
+        await page.locator('.row-sheet [data-item="exit-inbox"]').tap();
+        await page.locator(".mode-inbox").waitFor({ state: "detached" });
+        await page.locator("#drawer-toggle").waitFor();
+        await sheetClosed(page);
+        await addressIs(page, { app: null }, "Back to Ovis leaves the mode's address");
+        await page.reload();
+        await page.locator("#drawer-toggle").waitFor();
+        await page.locator(".context-title-text").waitFor();
+        assert.equal(await page.locator(".mode-inbox").count(), 0, "a reload of the classic app the phone went back to does not start the mode again");
+        await addressIs(page, { app: null }, "the reloaded address is still the classic app's");
+        console.log("PASS with Agent inbox on a phone on, a phone that went Back to Ovis is still in the classic app after a reload");
+      });
+
+      if (errors.length > 0) {
+        failures.push("page errors after the themes");
+        console.log(`FAIL page errors after the themes: ${errors.join("; ")}`);
+      }
       assert.deepEqual(failures, [], "every block passes");
     } finally { await browser.close(); }
   } finally { server.stop(true); }
