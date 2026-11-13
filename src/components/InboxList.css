@@ -78,6 +78,27 @@
   gap: var(--space-2);
 }
 
+/* What the connection has to say (Reconnecting…, then Connected for a moment), centred between a phone's two top
+   controls: quiet words on the surface's own colour, so a row that scrolls under them does not show through. They
+   take no press. */
+.mode-inbox .inbox-top > .inbox-connection {
+  position: absolute;
+  inset-block: 0;
+  inset-inline: calc(var(--inbox-gutter) + var(--inbox-control) + var(--space-2));
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+  padding: var(--space-1) var(--space-2-5);
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* with no More before it (nothing to offer), New workspace keeps the end corner */
 .mode-inbox .inbox-top > .inbox-add:first-child {
   margin-inline-start: auto;
@@ -415,6 +436,20 @@
   justify-content: flex-end;
   gap: var(--space-2-5);
   height: var(--inbox-zone-h);
+}
+
+/* in the column the connection's words lead the top row, on the column's own surface */
+.mode-inbox.is-wide .inbox-top > .inbox-connection {
+  position: static;
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+  margin-inline-end: auto;
+  padding: 0;
+  border-radius: 0;
+  background: none;
 }
 
 .mode-inbox.is-wide .inbox-foot {

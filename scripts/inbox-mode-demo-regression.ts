@@ -22,6 +22,9 @@ declare global {
       /** every size the app has asked of a pane's pty since the page loaded, in order */
       resizes: { pane: string; cols: number; rows: number }[];
     };
+    /** the demo's `?demo_connection=switch`: the page loses the bridge connection, and has it back, when asked */
+    herdrDemoLoseConnection(): void;
+    herdrDemoRestoreConnection(): void;
   }
 }
 
@@ -1040,6 +1043,56 @@ try {
         await listScreen(page);
         console.log("PASS Search panes and actions in the list's More opens the command palette over the list on a phone, and Back closes it");
       });
+
+      // ---- the list says when the connection is lost ----
+      for (const viewport of [PHONE, desktop]) {
+        const wide = viewport.width >= 769;
+        const at = wide ? "a wide window" : "a phone";
+        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat&demo_connection=switch`, `the list while the connection is lost, on ${at}`, async (page) => {
+          const line = page.locator(".mode-inbox .inbox-top .inbox-connection");
+          // the pane's own connection is up before the list covers it: only a connection that was had can be lost
+          await page.locator(".conn-live").waitFor({ state: "attached" });
+          if (wide) {
+            await page.locator(".header-more-button").click();
+            await page.locator('.row-menu [data-item="enter-inbox"]').click();
+            await page.locator(".inbox-column .mode-inbox").waitFor();
+          } else await enterFromMore(page);
+          await rowCount(page, 6);
+          assert.equal(await line.count(), 0, "connected, the list draws no line");
+          assert.equal(await page.locator('.mode-inbox .inbox-top [role="status"]').count() >= 1, true, "the status line is in the document before it has a word");
+          await page.evaluate(() => window.herdrDemoLoseConnection());
+          await line.getByText("Reconnecting…").waitFor();
+          const drawn = await line.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            const style = getComputedStyle(node);
+            const dim = getComputedStyle(document.documentElement).getPropertyValue("--text-dim").trim();
+            const probe = document.createElement("span");
+            probe.style.color = dim;
+            document.body.append(probe);
+            const want = getComputedStyle(probe).color;
+            probe.remove();
+            return { centre: box.left + box.width / 2, left: box.left, size: style.fontSize, color: style.color, want, xs: getComputedStyle(document.documentElement).getPropertyValue("--fs-xs").trim() };
+          });
+          assert.equal(drawn.color, drawn.want, "the line is --text-dim");
+          assert.equal(drawn.size, drawn.xs, "the line is --fs-xs");
+          if (wide) near(drawn.left, 16, 1, "the line leads the column's top row");
+          else near(drawn.centre, viewport.width / 2, 1, "the line is centred between the two top controls");
+          // Connected is said for two seconds: caught in the mutation that draws it, so a slow run cannot miss it
+          const back = await page.evaluate(() => new Promise<string>((resolve) => {
+            const top = document.querySelector(".mode-inbox .inbox-top")!;
+            const observer = new MutationObserver(() => {
+              const said = top.querySelector(".inbox-connection")?.textContent ?? "";
+              if (said === "Connected") { observer.disconnect(); resolve(said); }
+            });
+            observer.observe(top, { subtree: true, childList: true, characterData: true, attributes: true });
+            window.herdrDemoRestoreConnection();
+            window.dispatchEvent(new Event("online"));
+          }));
+          assert.equal(back, "Connected", "back, the line says so");
+          await line.waitFor({ state: "detached" });
+          console.log(`PASS on ${at} the list says Reconnecting… in one quiet line while the connection is lost, Connected when it is back, and then nothing`);
+        }, viewport);
+      }
 
       // ---- entering the mode with a file open over the pane ----
       await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat&file=README.md`, "entering the mode with a file open over the pane", async (page) => {

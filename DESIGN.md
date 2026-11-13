@@ -2339,6 +2339,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   watching device and, with more than one PC shown, after the PC's name ("mac-mini ·
   Working"). While the connection has something to say the line says that instead
   (**Reconnecting…**, **Connected**; lib/headerConnection.ts), in its own colour.
+- The list says the same word, so its rows are never shown as they last were with no sign:
+  one quiet line (`.inbox-connection`, `role="status"`, `--fs-xs`, `--text-dim`), centred
+  between a phone's two top controls on the surface's own colour, so a row that scrolls under
+  it does not show through, and leading the column's top row on a wide window, where the
+  search field takes its place while open (the word is still said, not drawn). Nothing is
+  drawn while the connection has nothing to say, and on a phone the header's note, which
+  stands in the same place, goes first. The word comes from the pane under the list: a list
+  no pane was opened under since the page loaded has no connection of a pane to speak of.
 - The monitor button (`LensToggle` `thread`; lucide `Monitor`, **Show the terminal**, then
   **Show the chat**) runs the lens switch for the thread's pane: the terminal already mounted
   under the chat is shown in the thread's place and no second connection is made. Everything

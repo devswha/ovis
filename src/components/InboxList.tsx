@@ -5,11 +5,13 @@ import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import { heldOrder, INBOX_FILTERS, inboxEmpty, inboxFiltered, inboxKey, inboxOrder, inboxSearched, inboxSinceAt, inboxStatus, inboxWords, plainWords, type InboxFilter } from "../lib/agentInbox.ts";
 import { agentGroup, type AgentRow } from "../lib/agentRoster.ts";
+import type { HeaderConnection } from "../lib/headerConnection.ts";
 import { useT, type Translate } from "../lib/i18n.ts";
 import { inboxAsks, inboxRowLine, inboxStateWord } from "../lib/inboxRow.ts";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { agentName } from "../lib/runtimeMove.ts";
 import { useSettings } from "../lib/settings.ts";
+import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
@@ -61,6 +63,8 @@ export interface InboxListProps {
   onExit?: () => void;
   /** the header's note, between a phone's two top controls: the list has no header to say it in */
   note?: ReactNode;
+  /** what the connection has to say (lib/headerConnection.ts), which a thread says under its name: one quiet line here */
+  connection?: HeaderConnection;
 }
 
 /** the marks drawn as a full tile, which fill the round face; the others sit on it as a glyph */
@@ -92,7 +96,7 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
  * The inbox mode's list: every shown PC's agents, the ones that need the reader first, each a row of two lines.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, waits, more, onExit, note }: InboxListProps) {
+export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, waits, more, onExit, note, connection = null }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
@@ -257,6 +261,10 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       <ListFilter aria-hidden="true" />
     </button>
   );
+  // The connection's word, in the document before its words (lib/useAnnouncedText.ts) and drawn by nothing while there
+  // is none. The column's top row is the search field's while that is open: the word is still said, not drawn.
+  const connectionWord = useAnnouncedText(connection === null ? null : t(connection === "connected" ? "Connected" : "Reconnecting…"));
+  const connectionLine = <p className={connectionWord === null || (wide && searchOpen) ? "visually-hidden" : "inbox-connection"} role="status">{connectionWord}</p>;
   const moreButton = more && (
     <button type="button" className="icon-button inbox-round inbox-more" aria-label={more.label} title={more.label}
       aria-haspopup={more.popup} aria-expanded={more.expanded} onClick={(event) => more.onPress(event.currentTarget)}>
@@ -269,6 +277,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       onWheel={stopRestoring} onTouchStart={stopRestoring} onPointerDown={stopRestoring} onKeyDown={stopRestoring}>
       <div className="inbox-top">
         {wide ? <>
+          {connectionLine}
           {searchField}
           <button type="button" className="icon-button inbox-round inbox-search-toggle" aria-label={t("Search")} title={t("Search")} aria-expanded={searchOpen}
             onClick={() => { if (!searchOpen) setSearchAsked(true); else if (query === "") setSearchAsked(false); else search.current?.focus(); }}>
@@ -278,6 +287,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
         </> : <>
           {moreButton}
           {note}
+          {connectionLine}
           {newButton}
         </>}
       </div>

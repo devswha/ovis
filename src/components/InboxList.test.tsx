@@ -8,6 +8,7 @@ import type { AgentStatus, HerdrPane, InteractivePrompt, PaneSummaries, PaneSumm
 import machinesFixture from "../../site/demo/fixtures/machines.json";
 import { inboxKey, inboxOrder, type InboxFilter } from "../lib/agentInbox.ts";
 import * as api from "../lib/api.ts";
+import type { HeaderConnection } from "../lib/headerConnection.ts";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
@@ -73,10 +74,14 @@ describe("InboxList", () => {
   let waits: InstanceType<typeof InboxWaits>;
   /** whether the window is a phone's (the sheets' width) */
   let phone: boolean;
+  /** the animation frames asked for and not run yet: a case that waits for a status line's words runs them */
+  let frames: FrameRequestCallback[];
+  const runFrames = (): Promise<void> => act(async () => { for (const run of frames.splice(0)) run(0); });
 
   beforeEach(() => {
     promptReads = 0;
     phone = true;
+    frames = [];
     waits = new InboxWaits();
     // no case runs a reader's retry: their waits never fire, so no timer outlives a case to read into the next one
     const never = () => () => {};
@@ -92,7 +97,7 @@ describe("InboxList", () => {
       matchMedia: () => ({ matches: phone, addEventListener() {}, removeEventListener() {} }),
       addEventListener: events.addEventListener.bind(events),
       removeEventListener: events.removeEventListener.bind(events),
-      requestAnimationFrame: () => 1,
+      requestAnimationFrame: (run: FrameRequestCallback) => frames.push(run),
       history: { state: null, pushState() {}, replaceState() {}, back() {} },
       cancelAnimationFrame() {},
       location: { href: "http://localhost/", search: "" },
@@ -119,6 +124,7 @@ describe("InboxList", () => {
 
   interface DrawOptions {
     wide?: boolean; current?: string | null; filter?: InboxFilter; query?: string; watching?: boolean; activity?: SidebarActivity; scrollTop?: number;
+    connection?: HeaderConnection;
     /** how many times the list has opened (lib/useInbox.ts), and the opening it last took the focus for: a fresh opening unless a case says not */
     opening?: number; focusTaken?: number;
     /** how far the scroller can scroll at first: a scrollTop past it is clamped, as a browser does */
@@ -137,7 +143,7 @@ describe("InboxList", () => {
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <InboxList machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
       filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} focus={{ opening: options.opening ?? 1, taken }}
-      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} waits={waits} more={options.more} note={options.note} onExit={options.onExit} />
+      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} waits={waits} more={options.more} note={options.note} onExit={options.onExit} connection={options.connection ?? null} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -392,6 +398,40 @@ describe("InboxList", () => {
     expect(byClass(unmatched, "inbox-rows").length).toBe(0);
   });
 
+  it("says what the connection has to say in one status line, and draws nothing while it has nothing to say", async () => {
+    const line = (root: ReactTestInstance) => root.findAll((node) => node.type === "p" && node.props.role === "status" && /inbox-connection|visually-hidden/.test(String(node.props.className)))
+      .filter((node) => byClass(root, "inbox-empty").every((empty) => empty !== node));
+    // Given a list whose connection is as it should be: the status line is in the document, and drawn by nothing.
+    const root = await draw(roster());
+    await runFrames();
+    expect(line(root).map((node) => [node.props.className, text(node)])).toEqual([["visually-hidden", ""]]);
+
+    // When the connection is lost.
+    await redraw({ connection: "reconnecting" });
+
+    // Then the line says so, between the two top controls.
+    expect(line(root).map((node) => [node.props.className, text(node)])).toEqual([["inbox-connection", "Reconnecting…"]]);
+    const top = byClass(root, "inbox-top")[0]!;
+    expect(top.findAll((node) => node.props.className === "inbox-connection").length).toBe(1);
+
+    // When it is back: Connected, for as long as the source says it.
+    await redraw({ connection: "connected" });
+    expect(line(root).map((node) => text(node))).toEqual(["Connected"]);
+    await redraw({ connection: null });
+    expect(line(root).map((node) => [node.props.className, text(node)])).toEqual([["visually-hidden", ""]]);
+  });
+
+  it("gives the column's top row to the search field while it is open, the connection's word still said", async () => {
+    phone = false;
+    const root = await draw(roster(), { wide: true, connection: "reconnecting" });
+    await runFrames();
+    const line = () => byClass(root, "inbox-top")[0]!.findAll((node) => node.type === "p" && node.props.role === "status");
+    expect(line().map((node) => [node.props.className, text(node)])).toEqual([["inbox-connection", "Reconnecting…"]]);
+    await act(async () => { byClass(root, "inbox-search-toggle")[0]!.props.onClick(); });
+    expect(byClass(root, "inbox-search-input").length).toBe(1);
+    expect(line().map((node) => [node.props.className, text(node)])).toEqual([["visually-hidden", "Reconnecting…"]]);
+  });
+
   it("offers New workspace on the one connected PC, and none to a watching device", async () => {
     const asked: string[] = [];
     const root = await draw(roster(), { onNew: (machineId) => asked.push(machineId) });
@@ -634,7 +674,8 @@ describe("InboxList", () => {
     const root = await draw(roster(), { more: { label: "More", expanded: false, popup: "dialog", onPress: (node) => pressed.push(node) }, note: <span className="test-note">Link copied</span> });
     const top = byClass(root, "inbox-top")[0]!;
     const classes = (node: ReactTestInstance) => node.findAll((inner) => typeof inner.type === "string" && inner.parent === node).map((inner) => String(inner.props.className).split(" ").find((name) => name.startsWith("inbox-") && name !== "inbox-round") ?? String(inner.props.className));
-    expect(classes(top)).toEqual(["inbox-more", "test-note", "inbox-add"]);
+    // the connection's status line is in the document from the first render, drawn by nothing while it has no word
+    expect(classes(top)).toEqual(["inbox-more", "test-note", "visually-hidden", "inbox-add"]);
     expect(classes(byClass(root, "inbox-foot")[0]!)).toEqual(["inbox-filter-toggle", "inbox-search"]);
     const more = byClass(root, "inbox-more")[0]!;
     expect([more.props["aria-label"], more.props["aria-haspopup"], more.props["aria-expanded"]]).toEqual(["More", "dialog", false]);
