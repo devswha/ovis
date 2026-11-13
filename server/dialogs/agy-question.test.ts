@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { answerKeys, parseInteractivePrompt } from "../prompt.ts";
 import { finishPrompt, publicPrompt } from "./shared.ts";
+import { agyWriteInWaits } from "./agy.ts";
 
 // Antigravity 1.5.6's ask_question, one question asked alone, as it drew it at 120 columns: its hint names Enter "Select"
 const screen = readFileSync(new URL("../fixtures/agy-1.5.6-ask.txt", import.meta.url), "utf8");
@@ -12,6 +13,21 @@ test("reads Antigravity 1.5.6's single question, whose hint names Enter Select",
   expect(prompt.options.map((option) => option.label)).toEqual(["(Recommended) hello.txt", "bye.txt"]);
   expect(prompt.custom_option_index).toBe(2);
   expect(answerKeys(prompt, { option_index: 1 })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }]);
+});
+
+// A question Antigravity left on the screen when it exited, a shell's prompt under it: its keys would go to the shell
+test.each(["agy-1.5.6-ask", "agy-1.5.6-ask-multi"])("reads no question once other output stands under %s's key hint", (name) => {
+  const recorded = readFileSync(new URL(`../fixtures/${name}.txt`, import.meta.url), "utf8");
+  expect(parseInteractivePrompt("agy", recorded)).not.toBeNull();
+  expect(parseInteractivePrompt("agy", `${recorded.replace(/\s+$/, "")}\nuser@host:~$ echo pending\n`)).toBeNull();
+  // Antigravity's own status row is the one row its screens keep there
+  expect(recorded.replace(/\s+$/, "").split("\n").at(-1)).toMatch(/^esc to cancel\b/);
+});
+
+test("takes the write-in field for open only while it ends the screen", () => {
+  const editor = "Question 1/1: Which environment?\n\n  1. Staging\n▸ 2. Write-in...\n\n  Your answer:\n  > \n\nenter Submit · esc Back\n";
+  expect(agyWriteInWaits(editor)).toBe(true);
+  expect(agyWriteInWaits(`${editor}user@host:~$ echo pending\n`)).toBe(false);
 });
 
 test("does not read the folder-trust picker as a question", () => {
