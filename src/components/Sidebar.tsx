@@ -109,8 +109,8 @@ function alignBreath(event: AnimationEvent<HTMLSpanElement>) {
 
 /**
  * `detail`: what the agent itself said of the state (a blocked agent's reason), after the state's words. `label`: the
- * state in the caller's own words, said and shown on hover in place of the badge's (the inbox mode names a state as
- * its chip and its filters do, lib/inboxRow.ts).
+ * state in the caller's own words, which are then the badge's everywhere: its name, its tooltip and its text (the
+ * inbox mode names a state as its chip and its filters do, lib/inboxRow.ts).
  */
 export function StatusBadge({ status, compact = false, detail = null, label: said }: { status?: AgentStatus; compact?: boolean; detail?: string | null; label?: string }) {
   const t = useT();
@@ -139,7 +139,7 @@ export function StatusBadge({ status, compact = false, detail = null, label: sai
       {compact && indicators !== "classic" && <span className="sidebar-status-glyph" aria-hidden="true" onAnimationStart={value === "working" ? alignBreath : undefined}>{indicatorGlyph(value, indicators)}</span>}
       {compact && indicators === "classic" && value === "blocked" && <span className="sidebar-status-mark" aria-hidden="true">?</span>}
       {compact && indicators === "classic" && dot && <span className="sidebar-status-dot" aria-hidden="true" onAnimationStart={value === "working" ? alignBreath : undefined} />}
-      <span className={compact ? "visually-hidden" : undefined}>{label}</span>
+      <span className={compact ? "visually-hidden" : undefined}>{said ?? label}</span>
     </span>
   );
 }

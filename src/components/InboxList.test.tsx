@@ -195,8 +195,10 @@ describe("InboxList", () => {
   const mark = (root: ReactTestInstance, paneId: string) => {
     const [slot] = byClass(item(root, paneId), "inbox-state");
     const [badge] = byClass(slot!, "sidebar-status");
-    // the mark's name and its tooltip are one word: a pointer and a screen reader are told the same
+    // the mark's name, its tooltip and the text it holds are one word: a pointer and a screen reader are told the same,
+    // whichever of them a reader takes
     expect(badge!.props.title).toBe(badge!.props["aria-label"]);
+    expect(byClass(badge!, "visually-hidden").map(text)).toEqual([badge!.props["aria-label"]]);
     return { state: badge!.props["data-status"] as string, label: badge!.props["aria-label"] as string, drawn: String(slot!.props.className).split(" ").includes("is-drawn") };
   };
   const question = (asked: string, body: string | null = null) => ({
