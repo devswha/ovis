@@ -181,6 +181,14 @@ export function escapeFor(state: { composing: boolean; drawn: boolean; textField
   return state.textField ? "both" : "sentence";
 }
 
+/** Whether any of the row is in its page's scrolling view: a row outside it has nothing on the screen to show or to close. */
+function inPageView(row: Element | null): boolean {
+  if (row === null) return false;
+  const box = row.getBoundingClientRect();
+  const page = row.closest(".modal-body")?.getBoundingClientRect();
+  return page === undefined || (box.bottom > page.top && box.top < page.bottom);
+}
+
 /** Whether the focus is where text is typed: such a field keeps Escape for its own draft, and for the dialog behind it. */
 function inTextField(): boolean {
   const active = document.activeElement;
@@ -190,13 +198,14 @@ function inTextField(): boolean {
 }
 
 /**
- * A bare row's sentence on demand (#3275). A mouse resting on the row and the keyboard's focus on its control
- * show it over the page (RowSentence); Escape closes it alone, and it then stays closed until the pointer or the
- * focus leaves the row. A press on the row's control is a choice, not a question: it closes the sentence too, the
- * keyboard's press as a pointer's, so Escape after a choice is Settings' again. In a text field the Escape is the
- * field's too (a typed size goes back, as before), and the first text typed there closes the sentence, so it is
- * never in the way of what is being written. A finger has no hover: a tap on the row, anywhere but on its control,
- * opens the sentence in the row, under its name and control and as wide as the row, and a second tap closes it.
+ * A bare row's sentence on demand (#3275). A mouse resting on the row and the keyboard's focus on its control show it
+ * over the page (RowSentence); Escape closes it alone, as it closes one a tap opened in the row, and it then stays
+ * closed until the pointer or the focus leaves the row. A press on the row's control is a choice, not a question: it
+ * closes the sentence too, the keyboard's press as a pointer's, so Escape after a choice is Settings' again. In a
+ * text field the Escape is the field's too (a typed size goes back, as before), and the first text typed there closes
+ * the sentence, so it is never in the way of what is being written. A finger has no hover: a tap on the row, anywhere
+ * but on its control, opens the sentence in the row, under its name and control and as wide as the row, and a second
+ * tap closes it.
  * `on`: the row has a sentence and its page does not show it.
  */
 function useRowSentence(on: boolean): {
@@ -207,6 +216,10 @@ function useRowSentence(on: boolean): {
   drawn: RefObject<boolean>;
   /** in the row now, opened by a tap */
   opened: boolean;
+  /** the sentence over the page goes: the pointer went on to a control it lies on */
+  pass: () => void;
+  /** the row is gone from the page (a search hides it): its sentence over the page goes with it, and its rest timer */
+  forget: () => void;
   rowEvents: { onPointerEnter?: (event: ReactPointerEvent) => void; onPointerLeave?: () => void; onPointerDown?: (event: ReactPointerEvent) => void; onFocus?: (event: ReactFocusEvent) => void; onBlur?: (event: ReactFocusEvent) => void; onInput?: () => void; onClick?: (event: ReactMouseEvent) => void };
 } {
   const row = useRef<HTMLDivElement>(null);
@@ -225,11 +238,21 @@ function useRowSentence(on: boolean): {
     closeSentence?.();
     const close = (): void => setShown(null);
     closeSentence = close;
+    return () => {
+      if (closeSentence === close) closeSentence = null;
+      sentenceClosedAt = performance.now();
+    };
+  }, [shown]);
+  // Escape closes a sentence however it came: the one over the page, and the one a tap opened in the row (a
+  // touch screen with a keyboard). Every sentence opened in a row in sight closes on the one press
+  const closable = shown !== null || opened;
+  useEffect(() => {
+    if (!closable) return;
     const onKey = (event: KeyboardEvent): void => {
       if (event.key !== "Escape") return;
       const otherModal = focusInOtherModal(row.current?.closest<HTMLElement>("[aria-modal='true']") ?? null);
       // key code 229: the Escape WebKit can still send for a composition after compositionend
-      const whose = escapeFor({ composing: event.isComposing || event.keyCode === 229, drawn: drawn.current, textField: inTextField(), otherModal });
+      const whose = escapeFor({ composing: event.isComposing || event.keyCode === 229, drawn: opened ? inPageView(row.current) : drawn.current, textField: inTextField(), otherModal });
       if (whose === "other") {
         // the dialog in front takes its Escape, and a sentence left showing under it goes; one waiting for its row stays
         if (otherModal) setShown(null);
@@ -242,17 +265,20 @@ function useRowSentence(on: boolean): {
       }
       dismissed.current = true;
       setShown(null);
+      setOpened(false);
     };
     document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      if (closeSentence === close) closeSentence = null;
-      sentenceClosedAt = performance.now();
-    };
-  }, [shown]);
-  if (!on) return { row, shown: null, drawn, opened: false, rowEvents: {} };
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [closable, opened]);
+  const pass = (): void => setShown(null);
+  const forget = (): void => {
+    if (rest.current !== undefined) window.clearTimeout(rest.current);
+    dismissed.current = false;
+    setShown(null);
+  };
+  if (!on) return { row, shown: null, drawn, opened: false, pass, forget, rowEvents: {} };
   return {
-    row, shown: opened ? null : shown, drawn, opened,
+    row, shown: opened ? null : shown, drawn, opened, pass, forget,
     rowEvents: {
       onPointerEnter: (event) => {
         if (event.pointerType === "touch" || opened) return;
@@ -311,23 +337,32 @@ function useRowSentence(on: boolean): {
 /**
  * A row's sentence over the page: drawn in the dialog's own layer, over the dialog and not cut by its scrolling
  * page (in the document where the row is in no dialog), and placed by placeSentence. Over a row whose control
- * would be under it, it narrows to the room beside that control (sentenceRoom). It follows its row while the page
- * scrolls and is drawn only while the row is in the page's view: a dialog moves the keyboard's focus without
- * scrolling (lib/useFocusTrap.ts), so the focus can be on a setting the page is not scrolled to, and its sentence
- * then waits for the row (`drawn` says which). Not read out: the row's own copy describes the control.
+ * would be under it, it narrows to the room beside that control (sentenceRoom). Where that room is too little it
+ * keeps its width and lies on the control's near end: there the pointer is the control's, not the sentence's, so
+ * the sentence goes as the pointer comes onto that part (`onPass`) and the press reaches the control. It follows
+ * its row while the page scrolls and is drawn only while the row is in the page's view: a dialog moves the
+ * keyboard's focus without scrolling (lib/useFocusTrap.ts), so the focus can be on a setting the page is not
+ * scrolled to, and its sentence then waits for the row (`drawn` says which). Not read out: the row's own copy
+ * describes the control.
  */
-function RowSentence({ row, drawn, children }: { row: HTMLElement; drawn: RefObject<boolean>; children: ReactNode }) {
+function RowSentence({ row, drawn, onPass, children }: { row: HTMLElement; drawn: RefObject<boolean>; onPass: () => void; children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const [at, setAt] = useState<{ left: number; top: number; maxWidth: string } | null>(null);
+  // the other rows' controls the sentence lies on, where it found no room beside them
+  const covered = useRef<readonly ScreenBox[]>([]);
+  const passOnControl = (event: ReactPointerEvent): void => {
+    const { clientX: x, clientY: y } = event;
+    if (covered.current.some((control) => x >= control.left && x <= control.right && y >= control.top && y <= control.bottom)) onPass();
+  };
   useLayoutEffect(() => {
     const place = (): void => {
       const tip = box.current;
       if (!tip) return;
       const rowBox = row.getBoundingClientRect();
       const pageEl = row.closest(".modal-body");
-      const page = pageEl?.getBoundingClientRect();
-      if (page && (rowBox.bottom <= page.top || rowBox.top >= page.bottom)) {
+      if (!inPageView(row)) {
         drawn.current = false;
+        covered.current = [];
         setAt(null);
         return;
       }
@@ -358,6 +393,9 @@ function RowSentence({ row, drawn, children }: { row: HTMLElement; drawn: RefObj
         tip.style.maxWidth = maxWidth;
         next = measure();
       }
+      const lies = { left: next.left, top: next.top, right: next.left + tip.offsetWidth, bottom: next.top + tip.offsetHeight };
+      covered.current = controls.filter((control) => control.left < lies.right && control.right > lies.left && control.top < lies.bottom && control.bottom > lies.top)
+        .map((control) => ({ left: control.left, top: control.top, right: control.right, bottom: control.bottom }));
       setAt((was) => was !== null && was.left === next.left && was.top === next.top && was.maxWidth === maxWidth ? was : { left: next.left, top: next.top, maxWidth });
     };
     place();
@@ -370,7 +408,7 @@ function RowSentence({ row, drawn, children }: { row: HTMLElement; drawn: RefObj
     };
   }, [row, drawn]);
   return createPortal(
-    <div ref={box} className="settings-help" aria-hidden="true" style={at === null ? { visibility: "hidden" } : { left: at.left, top: at.top, maxWidth: at.maxWidth === "" ? undefined : at.maxWidth }}>{children}</div>,
+    <div ref={box} className="settings-help" aria-hidden="true" onPointerMove={passOnControl} onPointerDown={passOnControl} style={at === null ? { visibility: "hidden" } : { left: at.left, top: at.top, maxWidth: at.maxWidth === "" ? undefined : at.maxWidth }}>{children}</div>,
     row.closest<HTMLElement>(".modal-scrim") ?? document.body,
   );
 }
@@ -419,7 +457,11 @@ export function SettingsRow({ label, description, keywords, held = false, htmlFo
   const t = useT();
   const sentenceId = useId();
   const sentence = useRowSentence(description !== undefined && bare !== false);
-  if (!held && words.length > 0 && !matchesSettingsQuery(words, label, description, keywords, condition, children)) return null;
+  const filteredOut = !held && words.length > 0 && !matchesSettingsQuery(words, label, description, keywords, condition, children);
+  // a row the search hides is removed under a still pointer, which sends no leave: its sentence would come back with it
+  const forgetSentence = sentence.forget;
+  useEffect(() => { if (filteredOut) forgetSentence(); }, [filteredOut]);
+  if (filteredOut) return null;
   // `reset`: the keys this row sets; once any is off its default, a button beside the label puts them back
   const changed = onReset !== undefined || (reset !== undefined && reset.some((key) => JSON.stringify(settings[key]) !== JSON.stringify(DEFAULT_SETTINGS[key]))) || resetAlso?.changed === true;
   const restore = () => {
@@ -452,7 +494,7 @@ export function SettingsRow({ label, description, keywords, held = false, htmlFo
       <SettingsRowSentence.Provider value={description !== undefined ? sentenceId : undefined}>{describedByRow(children, description !== undefined ? sentenceId : undefined)}</SettingsRowSentence.Provider>
       {/* opened by a tap: under the name and the control, as wide as the row */}
       {sentence.opened && <span id={sentenceId} className="settings-description settings-row-sentence">{description}</span>}
-      {sentence.shown !== null && sentence.row.current !== null && <RowSentence row={sentence.row.current} drawn={sentence.drawn}>{description}</RowSentence>}
+      {sentence.shown !== null && sentence.row.current !== null && <RowSentence row={sentence.row.current} drawn={sentence.drawn} onPass={sentence.pass}>{description}</RowSentence>}
     </div>
   );
 }

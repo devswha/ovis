@@ -210,6 +210,9 @@
   z-index: var(--z-popover);
   box-sizing: border-box;
   max-width: min(22rem, calc(100vw - var(--space-4)));
+  /* in a window shorter than the sentence (a high zoom) it stays inside the screen and scrolls under the pointer */
+  max-height: calc(100dvh - var(--space-4));
+  overflow-y: auto;
   padding: var(--space-2) var(--space-3);
   background: var(--bg-elevated);
   border: var(--hairline) solid var(--border-strong);

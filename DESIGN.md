@@ -4182,10 +4182,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   no wider than `22rem`), fixed in the dialog's scrim so the scrolling page does not cut it. It goes
   above the row with its left edge on the name's, so it covers neither the row's own control nor
   the row below, which the pointer goes to next; under the row only where the screen ends above it,
-  and never above the screen's top, so a sentence taller than a short window still starts in sight.
+  and never above the screen's top, so a sentence taller than a short window still starts in sight; it is never taller than the
+  screen, and scrolls under the pointer where its words do not fit.
   Over another row's control it narrows to the room beside that control, down to `224px`; with less
   room than that (the row under a font row's field) it keeps its width and lies on that control's
-  near end, which the reader reaches by leaving the sentence or with Escape. It is drawn only while
+  near end. There the pointer is the control's, not the sentence's: the sentence goes as the pointer
+  comes onto that part, so a press reaches the control instead of landing on the sentence. It is drawn only while
   its row is in the page's view: a dialog's Tab moves the focus without scrolling
   (`lib/useFocusTrap.ts`), so on a setting the page is not scrolled to the sentence waits for the
   row, and Escape is not its own meanwhile. It never
@@ -4204,7 +4206,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   dialog opened over Settings keeps its own Escape, and a pen taps as a finger does. In a text field that
   Escape is the field's too, and the first text typed closes it. A finger has no hover: a tap on the row, anywhere but its control, opens the sentence in the
   row, under the name and the control at the row's width (`.settings-row-sentence`), and a second
-  tap closes it, so nothing is drawn over a phone's page. Every control in the row is described by
+  tap closes it, so nothing is drawn over a phone's page. Escape closes it too, before Settings (a
+  touch screen with a keyboard), and a row that a search hides takes its sentence with it. Every control in the row is described by
   the same sentence (`aria-describedby`): its switch, select, stepper or group of choices, and a
   button or a field the page draws there (one that brings a description of its own keeps it), as
   [Zed's settings](https://github.com/zed-industries/zed/blob/main/crates/settings_ui/src/settings_ui.rs)

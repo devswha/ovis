@@ -159,9 +159,10 @@ describe("where a row's sentence goes (#3275)", () => {
 });
 
 describe("when a row's sentence shows and whose Escape it is (#3275)", () => {
-  it("counts only a key that moves the focus as the keyboard's: not the Escape or Enter after which the app returns the focus", () => {
-    expect(["Tab", "ArrowDown", "ArrowLeft", "Home", "End"].map(movesFocus)).toEqual([true, true, true, true, true]);
-    expect(["Escape", "Enter", " ", "a", "Shift"].map(movesFocus)).toEqual([false, false, false, false, false]);
+  it("does not take for the keyboard's a focus that follows Escape, Enter or Space: the app gives the focus back after those", () => {
+    // closing an editor (Escape) and answering a confirmation (Enter, Space) return the focus to a setting: a
+    // sentence there would take the next Escape from Settings. Tab is what moves the reader's own focus
+    expect({ Escape: movesFocus("Escape"), Enter: movesFocus("Enter"), Space: movesFocus(" "), Tab: movesFocus("Tab") }).toEqual({ Escape: false, Enter: false, Space: false, Tab: true });
   });
 
   it("gives Escape to the sentence alone, shares it with a text field, and leaves it to an IME, to a row out of view and to another dialog", () => {
