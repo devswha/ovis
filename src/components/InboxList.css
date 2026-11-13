@@ -589,12 +589,12 @@
   }
 }
 
-/* A press is one step past hover: the open row's own fill, which a pressed row is about to have. After the hover
-   rule, which it must outweigh under a pointer that is over the row it presses. Back to Ovis at the foot answers a
-   press the same way. */
+/* A press is a step past hover that reads as one in both themes: the open row's own press, half way from the
+   selection's fill to the strong edge's colour. After the hover rule, which it must outweigh under a pointer that is
+   over the row it presses. Back to Ovis at the foot answers a press the same way. */
 .mode-inbox.is-wide .inbox-row:active:not(:disabled),
 .mode-inbox.is-wide .inbox-exit:active:not(:disabled) {
-  background: var(--side-selected);
+  background: color-mix(in srgb, var(--side-selected), var(--border-strong));
 }
 
 .mode-inbox.is-wide .inbox-name {

@@ -2410,10 +2410,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     the time, with the full local time. The open thread's row has the sidebar's selection
     (`--side-selected`, the name at `--fw-selected`, `aria-current="true"`), with no border,
     stripe or outline; no row is open while no agent is chosen. A row fills with the sidebar's
-    `--side-hover` under a hovering pointer and, one step past it, with `--side-selected`
-    under a press: the fill it is about to have. The open row, which hover does not change,
-    goes half way to `--border-strong` under a press (a press on it shows its chat again where
-    its terminal was shown).
+    `--side-hover` under a hovering pointer and, under a press, half way from `--side-selected`
+    (the fill it is about to have) to `--border-strong`, a step that reads as a press in light
+    as in dark. The open row, which hover does not change, takes the same press (a press on it
+    shows its chat again where its terminal was shown).
   - A row is as wide as the list, never as wide as what a scrollbar leaves of it
     (`.inbox-rows` reads the list's width in `cqi`): under a scrollbar that takes room
     (Chrome's own on Windows and Linux) the rows keep their `--space-3` insets and their place,
@@ -2423,7 +2423,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     narrower than 769px the same rule keeps a row's time and mark where they are.
   - The column's foot is one line, `--space-3` above the window's edge: at its start **Back to
     Ovis** beside the Ovis mark (the sidebar foot's own action, where the classic sidebar has
-    the way in; `--side-hover` under a hovering pointer, `--side-selected` under a press), at
+    the way in; `--side-hover` under a hovering pointer, a row's press under a press), at
     its end the state filter and **More** as round controls, `--space-2`
     apart. Nothing in the foot is filled but the filter's button while a filter other than All
     is on, the round control's own rule (above).

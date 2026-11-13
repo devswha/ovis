@@ -1272,12 +1272,20 @@ try {
           }, value);
           const fills = (selector: string, colour: string, what: string) => page.waitForFunction(({ selector, colour }) =>
             getComputedStyle(document.querySelector(selector)!).backgroundColor === colour, { selector, colour }, { timeout: 5_000 }).catch(() => { throw new Error(`${what}: ${selector} is not ${colour}`); });
-          const sideHover = await token("var(--side-hover)"), sideSelected = await token("var(--side-selected)");
+          const sideHover = await token("var(--side-hover)"), rowPress = await token("color-mix(in srgb, var(--side-selected), var(--border-strong))");
           const hover = await token("var(--bg-hover)"), strong = await token("var(--border-strong)");
-          assert.ok(new Set([sideHover, sideSelected]).size === 2 && new Set([hover, strong]).size === 2, "each press token is another colour than its hover token");
+          /** how far two colours stand apart: their largest difference in one channel, of 255 */
+          const apart = (one: string, other: string): number => {
+            const [a, b] = [one, other].map((colour) => (colour.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number));
+            return Math.max(...a!.map((value, at) => Math.abs(value - b![at]!)));
+          };
+          // a press reads as a press: well past the 7 of 255 a row's press once stood from its hover in light
+          for (const [press, over, what] of [[rowPress, sideHover, "a row's"], [strong, hover, "a round control's"]] as const) {
+            assert.ok(apart(press, over) >= 15, `${what} press stands ${apart(press, over)} of 255 from its hover (${press} against ${over})`);
+          }
           for (const [selector, over, pressed] of [
-            [`.mode-inbox .inbox-item[data-pane="${BLOCKED}"] .inbox-row`, sideHover, sideSelected],
-            [".inbox-exit", sideHover, sideSelected],
+            [`.mode-inbox .inbox-item[data-pane="${BLOCKED}"] .inbox-row`, sideHover, rowPress],
+            [".inbox-exit", sideHover, rowPress],
             [".inbox-column .inbox-search-toggle", hover, strong],
             [".thread-top .header-more-button", hover, strong],
           ] as const) {
@@ -1291,7 +1299,7 @@ try {
             await page.mouse.up();
           }
           await addressIs(page, { app: "inbox", pane: WORKING }, "no press opened anything");
-          console.log(`PASS ${theme}: on a wide window a row and Back to Ovis fill with the open row's fill under a press, a round control with its strong edge's colour, each a step past its hover`);
+          console.log(`PASS ${theme}: on a wide window a row and Back to Ovis take the open row's press under a press (${apart(rowPress, sideHover)} of 255 past hover), a round control its strong edge's colour (${apart(strong, hover)} past hover)`);
         }, desktop);
       }
 
