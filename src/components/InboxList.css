@@ -2,10 +2,8 @@
    at its top and a round button and a search pill at its foot, the rows scrolling under both. From 769px it is the
    column beside the thread it opens (.is-wide), its controls in a top row and a foot of its own. */
 .mode-inbox {
-  /* a round control: a finger's size here, the density's control in the column under a fine pointer */
-  --inbox-control: var(--touch-target);
-  /* the band the column's top controls and the pane's floating ones are centred in (InboxMode.css reads it too) */
-  --inbox-zone-h: calc(var(--inbox-control) + var(--space-3) * 2);
+  /* a round control's size (--inbox-control) and the band the column's top controls are centred in
+     (--inbox-zone-h) are the shell's, which the pane's own controls share: InboxMode.css, .app.is-inbox */
   /* the gutter the round controls stand on; a row's mark and its time stand one step further in */
   --inbox-gutter: calc(var(--space-4) + var(--space-1) / 2);
   --inbox-inset: calc(var(--inbox-gutter) + var(--space-1));
@@ -406,12 +404,9 @@
 
 /* ---------- from 769px: the column beside the thread ---------- */
 
+/* its rows fill as the sidebar's do (--side-hover, --side-selected: Sidebar.css, .sidebar) */
 .mode-inbox.is-wide {
-  --inbox-control: var(--control-h);
   --inbox-avatar: var(--avatar-size);
-  /* the sidebar's own row fills (Sidebar.css), on the column's surface */
-  --side-hover: color-mix(in srgb, var(--bg-hover) 50%, var(--bg-nav));
-  --side-selected: var(--bg-hover);
   position: relative;
   inset: auto;
   z-index: auto;
@@ -566,12 +561,8 @@
   font-weight: var(--fw-selected);
 }
 
-/* a finger gets its target at any width */
+/* a finger gets its target at any width (the controls' own size is the shell's: InboxMode.css) */
 @media (pointer: coarse) {
-  .mode-inbox.is-wide {
-    --inbox-control: var(--touch-target);
-  }
-
   .mode-inbox.is-wide .inbox-row {
     min-height: max(var(--row-h), var(--touch-target));
   }
