@@ -975,7 +975,9 @@ install_lock() {
   lock="$OVIS_HOME/.install.lock"
   mkdir -p "$OVIS_HOME"
   lock_waited=0
-  while ! mkdir "$lock" 2>/dev/null; do
+  # The claim is the pid file, created only where none is (noclobber opens it O_EXCL in the shell itself): mkdir's
+  # exit alone does not exclude, as some mkdir commands report success to two callers at once (uutils coreutils)
+  while ! { mkdir "$lock" 2>/dev/null; (set -C; printf '%s\n' "$$" >"$lock/pid") 2>/dev/null; }; do
     if mkdir "$lock.break" 2>/dev/null; then
       lock_holder=$(cat "$lock/pid" 2>/dev/null || true)
       if [ -n "$lock_holder" ] && ! kill -0 "$lock_holder" 2>/dev/null; then
@@ -995,7 +997,6 @@ install_lock() {
     sleep 1
     lock_waited=$((lock_waited + 1))
   done
-  printf '%s\n' "$$" >"$lock/pid"
   trap 'install_unlock' EXIT
   trap 'install_unlock; exit 129' HUP
   trap 'install_unlock; exit 130' INT

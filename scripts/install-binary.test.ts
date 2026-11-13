@@ -213,8 +213,10 @@ describe.skipIf(process.platform === "win32")("install.sh installs the release's
     }
   }, 120_000);
 
-  it("lets a second install in only after the first has swapped bin, not into its window", async () => {
+  for (const mkdirExcludes of [true, false]) it(`lets a second install in only after the first has swapped bin, not into its window${mkdirExcludes ? "" : ", with a mkdir that never refuses"}`, async () => {
     const { releases, key, start, standIn, ovis, home } = pc();
+    // some mkdir commands report success to two callers at once (uutils coreutils): the lock may not rest on it
+    if (!mkdirExcludes) standIn("mkdir", `exec "${Bun.which("mkdir")}" -p "$@"`);
     release(releases, "1.2.3", key.privateKeyPem);
     release(releases, "1.2.4", key.privateKeyPem);
     const sync = join(home, "sync");
