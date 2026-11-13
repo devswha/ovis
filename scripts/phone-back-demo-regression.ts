@@ -46,7 +46,7 @@ const keep = async (page: Page, name: string): Promise<void> => { if (evidence) 
  * The app on the api pane, reached from a blank page: one step back from it leaves the app. `settings` are
  * this device's, beside the language. Without `navigationApi` the browser's is taken away before the app loads.
  */
-async function open(browser: Browser, origin: string, screen: Screen, run: (page: Page, entries: Entry[]) => Promise<void>, settings: Record<string, string> = {}, navigationApi = true): Promise<void> {
+async function open(browser: Browser, origin: string, screen: Screen, run: (page: Page, entries: Entry[]) => Promise<void>, settings: Record<string, string> = {}, navigationApi = true, pane = panes.api): Promise<void> {
   const context = await browser.newContext({ viewport: { width: screen.width, height: screen.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, locale: "en-US" });
   const entries: Entry[] = [];
   try {
@@ -80,7 +80,7 @@ async function open(browser: Browser, origin: string, screen: Screen, run: (page
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto("about:blank");
-    await page.goto(`${origin}/?pane=${encodeURIComponent(panes.api)}`);
+    await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
     await page.locator(".conn-live").waitFor();
     assert.equal(await page.evaluate(() => (window as unknown as { navigation?: unknown }).navigation !== undefined), navigationApi, `${screen.label}: the browser's Navigation API is ${navigationApi ? "there" : "taken away"}`);
     await run(page, entries);
@@ -328,7 +328,9 @@ try {
       await stillHere(page, origin, shown, "a menu with the phone on its side");
     });
 
-    // a tablet: the sidebar stays beside the pane, a row's menu is a popover, and the tab strip is in the header
+    // a tablet: the sidebar stays beside the pane, a row's menu is a popover, and the tab strip is in the header. On
+    // the web pane, whose agent waits on its question for good, so closing its tab always asks first: the api pane's
+    // turn ends 4.5 s after load (site/demo/transport.ts), and an idle tab among others closes without asking
     await open(browser, origin, TABLET, async (page) => {
       const shown = await paneShown(page);
       assert.equal(await page.locator(".drawer-toggle").isVisible(), false, "a tablet keeps the sidebar beside the pane: there is no drawer");
@@ -354,7 +356,7 @@ try {
       // with nothing open, the first screen is where Back leaves the app
       await back(page);
       await page.waitForURL("about:blank");
-    });
+    }, {}, true, panes.web);
 
     // Files on a tablet, a dialog as on a desktop: a document and a change each open over it, and Back closes one thing at a time
     await open(browser, origin, TABLET, async (page) => {
