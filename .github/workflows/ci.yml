@@ -52,7 +52,9 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           REQUESTED_LABELS: ${{ inputs.self_hosted_labels }}
-          CONFIGURED_LABELS: ${{ vars.CI_SELF_HOSTED_LABELS }}
+          # CI_LINUX_SELF_HOSTED_LABELS moves only these Linux jobs (pages.yml and release.yml keep
+          # following CI_SELF_HOSTED_LABELS), e.g. to the cloud VM runners: '["self-hosted","ovis-vm"]'
+          CONFIGURED_LABELS: ${{ vars.CI_LINUX_SELF_HOSTED_LABELS || vars.CI_SELF_HOSTED_LABELS }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
           SELF_HOSTED_CAPACITY: ${{ vars.CI_SELF_HOSTED_CAPACITY }}
           GH_TOKEN: ${{ github.token }}
@@ -397,11 +399,13 @@ jobs:
     runs-on: ${{ fromJSON(needs.changes.outputs.linux) }}
     # A hosted runner has 4 CPUs: one job running every script there took about 28 minutes, and
     # frame-timing checks failed under the load. So hosted runs split the scripts over four jobs
-    # (scripts/ci-browser-parallel.ts's BROWSER_SHARD); a self-hosted run keeps one job.
+    # (scripts/ci-browser-parallel.ts's BROWSER_SHARD); a self-hosted run keeps one job. The cloud VM
+    # runners (label ovis-vm, 4 vCPUs each, scripts/self-hosted-runner/vm-runner.sh) are hosted-sized:
+    # five jobs there, so no shard waits past the longest script for long.
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(contains(needs.changes.outputs.linux, 'self-hosted') && '[1]' || '[1,2,3,4]') }}
+        shard: ${{ fromJSON(contains(needs.changes.outputs.linux, 'ovis-vm') && '[1,2,3,4,5]' || contains(needs.changes.outputs.linux, 'self-hosted') && '[1]' || '[1,2,3,4]') }}
     # a wait for a slot counts against it
     timeout-minutes: 50
     env:
