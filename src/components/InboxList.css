@@ -140,8 +140,9 @@
   }
 }
 
-/* a phone's top controls start at the top safe area, which is the screen's own edge where there is none: a ring
-   round them would be cut there, so the screen's round controls draw it inside, as its rows do */
+/* a phone's top controls stand --space-2 under the top safe area (--inbox-top-gap), close to the screen's own edge
+   where there is none: a ring drawn round them would all but touch it, so the screen's round controls draw it
+   inside, as its rows do */
 .mode-inbox:not(.is-wide) .icon-button.inbox-round:focus-visible {
   outline-offset: var(--ring-inset-offset);
 }
