@@ -114,7 +114,7 @@ export interface SlotView {
   attach: boolean;
 }
 
-export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, gridDrop, gridDropRef, clearDropPreview, tabDrag, showGridDrop, hideDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, markMove, swapPanes, movePanes, arrangeRefused, followPaneMove }: {
+export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, gridDrop, gridDropRef, clearDropPreview, tabDrag, showGridDrop, hideDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, markMove, swapPanes, movePanes, arrangeRefused, followPaneMove, threadDrawn }: {
   machines: Machine[];
   split: SplitState | null;
   wideScreen: boolean;
@@ -158,11 +158,14 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
   arrangeRefused: (machineId: string) => boolean;
   /** herdr moved a pane under a new ID: what is kept under the old one, and every view of it, goes to the new one (App's followPaneMove) */
   followPaneMove: (machineId: string, from: string, to: string) => void;
+  /** the inbox mode draws the selected pane's thread alone (`PaneCanvas` `solo`): no other slot's pane is on the screen */
+  threadDrawn: boolean;
 }) {
   // The split view (lib/split.ts): drawn only where the sidebar stands beside the pane, and only
   // while a pane is selected; a narrower window shows the active slot alone and keeps the split
   const splitOn = split !== null && wideScreen && selectedPaneId !== null;
-  splitShownRef.current = splitOn;
+  // what the alerts read as on the screen (lib/useAlertSignals.ts): a thread drawn alone shows none of the other slots
+  splitShownRef.current = splitOn && !threadDrawn;
   const current: SplitTarget | null = selectedPaneId === null ? null : { machineId: selectedMachineId, paneId: selectedPaneId };
   // every slot draws on a connection of its own but slot a (App's SlotSessions), so slots may attach
   // one tab each and attach and detach it as the others are not there
