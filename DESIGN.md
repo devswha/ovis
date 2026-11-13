@@ -2545,7 +2545,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   shows that pane alone; Back onto the list mounts them again under it, a second attach that
   keeps the size the pty has (keep_size) and so sizes nothing, each held at the box the list
   found it in (the hold remembers a slot's box by its id too), and the mode left from there
-  shows the split as it was and sends no size and no release. The tab's other pane under a herdr
+  shows each half with its own pane in its own box and sends no size and no release. Two things
+  are not as the mode found them, both the reader's own doing in it: the pane whose thread was
+  opened comes back on its chat unless the monitor button put its terminal back (a thread opens
+  on its chat, and a pane's lens is its own wherever it is shown), and with the app's own split
+  the active half is the opened row's half (below). The tab's other pane under a herdr
   split is hidden by the thread rather than taken off the page, and lets the size go meanwhile:
   the list keeps what it held as the list first covered it, so leaving from the list it asks once
   for the grid it held, as leaving straight from the thread does, and each pane leaves the mode
