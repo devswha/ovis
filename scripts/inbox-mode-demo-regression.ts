@@ -1772,12 +1772,14 @@ try {
           }
           if (wide) near(drawn.left, 16, 1, "the line leads the column's top row");
           else near(drawn.centre, viewport.width / 2, 1, "the line is centred between the two top controls");
-          // Connected is said for two seconds: caught in the mutation that draws it, so a slow run cannot miss it
-          const back = await page.evaluate(() => new Promise<string>((resolve) => {
+          // Connected is said for two seconds: caught in the mutation that draws it, so a slow run cannot miss it. A
+          // connection that never comes back fails the step by a deadline, and the page's observer goes either way
+          const back = await page.evaluate(() => new Promise<string>((resolve, reject) => {
             const top = document.querySelector(".mode-inbox .inbox-top")!;
+            const deadline = window.setTimeout(() => { observer.disconnect(); reject(new Error("the list never said Connected within 15 s")); }, 15_000);
             const observer = new MutationObserver(() => {
               const said = top.querySelector(".inbox-connection")?.textContent ?? "";
-              if (said === "Connected") { observer.disconnect(); resolve(said); }
+              if (said === "Connected") { observer.disconnect(); window.clearTimeout(deadline); resolve(said); }
             });
             observer.observe(top, { subtree: true, childList: true, characterData: true, attributes: true });
             window.herdrDemoRestoreConnection();
