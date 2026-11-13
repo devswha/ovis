@@ -24,6 +24,7 @@ class FakeSlot {
   }
   getBoundingClientRect(): Box { this.reads += 1; return { ...this.box }; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
+  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
   removeAttribute(name: string): void { this.attributes.delete(name); }
   kept(): Record<string, string> | null {
     return this.attributes.has("data-kept-box") ? Object.fromEntries(this.properties) : null;
@@ -178,6 +179,30 @@ describe("useKeptPaneBoxes", () => {
 
     // Then the slot has no rectangle and nothing of the hold: the thread fills the pane area.
     expect([slot.kept(), Object.fromEntries(slot.properties)]).toEqual([null, {}]);
+  });
+
+  it("holds a split's half that Back mounts again under the list at the box the list found it in", async () => {
+    // Given a split's two halves under the list, each read in its classic box.
+    const half = (id: string, left: number) => { const slot = new FakeSlot({ left, top: 42, width: 560, height: 830 }); slot.setAttribute("data-slot", id); return slot; };
+    const first = half("a", 320);
+    slots = [first, half("b", 880)];
+    areaBox = { left: 320, top: 42, width: 1120, height: 830 };
+    await draw(false);
+    areaBox = { left: 320, top: 0, width: 1120, height: 900 };
+    await draw(true);
+
+    // When a row's thread takes the second half off the page, and Back mounts it again as another element under the list.
+    slots = [first];
+    await draw(false);
+    const again = half("b", 880);
+    again.box = { left: 880, top: 0, width: 560, height: 900 };
+    // it mounts in the commit of that render: the render that reads the boxes finds the first half alone
+    let queries = 0;
+    (area as unknown as { current: { querySelectorAll(): FakeSlot[] } }).current.querySelectorAll = () => (queries++ === 0 ? [first] : [first, again]);
+    await draw(true);
+
+    // Then it is held at the box the list found it in, not at the one the area gives it now.
+    expect(again.kept()).toEqual({ position: "absolute", left: "560px", top: "42px", width: "560px", height: "830px" });
   });
 
   it("reads nothing of the page and watches nothing while no list covers a pane, as in the classic app", async () => {

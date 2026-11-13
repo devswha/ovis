@@ -2532,8 +2532,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   in the box it had, it sends nothing. One that held none (its chat shown, a split half that let
   the size go or follows the other half's grid) takes none on its way out. A thread is one pane:
   once a row's thread is drawn the split's other halves leave the page, and a tab herdr split
-  shows that pane alone; Back onto the list mounts them again under it, attached keeping the
-  size the pty has, and the mode left from there shows the split as it was. The classic shell's tab row is
+  shows that pane alone; Back onto the list mounts them again under it, a second attach that
+  keeps the size the pty has (keep_size) and so sizes nothing, each held at the box the list
+  found it in (the hold remembers a slot's box by its id too), and the mode left from there
+  shows the split as it was and sends no size and no release. The classic shell's tab row is
   part of that box wherever it is a row of the pane's own (under a phone's header by default,
   Settings → Tabs on a phone; each half of a split): the mode draws no tab row, so a pane under
   the list keeps the row it had, hidden with it, and a phone thread that shows its terminal

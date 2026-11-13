@@ -22,10 +22,18 @@ const HELD = ["position", ...SIDES] as const;
  */
 export function useKeptPaneBoxes(area: RefObject<HTMLElement | null>, covered: boolean): void {
   const boxes = useRef(new WeakMap<Element, { left: number; top: number; width: number; height: number }>());
+  // by the slot's id too (App.tsx data-slot): a split's half that a thread took off the page is mounted again under
+  // the list by Back, as another element, and is held at the box it had when the list last found it
+  const bySlot = useRef(new Map<string, { left: number; top: number; width: number; height: number }>());
   /** whether the list covered the panes as the page was last written */
   const wasCovered = useRef(false);
   if (covered && !wasCovered.current) {
-    for (const slot of area.current?.querySelectorAll(SLOTS) ?? []) boxes.current.set(slot, slot.getBoundingClientRect());
+    for (const slot of area.current?.querySelectorAll(SLOTS) ?? []) {
+      const box = slot.getBoundingClientRect();
+      boxes.current.set(slot, box);
+      const id = slot.getAttribute("data-slot");
+      if (id !== null) bySlot.current.set(id, box);
+    }
   }
   useLayoutEffect(() => {
     wasCovered.current = covered;
@@ -34,7 +42,8 @@ export function useKeptPaneBoxes(area: RefObject<HTMLElement | null>, covered: b
     const origin = host.getBoundingClientRect();
     const held: { slot: HTMLElement; own: string[]; wrote: string[] }[] = [];
     for (const slot of host.querySelectorAll<HTMLElement>(SLOTS)) {
-      const box = boxes.current.get(slot);
+      const id = slot.getAttribute("data-slot");
+      const box = boxes.current.get(slot) ?? (id === null ? undefined : bySlot.current.get(id));
       if (box === undefined) continue;
       const place = { position: "absolute", left: `${box.left - origin.left}px`, top: `${box.top - origin.top}px`, width: `${box.width}px`, height: `${box.height}px` };
       const own = HELD.map((name) => slot.style.getPropertyValue(name));

@@ -1118,6 +1118,38 @@ try {
         console.log(`PASS a row's thread opened from a classic split is drawn at the pane area's width (${Math.round(area.w)}px) and its terminal sized to it (${asked.cols} by ${asked.rows})`);
       }, { width: 1440, height: 900 });
 
+      // ---- a classic split through a thread and back ----
+      // A row's thread takes the split's other half off the page; Back mounts it again under the list (it attaches once
+      // more, keeping the pty's size) held at its classic box, and the mode left from there sends no size or release.
+      await withPage(browser, base, { language: "en", theme: "light" }, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "a classic split through a thread and back", async (page) => {
+        await page.evaluate((other) => sessionStorage.setItem("ovis:split", JSON.stringify({ other: { machineId: "local", paneId: other }, bSide: "right", active: "a" })), BLOCKED);
+        await page.reload();
+        await page.locator(".app-header.is-zoned").waitFor();
+        await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2, undefined, { timeout: 15_000 });
+        // fixed wait: the halves' own attach and first sizing have gone out
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const other = await box(page, `[data-layout-pane="${BLOCKED}"] .xterm-screen`);
+        await page.locator(".header-more-button").click();
+        await page.locator('.row-menu [data-item="enter-inbox"]').click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        const before = await page.evaluate(() => window.inboxFixture.frames.length);
+        await page.goBack();
+        await page.locator(".inbox-unchosen").waitFor();
+        await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2, undefined, { timeout: 5_000 });
+        await page.locator(".inbox-exit").click();
+        await page.locator(".mode-inbox").waitFor({ state: "detached" });
+        await page.locator(".app-header.is-zoned").waitFor();
+        // fixed wait: no size or release may be sent for the split shown again
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const sent = (await page.evaluate((count) => window.inboxFixture.frames.slice(count), before)).filter((frame) => frame.type === "resize" || frame.type === "release-size");
+        assert.deepEqual(sent, [], "after the Back, nothing sends a size or a release");
+        sameBox(await box(page, `[data-layout-pane="${BLOCKED}"] .xterm-screen`), other, "the split's other half has the box, and the grid, it had before the mode");
+        console.log("PASS a classic split through a row's thread and Back: its other half comes back under the list held at its classic box, and Back to Ovis sends no size or release");
+      }, { width: 1440, height: 900 });
+
       // ---- a thread that shows its terminal sizes its pty to the thread's box ----
       // Entering the mode, and leaving it from the list, size nothing (above), and a thread opens on its chat, which
       // sizes nothing either. Showing the terminal there sizes the pty to the thread's box, as showing it after the
