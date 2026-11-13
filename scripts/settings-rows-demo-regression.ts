@@ -957,15 +957,16 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     await page.mouse.move(2, 2);
 
     // where no room is left beside the control of the row above, the sentence lies on that control's near end.
-    // There the pointer is the control's: the sentence takes no pointer on that part, so a press reaches the
-    // control, and the mouse that moves onto it has left the row, which closes a hover's sentence. The first row
-    // of the page whose sentence lies on another row's control shows it.
+    // There the pointer is the control's: the sentence is cut out over that control, so a press reaches the
+    // control, and the mouse that moves onto it has left the row, which closes a hover's sentence. Beside the
+    // control the sentence is whole and keeps the pointer. The first row of the page whose sentence lies on
+    // another row's control, with some of itself above or below that control, shows it.
     // Density is asked first, and again: Escape closed its sentence with the pointer on the sentence, which sends
     // the row no leave, and a row hovered again still shows its sentence
     const withSentence = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".settings-body:not([hidden]) .settings-row")]
       .filter((row) => row.checkVisibility() && row.querySelector(":scope > .settings-row-text > .visually-hidden[id]") !== null)
       .map((row) => row.querySelector(".settings-label")?.textContent ?? ""));
-    let covered: { row: string; x: number; y: number } | null = null;
+    let covered: { row: string; x: number; y: number; beside: number } | null = null;
     for (const name of ["Density", ...withSentence.filter((other) => other !== "Density")]) {
       await rowOf(page, name).locator(".settings-label").first().hover();
       await sentence.waitFor();
@@ -976,7 +977,9 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
           for (const control of [...row.children].filter((child) => !child.classList.contains("settings-row-text"))) {
             const box = control.getBoundingClientRect();
             const [left, right, top, bottom] = [Math.max(box.left, tip.left), Math.min(box.right, tip.right), Math.max(box.top, tip.top), Math.min(box.bottom, tip.bottom)];
-            if (box.height > 0 && right - left > 4 && bottom - top > 4) return { row: row.querySelector(".settings-label")?.textContent ?? "", x: (left + right) / 2, y: (top + bottom) / 2 };
+            // `beside`: a height where the sentence is over that control's columns but above or below the control
+            const beside = box.top - tip.top > 6 ? (tip.top + box.top) / 2 : tip.bottom - box.bottom > 6 ? (box.bottom + tip.bottom) / 2 : null;
+            if (box.height > 0 && right - left > 4 && bottom - top > 4 && beside !== null) return { row: row.querySelector(".settings-label")?.textContent ?? "", x: (left + right) / 2, y: (top + bottom) / 2, beside };
           }
         }
         return null;
@@ -987,6 +990,10 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     }
     assert.ok(covered !== null, "some row's sentence lies on the control of another row at this width");
     const lying = await sentence.textContent();
+    await page.mouse.move(covered.x, covered.beside, { steps: 4 });
+    await drawn(page);
+    assert.equal(await sentence.textContent(), lying, "above or below the control it lies on, the sentence keeps the pointer");
+    assert.equal(await page.evaluate(({ x, beside }) => document.elementFromPoint(x, beside)?.closest(".settings-help") != null, covered), true, "and is what a press there lands on, so its words can be selected");
     await page.mouse.move(covered.x, covered.y, { steps: 4 });
     // that sentence goes; the row the pointer is on now may show its own, which lies on none of its own control
     await page.waitForFunction((was) => document.querySelector(".settings-help")?.textContent !== was, lying);
