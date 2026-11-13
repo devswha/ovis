@@ -494,6 +494,36 @@ describe("InboxList", () => {
     }
   });
 
+  it("gives the focus to the list when its failure gives way to rows, on both layouts, unless the focus is somewhere else", async () => {
+    const failure = { error: "Failed to fetch", retry: () => {} };
+    for (const wide of [false, true]) {
+      phone = !wide;
+      // Given a list whose load failed, the opening's focus taken, and nothing focused on the page (Retry left it).
+      await draw([], { wide, failure });
+      expect(byClass(renderer!.root, "inbox-retry")).toHaveLength(1);
+      focused.length = 0;
+
+      // When a read brings the rows.
+      await redraw({ machines: roster() });
+
+      // Then the rows are drawn and the list's root has the focus, without a scroll.
+      expect([byClass(renderer!.root, "inbox-retry").length, byClass(renderer!.root, "inbox-item").length > 0]).toEqual([0, true]);
+      expect(focused).toEqual([{ node: "section", options: { preventScroll: true } }]);
+      await act(async () => { renderer?.unmount(); });
+
+      // Given the same failure, with the focus somewhere else on the page (the search field, another control).
+      Object.defineProperty(document, "activeElement", { configurable: true, value: { nodeName: "INPUT" } });
+      await draw([], { wide, failure });
+      focused.length = 0;
+
+      // When the rows come, the focus stays where it is.
+      await redraw({ machines: roster() });
+      expect(focused).toEqual([]);
+      Reflect.deleteProperty(document, "activeElement");
+      await act(async () => { renderer?.unmount(); });
+    }
+  });
+
   it("says what the connection has to say in one status line, and draws nothing while it has nothing to say", async () => {
     const line = (root: ReactTestInstance) => root.findAll((node) => node.type === "p" && node.props.role === "status" && /inbox-connection|visually-hidden/.test(String(node.props.className)))
       .filter((node) => byClass(root, "inbox-empty").every((empty) => empty !== node));

@@ -1705,7 +1705,10 @@ try {
           assert.ok(asked > 0, `Retry asks for the roster (${asked} reads)`);
           await rowCount(page, 6);
           assert.equal(await failure.count(), 0, "loaded, the list has no failure to say");
-          console.log(`PASS on ${at} a list whose load failed says so in the app's words, its read's message (${cause}) smaller under them, and one Retry, which says it is on its way in the box it had while its read is held, keeps the focus, and loads the rows`);
+          // Retry left the page with the focus on it: the list takes it, as when it opens, and the page's body does not
+          const focusAt = await page.evaluate(() => { const at = document.activeElement; return at === null || at === document.body ? "the page's body" : `${at.tagName.toLowerCase()}.${String(at.className)}`; });
+          assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".mode-inbox")), true, `the rows drawn, the focus is on the list: it is on ${focusAt}`);
+          console.log(`PASS on ${at} a list whose load failed says so in the app's words, its read's message (${cause}) smaller under them, and one Retry, which says it is on its way in the box it had while its read is held, keeps the focus, and loads the rows with the focus on the list`);
           // the language is shared and the demo's follows the browser's: a Korean browser is what makes the page Korean
         }, viewport, viewport.width < 769, language === "ko" ? "ko-KR" : "en-US");
       }

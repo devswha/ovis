@@ -240,6 +240,17 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
     setRetrying(true);
     void Promise.resolve(failed.retry()).finally(() => setRetrying(false));
   };
+  // The failure gave way to rows (or the empty line): Retry left the page, and with it the focus it held. The list
+  // takes the focus, as it does each time it opens, without a scroll; a focus that is somewhere else stays there.
+  const failing = failed !== null;
+  const wasFailing = useRef(failing);
+  useLayoutEffect(() => {
+    const was = wasFailing.current;
+    wasFailing.current = failing;
+    if (!was || failing) return;
+    const at = document.activeElement;
+    if (at === null || at === undefined || at === document.body) root.current?.focus({ preventScroll: true });
+  }, [failing]);
   const empty = emptyWhy === "loading" ? [t("Loading…")]
     : emptyWhy === "none" ? (offerNew ? [t("Nothing is running yet"), t("Use + to start a workspace")] : [t("Nothing is running yet")])
     : emptyWhy === "no-match" ? [t("No results")] : null;
