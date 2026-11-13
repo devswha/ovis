@@ -375,11 +375,13 @@
   background: var(--bg-nav);
 }
 
+/* the column ends in its seam (the sidebar's own edge, a hairline): the end insets are counted from the column's
+   edge, so each takes the seam off */
 .mode-inbox.is-wide .inbox-top,
 .mode-inbox.is-wide .inbox-foot {
   position: static;
   flex: 0 0 auto;
-  padding-inline: var(--space-4);
+  padding-inline: var(--space-4) calc(var(--space-4) - var(--hairline));
   pointer-events: auto;
 }
 
@@ -452,7 +454,7 @@
   position: static;
   flex: 1 1 auto;
   min-height: 0;
-  padding: var(--space-1) var(--space-3) var(--space-3);
+  padding: var(--space-1) calc(var(--space-3) - var(--hairline)) var(--space-3) var(--space-3);
   scroll-padding-block: var(--space-1);
   scrollbar-width: thin;
 }
