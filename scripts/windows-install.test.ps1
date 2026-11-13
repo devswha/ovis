@@ -480,6 +480,9 @@ console.log(key.publicKey);
     Assert ($state.linkedRoot -eq (Join-Path $ovisHome 'plugin') -and (Test-Path (Join-Path $ovisHome 'plugin\herdr-plugin.toml'))) 'The plugin that runs it must be linked into herdr'
     $again = & $copy -Ref 'v1.2.3' 6>&1 | Out-String
     Assert ($again -match 'nothing to do') "A second run must have nothing to do: $again"
+    Remove-Item -LiteralPath (Join-Path $ovisHome 'bin\dist\index.html')
+    $restored = & $copy -Ref 'v1.2.3' 6>&1 | Out-String
+    Assert ($restored -notmatch 'nothing to do' -and ((Get-Content -Raw (Join-Path $ovisHome 'bin\dist\index.html')) -match '1\.2\.3')) "A missing client must be installed again: $restored"
     $kept = (Get-FileHash $exe).Hash
     foreach ($case in @(@('v1.2.4', 'does not match its SHA-256'), @('v1.2.5', 'not a valid signature'), @('v1.2.6', 'is for version 1\.2\.2, not 1\.2\.6'))) {
         $message = ''

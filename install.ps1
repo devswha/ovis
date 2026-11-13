@@ -308,7 +308,8 @@ function Install-OvisBinaryLocked([string]$Version) {
     $exe = Join-Path $bin 'ovis-server.exe'
     try {
         $running = Get-Content -Raw -LiteralPath (Join-Path $bin 'ovis-server.json') | ConvertFrom-Json
-        if ($running.version -eq $Version -and (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $running.assets.'windows-x64'.sha256) {
+        # the client it serves too: one gone missing is installed again
+        if ($running.version -eq $Version -and (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant() -eq $running.assets.'windows-x64'.sha256 -and (Test-Path -LiteralPath (Join-Path $bin 'dist\index.html'))) {
             Write-Host "Ovis: Ovis $Version is installed already in $ovisHome; nothing to do"
             return $false
         }
