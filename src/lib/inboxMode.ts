@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { inboxStartsOpen } from "./agentInbox.ts";
 import { NAV_KEY, type AppLink } from "./deepLink.ts";
+import { SEEN_KEY } from "./historyKeys.ts";
 import { pageAddress, pageSearch } from "./pageQuery.ts";
 
 declare const __HERDR_TEST_HOOKS__: boolean | undefined;
@@ -46,9 +47,14 @@ export function withInboxAddress(search: string, inbox: boolean): string {
 
 /**
  * Whether a page load is a fresh navigation: an address opened, typed, pasted or tapped. Not a reload, not a step
- * through the history onto the page, and not an entry the app itself wrote, which carries a state (a move between
- * panes, a change of mode, a sheet's or a dialog's entry) where a fresh one carries none. `type` is how the browser
- * says the page was loaded (pageNavigation), undefined where it does not say: the entry's state alone tells then.
+ * through the history onto the page, and not an entry the app has stood on before, which carries a state where a
+ * fresh one carries none. Every entry the app adds has a state of its own (a move between panes, a change of mode,
+ * a sheet's or a dialog's entry); the entry a page loaded on has none, and the address bar writes on it with the
+ * state it finds there, so useInboxMode marks it (SEEN_KEY, lib/historyKeys.ts), and marks any entry left without
+ * a state as the page is hidden. The state stays with its entry over a reload and when the browser restores the
+ * tab or loads it again after discarding it, which a browser may report as a navigation. `type` is how the
+ * browser says the page was loaded (pageNavigation), undefined where it does not say: the entry's state alone
+ * tells then.
  */
 export function freshNavigation(type: string | undefined, state: unknown): boolean {
   return type !== "reload" && type !== "back_forward" && state === null;
@@ -119,9 +125,22 @@ export function useInboxMode({ read = inboxModeRead(), startsIn }: {
   const [on, setOn] = useState(() => starts || (read && inboxAddress(pageSearch())));
   const drawerBlocked = useRef(on);
   useEffect(() => {
-    if (!starts || inboxAddress(pageSearch())) return;
-    window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, withInboxAddress(pageSearch(), true), window.location.hash));
-    // at load only: where the device starts, not where it stays
+    if (!read) return;
+    // a device that starts in the mode says so in its address, at load only: where it starts, not where it stays
+    const address = starts && !inboxAddress(pageSearch()) ? pageAddress(window.location.pathname, withInboxAddress(pageSearch(), true), window.location.hash) : undefined;
+    // An entry the app has stood on carries a state (freshNavigation): the one the page loaded on from here, and one
+    // left without a state since (the auth link's own replace, a fragment typed into the address) by the time the
+    // page is hidden, which comes before the browser can discard the tab or close with it.
+    const seen = (): void => { if (window.history.state === null) window.history.replaceState({ [SEEN_KEY]: true }, ""); };
+    const hidden = (): void => { if (document.visibilityState === "hidden") seen(); };
+    if (address !== undefined) window.history.replaceState(window.history.state ?? { [SEEN_KEY]: true }, "", address);
+    else seen();
+    window.addEventListener("pagehide", seen);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", hidden);
+    return () => {
+      window.removeEventListener("pagehide", seen);
+      if (typeof document !== "undefined") document.removeEventListener("visibilitychange", hidden);
+    };
   }, []);
   useEffect(() => {
     if (!read) return;

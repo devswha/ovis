@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { NAV_KEY } from "./deepLink.ts";
+import { SEEN_KEY } from "./historyKeys.ts";
 import { useInboxMode, type InboxMode } from "./inboxMode.ts";
 
 describe("useInboxMode", () => {
@@ -12,7 +13,7 @@ describe("useInboxMode", () => {
   let writes: string[];
   let entries: Array<{ state: unknown; url: URL }>;
   let index: number;
-  let listeners: Array<(event: Event) => void>;
+  let listeners: Array<{ type: string; listener: (event: Event) => void }>;
   /** what a listener registered after the hook's saw of each pop: the event must reach it */
   let heardAfter: number;
   /** the history writes made as the page loaded */
@@ -38,11 +39,11 @@ describe("useInboxMode", () => {
           index += steps;
           let stopped = false;
           const event = Object.assign(new Event("popstate"), { state: entries[index]!.state, stopImmediatePropagation: () => { stopped = true; } });
-          for (const listener of [...listeners]) { if (!stopped) listener(event); }
+          for (const { type, listener } of [...listeners]) { if (type === "popstate" && !stopped) listener(event); }
         },
       },
-      addEventListener: (_type: "popstate", listener: (event: Event) => void) => { listeners.push(listener); },
-      removeEventListener: (_type: "popstate", listener: (event: Event) => void) => { listeners = listeners.filter((other) => other !== listener); },
+      addEventListener: (type: string, listener: (event: Event) => void) => { listeners.push({ type, listener }); },
+      removeEventListener: (type: string, listener: (event: Event) => void) => { listeners = listeners.filter((other) => other.type !== type || other.listener !== listener); },
     } });
   });
 
@@ -68,18 +69,72 @@ describe("useInboxMode", () => {
   const back = (): Promise<void> => act(async () => { window.history.go(-1); });
   const forward = (): Promise<void> => act(async () => { window.history.go(1); });
   const searches = (): string[] => entries.map((entry) => entry.url.search);
+  /** the page's own events, which no history step raises */
+  const emit = (type: string): void => { for (const item of [...listeners]) if (item.type === type) item.listener(new Event(type)); };
 
-  it("is off on the app's own address and on on the mode's, writing nothing at load", async () => {
+  it("is off on the app's own address and on on the mode's, and at load only marks the entry the page loaded on, its address as it was", async () => {
     await mount(["/?ws=w1-api&pane=p1&view=chat"]);
     expect([mode.on, mode.at()]).toEqual([false, false]);
-    expect(writes).toEqual([]);
+    expect(loadWrites).toEqual(["replaceState 0 ?ws=w1-api&pane=p1&view=chat"]);
+    expect(entries[0]!.state).toEqual({ [SEEN_KEY]: true });
     await act(async () => { renderer?.unmount(); });
 
-    // opened by its own address, or reloaded there: the mode, with nothing of the app pushed under or over it
+    // opened by its own address: the mode, with nothing of the app pushed under or over it
     await mount(["/?app=inbox"]);
     expect([mode.on, mode.at()]).toEqual([true, true]);
-    expect(writes).toEqual([]);
+    expect(loadWrites).toEqual(["replaceState 0 ?app=inbox"]);
     expect(entries).toHaveLength(1);
+    await act(async () => { renderer?.unmount(); });
+
+    // reloaded on an entry of the app's own: nothing is written on it
+    entries = [{ state: { [NAV_KEY]: true }, url: new URL("http://localhost:7317/?app=inbox") }];
+    index = 0;
+    function Probe() { mode = useInboxMode({ read: true }); return null; }
+    await act(async () => { renderer = create(createElement(Probe)); });
+    expect(writes).toEqual([]);
+    expect(entries[0]!.state).toEqual({ [NAV_KEY]: true });
+  });
+
+  it("marks an entry left without a state by the time the page is hidden or left, and writes on none that has one", async () => {
+    const page = { visibilityState: "visible", changed: [] as Array<() => void> };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      get visibilityState() { return page.visibilityState; },
+      // no hosted shell around the app (lib/shellMode.ts)
+      querySelector: () => null,
+      addEventListener: (_type: "visibilitychange", listener: () => void) => { page.changed.push(listener); },
+      removeEventListener: (_type: "visibilitychange", listener: () => void) => { page.changed = page.changed.filter((other) => other !== listener); },
+    } });
+    const visibility = (state: string): void => { page.visibilityState = state; for (const listener of [...page.changed]) listener(); };
+    await mount(["/?pane=p1"]);
+    // Given the entry has no state again, as the auth link's own replace leaves it.
+    window.history.replaceState(null, "", "/?pane=p1");
+    writes = [];
+
+    // When the page comes to the front, nothing is written; when it is hidden, the entry is marked where it stands.
+    visibility("visible");
+    expect(writes).toEqual([]);
+    visibility("hidden");
+    expect(writes).toEqual(["replaceState 0 ?pane=p1"]);
+    expect(entries[0]!.state).toEqual({ [SEEN_KEY]: true });
+
+    // an entry that has a state is written on no more: hidden again, left, or one of the app's own
+    visibility("hidden");
+    emit("pagehide");
+    await act(async () => { mode.enter(); });
+    emit("pagehide");
+    expect(writes).toEqual(["replaceState 0 ?pane=p1", "pushState 1 ?pane=p1&app=inbox"]);
+    expect(entries[1]!.state).toEqual({ [NAV_KEY]: true });
+
+    // leaving the page marks one too
+    window.history.replaceState(null, "", "/?pane=p1&app=inbox");
+    emit("pagehide");
+    expect(entries[1]!.state).toEqual({ [SEEN_KEY]: true });
+
+    // and nothing listens once the app is gone
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    expect(page.changed).toEqual([]);
+    expect(listeners.filter((item) => item.type === "pagehide")).toEqual([]);
   });
 
   it("enters by one entry that keeps the address's other parameters, and Back and Forward follow it", async () => {
@@ -125,7 +180,7 @@ describe("useInboxMode", () => {
     await mount(["/?pane=p1", "/?app=inbox"]);
     let seen: boolean[] = [];
     // registered before the hook's own listener would be: it reads the entry the pop landed on, not the drawn mode
-    listeners.unshift(() => { seen = [mode.on, mode.at()]; });
+    listeners.unshift({ type: "popstate", listener: () => { seen = [mode.on, mode.at()]; } });
 
     await back();
 
@@ -149,8 +204,9 @@ describe("useInboxMode", () => {
   it("starts in the mode on a device that says so, its address taking the mark by a replace with nothing pushed", async () => {
     await mount(["/"], true, true);
     expect([mode.on, mode.at()]).toEqual([true, true]);
+    // one replace says the mode and marks the entry
     expect(loadWrites).toEqual(["replaceState 0 ?app=inbox"]);
-    expect(entries).toHaveLength(1);
+    expect(entries).toEqual([{ state: { [SEEN_KEY]: true }, url: new URL("http://localhost:7317/?app=inbox") }]);
     await act(async () => { renderer?.unmount(); });
 
     // a tapped alert's address keeps its pane: the mode opens on that thread
@@ -159,9 +215,9 @@ describe("useInboxMode", () => {
     expect(loadWrites).toEqual(["replaceState 0 ?pane=p1&view=chat&app=inbox"]);
     await act(async () => { renderer?.unmount(); });
 
-    // an address already the mode's is left as it is, and a build that does not read the mode starts nowhere
+    // an address already the mode's is left as it is, and a build that does not read the mode starts nowhere and writes nothing
     await mount(["/?app=inbox"], true, true);
-    expect(loadWrites).toEqual([]);
+    expect(loadWrites).toEqual(["replaceState 0 ?app=inbox"]);
     await act(async () => { renderer?.unmount(); });
     await mount(["/"], false, true);
     expect(mode.on).toBe(false);
@@ -181,7 +237,7 @@ describe("useInboxMode", () => {
   });
 
   it("writes the mode into the hosted shell's fragment", async () => {
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelector: () => ({ getAttribute: () => "relay" }) } });
+    Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelector: () => ({ getAttribute: () => "relay" }), addEventListener: () => {}, removeEventListener: () => {} } });
     const scope = `/s/${"ab".repeat(16)}/`;
     await mount([`${scope}#pane=p1`]);
     expect(mode.on).toBe(false);

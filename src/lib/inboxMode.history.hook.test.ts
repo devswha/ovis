@@ -315,6 +315,29 @@ describe("the inbox mode in the history", () => {
     expect(addresses()).toEqual([P1]);
   });
 
+  it("a tab the browser loads again on the entry the page loaded on starts nothing, though it calls that a navigation: the app marked the entry", async () => {
+    // Given a phone in the classic app with the setting off, on the entry it loaded on, whose address the app wrote to say its pane.
+    await open([""], "p1");
+    expect(screen()).toBe("app:p1");
+    expect(addresses()).toEqual([P1]);
+    const stood = entries[0]!.state;
+    await act(async () => { renderer?.unmount(); });
+
+    // When the setting has been turned on since, and the browser restores the tab on that entry as a navigation.
+    setting = true;
+    navigation = "navigate";
+    await open([P1], "p1", stood);
+
+    // Then it opens where its address says, the classic app.
+    expect(screen()).toBe("app:p1");
+    expect(addresses()).toEqual([P1]);
+    await act(async () => { renderer?.unmount(); });
+
+    // And the same address on an entry no page of the app has stood on is a fresh navigation: that pane's thread.
+    await open([P1], "p1");
+    expect(screen()).toBe("thread:p1");
+  });
+
   it("a reload keeps the mode and what it showed", async () => {
     await open([P1, LIST, thread(P2)], "p2");
     expect(screen()).toBe("thread:p2");

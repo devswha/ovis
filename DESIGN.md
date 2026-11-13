@@ -2221,9 +2221,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   list behind its Back; the address takes the mode's mark by a replace. An address that names
   only a workspace or a file, and every wider window, open as they always did. The setting
   says where the device starts, not where it stays: leaving the mode does not turn it off, and
-  only a fresh navigation starts it (lib/inboxMode.ts `freshNavigation`). A reload, a page the
-  browser restores and an entry the app itself wrote open where their address says, so a phone
-  that went Back to Ovis is still in the classic app after a reload. Its
+  only a fresh navigation starts it (lib/inboxMode.ts `freshNavigation`): a load the browser
+  does not call a reload or a step through the history, on an entry that carries no state. An
+  entry the app has stood on carries one: every entry it adds has a state of its own, and it
+  marks the entry a page loaded on (`SEEN_KEY`; the address bar writes on that entry with the
+  state it finds there) and any entry left without a state as the page is hidden. So a reload, a
+  tab the browser restores or loads again after discarding it (which some call a navigation) and
+  a step back onto the app's entries open where their address says, and a phone that went Back
+  to Ovis is still in the classic app afterwards. Its
   row says: "On this device, a phone-width window starts in the agent inbox: the list of
   agents, or the chat of the pane its address names. More has Back to Ovis."
 - Brief, the list on a phone. Primary action: opening a row; no control is drawn as primary.
