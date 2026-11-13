@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DESKTOP_APP_UPDATES, noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type UpdateRequest, type UpdateStatus, INSTALL_ID } from "../shared/update.ts";
@@ -185,6 +185,26 @@ describe("a manual install", () => {
     expect(sent).toEqual([{ type: "update-status-request" }]);
   });
 
+  it("gives the 0.2.0 commands with the folder as one literal word, whatever the folder's name holds", () => {
+    // pasted into a shell with a stand-in git: git gets exactly that folder, and nothing in its name runs
+    const scratch = mkdtempSync(join(tmpdir(), "ovis-020-paste-"));
+    try {
+      const bin = join(scratch, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "git"), `#!/bin/sh\nfor arg; do printf '%s\\n' "$arg"; done > "${join(scratch, "args")}"\n`, { mode: 0o755 });
+      const folder = join(scratch, `a'b"c$(touch ran-1)d\`touch ran-2\`e`);
+      const reason = oldLauncherReason(folder);
+      const command = /run: (git -C .+? pull --ff-only origin main) \(or,/.exec(reason)?.[1];
+      expect(command).toBeDefined();
+      const run = Bun.spawnSync(["sh", "-c", command!], { cwd: scratch, env: { PATH: `${bin}:/usr/bin:/bin` }, stderr: "pipe" });
+      expect(run.exitCode, run.stderr.toString()).toBe(0);
+      expect(readFileSync(join(scratch, "args"), "utf8")).toBe(["-C", folder, "pull", "--ff-only", "origin", "main", ""].join("\n"));
+      expect(readdirSync(scratch).filter((name) => name.startsWith("ran-"))).toEqual([]);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
   it("tells a bridge the launcher of 0.2.0 started to update its checkout, the only way on from there", async () => {
     // that launcher is its own supervisor and starts the bridge with no source root, in a release it cloned from the
     // checkout: git's reflog there names the checkout, which the commands to run then name
@@ -199,7 +219,7 @@ describe("a manual install", () => {
       const under020 = connect({ OVIS_MANAGED: "1", HERDR_WEB_MANAGED: "1" }, release);
       deliver({ type: "update-status", status: { ...older, available: false } });
       expect(under020.status()).toMatchObject({ available: false, blocked_reason: oldLauncherReason("/home/me/herdr-web-ui") });
-      expect(under020.status().blocked_reason).toContain('"/home/me/herdr-web-ui"');
+      expect(under020.status().blocked_reason).toContain("'/home/me/herdr-web-ui'");
       const refused = await handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", under020);
       expect(refused.status).toBe(409);
       expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(oldLauncherReason("/home/me/herdr-web-ui"));

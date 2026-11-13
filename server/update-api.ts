@@ -50,9 +50,13 @@ export interface SupervisorChannel {
  * nothing: only its checkout, updated, brings a launcher that moves on to the compiled server.
  */
 const OLD_LAUNCHER_OPENING = "This Ovis runs under the launcher of version 0.2.0";
+/** `text` as one word of a POSIX shell, taken literally: in single quotes, each ' written as '\'' */
+export const shellWord = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`;
+
 export function oldLauncherReason(checkout: string | null): string {
-  const folder = checkout ?? "<the folder Ovis was installed in>";
-  return `${OLD_LAUNCHER_OPENING}, which installs no further update. To move on, run: git -C "${folder}" pull --ff-only origin main (or, for the herdr plugin: herdr plugin update devswha.ovis). Then restart Ovis: herdr's Stop Ovis, then Start Ovis (or stop it and run bun run start in "${folder}").`;
+  // the folder git recorded may hold anything a file name can ($(…), a backtick, a quote): pasted, it stays one word
+  const folder = checkout === null ? "<the folder Ovis was installed in>" : shellWord(checkout);
+  return `${OLD_LAUNCHER_OPENING}, which installs no further update. To move on, run: git -C ${folder} pull --ff-only origin main (or, for the herdr plugin: herdr plugin update devswha.ovis). Then restart Ovis: herdr's Stop Ovis, then Start Ovis (or stop it and run bun run start in ${folder}).`;
 }
 
 /**
