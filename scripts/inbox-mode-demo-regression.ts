@@ -1377,6 +1377,8 @@ try {
       for (const gone of [
         { what: "its workspace still open", path: `/?app=inbox&ws=w1C-checkout-api&pane=${encodeURIComponent("w1C:p9")}&view=chat`, note: "That link's chat is closed" },
         { what: "its workspace closed too", path: `/?app=inbox&pane=${encodeURIComponent("w9Z:p9")}&view=chat`, note: "That link's workspace is closed" },
+        // a PC this app does not have: the pane's id means nothing on another PC, and the classic app opens the pane herdr has in front
+        { what: "its PC not set up here", path: `/?app=inbox&machine=not-here&pane=${encodeURIComponent(WORKING)}&view=chat`, note: "That link's PC is not set up here" },
       ]) {
         for (const viewport of [PHONE, desktop]) {
           const at = viewport.width >= 769 ? "a wide window" : "a phone";
