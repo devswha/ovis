@@ -39,7 +39,6 @@ import { readOmoLinesCooperatively, type OmoLine } from "./omo-records.ts";
 export { readOmoLines as readLines, type OmoLine } from "./omo-records.ts";
 
 import type { AgentStatus, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import type { OwnStatusAgent } from "../shared/own-status-agents.ts";
 import { omoAsksAfter, type OmoAsks } from "./omo-ask.ts";
 import { omoDetachedAfter, type OmoDetachedCell } from "./omo-detached.ts";
 import { omoJobCount, omoJobsAfter, omoJobTasks, type OmoJobs } from "./omo-jobs.ts";
@@ -173,11 +172,8 @@ export interface OmoStatusDeps {
   onChange: (paneId: string, status: AgentStatus, background: number, turn: boolean, rest?: OmoRest) => void;
   /** a pane was found to run OmO: what herdr called it until now is the same agent */
   onFound?: (paneId: string, again: boolean) => void;
-  /**
-   * the identity the panes' status is reported under (`omo`), and the names herdr gave the agent before. It is one
-   * of shared/own-status-agents.ts: the page trusts herdr's counter for no agent named there
-   */
-  agent?: OwnStatusAgent;
+  /** the identity the panes' status is reported under (`omo`), and the names herdr gave the agent before */
+  agent?: string;
   aliases?: readonly string[];
   /** a session record applied to the turn so far (`omoTurnAfter`): another agent's records have their own */
   turnAfter?: (turn: OmoTurn, line: OmoLine) => OmoTurn;
@@ -240,7 +236,7 @@ export class OmoStatus {
   private readonly background: NonNullable<OmoStatusDeps["background"]>;
   private readonly now: () => number;
   private readonly refreshMs: number;
-  private readonly agent: OwnStatusAgent;
+  private readonly agent: string;
   private readonly aliases: readonly string[];
   private readonly turnAfter: NonNullable<OmoStatusDeps["turnAfter"]>;
   private readonly ready: NonNullable<OmoStatusDeps["ready"]>;
