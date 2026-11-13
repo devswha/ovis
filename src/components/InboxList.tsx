@@ -68,6 +68,8 @@ export interface InboxListProps {
   note?: ReactNode;
   /** what the connection has to say (lib/headerConnection.ts), which a thread says under its name: one quiet line here */
   connection?: HeaderConnection;
+  /** why the roster's last load failed, in the words the app has for it (the classic sidebar's error), and the way to load it again */
+  failure?: { error: string; retry(): void } | null;
 }
 
 /** the marks drawn as a full tile, which fill the round face; the others sit on it as a glyph */
@@ -99,7 +101,7 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
  * The inbox mode's list: every shown PC's agents, the ones that need the reader first, each a row of two lines.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, onExit, note, connection = null }: InboxListProps) {
+export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, onExit, note, connection = null, failure = null }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
@@ -226,6 +228,9 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   // The mode's own three empty states, each saying what happened and, where there is something to do, what, on a
   // line of its own: the round plus starts a workspace, and is named only where it is drawn. None says what the
   // rows are: the mode's chrome does not.
+  // a load that failed with no row to show says so, with its cause and a way to try again, where a load in flight
+  // says Loading… and a roster with nothing running says so: a failure is never taken for either
+  const failed = failure !== null && all.length === 0 ? failure : null;
   const empty = emptyWhy === "loading" ? [t("Loading…")]
     : emptyWhy === "none" ? (offerNew ? [t("Nothing is running yet"), t("Use + to start a workspace")] : [t("Nothing is running yet")])
     : emptyWhy === "no-match" ? [t("No results")] : null;
@@ -306,7 +311,12 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
         </>}
       </div>
       <div className="inbox-scroll" ref={scroller} onScroll={(event) => { if (restoring.current === null) scroll.current = event.currentTarget.scrollTop; }}>
-        {empty !== null ? <p className="inbox-empty" role="status">{empty.flatMap((line, at) => [...(at > 0 ? [" "] : []), <span key={line}>{line}</span>])}</p> : (
+        {failed !== null ? (
+          <div className="inbox-failed" role="alert">
+            <p className="inbox-failed-cause">{failed.error}</p>
+            <button type="button" className="btn" onClick={failed.retry}>{t("Retry")}</button>
+          </div>
+        ) : empty !== null ? <p className="inbox-empty" role="status">{empty.flatMap((line, at) => [...(at > 0 ? [" "] : []), <span key={line}>{line}</span>])}</p> : (
           <ul className="inbox-rows" onPointerDown={holdAfterPress} onTouchEnd={holdAfterPress}
             onFocus={(event) => setFocusIn(event.target.matches(":focus-visible"))} onBlur={(event) => { if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }}>
             {rows.map((row) => {

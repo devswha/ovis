@@ -29,6 +29,10 @@ declare global {
        */
       dropRoster(): void;
       restoreRoster(): void;
+      /** whether the roster's load fails (the page's `?inbox_fail=roster` starts it failing): a 500, and no roster pushed meanwhile */
+      failRoster(failing: boolean): void;
+      /** how many times the page has asked for the roster (/api/machines), failed or not */
+      rosterReads: number;
     };
     /** every shell the page has committed since its document began, in order (the first-paint step notes them) */
     inboxShells: string[];
@@ -74,9 +78,12 @@ function installInboxFixture(): void {
     return machines;
   };
   const sources = new Set<EventSource>();
+  let rosterFails = new URLSearchParams(location.search).get("inbox_fail") === "roster";
   const fetchDemo = window.fetch;
   window.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+    if (url.pathname === "/api/machines") window.inboxFixture.rosterReads++;
+    if (rosterFails && url.pathname === "/api/machines") return Response.json({ error: { code: "internal", message: "The roster could not be read" } }, { status: 500 });
     const response = await fetchDemo(input, init);
     if (url.pathname !== "/api/machines" || !response.ok) return response;
     const body = await response.json();
@@ -91,6 +98,7 @@ function installInboxFixture(): void {
       Object.defineProperty(this, "onmessage", {
         get: () => (event: MessageEvent<string>) => {
           const body = JSON.parse(event.data);
+          if (body.type === "machines" && rosterFails) return;
           if (body.type === "machines") { body.machines = patch(body.machines); window.inboxFixture.rosters++; }
           if (body.type === "machine-message" && body.message.type === "pane-status") {
             body.message.finish_epoch = `${state.epoch}:${body.machine_id}`;
@@ -144,6 +152,8 @@ function installInboxFixture(): void {
     restoreRoster() {
       for (const source of sources) { Object.assign(source, { readyState: 1 }); source.onopen?.(new Event("open")); }
     },
+    failRoster(failing) { rosterFails = failing; },
+    rosterReads: 0,
   };
 }
 
@@ -1414,6 +1424,36 @@ try {
           assert.equal(back, "Connected", "back, the line says so");
           await line.waitFor({ state: "detached" });
           console.log(`PASS on ${at} the list says Reconnecting… in one quiet line (${wide ? "a plain line leading the column's top row" : "a round pill on the round controls' surface and centre line"}) while the connection is lost, Connected when it is back, and then nothing`);
+        }, viewport);
+      }
+
+      // ---- a list whose load failed ----
+      // A cold list whose roster could not be read says so, with the cause and a Retry, never Loading… for ever; Retry
+      // loads it again.
+      for (const viewport of [PHONE, desktop]) {
+        const wide = viewport.width >= 769;
+        const at = wide ? "a wide window" : "a phone";
+        await withPage(browser, base, light, "/?app=inbox&inbox_fail=roster", `the list whose load failed, on ${at}`, async (page) => {
+          const failure = page.locator('.mode-inbox [role="alert"]');
+          await failure.waitFor();
+          assert.equal(await page.locator(".mode-inbox .inbox-empty").count(), 0, "a failed load is not said to be loading");
+          const cause = (await failure.locator(".inbox-failed-cause").textContent())?.trim() ?? "";
+          assert.ok(cause.length > 0, "the failure says its cause");
+          const retry = failure.getByRole("button");
+          assert.equal(await retry.count(), 1, "the failure holds one button");
+          if (!wide) assert.ok((await box(page, '.mode-inbox [role="alert"] button')).h >= 44, "Retry is a touch target on a phone");
+          // the failure ends and Retry is pressed in one task: no background read can come between, and the read the
+          // press makes is counted as it is made
+          const asked = await page.evaluate(() => {
+            window.inboxFixture.failRoster(false);
+            const before = window.inboxFixture.rosterReads;
+            document.querySelector<HTMLButtonElement>('.mode-inbox [role="alert"] button')!.click();
+            return window.inboxFixture.rosterReads - before;
+          });
+          assert.ok(asked > 0, `Retry asks for the roster (${asked} reads)`);
+          await rowCount(page, 6);
+          assert.equal(await failure.count(), 0, "loaded, the list has no failure to say");
+          console.log(`PASS on ${at} a list whose load failed says so, with its cause (${cause}) and one Retry where its rows would be, and Retry loads them`);
         }, viewport);
       }
 

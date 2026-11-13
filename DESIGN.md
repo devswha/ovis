@@ -2352,7 +2352,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   line of its own under it at every width (two blocks; one too long for a narrow window breaks
   into even lines, between words): **Loading…**; **Nothing is running yet**, then **Use + to
   start a workspace**, left out where the plus is not drawn (a watching device, no connected
-  PC); **No results**.
+  PC); **No results**. A load that failed with no row to show is said there instead, never as
+  Loading…: the cause in the app's words for it (the classic sidebar's error, `--danger-text`)
+  and **Retry** under it (`.btn`, `--touch-target` under a coarse pointer), one `role="alert"`,
+  on both layouts; Retry loads the roster again. Rows already drawn stay over a refresh that
+  failed.
   None says what the rows are, as nothing else in the mode's chrome does; the classic Agents
   list keeps its own lines. The filter, the query and the scroll offset are kept while a thread
   is open.

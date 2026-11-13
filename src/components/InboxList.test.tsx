@@ -128,6 +128,7 @@ describe("InboxList", () => {
   interface DrawOptions {
     wide?: boolean; current?: string | null; filter?: InboxFilter; query?: string; watching?: boolean; activity?: SidebarActivity; scrollTop?: number;
     connection?: HeaderConnection;
+    failure?: { error: string; retry(): void } | null;
     /** how many times the list has opened (lib/useInbox.ts), and the opening it last took the focus for: a fresh opening unless a case says not */
     opening?: number; focusTaken?: number;
     /** the row (inboxKey) whose thread a Back just left: the list's opening gives it the focus */
@@ -149,7 +150,7 @@ describe("InboxList", () => {
     <Stamping machines={machines} activity={options.activity ?? activity} />
     <InboxList machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
       filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} focus={{ opening: options.opening ?? 1, taken, row: options.returnTo ?? null }}
-      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} more={options.more} note={options.note} onExit={options.onExit} connection={options.connection ?? null} />
+      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} more={options.more} note={options.note} onExit={options.onExit} connection={options.connection ?? null} failure={options.failure ?? null} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -414,6 +415,43 @@ describe("InboxList", () => {
     const unmatched = await draw(roster(), { query: "nothing is called this" });
     expect(byClass(unmatched, "inbox-empty").map(text)).toEqual(["No results"]);
     expect(byClass(unmatched, "inbox-rows").length).toBe(0);
+  });
+
+  it("says a failed load with its cause and a Retry that loads again, where a load in flight says it is loading", async () => {
+    const retries: string[] = [];
+    const failure = { error: "Failed to fetch", retry: () => { retries.push("retry"); } };
+    const alerts = (root: ReactTestInstance) => root.findAll((node) => typeof node.type === "string" && node.props.role === "alert");
+    const buttons = (node: ReactTestInstance) => node.findAll((inner) => inner.type === "button");
+
+    // Given a load in flight, no roster yet: a status line, no alert and nothing to press.
+    const loading = await draw([]);
+    expect([alerts(loading).length, byClass(loading, "inbox-empty").map((node) => node.props.role)]).toEqual([0, ["status"]]);
+    await act(async () => { renderer?.unmount(); });
+
+    // When the load failed with no roster, on a phone and in the column: one alert in the rows' place, which says
+    // the cause the app has for it and holds one real button, and the button loads again.
+    for (const wide of [false, true]) {
+      phone = !wide;
+      const failed = await draw([], { wide, failure });
+      const [alert, ...others] = alerts(failed);
+      expect([others.length, byClass(failed, "inbox-empty").length, byClass(failed, "inbox-rows").length]).toEqual([0, 0, 0]);
+      expect(byClass(alert!, "inbox-failed-cause").map(text)).toEqual(["Failed to fetch"]);
+      const [retry, ...more] = buttons(alert!);
+      expect([more.length, retry!.props.type, retry!.props.className]).toEqual([0, "button", "btn"]);
+      await act(async () => { retry!.props.onClick(); });
+      expect(retries).toEqual(wide ? ["retry", "retry"] : ["retry"]);
+      await act(async () => { renderer?.unmount(); });
+    }
+
+    // a roster that lists PCs and nothing running, then fails to load again: the failure, not the empty line
+    const empty = roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && { ...machine.snapshot, panes: [] } }));
+    const none = await draw(empty, { failure });
+    expect([alerts(none).length, byClass(none, "inbox-empty").length]).toEqual([1, 0]);
+    await act(async () => { renderer?.unmount(); });
+
+    // rows already drawn stay over a refresh that failed: the list does not trade them for the failure
+    const kept = await draw(roster(), { failure });
+    expect([alerts(kept).length, byClass(kept, "inbox-item").length > 0]).toEqual([0, true]);
   });
 
   it("says what the connection has to say in one status line, and draws nothing while it has nothing to say", async () => {

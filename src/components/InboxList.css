@@ -425,6 +425,24 @@
   text-align: center;
 }
 
+/* a load that failed: its cause in the danger's words, and Retry under it, where the rows would be */
+.mode-inbox .inbox-failed {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.mode-inbox .inbox-failed-cause {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: var(--fs-md);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
 /* what happened, and under it the next step where there is one: each a line of its own at every width, so neither
    sentence runs into the other or ends on a word left alone. One too long for a narrow window breaks into even
    lines, between words (Korean keeps each word whole, styles.css) */
