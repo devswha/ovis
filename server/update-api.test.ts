@@ -192,13 +192,21 @@ describe("a manual install", () => {
       const bin = join(scratch, "bin");
       mkdirSync(bin);
       writeFileSync(join(bin, "git"), `#!/bin/sh\nfor arg; do printf '%s\\n' "$arg"; done > "${join(scratch, "args")}"\n`, { mode: 0o755 });
+      const pasted = (checkout: string | null) => {
+        const command = /run: (git -C .+? pull --ff-only origin main) \(or,/.exec(oldLauncherReason(checkout))?.[1];
+        expect(command).toBeDefined();
+        const run = Bun.spawnSync(["sh", "-c", command!], { cwd: scratch, env: { PATH: `${bin}:/usr/bin:/bin` }, stderr: "pipe" });
+        expect(run.exitCode, run.stderr.toString()).toBe(0);
+        return readFileSync(join(scratch, "args"), "utf8").split("\n").slice(0, -1);
+      };
       const folder = join(scratch, `a'b"c$(touch ran-1)d\`touch ran-2\`e`);
-      const reason = oldLauncherReason(folder);
-      const command = /run: (git -C .+? pull --ff-only origin main) \(or,/.exec(reason)?.[1];
-      expect(command).toBeDefined();
-      const run = Bun.spawnSync(["sh", "-c", command!], { cwd: scratch, env: { PATH: `${bin}:/usr/bin:/bin` }, stderr: "pipe" });
-      expect(run.exitCode, run.stderr.toString()).toBe(0);
-      expect(readFileSync(join(scratch, "args"), "utf8")).toBe(["-C", folder, "pull", "--ff-only", "origin", "main", ""].join("\n"));
+      expect(pasted(folder)).toEqual(["-C", folder, "pull", "--ff-only", "origin", "main"]);
+      // the placeholder where the folder cannot be told, pasted unchanged: one word for git, no file written or read
+      const before = readdirSync(scratch).sort();
+      const [, placeholder, ...rest] = pasted(null);
+      expect(rest).toEqual(["pull", "--ff-only", "origin", "main"]);
+      expect(placeholder).not.toMatch(/[\s<>]/);
+      expect(readdirSync(scratch).sort()).toEqual(before);
       expect(readdirSync(scratch).filter((name) => name.startsWith("ran-"))).toEqual([]);
     } finally {
       rmSync(scratch, { recursive: true, force: true });

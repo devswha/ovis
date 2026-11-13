@@ -5,7 +5,7 @@
   files changed after it was installed is not run.
 - An install still started by the launcher of Ovis 0.2.0 installs no further update by itself, and its
   Settings now say so. To move on, update its folder and restart Ovis:
-  `git -C <the folder Ovis was installed in> pull --ff-only origin main` (for the herdr plugin:
+  `git -C 'YOUR-OVIS-FOLDER' pull --ff-only origin main`, with your Ovis folder in its place (for the herdr plugin:
   `herdr plugin update devswha.ovis`), then herdr's Stop Ovis and Start Ovis (or stop it and run
   `bun run start` in that folder). From then on it updates itself again.
 
