@@ -2535,7 +2535,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane therefore keeps the box it was shown in (lib/coveredPane.ts reads each pane's box as the
   list is about to cover it, and at no other time, so the classic app reads and watches nothing
   for it; it writes the box on the slot's own style, over the rectangle a split's half carries
-  there, `.pane-slot[data-kept-box]`) and sizes nothing (`PaneCoveredContext`, as a split pane a
+  there, `.pane-slot[data-kept-box]`, with the room a header over the pane took of it
+  (`--header-over`: a phone's glass header, a wide thread's zone; the list gives it none), as the
+  commit that covers it is made, before anything lays the page out again: laid out for a moment
+  at the area's new size, or losing that room at its top while hidden, a transcript at its end
+  would be cut short and stand short of it, under the list and in the thread its row opens, with
+  Jump to latest) and sizes nothing (`PaneCoveredContext`, as a split pane a
   phone keeps behind another sizes nothing), keeping its hold on the pty's size, or the lack of
   one, as it does under a phone's open drawer. Shown again it fits the box it is shown in, and a
   pane that held the size as the list covered it asks for that grid only where it differs: back

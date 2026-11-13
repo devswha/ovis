@@ -1366,6 +1366,78 @@ try {
         }, viewport, touch);
       }
 
+      // ---- a pane the list covered, opened by its own row ----
+      // The pane the classic app showed stays mounted under the list, and its own row opens it with no new pick: it is
+      // the selection already. It followed its transcript's end as the list covered it, so it stands at that end under
+      // the list and, shown as a thread, at its end with no Jump to latest: by Enter as by a press, after another
+      // agent's thread and Back, and again after Back and the same row.
+      for (const lane of [
+        { at: "390 under a coarse pointer", viewport: PHONE, touch: true, acts: ["Enter"] },
+        { at: "390 under a coarse pointer", viewport: PHONE, touch: true, acts: ["press"] },
+        { at: "390 under a coarse pointer", viewport: PHONE, touch: true, acts: ["another", "press"] },
+        { at: "480 under a fine pointer", viewport: { width: 480, height: 900 }, touch: false, acts: ["Enter"] },
+        { at: "480 under a fine pointer", viewport: { width: 480, height: 900 }, touch: false, acts: ["press"] },
+        { at: "1440", viewport: desktop, touch: false, acts: ["press", "press"] },
+      ] as const) {
+        const wide = lane.viewport.width >= 769;
+        const what = `the transcript's end as the pane classic showed is opened by its own row (${lane.acts.join(", Back, ")}), at ${lane.at}`;
+        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, what, async (page) => {
+          const press = (target: ReturnType<typeof row>) => lane.touch ? target.tap() : target.click();
+          const view = `[data-layout-pane="${WORKING}"] .chat-view`;
+          /** how far short of its end the transcript stands, and how many of the chat's controls for its end are drawn */
+          const transcript = () => page.evaluate((selector) => {
+            const node = document.querySelector<HTMLElement>(selector);
+            const drawn = [...document.querySelectorAll(".chat-new-messages")].filter((control) => control.getClientRects().length > 0 && getComputedStyle(control).visibility === "visible");
+            return node === null ? null : { short: Math.round(node.scrollHeight - node.clientHeight - node.scrollTop), controls: drawn.map((control) => control.getAttribute("aria-label") ?? control.textContent) };
+          }, view);
+          /** the transcript has its rows and stands at its end */
+          const atEnd = () => page.waitForFunction((selector) => {
+            const node = document.querySelector<HTMLElement>(selector);
+            return node !== null && node.querySelector("[data-chat-row]") !== null && node.clientHeight > 0 && node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
+          }, view, { timeout: 5_000 }).then(() => true, () => false);
+          await page.locator(".app-header.is-zoned").waitFor();
+          // the demo ends the agent's turn on its own a few seconds in (the fixture holds its state): its last words are in
+          // the transcript before the list covers it, so nothing grows it while it is read
+          await page.waitForFunction((selector) => document.querySelector(selector)?.textContent?.includes("6 tests pass") === true, view, { timeout: 15_000 });
+          assert.ok(await atEnd(), "the classic app's chat follows its transcript's end");
+          await press(page.locator(".header-more-button"));
+          if (wide) {
+            await page.locator('.row-menu [data-item="enter-inbox"]').click();
+            await page.locator(".inbox-column .mode-inbox").waitFor();
+          } else {
+            await page.locator(".row-sheet").waitFor();
+            await press(page.locator('.row-sheet [data-item="enter-inbox"]'));
+            await sheetClosed(page);
+            await listScreen(page);
+          }
+          await rowCount(page, 6);
+          await frames(page);
+          const covered = await transcript();
+          assert.ok(covered !== null && covered.short <= 1, `under the list the transcript stands at its end: ${JSON.stringify(covered)}`);
+          let opened = 0;
+          for (const [index, act] of lane.acts.entries()) {
+            if (index > 0) {
+              await page.goBack();
+              if (wide) await page.locator(".inbox-unchosen").waitFor(); else await listScreen(page);
+              await rowCount(page, 6);
+            }
+            const pane = act === "another" ? BLOCKED : WORKING;
+            if (act === "Enter") { await row(page, pane).focus(); await page.keyboard.press("Enter"); }
+            else await press(row(page, pane));
+            await page.locator(wide ? ".thread-chip" : "#inbox-back").waitFor();
+            await addressIs(page, { app: "inbox", pane }, "the row's thread is drawn");
+            if (pane !== WORKING) continue;
+            opened += 1;
+            const reached = await atEnd();
+            // fixed wait: nothing moves the transcript or draws a control for its end later
+            await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+            const shown = await transcript();
+            assert.ok(reached && shown !== null && shown.short <= 1 && shown.controls.length === 0, `opened by ${act} (${opened}), the thread's transcript is at its end with no Jump to latest: ${JSON.stringify(shown)}`);
+          }
+          console.log(`PASS ${what}: under the list and in each thread at its end, with no Jump to latest`);
+        }, lane.viewport, lane.touch);
+      }
+
       // ---- the band over a shown terminal under a finger, on a wide window ----
       // Where classic has no status bar (a finger), the band over a thread's terminal is the classic header's height:
       // the thread's controls in it take the header's own touch size and sit on its middle, as classic's header

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, type RefObject } from "react";
+import { createElement, useLayoutEffect, type RefObject } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useKeptPaneBoxes } from "./coveredPane.ts";
 
@@ -12,6 +12,8 @@ class FakeSlot {
   reads = 0;
   readonly attributes = new Map<string, string>();
   readonly properties = new Map<string, string>();
+  /** the custom properties the page gives it from its ancestors, as the slot's computed style reads them */
+  readonly computed = new Map<string, string>();
   readonly style = {
     getPropertyValue: (name: string): string => this.properties.get(name) ?? "",
     setProperty: (name: string, value: string): void => { this.properties.set(name, value); },
@@ -41,8 +43,9 @@ describe("useKeptPaneBoxes", () => {
   const area = { current: null } as unknown as RefObject<HTMLElement | null>;
 
   beforeEach(() => {
-    for (const key of ["ResizeObserver", "MutationObserver", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["ResizeObserver", "MutationObserver", "IS_REACT_ACT_ENVIRONMENT", "getComputedStyle"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: (slot: FakeSlot) => ({ getPropertyValue: (name: string) => slot.computed.get(name) ?? "" }) });
     asked = { panes: 0, box: 0, observers: 0 };
     const Observer = class {
       constructor() { asked.observers += 1; }
@@ -203,6 +206,58 @@ describe("useKeptPaneBoxes", () => {
 
     // Then it is held at the box the list found it in, not at the one the area gives it now.
     expect(again.kept()).toEqual({ position: "absolute", left: "560px", top: "42px", width: "560px", height: "830px" });
+  });
+
+  it("holds a covered pane at its size before anything in the commit that covers it reads the page", async () => {
+    // Given a pane shown under a phone's header, and a part of the page that opens with the list and reads the page as
+    // it opens (the list puts its scroll back and takes the focus): its layout effect runs before the hold's own.
+    const slot = new FakeSlot({ left: 0, top: 52, width: 390, height: 792 });
+    slots = [slot];
+    const seen: string[] = [];
+    function Opening({ covered }: { covered: boolean }) {
+      useLayoutEffect(() => { if (covered) seen.push(slot.style.getPropertyValue("height") || "not held"); }, [covered]);
+      return null;
+    }
+    function Page({ covered }: { covered: boolean }) {
+      useKeptPaneBoxes(area, covered);
+      return createElement(Opening, { covered });
+    }
+    const show = async (covered: boolean): Promise<void> => {
+      await act(async () => {
+        if (renderer) renderer.update(createElement(Page, { covered }));
+        else renderer = create(createElement(Page, { covered }));
+      });
+    };
+    await show(false);
+
+    // When the list covers it, the header gone: the area the page would lay it out in is taller.
+    areaBox = { left: 0, top: 0, width: 390, height: 844 };
+    await show(true);
+
+    // Then that part finds the pane already held at the height it was shown at, and the hold ends where it was on the
+    // screen: the page is never laid out with the pane at the area's height, not even for a moment.
+    expect(seen).toEqual(["792px"]);
+    expect(slot.kept()).toEqual({ position: "absolute", left: "0px", top: "52px", width: "390px", height: "792px" });
+  });
+
+  it("holds the room a header over the pane took of it as it was shown (--header-over), and gives it back", async () => {
+    // Given a thread on a wide window: its zone floats over the chat, and the page gives the pane the zone's room above
+    // its transcript (under the list it gives none).
+    const slot = new FakeSlot({ left: 320, top: 0, width: 1120, height: 900 });
+    slot.computed.set("--header-over", "calc(34px + 12px * 2)");
+    slots = [slot];
+    areaBox = { left: 320, top: 0, width: 1120, height: 900 };
+    await draw(false);
+
+    // When Back puts the list over it.
+    await draw(true);
+
+    // Then the pane keeps that room with its box: its transcript has the top it was shown with under the list.
+    expect(slot.kept()).toEqual({ position: "absolute", left: "0px", top: "0px", width: "1120px", height: "900px", "--header-over": "calc(34px + 12px * 2)" });
+
+    // When the row shows it again, nothing of the hold is left: the thread's own room stands.
+    await draw(false);
+    expect([slot.kept(), slot.properties.size]).toEqual([null, 0]);
   });
 
   it("reads nothing of the page and watches nothing while no list covers a pane, as in the classic app", async () => {
