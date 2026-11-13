@@ -22,11 +22,12 @@ export function inboxAsks(group: AgentGroup): boolean {
 
 /**
  * A row's one muted line. The agent's own words when it has some; else its state's word, and for an agent at rest
- * the place it runs in (`place`, empty when the row's name already says it). With more than one PC shown the PC's
- * name (`machine`) leads the line, and a PC that is away says so in the words' place.
+ * the place it runs in (`place`, empty when the row's name already says it); a finished turn whose last request
+ * failed (`failed`) says so, never Done. With more than one PC shown the PC's name (`machine`) leads the line, and
+ * a PC that is away says so in the words' place.
  */
-export function inboxRowLine(input: { online: boolean; group: AgentGroup; words: string | null; place: string; machine: string | null }, t: Translate): string {
+export function inboxRowLine(input: { online: boolean; group: AgentGroup; words: string | null; place: string; machine: string | null; failed?: boolean }, t: Translate): string {
   const said = !input.online ? t("Offline")
-    : input.words ?? (input.group === "idle" && input.place !== "" ? input.place : inboxStateWord(input.group, t));
+    : input.words ?? (input.failed ? t("Turn failed") : input.group === "idle" && input.place !== "" ? input.place : inboxStateWord(input.group, t));
   return input.machine === null ? said : `${input.machine} · ${said}`;
 }

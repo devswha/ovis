@@ -2335,21 +2335,30 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     full tile (Claude, OMP, omo) fills the face, any other sits on `--bg-elevated` inside a
     hairline at three fifths of it. Nothing hangs on the mark.
   - `--space-4` after it, two lines. The name (`.inbox-name`): the Agents list's own row title,
-    one line with an ellipsis, `--fs-lg`, `--fw-medium`, `--text-strong`, `--lh-heading`.
+    one line with an ellipsis, `--fs-lg`, `--fw-medium`, `--text-strong`, `--lh-heading`. At the
+    end of its line, on its middle, how long the agent has been in its state (`time.inbox-time`,
+    `--fs-meta`, `--text-dim`, tabular figures; **<1m**, **6m**, **2h**, **3d**), timed as the
+    Agent inbox times it: a waiting agent since this page saw it begin to wait, a working one
+    since the user last asked it, any other since its last words; no time where none is known.
     Under it, `--space-half` lower, exactly one line of words (`.inbox-words`, `--fs-row-sub`,
     `--lh-base`, an ellipsis; a line break in the words reads as a space; `dir="auto"`).
   - The words are the agent's own for its state: what a waiting agent asks (its note, else its
-    prompt's question), a working agent's plan step. Where it has none the line says its
-    state's word (**Needs you**, **Working**, **Done**), and for an agent at rest the place it
-    runs in (workspace, then tab), or **Ready** when its name already says the place. With more
+    prompt's question), a working agent's plan step, and otherwise what it last said, as plain
+    text without Markdown's marks (**You: …** when the last words are the user's own message).
+    Where it has none the line says its state's word (**Needs you**, **Working**, **Done**),
+    and for an agent at rest the place it runs in (workspace, then tab), or **Ready** when its
+    name already says the place. With more
     than one PC shown the PC's name leads the line ("mac-mini · Adding the replay metric"). The
     words are `--text-dim`; a row that asks for a look (needs you, done and not looked at) draws
     them in `--text`, one step stronger, as a messenger darkens an unread line.
   - The state's mark at the end of the words' line (`.inbox-state`): the sidebar's compact
     status mark (Badge, above), so each state keeps the shape and colour it has in the Agents
     list, and Settings → Status indicators changes it here as there. It is only as wide as what
-    it draws: an agent at rest draws nothing and its words take the whole line. The row's
-    accessible name says the agent's kind, its name, its state's word, then its words.
+    it draws: an agent at rest draws nothing and its words take the whole line. A finished turn
+    whose last words are a request the agent recorded as failed draws the warning triangle a
+    pane herdr could not restore has (`--status-blocked`) in the mark's place and is named
+    **Turn failed**, never Done. The row's accessible name says the agent's kind, its name, its
+    state's word, its words, then the time.
   A PC that is away draws its rows disabled and faded to 0.55, with no mark, saying **Offline**
   after the PC's name.
 - The state filter is one choice among **All**, **Needs you**, **Working** and **Done**, opened
@@ -2369,7 +2378,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   both column edges, with `--radius-lg`: the mark at `--avatar-size`, `--space-2-5` before the
   name (`--fs-md`) over the words (`--fs-sm`), the state's mark at the row's end on its middle,
   `--space-2` inside the row's box. A wide row draws no time; its tooltip says the name and
-  the words whole. The open thread's row has the sidebar's selection (`--side-selected`, the
+  the words whole and the time, with the full local time. The open thread's row has the sidebar's selection (`--side-selected`, the
   name at `--fw-selected`, `aria-current="true"`), with no border, stripe or outline. The
   column's foot is one line, `--space-3` above the window's edge: the state filter and **More**
   as round controls at its end, `--space-2` apart.

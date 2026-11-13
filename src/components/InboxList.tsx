@@ -1,11 +1,11 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
-import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, X } from "lucide-react";
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
-import { heldOrder, INBOX_FILTERS, inboxEmpty, inboxFiltered, inboxKey, inboxOrder, inboxSearched, inboxStatus, inboxWords, type InboxFilter } from "../lib/agentInbox.ts";
+import { heldOrder, INBOX_FILTERS, inboxEmpty, inboxFiltered, inboxKey, inboxOrder, inboxSearched, inboxSinceAt, inboxStatus, inboxWords, plainWords, type InboxFilter } from "../lib/agentInbox.ts";
 import { agentGroup, type AgentRow } from "../lib/agentRoster.ts";
-import { useT } from "../lib/i18n.ts";
+import { useT, type Translate } from "../lib/i18n.ts";
 import { inboxAsks, inboxRowLine, inboxStateWord } from "../lib/inboxRow.ts";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { agentName } from "../lib/runtimeMove.ts";
@@ -13,10 +13,12 @@ import { useSettings } from "../lib/settings.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
+import type { InboxWaits } from "../lib/useInbox.ts";
 import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/useInboxQuestions.ts";
+import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AgentMark } from "./AgentMark.tsx";
-import { agentRowTitle, blockedNote } from "./AgentSidebar.tsx";
+import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";
 import "./InboxList.css";
@@ -48,6 +50,10 @@ export interface InboxListProps {
   onNew(machineId: string): void;
   /** the page's reader of the waiting agents' questions (lib/useInbox.ts), which outlives this list */
   questionReads: QuestionReads;
+  /** the page's reader of each row's last words (lib/useInbox.ts), which outlives this list */
+  summaryReads: SummaryReads;
+  /** when the page saw each agent begin to wait (lib/useInbox.ts), which outlives this list */
+  waits: InboxWaits;
   more?: InboxMore;
   /** the way out of the mode, drawn at the column's foot where the classic sidebar's foot has the way in */
   onExit?: () => void;
@@ -59,6 +65,16 @@ export interface InboxListProps {
 const TILE_MARKS = new Set(["claude", "omp", "omo"]);
 /** how long after a press in the list its rows keep their order */
 const PRESS_HOLD_MS = 1000;
+/** how often the rows' times are drawn again, while one is drawn */
+const CLOCK_MS = 30_000;
+
+/** The words a row's last turn says: the agent's as written, the user's own marked as theirs. */
+function lastWords(summary: RowSummary | undefined, t: Translate): string | null {
+  if (summary === undefined) return null;
+  const text = plainWords(summary.text);
+  if (text === null) return null;
+  return summary.role === "user" ? t("You: {text}", { text }) : text;
+}
 
 /** An agent's round mark: a tile mark fills the face, any other sits on it; a pane with no agent draws the shell's glyph. */
 export function InboxAvatar({ mark }: { mark: string | null }) {
@@ -74,25 +90,31 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
  * The inbox mode's list: every shown PC's agents, the ones that need the reader first, each a row of two lines.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, current = null, onOpen, onNew, questionReads, more, onExit, note }: InboxListProps) {
+export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, current = null, onOpen, onNew, questionReads, summaryReads, waits, more, onExit, note }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
-  const { settings } = useSettings();
+  const { settings, resolvedLanguage } = useSettings();
   // at a phone's width a menu of the list's is a sheet, a dialog (RowMenu): its button says which
   const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
   // within a state, the Agents list's own order (Settings → Within a state), names as its rows draw them
   const { agentGroupSort: sort, sidebarRows, statusIndicators } = settings;
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
+  const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity));
+  const waitStarts = useSyncExternalStore(waits.subscribe, waits.current, waits.current);
+  // the rows' times age on a clock that ticks only while one is drawn (AgentSidebar.tsx); the time is read in the
+  // render that draws new words, a new wait or another set of timed rows, so their landing costs no second render
+  const [tick, setTick] = useState(0);
   /** the agent's own words its row draws: the search finds them too */
   const wordsOf = (row: AgentRow): string | null => {
     const online = row.machine.state === "connected";
+    const key = inboxKey(row);
     return inboxWords({
       group: agentGroup(inboxStatus(row, activity)), blocked: online ? blockedNote(row.entry.pane, t) : null,
-      question: questions.get(inboxKey(row)) ?? null, plan: online ? row.entry.pane.plan : undefined, last: null,
+      question: questions.get(key) ?? null, plan: online ? row.entry.pane.plan : undefined, last: lastWords(summaries.get(key), t),
     });
   };
   const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
@@ -116,7 +138,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
     if (!holding) kept.current = { readerKey, order: shown.map(inboxKey) };
   });
 
-  // the place the list had is reached again once its rows are back: a waiting row's question comes after the mount,
+  // the place the list had is reached again once its rows are back: a waiting row's question and each row's last words come after the mount,
   // and a list shorter than the place clamps it. Until the place is reached or the reader touches the list, a scroll
   // (the clamp's own) is not kept as the place; once they do, the place is theirs and is never set again
   const restoring = useRef<number | null>(scroll.current);
@@ -126,7 +148,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
     if (node === null || restoring.current === null) return;
     node.scrollTop = restoring.current;
     if (node.scrollTop === restoring.current) restoring.current = null;
-  }, [questions]);
+  }, [questions, summaries]);
   useLayoutEffect(() => { root.current?.focus({ preventScroll: true }); }, []);
 
   const [pcMenu, setPcMenu] = useState<HTMLElement | null>(null);
@@ -151,15 +173,27 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       tabName: agentTabName(tab, tabs, t),
     }).filter((part) => part !== title).join(" · ");
     const kind = entry.canonicalAgent;
-    const state = online ? inboxStateWord(group, t) : t("Offline");
-    const line = inboxRowLine({ online, group, words: wordsOf(row), place, machine: severalPcs ? machine.name : null }, t);
+    const key = inboxKey(row);
+    const summary = summaries.get(key);
+    // a finished turn whose last words are a request the agent recorded as failed: it says so, never Done
+    const failed = online && group === "done" && summary?.failed === true;
+    const state = !online ? t("Offline") : failed ? t("Turn failed") : inboxStateWord(group, t);
+    const line = inboxRowLine({ online, group, words: wordsOf(row), place, machine: severalPcs ? machine.name : null, failed }, t);
     return {
-      key: inboxKey(row), machine, pane, online, status, group, title, line, mark: paneMark(entry) ?? "",
-      asks: online && inboxAsks(group),
-      // what a screen reader hears for the row: who it is, how it is, then what it says
-      spoken: [kind ? agentName(kind) : null, title, state, line === state ? null : line].filter((part) => part !== null).join(", "),
+      key, machine, pane, online, status, group, title, line, failed, mark: paneMark(entry) ?? "", kind, state,
+      asks: online && inboxAsks(group), since: online ? inboxSinceAt(group, summary, waitStarts.get(key)) : null,
     };
   });
+  const timed = rows.some((row) => row.since !== null);
+  // read again whenever the clock ticks, new words or a new wait land, or the rows that draw a time change (a filter
+  // that drew none while the clock stood still brings one back)
+  const timedRows = rows.flatMap((row) => row.since === null ? [] : [row.key]).join("\n");
+  const now = useMemo(() => Date.now(), [tick, summaries, waitStarts, timedRows]);
+  useEffect(() => {
+    if (!timed) return;
+    const timer = setInterval(() => setTick((count) => count + 1), CLOCK_MS);
+    return () => clearInterval(timer);
+  }, [timed]);
   const connected = machines.filter((machine) => machine.state === "connected");
   const offerNew = !watching && connected.length > 0;
   // the sheet of PCs is for a choice among two or more: it closes when that choice goes, and stays closed if it comes back
@@ -169,7 +203,11 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
 
   /** a state's mark as the Agents list's rows end with it (Sidebar.tsx): drawn only for the states that have one */
   const drawsMark = (status: AgentStatus | undefined): boolean => statusIndicators !== "classic" || agentGroup(status) !== "idle";
-  const stateMark = (status: AgentStatus | undefined) => (
+  // a failed turn has a mark of its own, the warning a pane herdr could not restore draws in the sidebar: its shape
+  // tells it from a finish, not its colour alone
+  const stateMark = (status: AgentStatus | undefined, failed: boolean) => failed ? (
+    <span className="inbox-state is-drawn"><span className="badge badge-blocked sidebar-status" data-status="failed" role="status" aria-label={t("Turn failed")} title={t("Turn failed")}><TriangleAlert aria-hidden="true" /></span></span>
+  ) : (
     <span className={`inbox-state${drawsMark(status) ? " is-drawn" : ""}`}><StatusBadge compact status={status} /></span>
   );
 
@@ -237,20 +275,27 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
             {rows.map((row) => {
               const open = wide && row.key === current;
               const words = <span className="inbox-words" dir="auto">{row.line}</span>;
+              // how long the agent has been in its state: drawn at the name's end on a phone, said in the row's
+              // name and tooltip in the column, which draws no time
+              const age = row.since === null ? null : stateAge(now - row.since);
+              const at = row.since === null ? null : new Date(row.since);
+              // what a screen reader hears for the row: who it is, how it is, what it says, then for how long
+              const spoken = [row.kind ? agentName(row.kind) : null, row.title, row.state, row.line === row.state ? null : row.line, age].filter((part) => part !== null).join(", ");
               return (
                 <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}`} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
-                  <button type="button" className="inbox-row" disabled={!row.online} aria-label={row.spoken} aria-current={open ? "true" : undefined}
-                    title={wide ? `${row.title}\n${row.line}` : undefined}
+                  <button type="button" className="inbox-row" disabled={!row.online} aria-label={spoken} aria-current={open ? "true" : undefined}
+                    title={wide ? [row.title, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}
                     onPointerDown={(event) => { if (event.button === 0 && row.online) pressPane?.(row.machine.id, row.pane.pane_id); }}
                     onClick={() => onOpen(row.machine.id, row.pane.pane_id)}>
                     <InboxAvatar mark={row.mark} />
                     <span className="inbox-body">
                       <span className="inbox-line">
                         <span className="inbox-name">{row.title}</span>
+                        {!wide && at !== null && <time className="inbox-time" dateTime={at.toISOString()} title={at.toLocaleString(resolvedLanguage)}>{age}</time>}
                       </span>
-                      {wide ? words : <span className="inbox-sub">{words}{stateMark(row.status)}</span>}
+                      {wide ? words : <span className="inbox-sub">{words}{stateMark(row.status, row.failed)}</span>}
                     </span>
-                    {wide && stateMark(row.status)}
+                    {wide && stateMark(row.status, row.failed)}
                   </button>
                 </li>
               );

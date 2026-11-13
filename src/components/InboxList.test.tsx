@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import * as ReactDom from "react-dom";
 import { act, type ReactElement, type ReactNode } from "react";
 import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
-import type { AgentStatus, HerdrPane, InteractivePrompt } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrPane, InteractivePrompt, PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
 import { inboxKey, inboxOrder, type InboxFilter } from "../lib/agentInbox.ts";
 import * as api from "../lib/api.ts";
@@ -30,6 +30,15 @@ function RowMenu(_props: Parameters<typeof rowMenu.RowMenu>[0]) { return null; }
 await mock.module("./RowMenu.tsx", () => ({ ...rowMenu, RowMenu }));
 const { InboxList } = await import("./InboxList.tsx");
 const { newQuestionReads } = await import("../lib/useInboxQuestions.ts");
+const { SummaryReads } = await import("../lib/useInboxSummaries.ts");
+const { InboxWaits } = await import("../lib/useInbox.ts");
+
+// the summary reads the page's reader makes: each case answers them itself
+type SummaryCall = { machineId: string; paneIds: readonly string[]; resolve(answer: PaneSummaries | null): void };
+let summaryCalls: SummaryCall[] = [];
+/** an ISO time this many minutes ago */
+const ago = (minutes: number): string => new Date(Date.now() - minutes * 60_000).toISOString();
+const said = (text: string, at: string | null, more: Partial<PaneSummary> = {}): PaneSummary => ({ role: "assistant", text, at, asked_at: null, ...more });
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const activity: SidebarActivity = {
@@ -59,14 +68,21 @@ describe("InboxList", () => {
   let renderer: ReactTestRenderer | undefined;
   // the page's reader (lib/useInbox.ts), which outlives each mount of the list
   let questionReads: ReturnType<typeof newQuestionReads>;
+  let summaryReads: InstanceType<typeof SummaryReads>;
+  // when the page saw each wait begin (lib/useInbox.ts), which outlives the list too
+  let waits: InstanceType<typeof InboxWaits>;
   /** whether the window is a phone's (the sheets' width) */
   let phone: boolean;
 
   beforeEach(() => {
     promptReads = 0;
     phone = true;
-    // no case runs the reader's retry: its wait never fires, so no timer outlives a case to read into the next one
-    questionReads = newQuestionReads(() => () => {});
+    waits = new InboxWaits();
+    // no case runs a reader's retry: their waits never fire, so no timer outlives a case to read into the next one
+    const never = () => () => {};
+    questionReads = newQuestionReads(never);
+    summaryCalls = [];
+    summaryReads = new SummaryReads((machineId, paneIds) => new Promise((resolve) => { summaryCalls.push({ machineId, paneIds, resolve }); }), never);
     presses = [];
     for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const events = new EventTarget();
@@ -118,7 +134,7 @@ describe("InboxList", () => {
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <InboxList machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
       filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll}
-      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} more={options.more} note={options.note} onExit={options.onExit} />
+      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} waits={waits} more={options.more} note={options.note} onExit={options.onExit} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -431,6 +447,147 @@ describe("InboxList", () => {
     expect(scroll.current).toBe(40);
   });
 
+
+  /** answers the newest summary read: every pane it asked about, null where the case gives nothing */
+  const answerSummaries = async (summaries: Record<string, PaneSummary>) => {
+    const call = summaryCalls.at(-1)!;
+    await act(async () => { call.resolve({ server_time: new Date().toISOString(), summaries: Object.fromEntries(call.paneIds.map((id) => [id, summaries[id] ?? null])) }); });
+  };
+  const times = (root: ReactTestInstance, paneId: string) => item(root, paneId).findAll((node) => node.type === "time");
+  const age = (root: ReactTestInstance, paneId: string) => times(root, paneId).map(text);
+  const label = (root: ReactTestInstance, paneId: string) => byClass(item(root, paneId), "inbox-row")[0]!.props["aria-label"] as string;
+
+  it("shows a done agent's last words in place of Done, and how long it has been done at the end of its name", async () => {
+    const at = ago(6.5);
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    expect(words(root, "w1E:p1")).toEqual(["Done"]);
+    await answerSummaries({ "w1E:p1": said("All six export tests pass.", at) });
+    expect(words(root, "w1E:p1")).toEqual(["All six export tests pass."]);
+    expect(age(root, "w1E:p1")).toEqual(["6m"]);
+    const [time] = times(root, "w1E:p1");
+    expect(time!.props.className).toBe("inbox-time");
+    expect(time!.parent!.props.className).toBe("inbox-line");
+    expect(Math.abs(Date.parse(time!.props.dateTime) - Date.parse(at))).toBeLessThan(1000);
+    expect(label(root, "w1E:p1")).toBe("Gajae Code, Why did the backup fail?, Done, All six export tests pass., 6m");
+  });
+
+  it("shows a resting agent's last words in place of where it runs, the user's own message marked as theirs", async () => {
+    const root = await draw(roster());
+    expect(words(root, "w1F:p1")).toEqual(["docs-site"]);
+    await answerSummaries({ "w1F:p1": said("Run the export tests again", ago(2.5), { role: "user" }) });
+    expect(words(root, "w1F:p1")).toEqual(["You: Run the export tests again"]);
+  });
+
+  it("keeps a waiting agent's question as its words and says how long it has waited since the page saw the wait begin", async () => {
+    waits.observe([["local:w1D:p1", "working"]], Date.now() - 40 * 60_000);
+    waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 3.5 * 60_000);
+    const root = await draw(roster());
+    await act(async () => { answerPrompt(question("Run the export tests?")); });
+    // the agent last spoke before it worked for half an hour: its words' time is not its wait's
+    await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(40.5)) });
+    expect(words(root, "w1D:p1")).toEqual(["Run the export tests?"]);
+    expect(age(root, "w1D:p1")).toEqual(["3m"]);
+  });
+
+  it("says nothing of how long a row has waited when it was already waiting as the page opened, and draws a wait seen to begin", async () => {
+    waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 3.5 * 60_000);
+    const root = await draw(roster());
+    await answerSummaries({ "w1D:p1": said("I will run the export tests next.", ago(40.5)) });
+    expect(times(root, "w1D:p1")).toEqual([]);
+    await act(async () => { waits.observe([["local:w1D:p1", "working"]], Date.now() - 10 * 60_000); });
+    await act(async () => { waits.observe([["local:w1D:p1", "blocked"]], Date.now() - 2.5 * 60_000); });
+    expect(age(root, "w1D:p1")).toEqual(["2m"]);
+  });
+
+  it("marks a done row whose last words are a failed request with the failed mark and says Turn failed, never Done", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done", "w1F:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Error: rate limited", ago(1.5), { failed: true }), "w1F:p1": said("All good.", ago(1.5)) });
+    const failed = byClass(item(root, "w1E:p1"), "sidebar-status")[0]!;
+    expect([failed.props["data-status"], failed.props["aria-label"], failed.props.className]).toEqual(["failed", "Turn failed", "badge badge-blocked sidebar-status"]);
+    expect(label(root, "w1E:p1")).toBe("Gajae Code, Why did the backup fail?, Turn failed, Error: rate limited, 1m");
+    expect(mark(root, "w1F:p1")).toEqual({ state: "done", label: "Agent DONE", drawn: true });
+    expect(String(item(root, "w1E:p1").props.className).split(" ")).toContain("is-asking");
+  });
+
+  it("draws nothing, and throws nothing, for a summary whose text is not text", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": { text: 5 } as unknown as PaneSummary });
+    expect(words(root, "w1E:p1")).toEqual(["Done"]);
+    expect(times(root, "w1E:p1")).toEqual([]);
+  });
+
+  it("keeps a working agent's plan step as its words and times it from the user's last ask", async () => {
+    const plan = { current: "Write the export guard test", done: 1, total: 3 };
+    const root = await draw(roster((pane) => pane.pane_id === "w1C:p1" ? { ...pane, plan } as HerdrPane : pane));
+    await answerSummaries({ "w1C:p1": said("Reading the export module.", ago(30.5), { asked_at: ago(2.5) }) });
+    expect(words(root, "w1C:p1")).toEqual(["Write the export guard test"]);
+    expect(age(root, "w1C:p1")).toEqual(["2m"]);
+  });
+
+  it("draws the last words without Markdown's marks", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Pinned the `clock` in **retry.test.ts**, see [the run](https://example.com/run)", ago(1.5)) });
+    expect(words(root, "w1E:p1")).toEqual(["Pinned the clock in retry.test.ts, see the run"]);
+  });
+
+  it("reads the rows' last words once for the page: not again when the list mounts again, nor for a filter or a search", async () => {
+    const machines = roster();
+    await draw(machines);
+    expect(summaryCalls).toHaveLength(1);
+    await answerSummaries({ "w1E:p1": said("Ready when you are.", ago(4.5)) });
+    await act(async () => { renderer?.unmount(); });
+    const root = await draw(machines);
+    expect(summaryCalls).toHaveLength(1);
+    expect(words(root, "w1E:p1")).toEqual(["Ready when you are."]);
+    expect(age(root, "w1E:p1")).toEqual(["4m"]);
+    await redraw({ filter: "working" });
+    await redraw({ filter: "all", query: "export" });
+    await redraw({ query: "" });
+    expect(summaryCalls).toHaveLength(1);
+  });
+
+  it("draws a timed row a filter brings back from the clock as it is now, and a time in the future as under a minute", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done", "w1F:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Done.", ago(6.5)), "w1F:p1": said("Done too.", ago(-10)) });
+    expect(age(root, "w1E:p1")).toEqual(["6m"]);
+    expect(age(root, "w1F:p1")).toEqual(["<1m"]);
+    // a filter that draws no time while an hour passes: no clock ticks meanwhile
+    await redraw({ filter: "working" });
+    const later = Date.now() + 60 * 60_000;
+    const clock = spyOn(Date, "now").mockReturnValue(later);
+    try {
+      await redraw({ filter: "all" });
+      expect(age(root, "w1E:p1")).toEqual(["1h"]);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("titles the time with the full local time in the interface language", async () => {
+    const stored: Record<string, string> = { "ovis:settings": JSON.stringify({ language: "ko" }) };
+    Object.assign(window, { localStorage: { getItem: (key: string) => stored[key] ?? null, setItem() {}, removeItem() {} } });
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await answerSummaries({ "w1E:p1": said("Done.", ago(6.5)) });
+    const [time] = times(root, "w1E:p1");
+    const at = new Date(time!.props.dateTime);
+    expect(time!.props.title).toBe(at.toLocaleString("ko"));
+    expect(time!.props.title).not.toBe(at.toLocaleString("en"));
+  });
+
+  it("keeps a done row when the query is part of the last words it shows", async () => {
+    const root = await draw(roster(), { activity: statusOf({ "w1E:p1": "done" }) });
+    await redraw({ query: "jq quirk" });
+    expect(order(root)).toEqual([]);
+    await answerSummaries({ "w1E:p1": said("Fixed the `jq` quirk in the zsh prompt.", ago(3.5)) });
+    expect(order(root)).toEqual(["w1E:p1"]);
+  });
+
+  it("reaches the kept scroll place once the rows' last words are back", async () => {
+    await draw(roster(), { scrollTop: 167, scrollMax: 127 });
+    expect(nodes.get("inbox-scroll")!.scrollTop).toBe(127);
+    scrollMax = 400;
+    await answerSummaries({ "w1E:p1": said("Ready when you are.", ago(4.5)) });
+    expect(nodes.get("inbox-scroll")!.scrollTop).toBe(167);
+  });
+
   it("on a phone draws More and New workspace at its top with the shell's note between them, and the filter and the search at its foot", async () => {
     const pressed: unknown[] = [];
     const root = await draw(roster(), { more: { label: "More", expanded: false, popup: "dialog", onPress: (node) => pressed.push(node) }, note: <span className="test-note">Link copied</span> });
@@ -474,6 +631,17 @@ describe("InboxList", () => {
       expect(byClass(row, "inbox-sub").length).toBe(0);
       expect(String((row.children.at(-1) as ReactTestInstance).props.className).split(" ")).toContain("inbox-state");
       expect(row.props.title).toBe("Guard the export button\nNeeds you");
+    });
+
+    it("draws no time on a row, and says it in the row's name and its tooltip", async () => {
+      const root = await draw(roster(), { wide: true, activity: statusOf({ "w1E:p1": "done" }) });
+      await answerSummaries({ "w1E:p1": said("All six export tests pass.", ago(6.5)) });
+      expect(times(root, "w1E:p1")).toEqual([]);
+      const row = byClass(item(root, "w1E:p1"), "inbox-row")[0]!;
+      expect(row.props["aria-label"]).toBe("Gajae Code, Why did the backup fail?, Done, All six export tests pass., 6m");
+      const lines = String(row.props.title).split("\n");
+      expect(lines.slice(0, 2)).toEqual(["Why did the backup fail?", "All six export tests pass."]);
+      expect(lines[2]).toStartWith("6m · ");
     });
 
     it("draws Back to Ovis with the app's mark at its foot's start, and no way out where the list is the screen", async () => {

@@ -946,7 +946,7 @@ export function App() {
     <InboxList machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll}
       current={column && !inbox.shown && selectedPaneId !== null ? sidebarPinKey(selectedMachineId, selectedPaneId) : null}
       onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
-      onNew={openNewOn} questionReads={inbox.questionReads}
+      onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads} waits={inbox.waits}
       more={{ label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
       onExit={leaveMode}
       note={column ? undefined : <HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />} />

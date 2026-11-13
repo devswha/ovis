@@ -303,6 +303,15 @@
   white-space: nowrap;
 }
 
+/* how long the agent has been in its state, at the end of the name's line */
+.mode-inbox .inbox-time {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-meta);
+  font-variant-numeric: var(--font-numeric);
+  white-space: nowrap;
+}
+
 .mode-inbox .inbox-sub {
   display: flex;
   align-items: center;
