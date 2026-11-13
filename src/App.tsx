@@ -636,6 +636,8 @@ export function App() {
         const found = newTabTarget(target);
         if (!found) return;
         const asked = selectionRef.current;
+        // the mode entered, or its list opened or left, while herdr answered is a move of the user's too: it moves no selection
+        const shellAsked = [inboxMode.drawerBlocked.current, inbox.shownRef.current];
         // the keys typed from now on are the new tab's (lib/typeAhead.ts)
         const ahead = catchTypeAhead();
         let created: Awaited<ReturnType<typeof createTab>>;
@@ -647,7 +649,7 @@ export function App() {
         }
         void load();
         // what the user went to while herdr answered is theirs to keep
-        const still = selectionStill(asked, selectionRef.current);
+        const still = selectionStill(asked, selectionRef.current) && shellAsked[0] === inboxMode.drawerBlocked.current && shellAsked[1] === inbox.shownRef.current;
         // the keys typed ahead are this tab's either way: held for it when the user went elsewhere meanwhile
         ahead?.handTo(found.machineId, created.pane_id, still);
         if (still) selectTargetRef.current(found.machineId, created.pane_id);
