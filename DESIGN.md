@@ -2201,6 +2201,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   shell's fragment with the rest of the page's query), so a reload, a link, Back and Forward
   agree on the mode. `INBOX_MODE_OFFERED` is the one switch: while it is false no entry is drawn
   and only a build with test hooks reads the address.
+- The first paint. A page that opens on the mode's address draws the mode's own shell before
+  it has connected (`InboxConnecting`): the list's surface with one `--text-dim` line where
+  its rows will be (**Connecting to Ovis…**, a status line), the screen on a phone and the
+  column beside an empty pane from 769px, at the width the column will have, with no control,
+  since nothing answers yet. It never draws the classic header or sidebar, not for a frame.
 - **Open agent inbox** enters it: More's last group in the classic header at every width, a row
   at the sidebar's foot (the drawer's on a phone; Sidebar roster row and footer), and a row of
   the command palette. **Back to Ovis** leaves it: first in a phone's More, at the column's

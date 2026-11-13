@@ -140,7 +140,7 @@ import { useAddressBar } from "./lib/useAddressBar.ts";
 import { useInbox, useInboxShell } from "./lib/useInbox.ts";
 import { INBOX_MODE_OFFERED, pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
-import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
+import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
@@ -932,7 +932,9 @@ export function App() {
   if (locked === null) {
     // the auth state is unknown until /api/health or /api/session answers (ten seconds when
     // herdr is down): show the shell without the terminal, and so without a WebSocket,
-    // instead of a blank page
+    // instead of a blank page. A page that opens in the inbox mode shows the mode's own shell: its address says
+    // the mode at the first render, and the classic header and sidebar would be painted for a frame or two
+    if (inMode) return <InboxConnecting wide={inboxWide} sidebarWidth={sidebarWidth} />;
     return (
       <div className="app">
         <header className="app-header">

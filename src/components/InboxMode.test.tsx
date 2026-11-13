@@ -8,7 +8,7 @@ import machinesFixture from "../../site/demo/fixtures/machines.json";
 import type { HeaderConnection } from "../lib/headerConnection.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
-import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop, type ThreadProps } from "./InboxMode.tsx";
+import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop, type ThreadProps } from "./InboxMode.tsx";
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const statusOf = (moved: Record<string, AgentStatus> = {}): SidebarActivity => ({
@@ -115,6 +115,28 @@ describe("the zone over a wide thread", () => {
 describe("a wide pane with no agent chosen", () => {
   it("says so in one status line", () => {
     expect(draw(createElement(InboxUnchosen))).toMatch(/^<p class="inbox-unchosen" role="status">[^<]+<\/p>$/);
+  });
+});
+
+describe("the mode's shell before the app has connected", () => {
+  it("is the list's own surface as the screen on a phone: no header, no sidebar, no control, one status line", () => {
+    const markup = draw(createElement(InboxConnecting, { wide: false }));
+    expect(markup).toMatch(/^<div class="app sidebar-collapsed is-inbox is-inbox-list">/);
+    for (const classic of ["app-header", "terminal-placeholder", "brand", "<aside", "<button"]) expect(markup).not.toContain(classic);
+    expect(markup.match(/class="mode-inbox"/g)).toHaveLength(1);
+    expect(markup).toContain('<div class="pane-column"><div class="pane-split"><section class="mode-inbox" aria-label="Agent inbox">');
+    // the line is in the document before its words (lib/useAnnouncedText.ts), where the list's own loading line will be
+    expect(markup.match(/role="status"/g)).toHaveLength(1);
+    expect(markup).toContain('<div class="inbox-scroll"><p class="visually-hidden" role="status"></p></div>');
+  });
+
+  it("is the column beside an empty pane on a wide window, at the width the column will have", () => {
+    const markup = draw(createElement(InboxConnecting, { wide: true, sidebarWidth: 360 }));
+    expect(markup).toMatch(/^<div class="app is-inbox is-inbox-wide" style="--sidebar-user-w:360px">/);
+    for (const classic of ["app-header", "terminal-placeholder", "brand", "<button"]) expect(markup).not.toContain(classic);
+    expect(markup).toContain('<aside class="sidebar inbox-column"><section class="mode-inbox is-wide" aria-label="Agent inbox">');
+    expect(markup).toContain('<div class="pane-column"><div class="pane-split"></div></div>');
+    expect(markup.match(/role="status"/g)).toHaveLength(1);
   });
 });
 

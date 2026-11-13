@@ -39,7 +39,6 @@ export const SIDEBAR_JA: Record<string, string> = {
   "No results": "結果なし",
   "You: {text}": "自分: {text}",
   "Turn failed": "エラー",
-  "Agent inbox": "エージェント受信トレイ",
   "Filter by state": "状態で絞り込む",
   "Filter by state: {state}": "状態で絞り込む: {state}",
   "Expand worktrees of {name}": "{name} のワークツリーを展開",

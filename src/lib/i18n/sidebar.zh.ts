@@ -39,7 +39,6 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "No results": "无结果",
   "You: {text}": "我：{text}",
   "Turn failed": "出错",
-  "Agent inbox": "Agent 收件箱",
   "Filter by state": "按状态筛选",
   "Filter by state: {state}": "按状态筛选：{state}",
   "Expand worktrees of {name}": "展开 {name} 的工作树",

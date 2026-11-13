@@ -39,7 +39,6 @@ export const SIDEBAR_KO: Record<string, string> = {
   "No results": "결과 없음",
   "You: {text}": "나: {text}",
   "Turn failed": "오류",
-  "Agent inbox": "에이전트 인박스",
   "Filter by state": "상태로 거르기",
   "Filter by state: {state}": "상태로 거르기: {state}",
   "Expand worktrees of {name}": "{name}의 워크트리 펼치기",

@@ -22,6 +22,8 @@ declare global {
       /** every size the app has asked of a pane's pty since the page loaded, in order */
       resizes: { pane: string; cols: number; rows: number }[];
     };
+    /** every shell the page has committed since its document began, in order (the first-paint step notes them) */
+    inboxShells: string[];
     /** the demo's `?demo_connection=switch`: the page loses the bridge connection, and has it back, when asked */
     herdrDemoLoseConnection(): void;
     herdrDemoRestoreConnection(): void;
@@ -1047,6 +1049,37 @@ try {
         await listScreen(page);
         console.log("PASS Search panes and actions in the list's More opens the command palette over the list on a phone, and Back closes it");
       });
+
+      // ---- the first paint of a cold load ----
+      // The address says the mode at the first render: what the page draws before it has connected is the mode's
+      // own shell, never the classic header or sidebar. Every shell the page commits is noted from the document's
+      // start: a commit is all a frame can paint.
+      for (const viewport of [PHONE, desktop]) {
+        const at = viewport.width >= 769 ? "a wide window" : "a phone";
+        await withPage(browser, base, light, "/?app=inbox", `the first paint of the mode's own address on ${at}`, async (page) => {
+          await page.context().addInitScript(() => {
+            const shells: string[] = [];
+            window.inboxShells = shells;
+            const note = (): void => {
+              const root = document.getElementById("root");
+              if (!root || root.childElementCount === 0) return;
+              const has = (selector: string): boolean => root.querySelector(selector) !== null;
+              const shell = has(".boot") ? "boot" : `${has(".app.is-inbox") ? "mode" : "classic"}${has(".app-header") ? " with a header" : ""}${has(".sidebar:not(.inbox-column)") ? " with the sidebar" : ""}`;
+              if (shells.at(-1) !== shell) shells.push(shell);
+            };
+            new MutationObserver(note).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+          });
+          const cold = await page.context().newPage();
+          cold.on("pageerror", (error) => errors.push(`the first paint on ${at}: ${error.message}`));
+          try {
+            await cold.goto(`${base}/?app=inbox`);
+            await cold.locator(".mode-inbox .inbox-item").first().waitFor();
+            const shells = await cold.evaluate(() => window.inboxShells);
+            assert.deepEqual(shells.filter((shell) => shell !== "boot"), ["mode"], `every shell the page drew is the mode's own: ${shells.join(", then ")}`);
+          } finally { await cold.close(); }
+          console.log(`PASS a cold load of the mode's own address on ${at} draws the mode's shell from its first paint: no classic header or sidebar`);
+        }, viewport);
+      }
 
       // ---- a press is a step past hover on a wide window ----
       for (const theme of ["light", "dark"]) {

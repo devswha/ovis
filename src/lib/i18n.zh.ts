@@ -549,6 +549,7 @@ const BASE: Record<string, string> = {
   "All": "全部",
   "Search": "搜索",
   "Choose one from the list to open its chat here.": "从列表中选择一项，它的聊天会在这里打开。",
+  "Agent inbox": "Agent 收件箱",
   "Open agent inbox": "打开 Agent 收件箱",
   "Back to Ovis": "返回 Ovis",
   "Remove PC": "移除 PC",

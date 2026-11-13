@@ -4,7 +4,7 @@
  * thread's round controls) and the line that stands in a pane with no thread. Each piece is one of the app's own
  * primitives with its tokens.
  */
-import { useMemo, type ReactNode } from "react";
+import { useMemo, type CSSProperties, type ReactNode } from "react";
 import { Inbox } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
@@ -17,6 +17,7 @@ import { inboxStateWord } from "../lib/inboxRow.ts";
 import { agentName } from "../lib/runtimeMove.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { paneMark } from "../lib/sidebarAgents.ts";
+import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { agentRowTitle } from "./AgentSidebar.tsx";
 import { InboxAvatar } from "./InboxList.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
@@ -102,6 +103,33 @@ export function ThreadTop({ thread, note, controls }: { thread: ThreadProps | nu
         {thread !== null && <ThreadChip {...thread} />}
       </div>
       {controls !== null && <div className="thread-top-controls">{controls}</div>}
+    </div>
+  );
+}
+
+/**
+ * The mode's shell before the app knows whether this device may open it (App.tsx): what a page that opens on the
+ * mode's own address paints first. The list's surface with one line where its rows will be, the screen on a phone
+ * and the column beside an empty pane from 769px, at the width the column will have. No control is drawn: nothing
+ * answers yet. Never the classic shell's header or sidebar, which a page that opens in the mode never shows.
+ */
+export function InboxConnecting({ wide, sidebarWidth = null }: { wide: boolean; sidebarWidth?: number | null }) {
+  const t = useT();
+  const shown = useAnnouncedText(t("Connecting to Ovis…"));
+  const list = (
+    <section className={`mode-inbox${wide ? " is-wide" : ""}`} aria-label={t("Agent inbox")}>
+      <div className="inbox-top" />
+      <div className="inbox-scroll"><p className={shown === null ? "visually-hidden" : "inbox-empty"} role="status">{shown}</p></div>
+      <div className="inbox-foot" />
+    </section>
+  );
+  return (
+    <div className={`app${wide ? "" : " sidebar-collapsed"} is-inbox ${wide ? "is-inbox-wide" : "is-inbox-list"}`}
+      style={wide && sidebarWidth !== null ? { "--sidebar-user-w": `${sidebarWidth}px` } as CSSProperties : undefined}>
+      <div className="app-body">
+        {wide && <aside className="sidebar inbox-column">{list}</aside>}
+        <div className="pane-column"><div className="pane-split">{!wide && list}</div></div>
+      </div>
     </div>
   );
 }
