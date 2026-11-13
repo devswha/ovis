@@ -171,21 +171,31 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     if (term && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows, true);
   }, [shown]);
 
-  // under the inbox mode's list the pane sized nothing and kept its hold on the pty's size; shown again, it fits the
-  // box it is shown in and asks for that grid only where it differs from the one it last asked for: a pane that
-  // comes back to the box it had sends nothing
+  // Under the inbox mode's list the pane sizes nothing and keeps its hold on the pty's size, or the lack of one. Shown
+  // again, it fits the box it is shown in, and a pane that held the size as the list covered it asks for that grid
+  // only where it differs from the one it last asked for: one that comes back to the box it had sends nothing. A pane
+  // that held no size then (the chat lens, a split half that let the size go or follows the other half's grid)
+  // takes none on its way out: it is as the list found it.
   const wasCovered = useRef(covered);
+  const heldAtCover = useRef(false);
   useEffect(() => {
     if (wasCovered.current === covered) return;
     wasCovered.current = covered;
     const pane = paneRef.current;
-    if (covered || !pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
+    if (covered) {
+      heldAtCover.current = pane !== null && socketRef.current?.holdsSize(pane) === true;
+      return;
+    }
+    const held = heldAtCover.current;
+    heldAtCover.current = false;
+    if (!held || !pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
     if (keyboardHoldsRef.current(true)) return;
     const term = termRef.current;
     try {
       fitRef.current?.fit();
       fittedRef.current();
     } catch {
+      // a terminal not laid out yet, or one being disposed: its ResizeObserver fits it once it has a box, as here
       return;
     }
     if (term && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows);

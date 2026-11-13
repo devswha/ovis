@@ -2507,16 +2507,23 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane once opened stays mounted under the list, hidden (`visibility: hidden`, inert), so a
   message on its way is not cut.
 - Entering the mode, and leaving it from the list, size no terminal; showing the terminal in a
-  thread sizes it to the thread's box. The list takes the shell's bars away, from 769px it
-  draws its column whether or not the classic sidebar was open, and a classic split becomes one
-  pane, so a pane laid out again under the list would have another box than the one its pty
-  was sized to. A covered pane therefore keeps the box it was shown in
-  (lib/coveredPane.ts reads each pane's box as the list is about to cover it, and at no other
-  time, so the classic app reads and watches nothing for it; it holds the pane there,
-  `.pane-slot[data-kept-box]`) and sizes nothing (`PaneCoveredContext`, as a split pane a phone
-  keeps behind another sizes nothing), keeping its hold on the pty's size as it does under a
-  phone's open drawer. Shown again it fits the box it is shown in and asks for that grid only
-  where it differs: back in the box it had, it sends nothing. The classic shell's tab row is
+  thread sizes it to the thread's box. Under the list every pane is where classic left it: a
+  classic split keeps each of its halves and a tab herdr split keeps its panes, all mounted, so
+  the mode detaches no terminal and attaches none again. The list takes the shell's bars away,
+  and from 769px it draws its column whether or not the classic sidebar was open, so a pane laid
+  out again under the list would have another box than the one its pty was sized to. A covered
+  pane therefore keeps the box it was shown in (lib/coveredPane.ts reads each pane's box as the
+  list is about to cover it, and at no other time, so the classic app reads and watches nothing
+  for it; it writes the box on the slot's own style, over the rectangle a split's half carries
+  there, `.pane-slot[data-kept-box]`) and sizes nothing (`PaneCoveredContext`, as a split pane a
+  phone keeps behind another sizes nothing), keeping its hold on the pty's size, or the lack of
+  one, as it does under a phone's open drawer. Shown again it fits the box it is shown in, and a
+  pane that held the size as the list covered it asks for that grid only where it differs: back
+  in the box it had, it sends nothing. One that held none (its chat shown, a split half that let
+  the size go or follows the other half's grid) takes none on its way out. A thread is one pane:
+  once a row's thread is drawn the split's other halves leave the page, and a tab herdr split
+  shows that pane alone; Back onto the list mounts them again under it, attached keeping the
+  size the pty has, and the mode left from there shows the split as it was. The classic shell's tab row is
   part of that box wherever it is a row of the pane's own (under a phone's header by default,
   Settings → Tabs on a phone; each half of a split): the mode draws no tab row, so a pane under
   the list keeps the row it had, hidden with it, and a phone thread that shows its terminal

@@ -929,9 +929,13 @@ export function App() {
   // nor does More count where the mode's list stands beside the thread, its waiting rows first: one fact, one place
   const waitingDot = waitingInMore && !statusBarShown && !inboxWide;
   const openNewOn = (id: string): void => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); };
-  // an inbox mode thread is one pane, whatever split classic left; on its list the shell draws no header (the
-  // list is the screen), and a mode left with no pane to show a thread of shows its list
-  const paneSplit = splitOn && !inMode;
+  // An inbox mode thread is one pane, whatever split classic left. Under the mode's list the panes are as classic
+  // left them, a split's every half and a tab herdr split all mounted, covered and sizing nothing, so the mode
+  // detaches no terminal and attaches none again; their layout gives way to a thread's only when a thread is drawn.
+  // On its list the shell draws no header (the list is the screen), and a mode left with no pane to show a thread of
+  // shows its list
+  const threadDrawn = inMode && !inbox.shown;
+  const paneSplit = splitOn && !threadDrawn;
   const listScreen = inMode && inbox.shown && !inboxWide;
   // a phone thread that shows its terminal, where the classic shell would draw the pane's own tab row over it: the
   // thread keeps that row's room free, so the terminal's box, and its pty's size, are the ones classic gives it
@@ -1281,7 +1285,7 @@ export function App() {
             </> : null} />}
           {(inbox.shown && inbox.cold ? [] : shownSlots).map((slot) => {
             const active = !splitOn || split!.active === slot;
-            const other = active || inMode ? undefined : others.get(slot);
+            const other = active || threadDrawn ? undefined : others.get(slot);
             if (!active && !other) return null;
             const machineId = other ? other.target.machineId : selectedMachineId;
             const paneId = other ? other.target.paneId : selectedPaneId;
@@ -1291,7 +1295,7 @@ export function App() {
             const workspace = other ? other.workspace : selectedWorkspace;
             const slotSnapshot = other ? other.machine?.snapshot ?? null : snapshot;
             const attach = other ? other.attach : terminalAttach;
-            const rect = inMode ? undefined : rects?.get(slot);
+            const rect = threadDrawn ? undefined : rects?.get(slot);
             // two slots side by side keep the halves' sides; any other layout places each slot at its rectangle
             const side = paneSplit ? slotSide(split!, slot) : null;
             const lensOf = (item: HerdrPane): PaneView => active && item.pane_id === selectedPaneId ? view
@@ -1357,7 +1361,7 @@ export function App() {
                 {!(slotSnapshot && pane && workspace) && slotBar}
                 {/* an inbox mode thread has no tab row and no tab sheet; a pane under the mode's list, hidden, keeps the
                     row the classic shell gave it, so its terminal keeps its box */}
-                {slotSnapshot && pane && workspace && !(active && classicStripInHeader) && (!inMode || inbox.shown) && (
+                {slotSnapshot && pane && workspace && !(active && classicStripInHeader) && !threadDrawn && (
                   <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect}
                     inHeader={tabsInHeader} sheet={active ? tabSheet : null} onSheetClose={closeTabSheet} end={slotEnd} closable={auth?.role !== "watch"}
                     renameRequest={active && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
@@ -1380,13 +1384,13 @@ export function App() {
                   <div id={slotPanelId} className="terminal-tabpanel" role={slotPanelLabel === null ? undefined : "tabpanel"} aria-label={slotPanelLabel ?? undefined}>
                   <PaneCanvas key={machineId} snapshot={slotSnapshot} pane={pane} selectedPaneId={paneId} onSelect={onSelect} onChanged={actions.refresh} actionsRef={active ? paneActionsRef : undefined} watching={auth?.role === "watch"}
                     mirrored={herdr?.terminal_attach === false || herdr?.terminal_mirror === true}
-                    onOpenInHalf={wideScreen && !inMode ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
+                    onOpenInHalf={wideScreen && !threadDrawn ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
                     onRecoverUnsent={(target) => openUnsent({ machineId, pane: target })}
                     onSearchConversation={(target) => searchable(machineId, target, lensOf(target)) && !(slotPeek !== null && target.pane_id === pane?.pane_id) ? () => requestSearch(slot, machineId, target.pane_id) : null}
                     onNewTab={workspace ? () => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
                     onNewTerminal={workspace ? () => actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
                     onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId, tabId, workspaceId })}
-                    tabsInHeader={tabsInHeader || inMode} solo={inMode}
+                    tabsInHeader={tabsInHeader || threadDrawn} solo={threadDrawn}
                     renameRequest={active && pane && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
                     renderPane={(item, itemActive, herdrSplit) => <OpenFileContext.Provider value={item ? (path) => openFile({ path, paneId: item.pane_id, machineId }) : null}>
                       <PaneTerminal

@@ -21,6 +21,8 @@ declare global {
       set(paneId: string, status: AgentStatus, finish?: number): Promise<void>;
       /** every size the app has asked of a pane's pty since the page loaded, in order */
       resizes: { pane: string; cols: number; rows: number }[];
+      /** every frame a pane's terminal sent since the page loaded, on any of the page's sockets: attach, detach, resize, release-size */
+      frames: { type: string; pane: string; cols?: number; rows?: number }[];
     };
     /** every shell the page has committed since its document began, in order (the first-paint step notes them) */
     inboxShells: string[];
@@ -108,6 +110,7 @@ function installInboxFixture(): void {
       if (typeof data === "string") {
         const frame = JSON.parse(data);
         if (frame.type === "resize") window.inboxFixture.resizes.push({ pane: frame.pane_id, cols: frame.cols, rows: frame.rows });
+        if (["attach", "detach", "resize", "release-size"].includes(frame.type)) window.inboxFixture.frames.push({ type: frame.type, pane: frame.pane_id, cols: frame.cols, rows: frame.rows });
       }
       sendFrame(data);
     };
@@ -118,6 +121,7 @@ function installInboxFixture(): void {
   window.inboxFixture = {
     rosters: 0,
     resizes: [],
+    frames: [],
     async publish() {
       const { machines } = await (await fetch("/api/machines")).json();
       send({ type: "machines", machines });
@@ -999,6 +1003,65 @@ try {
           sameBox(await terminalBox(page), classic, "back in the classic app the terminal has the box it had");
           console.log(`PASS the mode sizes no terminal on ${setup.name}: entered and left with the pane showing its terminal (${Math.round(classic.w)} by ${Math.round(classic.h)}), its pty is sent no size and its box stays`);
         }, setup.viewport);
+      }
+
+      // ---- a split under the list: every pane stays where classic left it, attached, sizing nothing ----
+      // A classic split's halves (restored from the session, each its own pane) and a tab herdr split (two panes in
+      // one canvas) are covered by the list with each pane still mounted in the box it had: entering the mode and
+      // leaving it from the list detach no terminal and attach none again, and send no size and no release, for any
+      // pane, whether it held the pty's size or had let it go.
+      for (const setup of [
+        { name: "a classic split", path: `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, split: { other: { machineId: "local", paneId: BLOCKED }, bSide: "right", active: "a" }, panes: 2 },
+        { name: "a tab herdr split", path: `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, split: null, panes: 2 },
+      ]) {
+        await withPage(browser, base, light, setup.path, `a split under the list: ${setup.name}`, async (page) => {
+          const frames = (): Promise<Window["inboxFixture"]["frames"]> => page.evaluate(() => window.inboxFixture.frames.slice());
+          /** each drawn pane's terminal screen, by pane: its box is its grid of cells */
+          const screens = (): Promise<Record<string, Box>> => page.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-layout-pane]")].flatMap((frame) => {
+            const screen = frame.querySelector(".xterm-screen");
+            if (!screen) return [];
+            const box = screen.getBoundingClientRect();
+            return box.width > 0 ? [[frame.getAttribute("data-layout-pane"), { x: box.x, y: box.y, w: box.width, h: box.height, right: box.right, bottom: box.bottom }]] : [];
+          })));
+          if (setup.split !== null) {
+            // the split is the page's own, restored from the session: the reload reads it
+            await page.evaluate((split) => sessionStorage.setItem("ovis:split", JSON.stringify(split)), setup.split);
+            await page.reload();
+          }
+          await page.locator(".app-header.is-zoned").waitFor();
+          if (setup.split === null) {
+            await page.keyboard.press("Control+Shift+K");
+            await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Split pane right");
+            await page.getByRole("option", { name: "Split pane right", exact: true }).click();
+          }
+          await page.waitForFunction((count) => [...document.querySelectorAll("[data-layout-pane] .xterm-screen")].filter((screen) => screen.getBoundingClientRect().width > 0).length === count, setup.panes, { timeout: 15_000 });
+          // fixed wait: the new pane's own attach and first sizing have gone out
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          const classic = await screens();
+          const panes = Object.keys(classic);
+          assert.equal(panes.length, setup.panes, `classic draws the split's ${setup.panes} terminals: ${panes.join(", ")}`);
+          const before = (await frames()).length;
+
+          await page.locator(".header-more-button").click();
+          await page.locator('.row-menu [data-item="enter-inbox"]').click();
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          await paneHiddenUnderList(page, "the split's panes are mounted under the list, hidden");
+          assert.deepEqual(Object.keys(await screens()).sort(), [...panes].sort(), "every pane of the split is still mounted under the list");
+          // fixed wait: nothing may be sent for a pane under the list
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          assert.deepEqual((await frames()).slice(before), [], "entering the mode detaches no terminal, attaches none and sends no size or release");
+
+          await page.locator(".inbox-exit").click();
+          await page.locator(".mode-inbox").waitFor({ state: "detached" });
+          await page.locator(".app-header.is-zoned").waitFor();
+          // fixed wait: nothing may be sent for a split shown again as it was
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          assert.deepEqual((await frames()).slice(before), [], "leaving the mode from the list detaches no terminal, attaches none and sends no size or release");
+          const after = await screens();
+          for (const pane of panes) sameBox(after[pane] ?? { x: -1, y: -1, w: -1, h: -1, right: -1, bottom: -1 }, classic[pane]!, `the split's pane ${pane} has the box, and the grid, it had`);
+          console.log(`PASS ${setup.name} under the list: its ${panes.length} panes stay mounted, and entering the mode and leaving it from the list send no attach, detach, size or release; each pane keeps its grid`);
+        }, { width: 1440, height: 900 });
       }
 
       // ---- a thread that shows its terminal sizes its pty to the thread's box ----

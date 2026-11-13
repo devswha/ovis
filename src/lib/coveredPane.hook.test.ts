@@ -5,7 +5,7 @@ import { useKeptPaneBoxes } from "./coveredPane.ts";
 
 interface Box { left: number; top: number; width: number; height: number }
 
-/** a pane slot as the hook reads and writes it: its box, its kept-box attribute and the custom properties that carry the box */
+/** a pane slot as the hook reads and writes it: its box, its kept-box attribute and its own style's properties */
 class FakeSlot {
   box: Box;
   /** how often its box was read */
@@ -13,10 +13,15 @@ class FakeSlot {
   readonly attributes = new Map<string, string>();
   readonly properties = new Map<string, string>();
   readonly style = {
+    getPropertyValue: (name: string): string => this.properties.get(name) ?? "",
     setProperty: (name: string, value: string): void => { this.properties.set(name, value); },
     removeProperty: (name: string): void => { this.properties.delete(name); },
   };
-  constructor(box: Box) { this.box = box; }
+  /** `own`: the properties the slot's own style already holds, as a split's slot holds its rectangle */
+  constructor(box: Box, own: Record<string, string> = {}) {
+    this.box = box;
+    for (const [name, value] of Object.entries(own)) this.properties.set(name, value);
+  }
   getBoundingClientRect(): Box { this.reads += 1; return { ...this.box }; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
   removeAttribute(name: string): void { this.attributes.delete(name); }
@@ -86,7 +91,7 @@ describe("useKeptPaneBoxes", () => {
     await draw(true);
 
     // Then the pane keeps its box, placed inside the area as it now lies.
-    expect(slot.kept()).toEqual({ "--kept-left": "0px", "--kept-top": "52px", "--kept-width": "390px", "--kept-height": "792px" });
+    expect(slot.kept()).toEqual({ position: "absolute", left: "0px", top: "52px", width: "390px", height: "792px" });
 
     // When it is shown again.
     await draw(false);
@@ -103,18 +108,18 @@ describe("useKeptPaneBoxes", () => {
     // a wide window whose classic sidebar is collapsed: the mode draws its column, and the area moves and narrows
     areaBox = { left: 320, top: 0, width: 1120, height: 900 };
     await draw(true);
-    expect(slot.kept()).toEqual({ "--kept-left": "-320px", "--kept-top": "42px", "--kept-width": "1440px", "--kept-height": "830px" });
+    expect(slot.kept()).toEqual({ position: "absolute", left: "-320px", top: "42px", width: "1440px", height: "830px" });
 
     // the window is resized under the list: what the pane's element measures now is not a box it was shown in
     slot.box = { left: 0, top: 42, width: 1000, height: 600 };
     await draw(true);
-    expect(slot.kept()).toEqual({ "--kept-left": "-320px", "--kept-top": "42px", "--kept-width": "1440px", "--kept-height": "830px" });
+    expect(slot.kept()).toEqual({ position: "absolute", left: "-320px", top: "42px", width: "1440px", height: "830px" });
 
     // a row opens it as a thread beside the column, and Back covers it again: the thread's box is the one it keeps now
     await draw(false);
     slot.box = { left: 320, top: 0, width: 1120, height: 900 };
     await draw(true);
-    expect(slot.kept()).toEqual({ "--kept-left": "0px", "--kept-top": "0px", "--kept-width": "1120px", "--kept-height": "900px" });
+    expect(slot.kept()).toEqual({ position: "absolute", left: "0px", top: "0px", width: "1120px", height: "900px" });
   });
 
   it("leaves alone a pane that came to the page under the list, until it has been shown", async () => {
@@ -131,7 +136,30 @@ describe("useKeptPaneBoxes", () => {
     await draw(true);
 
     // Then it keeps the thread's box.
-    expect(slot.kept()).toEqual({ "--kept-left": "0px", "--kept-top": "0px", "--kept-width": "390px", "--kept-height": "844px" });
+    expect(slot.kept()).toEqual({ position: "absolute", left: "0px", top: "0px", width: "390px", height: "844px" });
+  });
+
+  it("holds each half of a classic split in its own box over the rectangle its style carries, and gives that style back", async () => {
+    // Given a split's two halves, side by side: each slot's own style places it by percentages of the pane area.
+    const rectangle = (left: string) => ({ left, top: "0%", width: "50%", height: "100%" });
+    const first = new FakeSlot({ left: 320, top: 42, width: 560, height: 830 }, rectangle("0%"));
+    const second = new FakeSlot({ left: 880, top: 42, width: 560, height: 830 }, rectangle("50%"));
+    slots = [first, second];
+    areaBox = { left: 320, top: 42, width: 1120, height: 830 };
+    await draw(false);
+
+    // When the list covers them, and the bars over the area are gone.
+    areaBox = { left: 320, top: 0, width: 1120, height: 900 };
+    await draw(true);
+
+    // Then each half is held in the box it was shown in, over its rectangle.
+    expect(first.kept()).toEqual({ position: "absolute", left: "0px", top: "42px", width: "560px", height: "830px" });
+    expect(second.kept()).toEqual({ position: "absolute", left: "560px", top: "42px", width: "560px", height: "830px" });
+
+    // When they are shown again, each has its own rectangle back, and nothing of the hold.
+    await draw(false);
+    expect([first.kept(), Object.fromEntries(first.properties)]).toEqual([null, rectangle("0%")]);
+    expect([second.kept(), Object.fromEntries(second.properties)]).toEqual([null, rectangle("50%")]);
   });
 
   it("reads nothing of the page and watches nothing while no list covers a pane, as in the classic app", async () => {
