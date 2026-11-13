@@ -645,6 +645,7 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
 | Dense row | `--fs-dense-row` | `var(--fs-md)` | `var(--fs-md)` | Dense document and table rows |
 | Reading | `--fs-chat` | `calc(15px * var(--ui-scale))` | `calc(14px * var(--ui-scale))` | Chat prose, the user's bubble, live narration; the message box with a mouse (`16px` on coarse pointer) |
 | Reading role | `--fs-reading` | `var(--fs-chat)` | `var(--fs-chat)` | Long-form reading copy |
+| Row words | `--fs-row-sub` | `calc(15px * var(--ui-scale))` | `calc(14px * var(--ui-scale))` | A list row's second line under a `--fs-lg` name, one step smaller at every pointer (`--fs-chat` reaches the name's size under a finger): the inbox mode's row words on a phone |
 | Large | `--fs-lg` | `calc(16px * var(--ui-scale))` | `calc(15px * var(--ui-scale))` | Header title, modal title |
 | Section title | `--fs-section-title` | `calc(17px * var(--ui-scale))` | `calc(16px * var(--ui-scale))` | Dialog and settings section heading (>= 1.25x over row labels) |
 | Title | `--fs-xl` | `calc(18px * var(--ui-scale))` | `calc(17px * var(--ui-scale))` | Compact heading |
@@ -1168,6 +1169,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   palette's button gives its room to the title (the More menu's first item and a hardware
   keyboard still open it).
   Icons and selected context remain.
+- Layout: inbox mode list (a phone, and any window under 769px): two floating rows of controls
+  stay put while the rows scroll, a scroll-body shell. Scroll owner: `.inbox-scroll`.
+  Anti-patterns: a second scroller inside the list, the page itself scrolling, a foot that
+  scrolls away with the rows, controls that stay put only because the list is short.
 
 ## 5. Components
 
@@ -2293,6 +2298,91 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the agents, the ones that need the user first. It differs from them in keeping one flat list
   with state chips, in leaving the workspace tree in the drawer, one tap away
   as before, and in having no tab bar: the header and the drawer stay the way to everything else.
+
+### Inbox mode (`.inbox-list`)
+- Not offered yet: nothing opens it, and only a build with test hooks reads its address
+  (lib/inboxMode.ts, `INBOX_MODE_OFFERED`).
+- The agent inbox as a mode of its own: the list of agents and the thread a row opens, in the
+  shell's place, on a phone and on a desktop. Its address says so (`?app=inbox`, a parameter
+  lib/deepLink.ts leaves in place while the app moves between panes), so a reload, a link, Back
+  and Forward agree on the mode.
+- The list (InboxList.tsx) is every shown PC's agents, in the Agent inbox's own order (needs
+  you, working, done, ready; inside a state as Settings → Within a state says; a row never moves
+  under a finger or the focus) and with its own reads (a waiting agent's question). It has no
+  title, no heading and no brand: its section is named for a screen reader (`aria-label`) and
+  nothing drawn says what the list is.
+- On a phone, and in any window under 769px, the list is the screen: one flat `--bg` surface
+  from the top safe area down, with no header bar and no rule. Two round controls float at its
+  top, `calc(var(--space-4) + var(--space-1) / 2)` (18px) from the side edges: **More** at the
+  start, **New workspace** (a plus; with several connected PCs it opens the sheet of PCs) at the
+  end; the first row starts `--space-4` under them. At its foot, `--space-3` above the bottom
+  safe area, float the state filter's round button and the search pill, `--space-3` apart. The
+  rows scroll under both rows of controls and end clear of them; a row the keyboard brings into
+  view stops clear of them too (`scroll-padding`). A watching device, or one with no connected
+  PC, has no New workspace.
+- A round control (`.icon-button.inbox-round`) is the icon button as a raised disc:
+  `--bg-elevated`, a hairline `--border`, `--radius-pill`, `--text-strong` glyph, and
+  `--shadow-card` where it floats over the rows. `--touch-target` (44px) at a phone's width and
+  under a coarse pointer at any width, `--control-h` in the column under a fine pointer. Hover
+  and press fill it with `--bg-hover` and its edge takes `--border-strong`; it never takes the
+  icon button's accent edge. The filter's button is filled (`--text-strong` behind a `--bg`
+  glyph) while a filter other than All is on, and its name says which.
+- A row (`.inbox-item` > `.inbox-row`, one button, nothing else pressable inside it) is the
+  whole width and `--touch-target` plus twice the gutter tall (80px), with no rule and no gap
+  between two rows; `--bg-hover` under a press and under a hovering pointer, the focus ring
+  drawn inside it. It holds, 22px in from each side:
+  - The agent's own mark in a round face (`.inbox-avatar`, `--touch-target`): a mark drawn as a
+    full tile (Claude, OMP, omo) fills the face, any other sits on `--bg-elevated` inside a
+    hairline at three fifths of it. Nothing hangs on the mark.
+  - `--space-4` after it, two lines. The name (`.inbox-name`): the Agents list's own row title,
+    one line with an ellipsis, `--fs-lg`, `--fw-medium`, `--text-strong`, `--lh-heading`.
+    Under it, `--space-half` lower, exactly one line of words (`.inbox-words`, `--fs-row-sub`,
+    `--lh-base`, an ellipsis; a line break in the words reads as a space; `dir="auto"`).
+  - The words are the agent's own for its state: what a waiting agent asks (its note, else its
+    prompt's question), a working agent's plan step. Where it has none the line says its
+    state's word (**Needs you**, **Working**, **Done**), and for an agent at rest the place it
+    runs in (workspace, then tab), or **Ready** when its name already says the place. With more
+    than one PC shown the PC's name leads the line ("mac-mini · Adding the replay metric"). The
+    words are `--text-dim`; a row that asks for a look (needs you, done and not looked at) draws
+    them in `--text`, one step stronger, as a messenger darkens an unread line.
+  - The state's mark at the end of the words' line (`.inbox-state`): the sidebar's compact
+    status mark (Badge, above), so each state keeps the shape and colour it has in the Agents
+    list, and Settings → Status indicators changes it here as there. It is only as wide as what
+    it draws: an agent at rest draws nothing and its words take the whole line. The row's
+    accessible name says the agent's kind, its name, its state's word, then its words.
+  A PC that is away draws its rows disabled and faded to 0.55, with no mark, saying **Offline**
+  after the PC's name.
+- The state filter is one choice among **All**, **Needs you**, **Working** and **Done**, opened
+  from its round button (lucide `ListFilter`) as a `RowMenu` of radio items, a sheet with a
+  radio group at 640px and below; each state's own mark is its item's glyph. Search is one pill
+  (`.inbox-search-input`: `--touch-target` tall, `--radius-pill`, the field's `--border-input`
+  edge, `--shadow-card`, a `--text-dim` glass at `--icon-size`, the placeholder **Search** at
+  `--fs-input`), with its own clear button while it holds words; it matches as the Agent inbox's
+  search does. Loading, no agents and no match are one centred `--text-dim` line where the rows
+  would be.
+- From 769px the list is the column beside the thread (`.inbox-list.is-wide`), on `--bg-nav`.
+  Its top row is a band `--control-h` plus twice `--space-3` tall with two round controls at its
+  end, `--space-2-5` apart and `--space-4` from the column's edge: **Search agents** and **New
+  workspace**. The search field opens in the row's free part when asked for, takes the focus,
+  stays while it holds words (a query never narrows the list unseen), and Escape first clears
+  it, then puts it away. Rows are `--row-h` tall, `--space-1` apart and `--space-3` in from
+  both column edges, with `--radius-lg`: the mark at `--avatar-size`, `--space-2-5` before the
+  name (`--fs-md`) over the words (`--fs-sm`), the state's mark at the row's end on its middle,
+  `--space-2` inside the row's box. A wide row draws no time; its tooltip says the name and
+  the words whole. The open thread's row has the sidebar's selection (`--side-selected`, the
+  name at `--fw-selected`, `aria-current="true"`), with no border, stripe or outline. The
+  column's foot is one line, `--space-3` above the window's edge: the state filter and **More**
+  as round controls at its end, `--space-2` apart.
+- It follows the Grok app's conversation list, on a phone and on a desktop: two-line rows with
+  a round mark, one muted line of last words and a single dot, round controls in place of a
+  header bar, a search pill at the foot of a phone, an inset rounded fill for the open row of a
+  desktop's column. It differs where Ovis has more to say or a rule of its own: the dot's slot
+  holds the agent's state by shape and colour, not "unread" alone; the muted line and the
+  placeholder take `--text-dim` (the reference's fall under 4.5:1) and a field's edge
+  `--border-input`; which PC leads the line; the state filter stands where the reference has
+  a shortcut button; and no mark of the reference is used, each agent keeps its own.
+- What the list never does is what the Agent inbox never does: it sends no input, answers no
+  prompt, and moves no focus in herdr.
 
 ### Plan meters (`.usage*`)
 - Right of the Settings gear, one button holding as many chips as the row has room for (judged

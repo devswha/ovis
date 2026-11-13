@@ -547,6 +547,7 @@ const BASE: Record<string, string> = {
   "Add": "添加",
   "Update": "更新",
   "All": "全部",
+  "Search": "搜索",
   "Remove PC": "移除 PC",
   "Remove PC {name}?": "移除 PC {name}？",
   "Removes this registration. Remote sessions keep running.": "仅移除此注册。远程会话会继续运行。",

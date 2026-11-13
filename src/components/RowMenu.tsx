@@ -65,13 +65,15 @@ interface Props {
   onClose: () => void;
   /** `paths`: each hint is a path; the menu is wider and a long path gives way before its label */
   variant?: "paths";
+  /** the items are one choice among them, `checked` on the chosen one: radio items in the popover, a radio group in the sheet */
+  choice?: boolean;
 }
 
 const GAP = 4;
 const EDGE = 8;
 /** letters typed within this long of each other look for one item together (a menu's type-ahead) */
 const TYPE_AHEAD_MS = 500;
-const POPOVER_ITEMS = '[role="menuitem"], [role="menuitemcheckbox"]';
+const POPOVER_ITEMS = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
 // the sheet is modal: its Cancel is one of the stops
 const SHEET_ITEMS = '.row-sheet-item, .row-sheet-aside, .row-sheet-cancel';
 
@@ -84,7 +86,7 @@ export function rowMenuAnchor(node: Element): HTMLElement | null {
   return surface === null ? null : anchors.get(surface) ?? null;
 }
 
-export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert, detail, header, items, align = "end", onClose, variant }: Props) {
+export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert, detail, header, items, align = "end", onClose, variant, choice = false }: Props) {
   const t = useT();
   const sheet = useMediaQuery(SHEET_QUERY);
   const surface = useRef<HTMLDivElement>(null);
@@ -262,10 +264,10 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
             </div>
           )}
           {/* the items scroll between the head and Cancel: a tab's menu is taller than a short phone, and `.modal` hides its overflow */}
-          <div className="row-sheet-items">
+          <div className="row-sheet-items" role={choice ? "radiogroup" : undefined} aria-label={choice ? title : undefined}>
             {items.map((item) => {
               const button = (
-                <button key={item.id} type="button" data-item={item.id} className={`row-sheet-item${item.danger ? " is-danger" : ""}${item.divider && !item.aside ? " has-divider" : ""}${item.disabled ? " is-disabled" : ""}`} aria-current={item.current ? "true" : undefined} aria-pressed={item.checked} aria-disabled={item.disabled || undefined} title={item.title} onMouseDown={keepFocus} onMouseEnter={point ? (event) => event.currentTarget.focus({ preventScroll: true }) : undefined} onClick={() => run(item)}>
+                <button key={item.id} type="button" data-item={item.id} className={`row-sheet-item${item.danger ? " is-danger" : ""}${item.divider && !item.aside ? " has-divider" : ""}${item.disabled ? " is-disabled" : ""}`} aria-current={item.current ? "true" : undefined} role={choice ? "radio" : undefined} aria-checked={choice ? item.checked === true : undefined} aria-pressed={choice ? undefined : item.checked} aria-disabled={item.disabled || undefined} title={item.title} onMouseDown={keepFocus} onMouseEnter={point ? (event) => event.currentTarget.focus({ preventScroll: true }) : undefined} onClick={() => run(item)}>
                   {item.glyph ?? <item.icon aria-hidden="true" />}
                   <span className="row-sheet-label">{item.label}</span>
                   {item.hint && <span className="row-sheet-hint">{item.hint}</span>}
@@ -298,7 +300,7 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
       {items.map((item) => (
         <Fragment key={item.id}>
           {item.divider && <span className="row-menu-divider" role="separator" />}
-          <button type="button" data-item={item.id} role={item.checked === undefined ? "menuitem" : "menuitemcheckbox"} aria-checked={item.checked} className={`menu-item${item.danger ? " is-danger" : ""}${item.disabled ? " is-disabled" : ""}`} aria-current={item.current ? "true" : undefined} aria-disabled={item.disabled || undefined} title={item.title} onMouseDown={keepFocus} onMouseEnter={point ? (event) => event.currentTarget.focus({ preventScroll: true }) : undefined} onClick={() => run(item)}>
+          <button type="button" data-item={item.id} role={choice ? "menuitemradio" : item.checked === undefined ? "menuitem" : "menuitemcheckbox"} aria-checked={choice ? item.checked === true : item.checked} className={`menu-item${item.danger ? " is-danger" : ""}${item.disabled ? " is-disabled" : ""}`} aria-current={item.current ? "true" : undefined} aria-disabled={item.disabled || undefined} title={item.title} onMouseDown={keepFocus} onMouseEnter={point ? (event) => event.currentTarget.focus({ preventScroll: true }) : undefined} onClick={() => run(item)}>
             {item.glyph ?? <item.icon aria-hidden="true" />}
             <span className="menu-item-main">{item.label}</span>
             {item.hint && <span className="menu-item-hint">{item.hint}</span>}

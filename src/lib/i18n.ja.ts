@@ -545,6 +545,7 @@ const BASE: Record<string, string> = {
   "Add": "追加",
   "Update": "更新",
   "All": "すべて",
+  "Search": "検索",
   "Remove PC": "PC を削除",
   "Remove PC {name}?": "PC {name} を削除しますか？",
   "Removes this registration. Remote sessions keep running.": "この登録のみを削除します。リモートのセッションは実行されたままです。",

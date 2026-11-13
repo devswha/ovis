@@ -1,0 +1,480 @@
+/* The inbox mode's list (InboxList.tsx). On a phone it is the screen: one flat surface, two round controls floating
+   at its top and a round button and a search pill at its foot, the rows scrolling under both. From 769px it is the
+   column beside the thread it opens (.is-wide), its controls in a top row and a foot of its own. */
+.inbox-list {
+  /* a round control: a finger's size here, the density's control in the column under a fine pointer */
+  --inbox-control: var(--touch-target);
+  /* the band the column's top controls and the pane's floating ones are centred in (InboxMode.css reads it too) */
+  --inbox-zone-h: calc(var(--inbox-control) + var(--space-3) * 2);
+  /* the gutter the round controls stand on; a row's mark and its time stand one step further in */
+  --inbox-gutter: calc(var(--space-4) + var(--space-1) / 2);
+  --inbox-inset: calc(var(--inbox-gutter) + var(--space-1));
+  --inbox-avatar: var(--touch-target);
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+
+/* the pane keeps its size under the list (never display: none: a terminal refit to nothing would resize its pty) */
+.pane-split.is-under-inbox > .pane-slot {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* the rows scroll under the two floating rows of controls and end clear of both; a row the keyboard brings into
+   view stops clear of them too, so its focus ring is never under a control */
+.inbox-scroll {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-block: calc(var(--inbox-control) + var(--space-4)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
+  scroll-padding-block: calc(var(--inbox-control) + var(--space-2)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
+}
+
+/* only the controls take a press: between and beside them the rows under the band do */
+.inbox-top,
+.inbox-foot {
+  position: absolute;
+  inset-inline: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  padding-inline: var(--inbox-gutter);
+  pointer-events: none;
+}
+
+.inbox-top > *,
+.inbox-foot > * {
+  pointer-events: auto;
+}
+
+.inbox-top {
+  top: 0;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+/* with no More before it (nothing to offer), New workspace keeps the end corner */
+.inbox-top > .inbox-new:first-child {
+  margin-inline-start: auto;
+}
+
+.inbox-foot {
+  bottom: calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+  gap: var(--space-3);
+}
+
+/* the mode's round control: the icon button as a raised disc. It keeps one look under a press and while its menu
+   is open (the icon button's accent edge is a square control's), and its disc under a finger */
+.icon-button.inbox-round {
+  width: var(--inbox-control);
+  height: var(--inbox-control);
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-card);
+  color: var(--text-strong);
+}
+
+@media (hover: hover) {
+  .icon-button.inbox-round:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+}
+
+.icon-button.inbox-round:active,
+.icon-button.inbox-round[aria-expanded="true"] {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+/* a filter other than All is on: the button is filled, as a chosen choice is */
+.icon-button.inbox-filter.is-on,
+.icon-button.inbox-filter.is-on:active,
+.icon-button.inbox-filter.is-on[aria-expanded="true"] {
+  background: var(--text-strong);
+  border-color: var(--text-strong);
+  color: var(--bg);
+}
+
+@media (hover: hover) {
+  .icon-button.inbox-filter.is-on:hover:not(:disabled) {
+    background: var(--text);
+    border-color: var(--text);
+  }
+}
+
+/* a state's mark as a filter choice's glyph, in the box a menu's icon has */
+.inbox-filter-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+.inbox-filter-mark > .sidebar-status {
+  flex: none;
+  width: auto;
+  height: auto;
+}
+
+.inbox-search {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.inbox-search-glass {
+  position: absolute;
+  top: 50%;
+  inset-inline-start: var(--space-4);
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--text-dim);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.inbox-search-input {
+  --field-fs: var(--fs-input);
+  width: 100%;
+  height: var(--inbox-control);
+  min-height: var(--inbox-control);
+  padding-inline: calc(var(--space-4) + var(--icon-size) + var(--space-2-5)) var(--inbox-control);
+  border-radius: var(--radius-pill);
+  box-shadow: var(--shadow-card);
+}
+
+/* the clear is the field's own, drawn once below; the browser's cancel glyph would make two */
+.inbox-search-input::-webkit-search-cancel-button,
+.inbox-search-input::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.inbox-search-clear {
+  position: absolute;
+  top: 0;
+  inset-inline-end: 0;
+  display: grid;
+  place-items: center;
+  width: var(--inbox-control);
+  height: var(--inbox-control);
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.inbox-search-clear svg {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+.inbox-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* the mark with the gutter above and below it is the row: no rule and no gap between two rows */
+.inbox-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  min-height: calc(var(--inbox-avatar) + var(--inbox-gutter) * 2);
+  padding: 0 var(--inbox-inset);
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.inbox-row:active {
+  background: var(--bg-hover);
+}
+
+@media (hover: hover) {
+  .inbox-row:hover:not(:disabled) {
+    background: var(--bg-hover);
+  }
+}
+
+.inbox-row:focus-visible {
+  outline-offset: calc(var(--ring-offset) * -1);
+}
+
+.inbox-row:disabled {
+  cursor: default;
+}
+
+.inbox-item.is-offline {
+  opacity: 0.55;
+}
+
+.inbox-avatar {
+  flex: 0 0 auto;
+  width: var(--inbox-avatar);
+  height: var(--inbox-avatar);
+}
+
+.inbox-avatar-face {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+}
+
+.inbox-avatar .agent-mark {
+  display: grid;
+}
+
+/* a mark that sits on the face keeps three fifths of it; one drawn as a tile fills it */
+.inbox-avatar-face svg {
+  width: calc(var(--inbox-avatar) * 0.6);
+  height: calc(var(--inbox-avatar) * 0.6);
+}
+
+.inbox-avatar.is-tile .inbox-avatar-face {
+  border: 0;
+}
+
+.inbox-avatar.is-tile .inbox-avatar-face svg {
+  width: var(--inbox-avatar);
+  height: var(--inbox-avatar);
+}
+
+.inbox-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-half);
+  min-width: 0;
+}
+
+/* the time stands on the name's middle, not on its baseline */
+.inbox-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.inbox-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-heading);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-sub {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* one line, whatever the agent wrote: a line break in its words reads as a space */
+.inbox-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--fs-row-sub);
+  line-height: var(--lh-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* a row that asks for a look (needs you, done and not looked at) draws its line one step stronger */
+.inbox-item.is-asking .inbox-words {
+  color: var(--text);
+}
+
+/* the state's mark at the end of the words: only as wide as what it draws, so a row with none gives the words the line */
+.inbox-state {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.inbox-state.is-drawn {
+  margin-inline-start: var(--space-2);
+}
+
+/* a state that draws nothing keeps its element and its label, out of the row's flow */
+.inbox-state:not(.is-drawn) {
+  position: absolute;
+}
+
+.inbox-state > .sidebar-status {
+  flex: none;
+  width: auto;
+  height: auto;
+}
+
+/* loading, none, no match: one quiet line where the rows would be */
+.inbox-empty {
+  margin: var(--space-8) var(--space-4);
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+
+/* ---------- from 769px: the column beside the thread ---------- */
+
+.inbox-list.is-wide {
+  --inbox-control: var(--control-h);
+  --inbox-avatar: var(--avatar-size);
+  /* the sidebar's own row fills (Sidebar.css), on the column's surface */
+  --side-hover: color-mix(in srgb, var(--bg-hover) 50%, var(--bg-nav));
+  --side-selected: var(--bg-hover);
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-nav);
+}
+
+.inbox-list.is-wide .inbox-top,
+.inbox-list.is-wide .inbox-foot {
+  position: static;
+  flex: 0 0 auto;
+  padding-inline: var(--space-4);
+  pointer-events: auto;
+}
+
+.inbox-list.is-wide .inbox-top {
+  justify-content: flex-end;
+  gap: var(--space-2-5);
+  height: var(--inbox-zone-h);
+}
+
+.inbox-list.is-wide .inbox-foot {
+  gap: var(--space-2);
+  padding-block: var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+}
+
+.inbox-foot-start {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* the column's controls rest on its surface: no shadow, and the smaller glyph of a pointer's control */
+.inbox-list.is-wide .icon-button.inbox-round {
+  box-shadow: none;
+}
+
+.inbox-list.is-wide .icon-button.inbox-round svg {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+.inbox-list.is-wide .inbox-search-input {
+  --field-fs: var(--fs-sm);
+  padding-inline: var(--space-3) var(--inbox-control);
+  box-shadow: none;
+}
+
+.inbox-list.is-wide .inbox-search-clear svg {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+/* the first row starts --space-4 under the top controls: the band's own --space-3 and this */
+.inbox-list.is-wide .inbox-scroll {
+  position: static;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--space-1) var(--space-3) var(--space-3);
+  scroll-padding-block: var(--space-1);
+  scrollbar-width: thin;
+}
+
+.inbox-list.is-wide .inbox-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.inbox-list.is-wide .inbox-row {
+  gap: var(--space-2-5);
+  min-height: var(--row-h);
+  padding: var(--space-2);
+  border-radius: var(--radius-lg);
+}
+
+.inbox-list.is-wide .inbox-row:active {
+  background: var(--side-hover);
+}
+
+@media (hover: hover) {
+  .inbox-list.is-wide .inbox-row:hover:not(:disabled) {
+    background: var(--side-hover);
+  }
+}
+
+.inbox-list.is-wide .inbox-name {
+  font-size: var(--fs-md);
+}
+
+.inbox-list.is-wide .inbox-words {
+  font-size: var(--fs-sm);
+}
+
+/* the mark at the row's end, on its middle: the row's gap and this keep the text --space-3 before it */
+.inbox-list.is-wide .inbox-state.is-drawn {
+  margin-inline-start: var(--space-half);
+}
+
+/* the open thread's row: the sidebar's own selection, a tonal fill and a heavier name */
+.inbox-list.is-wide .inbox-item.is-current .inbox-row,
+.inbox-list.is-wide .inbox-item.is-current .inbox-row:hover {
+  background: var(--side-selected);
+}
+
+.inbox-list.is-wide .inbox-item.is-current .inbox-name {
+  font-weight: var(--fw-selected);
+}
+
+/* a finger gets its target at any width */
+@media (pointer: coarse) {
+  .inbox-list.is-wide {
+    --inbox-control: var(--touch-target);
+  }
+
+  .inbox-list.is-wide .inbox-row {
+    min-height: max(var(--row-h), var(--touch-target));
+  }
+}
+
+/* a press fills a row, as an iPhone's list row; it does not dim (styles.css) */
+@media (hover: none) and (pointer: coarse) {
+  .inbox-row:active:not(:disabled),
+  .icon-button.inbox-round:active:not(:disabled) {
+    opacity: 1;
+  }
+}
