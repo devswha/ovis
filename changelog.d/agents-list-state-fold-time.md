@@ -10,7 +10,10 @@
 
 ### Changed
 - Agents list, grouped by state: a heading says its state once, in the state's colour with the
-  count beside it, and the rows under it no longer repeat the state mark. A row leaves out what
-  would be cut to a few letters, and on a phone it is one line: the title, then the time.
+  count beside it, and the rows under it no longer repeat the state mark.
+- Agents list, grouped or not: a row leaves out what would be cut to a few letters after its
+  title, a waiting agent's reason and, on One line, its place. On a phone a One line row is one
+  line: the title, then the time, with no place. Two lines keeps the place on its second line,
+  where the time now ends the line.
 - An agent row's menu says first what a waiting agent waits for, on a line of its own, in a phone's
   sheet and in the menu of a wider screen.
