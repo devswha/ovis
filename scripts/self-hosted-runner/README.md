@@ -390,12 +390,18 @@ vm-runner.sh supervise                              # forever: one container per
 ```
 
 - Registration is not ephemeral: the VM keeps the runner's credential (a root-owned docker volume) and each job's
-  container gets a copy, read-only. A VM therefore holds a credential for this repository's runners; remove the
-  runner (`gh api -X DELETE repos/devswha/ovis/actions/runners/ID`) when the VM goes.
+  container gets a copy. The runner reads it as the same user the job's steps run as, so **a job can read its runner's
+  credential** and could register a look-alike runner that takes later jobs of this repository. Only this repository's
+  own branches run here (the guard below), so that takes code already in this repository; this PC's runners differ in
+  holding a fresh registration per job. Remove the runner (`gh api -X DELETE repos/devswha/ovis/actions/runners/ID`)
+  when the VM goes, and re-register to rotate the credential.
 - The firewall is not optional: such VMs listen on every address with services of their own (an unauthenticated
   Docker API on 2375 among them). `vm-runner.sh` drops all traffic from the job containers to the VM itself and to
   private and link-local ranges; a job reaches the internet and the resolver only.
 - Fork PRs never run here, as on every runner of this image (`job-started.sh`).
+- **Order**: the variable below moves Fast checks too, and on these VMs (Linux 6.12, 4 vCPUs) Fast checks fails until
+  the coarse-file-clock and SIGTERM fixes of #3808 are on main. Set it only after that, and after a manual run
+  (`self_hosted_labels`, below) on the VM runners is green.
 - Routing: `gh variable set CI_LINUX_SELF_HOSTED_LABELS --body '["self-hosted","ovis-vm"]'` moves ci.yml's Linux jobs
   of pull requests and branch pushes to them (main keeps `CI_MAIN_SELF_HOSTED_LABELS`; pages.yml and release.yml keep
   `CI_SELF_HOSTED_LABELS`). With `ovis-vm` the browser scripts run as five jobs. A manual run takes

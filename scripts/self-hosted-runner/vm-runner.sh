@@ -25,6 +25,10 @@ firewall() {
   for d in 169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
     ipt -C DOCKER-USER -i docker0 -d "$d" -j DROP 2>/dev/null || ipt -I DOCKER-USER -i docker0 -d "$d" -j DROP
   done
+  # DNS goes through, inserted above the drops: the resolver docker hands a container may sit in a private range
+  for pr in udp tcp; do
+    ipt -C DOCKER-USER -i docker0 -p "$pr" --dport 53 -j ACCEPT 2>/dev/null || ipt -I DOCKER-USER -i docker0 -p "$pr" --dport 53 -j ACCEPT
+  done
 }
 case "${1:?setup|register|supervise|stop}" in
   setup)
@@ -44,6 +48,8 @@ case "${1:?setup|register|supervise|stop}" in
         --name "$NAME" --labels "$LABELS" --work /w --replace >/tmp/config.log 2>&1 || { tail -3 /tmp/config.log; exit 1; }
       unset T; cp .runner .credentials .credentials_rsaparams /cred/ && chmod 600 /cred/.runner /cred/.credentials /cred/.credentials_rsaparams && echo "registered $NAME ($LABELS)"' ;;
   supervise)
+    # a job container that ends non-zero (a failed or cancelled job) must not end the loop: no set -e from here on
+    set +e
     dockerd_up
     echo "$$" > "$HOME/.ovis-ci/runner.pid"
     while :; do
@@ -51,12 +57,13 @@ case "${1:?setup|register|supervise|stop}" in
       firewall
       echo "$(date -u +%FT%TZ) job container start" >> "$LOG"
       sudo -n docker run --rm --name ovis-vm-job --network "$NET" --cpuset-cpus "0-$(( $(nproc) - 1 ))" --shm-size 2g \
-        --pids-limit 8192 --ulimit core=0 --security-opt no-new-privileges \
+        --pids-limit 8192 --ulimit core=0 --security-opt no-new-privileges --cap-drop ALL \
         --tmpfs /w:rw,exec,nosuid,size=4g,uid=1001,gid=1001,mode=0755 --tmpfs /tmp:rw,exec,nosuid,size=4g,mode=1777 \
         -e CHECK_HOST_MAX_RUNS=2 -e CHECK_HOST_TEST_SHARDS=3 -e CHECK_HOST_BROWSER_WORKERS=3 -e CHECK_HOST_UNIT_WORKERS=4 \
         -v "$VOL:/cred:ro" --entrypoint bash "$IMAGE" \
         -c 'cp /cred/.runner /cred/.credentials /cred/.credentials_rsaparams . && exec ./run.sh --once </dev/null' >> "$LOG" 2>&1
-      echo "$(date -u +%FT%TZ) job container exit $?" >> "$LOG"
+      rc=$?
+      echo "$(date -u +%FT%TZ) job container exit $rc" >> "$LOG"
       sleep 3
     done ;;
   stop)
