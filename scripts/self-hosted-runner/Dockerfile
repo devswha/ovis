@@ -20,6 +20,8 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq unzip xz-utils tar ffmpeg python3 tini \
+      openssh-client openssh-server iproute2 \
+ && mkdir -p /run/sshd \
  && rm -rf /var/lib/apt/lists/*
 
 # Install fixed Bun and Node releases system-wide so the unprivileged runner can use them.
