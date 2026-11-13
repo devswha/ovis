@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash, createPrivateKey, sign } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIST_ARCHIVE, generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
-import { download, installServer, NoBinaryRelease, releasesBase, verifiedInstall } from "./server-install.ts";
+import { download, installServer, NoBinaryRelease, releasesBase, startedAt, verifiedInstall, withInstallLock } from "./server-install.ts";
 
 /**
  * scripts/server-install.ts, which scripts/plugin-launch.ts runs: a release folder signed with a key made for the test,
@@ -344,6 +344,88 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     writeFileSync(join(lock, "pid"), `${process.pid}\n`);
     await expect(install({ lockWaitMs: 300 })).rejects.toThrow(`another install is running in ${home} (pid ${process.pid})`);
     expect(readFileSync(join(lock, "pid"), "utf8").trim()).toBe(String(process.pid));
+  });
+
+  it("claims the lock by its pid file, as install.sh does: a folder without one is free, a pid file is held", async () => {
+    const home = scratch();
+    const lock = join(home, ".install.lock");
+    // what install.sh leaves for an instant between its mkdir and its claim: nobody holds it yet
+    mkdirSync(lock);
+    let ran = false;
+    await withInstallLock(home, async () => {
+      ran = true;
+      expect(readFileSync(join(lock, "pid"), "utf8")).toBe(`${process.pid}\n`);
+      expect(readFileSync(join(lock, "started"), "utf8").trim()).toBe(startedAt(process.pid)!);
+    });
+    expect(ran).toBe(true);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it("breaks a lock whose pid now runs another process, started at another time than the holder", async () => {
+    const home = scratch();
+    const lock = join(home, ".install.lock");
+    mkdirSync(lock);
+    // a live pid, as one reused after the holder died; the record says its holder started at another time
+    writeFileSync(join(lock, "pid"), `${process.pid}\n`);
+    writeFileSync(join(lock, "started"), "Thu Jan  1 00:00:00 1970\n");
+    let ran = false;
+    await withInstallLock(home, async () => { ran = true; }, 2_000);
+    expect(ran).toBe(true);
+  });
+
+  it("leaves a lock judged stale to a fresh holder that took it before the breaker removed it", async () => {
+    const home = scratch();
+    const lock = join(home, ".install.lock");
+    mkdirSync(lock);
+    const dead = Number(Bun.spawnSync(["sh", "-c", "echo $$"]).stdout.toString().trim());
+    writeFileSync(join(lock, "pid"), `${dead}\n`);
+    const fresh = Bun.spawn(["sleep", "30"]);
+    try {
+      let breaks = 0;
+      // the slow breaker: between its judgement and its re-read the dead holder's lock is released and a live one claims it
+      const takenOver = () => {
+        if (breaks++ > 0) return;
+        rmSync(lock, { recursive: true });
+        mkdirSync(lock);
+        writeFileSync(join(lock, "pid"), `${fresh.pid}\n`);
+      };
+      await expect(withInstallLock(home, async () => {}, 600, undefined, takenOver)).rejects.toThrow(`another install is running in ${home} (pid ${fresh.pid})`);
+      expect(breaks).toBe(1);
+      expect(readFileSync(join(lock, "pid"), "utf8").trim()).toBe(String(fresh.pid));
+    } finally {
+      fresh.kill();
+      await fresh.exited;
+    }
+  });
+
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("keeps every release a running server was started from, and prunes it once that server stopped", async () => {
+    const root = scratch();
+    const releases = join(root, "release");
+    const home = join(root, "home");
+    const key = generateKeyPair();
+    // a binary that runs until it is stopped (a copy of the shell, waiting on a child): the server started from release A
+    const sleeper = readFileSync(realpathSync("/bin/sh"));
+    const version = (v: string) => {
+      const dir = release(releases, v, key.privateKeyPem);
+      writeFileSync(join(dir, releaseFile(PLATFORM)), sleeper);
+      writeManifest(dir, { version: v, sources });
+      signManifest(dir, key.privateKeyPem);
+    };
+    const install = (v: string) => installServer({ home, version: v, platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey, ptyRuns: () => false });
+    const named = () => readdirSync(join(home, "releases")).filter((name) => !name.startsWith(".")).map((name) => name.split("-")[0]).sort();
+    for (const v of ["1.0.0", "1.0.1", "1.0.2", "1.0.3"]) version(v);
+    await install("1.0.0");
+    const server = Bun.spawn([join(home, "bin", "ovis-server"), "-c", "sleep 30; :"]);
+    try {
+      await install("1.0.1");
+      await install("1.0.2");
+      expect(named()).toEqual(["1.0.0", "1.0.1", "1.0.2"]);
+    } finally {
+      server.kill();
+      await server.exited;
+    }
+    await install("1.0.3");
+    expect(named()).toEqual(["1.0.2", "1.0.3"]);
   });
 });
 

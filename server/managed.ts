@@ -26,12 +26,12 @@ export function releaseSupervisor(root: string, stateDir: string): string | null
   } catch { return null; }
 }
 
-export async function runManaged(root = ROOT) {
+/** `own`: the supervisor this checkout falls back to (the compiled binary has no supervisor.ts: there it runs as
+ * `ovis-server supervisor`); a test names another */
+export async function runManaged(root = ROOT, own = entryCommand("supervisor")[1]) {
   root = resolve(root);
   moveLegacyStateDir();
   const stateDir = updateStateDir(root, Number(process.env["PORT"] ?? DEFAULT_PORT));
-  // the compiled binary has no supervisor.ts: there it runs as `ovis-server supervisor`
-  const own = entryCommand("supervisor")[1];
   let child: ReturnType<typeof Bun.spawn> | null = null;
   let stopping = false;
   const stop = (signal: NodeJS.Signals) => { stopping = true; child?.kill(signal); };

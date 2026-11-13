@@ -66,8 +66,8 @@ case "$*" in
   *" https://raw.githubusercontent.com/devswha/ovis/$OVIS_REF/herdr-plugin.toml")
     [ ! -e "$SCRATCH/manifest-blocked" ] || { echo "curl: (7) Failed to connect to raw.githubusercontent.com port 443" >&2; exit 7; }
     printf 'id = "%s"\\nname = "Ovis"\\n' "$(cat "$SCRATCH/ref-id" 2>/dev/null || echo devswha.ovis)" ;;
-  # a release from before the compiled server: no ovis-server.json
-  *" https://github.com/devswha/ovis/releases/download/$OVIS_REF/ovis-server.json") echo "curl: (22) The requested URL returned error: 404" >&2; exit 22 ;;
+  # a release from before the compiled server: no ovis-server.json (the probe reads the status, -w %{http_code})
+  *" https://github.com/devswha/ovis/releases/download/$OVIS_REF/ovis-server.json") printf 404 ;;
   *) echo "unexpected curl $*" >&2; exit 1 ;;
 esac`,
   // a desktop's openers, which only write down what they were asked to open (renamed into place: a reader never sees half a line)

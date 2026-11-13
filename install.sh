@@ -965,12 +965,16 @@ binary_pty_host() {
   printf '{"sha256":"%s","version":"%s"}\n' "$pty_sha" "$version" >"$stage/bin/ovis-pty-sidecar.json"
 }
 
-# One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, made by mkdir (atomic) and holding this
-# shell's pid. Another run waits for it, at most INSTALL_LOCK_WAIT seconds, and then fails, saying who holds
-# it. A lock whose holder is gone (its pid does not run, or it never wrote one more than a minute ago) is
-# broken under .install.lock.break, one breaker at a time. With three or more installs started at the same
-# instant a narrow race remains (a follow-up). Released on every exit, a signal's included; only kill -9
-# leaves it, stale.
+# When process $1 started, as ps prints it (the same words scripts/server-install.ts compares), or nothing
+started_at() {
+  LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' \t' '  ' | sed 's/^ //;s/ $//'
+}
+
+# One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, claimed by its pid file and holding this
+# shell's pid, and when it started. Another run waits for it, at most INSTALL_LOCK_WAIT seconds, and then
+# fails, saying who holds it. A lock whose holder is gone (its pid does not run, or runs a process started at
+# another time, or it never wrote one more than a minute ago) is broken under .install.lock.break, one
+# breaker at a time. Released on every exit, a signal's included; only kill -9 leaves it, stale.
 install_lock() {
   lock="$OVIS_HOME/.install.lock"
   mkdir -p "$OVIS_HOME"
@@ -981,8 +985,12 @@ install_lock() {
     # the breaker is claimed as the lock is, by a file created only where none is
     if (set -C; printf '%s\n' "$$" >"$lock.break") 2>/dev/null; then
       lock_holder=$(cat "$lock/pid" 2>/dev/null || true)
+      lock_started=$(cat "$lock/started" 2>/dev/null || true)
       lock_stale=0
       if [ -n "$lock_holder" ] && ! kill -0 "$lock_holder" 2>/dev/null; then
+        lock_stale=1
+      elif [ -n "$lock_holder" ] && [ -n "$lock_started" ] && lock_now=$(started_at "$lock_holder") && [ -n "$lock_now" ] && [ "$lock_now" != "$lock_started" ]; then
+        # its pid was reused: the process that runs under it now is not the holder
         lock_stale=1
       elif [ -z "$lock_holder" ] && [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
         lock_stale=1
@@ -1001,6 +1009,7 @@ install_lock() {
     sleep 1
     lock_waited=$((lock_waited + 1))
   done
+  started_at "$$" >"$lock/started" 2>/dev/null || true
   trap 'install_unlock' EXIT
   trap 'install_unlock; exit 129' HUP
   trap 'install_unlock; exit 130' INT
@@ -1504,7 +1513,17 @@ pick_install() {
   esac
   probe=$(mktemp) || fail "could not make a temporary file"
   probe_status=0
-  fetch "$releases/$ref/ovis-server.json" "$probe" 65536 2>/dev/null || probe_status=$?
+  # only a manifest that is not there (HTTP 404, or no such file in a file:// folder: curl's 37) means a release from
+  # before the compiled server; any other HTTP error is a failure, as scripts/server-install.ts has it
+  probe_http=$(curl -sSL --proto '=https,file' --proto-redir '=https' --max-filesize 65536 --retry 3 -w '%{http_code}' -o "$probe" \
+    "$releases/$ref/ovis-server.json" </dev/null 2>/dev/null) || probe_status=$?
+  if [ "$probe_status" = 0 ]; then
+    case "$probe_http" in
+      000 | 2??) ;;
+      404) probe_status=37 ;;
+      *) probe_status=22 ;;
+    esac
+  fi
   old_shape=0
   if [ "$probe_status" = 0 ] && ! grep -q '^  "schema": ' "$probe"; then
     # a manifest without a schema is of the shape releases had before this installer (todo 5's): signed, for this
@@ -1515,9 +1534,8 @@ pick_install() {
   rm -f "$probe"
   case "$probe_status" in
     0) binary=1 ;;
-    # any HTTP error (curl -f's 22) or no such file (37) reads as a release from before the compiled server: the source
-    # of the same tag over TLS. Todo 7 (the updater) narrows this to 404 only, as scripts/plugin-launch.ts has it
-    22 | 37)
+    # no manifest (404, or 37: no such file) is a release from before the compiled server: the source of the same tag
+    37)
       [ "$old_shape" = 0 ] || say "Ovis $ref's signed ovis-server.json has the shape from before this installer"
       if [ "$binary_home" = 1 ]; then
         # an explicit tag without the binary asks for source; the latest release unreachable keeps what runs

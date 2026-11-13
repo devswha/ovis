@@ -12,18 +12,19 @@
  * On Windows, where a link needs rights a user may not have, bin is the release folder itself, moved in by two
  * renames (the old one aside, the new one in); a run cut off between them finds the old one and moves it back.
  *
- * One install at a time: <home>/.install.lock, made with an atomic mkdir and holding the holder's pid. Another install
- * waits for it (at most LOCK_WAIT_MS), then finds that version installed and has nothing to do, or installs its own; a
- * lock whose holder is gone is broken, one breaker at a time (with three or more installs started at the same instant a
- * narrow race remains, a follow-up). Only the lock holder makes
- * a stage, so what the holder removes of releases/ belongs to no other run.
+ * One install at a time: <home>/.install.lock, claimed as install.sh and install.ps1 claim it, by its pid file created
+ * only where none is (EEXIST: held), with the holder's start time beside it. Another install waits for it (at most
+ * LOCK_WAIT_MS), then finds that version installed and has nothing to do, or installs its own; a lock whose holder is
+ * gone (its pid does not run, or runs a process started at another time) is broken, one breaker at a time, and only
+ * while it still holds the record judged stale. Only the lock holder makes a stage, so what the holder removes of
+ * releases/ belongs to no other run.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runsHere } from "./pty-sidecar.ts";
-import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, oldShapeRelease, ptyAssetFor, RELEASE_PUBLIC_KEY, type ReleaseAsset, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
+import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, oldShapeRelease, ptyAssetFor, RELEASE_PUBLIC_KEY, type ReleaseAsset, releaseFile, SERVER_PLATFORMS, type ServerManifest, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
 
 export const DEFAULT_RELEASES = "https://github.com/devswha/ovis/releases/download";
 const MANIFEST_LIMIT = 64 * 1024;
@@ -93,7 +94,7 @@ export async function download(url: string, limit: number, name: string, fetchFi
  * only after its size and SHA-256 match the manifest and it runs here: no other file's word for a host is taken. Any
  * failure leaves no host, and terminals mirrored; it never fails the install. What it did, in a few words.
  */
-async function ptyHost(at: string, hosts: Record<string, ReleaseAsset>, platform: ServerPlatform, version: string, bin: string, options: InstallServerOptions): Promise<string> {
+async function ptyHost(at: string, hosts: Record<string, ReleaseAsset>, platform: ServerPlatform, version: string, bin: string, options: Pick<InstallServerOptions, "fetchFile" | "ptyRuns">): Promise<string> {
   const build = ptyAssetFor(platform);
   if (!build) return "no Rust PTY host on this platform";
   let bytes: Uint8Array;
@@ -182,7 +183,7 @@ function swap(home: string, name: string): void {
 }
 
 export const LOCK_WAIT_MS = 600_000;
-/** a lock or break mutex without a pid this long is one whose maker died between mkdir and writing it */
+/** a lock folder or breaker without a pid this long is one whose maker died before it wrote it */
 const UNCLAIMED_MS = 60_000;
 
 const alive = (pid: number): boolean => {
@@ -193,65 +194,136 @@ const alive = (pid: number): boolean => {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 };
-const holderOf = (lock: string): number | null => {
+
+/**
+ * When process `pid` started, as `ps -o lstart=` prints it (the same words on Linux and macOS, and in install.sh), or
+ * null where that cannot be told (no such process, no ps: Windows). A pid alone is reused: one that runs a process
+ * started at another time than the holder's is not the holder.
+ */
+export function startedAt(pid: number): string | null {
+  if (WINDOWS) return null;
   try {
-    const pid = Number(readFileSync(join(lock, "pid"), "utf8").trim());
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
+    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], { stdin: "ignore", stdout: "pipe", stderr: "ignore", env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: 5_000 });
+    const text = result.stdout.toString().trim().replace(/\s+/g, " ");
+    return result.exitCode === 0 && text !== "" ? text : null;
   } catch {
     return null;
   }
+}
+
+/** The lock's record: its holder's pid (the claim, in `pid`) and, where written, when that process started (`started`). */
+const recordOf = (lock: string): { pid: number | null; started: string | null } => {
+  let pid: number | null = null;
+  let started: string | null = null;
+  try {
+    const value = Number(readFileSync(join(lock, "pid"), "utf8").trim());
+    pid = Number.isInteger(value) && value > 0 ? value : null;
+  } catch { /* no claim yet */ }
+  try { started = readFileSync(join(lock, "started"), "utf8").trim().replace(/\s+/g, " ") || null; } catch { /* an older installer's, or not written yet */ }
+  return { pid, started };
 };
-/** Whether `lock`'s holder is gone: its pid does not run, or it never wrote one and that was long ago. */
+
+/**
+ * Whether `lock`'s holder is gone: its pid does not run, or runs a process started at another time than the one the
+ * lock records, or it never wrote a pid and that was long ago.
+ */
 function stale(lock: string): boolean {
-  const pid = holderOf(lock);
-  if (pid !== null) return !alive(pid);
+  const { pid, started } = recordOf(lock);
+  if (pid !== null) {
+    if (!alive(pid)) return true;
+    const now = started === null ? null : startedAt(pid);
+    return now !== null && now !== started;
+  }
   try { return Date.now() - statSync(lock).mtimeMs > UNCLAIMED_MS; } catch { return false; }
 }
 
 /**
- * Runs `run` holding `<home>/.install.lock`. A lock found stale is broken under `.install.lock.break`, so two waiters
- * that both saw it stale cannot both remove it, and the one that comes second sees the new holder's pid and waits.
+ * Creates `path` holding `text` only where nothing is (O_EXCL): false when something is there already, or when its
+ * folder went meanwhile (a holder released the lock between this run's mkdir and its claim: the next round makes it).
  */
-export async function withInstallLock<T>(home: string, run: () => Promise<T>, waitMs = LOCK_WAIT_MS, onWait?: () => void): Promise<T> {
+function claim(path: string, text: string): boolean {
+  try {
+    writeFileSync(path, text, { flag: "wx" });
+    return true;
+  } catch (error) {
+    if (["EEXIST", "ENOENT"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+    throw error;
+  }
+}
+
+/**
+ * Runs `run` holding `<home>/.install.lock`, claimed by its pid file, made only where none is: the folder's mkdir alone
+ * does not exclude (some mkdir commands, and two callers of one that is not, both see it succeed), so install.sh and
+ * install.ps1 claim the same lock by the same file. A lock found stale is broken under `.install.lock.break`, a file
+ * claimed the same way, so two waiters that both saw it stale cannot both remove it; and it is removed only while it
+ * still holds the record judged stale, so a fresh holder that took it meanwhile keeps it.
+ * `beforeBreak` runs between the judgement and that re-read: tests.
+ */
+export async function withInstallLock<T>(home: string, run: () => Promise<T>, waitMs = LOCK_WAIT_MS, onWait?: () => void, beforeBreak?: () => void): Promise<T> {
   mkdirSync(home, { recursive: true });
   const lock = join(home, ".install.lock");
   const breaker = `${lock}.break`;
   const deadline = Date.now() + waitMs;
   for (;;) {
-    try {
-      mkdirSync(lock);
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
+    mkdirSync(lock, { recursive: true });
+    if (claim(join(lock, "pid"), `${process.pid}\n`)) break;
+    if (!existsSync(lock)) continue;
     let broke = false;
-    try {
-      mkdirSync(breaker);
+    if (claim(breaker, `${process.pid}\n`)) {
       try {
-        // removed only while it still holds the record judged stale: a fresh holder's lock is never taken
-        const judged = holderOf(lock);
-        if (stale(lock) && holderOf(lock) === judged) {
-          rmSync(lock, { recursive: true, force: true });
-          broke = true;
+        const judged = JSON.stringify(recordOf(lock));
+        if (stale(lock)) {
+          beforeBreak?.();
+          if (JSON.stringify(recordOf(lock)) === judged) {
+            rmSync(lock, { recursive: true, force: true });
+            broke = true;
+          }
         }
       } finally {
-        try { rmdirSync(breaker); } catch { /* another waiter cleared it as unclaimed */ }
+        rmSync(breaker, { recursive: true, force: true });
       }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try { if (Date.now() - statSync(breaker).mtimeMs > UNCLAIMED_MS) rmdirSync(breaker); } catch { /* gone meanwhile */ }
+    } else {
+      try { if (Date.now() - statSync(breaker).mtimeMs > UNCLAIMED_MS) rmSync(breaker, { recursive: true, force: true }); } catch { /* gone meanwhile */ }
     }
     if (broke) continue;
     onWait?.();
-    if (Date.now() >= deadline) throw new Error(`another install is running in ${home} (pid ${holderOf(lock) ?? "unknown"}); try again once it ends. Nothing was changed`);
+    if (Date.now() >= deadline) throw new Error(`another install is running in ${home} (pid ${recordOf(lock).pid ?? "unknown"}); try again once it ends. Nothing was changed`);
     await Bun.sleep(200);
   }
-  writeFileSync(join(lock, "pid"), `${process.pid}\n`);
+  const started = startedAt(process.pid);
+  if (started !== null) writeFileSync(join(lock, "started"), `${started}\n`);
   try {
     return await run();
   } finally {
-    rmSync(lock, { recursive: true, force: true });
+    // only its own: a lock broken under it (judged stale by mistake) is another holder's now
+    if (recordOf(lock).pid === process.pid) rmSync(lock, { recursive: true, force: true });
   }
+}
+
+/**
+ * The folders of `folders` that a running process was started from: its executable lies inside one (Linux: every
+ * /proc/<pid>/exe; macOS: the full paths ps prints). Elsewhere (Windows), none is told: removing a running .exe fails,
+ * which the prune already leaves for the next install.
+ */
+export function foldersInUse(folders: string[]): Set<string> {
+  const used = new Set<string>();
+  let executables: string[] = [];
+  try {
+    if (process.platform === "linux") {
+      for (const pid of readdirSync("/proc")) {
+        if (!/^\d+$/.test(pid)) continue;
+        try { executables.push(readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "")); } catch { /* gone, or another user's */ }
+      }
+    } else if (process.platform === "darwin") {
+      executables = Bun.spawnSync(["ps", "-axo", "comm="], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 5_000 }).stdout.toString().split("\n").map((line) => line.trim());
+    }
+  } catch { /* none told */ }
+  for (const folder of folders) {
+    let real: string;
+    try { real = realpathSync(folder); } catch { continue; }
+    if (executables.some((path) => path.startsWith(`${real}/`))) used.add(folder);
+  }
+  return used;
 }
 
 /**
@@ -291,6 +363,47 @@ export function verifiedInstall(home: string, version: string, platform: ServerP
     if (typeof manifest !== "string" && binaryMatches(home, binary, manifest.assets[platform].sha256) && existsSync(join(current, "dist", "index.html"))) return binary;
   } catch { /* nothing installed there, or not whole */ }
   return null;
+}
+
+/** A release's manifest as checked: its exact bytes, its signature, and what it names. */
+export interface SignedManifest { manifest: ServerManifest; bytes: Uint8Array; signature: Uint8Array }
+
+/**
+ * The manifest of the release at `at` (named `tag`), once its signature by `publicKey` holds over its exact bytes, it is in
+ * its canonical form and it names `version`: nothing else is downloaded before this passes. Throws NoBinaryRelease where
+ * the release has no ovis-server.json, or has one of the shape from before schema 1; any other failure is an Error.
+ */
+export async function signedManifest(at: string, tag: string, version: string, publicKey: string, fetchFile?: typeof fetch): Promise<SignedManifest> {
+  const bytes = await download(`${at}/${MANIFEST}`, MANIFEST_LIMIT, MANIFEST, fetchFile);
+  if (!bytes) throw new NoBinaryRelease(`the release ${tag} ships no compiled server (${at}/${MANIFEST} does not exist)`);
+  const signature = await download(`${at}/${SIGNATURE}`, SIGNATURE_LIMIT, SIGNATURE, fetchFile);
+  if (!signature) throw new Error(`${at}/${SIGNATURE} does not exist; nothing was changed`);
+  const manifest = checkManifest(Buffer.from(bytes), new TextDecoder().decode(signature), publicKey, { version });
+  if (typeof manifest === "string") {
+    if (oldShapeRelease(Buffer.from(bytes), new TextDecoder().decode(signature), publicKey, version)) {
+      throw new NoBinaryRelease(`the release ${tag} ships no compiled server this installer runs (its signed ${MANIFEST} has the shape from before schema 1)`);
+    }
+    throw new Error(`${manifest}; nothing was changed`);
+  }
+  return { manifest, bytes, signature };
+}
+
+/**
+ * Fills the empty folder `into` with what runs the release at `at` on `platform`, each file checked against `signed`
+ * first: the binary, the client unpacked into dist/, the manifest and its signature as they were checked, and the Rust
+ * PTY host the manifest names (bin/), where it runs here. Throws on the first check that fails, leaving `into` to the
+ * caller to remove; says in a few words what became of the PTY host.
+ */
+export async function fetchRelease(at: string, signed: SignedManifest, platform: ServerPlatform, into: string, options: Pick<InstallServerOptions, "fetchFile" | "ptyRuns"> = {}): Promise<string> {
+  const { manifest } = signed;
+  writeFileSync(join(into, binaryName(platform)), await checked(at, manifest.assets[platform], options.fetchFile), { mode: 0o755 });
+  chmodSync(join(into, binaryName(platform)), 0o755);
+  writeFileSync(join(into, DIST_ARCHIVE), await checked(at, manifest.dist, options.fetchFile));
+  unpack(join(into, DIST_ARCHIVE), join(into, "dist"));
+  rmSync(join(into, DIST_ARCHIVE));
+  writeFileSync(join(into, MANIFEST), signed.bytes);
+  writeFileSync(join(into, SIGNATURE), signed.signature);
+  return await ptyHost(at, manifest.pty, platform, manifest.version, join(into, "bin"), options);
 }
 
 export interface InstallServerOptions {
@@ -345,17 +458,8 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
   if (verifiedInstall(home, version, platform, publicKey)) return { installed: false, message: `Ovis ${version} is installed already in ${current}; nothing to do`, binary };
 
   const at = `${base}/v${version}`;
-  const manifestBytes = await download(`${at}/${MANIFEST}`, MANIFEST_LIMIT, MANIFEST, options.fetchFile);
-  if (!manifestBytes) throw new NoBinaryRelease(`the release v${version} ships no compiled server (${at}/${MANIFEST} does not exist)`);
-  const signature = await download(`${at}/${SIGNATURE}`, SIGNATURE_LIMIT, SIGNATURE, options.fetchFile);
-  if (!signature) throw new Error(`${at}/${SIGNATURE} does not exist; nothing was changed`);
-  const manifest = checkManifest(Buffer.from(manifestBytes), new TextDecoder().decode(signature), publicKey, { version });
-  if (typeof manifest === "string") {
-    if (oldShapeRelease(Buffer.from(manifestBytes), new TextDecoder().decode(signature), publicKey, version)) {
-      throw new NoBinaryRelease(`the release v${version} ships no compiled server this installer runs (its signed ${MANIFEST} has the shape from before schema 1)`);
-    }
-    throw new Error(`${manifest}; nothing was changed`);
-  }
+  const signed = await signedManifest(at, `v${version}`, version, publicKey, options.fetchFile);
+  const { manifest } = signed;
   // a checkout of another commit with the same version (a branch, main between releases) runs its own sources
   const sources = options.sources;
   if (sources && ("error" in sources || sources.server !== manifest.sources.server || sources.shared !== manifest.sources.shared)) {
@@ -367,14 +471,7 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
   let host = "";
   let previous: string | null = null;
   try {
-    writeFileSync(join(stage, binaryName(platform)), await checked(at, manifest.assets[platform], options.fetchFile), { mode: 0o755 });
-    chmodSync(join(stage, binaryName(platform)), 0o755);
-    writeFileSync(join(stage, DIST_ARCHIVE), await checked(at, manifest.dist, options.fetchFile));
-    unpack(join(stage, DIST_ARCHIVE), join(stage, "dist"));
-    rmSync(join(stage, DIST_ARCHIVE));
-    writeFileSync(join(stage, MANIFEST), manifestBytes);
-    writeFileSync(join(stage, SIGNATURE), signature);
-    host = `; ${await ptyHost(at, manifest.pty, platform, version, join(stage, "bin"), options)}`;
+    host = `; ${await fetchRelease(at, signed, platform, stage, options)}`;
     await options.inWindow?.();
     // the release bin names now: a server started from it may still run, so it stays until the next install
     try { previous = WINDOWS ? null : realpathSync(join(home, "bin")).split(/[/\\]/).at(-1)!; } catch { previous = null; }
@@ -390,10 +487,12 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
   } finally {
     rmSync(stage, { recursive: true, force: true });
   }
-  // the releases that no longer run, never the one bin names; on Linux and macOS a server still running from one keeps
-  // its open files
-  for (const old of readdirSync(releases).filter((entry) => entry !== name && entry !== previous && !entry.startsWith("."))) {
-    try { rmSync(join(releases, old), { recursive: true, force: true }); } catch { /* still in use: the next install removes it */ }
+  // the releases that no longer run: never the one bin names, the one it named before, nor one a server still runs from
+  // (it reads dist/ from there); such a release goes with the first install after that server stopped
+  const old = readdirSync(releases).filter((entry) => entry !== name && entry !== previous && !entry.startsWith(".")).map((entry) => join(releases, entry));
+  const running = foldersInUse(old);
+  for (const folder of old.filter((entry) => !running.has(entry))) {
+    try { rmSync(folder, { recursive: true, force: true }); } catch { /* still in use: the next install removes it */ }
   }
   return { installed: true, message: `installed Ovis ${version} (${releaseFile(platform)}, sha256 ${manifest.assets[platform].sha256}) in ${current}${host}`, binary };
 }

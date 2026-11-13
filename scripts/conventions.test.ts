@@ -215,6 +215,8 @@ describe("names from before Ovis", () => {
     "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name, as pty-host.mjs does",
     "server/pty/host.test.ts": "tests that both PTY hosts keep the token from the command under either name",
     "server/remote-host.ts": "a remote bundle published before the rename reads the old name",
+    "server/update-artifact.ts": "a binary release's supervisor finds the checkout a launcher from before the rename names by the old name",
+    "server/update-artifact.test.ts": "starts every launcher there has been, those from before the rename with their old names",
     "install.sh": "reads the old settings of an earlier install",
     "scripts/install-herdr-core.test.ts": "tests that install.sh replaces an earlier install's runtime under its old name",
     "scripts/install-ovis-command.test.ts": "tests that the ovis command reads an earlier install's state dir setting under its old name",
