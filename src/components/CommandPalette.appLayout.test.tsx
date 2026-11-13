@@ -70,11 +70,11 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     }
   });
 
-  async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer), shown = snapshot, online = false, inboxShown = false, inboxMode = false): Promise<string[]> {
+  async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer), shown = snapshot, online = false, inboxMode = false): Promise<string[]> {
     await act(async () => { renderer?.unmount(); });
     await act(async () => {
       renderer = create(createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
-        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online, selectedPaneId, view: "chat", actions, inboxShown, inboxMode }))));
+        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online, selectedPaneId, view: "chat", actions, inboxMode }))));
     });
     return renderer!.root.findAll((node) => node.props.className === "menu-item-main" && typeof node.props.children === "string").map((node) => node.props.children as string);
   }
@@ -121,19 +121,9 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     expect(await rows(APP_CORE, "p3", ">move tab")).toEqual([]);
   });
 
-  it("offers no New tab or Rename tab while a phone's agent list covers the selected pane, and New workspace still", async () => {
-    const covered = await rows(TUI, "p1", ">", undefined, snapshot, false, true);
-    expect(covered).not.toContain("New tab");
-    expect(covered).not.toContain("Rename tab");
-    expect(covered).toContain("New workspace");
-    const shown = await rows(TUI, "p1", ">");
-    expect(shown).toContain("New tab");
-    expect(shown).toContain("Rename tab");
-  });
-
   it("offers nothing the inbox mode's shell has no place for: no New tab, Rename tab or sidebar row, in a thread as on the list", async () => {
     const SHELL_ROWS = ["New tab", "Rename tab", "Toggle sidebar", "Filter workspaces and agents"];
-    const thread = await rows(TUI, "p1", ">", undefined, snapshot, false, false, true);
+    const thread = await rows(TUI, "p1", ">", undefined, snapshot, false, true);
     for (const row of SHELL_ROWS) expect(thread).not.toContain(row);
     for (const row of ["New workspace", "Switch to terminal", "Settings", "Toggle theme"]) expect(thread).toContain(row);
     const classic = await rows(TUI, "p1", ">");
@@ -147,7 +137,7 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     expect(await rows(TUI, "p1", ">open agent inbox", into)).toEqual(["Open agent inbox"]);
     await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
     const out = actionsOf(TUI, { inboxMode: { on: true, go: () => { went.push("out"); } } });
-    expect(await rows(TUI, "p1", ">back to ovis", out, snapshot, false, false, true)).toEqual(["Back to Ovis"]);
+    expect(await rows(TUI, "p1", ">back to ovis", out, snapshot, false, true)).toEqual(["Back to Ovis"]);
     await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
     expect(went).toEqual(["in", "out"]);
   });

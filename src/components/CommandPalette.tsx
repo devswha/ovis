@@ -58,9 +58,7 @@ interface CommandPaletteProps {
   actions: AppActions;
   /** this device may only watch: the PCs refuse it their checkouts, so no branch is read (#2250) */
   watching?: boolean;
-  /** a phone's agent list covers the selected pane: New tab and Rename tab, which would act beside it or on it, are not offered */
-  inboxShown?: boolean;
-  /** the inbox mode's shell (lib/inboxMode.ts) has no tab row and no sidebar: nothing is offered that needs one */
+  /** the inbox mode's shell (lib/inboxMode.ts) has no tab row and no sidebar: nothing is offered that needs one, on its list as in a thread */
   inboxMode?: boolean;
 }
 
@@ -160,7 +158,7 @@ function ShortcutHint({ shortcutId }: { shortcutId?: ShortcutId }) {
   return <span className="palette-shortcut" aria-label={keys.join(" + ")}>{keys.map((key) => <kbd className="kbd" key={key}>{key}</kbd>)}</span>;
 }
 
-export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false, inboxShown = false, inboxMode = false }: CommandPaletteProps) {
+export function CommandPalette({ open, initialQuery = "", onClose, machines, onSelect, snapshot, online, selectedPaneId, view, actions, watching = false, inboxMode = false }: CommandPaletteProps) {
   const t = useT();
   const { settings } = useSettings();
   const firstLines = useSyncExternalStore(subscribeTabLabels, shownTabLabels, shownTabLabels);
@@ -337,13 +335,13 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const paletteActions = useMemo<PaletteAction[]>(() => [
     { id: "new", label: t("New workspace"), icon: MessageSquarePlus, shortcut: "new-session", run: actions.openNewSession },
     // in the selected pane's workspace: nothing to add a tab to without one
-    ...(selectedPaneId !== null && !inboxShown && !inboxMode ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
+    ...(selectedPaneId !== null && !inboxMode ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
     ...(worktreeHere ? [
       { id: "new-worktree", label: t("New worktree"), icon: GitBranch, run: () => actions.openWorktree?.("create") },
       { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => actions.openWorktree?.("open") },
     ] satisfies PaletteAction[] : []),
     ...(historyHere ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory() }] satisfies PaletteAction[] : []),
-    ...(selectedPaneId !== null && tabShown && renameOffered && !inboxShown && !inboxMode ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
+    ...(selectedPaneId !== null && tabShown && renameOffered && !inboxMode ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
     // herdr's prefix+v and prefix+-: the new pane is opened here only when asked, as herdr's --focus
     ...(splitPane ? [
       { id: "split-right", label: t("Split pane right"), icon: Columns2, shortcut: "split-right", run: () => splitPane("right") },
@@ -373,7 +371,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     // starts the address a page this PC serves is typed as (below), the port left to type
     ...(actions.openLocalPage ? [{ id: "local-page", label: t("Open a page on this PC…"), icon: Globe, keepOpen: true, run: () => { setQuery("localhost:"); setFilter("all"); setSelection(NO_SELECTION); inputRef.current?.focus(); } }] : []),
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, run: actions.refresh },
-  ], [actions, overDialog, surface, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, inboxShown, inboxMode, tabShown, renameOffered, worktreeHere, historyHere, online, browseTo, browseStart, home]);
+  ], [actions, overDialog, surface, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, inboxMode, tabShown, renameOffered, worktreeHere, historyHere, online, browseTo, browseStart, home]);
 
   // Settings pages and groups are found by a query only, and open on the page itself, a group's
   // scrolled to and focused: the dialog reads the request as it mounts

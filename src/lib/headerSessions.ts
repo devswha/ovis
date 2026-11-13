@@ -125,9 +125,8 @@ export function useWaitingRosters(shown: readonly Machine[], selected: Machine |
 /** The header's control drawn over the open drawer, its top row: the toggle that closes it. */
 const drawerHeaderStops = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(".app-header .drawer-toggle")];
 
-/** The header's first button a closed drawer gives the focus back to: the drawer toggle, else an inbox mode thread's Back drawn in its place (App.tsx). */
-const drawerReturnButton = (): HTMLElement | null =>
-  document.querySelector<HTMLElement>(".app-header .drawer-toggle") ?? document.querySelector<HTMLElement>(".app-header .inbox-back");
+/** The header's button a closed drawer gives the focus back to: its toggle. */
+const drawerReturnButton = (): HTMLElement | null => document.querySelector<HTMLElement>(".app-header .drawer-toggle");
 
 /**
  * A phone's open drawer is a dialog over the pane (App.tsx gives it the role): Tab goes round its own controls
