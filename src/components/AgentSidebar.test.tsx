@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest, setSystemTime } from "bun:test";
-import { act, useLayoutEffect } from "react";
+import { act, useLayoutEffect, useState } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
@@ -9,7 +9,8 @@ import { currentAgentRowTokens, setAgentRowTokens } from "../lib/agentRowTokens.
 import { SettingsProvider } from "../lib/settings.ts";
 import { SidebarActivityProvider, useSidebarActivity } from "../lib/sidebarActivity.tsx";
 import { stateWatch } from "../lib/agentStateWatch.ts";
-import { useAgentStateStamping } from "../lib/useAgentStateSince.ts";
+import { stateSince, type StateStamps } from "../lib/agentStateSince.ts";
+import { useAgentStateStamping, useAgentStateStamps } from "../lib/useAgentStateSince.ts";
 import type { SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
 import { setSidebarPins } from "../lib/sidebarPins.ts";
@@ -665,13 +666,64 @@ describe("AgentSidebar fold memory", () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
-      // When the page loads, as the app does with no roster yet, and its roster then comes.
+      // When the page loads, as the app does with no roster yet: nothing is looked at, so nothing the device keeps is
+      // touched (a look at no PC would mark every stamp as its PC's having left the roster, for other tabs to read).
+      const seeded = kept();
       await act(async () => { renderer = create(page([])); });
-      expect(kept()).toBeDefined();
+      expect(kept()).toEqual(seeded);
+      expect(writes.filter((key) => key === "ovis:agent-state-since")).toEqual([]);
+      // And when its roster then comes.
       await act(async () => { renderer!.update(page(loaded)); });
       // Then the look that takes the time back was made in the commit that drew the roster, and the row says none.
       expect(beforePaint).toEqual([undefined]);
       expect(since()).toEqual([]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+      renderer = undefined;
+      jest.useRealTimers();
+      setSystemTime();
+    }
+  });
+
+  it("tells a list only the times of PCs the page has looked at: one first drawn with its roster reads none that is not judged (#3505)", async () => {
+    const start = 1_800_000_000_000;
+    const withLocal = (state: Machine["state"]) => roster().map((machine) => ({ ...machine, state: machine.id === "local" ? state : machine.state, snapshot: machine.snapshot && {
+      ...machine.snapshot, finish_epoch: "server-1",
+      panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "working" as const, finish_id: 0 } : pane),
+      agents: machine.snapshot.agents.map((agent) => agent.pane_id === paneId ? { ...agent, agent_status: "working" as const, state_change_seq: 50 } : agent),
+    } }));
+    const terminal = withLocal("connected").flatMap((machine) => machine.snapshot?.panes ?? []).find((pane) => pane.pane_id === paneId)!.terminal_id;
+    // a time this device kept of the agent at work ten hours ago, under a counter herdr has since moved past: nothing proves it
+    const unproven = JSON.stringify({ version: 1, pcs: { local: { lifetime: null, epoch: "server-1", rows: { [paneId]: { state: "working", at: start - 10 * 3_600_000, terminal, seq: 40, finish: 0 } } } } });
+    // what a list reads as it is first drawn, in the commit that mounts it
+    const firstRead: Array<number | null> = [];
+    function FirstDrawn() {
+      const stamps: StateStamps = useAgentStateStamps();
+      const [read] = useState(() => stateSince(stamps, "local", paneId, terminal, "working"));
+      useLayoutEffect(() => { firstRead.push(read); }, [read]);
+      return null;
+    }
+    const page = (machines: Machine[], list: boolean) => <SettingsProvider><Stamping machines={machines} />{list && <FirstDrawn />}</SettingsProvider>;
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(start));
+    try {
+      // Given a page loaded with no roster yet, whose list is first drawn in the commit that brings the roster (the
+      // roster answered before the page knew it was unlocked).
+      stored.set("ovis:agent-state-since", unproven);
+      await act(async () => { renderer = create(page([], false)); });
+      await act(async () => { renderer!.update(page(withLocal("connected"), true)); });
+      // Then that list reads no time: the page had judged nothing when it was drawn.
+      expect(firstRead).toEqual([null]);
+      await act(async () => { renderer!.unmount(); });
+
+      // Given a page whose first roster has the PC away, and a list first drawn in the commit that brings the PC back.
+      firstRead.length = 0;
+      stored.set("ovis:agent-state-since", unproven);
+      await act(async () => { renderer = create(page(withLocal("connecting"), false)); });
+      expect(JSON.parse(stored.get("ovis:agent-state-since")!)).toEqual(JSON.parse(unproven));
+      await act(async () => { renderer!.update(page(withLocal("connected"), true)); });
+      // Then it reads none either: the stamps of a PC that was away were kept, and never told to a list.
+      expect(firstRead).toEqual([null]);
     } finally {
       await act(async () => { renderer?.unmount(); });
       renderer = undefined;
