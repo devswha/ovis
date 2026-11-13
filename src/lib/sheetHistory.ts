@@ -196,11 +196,16 @@ function placeOf(id: string): number {
 }
 /**
  * A navigation is about to take over the entry `state` is: the staying sheet whose entry it is, and
- * each one still up under a sheet whose entry it is, is under that navigation from here.
+ * each one still up under a sheet whose entry it is, is under that navigation from here. A sheet
+ * under it that holds an entry of its own again (a Back the sheet over it refused gave each its
+ * own) shares none: the link to it is left from before, and the walk ends there.
  */
 function cover(state: unknown): void {
-  for (let id = sheetOf(state) ?? undefined; id !== undefined; id = heirs.get(id)) {
-    if (open.has(id) && staying.has(id)) { covered.add(id); underNavigation.add(id); }
+  const top = sheetOf(state);
+  if (top === null) return;
+  if (open.has(top) && staying.has(top)) { covered.add(top); underNavigation.add(top); }
+  for (let id = heirs.get(top); id !== undefined && covered.has(id); id = heirs.get(id)) {
+    if (open.has(id) && staying.has(id)) underNavigation.add(id);
   }
 }
 let pushing = false;
