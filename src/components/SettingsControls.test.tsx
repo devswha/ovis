@@ -337,12 +337,18 @@ describe("a row's sentence, as its hook keeps it (#3275)", () => {
     expect(await escape()).toBe(true);
   });
 
-  it("keeps the keyboard's sentence when a mouse's rest on another row ends after it", async () => {
+  it("keeps what was asked last: the keyboard's sentence over a rest that began before it, the mouse's over a sentence that was there first", async () => {
     await draw({ a: true, b: true });
     await mouseEnters("a");
     await focusAfter("Tab", "b");
     await restEnds();
     expect([row("a").shown, row("b").shown]).toEqual([null, "focus"]);
+
+    // the mouse leaves, comes back and rests: asked after the keyboard's sentence opened, it takes its place
+    await does(() => row("a").rowEvents.onPointerLeave?.());
+    await mouseEnters("a");
+    await restEnds();
+    expect([row("a").shown, row("b").shown]).toEqual(["hover", null]);
   });
 
   it("keeps no sentence for a row whose description went away, and takes no Escape for it", async () => {

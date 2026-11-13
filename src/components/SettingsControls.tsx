@@ -151,6 +151,8 @@ const SENTENCE_FOLLOW_MS = 400;
 /** one sentence over the page at a time: how to close the one showing, and when the last one closed */
 let closeSentence: (() => void) | null = null;
 let sentenceClosedAt = Number.NEGATIVE_INFINITY;
+/** how many sentences have opened over the page: a mouse's rest that began before the last one opened is out of date */
+let sentencesOpened = 0;
 
 const FOCUS_KEYS = new Set(["Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"]);
 
@@ -239,6 +241,7 @@ export function useRowSentence(on: boolean): {
   useEffect(() => () => { if (rest.current !== undefined) window.clearTimeout(rest.current); }, []);
   useEffect(() => {
     if (shown === null) return;
+    sentencesOpened += 1;
     closeSentence?.();
     const close = (): void => setShown(null);
     closeSentence = close;
@@ -296,9 +299,10 @@ export function useRowSentence(on: boolean): {
         // removes it under the pointer, and a row hovered again is asked again
         dismissed.current = false;
         if (shown !== null) return;
-        // by the time the rest is over the keyboard may have asked for another row's sentence: that one stays, and
-        // the mouse that has not moved since does not replace it
-        rest.current = window.setTimeout(() => { if (closeSentence === null) setShown("hover"); }, performance.now() - sentenceClosedAt < SENTENCE_FOLLOW_MS ? 0 : SENTENCE_REST_MS);
+        // the last thing asked stays: when the keyboard asks for another row's sentence during the rest, the mouse that
+        // has not moved since does not replace it; a mouse that comes to rest after that sentence opened does
+        const asked = sentencesOpened;
+        rest.current = window.setTimeout(() => { if (sentencesOpened === asked) setShown("hover"); }, performance.now() - sentenceClosedAt < SENTENCE_FOLLOW_MS ? 0 : SENTENCE_REST_MS);
       },
       // the sentence is drawn elsewhere but is this row's child: the pointer on it has not left the row, so it stays to be read
       onPointerLeave: () => {

@@ -4323,8 +4323,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`lib/useFocusTrap.ts`), so on a setting the page is not scrolled to the sentence waits for the
   row, and Escape is not its own meanwhile. It never
   moves: it is there or it is not, and a row entered within `400ms` of another's closing shows its
-  own at once. A mouse's rest that ends while the keyboard's sentence of another row is showing
-  shows nothing: the last thing asked stays. The pointer on it keeps it, it takes no focus, and Escape closes it alone and leaves
+  own at once. The last thing asked stays: a mouse's rest that began before the keyboard
+  asked for another row's sentence shows nothing when it ends, and one that begins after it takes its place. The pointer on it keeps it, it takes no focus, and Escape closes it alone and leaves
   Settings open. The keyboard on a setting always shows its sentence, so from there the first Escape
   closes the sentence and the next does what Escape does (empties the search, closes Settings), as
   [React Aria's tooltip](https://github.com/adobe/react-spectrum/blob/main/packages/react-aria/src/tooltip/useTooltipTrigger.ts)
