@@ -1,8 +1,10 @@
 /**
  * What the inbox mode's shell draws around a thread (App.tsx decides where; the list is InboxList.tsx): a phone
- * thread's title in the app's header. Each piece is one of the app's own primitives with its tokens.
+ * thread's title in the app's header, and from 769px the zone that floats over the pane (the name chip and the
+ * thread's round controls) and the line that stands in a pane with no thread. Each piece is one of the app's own
+ * primitives with its tokens.
  */
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
@@ -67,4 +69,44 @@ export function ThreadTitle(props: ThreadProps) {
       </div>
     </div>
   );
+}
+
+/**
+ * The wide thread's name chip: the mark, the name and, after it, the state's word. It floats centred over the pane
+ * where the classic shell has a header, and is not a control.
+ */
+function ThreadChip(props: ThreadProps) {
+  const t = useT();
+  const { machines, activity, machineId, pane, connection, watching, severalPcs } = props;
+  const { name, kind, mark, said } = useMemo(() => threadFacts({ machines, activity, machineId, pane, connection, watching, severalPcs }, t), [machines, activity, machineId, pane, connection, watching, severalPcs, t]);
+  return (
+    <div className="thread-chip" title={name}>
+      <InboxAvatar mark={mark} />
+      <span className="thread-chip-name">{kind && <span className="visually-hidden">{agentName(kind)}: </span>}{name}</span>
+      <span className={`thread-chip-state${connection === null ? "" : ` is-${connection}`}`}>{said}</span>
+    </div>
+  );
+}
+
+/**
+ * The zone over the wide pane: the chip on the pane's middle and the thread's controls at its end, on one centre
+ * line with the column's top controls. `thread` is null where no chip is drawn (no agent chosen, or the shell's
+ * note stands in its place); the note's status line is there either way, as it is in the classic header.
+ */
+export function ThreadTop({ thread, note, controls }: { thread: ThreadProps | null; note: ReactNode; controls: ReactNode }) {
+  return (
+    <div className={`thread-top${thread === null && controls === null ? " is-empty" : ""}`}>
+      <div className="thread-top-middle">
+        {note}
+        {thread !== null && <ThreadChip {...thread} />}
+      </div>
+      {controls !== null && <div className="thread-top-controls">{controls}</div>}
+    </div>
+  );
+}
+
+/** A wide pane with no agent chosen: the one line that stands where the thread would. */
+export function InboxUnchosen() {
+  const t = useT();
+  return <p className="inbox-unchosen" role="status">{t("Choose an agent to open its chat here.")}</p>;
 }

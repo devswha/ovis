@@ -56,7 +56,7 @@ import { takeAuthTokenFromUrl } from "./lib/authLink.ts";
 import { rosterPanes } from "./lib/dagPane.ts";
 import { adjacentTabPane, adjacentWorkspacePane, numberedTabPane, drawnWorkspaceRows, sidebarWorkspaceSteps, type ViewedPane } from "./lib/adjacentTarget.ts";
 import { lastViewedPane } from "./lib/lastViewedPane.ts";
-import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds } from "./lib/sidebarPins.ts";
+import { currentSidebarPins, movedSidebarPins, pinnedWorkspaceIds, sidebarPinKey } from "./lib/sidebarPins.ts";
 import { liveGroupKeys, movedAgentGroup } from "./lib/namedAgentGroups.ts";
 import { ReorderContext } from "./lib/machineContext.tsx";
 import { pcLoadOn, phoneInboxOn, useSettings } from "./lib/settings.ts";
@@ -140,7 +140,7 @@ import { useInbox, useInboxWaits } from "./lib/useInbox.ts";
 import { AgentInbox } from "./components/AgentInbox.tsx";
 import { useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
-import { ThreadTitle } from "./components/InboxMode.tsx";
+import { InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
 
@@ -837,7 +837,9 @@ export function App() {
   useGroupClosedWhenEmpty(moreMenu, groupItems.length === 0);
   // in a thread opened from the list, the header's first button goes back to it; the drawer opens by its edge
   // swipe, and from More for a keyboard, a screen reader or a window with no edge to swipe
-  const inboxBack = inbox.enabled && !inbox.shown && !drawerOpen && !guideShown;
+  // from 769px the mode draws the list beside the thread, so a thread there has nothing to go back to
+  const inboxWide = inMode && wideScreen;
+  const inboxBack = inbox.enabled && !inbox.shown && !drawerOpen && !guideShown && !inboxWide;
   const moreItems: RowMenuItem[] = [
     ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(sessionTally.waiting), icon: CircleHelp, run: openNextWaiting }] : []),
     ...(inboxBack ? [{ id: "open-drawer", label: t("Open workspace list"), icon: Menu, run: () => setDrawerOpen(true) }] : []),
@@ -858,16 +860,21 @@ export function App() {
   // The inbox mode's More: what still means something in a shell with no drawer, tab row or status bar. On the list
   // only what is the app's own (the list already shows who waits first); in a thread also what is about the thread,
   // the pane menu's items for what it shows among them. Settings stands last: the mode has no sidebar foot to hold it.
+  // From 769px the list is beside the thread and each has a More of its own: the column's holds the app's items, the
+  // pane's the thread's. Which one is open is told by where its button stands.
   const fromMore = (id: string): RowMenuItem[] => moreItems.filter((item) => item.id === id);
-  const modeMoreItems: RowMenuItem[] = [
-    ...(inbox.shown ? fromMore("alerts") : [
-      ...fromMore("next-waiting"), ...fromMore("find-group"), ...fromMore("find"),
-      ...(foldFind ? [] : paneMoreItems.filter((item) => item.id === "search-conversation")),
-      ...fromMore("files"), ...fromMore("copy-link"), ...fromMore("alerts"),
-      ...paneMoreItems.filter((item) => item.id === "mirror-width" || item.id === "recover-unsent"),
-    ]).map((item) => ({ ...item, divider: false })),
+  const moreOnList = inbox.shown || (more !== null && more.anchor.closest(".inbox-list") !== null);
+  const modeThreadItems: RowMenuItem[] = [
+    ...fromMore("next-waiting"), ...fromMore("find-group"), ...fromMore("find"),
+    ...(foldFind ? [] : paneMoreItems.filter((item) => item.id === "search-conversation")),
+    ...fromMore("files"), ...fromMore("copy-link"),
+    ...paneMoreItems.filter((item) => item.id === "mirror-width" || item.id === "recover-unsent"),
+  ].map((item) => ({ ...item, divider: false }));
+  const modeAppItems: RowMenuItem[] = [
+    ...fromMore("alerts").map((item) => ({ ...item, divider: false })),
     { id: "settings", label: t("Settings"), icon: SettingsGlyph, divider: true, run: actions.openSettings },
   ];
+  const modeMoreItems: RowMenuItem[] = moreOnList ? modeAppItems : inboxWide ? modeThreadItems : [...modeThreadItems, ...modeAppItems];
 
   // the chat's surface is what the pane column shows: the header's pane zone and the tab strip
   // take it (from 769px). A pane herdr could not restore draws a placeholder, not the chat.
@@ -888,7 +895,7 @@ export function App() {
   // an inbox mode thread is one pane, whatever split classic left; on its list the shell draws no header (the
   // list is the screen), and a mode left with no pane to show a thread of shows its list
   const paneSplit = splitOn && !inMode;
-  const listScreen = inMode && inbox.shown;
+  const listScreen = inMode && inbox.shown && !inboxWide;
   const { show: showInbox } = inbox;
   useEffect(() => { if (inMode && !inbox.shown && selectedPaneId === null && linkLanded) showInbox(); }, [inMode, inbox.shown, selectedPaneId, linkLanded, showInbox]);
 
@@ -918,6 +925,38 @@ export function App() {
   }
   if (locked) return <AccessGate reason={lockReason} initialCode={pairCode} consumePairCode={consumePairCode} pairingUnconfirmed={pairingUnconfirmed} onPaired={onPaired} onUnlocked={unlock} />;
 
+  // The mode's list: the screen on a phone, where More is its own control (the shell draws no header over it) and
+  // the header's note stands between its top controls; the column from 769px, where its row for the open thread is
+  // the selected one.
+  const modeList = (column: boolean): ReactNode => (
+    <InboxList machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll}
+      current={column && !inbox.shown && selectedPaneId !== null ? sidebarPinKey(selectedMachineId, selectedPaneId) : null}
+      onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
+      onNew={openNewOn} questionReads={inbox.questionReads}
+      more={{ label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
+      note={column ? undefined : <HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />} />
+  );
+  // More's button: a square of the header's, or one of the mode's round controls over the wide pane
+  const moreButton = (round: boolean): ReactNode => (
+    <span className="header-more">
+      <button
+        type="button"
+        className={`icon-button ${round ? "inbox-round " : ""}header-more-button`}
+        aria-label={moreLabel}
+        title={moreLabel}
+        aria-haspopup={isSheetWidth ? "dialog" : "menu"}
+        aria-expanded={(more !== null && !(inMode && moreOnList)) || groupItems.length > 0}
+        onClick={(event) => {
+          const anchor = event.currentTarget;
+          setMore((open) => (open ? null : { anchor }));
+        }}
+      >
+        <Ellipsis />
+      </button>
+      {/* the waiting dot carries the count (G-015): the number a phone otherwise reads only inside More */}
+      {waitingDot ? <span className="header-more-dot is-waiting" data-count={sessionTally.waiting} aria-hidden="true" /> : alertsOffDot && <span className="header-more-dot" aria-hidden="true" />}
+    </span>
+  );
   // Files beside the pane (opt-in, wide windows) shares the docked file's place: shown while no docked
   // file or web page covers it, and kept mounted under one so its folder and tab are there again after
   const filesBeside = filesOpen && filesDocked && selectedPane !== null && !filesCovered;
@@ -935,12 +974,12 @@ export function App() {
   );
 
   return (
-    <MachineSessionsProvider sessions={machineSessions} machineIds={machines.map((machine) => machine.id)}><MachineContext.Provider value={selectedMachineId}><AppLayoutContext.Provider value={appLayout}><div className={`app${inMode || sidebarCollapsed ? " sidebar-collapsed" : ""}${inMode ? " is-inbox" : ""}${listScreen ? " is-inbox-list" : ""}`} style={sidebarWidth === null && filePanelWidth === null ? undefined : {
+    <MachineSessionsProvider sessions={machineSessions} machineIds={machines.map((machine) => machine.id)}><MachineContext.Provider value={selectedMachineId}><AppLayoutContext.Provider value={appLayout}><div className={`app${(inMode ? !inboxWide : sidebarCollapsed) ? " sidebar-collapsed" : ""}${inMode ? " is-inbox" : ""}${listScreen ? " is-inbox-list" : ""}${inboxWide ? " is-inbox-wide" : ""}${inboxWide && !inbox.shown && selectedPane !== null && !chatShown ? " is-inbox-terminal" : ""}`} style={sidebarWidth === null && filePanelWidth === null ? undefined : {
       ...(sidebarWidth === null ? {} : { "--sidebar-user-w": `${sidebarWidth}px` }),
       ...(filePanelWidth === null ? {} : { "--file-panel-user-w": `${filePanelWidth}px` }),
     } as CSSProperties}>
       {selectedPane !== null && !guideShown && !inbox.shown && <h1 className="visually-hidden">{selectedTitle}</h1>}
-      {listScreen ? null : <header className={`app-header is-zoned${chatShown ? " is-chat" : ""}${stripInHeader && !phoneTabRow ? " has-tab-row" : ""}${phoneTabRow && stripInHeader ? " has-phone-tabs" : ""}`}>
+      {listScreen || inboxWide ? null : <header className={`app-header is-zoned${chatShown ? " is-chat" : ""}${stripInHeader && !phoneTabRow ? " has-tab-row" : ""}${phoneTabRow && stripInHeader ? " has-phone-tabs" : ""}`}>
         {/* is-zoned tells this header from the connecting shell's, which has no zones to draw.
             .header-side is the sidebar's own top row from 769px (styles.css); below that its
             buttons sit in the bar */}
@@ -1102,24 +1141,7 @@ export function App() {
               : localFreshness === "unavailable" && (health?.herdr.runtime === "herdr-core"
                 ? <span className="pill pill-offline" title={t("Open the Herdr app on this PC, or check HC_SESSION and HC_SOCKET.")}>{t("herdr-core unavailable")}</span>
                 : <span className="pill pill-offline" title={t("Start herdr on this PC, or check HERDR_SOCKET.")}>{t("herdr unavailable")}</span>)}
-          <span className="header-more">
-            <button
-              type="button"
-              className="icon-button header-more-button"
-              aria-label={moreLabel}
-              title={moreLabel}
-              aria-haspopup={isSheetWidth ? "dialog" : "menu"}
-              aria-expanded={more !== null || groupItems.length > 0}
-              onClick={(event) => {
-                const anchor = event.currentTarget;
-                setMore((open) => (open ? null : { anchor }));
-              }}
-            >
-              <Ellipsis />
-            </button>
-            {/* the waiting dot carries the count (G-015): the number a phone otherwise reads only inside More */}
-            {waitingDot ? <span className="header-more-dot is-waiting" data-count={sessionTally.waiting} aria-hidden="true" /> : alertsOffDot && <span className="header-more-dot" aria-hidden="true" />}
-          </span>
+          {moreButton(false)}
         </div>
       </header>}
       {/* More's menus are drawn outside the header (RowMenu's portal): the inbox mode's list has More and no header */}
@@ -1127,7 +1149,7 @@ export function App() {
           <RowMenu
             anchor={more.anchor}
             title={t("More")}
-            header={crumb && !inbox.shown ? (
+            header={crumb && !inbox.shown && !(inMode && moreOnList) ? (
               <div className="header-more-crumb">
                 {/* the status bar says where the pane is; the session's lines and the route stay here */}
                 {/* the pane's whole title, which the header cuts short: a phone has no tooltip, so More says it, with the agent (G-069) */}
@@ -1150,8 +1172,12 @@ export function App() {
 
       <PanePressContext.Provider value={pressPane}>
       <div className="app-body">
-        {/* the inbox mode has no drawer and no workspace tree: its list stands in the pane's place */}
-        {inMode ? null : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}
+        {/* the inbox mode has no drawer and no workspace tree: its list stands in the pane's place, and from 769px
+            in the sidebar's own column, at the sidebar's width, so the pane is as wide as in the classic shell */}
+        {inMode ? (inboxWide && <aside className="sidebar inbox-column">
+          {modeList(true)}
+          <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
+        </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}
           // the header's toggle is drawn as the open drawer's top row: a screen reader that keeps to the modal finds it in it
           aria-owns={drawerModal ? "drawer-toggle" : undefined} ref={drawerRef} {...peekSidebarHandlers}>
           {error && <div className="error-state" role="alert"><p>{error}</p><button className="btn" onClick={() => void load()}>{t("Retry")}</button></div>}
@@ -1199,6 +1225,14 @@ export function App() {
           onOpened={(paneId, agentStarted) => { if (agentStarted) actions.agentStarted("local", paneId); setupGuide.finish(() => selectTarget("local", paneId)); void load(); }} /></MachineContext.Provider>}
         {guideShown ? null :
         <div ref={paneAreaRef} className={`pane-split${paneSplit ? " is-split" : ""}${inbox.shown ? " is-under-inbox" : ""}`} onDragEnterCapture={paneDragOver} onDragOverCapture={paneDragOver} onDragLeave={paneDragLeave} onDropCapture={paneDrop}>
+          {/* the wide thread's zone comes before its pane, after the column: the keyboard follows the drawn order */}
+          {inboxWide && <ThreadTop note={<HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />}
+            thread={!inbox.shown && selectedPane !== null && note === null ? { machines, activity, machineId: selectedMachineId, pane: selectedPane, connection: headerConnection, watching: auth?.role === "watch", severalPcs: sidebarMachines.length > 1 } : null}
+            controls={!inbox.shown && selectedPane !== null ? <>
+              <LensToggle view={view} peek={terminalPeek !== null} terminalAttach={terminalAttach} thread round
+                title={(label) => shortcutTitle(label, "toggle-view")} onToggle={actions.toggleView} />
+              {moreButton(true)}
+            </> : null} />}
           {(inbox.shown && inbox.cold ? [] : shownSlots).map((slot) => {
             const active = !splitOn || split!.active === slot;
             const other = active || inMode ? undefined : others.get(slot);
@@ -1367,12 +1401,9 @@ export function App() {
           {inbox.shown && !inMode && <AgentInbox machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll}
             onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
             onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads} waits={inbox.waits} />}
-          {/* the mode's list is the screen: More is its own control (the shell draws no header over it) and the header's note stands between its top controls */}
-          {listScreen && <InboxList machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={false} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll}
-            onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
-            onNew={openNewOn} questionReads={inbox.questionReads}
-            more={{ label: moreBase, expanded: more !== null, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
-            note={<HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />} />}
+          {/* the mode's list is the screen on a phone; from 769px it is the column, and a pane with no thread says so */}
+          {listScreen && modeList(false)}
+          {inboxWide && inbox.shown && <InboxUnchosen />}
           {dividers.length > 0 && !inMode && <SplitDividers dividers={dividers} areaRef={paneAreaRef} onResize={resizeDivider} />}
           <SplitDropPreview visible={!inMode && splitDragOn && (paneDragging || tabDrag !== null)} grid={gridPreview} />
         </div>}

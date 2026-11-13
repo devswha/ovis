@@ -58,3 +58,206 @@
 .thread-state.is-connected {
   color: var(--status-done);
 }
+
+/* ---------- from 769px: the list beside the thread ---------- */
+
+/* The list is the sidebar's column at the sidebar's own width, so the pane is as wide here as in the classic
+   shell and entering or leaving the mode refits no terminal. No bar crosses the window: the column's top
+   controls and the pane's zone share one band (--inbox-zone-h), and the seam runs from the window's top. */
+.app.is-inbox-wide {
+  --inbox-control: var(--control-h);
+  --inbox-zone-h: calc(var(--inbox-control) + var(--space-3) * 2);
+}
+
+.inbox-column,
+.app.is-inbox-wide .pane-column {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* the zone, then the thread's one pane under it */
+.app.is-inbox-wide .pane-split {
+  flex-direction: column;
+}
+
+/* The zone over the pane. Under the terminal it is a band of the terminal's own surface above it; over the chat
+   it floats (below), and the two columns beside the chip are at least as wide as the controls, so the chip
+   stays on the pane's middle and never runs under them. Only what it holds takes a press. */
+.thread-top {
+  --thread-side: calc(var(--inbox-control) * 2 + var(--space-2));
+  position: relative;
+  z-index: var(--z-header);
+  display: grid;
+  grid-template-columns: minmax(var(--thread-side), 1fr) minmax(0, auto) minmax(var(--thread-side), 1fr);
+  align-items: center;
+  column-gap: var(--space-3);
+  flex: 0 0 auto;
+  height: var(--inbox-zone-h);
+  padding-inline: var(--space-3);
+  background: var(--term-bg);
+  pointer-events: none;
+}
+
+.thread-top-middle {
+  grid-column: 2;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.thread-top-controls {
+  grid-column: 3;
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  gap: var(--space-2);
+}
+
+.thread-top-middle > *,
+.thread-top-controls > * {
+  pointer-events: auto;
+}
+
+/* Over the chat the zone floats, as a phone's glass header does: the stack starts under it (--header-over,
+   ChatView.css) while the transcript reaches up and fades into the pane's surface behind the chip. The zone
+   draws that fade itself, in place of the transcript's own short one. */
+.app.is-inbox-wide .pane-column.is-chat {
+  --header-over: var(--inbox-zone-h);
+}
+
+.app.is-inbox-wide .pane-column.is-chat .thread-top,
+.thread-top.is-empty {
+  position: absolute;
+  top: 0;
+  inset-inline: 0;
+}
+
+.app.is-inbox-wide .pane-column.is-chat .thread-top {
+  background: linear-gradient(var(--bg), transparent);
+}
+
+.thread-top.is-empty {
+  background: transparent;
+}
+
+.app.is-inbox-wide .terminal-host:first-child .chat-view::before {
+  display: none;
+}
+
+.app.is-inbox-wide .terminal-stack.is-chat > .terminal-surface {
+  overflow: visible;
+  clip-path: inset(calc(-1 * var(--header-over, 0px)) 0 0 0);
+}
+
+/* The thread's round controls and its chip rest on the pane: no shadow, a pointer's glyph size. */
+.thread-top .icon-button.inbox-round {
+  box-shadow: none;
+}
+
+.thread-top .icon-button.inbox-round svg {
+  width: var(--icon-size-md);
+  height: var(--icon-size-md);
+}
+
+/* the chip: as wide as what it says, opaque, the mark concentric with its end */
+.thread-chip {
+  --inbox-avatar: var(--mark-size);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  min-width: 0;
+  max-width: 100%;
+  height: var(--inbox-control);
+  padding-inline: calc((var(--inbox-control) - var(--mark-size)) / 2 - var(--hairline)) calc(var(--space-3) + var(--space-half));
+  background: var(--bg-elevated);
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+}
+
+.thread-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-chip-state {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.thread-chip-state.is-reconnecting {
+  color: var(--status-reconnecting);
+}
+
+.thread-chip-state.is-connected {
+  color: var(--status-done);
+}
+
+/* no agent chosen: one quiet line where the thread would be, over the pane the list would cover on a phone */
+.inbox-unchosen {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: var(--fs-md);
+  text-align: center;
+}
+
+/* Under the terminal the pane column ends as the classic shell's does where a status bar closes it (a fine
+   pointer): the zone is taller than the classic header, so the rest of the two bars' height is kept under the
+   terminal and its grid is the size it has in classic. */
+.app.is-inbox-wide.is-inbox-terminal .pane-column {
+  background: var(--term-bg);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .app.is-inbox-wide.is-inbox-terminal .pane-column {
+    padding-bottom: calc(var(--header-h) + var(--status-bar-h) - var(--inbox-zone-h));
+  }
+}
+
+/* a finger gets its target at any width, and the band grows with it */
+@media (pointer: coarse) {
+  .app.is-inbox-wide {
+    --inbox-control: var(--touch-target);
+  }
+}
+
+/* An installed desktop app with the title bar folded away has no header to drag the window by or to keep clear
+   of the window's controls (styles.css does both for the classic header): the two top bands do it here. */
+@media (display-mode: window-controls-overlay) {
+  .inbox-list.is-wide .inbox-top,
+  .thread-top {
+    -webkit-app-region: drag;
+    app-region: drag;
+  }
+
+  .inbox-list.is-wide .inbox-top :is(button, input),
+  .thread-top :is(button, .thread-chip) {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+  }
+
+  .inbox-list.is-wide .inbox-top {
+    padding-inline-start: calc(var(--space-4) + env(titlebar-area-x, 0px));
+  }
+
+  .thread-top {
+    padding-inline-end: calc(var(--space-3) + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw));
+  }
+}
+
+/* an iPad home-screen app in a window has the window's controls over its top-left corner (lib/viewport.ts) */
+:root[data-window-controls] .inbox-list .inbox-top {
+  padding-inline-start: calc(var(--window-controls-w, 72px) + env(safe-area-inset-left, 0px));
+}

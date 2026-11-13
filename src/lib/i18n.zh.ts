@@ -548,6 +548,7 @@ const BASE: Record<string, string> = {
   "Update": "更新",
   "All": "全部",
   "Search": "搜索",
+  "Choose an agent to open its chat here.": "选择一个 Agent，它的聊天会在这里打开。",
   "Remove PC": "移除 PC",
   "Remove PC {name}?": "移除 PC {name}？",
   "Removes this registration. Remote sessions keep running.": "仅移除此注册。远程会话会继续运行。",

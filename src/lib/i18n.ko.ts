@@ -544,6 +544,7 @@ const BASE: Record<string, string> = {
   "Update": "업데이트",
   "All": "전체",
   "Search": "검색",
+  "Choose an agent to open its chat here.": "에이전트를 고르면 채팅이 여기에 열립니다.",
   "Remove PC": "PC 제거",
   "Remove PC {name}?": "{name} PC를 제거할까요?",
   "Removes this registration. Remote sessions keep running.": "이 등록만 지웁니다. 원격 세션은 계속 돕니다.",

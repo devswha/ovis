@@ -1,0 +1,119 @@
+import { describe, expect, it } from "bun:test";
+import { createElement, type ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+import type { Machine } from "../../shared/machines.ts";
+import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
+import machinesFixture from "../../site/demo/fixtures/machines.json";
+import type { HeaderConnection } from "../lib/headerConnection.ts";
+import { SettingsProvider } from "../lib/settings.ts";
+import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
+import { InboxUnchosen, ThreadTitle, ThreadTop, type ThreadProps } from "./InboxMode.tsx";
+
+const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
+const statusOf = (moved: Record<string, AgentStatus> = {}): SidebarActivity => ({
+  seqs: () => new Map(),
+  status: (_machineId, pane) => moved[pane.pane_id] ?? pane.agent_status as AgentStatus | undefined,
+});
+const paneOf = (machines: Machine[], paneId: string): HerdrPane => machines[0]!.snapshot!.panes.find((pane) => pane.pane_id === paneId) as HerdrPane;
+
+function draw(node: ReactElement): string {
+  const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
+  Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+  try {
+    return renderToStaticMarkup(createElement(SettingsProvider, { children: node }));
+  } finally {
+    if (saved) Object.defineProperty(navigator, "languages", saved);
+    else Reflect.deleteProperty(navigator, "languages");
+  }
+}
+/** the words drawn in the one element of class `name`, its hidden prefix left out */
+const said = (markup: string, name: string): string | null => {
+  const found = new RegExp(`<span class="${name}(?: [^"]*)?">(?:<span class="visually-hidden">[^<]*</span>)?([^<]*)</span>`).exec(markup);
+  return found ? found[1]!.replaceAll("&amp;", "&") : null;
+};
+function thread(paneId: string, more: Partial<ThreadProps> = {}, machines: Machine[] = structuredClone(fixture)): ThreadProps {
+  return { machines, activity: statusOf(), machineId: "local", pane: paneOf(machines, paneId), connection: null as HeaderConnection, watching: false, severalPcs: false, ...more };
+}
+
+describe("a phone thread's title", () => {
+  const title = (props: ThreadProps): string => draw(createElement(ThreadTitle, props));
+
+  it("says the name its row in the list draws, with the agent's kind for a screen reader", () => {
+    const markup = title(thread("w1D:p1"));
+    expect(said(markup, "thread-name")).toBe("Guard the export button");
+    expect(markup).toContain('<span class="visually-hidden">Codex: </span>');
+  });
+
+  it("says the agent's state in the list's words", () => {
+    expect(said(title(thread("w1D:p1")), "thread-state")).toBe("Needs you");
+    expect(said(title(thread("w1C:p1")), "thread-state")).toBe("Working");
+    expect(said(title(thread("w1E:p1", { activity: statusOf({ "w1E:p1": "done" }) })), "thread-state")).toBe("Done");
+    expect(said(title(thread("w1E:p1")), "thread-state")).toBe("Ready");
+    // waiting on background work is working, as the list's filter has it
+    expect(said(title(thread("w1E:p1", { activity: statusOf({ "w1E:p1": "waiting" }) })), "thread-state")).toBe("Working");
+  });
+
+  it("says Terminal for a pane that runs no agent, named as its tab is", () => {
+    const markup = title(thread("w1G:p1"));
+    expect(said(markup, "thread-state")).toBe("Terminal");
+    expect(said(markup, "thread-name")).toBe("Tag v1.4.0");
+    expect(markup).not.toContain("visually-hidden");
+  });
+
+  it("says Offline for a PC that is away", () => {
+    const machines = structuredClone(fixture).map((machine) => ({ ...machine, state: "disconnected" as const }));
+    expect(said(title(thread("w1D:p1", {}, machines)), "thread-state")).toBe("Offline");
+  });
+
+  it("leads the state with View only on a watching device, then the PC's name when several are shown", () => {
+    expect(said(title(thread("w1D:p1", { watching: true })), "thread-state")).toBe("View only · Needs you");
+    expect(said(title(thread("w1D:p1", { severalPcs: true })), "thread-state")).toBe("workstation · Needs you");
+    expect(said(title(thread("w1D:p1", { watching: true, severalPcs: true })), "thread-state")).toBe("View only · workstation · Needs you");
+  });
+
+  it("gives the line to the connection while it has something to say", () => {
+    const lost = title(thread("w1D:p1", { connection: "reconnecting", watching: true }));
+    expect(said(lost, "thread-state")).toBe("Reconnecting…");
+    expect(lost).toContain('class="thread-state is-reconnecting"');
+    expect(said(title(thread("w1D:p1", { connection: "connected" })), "thread-state")).toBe("Connected");
+  });
+});
+
+describe("the zone over a wide thread", () => {
+  const note = createElement("div", { className: "test-note" });
+  const controls = createElement("button", { className: "test-control" });
+
+  it("draws the chip with the mark, the name and the state's word, and the thread's controls", () => {
+    const markup = draw(createElement(ThreadTop, { thread: thread("w1D:p1", { severalPcs: true }), note, controls }));
+    expect(said(markup, "thread-chip-name")).toBe("Guard the export button");
+    expect(said(markup, "thread-chip-state")).toBe("workstation · Needs you");
+    expect(markup).toContain('class="inbox-avatar"');
+    expect(markup).toContain('class="thread-top"');
+    expect(markup.indexOf("test-note")).toBeLessThan(markup.indexOf("thread-chip"));
+    expect(markup.indexOf("thread-chip")).toBeLessThan(markup.indexOf("test-control"));
+    // the chip says the thread and is no control: nothing in it can be pressed
+    expect(/<div class="thread-chip"[^>]*>(?:(?!<\/div>).)*<button/.test(markup)).toBe(false);
+  });
+
+  it("keeps the shell's note and draws no chip where the note stands in its place", () => {
+    const markup = draw(createElement(ThreadTop, { thread: null, note, controls }));
+    expect(markup).toContain("test-note");
+    expect(markup).toContain("test-control");
+    expect(markup).not.toContain("thread-chip");
+    expect(markup).toContain('class="thread-top"');
+  });
+
+  it("is empty over a pane with no thread: no chip and no controls, only the note's place", () => {
+    const markup = draw(createElement(ThreadTop, { thread: null, note, controls: null }));
+    expect(markup).toContain('class="thread-top is-empty"');
+    expect(markup).toContain("test-note");
+    expect(markup).not.toContain("thread-top-controls");
+  });
+});
+
+describe("a wide pane with no agent chosen", () => {
+  it("says so in one status line", () => {
+    expect(draw(createElement(InboxUnchosen))).toBe('<p class="inbox-unchosen" role="status">Choose an agent to open its chat here.</p>');
+  });
+});
