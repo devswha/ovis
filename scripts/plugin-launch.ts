@@ -22,15 +22,25 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { install as installPtyHost } from "./pty-sidecar.ts";
-import { hostPlatform, installServer, NoBinaryRelease, releasesBase, verifiedInstall } from "./server-install.ts";
+import { hostPlatform, installServer, NoBinaryRelease, releasesBase } from "./server-install.ts";
 
 const root = resolve(import.meta.dir, "..");
 const USAGE = "usage: bun scripts/plugin-launch.ts install | <command> [flags]   (the commands of scripts/plugin.ts: start, stop, status, phone-setup, add, ...)";
 
 /** Runs `argv` with this process's terminal and gives back its exit code. */
-async function run(argv: string[]): Promise<number> {
-  const child = Bun.spawn(argv, { cwd: root, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
-  return await child.exited;
+export async function run(argv: string[], env: Record<string, string> = {}): Promise<number> {
+  const child = Bun.spawn(argv, { cwd: root, env: { ...process.env, ...env }, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+  // the child takes back what it handed out (a pairing code) on SIGTERM or SIGHUP: pass them on, and let Ctrl+C reach
+  // it alone (it shares the terminal) instead of ending this launcher before it
+  const forward = (signal: NodeJS.Signals) => () => { try { child.kill(signal); } catch { /* gone already */ } };
+  const handlers = { SIGTERM: forward("SIGTERM"), SIGHUP: forward("SIGHUP"), SIGINT: () => {} } as const;
+  for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
+  try {
+    const code = await child.exited;
+    return child.signalCode ? 128 + (({ SIGHUP: 1, SIGINT: 2, SIGTERM: 15 } as Record<string, number>)[child.signalCode] ?? 0) : code;
+  } finally {
+    for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
+  }
 }
 
 /** The checkout's own path: built from source, and scripts/plugin.ts run by this Bun. */
@@ -50,13 +60,20 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
     console.log(USAGE);
     return command === undefined ? 2 : 0;
   }
-  if (process.env["OVIS_FROM_SOURCE"] === "1") return await source(command, rest);
   const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
   const platform = hostPlatform();
+  // The build step's choice of source, whatever made it (OVIS_FROM_SOURCE=1, which install.sh sets for a branch, or a
+  // release without ovis-server.json), is remembered for this checkout's version, and every later command, which herdr
+  // runs without that variable, keeps it. The next build step (a later install, or herdr plugin update) decides anew:
+  // without the variable it drops the choice and asks the release again. A choice made for another version is ignored.
   const marker = join(home, "from-source");
-  // the build step asks the release again; a later command keeps what it found
-  if (command === "install") rmSync(marker, { force: true });
-  else if (platform && !verifiedInstall(home, version, platform) && existsSync(marker) && readFileSync(marker, "utf8").trim() === version) return await source(command, rest);
+  const remember = () => { mkdirSync(home, { recursive: true }); writeFileSync(marker, `${version}\n`); };
+  if (command === "install") {
+    rmSync(marker, { force: true });
+    if (process.env["OVIS_FROM_SOURCE"] === "1") { remember(); return await source(command, rest); }
+  } else if (process.env["OVIS_FROM_SOURCE"] === "1" || (existsSync(marker) && readFileSync(marker, "utf8").trim() === version)) {
+    return await source(command, rest);
+  }
   let binary: string;
   try {
     const result = await installServer({
@@ -69,15 +86,15 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
   } catch (error) {
     if (error instanceof NoBinaryRelease) {
       console.error(`Ovis: ${error.message}, so this checkout runs from source`);
-      mkdirSync(home, { recursive: true });
-      writeFileSync(marker, `${version}\n`);
+      remember();
       return await source(command, rest);
     }
     console.error(`Ovis: could not install the server of v${version}: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
   if (command === "install") return 0;
-  return await run([binary, "plugin", command, ...rest]);
+  // the server it starts knows it is this plugin's: Settings then says its updates come from herdr (server/updater.ts)
+  return await run([binary, "plugin", command, ...rest], { OVIS_PLUGIN_CHECKOUT: root });
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2)));

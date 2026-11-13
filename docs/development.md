@@ -936,8 +936,12 @@ environment) never holds it. Without the environment or its secret, `server-bina
 the secret, and `publish`, which needs it, does not run: no tag and no release are made, and nothing is published
 unsigned. In a fork the job is skipped, and so is `publish`.
 
-The owner sets it up once, before the first release that signs, on a Linux or macOS PC they trust (`keygen` refuses
-to run on Windows, where a file mode does not keep the key to its owner):
+The committed key (`RELEASE_PUBLIC_KEY`, `C8+dOD0g…`) is the public half of the key the owner already made: the
+secret holds its private half, and nothing below runs again for it. Only a new key pair (a lost or replaced key) runs
+these steps, on a Linux or macOS PC the owner trusts (`keygen` refuses to run on Windows, where a file mode does not
+keep the key to its owner), and then also commits the printed public key in `scripts/server-manifest.ts`
+(`RELEASE_PUBLIC_KEY`), `install.sh` (`RELEASE_PUBLIC_KEY=`) and `install.ps1` (`$releasePublicKey =`), before a
+release: `sign` refuses any other key, and installs that took the old key need a release under it to move on:
 1. `bun scripts/build-server.ts keygen <folder>` writes `<folder>/ovis-server-signing-key.pem` (readable by them
    alone) and prints only the public key.
 2. Create the environment `release-signing` with deployment branches limited to `main` (Settings → Environments →

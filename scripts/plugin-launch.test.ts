@@ -94,4 +94,40 @@ describe("the herdr plugin's launcher", () => {
     process.env["OVIS_RELEASES_URL"] = "http://nowhere.invalid";
     expect(await launch(["phone-setup"])).toMatchObject({ code: 7, sourced: [["phone-setup"]] });
   });
+
+  it("keeps the build step's source choice for every later command herdr runs without the variable", async () => {
+    process.env["OVIS_FROM_SOURCE"] = "1";
+    const install = await launch(["install"]);
+    expect(install).toMatchObject({ code: 7, sourced: [["install"]] });
+    delete process.env["OVIS_FROM_SOURCE"];
+    // the release answers a server error: a start that asked it would fail, not run the sources the install built
+    const broken = (async () => new Response(null, { status: 500 })) as unknown as typeof fetch;
+    expect(await launch(["start"], broken)).toMatchObject({ code: 7, sourced: [["start"]] });
+  });
+
+  it("ignores a source choice made for another version, and a build step without the variable drops it", async () => {
+    const home = join(scratch, "server");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "from-source"), "0.0.1\n");
+    const broken = (async () => new Response(null, { status: 500 })) as unknown as typeof fetch;
+    expect(await launch(["start"], broken)).toMatchObject({ code: 1, sourced: [] });
+    writeFileSync(join(home, "from-source"), `${version}\n`);
+    expect(await launch(["install"], broken)).toMatchObject({ code: 1, sourced: [] });
+    expect(existsSync(join(home, "from-source"))).toBe(false);
+  });
+});
+
+describe("the launcher's child", () => {
+  it("gets the SIGTERM sent to the launcher, and the launcher exits as the child did", async () => {
+    const ready = join(scratch, "ready");
+    const got = join(scratch, "got");
+    const script = `const { run } = await import(${JSON.stringify(join(import.meta.dir, "plugin-launch.ts"))});
+process.exit(await run(["sh", "-c", 'trap "echo got > ${got}; exit 3" TERM; : > ${ready}; while :; do sleep 0.05; done']));`;
+    const launcher = Bun.spawn([process.execPath, "-e", script], { stdout: "ignore", stderr: "pipe" });
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(ready)) { if (Date.now() > deadline) throw new Error("the child never started"); await Bun.sleep(20); }
+    launcher.kill("SIGTERM");
+    expect(await launcher.exited).toBe(3);
+    expect(readFileSync(got, "utf8")).toBe("got\n");
+  });
 });

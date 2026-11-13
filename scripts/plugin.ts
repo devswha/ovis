@@ -29,7 +29,7 @@ import { version as builtVersion } from "../package.json";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform, uptime } from "node:os";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 
 import qrcode from "qrcode-generator";
 
@@ -659,6 +659,22 @@ const stopDependencies: StopDependencies = {
  * checkout's lock until the bridge under it exits, and a `start` before then finds that lock,
  * gives up, and leaves nothing running.
  */
+/**
+ * Whether a process (its executable and argv) is this plugin's server in either of the forms it runs in: the form this
+ * process would start, Bun running the plugin checkout's server/managed.ts (from source, as before the compiled server),
+ * or the checkout's installed ovis-server(.exe) running its managed entry (scripts/plugin-launch.ts). So a stop run by
+ * one form finds the server the other started, as after herdr plugin update moved the plugin to the binary.
+ */
+export function startedByThisPlugin(path: string, argv: string[], env: Record<string, string | undefined> = process.env): boolean {
+  const same = (left: string | undefined, right: string) => left?.toLowerCase() === right.toLowerCase();
+  if (same(path, process.execPath) && same(argv[1], entryCommand("managed", ROOT)[1])) return true;
+  const checkout = env["OVIS_PLUGIN_CHECKOUT"] ?? env["HERDR_PLUGIN_ROOT"];
+  if (!checkout) return false;
+  if (same(argv[1], join(checkout, "server", "managed.ts")) && /^bun(\.exe)?$/i.test(basename(path))) return true;
+  const installed = `${join(checkout, ".ovis", "server").toLowerCase()}${sep}`;
+  return argv[1] === "managed" && path.toLowerCase().startsWith(installed) && /^ovis-server(\.exe)?$/i.test(basename(path));
+}
+
 export async function stop(dependencies: StopDependencies = stopDependencies): Promise<number> {
   // no start made the dir, and no server runs under the old id's: nothing to stop
   if (!existsSync(REQUESTED_STATE_DIR) && recordedPid() === null) {
@@ -694,8 +710,7 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
     const processes = await dependencies.processTable();
     const owner = processes.find(row => row.pid === pid);
     const argv = windowsArgv(owner?.commandLine ?? "");
-    if (owner?.path?.toLowerCase() !== process.execPath.toLowerCase()
-      || argv[1]?.toLowerCase() !== entryCommand("managed", ROOT)[1].toLowerCase()
+    if (!owner || !startedByThisPlugin(owner.path ?? "", argv)
       || owner.started === undefined || owner.started > recordedAt
       || !existsSync(PID_FILE) || statSync(PID_FILE).mtimeMs !== recordedAt
       || Number(readFileSync(PID_FILE, "utf8").trim()) !== pid) {

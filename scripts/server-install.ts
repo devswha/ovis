@@ -187,7 +187,7 @@ function stale(lock: string): boolean {
  * Runs `run` holding `<home>/.install.lock`. A lock found stale is broken under `.install.lock.break`, so two waiters
  * that both saw it stale cannot both remove it, and the one that comes second sees the new holder's pid and waits.
  */
-export async function withInstallLock<T>(home: string, run: () => Promise<T>, waitMs = LOCK_WAIT_MS): Promise<T> {
+export async function withInstallLock<T>(home: string, run: () => Promise<T>, waitMs = LOCK_WAIT_MS, onWait?: () => void): Promise<T> {
   mkdirSync(home, { recursive: true });
   const lock = join(home, ".install.lock");
   const breaker = `${lock}.break`;
@@ -215,6 +215,7 @@ export async function withInstallLock<T>(home: string, run: () => Promise<T>, wa
       try { if (Date.now() - statSync(breaker).mtimeMs > UNCLAIMED_MS) rmdirSync(breaker); } catch { /* gone meanwhile */ }
     }
     if (broke) continue;
+    onWait?.();
     if (Date.now() >= deadline) throw new Error(`another install is running in ${home} (pid ${holderOf(lock) ?? "unknown"}); try again once it ends. Nothing was changed`);
     await Bun.sleep(200);
   }
@@ -236,7 +237,8 @@ export function verifiedInstall(home: string, version: string, platform: ServerP
   try {
     const manifest = checkManifest(readFileSync(join(current, MANIFEST)), readFileSync(join(current, SIGNATURE), "utf8"), publicKey, { version });
     const binary = join(current, binaryName(platform));
-    if (typeof manifest !== "string" && sha256(readFileSync(binary)) === manifest.assets[platform].sha256) return binary;
+    // the client it serves too: a release whose dist/ went missing is installed again
+    if (typeof manifest !== "string" && sha256(readFileSync(binary)) === manifest.assets[platform].sha256 && existsSync(join(current, "dist", "index.html"))) return binary;
   } catch { /* nothing installed there, or not whole */ }
   return null;
 }
@@ -253,8 +255,9 @@ export interface InstallServerOptions {
   publicKey?: string;
   /** puts the Rust PTY host at the path it is given (scripts/pty-sidecar.ts install); its failure leaves terminals mirrored */
   ptyHost?: (target: string) => Promise<{ ok: boolean; message: string }>;
-  /** how long to wait for another install's lock, and how a file is fetched: tests */
+  /** how long to wait for another install's lock, how a file is fetched, and a call made when the lock is found held: tests */
   lockWaitMs?: number;
+  onLockWait?: () => void;
   fetchFile?: typeof fetch;
 }
 
@@ -272,7 +275,7 @@ export async function installServer(options: InstallServerOptions): Promise<{ in
   const current = join(home, "bin");
   const binary = join(current, binaryName(platform));
   if (verifiedInstall(home, version, platform, publicKey)) return { installed: false, message: `Ovis ${version} is installed already in ${current}; nothing to do`, binary };
-  return await withInstallLock(home, () => installLocked(options, platform, base, publicKey), options.lockWaitMs);
+  return await withInstallLock(home, () => installLocked(options, platform, base, publicKey), options.lockWaitMs, options.onLockWait);
 }
 
 async function installLocked(options: InstallServerOptions, platform: ServerPlatform, base: string, publicKey: string): Promise<{ installed: boolean; message: string; binary: string }> {
@@ -298,6 +301,7 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
   const stage = mkdtempSync(join(releases, ".stage-"));
   const name = `${version}-${randomBytes(4).toString("hex")}`;
   let host = "";
+  let previous: string | null = null;
   try {
     writeFileSync(join(stage, binaryName(platform)), await checked(at, manifest.assets[platform], options.fetchFile), { mode: 0o755 });
     chmodSync(join(stage, binaryName(platform)), 0o755);
@@ -307,6 +311,8 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
     writeFileSync(join(stage, MANIFEST), manifestBytes);
     writeFileSync(join(stage, SIGNATURE), signature);
     if (options.ptyHost) host = `; ${(await options.ptyHost(join(stage, "bin", "ovis-pty-sidecar"))).message}`;
+    // the release bin names now: a server started from it may still run, so it stays until the next install
+    try { previous = WINDOWS ? null : realpathSync(join(home, "bin")).split(/[/\\]/).at(-1)!; } catch { previous = null; }
     renameSync(stage, join(releases, name));
     try {
       swap(home, name);
@@ -319,9 +325,7 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
   }
   // the releases that no longer run, never the one bin names; on Linux and macOS a server still running from one keeps
   // its open files
-  let running = name;
-  try { running = WINDOWS ? name : realpathSync(current).split(/[/\\]/).at(-1)!; } catch { /* bin names the new one */ }
-  for (const old of readdirSync(releases).filter((entry) => entry !== name && entry !== running && !entry.startsWith("."))) {
+  for (const old of readdirSync(releases).filter((entry) => entry !== name && entry !== previous && !entry.startsWith("."))) {
     try { rmSync(join(releases, old), { recursive: true, force: true }); } catch { /* still in use: the next install removes it */ }
   }
   return { installed: true, message: `installed Ovis ${version} (${releaseFile(platform)}, sha256 ${manifest.assets[platform].sha256}) in ${current}${host}`, binary };

@@ -1076,15 +1076,16 @@ install_binary() {
   release_name="$version-${stage##*.stage-}"
   mv "$stage" "$OVIS_HOME/releases/$release_name" || refuse "could not move the checked release into place"
   stage=""
+  # the release bin names now: a server started from it may still run, so it stays until the next install
+  previous="$OVIS_HOME/$(readlink "$OVIS_HOME/bin" 2>/dev/null || true)"
   link="$OVIS_HOME/.bin-$$"
   ln -s "releases/$release_name" "$link" || fail "could not link $OVIS_HOME/bin; nothing was changed"
   # one rename over the old link: -T (GNU) and -h (BSD) keep mv from moving the link into the folder bin names
   if [ "$os" = darwin ]; then swap_flag=-fh; else swap_flag=-fT; fi
   mv "$swap_flag" "$link" "$OVIS_HOME/bin" || { rm -f "$link"; fail "could not swap $OVIS_HOME/bin; nothing was changed"; }
-  # the releases that no longer run: never the new one, nor the one bin names
-  running="$OVIS_HOME/$(readlink "$OVIS_HOME/bin" 2>/dev/null || true)"
+  # the releases no server can run from: never the new one, nor the one bin named before this install
   for old in "$OVIS_HOME"/releases/*; do
-    case "$old" in "$OVIS_HOME/releases/$release_name" | "$running") ;; *) rm -rf "$old" ;; esac
+    case "$old" in "$OVIS_HOME/releases/$release_name" | "$previous") ;; *) rm -rf "$old" ;; esac
   done
   install_unlock
   binary_changed=1
@@ -1498,7 +1499,7 @@ write_plugin() {
   cat >"$OVIS_HOME/plugin/.run.sh.new" <<'EOF'
 #!/bin/sh
 # herdr's way into the Ovis that install.sh installed: the release's server, as `ovis-server plugin <command>`
-exec "$(cd "$(dirname "$0")" && pwd)/../bin/ovis-server" plugin "$@"
+exec "$(cd "$(dirname "$0")" && pwd -P)/../bin/ovis-server" plugin "$@"
 EOF
   {
     printf 'id = "%s"\nname = "Ovis"\nversion = "%s"\nmin_herdr_version = "0.9.0"\n' "$PLUGIN" "$version"

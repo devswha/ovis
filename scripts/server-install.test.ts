@@ -86,13 +86,17 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     expect(snapshot(home)).toEqual(before);
   });
 
-  it("moves to a newer version in one swap and keeps no older release behind it", async () => {
+  it("moves to a newer version in one swap, keeping the release before it for a server still running from it", async () => {
     const { install, releases, key, home, binary } = fixture();
     await install();
     const newer = release(releases, "1.2.4", key.privateKeyPem);
     expect((await install({ version: "1.2.4" })).installed).toBe(true);
     expect(sha256(binary)).toBe(sha256(join(newer, releaseFile(PLATFORM))));
-    expect(readdirSync(join(home, "releases")).filter((name) => !name.startsWith("."))).toHaveLength(1);
+    // the release bin named before stays, for a server still running from it, until the next install
+    expect(readdirSync(join(home, "releases")).filter((name) => !name.startsWith(".")).sort().map((name) => name.split("-")[0])).toEqual(["1.2.3", "1.2.4"]);
+    release(releases, "1.2.5", key.privateKeyPem);
+    expect((await install({ version: "1.2.5" })).installed).toBe(true);
+    expect(readdirSync(join(home, "releases")).filter((name) => !name.startsWith(".")).sort().map((name) => name.split("-")[0])).toEqual(["1.2.4", "1.2.5"]);
   });
 
   const binaryOf = (dir: string) => join(dir, releaseFile(PLATFORM));
@@ -171,6 +175,15 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     expect((await install({ version: "1.2.4" })).installed).toBe(true);
   });
 
+  it("installs again a release whose client went missing", async () => {
+    const { install, home, key } = fixture();
+    await install();
+    rmSync(join(home, "bin", "dist"), { recursive: true });
+    expect(verifiedInstall(home, "1.2.3", PLATFORM, key.publicKey)).toBeNull();
+    expect((await install()).installed).toBe(true);
+    expect(existsSync(join(home, "bin", "dist", "index.html"))).toBe(true);
+  });
+
   it("runs an installed release only while its kept manifest still verifies and the binary matches it", async () => {
     const { install, home, key, binary } = fixture();
     await install();
@@ -200,14 +213,16 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     release(releases, "1.2.4", key.privateKeyPem);
     const events: string[] = [];
     let secondIn = false;
+    let waited!: () => void;
+    const secondWaits = new Promise<void>((resolve) => { waited = resolve; });
     const install = (version: string, hold: boolean) => installServer({
-      home, version, platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey,
+      home, version, platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey, onLockWait: hold ? undefined : waited,
       // in the window (both files checked, nothing moved yet); the first waits, at most 2 s, for the second to arrive
       ptyHost: async () => {
         events.push(`${version} in`);
         if (!hold) secondIn = true;
-        const until = Date.now() + 2000;
-        while (hold && !secondIn && Date.now() < until) await Bun.sleep(20);
+        // the first goes on once the second waits for the lock, or (only without a lock) reaches this window itself
+        if (hold) await Promise.race([secondWaits, new Promise<void>((resolve) => { const check = setInterval(() => { if (secondIn) { clearInterval(check); resolve(); } }, 10); })]);
         events.push(`${version} out`);
         return { ok: false, message: "no host" };
       },
