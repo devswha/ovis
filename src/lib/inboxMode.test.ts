@@ -33,9 +33,6 @@ describe("the inbox mode's address", () => {
   });
 });
 
-describe("the gate on the mode's address", () => {
-});
-
 describe("where a device that starts in the inbox starts", () => {
   it("starts in the mode on a phone whose address is the app's own start, or names a pane", () => {
     expect(startsInInbox(true, true, null, true)).toBe(true);
