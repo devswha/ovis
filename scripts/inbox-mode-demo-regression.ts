@@ -1328,6 +1328,31 @@ try {
         }, viewport, touch);
       }
 
+      // ---- the band over a shown terminal under a finger, on a wide window ----
+      // Where classic has no status bar (a finger), the band over a thread's terminal is the classic header's height:
+      // the thread's controls in it take the header's own touch size and sit on its middle, as classic's header
+      // controls do in that band, rather than from the window's top edge down over the terminal.
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "the thread's controls in the band over its terminal under a coarse pointer at 1440", async (page) => {
+        assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "the pointer is coarse");
+        await page.locator(".app-header.is-zoned").waitFor();
+        await page.locator(".header-more-button").click();
+        await page.locator('[data-item="enter-inbox"]').first().click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        await page.locator(".thread-top .lens-toggle").click();
+        await page.locator('.thread-top .lens-toggle[data-view="terminal"]').waitFor();
+        const band = await box(page, ".thread-top");
+        const [header, touch] = await page.evaluate(() => ["--header-h", "--touch-target-header"].map((name) => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name)))) as [number, number];
+        near(band.h, header, 0.5, "the band is the classic header's height");
+        for (const control of [".thread-top .lens-toggle", ".thread-top .header-more-button", ".thread-chip"]) {
+          const at = await box(page, control);
+          near(at.h, touch, 0.5, `${control} takes the header's touch size`);
+          near(at.y + at.h / 2, band.y + band.h / 2, 0.5, `${control} sits on the band's middle`);
+        }
+        console.log(`PASS under a coarse pointer at 1440 the thread's controls over its terminal are the header's touch size (${touch}px) on the middle of the ${band.h}px band`);
+      }, { width: 1440, height: 900 }, true);
+
       // ---- the command palette from the mode's More ----
       await withPage(browser, base, light, "/?app=inbox", "the command palette from the list's More", async (page) => {
         await listScreen(page);

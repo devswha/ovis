@@ -257,6 +257,15 @@
   .app.is-inbox-wide {
     --inbox-control: var(--touch-target);
   }
+
+  /* Over a shown terminal the band is the classic header's own height (above), not the zone's: its controls take
+     the header's own touch size, as classic's header controls do in that band, and sit on its middle. The band is
+     one row of its own height, and a control taller than it is centred all the same, not laid from its top. */
+  .app.is-inbox-wide.is-inbox-terminal .thread-top {
+    --inbox-control: var(--touch-target-header);
+    grid-template-rows: minmax(0, 1fr);
+    align-items: unsafe center;
+  }
 }
 
 /* An installed desktop app with the title bar folded away has no header to drag the window by or to keep clear

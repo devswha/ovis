@@ -2448,8 +2448,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     pane column with a status bar (a mouse), the pane column keeps the rest of the classic
     header's and status bar's height below the terminal; where classic has none (a finger, a
     pointer that cannot hover), the band is the classic header's own height (`--header-h`), its
-    controls on its middle. Over the chat and in the column a coarse pointer grows the round
-    controls to `--touch-target` and the band with them.
+    controls on its middle; under a finger they are the header's own touch size there
+    (`--touch-target-header`, as classic's header controls are in that band), centred on it. Over
+    the chat and in the column a coarse pointer grows the round controls to `--touch-target` and
+    the band with them.
   - A pane with no agent chosen says so in one centred `--text-dim` line (`.inbox-unchosen`,
     `role="status"`): "Choose one from the list to open its chat here." It names no agent: the word is
     drawn nowhere in the mode's own chrome.
