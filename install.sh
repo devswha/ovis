@@ -1446,10 +1446,21 @@ install_plugin() {
 # (a branch has no release to fetch), an install from source that is here already (herdr's plugin checkout,
 # or herdr-core's in APP_DIR: Settings → Updates keeps those current), or a release that ships no
 # ovis-server.json yet (one from before the compiled server). Nothing is installed here.
+# A source install asked for over the release's binary would find the plugin this installer linked "already
+# installed", build nothing and report a start that never came: say before anything is installed how to move instead.
+refuse_source_over_binary() {
+  fail "$1, but Ovis is installed here as the release's binary ($OVIS_HOME). To move it to source, remove that first: ovis stop; herdr plugin uninstall $PLUGIN; rm -rf $OVIS_HOME/bin $OVIS_HOME/releases $OVIS_HOME/plugin; then run this again"
+}
+
 pick_install() {
   binary=0
   ref=${OVIS_REF:-${HERDR_WEB_UI_REF:-}}
-  [ "${OVIS_FROM_SOURCE:-}" != 1 ] || return 0
+  binary_home=0
+  [ ! -e "$OVIS_HOME/bin/ovis-server" ] || binary_home=1
+  if [ "${OVIS_FROM_SOURCE:-}" = 1 ]; then
+    [ "$binary_home" = 0 ] || refuse_source_over_binary "OVIS_FROM_SOURCE=1 asks for a source install"
+    return 0
+  fi
   [ ! -d "$APP_DIR/.git" ] || return 0
   if command -v herdr >/dev/null 2>&1 && herdr plugin list 2>/dev/null </dev/null | grep -q -e "$PLUGIN " -e "$LEGACY_PLUGIN "; then
     # the plugin this installer links runs the binary; any other is a checkout from source
@@ -1465,7 +1476,10 @@ pick_install() {
   fi
   case "$ref" in
     v[0-9]*.[0-9]*.[0-9]*) version=${ref#v} ;;
-    *) return 0 ;;
+    *)
+      [ "$binary_home" = 0 ] || refuse_source_over_binary "OVIS_REF=$ref asks for a source install of a branch"
+      return 0
+      ;;
   esac
   probe=$(mktemp) || fail "could not make a temporary file"
   probe_status=0
@@ -1475,7 +1489,15 @@ pick_install() {
     0) binary=1 ;;
     # any HTTP error (curl -f's 22) or no such file (37) reads as a release from before the compiled server: the source
     # of the same tag over TLS. Todo 7 (the updater) narrows this to 404 only, as scripts/plugin-launch.ts has it
-    22 | 37) say "Ovis $ref ships no compiled server, so it is installed from source" ;;
+    22 | 37)
+      if [ "$binary_home" = 1 ]; then
+        # an explicit tag without the binary asks for source; the latest release unreachable keeps what runs
+        [ -z "${OVIS_REF:-${HERDR_WEB_UI_REF:-}}" ] || refuse_source_over_binary "Ovis $ref ships no compiled server, so it would be a source install"
+        say "could not check the release $ref ($releases, curl exit $probe_status); the installed Ovis stays as it is, nothing was changed"
+        exit 0
+      fi
+      say "Ovis $ref ships no compiled server, so it is installed from source"
+      ;;
     *) fail "could not reach $releases/$ref (curl exit $probe_status). Check the connection and run this again." ;;
   esac
 }

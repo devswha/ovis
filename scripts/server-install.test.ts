@@ -185,6 +185,16 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     expect(existsSync(join(home, "bin", "dist", "index.html"))).toBe(true);
   });
 
+  it("takes the binary only for the sources it was built from: another checkout's trees, or uncommitted changes, are no binary release", async () => {
+    const { releases, home, key } = fixture();
+    const install = (sources: { server: string; shared: string } | { error: string }) =>
+      installServer({ home, version: "1.2.3", platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey, sources });
+    await expect(install({ server: "c".repeat(40), shared: "b".repeat(40) })).rejects.toBeInstanceOf(NoBinaryRelease);
+    await expect(install({ error: "server/ or shared/ has changes that are not committed" })).rejects.toThrow("not the ones v1.2.3 was built from");
+    expect(existsSync(join(home, "bin"))).toBe(false);
+    expect((await install({ server: "a".repeat(40), shared: "b".repeat(40) })).installed).toBe(true);
+  });
+
   it("takes only the PTY host the signed manifest names: a tampered ovis-pty-sidecar.json is not read, a replaced host never runs", async () => {
     const root = scratch();
     const releases = join(root, "release");

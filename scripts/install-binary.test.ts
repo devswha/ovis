@@ -390,6 +390,36 @@ exec "${Bun.which("tar")}" "$@"`);
     expect(existsSync(join(ovis, "bin", "ovis-server"))).toBe(true);
   });
 
+  it("refuses a source install over the release's binary before installing anything, and says how to move", () => {
+    const { releases, key, run, ovis } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    expect(run("install_binary 1.2.3").code).toBe(0);
+    const before = snapshot(ovis);
+    for (const env of [{ OVIS_FROM_SOURCE: "1" }, { OVIS_REF: "feature/x" }, { OVIS_REF: "v1.2.2" }]) {
+      if (env.OVIS_REF === "v1.2.2") mkdirSync(join(releases, "v1.2.2"), { recursive: true });
+      const result = run("pick_install; echo picked", env);
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out).toContain("installed here as the release's binary");
+      expect(result.out).toContain("herdr plugin uninstall devswha.ovis");
+      expect(result.out).not.toContain("picked");
+    }
+    expect(snapshot(ovis)).toEqual(before);
+  });
+
+  it("keeps a binary install as it is when the latest release cannot be checked", () => {
+    const { releases, key, run, ovis } = pc();
+    release(releases, "1.2.3", key.privateKeyPem);
+    expect(run("install_binary 1.2.3").code).toBe(0);
+    const before = snapshot(ovis);
+    // the newest release folder answers no manifest: a failed probe, not a request for source
+    mkdirSync(join(releases, "v1.2.9"), { recursive: true });
+    const result = run("pick_install; echo picked");
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toContain("the installed Ovis stays as it is, nothing was changed");
+    expect(result.out).not.toContain("picked");
+    expect(snapshot(ovis)).toEqual(before);
+  });
+
   it("replaces nothing that is not its own: a bin folder someone made stays", () => {
     const { releases, key, run, ovis } = pc();
     release(releases, "1.2.3", key.privateKeyPem);

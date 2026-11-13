@@ -22,6 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { hostPlatform, installServer, NoBinaryRelease, releasesBase } from "./server-install.ts";
+import { sourceTrees } from "./server-manifest.ts";
 
 const root = resolve(import.meta.dir, "..");
 const USAGE = "usage: bun scripts/plugin-launch.ts install | <command> [flags]   (the commands of scripts/plugin.ts: start, stop, status, phone-setup, add, ...)";
@@ -53,7 +54,7 @@ async function fromSource(command: string, args: string[]): Promise<number> {
 }
 
 /** the tests': the install folder, what stands in for the source path, and how a file is fetched */
-export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch } = {}): Promise<number> {
+export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root) }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees> } = {}): Promise<number> {
   const [command, ...rest] = args;
   if (command === undefined || ["--help", "-h", "help"].includes(command)) {
     console.log(USAGE);
@@ -76,7 +77,8 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
   let binary: string;
   try {
     const result = await installServer({
-      home, version, fetchFile,
+      // the release's binary only for the sources it was built from: a branch or main between releases builds its own
+      home, version, fetchFile, sources,
       // the Rust PTY host comes with it, the one the signed manifest names (scripts/server-install.ts)
     });
     if (result.installed || command === "install") console.error(`Ovis: ${result.message}`);

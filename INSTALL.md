@@ -107,7 +107,12 @@ herdr when `OVIS_REF` names a branch), and it says so in one line. Otherwise:
   SHA-256 check;
 - `install.sh` today falls back to source when its manifest probe fails with any HTTP error, not only 404: the source
   of the same tag, from GitHub over TLS. The update work (todo 7 of the relay-fleet plan) narrows it to 404 only. A
-  manifest that is there and fails a check fails, as above.
+  manifest that is there and fails a check fails, as above;
+- the plugin's launcher takes the release's binary only when the checkout's `server/` and `shared/` are the git trees
+  the signed manifest names: a branch, or main between releases, runs its own sources;
+- over an install of the release's binary, `install.sh` builds no source: asked for one (`OVIS_FROM_SOURCE=1`, a
+  branch, or a tag without the binary), it stops before installing anything and says how to remove the binary first;
+  when the latest release cannot be checked, it leaves the installed Ovis as it is.
 
 - Success: the command exits 0 and `herdr plugin list` shows `devswha.ovis`.
 - The first build step is a check that prints, in one line, what is missing (`bun`, or a version

@@ -282,6 +282,8 @@ export interface InstallServerOptions {
    * file is checked and before anything moves: tests */
   ptyRuns?: (path: string) => boolean;
   inWindow?: () => Promise<void>;
+  /** the git trees of the checkout that asks (scripts/plugin-launch.ts): its binary only when the manifest names them */
+  sources?: { server: string; shared: string } | { error: string };
   /** how long to wait for another install's lock, how a file is fetched, and a call made when the lock is found held: tests */
   lockWaitMs?: number;
   onLockWait?: () => void;
@@ -324,6 +326,11 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
   if (!signature) throw new Error(`${at}/${SIGNATURE} does not exist; nothing was changed`);
   const manifest = checkManifest(Buffer.from(manifestBytes), new TextDecoder().decode(signature), publicKey, { version });
   if (typeof manifest === "string") throw new Error(`${manifest}; nothing was changed`);
+  // a checkout of another commit with the same version (a branch, main between releases) runs its own sources
+  const sources = options.sources;
+  if (sources && ("error" in sources || sources.server !== manifest.sources.server || sources.shared !== manifest.sources.shared)) {
+    throw new NoBinaryRelease(`this checkout's server/ and shared/ are not the ones v${version} was built from (${"error" in sources ? sources.error : "other git trees"})`);
+  }
 
   const stage = mkdtempSync(join(releases, ".stage-"));
   const name = `${version}-${randomBytes(4).toString("hex")}`;

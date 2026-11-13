@@ -29,6 +29,7 @@ afterEach(() => {
 });
 
 /** runs `args` with the source path recorded; what it returned, and each call the source path got */
+const BUILT_FROM = { server: "a".repeat(40), shared: "b".repeat(40) };
 async function launch(args: string[], fetchFile?: typeof fetch): Promise<{ code: number; sourced: string[][]; home: string }> {
   const home = join(scratch, "server");
   const sourced: string[][] = [];
@@ -71,7 +72,7 @@ describe("the herdr plugin's launcher", () => {
     for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
     for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
     writeFileSync(join(dir, "ovis-dist.tar.gz"), "client\n");
-    writeManifest(dir, { version, sources: { server: "a".repeat(40), shared: "b".repeat(40) } });
+    writeManifest(dir, { version, sources: BUILT_FROM });
     signManifest(dir, generateKeyPair().privateKeyPem);
     process.env["OVIS_RELEASES_URL"] = pathToFileURL(join(scratch, "release")).href;
     const result = await launch(["start"]);
@@ -116,6 +117,7 @@ describe("the herdr plugin's launcher", () => {
     expect(await launch(["install"], broken)).toMatchObject({ code: 1, sourced: [] });
     expect(existsSync(join(home, "from-source"))).toBe(false);
   });
+
 });
 
 describe("the launcher's child", () => {
