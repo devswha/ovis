@@ -283,10 +283,12 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
   /**
    * A pick of a pane another slot shows, where the pick is not the active slot's to take (the inbox mode's row: a
    * thread is one pane, and the mode left from it shows the split as it was): that slot becomes the active one and
-   * the active slot keeps its pane. The layout only; the pick is the caller's.
+   * the active slot keeps its pane. The layout only; the pick is the caller's. A narrower window that keeps the split
+   * shows its active slot alone, so the slot is made active there too: the pane it held is not drawn twice once the
+   * window widens.
    */
   const activateSlotOf = (target: SplitTarget): void => {
-    if (!splitOn || current === null) return;
+    if (split === null || current === null) return;
     const slot = Object.entries(split.panes).find(([, pane]) => sameTarget(pane, target))?.[0];
     const change = slot === undefined ? null : activatedSlot(split, current, slot);
     if (change?.split) setSplit(change.split);

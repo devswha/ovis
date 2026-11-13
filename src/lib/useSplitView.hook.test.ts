@@ -68,4 +68,14 @@ describe("useSplitLayout", () => {
     await draw({ wideScreen: true, threadDrawn: false });
     expect(splitShownRef.current).toBe(true);
   });
+
+  it("makes the slot that holds a picked pane the active one on a narrow window that keeps the split, as on a wide one", async () => {
+    for (const wideScreen of [true, false]) {
+      written = [];
+      await draw({ wideScreen, threadDrawn: false });
+      await act(async () => { layout.activateSlotOf({ machineId: "local", paneId: "w1:p2" }); });
+      // slot b is active and the pane slot a showed stays in slot a: neither half is drawn twice once the window widens
+      expect(written).toEqual([{ ...split, panes: { a: { machineId: "local", paneId: "w1:p1" } }, active: "b" }]);
+    }
+  });
 });
