@@ -19,6 +19,8 @@ declare global {
       publish(): Promise<void>;
       /** sets a pane's state as herdr would: its pane-status event, then the roster */
       set(paneId: string, status: AgentStatus, finish?: number): Promise<void>;
+      /** every size the app has asked of a pane's pty since the page loaded, in order */
+      resizes: { pane: string; cols: number; rows: number }[];
     };
   }
 }
@@ -92,8 +94,25 @@ function installInboxFixture(): void {
   const send = (body: unknown): void => {
     for (const source of sources) source.onmessage?.(new MessageEvent("message", { data: JSON.stringify(body) }));
   };
+  // the demo's socket is a class of its own that no browser event reports: each size the app asks of a pty is noted
+  const DemoSocket = window.WebSocket;
+  const Recorded = function (url: string | URL, protocols?: string | string[]) {
+    const socket = new DemoSocket(url, protocols);
+    const sendFrame = socket.send.bind(socket);
+    socket.send = (data: Parameters<WebSocket["send"]>[0]): void => {
+      if (typeof data === "string") {
+        const frame = JSON.parse(data);
+        if (frame.type === "resize") window.inboxFixture.resizes.push({ pane: frame.pane_id, cols: frame.cols, rows: frame.rows });
+      }
+      sendFrame(data);
+    };
+    return socket;
+  } as unknown as typeof WebSocket;
+  for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"] as const) Object.defineProperty(Recorded, name, { value: DemoSocket[name] });
+  window.WebSocket = Recorded;
   window.inboxFixture = {
     rosters: 0,
+    resizes: [],
     async publish() {
       const { machines } = await (await fetch("/api/machines")).json();
       send({ type: "machines", machines });
@@ -110,7 +129,8 @@ function installInboxFixture(): void {
 // The agent inbox as a mode of the app, on the unmodified app over the demo's fixture transport: the two entries and
 // the exit, the list as a phone's screen (its rows, state marks, filter and search), a thread with the terminal behind
 // its monitor button, the history (Back, Forward, reloads, a cold address), New workspace, a watching device, the
-// device setting that starts a phone in the mode, and the two panes of a wide window with the boxes classic has. All
+// device setting that starts a phone in the mode, the two panes of a wide window with the boxes classic has, and a
+// pane that shows its terminal while the mode is entered and left: its pty is sent no size and its box stays. All
 // files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const BLOCKED = "w1D:p1";      // Codex, waiting: "Allow command?"
 const WORKING = "w1C:p1";      // Claude
@@ -121,6 +141,8 @@ const WORKING_TITLE = "Idempotent payments";
 /** what the mode's shell never draws */
 const ABSENT = [".inbox-filters", ".inbox-chip", ".inbox-place", ".inbox-title", ".inbox-dot", ".tab-strip", ".context-tabs", ".view-switch", ".status-bar", "#drawer-toggle", "#workspace-drawer", ".sidebar-toggle", ".pane-split.is-split"];
 const PHONE = { width: 390, height: 844 };
+/** how long nothing may be sent to a pty: past the terminal's own wait for its box to settle before it fits */
+const NO_RESIZE_WAIT_MS = 1_000;
 
 const app = mkdtempSync(join(tmpdir(), "ovis-inbox-mode-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
@@ -172,6 +194,10 @@ const historyLength = (page: Page): Promise<number> => page.evaluate(() => histo
 const frames = (page: Page) => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
 const row = (page: Page, pane: string, machine = "local") => page.locator(`.mode-inbox .inbox-item[data-machine="${machine}"][data-pane="${pane}"] .inbox-row`);
 const near = (got: number, want: number, by: number, what: string): void => assert.ok(Math.abs(got - want) <= by, `${what}: ${got}, wanted ${want} within ${by}`);
+/** the same box, to half a pixel on each side */
+const sameBox = (got: Box, want: Box, what: string): void => {
+  for (const side of ["x", "y", "w", "h"] as const) near(got[side], want[side], 0.5, `${what} (${side})`);
+};
 /** the list as a phone's screen: no header over it, and the mode's mark in the address */
 async function listScreen(page: Page): Promise<void> {
   await page.locator(".mode-inbox").waitFor();
@@ -902,6 +928,57 @@ try {
           errors.length = 0;
         } else pass(26, "no page error");
       }
+      // ---- no terminal is sized by the mode ----
+      // A pane that shows its terminal is covered by the mode's list and shown again: nothing is sent to its pty and
+      // its terminal keeps its box. On a wide window whose classic sidebar is collapsed the list's column would
+      // narrow the pane, and on every one the list takes the shell's bars away.
+      const terminalAt = `/?pane=${encodeURIComponent(BLOCKED)}&view=terminal`;
+      for (const setup of [
+        { name: "a phone", viewport: PHONE, path: terminalAt },
+        { name: "a wide window", viewport: { width: 1440, height: 900 }, path: terminalAt },
+        { name: "a wide window with the classic sidebar collapsed", viewport: { width: 1440, height: 900 }, path: `${terminalAt}&sidebar=hidden` },
+      ]) {
+        await withPage(browser, base, { language: "en", theme: "light" }, setup.path, `the mode sizes no terminal on ${setup.name}`, async (page) => {
+          const wide = setup.viewport.width >= 769;
+          const terminal = ".terminal-stack:not(.is-chat) .pane-terminal";
+          const sized = (): Promise<Window["inboxFixture"]["resizes"]> => page.evaluate(() => window.inboxFixture.resizes.slice());
+          await page.locator(".app-header.is-zoned").waitFor();
+          const classic = await terminalBox(page);
+          if (setup.path.endsWith("sidebar=hidden")) assert.equal(classic.x, 0, "the classic sidebar is collapsed: the pane begins at the window's edge");
+          // fixed wait: the page's own first sizing of the pane has gone out
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          const before = (await sized()).length;
+
+          // into the mode: its list covers the pane
+          if (wide) {
+            await page.locator(".header-more-button").click();
+            await page.locator('.row-menu [data-item="enter-inbox"]').click();
+            await page.locator(".inbox-column .mode-inbox").waitFor();
+          } else await enterFromMore(page);
+          await rowCount(page, 6);
+          await paneHiddenUnderList(page, "the pane is mounted under the list, hidden");
+          // fixed wait: no size may be sent for the pane under the list
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          assert.deepEqual((await sized()).slice(before), [], "the list over the pane sends its pty no size");
+          sameBox(await box(page, terminal), classic, "under the list the terminal keeps the box it had");
+
+          // out again from the list: the pane is shown as it was
+          if (wide) await page.locator(".inbox-exit").click();
+          else {
+            await openSheet(page, ".inbox-more");
+            await page.locator('.row-sheet [data-item="exit-inbox"]').tap();
+          }
+          await page.locator(".mode-inbox").waitFor({ state: "detached" });
+          await page.locator(".app-header.is-zoned").waitFor();
+          if (!wide) await sheetClosed(page);
+          // fixed wait: no size may be sent for the pane shown again in the box it had
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          assert.deepEqual((await sized()).slice(before), [], "leaving the mode sends the pane's pty no size");
+          sameBox(await terminalBox(page), classic, "back in the classic app the terminal has the box it had");
+          console.log(`PASS the mode sizes no terminal on ${setup.name}: entered and left with the pane showing its terminal (${Math.round(classic.w)} by ${Math.round(classic.h)}), its pty is sent no size and its box stays`);
+        }, setup.viewport);
+      }
+
       assert.deepEqual(failures, [], "every block passes");
     } finally { await browser.close(); }
   } finally { server.stop(true); }

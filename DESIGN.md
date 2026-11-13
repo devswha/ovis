@@ -2362,10 +2362,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     are round controls. The header's note stands in the chip's place while it shows.
   - Over the chat the zone floats, as a phone's glass header does: the transcript reaches up
     under it and fades into `--bg` behind the chip, with no rule. Under the terminal the zone is
-    a band of the terminal's own surface above it, and under a fine pointer the pane column
-    keeps the rest of the classic header's and status bar's height below the terminal, so its
-    grid is the size it has in the classic shell. A coarse pointer grows the round controls to
-    `--touch-target` and the band with them.
+    a band of the terminal's own surface above it, and the terminal's box is the one it has in
+    the classic shell, so showing it sizes its pty as classic does: where classic closes the
+    pane column with a status bar (a mouse), the pane column keeps the rest of the classic
+    header's and status bar's height below the terminal; where classic has none (a finger, a
+    pointer that cannot hover), the band is the classic header's own height (`--header-h`), its
+    controls on its middle. Over the chat and in the column a coarse pointer grows the round
+    controls to `--touch-target` and the band with them.
   - A pane with no agent chosen says so in one centred `--text-dim` line (`.inbox-unchosen`,
     `role="status"`): "Choose one from the list to open its chat here." It names no agent: the word is
     drawn nowhere in the mode's own chrome.
@@ -2420,8 +2423,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   request that failed, is asked again up to three times, the first pane an answer left out
   behind the others, and an answer whose fields have the wrong type counts as none. A PC whose
   server has no such route shows its rows without them until it goes away and comes back. A
-  pane once opened stays mounted under a phone's list, hidden (`visibility: hidden`, inert,
-  keeping its size), so a message on its way is not cut.
+  pane once opened stays mounted under the list, hidden (`visibility: hidden`, inert), so a
+  message on its way is not cut.
+- No terminal is sized by entering or leaving the mode. The list takes the shell's bars away,
+  from 769px it draws its column whether or not the classic sidebar was open, and a classic
+  split becomes one pane, so a pane laid out again under the list would have another box than
+  the one its pty was sized to. A covered pane therefore keeps the box it was shown in
+  (lib/coveredPane.ts notes each pane's box while it is shown and holds it there,
+  `.pane-slot[data-kept-box]`) and sizes nothing (`PaneCoveredContext`, as a split pane a phone
+  keeps behind another sizes nothing), keeping its hold on the pty's size as it does under a
+  phone's open drawer. Shown again it fits the box it is shown in and asks for that grid only
+  where it differs: back in the box it had, it sends nothing. A thread opens on its chat (a
+  row, the next waiting agent), so its terminal is sized only when it is shown there. With the
+  classic sidebar collapsed, or from a classic split, a thread's pane is not classic's (the
+  column stands beside it, and it is one pane), so its terminal, once shown, has the thread's
+  own grid and takes classic's again when the mode is left.
 - It follows a messenger app's conversation list, the reference the maintainer chose, on a
   phone and on a desktop: two-line rows with a round mark, one muted line of last words and a
   single dot, round controls in place of a header bar, a search pill at the foot of a phone,

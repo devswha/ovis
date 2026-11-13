@@ -24,6 +24,23 @@
   pointer-events: none;
 }
 
+/* and the box it was shown in (lib/coveredPane.ts): the list takes the shell's bars away, from 769px it draws its
+   column whether or not the classic sidebar was open, and a classic split becomes one pane, so laid out again the
+   pane would have another box than the one its pty was sized to */
+.pane-split.is-under-inbox {
+  /* a kept box may lie outside the area as it is now (the column beside it, a window resized under the list) */
+  overflow: hidden;
+}
+
+.pane-split.is-under-inbox > .pane-slot[data-kept-box] {
+  position: absolute;
+  left: var(--kept-left);
+  top: var(--kept-top);
+  flex: none;
+  width: var(--kept-width);
+  height: var(--kept-height);
+}
+
 /* the rows scroll under the two floating rows of controls and end clear of both; a row the keyboard brings into
    view stops clear of them too, so its focus ring is never under a control */
 .mode-inbox .inbox-scroll {

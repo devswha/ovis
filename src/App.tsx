@@ -127,7 +127,8 @@ import { Droplet } from "./components/Droplet.tsx";
 import { MarkdownLinkMenu } from "./components/MarkdownLinkMenu.tsx";
 import { paneDragData, PANE_DRAG_TYPE, slotSide, type SplitSlot, type SplitTarget } from "./lib/split.ts";
 import { paneMoveNotice, useLayoutNotice, useLayoutRefused, useMoveRefused } from "./lib/useLayoutNotice.ts";
-import { PaneFollowContext, PanePressContext } from "./lib/paneSubmitContext.ts";
+import { PaneCoveredContext, PaneFollowContext, PanePressContext } from "./lib/paneSubmitContext.ts";
+import { useKeptPaneBoxes } from "./lib/coveredPane.ts";
 import { SplitDividers } from "./components/SplitDividers.tsx";
 import { SplitDropPreview } from "./components/SplitDropPreview.tsx";
 import { CrashProbe, RegionCrash } from "./components/AppCrash.tsx";
@@ -264,6 +265,8 @@ export function App() {
   const { selectionRef, movingPanes } = useSelectionMark({ selectedMachineId, selectedPaneId });
   const { lens, setLens, viewPicks, setViewPicks } = usePaneLensState();
   const { split, setSplit, soloSlot, endSplit, splitRef, splitShownRef, lastKeyAtRef, paneDragging, setPaneDragging, gridDrop, gridDropRef, showGridDrop, hideDropTarget, clearDropPreview, paneAreaRef, tabDrag, draggedPaneRef, markSwap, markMove } = useSplitState();
+  // a pane under the mode's list keeps the box it was shown in and sizes no pty (lib/coveredPane.ts)
+  useKeptPaneBoxes(paneAreaRef, inbox.shown);
   const { paletteOpen, paletteQuery, openPalette, setPaletteOpen } = useCommandPalette();
   const paneControls = useRef<PaneControls | null>(null);
   const [findRequest, setFindRequest] = useState<{ paneId: string | null; serial: number }>({ paneId: null, serial: 0 });
@@ -764,7 +767,8 @@ export function App() {
   const waitingRosters = useWaitingRosters(sidebarMachines, machines.find((machine) => machine.id === selectedMachineId), activity.status);
   const sessionTally = sessionCountsAcross(waitingRosters);
   const nextWaiting = nextWaitingTarget(waitingRosters, { machineId: selectedMachineId, paneId: selectedPaneId });
-  const openNextWaiting = (): void => { if (nextWaiting !== null) selectTarget(nextWaiting.machineId, nextWaiting.paneId); };
+  // in the inbox mode it opens that agent's chat, as a row does: a terminal is shown there only when it is asked for
+  const openNextWaiting = (): void => { if (nextWaiting !== null) selectTarget(nextWaiting.machineId, nextWaiting.paneId, inMode ? "chat" : undefined); };
 
   // a link to the New workspace dialog opens it once the PCs are in; one for a tab, once the
   // linked workspace's pane is selected (its folder is the workspace's, as the tab strip's + does)
@@ -1298,7 +1302,7 @@ export function App() {
             // a half with no strip to carry its close (its pane gone, or the half crashed) keeps one in a bar of its own
             const slotBar = paneSplit ? <div className="pane-slot-bar"><span className="pane-slot-title">{pane ? displayPaneTitle(pane) : t("Pane closed")}</span>{slotEnd}</div> : null;
             return (
-              <MachineContext.Provider key={slot} value={machineId}><AppLayoutContext.Provider value={appLayoutOf(herdr)}><SlotSessions slot={slot} machineIds={machines.map((item) => item.id)}><PaneFollowContext.Provider value={follows(slot)}>
+              <MachineContext.Provider key={slot} value={machineId}><AppLayoutContext.Provider value={appLayoutOf(herdr)}><SlotSessions slot={slot} machineIds={machines.map((item) => item.id)}><PaneFollowContext.Provider value={follows(slot)}><PaneCoveredContext.Provider value={inbox.shown}>
               <div
                 className={`pane-slot${showsChat(pane, slotView) ? " is-chat" : ""}${paneSplit ? active ? " is-active" : " is-inactive" : ""}${rect && rect.x + rect.w < 0.999 ? " joins-right" : ""}${rect && rect.y + rect.h < 0.999 ? " joins-below" : ""}`}
                 style={rect ? { left: `${rect.x * 100}%`, top: `${rect.y * 100}%`, width: `${rect.w * 100}%`, height: `${rect.h * 100}%` } : undefined}
@@ -1410,7 +1414,7 @@ export function App() {
                 </main>
                 </RenderBoundary>
               </div>
-              </PaneFollowContext.Provider></SlotSessions></AppLayoutContext.Provider></MachineContext.Provider>
+              </PaneCoveredContext.Provider></PaneFollowContext.Provider></SlotSessions></AppLayoutContext.Provider></MachineContext.Provider>
             );
           })}
           {/* the mode's list is the screen on a phone; from 769px it is the column, and a pane with no thread says so */}

@@ -20,6 +20,8 @@ export interface TerminalRefitsDeps {
   chatView: boolean;
   chatViewRef: RefObject<boolean>;
   coarseRef: RefObject<boolean>;
+  /** the inbox mode's list stands over the pane (lib/paneSubmitContext.ts PaneCoveredContext) */
+  covered: boolean;
   findOpenRef: RefObject<boolean>;
   fitRef: RefObject<FitAddon | null>;
   fittedRef: RefObject<() => void>;
@@ -43,7 +45,7 @@ export interface TerminalRefitsDeps {
 }
 
 export function useTerminalRefits(deps: TerminalRefitsDeps): void {
-  const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, colors, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize } = deps;
+  const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, colors, covered, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize } = deps;
   // the theme follows the settings without a remount
   useEffect(() => {
     const term = termRef.current;
@@ -168,6 +170,26 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     }
     if (term && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows, true);
   }, [shown]);
+
+  // under the inbox mode's list the pane sized nothing and kept its hold on the pty's size; shown again, it fits the
+  // box it is shown in and asks for that grid only where it differs from the one it last asked for: a pane that
+  // comes back to the box it had sends nothing
+  const wasCovered = useRef(covered);
+  useEffect(() => {
+    if (wasCovered.current === covered) return;
+    wasCovered.current = covered;
+    const pane = paneRef.current;
+    if (covered || !pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
+    if (keyboardHoldsRef.current(true)) return;
+    const term = termRef.current;
+    try {
+      fitRef.current?.fit();
+      fittedRef.current();
+    } catch {
+      return;
+    }
+    if (term && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows);
+  }, [covered]);
 
   // the split's other half took this tab's grid: this half lets the pty go and draws it at that grid;
   // made the active half, it fits its own screen and takes the pty, as a pane shown again does
