@@ -993,6 +993,8 @@ try {
         await page.locator("#drawer-toggle").waitFor();
         await sheetClosed(page);
         await addressIs(page, { app: null }, "Back to Ovis leaves the mode's address");
+        // the list's More went with the mode: the focus is on the classic header's drawer toggle, not nowhere
+        await page.waitForFunction(() => document.activeElement?.id === "drawer-toggle", undefined, { timeout: 5_000 });
         await page.reload();
         await page.locator("#drawer-toggle").waitFor();
         await page.locator(".context-title-text").waitFor();
@@ -1000,6 +1002,22 @@ try {
         await addressIs(page, { app: null }, "the reloaded address is still the classic app's");
         console.log("PASS with Agent inbox on a phone on, a phone that went Back to Ovis is still in the classic app after a reload");
       });
+
+      // ---- the focus after Back to Ovis ----
+      const light: Settings = { language: "en", theme: "light" };
+      const desktop = { width: 1440, height: 900 };
+      await withPage(browser, base, light, "/?app=inbox", "the focus after Back to Ovis on a wide window", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        await page.locator(".inbox-exit").click();
+        await page.locator(".mode-inbox").waitFor({ state: "detached" });
+        await page.locator(".app-header.is-zoned").waitFor();
+        // the foot's button went with the column: the focus is on the classic header's sidebar toggle
+        await page.waitForFunction(() => document.activeElement?.classList.contains("sidebar-toggle") === true, undefined, { timeout: 5_000 });
+        console.log("PASS Back to Ovis leaves the focus on the classic header's toggle: the drawer's on a phone, the sidebar's on a wide window");
+      }, desktop);
 
       if (errors.length > 0) {
         failures.push("page errors after the themes");

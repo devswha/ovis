@@ -2378,7 +2378,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - The focus. The list takes the keyboard focus, on its own section, each time it opens: the
   page's start on it, a way in, a Back onto it. A change of width that only draws it again
   takes none: a window widened past a phone's with a thread open leaves the focus in the
-  thread's composer.
+  thread's composer. Back to Ovis takes the control that was pressed away with the mode's
+  shell: a focus left nowhere goes to the classic header's workspace-list toggle (the drawer's
+  on a phone, the sidebar's from 769px), as it does whenever the control that held it is gone
+  (lib/focus.ts). Where something took it meanwhile it stays there: the pane's composer on a
+  desktop when the list uncovers the pane, More's button when a phone's thread is left.
 - More in the mode holds what still means something in its shell. On the list: **Back to
   Ovis**, **Alerts**, **Settings**. In a phone's thread also, between the first and the last
   two, the next waiting agent, Find, **Browse files**, **Copy link** and what the pane's menu

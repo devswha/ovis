@@ -107,6 +107,37 @@ describe("useInboxShell", () => {
     expect(calls).toEqual(["drawer false"]);
   });
 
+  it("gives a focus that was lost with the mode's shell to the classic header's toggle, and leaves one that is somewhere", async () => {
+    const saved = { document: Object.getOwnPropertyDescriptor(globalThis, "document"), window: Object.getOwnPropertyDescriptor(globalThis, "window") };
+    const body = {};
+    const page = { activeElement: body as unknown, body, toggles: [{ getClientRects: () => [{}], focus: () => { calls.push("focus toggle"); } }] };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      get activeElement() { return page.activeElement; }, body,
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => selector.includes(".drawer-toggle") ? page.toggles : [],
+    } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { requestAnimationFrame: (run: () => void) => { run(); return 0; } } });
+    try {
+      // Given the mode's shell, left by Back to Ovis: the button pressed went with it, and nothing has the focus.
+      await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true });
+      calls = [];
+      await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
+      expect(calls).toEqual(["focus toggle"]);
+
+      // Given the mode left while the focus is in the pane (the composer of the thread that classic now shows).
+      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true });
+      calls = [];
+      page.activeElement = {};
+      await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
+      expect(calls).toEqual([]);
+    } finally {
+      for (const [key, descriptor] of Object.entries(saved)) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    }
+  });
+
   it("shows the list for a mode with no pane to show a thread of, once the page's link has landed", async () => {
     await draw({ inMode: true, shown: false, selectedPaneId: null, linkLanded: false });
     expect(calls).toEqual(["drawer false"]);
