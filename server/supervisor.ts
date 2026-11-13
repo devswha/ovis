@@ -5,7 +5,7 @@
  * launcher starts the new release's supervisor. `root` is always the source checkout.
  */
 import "./adopt-legacy-env.ts";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
