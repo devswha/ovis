@@ -33,7 +33,7 @@ const snapshot: SessionSnapshot = {
 };
 const machines: Machine[] = [{ id: "local", name: "Host", kind: "local", enabled: true, state: "connected", error: null, snapshot }];
 // App's actions on each PC: split and zoom as the PC offers them (lib/layoutActions.ts, tested there)
-const actionsOf = (offer: LayoutOffer, own: Partial<AppActions> = {}) => new Proxy({ splitPane: offer.split ? () => {} : null, zoomPane: offer.arrange ? () => {} : null, enableNotifications: null, openFiles: null, lock: null, openLocalPage: null, ...own }, { get: (own, key) => key in own ? own[key as keyof typeof own] : () => {} }) as unknown as AppActions;
+const actionsOf = (offer: LayoutOffer, own: Partial<AppActions> = {}) => new Proxy({ splitPane: offer.split ? () => {} : null, zoomPane: offer.arrange ? () => {} : null, enableNotifications: null, openFiles: null, lock: null, openLocalPage: null, inboxMode: null, ...own }, { get: (own, key) => key in own ? own[key as keyof typeof own] : () => {} }) as unknown as AppActions;
 const LAYOUT_ROWS = ["Rename tab", "Split pane right", "Split pane down", "Split pane right and open it", "Split pane down and open it", "Zoom pane"];
 
 describe("the command palette on a PC the Herdr app lays out", () => {
@@ -138,6 +138,18 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     for (const row of ["New workspace", "Switch to terminal", "Settings", "Toggle theme"]) expect(thread).toContain(row);
     const classic = await rows(TUI, "p1", ">");
     for (const row of SHELL_ROWS) expect(classic).toContain(row);
+  });
+
+  it("lists the way into the agent inbox where it is offered, and the way back while in it", async () => {
+    const went: string[] = [];
+    expect(await rows(TUI, "p1", ">inbox")).toEqual([]);
+    const into = actionsOf(TUI, { inboxMode: { on: false, go: () => { went.push("in"); } } });
+    expect(await rows(TUI, "p1", ">open agent inbox", into)).toEqual(["Open agent inbox"]);
+    await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
+    const out = actionsOf(TUI, { inboxMode: { on: true, go: () => { went.push("out"); } } });
+    expect(await rows(TUI, "p1", ">back to ovis", out, snapshot, false, false, true)).toEqual(["Back to Ovis"]);
+    await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
+    expect(went).toEqual(["in", "out"]);
   });
 
   it("lists a core PC's rename, split, zoom and move rows where Ovis keeps its layout", async () => {

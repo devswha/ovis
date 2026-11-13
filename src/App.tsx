@@ -1,5 +1,5 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, ChevronDown, ChevronLeft, Eye, Plus, CircleHelp, Ellipsis, FolderOpen, Link, Menu, MessageCircle, MessageSquare, PanelLeft, PanelsTopLeft, Search, Settings as SettingsGlyph, SquareTerminal, Target, TextSearch, X } from "lucide-react";
+import { Bell, ChevronDown, ChevronLeft, Eye, Plus, CircleHelp, Ellipsis, FolderOpen, Inbox, Link, Menu, MessageCircle, MessageSquare, PanelLeft, PanelsTopLeft, Search, Settings as SettingsGlyph, SquareTerminal, Target, TextSearch, X } from "lucide-react";
 
 import type { HerdrPane, PaneDirection } from "../shared/protocol.ts";
 import { authenticate, createTab, movePaneBeside, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
@@ -138,9 +138,9 @@ import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, us
 import { useAddressBar } from "./lib/useAddressBar.ts";
 import { useInbox, useInboxWaits } from "./lib/useInbox.ts";
 import { AgentInbox } from "./components/AgentInbox.tsx";
-import { useInboxMode } from "./lib/inboxMode.ts";
+import { INBOX_MODE_OFFERED, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
-import { InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
+import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
 
@@ -344,6 +344,14 @@ export function App() {
   const inMode = inboxMode.on && !guideShown;
   drawerBlocked.current = inMode;
   useEffect(() => { if (inMode) setDrawerOpen(false); }, [inMode, setDrawerOpen]);
+  // Into the mode, onto its list, and out of it, onto the app as it was (the pane a thread showed, or the one under
+  // the list): one history entry each way, so Back undoes it. On a phone More's item runs while its sheet's own entry
+  // is still current: the push takes that entry over (lib/sheetHistory.ts), and no entry is left between.
+  const { enter: enterMode, leave: leaveMode } = inboxMode;
+  const { show: showInbox } = inbox;
+  const enterInbox = useCallback((): void => { setDrawerOpen(false); enterMode(); showInbox(); }, [setDrawerOpen, enterMode, showInbox]);
+  // offered where the mode is, and not over the setup guide, which has the classic shell to itself
+  const modeOffered = INBOX_MODE_OFFERED && !guideShown;
 
 
   const unlock = useCallback(() => {
@@ -720,6 +728,7 @@ export function App() {
         else setSidebarCollapsed((collapsed) => !collapsed);
       },
       openSidebarFilter: () => { if (!inMode) openSidebarFilter(); },
+      inboxMode: modeOffered ? { on: inMode, go: inMode ? leaveMode : enterInbox } : null,
       toggleTheme: () => updateSettings({ theme: resolvedTheme === "dark" ? "light" : "dark" }),
       lock: canSignOut ? lock : null,
       enableNotifications: bell.run === enableNotifications ? () => void enableNotifications() : null,
@@ -739,7 +748,7 @@ export function App() {
         if (target) paneActionsRef.current?.(target).find((item) => item.id === "close" && !item.disabled)?.run();
       },
     }),
-    [closeOffered, inbox.shown, inMode, revealFiles, selectPane, selectTarget, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter, selectedSearchable, requestSearch, split, soloSlot, settings.webLinks, settings.sidebarBackgroundWorkspaces, openWebPage],
+    [closeOffered, inbox.shown, inMode, modeOffered, enterInbox, leaveMode, revealFiles, selectPane, selectTarget, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter, selectedSearchable, requestSearch, split, soloSlot, settings.webLinks, settings.sidebarBackgroundWorkspaces, openWebPage],
   );
 
   useShortcuts(actions, locked === false);
@@ -856,6 +865,8 @@ export function App() {
     ...paneMoreItems.filter((item) => !(foldFind && item.id === "search-conversation") && (!foldPane || item.id.startsWith("pane:")))
       .map((item, index) => index === 0 ? { ...item, divider: true } : item),
     ...(foldPane && more ? [{ id: "pane-group", label: t("Pane and tab…"), icon: PanelsTopLeft, divider: true, run: () => openMoreGroup("pane", more.anchor) }] : []),
+    // the way into the agent inbox (lib/inboxMode.ts), More's last group at every width
+    ...(modeOffered ? [{ id: "enter-inbox", label: t("Open agent inbox"), icon: Inbox, divider: true, run: enterInbox }] : []),
   ];
   // The inbox mode's More: what still means something in a shell with no drawer, tab row or status bar. On the list
   // only what is the app's own (the list already shows who waits first); in a thread also what is about the thread,
@@ -871,10 +882,14 @@ export function App() {
     ...paneMoreItems.filter((item) => item.id === "mirror-width" || item.id === "recover-unsent"),
   ].map((item) => ({ ...item, divider: false }));
   const modeAppItems: RowMenuItem[] = [
+    // the way out first: the mode has no drawer or sidebar to leave by
+    { id: "exit-inbox", label: t("Back to Ovis"), icon: PanelsTopLeft, run: leaveMode },
     ...fromMore("alerts").map((item) => ({ ...item, divider: false })),
     { id: "settings", label: t("Settings"), icon: SettingsGlyph, divider: true, run: actions.openSettings },
   ];
-  const modeMoreItems: RowMenuItem[] = moreOnList ? modeAppItems : inboxWide ? modeThreadItems : [...modeThreadItems, ...modeAppItems];
+  // a phone's thread has the one More: the way out, then the thread's items, then the app's
+  const modeMoreItems: RowMenuItem[] = moreOnList ? modeAppItems : inboxWide ? modeThreadItems
+    : [modeAppItems[0]!, ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item), ...modeAppItems.slice(1)];
 
   // the chat's surface is what the pane column shows: the header's pane zone and the tab strip
   // take it (from 769px). A pane herdr could not restore draws a placeholder, not the chat.
@@ -896,7 +911,6 @@ export function App() {
   // list is the screen), and a mode left with no pane to show a thread of shows its list
   const paneSplit = splitOn && !inMode;
   const listScreen = inMode && inbox.shown && !inboxWide;
-  const { show: showInbox } = inbox;
   useEffect(() => { if (inMode && !inbox.shown && selectedPaneId === null && linkLanded) showInbox(); }, [inMode, inbox.shown, selectedPaneId, linkLanded, showInbox]);
 
   if (locked === null) {
@@ -934,6 +948,7 @@ export function App() {
       onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
       onNew={openNewOn} questionReads={inbox.questionReads}
       more={{ label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
+      onExit={leaveMode}
       note={column ? undefined : <HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />} />
   );
   // More's button: a square of the header's, or one of the mode's round controls over the wide pane
@@ -1164,7 +1179,7 @@ export function App() {
                 <ConnectionRouteMark portal={auth?.via === "portal"} ingress={security.state === "known" ? security.summary.observed_ingress : null} />
               </div>
             ) : undefined}
-            items={inMode ? modeMoreItems : inbox.shown ? moreItems.filter((item) => item.id === "next-waiting" || item.id === "palette" || item.id === "alerts") : moreItems}
+            items={inMode ? modeMoreItems : inbox.shown ? moreItems.filter((item) => item.id === "next-waiting" || item.id === "palette" || item.id === "alerts" || item.id === "enter-inbox") : moreItems}
             onClose={closeMore}
           />
         )}
@@ -1184,7 +1199,8 @@ export function App() {
           {/* a sidebar that cannot be drawn leaves the panes working */}
           <RenderBoundary resetKey={null} fallback={(retry) => <RegionCrash message={t("The sidebar can't be shown.")} retry={retry} />}>
             <CrashProbe region="sidebar" />
-            <ReorderContext.Provider value={reorderCoordinator}><MachineSidebar machines={sidebarMachines} allMachines={machines} watching={auth?.role === "watch"} appLayout={appLayoutOn} drawerOpen={drawerOpen} filterRequest={sidebarFilterRequest} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} activity={activity} actions={actions} onSelect={selectTarget} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={openNewOn} /></ReorderContext.Provider>
+            <ReorderContext.Provider value={reorderCoordinator}><MachineSidebar machines={sidebarMachines} allMachines={machines} watching={auth?.role === "watch"} appLayout={appLayoutOn} drawerOpen={drawerOpen} filterRequest={sidebarFilterRequest} selectedMachineId={selectedMachineId} selectedPaneId={selectedPaneId} activity={activity} actions={actions} onSelect={selectTarget} onUsageLogin={(paneId) => { selectTarget("local", paneId, "terminal"); void load(); }} onSetup={(machine, update = false) => { setUpdateRemote(update); setMachineDialog(machine); }} onNew={openNewOn}
+              footerStart={modeOffered ? <InboxFootEntry onOpen={enterInbox} /> : undefined} /></ReorderContext.Provider>
           </RenderBoundary>
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>}

@@ -49,6 +49,8 @@ export interface InboxListProps {
   /** the page's reader of the waiting agents' questions (lib/useInbox.ts), which outlives this list */
   questionReads: QuestionReads;
   more?: InboxMore;
+  /** the way out of the mode, drawn at the column's foot where the classic sidebar's foot has the way in */
+  onExit?: () => void;
   /** the header's note, between a phone's two top controls: the list has no header to say it in */
   note?: ReactNode;
 }
@@ -72,7 +74,7 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
  * The inbox mode's list: every shown PC's agents, the ones that need the reader first, each a row of two lines.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, current = null, onOpen, onNew, questionReads, more, note }: InboxListProps) {
+export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, current = null, onOpen, onNew, questionReads, more, onExit, note }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
@@ -258,6 +260,10 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       </div>
       <div className="inbox-foot">
         {wide ? <>
+          {onExit ? <button type="button" className="inbox-exit" onClick={onExit}>
+            <img src="/icons/icon-192.png?v=sheep1" alt="" width="22" height="22" className="inbox-exit-mark" />
+            <span className="inbox-exit-label">{t("Back to Ovis")}</span>
+          </button> : null}
           <span className="inbox-foot-start" />
           {filterButton}
           {moreButton}

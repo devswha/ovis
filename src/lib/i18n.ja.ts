@@ -547,6 +547,8 @@ const BASE: Record<string, string> = {
   "All": "すべて",
   "Search": "検索",
   "Choose an agent to open its chat here.": "エージェントを選ぶと、チャットがここに開きます。",
+  "Open agent inbox": "エージェント受信トレイを開く",
+  "Back to Ovis": "Ovis に戻る",
   "Remove PC": "PC を削除",
   "Remove PC {name}?": "PC {name} を削除しますか？",
   "Removes this registration. Remote sessions keep running.": "この登録のみを削除します。リモートのセッションは実行されたままです。",

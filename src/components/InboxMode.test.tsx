@@ -8,7 +8,7 @@ import machinesFixture from "../../site/demo/fixtures/machines.json";
 import type { HeaderConnection } from "../lib/headerConnection.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
-import { InboxUnchosen, ThreadTitle, ThreadTop, type ThreadProps } from "./InboxMode.tsx";
+import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop, type ThreadProps } from "./InboxMode.tsx";
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const statusOf = (moved: Record<string, AgentStatus> = {}): SidebarActivity => ({
@@ -115,5 +115,14 @@ describe("the zone over a wide thread", () => {
 describe("a wide pane with no agent chosen", () => {
   it("says so in one status line", () => {
     expect(draw(createElement(InboxUnchosen))).toBe('<p class="inbox-unchosen" role="status">Choose an agent to open its chat here.</p>');
+  });
+});
+
+describe("the way into the mode at the sidebar's foot", () => {
+  it("is one row of the footer's own that says Open agent inbox", () => {
+    const markup = draw(createElement(InboxFootEntry, { onOpen: () => {} }));
+    expect(markup.match(/<button/g)).toHaveLength(1);
+    expect(markup).toContain('class="btn btn-ghost sidebar-footer-action sidebar-footer-pc inbox-foot-entry"');
+    expect(markup).toContain('<span class="sidebar-footer-pc-name">Open agent inbox</span>');
   });
 });

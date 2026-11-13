@@ -383,6 +383,50 @@
   min-width: 0;
 }
 
+/* Back to Ovis: the app's mark and the words, where the classic sidebar's foot has the way in. Its fill under a
+   pointer reaches --space-2 past the mark, which stays on the column's inset. */
+.inbox-exit {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 1 auto;
+  gap: var(--space-2-5);
+  min-width: 0;
+  height: var(--inbox-control);
+  margin-inline-start: calc(-1 * var(--space-2));
+  padding: 0 var(--space-3) 0 var(--space-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--fs-md);
+  cursor: pointer;
+}
+
+.inbox-exit:active {
+  background: var(--side-hover);
+}
+
+@media (hover: hover) {
+  .inbox-exit:hover {
+    background: var(--side-hover);
+  }
+}
+
+.inbox-exit-mark {
+  display: block;
+  flex: 0 0 auto;
+  width: var(--mark-size);
+  height: var(--mark-size);
+}
+
+.inbox-exit-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* the column's controls rest on its surface: no shadow, and the smaller glyph of a pointer's control */
 .inbox-list.is-wide .icon-button.inbox-round {
   box-shadow: none;

@@ -12,11 +12,12 @@ import { pageAddress, pageSearch } from "./pageQuery.ts";
 declare const __HERDR_TEST_HOOKS__: boolean | undefined;
 
 /**
- * Whether the mode is offered: its entries are drawn and every build reads its address. While false only a build
- * with test hooks reads the address (the browser lane's demo build, as lib/crashProbe.ts has it), so the browser
- * scripts can open the mode and a shipped build or the published demo ignores it.
+ * Whether the mode is offered: its entries are drawn (More's Open agent inbox, the sidebar's foot) and every build
+ * reads its address. While false only a build with test hooks reads the address (the browser lane's demo build, as
+ * lib/crashProbe.ts has it), so the browser scripts can open the mode and a shipped build or the published demo
+ * ignores it.
  */
-export const INBOX_MODE_OFFERED: boolean = false;
+export const INBOX_MODE_OFFERED: boolean = true;
 
 const PARAM = "app";
 const INBOX = "inbox";

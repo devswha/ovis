@@ -105,7 +105,7 @@ describe("InboxList", () => {
     wide?: boolean; current?: string | null; filter?: InboxFilter; query?: string; watching?: boolean; activity?: SidebarActivity; scrollTop?: number;
     /** how far the scroller can scroll at first: a scrollTop past it is clamped, as a browser does */
     scrollMax?: number;
-    more?: Parameters<typeof InboxList>[0]["more"]; note?: ReactNode;
+    more?: Parameters<typeof InboxList>[0]["more"]; note?: ReactNode; onExit?: () => void;
     onFilter?: (filter: InboxFilter) => void; onQuery?: (query: string) => void;
     onOpen?: (machineId: string, paneId: string) => void; onNew?: (machineId: string) => void;
   }
@@ -118,7 +118,7 @@ describe("InboxList", () => {
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <InboxList machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
       filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll}
-      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} more={options.more} note={options.note} />
+      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} more={options.more} note={options.note} onExit={options.onExit} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -474,6 +474,21 @@ describe("InboxList", () => {
       expect(byClass(row, "inbox-sub").length).toBe(0);
       expect(String((row.children.at(-1) as ReactTestInstance).props.className).split(" ")).toContain("inbox-state");
       expect(row.props.title).toBe("Guard the export button\nNeeds you");
+    });
+
+    it("draws Back to Ovis with the app's mark at its foot's start, and no way out where the list is the screen", async () => {
+      let left = 0;
+      const root = await draw(roster(), { wide: true, onExit: () => { left += 1; } });
+      const foot = byClass(root, "inbox-foot")[0]!;
+      const [exit] = foot.findAll((node) => node.type === "button");
+      expect(String(exit!.props.className)).toBe("inbox-exit");
+      expect(text(exit!)).toBe("Back to Ovis");
+      expect(exit!.findByType("img").props.src).toBe("/icons/icon-192.png?v=sheep1");
+      await act(async () => { exit!.props.onClick(); });
+      expect(left).toBe(1);
+      await act(async () => { renderer?.unmount(); });
+      phone = true;
+      expect(byClass(await draw(roster(), { wide: false, onExit: () => {} }), "inbox-exit")).toEqual([]);
     });
 
     it("opens its search field on request, focused, and puts it away with Escape once it is empty", async () => {

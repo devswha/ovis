@@ -5,6 +5,7 @@
  * primitives with its tokens.
  */
 import { useMemo, type ReactNode } from "react";
+import { ChevronRight, Inbox } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { HerdrPane } from "../../shared/protocol.ts";
@@ -109,4 +110,16 @@ export function ThreadTop({ thread, note, controls }: { thread: ThreadProps | nu
 export function InboxUnchosen() {
   const t = useT();
   return <p className="inbox-unchosen" role="status">{t("Choose an agent to open its chat here.")}</p>;
+}
+
+/** The way into the mode at the sidebar's foot (a phone's drawer's): a row of the footer's own, above its gear. */
+export function InboxFootEntry({ onOpen }: { onOpen(): void }) {
+  const t = useT();
+  return (
+    <button type="button" className="btn btn-ghost sidebar-footer-action sidebar-footer-pc inbox-foot-entry" onClick={onOpen}>
+      <Inbox aria-hidden="true" />
+      <span className="sidebar-footer-pc-name">{t("Open agent inbox")}</span>
+      <ChevronRight aria-hidden="true" />
+    </button>
+  );
 }
