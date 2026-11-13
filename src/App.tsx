@@ -113,7 +113,7 @@ import { LensToggle } from "./components/LensToggle.tsx";
 import { PcLoadStatus } from "./components/MachineStats.tsx";
 import logoDark from "./assets/brand/logo-dark.png";
 import logoLight from "./assets/brand/logo-light.png";
-import { nextWaitingTarget, sessionCountsAcross, tabPosition, useDrawerDialog, useWaitingRosters } from "./lib/headerSessions.ts";
+import { nextWaitingTarget, sessionCountsAcross, tabPosition, useDrawerDialog, useWaitingRosters, waitingElsewhere } from "./lib/headerSessions.ts";
 import { selectionStill } from "./lib/selectionMark.ts";
 import { carryMovedPane, movedView } from "./lib/paneMove.ts";
 import { useScreenWakeLock } from "./lib/wakeLock.ts";
@@ -820,10 +820,14 @@ export function App() {
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const paneMenuInMore = selectedPane !== null
     && tabRowHidden(cramped, snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0, tabsInHeader || inMode);
+  // from 769px the mode draws the list beside the thread
+  const inboxWide = inMode && wideScreen;
   // More's first item jumps to the next session waiting for you, and where no status bar says it, a
   // waiting-coloured dot on its button says how many. The running and the finished ones are the sidebar's
-  // (the drawer's on a phone): the header does not count them
-  const waitingInMore = sessionTally.waiting > 0;
+  // (the drawer's on a phone): the header does not count them. Over an inbox mode thread the count is of the
+  // other sessions that wait, the ones that item opens: the thread's own question is on the screen already
+  const moreWaiting = inMode && !inbox.shown && selectedPaneId !== null ? waitingElsewhere(waitingRosters, { machineId: selectedMachineId, paneId: selectedPaneId }) : sessionTally.waiting;
+  const waitingInMore = moreWaiting > 0;
   const currentTabInMore = paneMenuInMore && selectedPane ? snapshot?.tabs.find((tab) => tab.tab_id === selectedPane.tab_id) : undefined;
   const currentTabPlace = currentTabInMore && snapshot ? snapshot.tabs.filter((tab) => tab.workspace_id === selectedPane!.workspace_id).indexOf(currentTabInMore) + 1 : 1;
   const currentTabName = currentTabInMore ? (customTabLabel(currentTabInMore, currentTabPlace) ?? tabLabel(currentTabInMore, t, currentTabPlace)) : null;
@@ -833,7 +837,7 @@ export function App() {
     run: () => paneActionsRef.current?.(selectedPane).find((fresh) => fresh.id === item.id)?.run(),
   })) : [];
   const moreBase = alertsOffDot ? t("More · alerts are off") : t("More");
-  const moreLabel = waitingInMore ? `${moreBase} · ${t("{count} waiting for you", { count: sessionTally.waiting })}` : moreBase;
+  const moreLabel = waitingInMore ? `${moreBase} · ${t("{count} waiting for you", { count: moreWaiting })}` : moreBase;
   const findInTerminal: RowMenuItem[] = selectedPane && !selectedPane.restore_error ? [{ id: "find", label: t("Find in terminal"), icon: Search, run: actions.openFind }] : [];
   // at a phone's width, the find items and the pane's and tab's actions fold into one item each, More keeping the
   // palette, Files, Copy link, Alerts and the tab's panes in sight (G-143); a group of one is not folded
@@ -844,13 +848,11 @@ export function App() {
   const foldPane = isSheetWidth && paneGroup.length > 1;
   const groupItems = openGroupItems(moreGroup?.kind ?? null, isSheetWidth, findGroup, paneGroup);
   useGroupClosedWhenEmpty(moreMenu, groupItems.length === 0);
-  // in a thread opened from the list, the header's first button goes back to it; the drawer opens by its edge
-  // swipe, and from More for a keyboard, a screen reader or a window with no edge to swipe
-  // from 769px the mode draws the list beside the thread, so a thread there has nothing to go back to
-  const inboxWide = inMode && wideScreen;
+  // in a thread opened from the list, the header's first button goes back to it; beside the list (from 769px) a
+  // thread has nothing to go back to
   const inboxBack = inbox.enabled && !inbox.shown && !drawerOpen && !guideShown && !inboxWide;
   const moreItems: RowMenuItem[] = [
-    ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(sessionTally.waiting), icon: CircleHelp, run: openNextWaiting }] : []),
+    ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(moreWaiting), icon: CircleHelp, run: openNextWaiting }] : []),
     // first at every width: a phone's header has no palette button, and a touch screen no shortcut
     { id: "palette", label: t("Search panes and actions"), icon: Search, ...(paletteKeys ? { hint: paletteKeys } : {}), run: () => openPalette() },
     ...(foldFind && more ? [{ id: "find-group", label: t("Find…"), icon: TextSearch, run: () => openMoreGroup("find", more.anchor) }] : findInTerminal),
@@ -875,7 +877,8 @@ export function App() {
   const fromMore = (id: string): RowMenuItem[] => moreItems.filter((item) => item.id === id);
   const moreOnList = inbox.shown || (more !== null && more.anchor.closest(".mode-inbox") !== null);
   const modeThreadItems: RowMenuItem[] = [
-    ...fromMore("next-waiting"), ...fromMore("find-group"), ...fromMore("find"),
+    // beside the list the next session that waits is its first row: the pane's More does not say it again
+    ...(inboxWide ? [] : fromMore("next-waiting")), ...fromMore("find-group"), ...fromMore("find"),
     ...(foldFind ? [] : paneMoreItems.filter((item) => item.id === "search-conversation")),
     ...fromMore("files"), ...fromMore("copy-link"),
     ...paneMoreItems.filter((item) => item.id === "mirror-width" || item.id === "recover-unsent"),
@@ -904,7 +907,8 @@ export function App() {
   // from 769px with a mouse the pane column ends in the Herdr app's status bar: where the pane is, its branch,
   // the connection. A touch screen keeps that room for its key bar and says them in More and the chip.
   const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown && !inMode;
-  const waitingDot = waitingInMore && !statusBarShown;
+  // nor does More count where the mode's list stands beside the thread, its waiting rows first: one fact, one place
+  const waitingDot = waitingInMore && !statusBarShown && !inboxWide;
   const openNewOn = (id: string): void => { setNewSessionMachineId(id); setNewTab(null); setNewSessionOpen(true); setDrawerOpen(false); };
   // an inbox mode thread is one pane, whatever split classic left; on its list the shell draws no header (the
   // list is the screen), and a mode left with no pane to show a thread of shows its list
@@ -956,8 +960,8 @@ export function App() {
       <button
         type="button"
         className={`icon-button ${round ? "inbox-round " : ""}header-more-button`}
-        aria-label={moreLabel}
-        title={moreLabel}
+        aria-label={round ? t("More") : moreLabel}
+        title={round ? t("More") : moreLabel}
         aria-haspopup={isSheetWidth ? "dialog" : "menu"}
         aria-expanded={(more !== null && !(inMode && moreOnList)) || groupItems.length > 0}
         onClick={(event) => {
@@ -968,7 +972,8 @@ export function App() {
         <Ellipsis />
       </button>
       {/* the waiting dot carries the count (G-015): the number a phone otherwise reads only inside More */}
-      {waitingDot ? <span className="header-more-dot is-waiting" data-count={sessionTally.waiting} aria-hidden="true" /> : alertsOffDot && <span className="header-more-dot" aria-hidden="true" />}
+      {/* the wide thread's More holds the thread's items alone: Alerts, and its dot's reason, are the column's */}
+      {waitingDot ? <span className="header-more-dot is-waiting" data-count={moreWaiting} aria-hidden="true" /> : alertsOffDot && !round && <span className="header-more-dot" aria-hidden="true" />}
     </span>
   );
   // Files beside the pane (opt-in, wide windows) shares the docked file's place: shown while no docked

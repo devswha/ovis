@@ -56,6 +56,21 @@ export function sessionCountsAcross<T extends PaneInfo>(rosters: readonly Machin
   return total;
 }
 
+/**
+ * How many sessions wait for the person other than the selected pane: what More counts over an inbox mode thread,
+ * whose own agent's question is on the screen already. The pane left out is the one nextWaitingTarget never opens.
+ */
+export function waitingElsewhere<T extends PaneInfo>(rosters: readonly MachineRoster<T>[], selected: { machineId: string; paneId: string | null }): number {
+  let waiting = 0;
+  for (const roster of rosters) {
+    for (const pane of rosterPanes(roster.panes)) {
+      if (roster.machineId === selected.machineId && pane.pane_id === selected.paneId) continue;
+      if (knownStatus(roster.status(pane)) === "blocked") waiting += 1;
+    }
+  }
+  return waiting;
+}
+
 function hiddenByTabZoom<T extends PaneInfo>(panes: readonly T[], layouts: Layouts, pane: T): boolean {
   const layout = layouts?.find((candidate) => candidate.tab_id === pane.tab_id);
   return !!layout?.zoomed && layout.focused_pane_id !== pane.pane_id && panes.some((other) => other.pane_id === layout.focused_pane_id);

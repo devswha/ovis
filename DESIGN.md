@@ -2371,6 +2371,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   adds for what it shows (Search conversation, the mirror's width, unsent text), under More's
   header of the pane's title, place and path. On a wide window each side has a More of its own:
   the column's holds the list's three items, the pane's the thread's.
+- What More counts in the mode. Over a phone's thread its dot and its name count the sessions
+  that wait other than the thread's own, whose question is on the screen in its prompt card,
+  and the next waiting agent is offered only when there is another. From 769px no More carries
+  a count and the pane's More has no next waiting agent: the list beside the thread shows who
+  waits, first, and one fact has one place. The list's More never counted.
 - The history. A change of mode is one entry in either direction, and Back undoes it: entered
   from a pane, the pane stays mounted under the list and Back on the list returns to it; left
   from a thread, the classic shell opens on that thread's pane. On a phone More's item runs
