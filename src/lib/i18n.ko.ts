@@ -543,7 +543,7 @@ const BASE: Record<string, string> = {
   "Update": "업데이트",
   "All": "전체",
   "Search": "검색",
-  "Choose an agent to open its chat here.": "에이전트를 고르면 채팅이 여기에 열립니다.",
+  "Choose one from the list to open its chat here.": "목록에서 하나를 고르면 채팅이 여기에 열립니다.",
   "Open agent inbox": "에이전트 인박스 열기",
   "Back to Ovis": "Ovis로 돌아가기",
   "Remove PC": "PC 제거",

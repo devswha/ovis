@@ -109,7 +109,7 @@ export function ThreadTop({ thread, note, controls }: { thread: ThreadProps | nu
 /** A wide pane with no agent chosen: the one line that stands where the thread would. */
 export function InboxUnchosen() {
   const t = useT();
-  return <p className="inbox-unchosen" role="status">{t("Choose an agent to open its chat here.")}</p>;
+  return <p className="inbox-unchosen" role="status">{t("Choose one from the list to open its chat here.")}</p>;
 }
 
 /** The way into the mode at the sidebar's foot (a phone's drawer's): a row of the footer's own, above its gear. */

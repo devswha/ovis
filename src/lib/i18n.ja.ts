@@ -545,7 +545,7 @@ const BASE: Record<string, string> = {
   "Update": "更新",
   "All": "すべて",
   "Search": "検索",
-  "Choose an agent to open its chat here.": "エージェントを選ぶと、チャットがここに開きます。",
+  "Choose one from the list to open its chat here.": "リストから選ぶと、チャットがここに開きます。",
   "Open agent inbox": "エージェント受信トレイを開く",
   "Back to Ovis": "Ovis に戻る",
   "Remove PC": "PC を削除",

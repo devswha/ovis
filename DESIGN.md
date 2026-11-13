@@ -2364,7 +2364,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     grid is the size it has in the classic shell. A coarse pointer grows the round controls to
     `--touch-target` and the band with them.
   - A pane with no agent chosen says so in one centred `--text-dim` line (`.inbox-unchosen`,
-    `role="status"`): "Choose an agent to open its chat here."
+    `role="status"`): "Choose one from the list to open its chat here." It names no agent: the word is
+    drawn nowhere in the mode's own chrome.
 - More in the mode holds what still means something in its shell. On the list: **Back to
   Ovis**, **Alerts**, **Settings**. In a phone's thread also, between the first and the last
   two, the next waiting agent, Find, **Browse files**, **Copy link** and what the pane's menu
