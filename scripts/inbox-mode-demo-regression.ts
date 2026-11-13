@@ -565,6 +565,9 @@ try {
           await openSheet(page, ".header-more-button");
           const items = await page.locator(".row-sheet .row-sheet-item").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-item")));
           assert.deepEqual(items.slice(0, 2), ["exit-inbox", "palette"], `a thread's More begins with the way out and the palette: ${items.join()}`);
+          // the sheet's header (the pane's title, place, path, the session's lines, the route) is no scroller of its own
+          const header = await page.locator(".row-sheet .header-more-crumb").evaluate((node) => ({ content: node.scrollHeight, box: node.clientHeight, lines: node.childElementCount }));
+          assert.ok(header.lines >= 3 && header.content <= header.box, `More's header holds its ${header.lines} lines without scrolling: ${header.content}px in ${header.box}px`);
           assert.equal(items[2], "next-waiting", `then the next agent that waits: ${items.join()}`);
           assert.ok(!items.includes("open-drawer"), `the mode has no drawer to open: ${items.join()}`);
           assert.deepEqual(items.slice(-2), ["alerts", "settings"], `the app's items end a thread's More: ${items.join()}`);

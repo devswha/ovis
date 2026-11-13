@@ -3145,7 +3145,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   with the location on two lines, "PC › workspace" then the full path in mono. Where no status bar
   shows, the pane's whole title and its agent lead those lines (`.header-more-title`, `--text`
   `--fw-medium`, "Claude Code · Guard the export button"): the header cuts a long title short and a
-  touch has no tooltip, so More is where a phone reads it in full. Its first item,
+  touch has no tooltip, so More is where a phone reads it in full. Only the path scrolls, in
+  its own lines, once it is longer than six: the lines around it never make a scroller of the
+  menu's header. Its first item,
   at every width, is **Search panes and actions**, which opens the command palette (its shortcut
   as the item's hint where the pointer is fine); then **Find in terminal**, **Browse files** (at
   `<=768px` only: from `769px` Files is the header's own button), **Copy link** and **Alerts**,
