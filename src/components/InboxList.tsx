@@ -12,6 +12,7 @@ import { inboxAsks, inboxRowLine, inboxStateWord } from "../lib/inboxRow.ts";
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { agentName } from "../lib/runtimeMove.ts";
 import { useSettings } from "../lib/settings.ts";
+import { knownStatus } from "../lib/status.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
@@ -239,11 +240,12 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   const drawsMark = (status: AgentStatus | undefined): boolean => statusIndicators !== "classic" || agentGroup(status) !== "idle";
   // a failed turn has a mark of its own, the warning a pane herdr could not restore draws in the sidebar: its shape
   // tells it from a finish, not its colour alone. Any other mark is named by the row's own state word (`word`), the
-  // one the thread's chip and the filters say: the mode has one vocabulary for a state
+  // one the thread's chip and the filters say: the mode has one vocabulary for a state. The ring of a turn that waits
+  // on its background work says so after that word, as the eye tells the ring from the working dot
   const stateMark = (status: AgentStatus | undefined, failed: boolean, word: string) => failed ? (
     <span className="inbox-state is-drawn"><span className="badge badge-blocked sidebar-status" data-status="failed" role="status" aria-label={t("Turn failed")} title={t("Turn failed")}><TriangleAlert aria-hidden="true" /></span></span>
   ) : (
-    <span className={`inbox-state${drawsMark(status) ? " is-drawn" : ""}`}><StatusBadge compact status={status} label={word} /></span>
+    <span className={`inbox-state${drawsMark(status) ? " is-drawn" : ""}`}><StatusBadge compact status={status} label={knownStatus(status) === "waiting" ? t("Working, waiting on background work") : word} /></span>
   );
 
   const closeSearch = (event: KeyboardEvent<HTMLInputElement>): void => {

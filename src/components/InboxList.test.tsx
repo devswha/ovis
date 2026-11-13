@@ -238,8 +238,11 @@ describe("InboxList", () => {
     const root = await draw(machines, { activity: waiting });
     expect(mark(root, "w1D:p1")).toEqual({ state: "blocked", label: "Needs you", drawn: true });
     expect(mark(root, "w1C:p1")).toEqual({ state: "working", label: "Working", drawn: true });
-    // a turn that waits on background work is Working in the mode's words, under its own mark
-    expect(mark(root, "w1F:p1")).toEqual({ state: "waiting", label: "Working", drawn: true });
+    // a turn that waits on background work is Working in the mode's words, and its own mark says what the eye sees
+    // that it is not the working dot
+    expect(mark(root, "w1F:p1")).toEqual({ state: "waiting", label: "Working, waiting on background work", drawn: true });
+    // the row's own name keeps the filters' word
+    expect(String(byClass(item(root, "w1F:p1"), "inbox-row")[0]!.props["aria-label"]).split(", ").at(-1)).toBe("Working");
     expect(mark(root, "w1E:p1")).toEqual({ state: "done", label: "Done", drawn: true });
     await redraw({ activity });
     expect(mark(root, "w1E:p1")).toEqual({ state: "idle", label: "Ready", drawn: false });

@@ -73,6 +73,7 @@ export const SIDEBAR_ZH: Record<string, string> = {
   "Collapse": "折叠",
   "Expand": "展开",
   "Working": "运行",
+  "Working, waiting on background work": "运行，等待后台工作",
   "Idle": "就绪",
   "{count} need you": "{count} 个需回应",
   "Agent state unknown": "代理状态未知",

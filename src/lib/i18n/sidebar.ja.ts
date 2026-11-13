@@ -73,6 +73,7 @@ export const SIDEBAR_JA: Record<string, string> = {
   "Collapse": "折りたたむ",
   "Expand": "展開",
   "Working": "実行中",
+  "Working, waiting on background work": "実行中、バックグラウンドの作業待ち",
   "Idle": "準備完了",
   "{count} need you": "応答待ち {count} 件",
   "Agent state unknown": "エージェントの状態は不明",

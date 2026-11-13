@@ -73,6 +73,7 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Collapse": "접기",
   "Expand": "펼치기",
   "Working": "실행",
+  "Working, waiting on background work": "실행, 백그라운드 작업 대기 중",
   "Idle": "대기",
   "{count} need you": "응답 필요 {count}개",
   "Agent state unknown": "에이전트 상태 알 수 없음",
