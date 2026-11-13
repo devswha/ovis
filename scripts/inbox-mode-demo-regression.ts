@@ -1036,6 +1036,23 @@ try {
         console.log("PASS Search panes and actions in the list's More opens the command palette over the list on a phone, and Back closes it");
       });
 
+      // ---- the system Back with the pane's More open ----
+      await withPage(browser, base, light, "/?app=inbox", "the system Back with the pane's More open in a wide thread", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        await page.locator(".thread-top .header-more-button").click();
+        await page.locator(".row-menu").waitFor();
+        await page.goBack();
+        // the thread closed under its More: the list with no agent chosen, and no menu left over it
+        await page.locator(".inbox-unchosen").waitFor();
+        await page.locator(".row-menu").waitFor({ state: "detached" });
+        assert.equal(await page.locator(".inbox-column .inbox-more").getAttribute("aria-expanded"), "false", "the column's More does not claim the menu the pane's More left");
+        await addressIs(page, { app: "inbox", pane: null }, "Back from the thread is the list's address");
+        console.log("PASS the system Back from a wide thread with the pane's More open closes the menu with its button, and shows the list with no agent chosen");
+      }, desktop);
+
       // ---- an address of the mode whose pane is gone ----
       // A pane that closed in a workspace still open (the classic app opens that workspace's pane in its place), and
       // one whose workspace is gone too (the classic app opens its usual pane): the mode opens the list under the

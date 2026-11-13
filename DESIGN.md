@@ -2390,7 +2390,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   **Copy link** and what the pane's menu adds for what it shows (Search conversation, the
   mirror's width, unsent text), under More's header of the pane's title, place and path. On a
   wide window each side has a More of its own: the column's holds the list's four items, the
-  pane's the thread's.
+  pane's the thread's. A More whose button leaves the screen closes with it: the system Back
+  from a wide thread takes the pane's More away, and its open menu goes too (lib/moreMenu.ts).
 - What More counts in the mode. Over a phone's thread its dot and its name count the sessions
   that wait other than the thread's own, whose question is on the screen in its prompt card,
   and the next waiting agent is offered only when there is another. From 769px no More carries
