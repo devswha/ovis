@@ -641,7 +641,7 @@ try {
           assert.equal(await page.locator(".pane-slot").count(), 0);
           await page.goBack({ waitUntil: "commit" });
           await page.waitForURL("about:blank");
-          pass(16, "with Agent inbox on a phone on, a phone's cold start is the mode's list, and Back leaves the app");
+          pass(16, "with Start in the agent inbox on a phone on, a phone's cold start is the mode's list, and Back leaves the app");
         });
 
         await withPage(browser, base, on, `/?pane=${encodeURIComponent(BLOCKED)}`, block("a phone that starts in the inbox, on an address naming a pane"), async (page) => {
@@ -668,9 +668,9 @@ try {
           const settings = page.locator(".settings-dialog");
           await settings.waitFor();
           await settings.locator(".settings-search-input").first().fill("Agent inbox");
-          const toggle = settings.getByRole("switch", { name: "Agent inbox on a phone" });
+          const toggle = settings.getByRole("switch", { name: "Start in the agent inbox on a phone" });
           await toggle.tap();
-          await page.waitForFunction(() => document.querySelector('.settings-dialog [role="switch"][aria-label="Agent inbox on a phone"]')?.getAttribute("aria-checked") === "true");
+          await page.waitForFunction(() => document.querySelector('.settings-dialog [role="switch"][aria-label="Start in the agent inbox on a phone"]')?.getAttribute("aria-checked") === "true");
           await page.getByRole("button", { name: "Close settings" }).tap();
           await settings.waitFor({ state: "detached" });
           assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:phone-inbox") ?? "null")), true);
@@ -1012,7 +1012,7 @@ try {
         await page.locator(".context-title-text").waitFor();
         assert.equal(await page.locator(".mode-inbox").count(), 0, "a reload of the classic app the phone went back to does not start the mode again");
         await addressIs(page, { app: null }, "the reloaded address is still the classic app's");
-        console.log("PASS with Agent inbox on a phone on, a phone that went Back to Ovis is still in the classic app after a reload");
+        console.log("PASS with Start in the agent inbox on a phone on, a phone that went Back to Ovis is still in the classic app after a reload");
       });
 
       // ---- the focus after Back to Ovis ----

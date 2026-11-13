@@ -95,7 +95,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "Two lines": "두 줄",
   "Sidebar filter": "사이드바 필터",
   "Show the sidebar on hover": "마우스를 올리면 사이드바 보기",
-  "Agent inbox on a phone": "폰에서 에이전트 목록 먼저",
+  "Start in the agent inbox on a phone": "폰에서 인박스로 시작",
   "On this device, a phone-width window starts in the agent inbox: the list of agents, or the chat of the pane its address names. More has Back to Ovis.": "이 기기에서 폰 너비 창은 에이전트 인박스에서 시작해, 에이전트 목록이나 주소에 있는 패널의 채팅을 엽니다. 더 보기에 'Ovis로 돌아가기'가 있습니다.",
   "Name tabs from the first message": "첫 메시지로 탭 이름 짓기",
   "Context left on agent rows": "에이전트 행에 남은 컨텍스트",

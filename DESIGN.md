@@ -2209,7 +2209,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   as a move to another pane does: its viewer closes, its own entry stays under the mode's, and
   Back shows the pane with its file again. The setup guide has the classic shell to itself
   and shows no entry. A watching device may use the mode and is offered no New workspace.
-- Settings → Appearance → More settings → Sidebar → **Agent inbox on a phone** (this device's
+- Settings → Appearance → More settings → Sidebar → **Start in the agent inbox on a phone** (this device's
   choice, off by default, its stored key unchanged) is where a phone starts: a window at most
   640px wide (`SHEET_QUERY`) whose address is the app's own start opens the mode's list, and
   one whose address names a pane (a tapped alert, a link) opens that pane's thread, with the

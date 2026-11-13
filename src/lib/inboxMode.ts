@@ -4,7 +4,7 @@
  * (`?app=inbox`), in a parameter of its own that lib/deepLink.ts leaves in place while the app moves between panes,
  * so a reload, a link, Back and Forward agree on where the app is. A change of mode is one history entry in either
  * direction, and Back undoes it; a page that opened in the mode has nothing of the app under it. A phone whose
- * device setting says so (Settings → Agent inbox on a phone) starts in the mode on a fresh navigation: its address
+ * device setting says so (Settings → Start in the agent inbox on a phone) starts in the mode on a fresh navigation: its address
  * takes the mark by a replace, so Back on its list still leaves the app.
  */
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
@@ -71,7 +71,7 @@ export function paneAddressStartsInInbox(link: AppLink | null): boolean {
 }
 
 /**
- * Whether a page starts in the mode on this device (Settings → Agent inbox on a phone): a phone-width window that a
+ * Whether a page starts in the mode on this device (Settings → Start in the agent inbox on a phone): a phone-width window that a
  * fresh navigation opened on the app's own start, which opens the list, or on a pane's address
  * (paneAddressStartsInInbox). An address that names only a workspace or a file opens as it always did, and so does
  * every wider window. The setting says where the phone starts, not where it stays: a reload and a restored page

@@ -95,7 +95,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Two lines": "2 行",
   "Sidebar filter": "サイドバーの絞り込み",
   "Show the sidebar on hover": "ホバーでサイドバーを表示",
-  "Agent inbox on a phone": "スマホではエージェント一覧を先に",
+  "Start in the agent inbox on a phone": "スマホではエージェント受信トレイから開始",
   "On this device, a phone-width window starts in the agent inbox: the list of agents, or the chat of the pane its address names. More has Back to Ovis.": "このデバイスでは、スマホ幅のウィンドウはエージェント受信トレイから始まり、エージェント一覧か、アドレスにあるペインのチャットを開きます。「その他」に「Ovis に戻る」があります。",
   "Name tabs from the first message": "最初のメッセージでタブに名前を付ける",
   "Context left on agent rows": "エージェント行に残りのコンテキスト",

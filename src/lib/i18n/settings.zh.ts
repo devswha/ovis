@@ -95,7 +95,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "Two lines": "双行",
   "Sidebar filter": "侧边栏筛选",
   "Show the sidebar on hover": "悬停时显示侧边栏",
-  "Agent inbox on a phone": "手机上先显示 Agent 列表",
+  "Start in the agent inbox on a phone": "手机上从 Agent 收件箱开始",
   "On this device, a phone-width window starts in the agent inbox: the list of agents, or the chat of the pane its address names. More has Back to Ovis.": "在此设备上，手机宽度的窗口会从 Agent 收件箱开始：打开 Agent 列表，地址中指定了面板时则打开该面板的聊天。“更多”里有“返回 Ovis”。",
   "Name tabs from the first message": "用第一条消息命名标签页",
   "Context left on agent rows": "在代理行显示剩余上下文",

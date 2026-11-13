@@ -59,7 +59,7 @@ describe("the inbox mode in the history", () => {
     drawerOpen: { current: false } as RefObject<boolean>,
   };
 
-  /** Settings → Agent inbox on a phone, on a phone-width window */
+  /** Settings → Start in the agent inbox on a phone, on a phone-width window */
   let setting: boolean;
   /** how the browser says the page was loaded; undefined where it does not say */
   let navigation: string | undefined;

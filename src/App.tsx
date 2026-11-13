@@ -255,7 +255,7 @@ export function App() {
   const { otherRecheck, otherRosterTick, setOtherRosterTick } = useSplitRecheck();
   const { rosterIn, pendingFile, selectionHint, headerNote, setHeaderNote, note: linkNote, autoSelected, setAutoSelected } = useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, pendingLink, rosterSeq, setRosterTick, linkLanded, t });
   // the inbox mode (lib/inboxMode.ts): the list and the thread a row opens in the shell's place, which then has no drawer.
-  // Settings → Agent inbox on a phone: a fresh navigation starts this device in it at a phone's width (lib/inboxMode.ts
+  // Settings → Start in the agent inbox on a phone: a fresh navigation starts this device in it at a phone's width (lib/inboxMode.ts
   // startsInInbox); a reload opens where its address says, so a phone that left the mode stays out of it
   const inboxMode = useInboxMode({ startsIn: () => pageStartsInInbox(phoneInboxOn(settings), window.matchMedia?.(SHEET_QUERY).matches === true, initialLink) });
   const { drawerOpen, setDrawerOpen, drawerOpenRef, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink, drawerBlocked: inboxMode.drawerBlocked });
