@@ -172,11 +172,13 @@ let climbing: { key: string; owner: string; state: unknown; href: string } | nul
 let took = false;
 /**
  * The entry the app is on while the history is off it: the user's Back or Forward left it, and a
- * sheet with no entry of its own refused. The history is on its way onto it again. Kept through a
- * way back the browser drops (another traversal overtook it), until the history is on it again,
- * a traversal lands that no sheet refuses, or an entry is pushed.
+ * sheet with no entry of its own refused (`by`). The history is on its way onto it again. Kept
+ * through a way back the browser drops (another traversal overtook it), until the history is on it
+ * again, a traversal lands that no sheet refuses, or an entry is pushed. It holds a traversal onto
+ * that entry only while the sheet that refused is up: with the sheet gone (answered from another
+ * device) and the way back lost, the user's own Forward onto the entry is the app's to follow.
  */
-let stood: string | null = null;
+let stood: { key: string; by: string } | null = null;
 /** whether the popstate being dispatched is a step of that: the traversal a sheet refused, or the way back (sheetStep.holds) */
 let holding = false;
 /** each sheet's entry by that key, where the browser gives one */
@@ -503,8 +505,8 @@ if (typeof window !== "undefined") {
       }
       return;
     }
-    if (stood !== null && here?.key === stood) {
-      // on the entry a refused Back or Forward left: its way back, and no traversal of the user's
+    if (stood !== null && here?.key === stood.key && open.has(stood.by)) {
+      // on the entry a refused Back or Forward left, under the sheet that refused: its way back, and no traversal of the user's
       stood = null;
       seen = sheetOf(event.state);
       steppedOff = true;
@@ -552,7 +554,7 @@ if (typeof window !== "undefined") {
     // They are asked from the top down, the one opened last first, and one that refuses keeps the
     // Back from those under it: they stay as they are
     const again: Array<{ id: string; onBack: () => boolean | void; under: boolean; refused: boolean }> = [];
-    let refusal = false;
+    let refuser: string | null = null;
     for (const [id, onBack] of [...open].reverse()) {
       if (id === landed) continue;
       // a sheet that stays under a navigation which took its entry (a terminal peek under Settings),
@@ -561,8 +563,8 @@ if (typeof window !== "undefined") {
       if (here !== null && covered.has(id) && underNavigation.has(id) && placeOf(id) >= 0 && here.index >= placeOf(id)) continue;
       open.delete(id);
       if (covered.delete(id)) again.unshift({ id, onBack, under: true, refused: false });
-      else if (own || step?.has(id) || refusal) again.unshift({ id, onBack, under: false, refused: false });
-      else if (onBack() === false) { again.unshift({ id, onBack, under: false, refused: true }); refusal = true; }
+      else if (own || step?.has(id) || refuser !== null) again.unshift({ id, onBack, under: false, refused: false });
+      else if (onBack() === false) { again.unshift({ id, onBack, under: false, refused: true }); refuser = id; }
       else { heirs.delete(id); waiting.delete(id); entryKeys.delete(id); }
     }
     // a Back off a sheet's entry that leaves a sheet up was the sheets' own (one refused it, or the one
@@ -601,14 +603,14 @@ if (typeof window !== "undefined") {
     // (sheetStep.holds). Where either entry is one with no key (a browser that tells none, an entry
     // this module cannot place) the traversal is left as it landed, and Back from the first entry
     // leaves the app with no popstate to refuse
-    const onto = refusal && step === null && from === null && was !== null ? stood ?? was.key : undefined;
-    if (onto !== undefined && here !== null && here.key !== onto) {
+    const onto = refuser !== null && step === null && from === null && was !== null ? { key: stood?.key ?? was.key, by: refuser } : null;
+    if (onto !== null && here !== null && here.key !== onto.key) {
       steppedOff = true;
       holding = true;
       for (const kept of again) { open.set(kept.id, kept.onBack); if (kept.under) covered.add(kept.id); }
       stood = onto;
       // a way back the browser drops (another traversal overtook it) is taken again when that one lands
-      const way = navigation()!.traverseTo(onto);
+      const way = navigation()!.traverseTo(onto.key);
       way.committed.catch(() => undefined);
       way.finished.catch(() => undefined);
       return;

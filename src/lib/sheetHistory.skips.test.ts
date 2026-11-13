@@ -444,6 +444,34 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     h.back(); await settled();
     expect(fake.at()).toBe(start);
   });
+
+  it("follows the user's Forward onto the entry a refused Back left, once the request that refused is gone and the way back never landed", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    h.pushState({ pane: "c" }, "", "/?pane=c");
+    h.back(); await settled();
+    const entry = fake.key();
+    // the app's listener, added after the module's: whether each step is held
+    const held: boolean[] = [];
+    let listening = true;
+    fake.window.addEventListener("popstate", (event) => { if (listening) held.push(sheetStep.holds(event as unknown as Event)); });
+    const leave = enter(() => false);
+    // the request refuses the user's Back, and the browser drops the way back onto B
+    fake.drop(true);
+    h.back(); await settled();
+    fake.drop(false);
+    expect(fake.at()).toBe(start); expect(held).toEqual([true]);
+    // answered from another device, the request closes with no tap and no entry of its own
+    leave(); await settled();
+    // the user's own Forward onto B is the app's to follow, not that way back
+    h.forward(); await settled();
+    expect(fake.key()).toBe(entry);
+    expect(held).toEqual([true, false]); expect(sheetHistory.sheetSteppedOff()).toBe(false);
+    listening = false;
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
+  });
 });
 
 describe("a sheet that stays up under a navigation which took its entry", () => {
