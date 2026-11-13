@@ -14,7 +14,7 @@ import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } fr
 import { herdrMayListen, herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
 import { COMPILED, ENTRIES, entryCommand, ROOT } from "./entries.ts";
-import { pluginBinaryOf } from "./updater.ts";
+import { installedBinaryAt, pluginBinaryOf } from "./updater.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
 import { runCommand, updateChannel, Updater, type Release } from "./updater.ts";
 
@@ -242,6 +242,7 @@ export async function runSupervisor(root = ROOT) {
     pluginCheckout: pluginRoot !== undefined && resolve(pluginRoot) === root,
     // the herdr plugin's launcher runs this compiled server from its checkout's .ovis/server: herdr updates it
     pluginBinary: pluginBinaryOf(process.env["OVIS_PLUGIN_CHECKOUT"], COMPILED),
+    installedBinary: installedBinaryAt(root, COMPILED),
     notice: process.env["OVIS_SUPERVISOR_FALLBACK"]
       ? "The updated supervisor failed to start, so the previous one is running this version. The next update tries again."
       : undefined,

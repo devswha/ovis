@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PLUGIN_BINARY_REASON, pluginBinaryOf, Updater } from "./updater.ts";
+import { INSTALLED_BINARY_REASON, installedBinaryAt, PLUGIN_BINARY_REASON, pluginBinaryOf, Updater } from "./updater.ts";
 
 // A herdr plugin checkout that scripts/plugin-launch.ts runs as the release's binary: the server's root is the release
 // folder inside the checkout's .ovis/server, where git still finds the checkout. Settings must say the update runs
@@ -40,4 +40,25 @@ it("tells a plugin's compiled server to update through herdr, and offers no in-a
   expect(updater.status.blocked_reason).toBe(PLUGIN_BINARY_REASON);
   expect(PLUGIN_BINARY_REASON).toContain("herdr plugin update");
   expect(updater.status.blocked_reason).not.toContain("main");
+});
+
+it("tells a compiled server the installers put in place to run the installer again, never to switch to a Git checkout", async () => {
+  const scratch = mkdtempSync(join(tmpdir(), "ovis-installed-binary-"));
+  dirs.push(scratch);
+  const root = join(scratch, ".local", "share", "ovis", "releases", "0.5.4-abcd");
+  mkdirSync(root, { recursive: true });
+  const updater = new Updater({ root, stateDir: join(scratch, "state"), autoUpdate: false, installedBinary: installedBinaryAt(root, true), publish() {}, activate: async () => {} });
+  await updater.initialize();
+  expect(updater.status.managed).toBe(false);
+  expect(updater.status.blocked_reason).toBe(INSTALLED_BINARY_REASON);
+  expect(INSTALLED_BINARY_REASON).toContain("curl -fsSL https://ovis.sh/install.sh | sh");
+  expect(INSTALLED_BINARY_REASON).toContain("irm https://ovis.sh/install.ps1 | iex");
+});
+
+it("knows where the installers put a compiled server, and nothing else for one", () => {
+  expect(installedBinaryAt("/home/me/.local/share/ovis/releases/0.5.4-abcd", true)).toBe(true);
+  expect(installedBinaryAt("C:\\Users\\me\\AppData\\Local\\ovis\\bin", true)).toBe(true);
+  expect(installedBinaryAt("/home/me/.local/share/ovis/releases/0.5.4-abcd", false)).toBe(false);
+  expect(installedBinaryAt("/home/me/plugins/checkout/.ovis/server/releases/0.5.4-abcd", true)).toBe(false);
+  expect(installedBinaryAt("/Applications/Ovis.app/Contents/Resources/server", true)).toBe(false);
 });
