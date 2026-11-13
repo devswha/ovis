@@ -36,6 +36,7 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Clear search": "검색어 지우기",
   "Nothing is running yet": "아직 실행 중인 것이 없습니다",
   "Couldn't load the list.": "목록을 불러오지 못했습니다.",
+  "Retrying…": "다시 시도하는 중…",
   "Use + to start a workspace": "+ 버튼으로 워크스페이스를 시작하세요",
   "No results": "결과 없음",
   "You: {text}": "나: {text}",

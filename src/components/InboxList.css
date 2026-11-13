@@ -461,6 +461,44 @@
   text-wrap: balance;
 }
 
+/* a Retry's read on its way: the loading words, as the list's own loading line says them, and the read's message
+   kept in its room, unseen, so Retry stays where it was pressed */
+.mode-inbox .inbox-failed-words.is-loading .inbox-failed-line {
+  color: var(--text-dim);
+}
+
+.mode-inbox .inbox-failed-words.is-loading .inbox-failed-cause {
+  visibility: hidden;
+}
+
+/* Retry and Retrying… in one cell, the one not said hidden: the button keeps one box whichever it says */
+.mode-inbox .inbox-retry-words {
+  display: inline-grid;
+}
+
+.mode-inbox .inbox-retry-words > span {
+  grid-area: 1 / 1;
+}
+
+.mode-inbox .inbox-retry-words > [aria-hidden="true"] {
+  visibility: hidden;
+}
+
+/* on its way (aria-disabled, so a press keeps the focus): dimmed by its colour, not faded, so its word stays
+   legible, as Settings' Retry on its way (SettingsDialog.css); no hover, and a finger's press does not dim it */
+.mode-inbox .btn.inbox-retry[aria-disabled="true"] {
+  opacity: 1;
+  color: var(--text-dim);
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .mode-inbox .btn.inbox-retry[aria-disabled="true"]:hover {
+    background: var(--bg-elevated);
+    border-color: var(--border);
+  }
+}
+
 /* what happened, and under it the next step where there is one: each a line of its own at every width, so neither
    sentence runs into the other or ends on a word left alone. One too long for a narrow window breaks into even
    lines, between words (Korean keeps each word whole, styles.css) */

@@ -69,8 +69,9 @@ export interface InboxListProps {
   note?: ReactNode;
   /** what the connection has to say (lib/headerConnection.ts), which a thread says under its name: one quiet line here */
   connection?: HeaderConnection;
-  /** why the roster's last load failed, in the words the app has for it (the classic sidebar's error), and the way to load it again */
-  failure?: { error: string; retry(): void } | null;
+  /** why the roster's last load failed (the read's own message), and the way to load it again: the read it starts, which
+   *  the list waits on to say a Retry is on its way */
+  failure?: { error: string; retry(): Promise<void> | void } | null;
 }
 
 /** the marks drawn as a full tile, which fill the round face; the others sit on it as a glyph */
@@ -232,6 +233,13 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   // a load that failed with no row to show says so, with its cause and a way to try again, where a load in flight
   // says Loading… and a roster with nothing running says so: a failure is never taken for either
   const failed = failure !== null && all.length === 0 ? failure : null;
+  // a Retry's read on its way, from the press until that read ends: Retry takes no other press meanwhile
+  const [retrying, setRetrying] = useState(false);
+  const retry = (): void => {
+    if (retrying || failed === null) return;
+    setRetrying(true);
+    void Promise.resolve(failed.retry()).finally(() => setRetrying(false));
+  };
   const empty = emptyWhy === "loading" ? [t("Loading…")]
     : emptyWhy === "none" ? (offerNew ? [t("Nothing is running yet"), t("Use + to start a workspace")] : [t("Nothing is running yet")])
     : emptyWhy === "no-match" ? [t("No results")] : null;
@@ -314,13 +322,28 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       </div>
       <div className="inbox-scroll" ref={scroller} onScroll={(event) => { if (restoring.current === null) scroll.current = event.currentTarget.scrollTop; }}>
         {failed !== null ? (
-          <div className="inbox-failed" role="alert">
-            {/* what happened, in the app's words; the read's own message, where it has one, smaller under it */}
-            <div className="inbox-failed-words">
-              <p className="inbox-failed-line">{t("Couldn't load the list.")}</p>
-              {failed.error !== "" && <p className="inbox-failed-cause" dir="auto">{failed.error}</p>}
-            </div>
-            <button type="button" className="btn" onClick={failed.retry}>{t("Retry")}</button>
+          <div className="inbox-failed">
+            {/* what happened, in the app's words, and the read's own message, where it has one, smaller under it; while a
+                Retry's read is on its way the loading words stand there instead (the message keeps its room, so Retry
+                does not move), and a failure again is a new alert */}
+            {retrying ? (
+              <div key="loading" className="inbox-failed-words is-loading" role="status">
+                <p className="inbox-failed-line">{t("Loading…")}</p>
+                {failed.error !== "" && <p className="inbox-failed-cause" dir="auto" aria-hidden="true">{failed.error}</p>}
+              </div>
+            ) : (
+              <div key="failed" className="inbox-failed-words" role="alert">
+                <p className="inbox-failed-line">{t("Couldn't load the list.")}</p>
+                {failed.error !== "" && <p className="inbox-failed-cause" dir="auto">{failed.error}</p>}
+              </div>
+            )}
+            {/* aria-disabled, not disabled: a press keeps the focus it had; its two words share one cell, so it keeps one box */}
+            <button type="button" className="btn inbox-retry" aria-disabled={retrying || undefined} aria-busy={retrying || undefined} onClick={retry}>
+              <span className="inbox-retry-words">
+                <span aria-hidden={retrying || undefined}>{t("Retry")}</span>
+                <span aria-hidden={!retrying || undefined}>{t("Retrying…")}</span>
+              </span>
+            </button>
           </div>
         ) : empty !== null ? <p className="inbox-empty" role="status">{empty.flatMap((line, at) => [...(at > 0 ? [" "] : []), <span key={line}>{line}</span>])}</p> : (
           <ul className="inbox-rows" onPointerDown={holdAfterPress} onTouchEnd={holdAfterPress}

@@ -36,6 +36,7 @@ export const SIDEBAR_JA: Record<string, string> = {
   "Clear search": "検索を消去",
   "Nothing is running yet": "まだ何も実行されていません",
   "Couldn't load the list.": "リストを読み込めませんでした。",
+  "Retrying…": "再試行しています…",
   "Use + to start a workspace": "+ ボタンでワークスペースを開始できます",
   "No results": "結果なし",
   "You: {text}": "自分: {text}",

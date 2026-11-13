@@ -128,7 +128,7 @@ describe("InboxList", () => {
   interface DrawOptions {
     wide?: boolean; current?: string | null; filter?: InboxFilter; query?: string; watching?: boolean; activity?: SidebarActivity; scrollTop?: number;
     connection?: HeaderConnection;
-    failure?: { error: string; retry(): void } | null;
+    failure?: { error: string; retry(): Promise<void> | void } | null;
     /** how many times the list has opened (lib/useInbox.ts), and the opening it last took the focus for: a fresh opening unless a case says not */
     opening?: number; focusTaken?: number;
     /** the row (inboxKey) whose thread a Back just left: the list's opening gives it the focus */
@@ -432,7 +432,7 @@ describe("InboxList", () => {
     await act(async () => { renderer?.unmount(); });
 
     // When the load failed with no roster, on a phone and in the column: one alert in the rows' place, which says
-    // the cause the app has for it and holds one real button, and the button loads again.
+    // what happened and the read's own message, and one real button under it that loads again.
     for (const wide of [false, true]) {
       phone = !wide;
       const failed = await draw([], { wide, failure });
@@ -440,8 +440,8 @@ describe("InboxList", () => {
       expect([others.length, byClass(failed, "inbox-empty").length, byClass(failed, "inbox-rows").length]).toEqual([0, 0, 0]);
       // what happened in the app's words, and the read's own message under it
       expect([byClass(alert!, "inbox-failed-line").map(text), byClass(alert!, "inbox-failed-cause").map(text)]).toEqual([["Couldn't load the list."], ["Failed to fetch"]]);
-      const [retry, ...more] = buttons(alert!);
-      expect([more.length, retry!.props.type, retry!.props.className]).toEqual([0, "button", "btn"]);
+      const [retry, ...more] = buttons(byClass(failed, "inbox-failed")[0]!);
+      expect([more.length, retry!.props.type, retry!.props.className]).toEqual([0, "button", "btn inbox-retry"]);
       await act(async () => { retry!.props.onClick(); });
       expect(retries).toEqual(wide ? ["retry", "retry"] : ["retry"]);
       await act(async () => { renderer?.unmount(); });
@@ -461,6 +461,37 @@ describe("InboxList", () => {
     // rows already drawn stay over a refresh that failed: the list does not trade them for the failure
     const kept = await draw(roster(), { failure });
     expect([alerts(kept).length, byClass(kept, "inbox-item").length > 0]).toEqual([0, true]);
+  });
+
+  it("holds Retry in its box while its read is on its way: it says so and takes no press, and the loading words stand in for the failure", async () => {
+    let release = (): void => undefined;
+    const presses: string[] = [];
+    const failure = { error: "Failed to fetch", retry: () => { presses.push("retry"); return new Promise<void>((resolve) => { release = resolve; }); } };
+    /** the words the button says: its label not hidden */
+    const said = (button: ReactTestInstance) => button.findAll((node) => node.type === "span" && node.props["aria-hidden"] === undefined && typeof node.children[0] === "string").map(text);
+    /** the live words in the rows' place: their role, their line, and whether the read's message is hidden */
+    const live = (root: ReactTestInstance) => byClass(root, "inbox-failed-words").map((node) => [node.props.role, byClass(node, "inbox-failed-line").map(text)[0], byClass(node, "inbox-failed-cause").map((cause) => cause.props["aria-hidden"] ?? null)]);
+    for (const wide of [false, true]) {
+      phone = !wide;
+      // Given a load that failed, Retry ready.
+      const failed = await draw([], { wide, failure });
+      const retry = () => byClass(failed, "inbox-retry")[0]!;
+      expect([live(failed), retry().props["aria-disabled"], retry().props["aria-busy"], said(retry())]).toEqual([[["alert", "Couldn't load the list.", [null]]], undefined, undefined, ["Retry"]]);
+
+      // When Retry is pressed, then pressed again while its read is on its way.
+      await act(async () => { retry().props.onClick(); });
+      await act(async () => { retry().props.onClick(); });
+
+      // Then one read was asked for; the loading words stand where the failure was, the read's message kept unseen,
+      // and Retry says it is on its way, busy, taking no press.
+      expect(presses.length).toBe(wide ? 2 : 1);
+      expect([live(failed), retry().props["aria-disabled"], retry().props["aria-busy"], said(retry())]).toEqual([[["status", "Loading…", ["true"]]], true, true, ["Retrying…"]]);
+
+      // When that read ends with the roster still failing: the failure is said again, and Retry is ready.
+      await act(async () => { release(); });
+      expect([live(failed), retry().props["aria-disabled"], retry().props["aria-busy"], said(retry())]).toEqual([[["alert", "Couldn't load the list.", [null]]], undefined, undefined, ["Retry"]]);
+      await act(async () => { renderer?.unmount(); });
+    }
   });
 
   it("says what the connection has to say in one status line, and draws nothing while it has nothing to say", async () => {

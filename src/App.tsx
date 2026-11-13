@@ -983,7 +983,7 @@ export function App() {
       onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads}
       more={{ label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
       onExit={leaveMode}
-      note={column ? undefined : <HeaderNote note={listNote} />} connection={column || listNote === null ? (column && !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection ? null : rosterConnection) : null} failure={error === null ? null : { error, retry: () => void load() }} />
+      note={column ? undefined : <HeaderNote note={listNote} />} connection={column || listNote === null ? (column && !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection ? null : rosterConnection) : null} failure={error === null ? null : { error, retry: load }} />
   );
   // More's button: a square of the header's, or one of the mode's round controls over the wide pane
   const moreButton = (round: boolean): ReactNode => (

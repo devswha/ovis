@@ -32,6 +32,8 @@ declare global {
       restoreRoster(): void;
       /** whether the roster's load fails (the page's `?inbox_fail=roster` starts it failing): a 500, and no roster pushed meanwhile */
       failRoster(failing: boolean): void;
+      /** whether a read of the roster waits on its way (a Retry's read in flight); let go, every read held goes on */
+      holdRoster(holding: boolean): void;
       /** how many times the page has asked for the roster (/api/machines), failed or not */
       rosterReads: number;
     };
@@ -80,10 +82,12 @@ function installInboxFixture(): void {
   };
   const sources = new Set<EventSource>();
   let rosterFails = new URLSearchParams(location.search).get("inbox_fail") === "roster";
+  let rosterHeld: (() => void)[] | null = null;
   const fetchDemo = window.fetch;
   window.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input), location.href);
     if (url.pathname === "/api/machines") window.inboxFixture.rosterReads++;
+    if (url.pathname === "/api/machines" && rosterHeld !== null) await new Promise<void>((go) => rosterHeld!.push(go));
     if (rosterFails && url.pathname === "/api/machines") return Response.json({ error: { code: "internal", message: "The roster could not be read" } }, { status: 500 });
     const response = await fetchDemo(input, init);
     if (url.pathname !== "/api/machines" || !response.ok) return response;
@@ -154,6 +158,12 @@ function installInboxFixture(): void {
       for (const source of sources) { Object.assign(source, { readyState: 1 }); source.onopen?.(new Event("open")); }
     },
     failRoster(failing) { rosterFails = failing; },
+    holdRoster(holding) {
+      if (holding) { rosterHeld ??= []; return; }
+      const held = rosterHeld ?? [];
+      rosterHeld = null;
+      for (const go of held) go();
+    },
     rosterReads: 0,
   };
 }
@@ -306,8 +316,8 @@ async function shot(page: Page, name: string): Promise<void> {
  * settings record: `phoneInbox` in a seed is stored there, and a seed without it leaves the device starting in the
  * classic app. A block that fails says where and is counted; the blocks after it still run.
  */
-async function withPage(browser: Browser, base: string, settings: Settings, path: string, what: string, run: (page: Page) => Promise<void>, viewport: { width: number; height: number } = PHONE, touch: boolean = viewport.width < 769): Promise<void> {
-  const context = await browser.newContext({ viewport, isMobile: touch, hasTouch: touch, locale: "en-US" });
+async function withPage(browser: Browser, base: string, settings: Settings, path: string, what: string, run: (page: Page) => Promise<void>, viewport: { width: number; height: number } = PHONE, touch: boolean = viewport.width < 769, locale = "en-US"): Promise<void> {
+  const context = await browser.newContext({ viewport, isMobile: touch, hasTouch: touch, locale });
   try {
     await context.addInitScript((seed) => {
       // the blank page the tab began on, which Back out of the app returns to, has no storage to seed
@@ -1590,22 +1600,51 @@ try {
           assert.equal(line.words, language === "ko" ? KO["Couldn't load the list."] : "Couldn't load the list.", "the failure says what happened in the app's words");
           assert.ok(own.words.length > 0 && own.size < line.size, `the read's own message is under it, smaller (${own.size}px under ${line.size}px)`);
           const cause = own.words;
-          const retry = failure.getByRole("button");
-          assert.equal(await retry.count(), 1, "the failure holds one button");
-          if (!wide) assert.ok((await box(page, '.mode-inbox [role="alert"] button')).h >= 44, "Retry is a touch target on a phone");
+          const retry = page.locator(".mode-inbox .inbox-failed").getByRole("button");
+          assert.equal(await retry.count(), 1, "the failure has one button");
+          const ready = await box(page, ".mode-inbox .inbox-retry");
+          if (!wide) assert.ok(ready.h >= 44, "Retry is a touch target on a phone");
+          // Retry pressed from the keyboard while the roster still fails, its read held on its way: Retry says so in the
+          // box it had and keeps the focus through more presses, and the loading words stand where the failure was
+          await page.evaluate(() => window.inboxFixture.holdRoster(true));
+          await retry.focus();
+          await page.keyboard.press("Enter");
+          await page.locator('.mode-inbox .inbox-retry[aria-disabled="true"][aria-busy="true"]').waitFor();
+          await page.keyboard.press("Enter");
+          await retry.click({ force: true });
+          const onItsWay = await page.evaluate(() => {
+            const button = document.querySelector(".mode-inbox .inbox-retry")!;
+            const words = document.querySelector(".mode-inbox .inbox-failed-words")!;
+            return {
+              focused: document.activeElement === button, busy: button.getAttribute("aria-disabled"),
+              said: [...button.querySelectorAll(".inbox-retry-words > span")].filter((span) => getComputedStyle(span).visibility === "visible").map((span) => span.textContent),
+              role: words.getAttribute("role"), line: words.querySelector(".inbox-failed-line")?.textContent, message: getComputedStyle(words.querySelector(".inbox-failed-cause")!).visibility,
+              alerts: document.querySelectorAll('.mode-inbox [role="alert"]').length,
+            };
+          });
+          assert.deepEqual(onItsWay, { focused: true, busy: "true", said: [language === "ko" ? KO["Retrying…"] : "Retrying…"], role: "status", line: language === "ko" ? KO["Loading…"] : "Loading…", message: "hidden", alerts: 0 },
+            "on its way, Retry says so and keeps the focus, and the loading words stand where the failure was");
+          sameBox(await box(page, ".mode-inbox .inbox-retry"), ready, "Retry keeps its box while its read is on its way");
+          // the read ends with the roster still failing: the failure is said again, and Retry is ready where it was
+          await page.evaluate(() => window.inboxFixture.holdRoster(false));
+          await page.locator('.mode-inbox .inbox-retry:not([aria-disabled])').waitFor();
+          await failure.waitFor();
+          sameBox(await box(page, ".mode-inbox .inbox-retry"), ready, "Retry keeps its box once its read has failed");
+          assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-retry")), true, "the focus is still on Retry");
           // the failure ends and Retry is pressed in one task: no background read can come between, and the read the
           // press makes is counted as it is made
           const asked = await page.evaluate(() => {
             window.inboxFixture.failRoster(false);
             const before = window.inboxFixture.rosterReads;
-            document.querySelector<HTMLButtonElement>('.mode-inbox [role="alert"] button')!.click();
+            document.querySelector<HTMLButtonElement>(".mode-inbox .inbox-retry")!.click();
             return window.inboxFixture.rosterReads - before;
           });
           assert.ok(asked > 0, `Retry asks for the roster (${asked} reads)`);
           await rowCount(page, 6);
           assert.equal(await failure.count(), 0, "loaded, the list has no failure to say");
-          console.log(`PASS on ${at} a list whose load failed says so, with its cause (${cause}) and one Retry where its rows would be, and Retry loads them`);
-        }, viewport);
+          console.log(`PASS on ${at} a list whose load failed says so in the app's words, its read's message (${cause}) smaller under them, and one Retry, which says it is on its way in the box it had while its read is held, keeps the focus, and loads the rows`);
+          // the language is shared and the demo's follows the browser's: a Korean browser is what makes the page Korean
+        }, viewport, viewport.width < 769, language === "ko" ? "ko-KR" : "en-US");
       }
 
       // ---- entering the mode with a file open over the pane ----

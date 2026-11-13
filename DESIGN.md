@@ -2360,8 +2360,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it has one, smaller and dim (`--fs-sm`, `--text-dim`: it is often the browser's English, the
   detail rather than the sentence), and **Retry** under them (`.btn`, `--touch-target` under a
   coarse pointer), one `role="alert"`,
-  on both layouts; Retry loads the roster again. Rows already drawn stay over a refresh that
-  failed.
+  on both layouts; Retry loads the roster again. While that read is on its way the words give way
+  to **Loading…** (`role="status"`; the read's message keeps its room unseen, so Retry does not
+  move) and Retry says **Retrying…** in the box it had (both words share one cell), `aria-disabled`
+  and `aria-busy`, so a press keeps the focus and asks for nothing more; it is dimmed by its
+  colour, not faded, as Settings' Retry on its way. A read that fails again is a new alert. Rows
+  already drawn stay over a refresh that failed.
   None says what the rows are, as nothing else in the mode's chrome does; the classic Agents
   list keeps its own lines. The filter, the query and the scroll offset are kept while a thread
   is open.
