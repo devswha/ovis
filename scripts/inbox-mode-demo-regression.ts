@@ -1110,8 +1110,11 @@ try {
         // fixed wait: the page's own first sizing of the pane has gone out
         await page.waitForTimeout(NO_RESIZE_WAIT_MS);
         const atLoad = await sized();
-        const grid = atLoad.filter((size) => size.pane === BLOCKED).at(-1);
-        assert.ok(grid, "the classic app sized the pane's pty as the page loaded");
+        // the grid the classic app sized the pane's pty to as the page loaded: the attach carries it, and a resize
+        // follows only where the terminal was fitted after the attach went out
+        const loaded = await page.evaluate((pane) => window.inboxFixture.frames.filter((frame) => frame.pane === pane && (frame.type === "attach" || frame.type === "resize")).at(-1) ?? null, BLOCKED);
+        assert.ok(loaded?.cols !== undefined && loaded.rows !== undefined, "the classic app attached the pane with its grid as the page loaded");
+        const grid = { pane: BLOCKED, cols: loaded.cols, rows: loaded.rows };
         const cell = await screenWidth() / grid.cols;
         const before = atLoad.length;
 
@@ -1384,6 +1387,9 @@ try {
           await rowCount(page, 6);
           assert.equal(await line.count(), 0, "connected, the list draws no line");
           assert.equal(await page.locator('.mode-inbox .inbox-top [role="status"]').count() >= 1, true, "the status line is in the document before it has a word");
+          // the stream that feeds the roster has opened (its first roster came): only a stream that was had can be lost;
+          // a cold list draws its rows from the roster's first read, which can come before the stream opens
+          await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
           // the bridge's connection is lost: the page's sockets, and the stream that feeds the roster
           await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
           await line.waitFor();
