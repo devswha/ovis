@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlink
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { reloadReason } from "../src/lib/updateNotes.ts";
+import { announcesUpdate, notesOffer, reloadReason } from "../src/lib/updateNotes.ts";
 import { releaseSupervisor } from "./managed.ts";
 import { latestRelease, newerVersion, offeredRelease, releaseNames, stagedRelease } from "./update-artifact.ts";
 import { updateStateDir } from "./update-state.ts";
@@ -195,6 +195,17 @@ describe.skipIf(process.platform === "win32" || !hostPlatform())("crossing from 
     expect(reloadReason(build, { current_revision: update.status.current_revision, served_revision: null }, false, false)).toBeNull();
     // a page of the version before still asks to reload, as after any update
     expect(reloadReason(fixture.revision, { current_revision: update.status.current_revision, served_revision: null }, false, false)).toBe("updated");
+    // the next check finds the running release the newest: no offer, and the line that tells of the update stays
+    await update.request("check", true);
+    expect(update.status).toMatchObject({ available: false, latest_revision: build, latest_version: "1.0.1" });
+    expect(notesOffer(update.status)).toBeNull();
+    expect(announcesUpdate(update.status, update.installed, null, Date.now())).toBe(true);
+    // a newer release is still offered by its manifest's id
+    const newer = publish(fixture.releases, "1.0.2", fixture.key.privateKeyPem, undefined, "f".repeat(40));
+    await update.request("check", true);
+    expect(update.status).toMatchObject({ available: true, latest_revision: sha256(readFileSync(join(newer, MANIFEST))), latest_version: "1.0.2" });
+    expect(notesOffer(update.status)).not.toBeNull();
+    rmSync(newer, { recursive: true });
     // a supervisor that starts now, source or compiled, tells the same commit
     for (const extra of [{}, { compiled: { ownRelease: JSON.parse(readFileSync(join(fixture.stateDir, "current.json"), "utf8")).directory } }]) {
       const restarted = updater(fixture, extra);
@@ -212,8 +223,8 @@ describe.skipIf(process.platform === "win32" || !hostPlatform())("crossing from 
     await update.request("check", true);
     await update.request("install", true, update.status.latest_revision!);
     const { directory } = JSON.parse(readFileSync(join(fixture.stateDir, "current.json"), "utf8"));
-    const shim = (key = fixture.key.publicKey) => {
-      writeFileSync(join(directory, "server", "supervisor.ts"), shimOf(key));
+    const shim = (key = fixture.key.publicKey, version = "1.0.1") => {
+      writeFileSync(join(directory, "server", "supervisor.ts"), shimOf(key, version));
       const result = Bun.spawnSync([process.execPath, join(directory, "server", "supervisor.ts")], { cwd: fixture.root, env: { ...process.env, OVIS_SOURCE_ROOT: fixture.root }, stdout: "pipe", stderr: "pipe" });
       return { code: result.exitCode, out: result.stderr.toString() };
     };
@@ -224,6 +235,11 @@ describe.skipIf(process.platform === "win32" || !hostPlatform())("crossing from 
     const other = shim(generateKeyPair().publicKey);
     expect(other.code).toBe(3);
     expect(other.out).toContain("not signed by the release key");
+    // nor is a manifest of another version, signed by the right key
+    const otherVersion = shim(undefined, "1.0.2");
+    expect(otherVersion.code).toBe(3);
+    expect(otherVersion.out).toContain("is for version 1.0.1, not the 1.0.2 staged here");
+    expect(existsSync(ran)).toBe(false);
     const binary = join(directory, "bin", "ovis-server");
     writeFileSync(binary, readFileSync(binary).map((byte, index) => (index === 5 ? byte ^ 1 : byte)));
     const changed = shim();

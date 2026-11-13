@@ -100,19 +100,22 @@ export async function offeredRelease(options: { base: string | undefined; channe
 /**
  * The few lines every launcher runs as a release's supervisor (`<Bun> <release>/server/supervisor.ts`, its cwd the
  * source checkout). Before anything of the release runs, they check what lies in bin/ now: the manifest's signature by
- * `publicKey` (the key the release was checked with when it was staged) and the binary's SHA-256 in that manifest. A
- * file changed since then makes them exit before the supervisor is ready, so the launcher falls back to the checkout's
- * own supervisor. Then they run the release's binary as the supervisor, pass its IPC messages ("ready") up to the
+ * `publicKey` (the key the release was checked with when it was staged), that it names `version` (the one staged: a
+ * manifest of another release, signed too, is not this one's) and the binary's SHA-256 in it. A file changed since
+ * then makes them exit before the supervisor is ready, so the launcher falls back to the checkout's own supervisor.
+ * The binary is hashed, then started by its path: a writer swapping the file between the two still gets its bytes run,
+ * as one who can write the state folder can also rewrite these lines; this guards against a change at rest, not that. Then they run the release's binary as the supervisor, pass its IPC messages ("ready") up to the
  * launcher and the launcher's stop signals down, and exit as it does, HANDOVER_EXIT included. A launcher from before
  * the rename names the checkout HERDR_WEB_SOURCE_ROOT. Plain JavaScript a Bun of any version runs.
  */
-export function releaseSupervisor(publicKey: string): string {
+export function releaseSupervisor(publicKey: string, version: string): string {
   return `// Written by the update that installed this compiled release (server/update-artifact.ts): the launcher of the source
 // checkout runs this file with its Bun, and this runs the release's binary as the supervisor, once it still checks.
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 const KEY = ${JSON.stringify(publicKey)};
+const VERSION = ${JSON.stringify(version)};
 const windows = process.platform === "win32";
 const bin = join(import.meta.dir, "..", "bin");
 const binary = join(bin, windows ? "ovis-server.exe" : "ovis-server");
@@ -122,7 +125,9 @@ try {
   const key = createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(KEY, "base64")]), format: "der", type: "spki" });
   if (!verify(null, manifest, key, signature)) throw new Error("ovis-server.json is not signed by the release key");
   const platform = (windows ? "windows" : process.platform) + "-" + process.arch;
-  const expected = JSON.parse(manifest.toString("utf8")).assets?.[platform]?.sha256;
+  const named = JSON.parse(manifest.toString("utf8"));
+  if (named.version !== VERSION) throw new Error("ovis-server.json is for version " + named.version + ", not the " + VERSION + " staged here");
+  const expected = named.assets?.[platform]?.sha256;
   if (createHash("sha256").update(readFileSync(binary)).digest("hex") !== expected) throw new Error(binary + " does not match its SHA-256 in ovis-server.json");
 } catch (error) {
   console.error("Ovis: this update's server was not run (" + (error instanceof Error ? error.message : String(error)) + "); the launcher falls back to the source checkout.");
@@ -155,7 +160,7 @@ export async function stageBinaryRelease(offer: BinaryOffer, options: { stateDir
     const host = await fetchRelease(offer.at, offer.signed, options.platform, bin, { fetchFile: options.fetchFile, ptyRuns: options.ptyRuns });
     options.signal?.throwIfAborted();
     mkdirSync(join(directory, "server"));
-    writeFileSync(join(directory, "server", "supervisor.ts"), releaseSupervisor(options.publicKey));
+    writeFileSync(join(directory, "server", "supervisor.ts"), releaseSupervisor(options.publicKey, offer.version));
     return { directory, host };
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });

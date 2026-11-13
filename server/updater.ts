@@ -528,7 +528,11 @@ export class Updater {
     const available = offer !== null && running !== null && offer.revision !== this.release!.revision && newerVersion(offer.version, running);
     this.offer = available ? offer : null;
     this.notes = available ? { ...noUpdateNotes(), revision: offer.revision } : noUpdateNotes();
-    this.patch({ latest_revision: offer?.revision ?? null, latest_version: offer?.version ?? null, checked_at, blocked_reason: null, available });
+    // nothing newer: the latest is the release that runs, told as pages compare it (its build commit, as current_revision),
+    // never as its manifest's id, which a page would take for another release on offer
+    const latest = available ? { latest_revision: offer.revision, latest_version: offer.version }
+      : offer ? { latest_revision: reportedRevision(this.release!), latest_version: running } : { latest_revision: null, latest_version: null };
+    this.patch({ ...latest, checked_at, blocked_reason: null, available });
   }
 
   /**
