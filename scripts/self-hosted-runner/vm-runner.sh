@@ -30,7 +30,9 @@ firewall() {
     while ipt -C DOCKER-USER -i docker0 -p "$pr" --dport 53 -j ACCEPT 2>/dev/null; do ipt -D DOCKER-USER -i docker0 -p "$pr" --dport 53 -j ACCEPT || return 1; done
   done
   # DNS to the resolvers a job container is actually given (read from one), IPv4 ones, port 53 only, above the drops
-  for ns in $(sudo -n docker run --rm --network "$NET" --entrypoint awk "$IMAGE" '/^nameserver/ {print $2}' /etc/resolv.conf | grep -E '^[0-9]+(\.[0-9]+){3}$'); do
+  servers=$(sudo -n docker run --rm --network "$NET" --entrypoint awk "$IMAGE" '/^nameserver/ {print $2}' /etc/resolv.conf | grep -E '^[0-9]+(\.[0-9]+){3}$') || return 1
+  [ -n "$servers" ] || return 1
+  for ns in $servers; do
     for pr in udp tcp; do
       ipt -C DOCKER-USER -i docker0 -d "$ns" -p "$pr" --dport 53 -j ACCEPT 2>/dev/null || ipt -I DOCKER-USER -i docker0 -d "$ns" -p "$pr" --dport 53 -j ACCEPT || return 1
     done
@@ -72,8 +74,9 @@ case "${1:?setup|register|supervise|stop}" in
         -c 'cp /cred/.runner /cred/.credentials /cred/.credentials_rsaparams . && exec ./run.sh --once </dev/null' >> "$LOG" 2>&1
       rc=$?
       echo "$(date -u +%FT%TZ) job container exit $rc" >> "$LOG"
-      # a container that ends at once (a removed registration, say) waits longer each time, up to 5 minutes
-      if (( SECONDS - started < 30 )); then wait_s=$(( ${wait_s:-3} * 2 > 300 ? 300 : ${wait_s:-3} * 2 )); else wait_s=3; fi
+      # a container that fails at once (a removed registration, say) waits longer each time, up to 5 minutes;
+      # a short job that ends well (skipped, cancelled) does not
+      if (( rc != 0 && SECONDS - started < 30 )); then wait_s=$(( ${wait_s:-3} * 2 > 300 ? 300 : ${wait_s:-3} * 2 )); else wait_s=3; fi
       sleep "$wait_s"
     done ;;
   stop)
