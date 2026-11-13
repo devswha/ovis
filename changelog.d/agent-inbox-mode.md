@@ -13,3 +13,10 @@
 ### Fixed
 - More closes when the button that opened it leaves the page (a Back that takes its screen away),
   instead of staying open over a screen it no longer belongs to.
+
+### Maintenance
+- The app marks the history entry a page loads on, and one left without a state when the page is
+  hidden, so a restored tab is told from a fresh navigation; only the inbox mode's phone start
+  reads the mark.
+- The roster's loader keeps the state of its event stream (lost, back), which the inbox mode's
+  list says; a drop or a reopen draws the app again, and Connected for two seconds after.
