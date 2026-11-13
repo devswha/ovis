@@ -34,7 +34,7 @@ it.skipIf(process.platform !== "win32")("runs the Windows launcher with executab
   const launcher = join(prefix, "plugin.ps1");
   copyFileSync(join(import.meta.dir, "plugin.ps1"), launcher);
   const result = join(scratch, "arguments.json");
-  writeFileSync(join(prefix, "plugin.ts"), `
+  writeFileSync(join(prefix, "plugin-launch.ts"), `
     await Bun.write(${JSON.stringify(result)}, JSON.stringify(process.argv.slice(2)));
     process.exit(process.argv[2] === "status" ? 7 : 0);
   `);
@@ -197,7 +197,9 @@ it.skipIf(process.platform !== "win32")("starts after its launcher exits, stops 
     Path: ["taskkill", "powershell", "git"].map(tool => dirname(Bun.which(tool)!)).join(";"),
     HERDR_SOCKET: socket, HERDR_SOCKET_PATH: socket, HERDR_PLUGIN_ROOT: undefined,
     HERDR_PLUGIN_STATE_DIR: state, HERDR_PLUGIN_CONFIG_DIR: config, OVIS_STATE_DIR: join(scratch, "app-state"),
-    OVIS_AUTO_UPDATE: "0", OVIS_TOKEN: "", HOST: "127.0.0.1", PORT: String(port) };
+    OVIS_AUTO_UPDATE: "0", OVIS_TOKEN: "", HOST: "127.0.0.1", PORT: String(port),
+    // this checkout's own server: the developer path of scripts/plugin-launch.ts, not a release binary
+    OVIS_FROM_SOURCE: "1" };
   delete env["PATH"];
   const run = async (command: string, expectedCode = 0) => {
     const entry = command === "start" ? manifest.startup.find(entry => entry.platforms.includes("windows"))
