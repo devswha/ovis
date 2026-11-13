@@ -1274,10 +1274,15 @@ try {
             getComputedStyle(document.querySelector(selector)!).backgroundColor === colour, { selector, colour }, { timeout: 5_000 }).catch(() => { throw new Error(`${what}: ${selector} is not ${colour}`); });
           const sideHover = await token("var(--side-hover)"), rowPress = await token("color-mix(in srgb, var(--side-selected), var(--border-strong))");
           const hover = await token("var(--bg-hover)"), strong = await token("var(--border-strong)");
+          /** a computed colour's three channels, of 255: Chrome writes a mixed colour as color(srgb …), each of 1 */
+          const channels = (colour: string): number[] => {
+            const srgb = /^color\(srgb ([\d.]+) ([\d.]+) ([\d.]+)/.exec(colour);
+            return srgb ? srgb.slice(1, 4).map((value) => Number(value) * 255) : (colour.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number);
+          };
           /** how far two colours stand apart: their largest difference in one channel, of 255 */
           const apart = (one: string, other: string): number => {
-            const [a, b] = [one, other].map((colour) => (colour.match(/[\d.]+/g) ?? []).slice(0, 3).map(Number));
-            return Math.max(...a!.map((value, at) => Math.abs(value - b![at]!)));
+            const [a, b] = [channels(one), channels(other)];
+            return Math.round(Math.max(...a.map((value, at) => Math.abs(value - b[at]!))));
           };
           // a press reads as a press: well past the 7 of 255 a row's press once stood from its hover in light
           for (const [press, over, what] of [[rowPress, sideHover, "a row's"], [strong, hover, "a round control's"]] as const) {
