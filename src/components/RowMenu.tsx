@@ -65,7 +65,10 @@ interface Props {
   onClose: () => void;
   /** `paths`: each hint is a path; the menu is wider and a long path gives way before its label */
   variant?: "paths";
-  /** the items are one choice among them, `checked` on the chosen one: radio items in the popover, a radio group in the sheet */
+  /**
+   * the items are one choice among them, `checked` on the chosen one: a menu's radio items, in the popover and in the
+   * sheet, where the arrows walk them, a press chooses and closes, and Tab takes them as one stop, at the chosen one
+   */
   choice?: boolean;
 }
 
@@ -76,6 +79,8 @@ const TYPE_AHEAD_MS = 500;
 const POPOVER_ITEMS = '[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]';
 // the sheet is modal: its Cancel is one of the stops
 const SHEET_ITEMS = '.row-sheet-item, .row-sheet-aside, .row-sheet-cancel';
+/** a choice's chosen item, where the sheet's focus starts */
+const CHOSEN = '.row-sheet-item[aria-checked="true"]';
 
 // each open menu's button: the menu is drawn outside what holds it, and a surface that keeps its own focus
 // (MachineSidebar's asked-for filter) counts its rows' menus as its own, and no other's
@@ -150,7 +155,7 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
   }, [align, anchor, onClose, point, sheet]);
 
   useEffect(() => {
-    const first = surface.current?.querySelector<HTMLElement>(sheet ? SHEET_ITEMS : POPOVER_ITEMS);
+    const first = (sheet && choice ? surface.current?.querySelector<HTMLElement>(CHOSEN) : null) ?? surface.current?.querySelector<HTMLElement>(sheet ? SHEET_ITEMS : POPOVER_ITEMS);
     window.requestAnimationFrame(() => first?.focus());
   }, [sheet]);
   // the sheet is modal: an item that went from under the focus (a tab closed elsewhere) gives it to the first one left
@@ -197,8 +202,13 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
   }, [anchor, onClose, point, sheet]);
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
-    const buttons = [...(surface.current?.querySelectorAll<HTMLElement>(sheet ? SHEET_ITEMS : POPOVER_ITEMS) ?? [])];
-    const index = buttons.indexOf(document.activeElement as HTMLElement);
+    const stops = [...(surface.current?.querySelectorAll<HTMLElement>(sheet ? SHEET_ITEMS : POPOVER_ITEMS) ?? [])];
+    const focused = document.activeElement as HTMLElement;
+    // a choice in the sheet is a menu of its own above Cancel: the arrows walk its items, Tab takes them as one stop
+    const choices = sheet && choice ? stops.filter((button) => button.getAttribute("role") === "menuitemradio") : [];
+    const inChoice = choices.includes(focused);
+    const buttons = inChoice && event.key !== "Tab" ? choices : stops;
+    const index = buttons.indexOf(focused);
     const move = (next: number): void => {
       event.preventDefault();
       buttons[point ? Math.max(0, Math.min(buttons.length - 1, next)) : (next + buttons.length) % buttons.length]?.focus();
@@ -208,7 +218,13 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
     else if (event.key === "Home") move(0);
     else if (event.key === "End") move(buttons.length - 1);
     // Tab stays inside the sheet, which is modal; it leaves the popover, which then goes
-    else if (event.key === "Tab" && sheet) move(index + (event.shiftKey ? -1 : 1));
+    else if (event.key === "Tab" && sheet && choices.length > 0) {
+      // the choice's stop is the item the focus is on, or the chosen one when the focus comes from outside it
+      const stop = inChoice ? focused : choices.find((button) => button.getAttribute("aria-checked") === "true") ?? choices[0]!;
+      const ring = stops.filter((button) => !choices.includes(button) || button === stop);
+      event.preventDefault();
+      ring[(ring.indexOf(inChoice ? stop : focused) + (event.shiftKey ? -1 : 1) + ring.length) % ring.length]?.focus();
+    } else if (event.key === "Tab" && sheet) move(index + (event.shiftKey ? -1 : 1));
     else if (event.key === "Tab") { event.preventDefault(); onClose(); }
     // a letter: the next item whose words start with what was typed; the same letter again walks the items that
     // start with it. Space and the modifiers are left to the item (Space presses it)
@@ -264,10 +280,10 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
             </div>
           )}
           {/* the items scroll between the head and Cancel: a tab's menu is taller than a short phone, and `.modal` hides its overflow */}
-          <div className="row-sheet-items" role={choice ? "radiogroup" : undefined} aria-label={choice ? title : undefined}>
+          <div className="row-sheet-items" role={choice ? "menu" : undefined} aria-label={choice ? title : undefined}>
             {items.map((item) => {
               const button = (
-                <button key={item.id} type="button" data-item={item.id} className={`row-sheet-item${item.danger ? " is-danger" : ""}${item.divider && !item.aside ? " has-divider" : ""}${item.disabled ? " is-disabled" : ""}`} aria-current={item.current ? "true" : undefined} role={choice ? "radio" : undefined} aria-checked={choice ? item.checked === true : undefined} aria-pressed={choice ? undefined : item.checked} aria-disabled={item.disabled || undefined} title={item.title} onMouseDown={keepFocus} onMouseEnter={point ? (event) => event.currentTarget.focus({ preventScroll: true }) : undefined} onClick={() => run(item)}>
+                <button key={item.id} type="button" data-item={item.id} className={`row-sheet-item${item.danger ? " is-danger" : ""}${item.divider && !item.aside ? " has-divider" : ""}${item.disabled ? " is-disabled" : ""}`} aria-current={item.current ? "true" : undefined} role={choice ? "menuitemradio" : undefined} aria-checked={choice ? item.checked === true : undefined} aria-pressed={choice ? undefined : item.checked} aria-disabled={item.disabled || undefined} title={item.title} onMouseDown={keepFocus} onMouseEnter={point ? (event) => event.currentTarget.focus({ preventScroll: true }) : undefined} onClick={() => run(item)}>
                   {item.glyph ?? <item.icon aria-hidden="true" />}
                   <span className="row-sheet-label">{item.label}</span>
                   {item.hint && <span className="row-sheet-hint">{item.hint}</span>}

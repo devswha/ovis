@@ -2344,7 +2344,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   holds nothing), the rows keep the order last drawn: a row never moves under a finger.
 - The state filter is one choice among **All**, **Needs you**, **Working** and **Done**, the
   Agents list's group headings for the same states, opened from its round button (lucide
-  `ListFilter`) as a `RowMenu` of radio items, a sheet with a radio group at 640px and below;
+  `ListFilter`) as a `RowMenu` of radio items, in a sheet at 640px and below too, which opens on
+  the chosen one: the arrows walk the four, a press chooses, and Tab takes them as one stop;
   each state's own mark is its item's glyph, and a ready agent shows only under All. Search is
   one pill (`.inbox-search-input`: `--touch-target` tall, `--radius-pill`, the field's
   `--border-input` edge, `--shadow-card`, a `--text-dim` glass at `--icon-size`, the

@@ -438,20 +438,39 @@ try {
           pass(2, "the list: no title and nothing the mode leaves out, two 44px round controls at the top and a round filter and a search pill at the foot on their insets, six 80px rows with a 44px mark, a 16px name and one 15px line, the waiting row first with its question, each state's own mark and none on the ready rows");
 
           await openSheet(page, ".inbox-filter-toggle");
-          assert.equal(await page.locator('.row-sheet [role="radiogroup"] [role="radio"]').count(), 4, "the four filters are one radio group");
-          assert.equal(await page.locator('.row-sheet [role="radio"][aria-checked="true"]').getAttribute("data-item"), "all");
+          assert.equal(await page.locator('.row-sheet [role="menu"] [role="menuitemradio"]').count(), 4, "the four filters are one menu of radio items");
+          assert.equal(await page.locator('.row-sheet [role="menuitemradio"][aria-checked="true"]').getAttribute("data-item"), "all");
+          // the keyboard as a menu's radio items take it: the focus starts on the chosen one, the arrows walk the four and
+          // choose nothing, Tab takes them as one stop before Cancel and comes back to the chosen one
+          const focusedItem = (want: string | null, why: string): Promise<unknown> => page.waitForFunction((item) => {
+            const at = document.activeElement;
+            return item === null ? at?.classList.contains("row-sheet-cancel") === true : at?.getAttribute("data-item") === item;
+          }, want, { timeout: 5_000 }).catch(() => { throw new Error(`the sheet's focus is not on ${want ?? "Cancel"}: ${why}`); });
+          await focusedItem("all", "the sheet opens on the chosen filter");
+          await page.keyboard.press("ArrowDown");
+          await focusedItem("blocked", "ArrowDown moves to the next filter");
+          await page.keyboard.press("ArrowUp");
+          await page.keyboard.press("ArrowUp");
+          await focusedItem("done", "ArrowUp from the first filter goes round to the last");
+          assert.equal(await page.locator('.row-sheet [role="menuitemradio"][aria-checked="true"]').getAttribute("data-item"), "all", "the arrows choose nothing");
+          await page.keyboard.press("Tab");
+          await focusedItem(null, "Tab leaves the four filters for Cancel");
+          await page.keyboard.press("Tab");
+          await focusedItem("all", "Tab comes back to the filters on the chosen one");
+          await page.keyboard.press("Shift+Tab");
+          await focusedItem(null, "Shift+Tab leaves the four filters for Cancel");
           await page.locator('.row-sheet [data-item="working"]').tap();
           await sheetClosed(page);
           await rowCount(page, 1);
           assert.equal((await rows(page))[0]!.pane, WORKING);
           assert.equal(await page.locator(".inbox-filter-toggle.is-on").getAttribute("aria-label"), "Filter by state: Working");
           await openSheet(page, ".inbox-filter-toggle");
-          assert.equal(await page.locator('.row-sheet [role="radio"][aria-checked="true"]').getAttribute("data-item"), "working");
+          assert.equal(await page.locator('.row-sheet [role="menuitemradio"][aria-checked="true"]').getAttribute("data-item"), "working");
           await page.locator('.row-sheet [data-item="all"]').tap();
           await sheetClosed(page);
           await rowCount(page, 6);
           assert.equal(await page.locator(".inbox-filter-toggle").getAttribute("aria-label"), "Filter by state");
-          pass(3, "the filter's button opens All, Needs you, Working and Done as a radio group; Working narrows the list to its row and fills the button, All draws the six again");
+          pass(3, "the filter's button opens All, Needs you, Working and Done as a menu of radio items that the arrows walk and Tab takes as one stop; Working narrows the list to its row and fills the button, All draws the six again");
 
           const field = page.locator(".inbox-search-input");
           await field.fill("export");
