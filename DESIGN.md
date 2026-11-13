@@ -1300,7 +1300,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the agent's own, of any length: past a fifth of the screen they scroll in their own box, so the
   name, the actions and Cancel stay in reach. The popover a
   wider screen opens says it too, under its header (`.row-menu-alert`, `--fs-meta`, wrapped and
-  whole): a touch screen too wide for the sheet has no tooltip either. The
+  whole): a touch screen too wide for the sheet has no tooltip either. There it is the menu's
+  description (`aria-describedby`): a screen reader inside a menu reads the items alone. The
   rows scroll between the head and Cancel (`.row-sheet-items`), which stay put, when the sheet's
   92% of the screen cannot hold them. Escape, a press outside and
   focus leaving it close it (on a desktop a scroll or a resize too), and focus returns to the

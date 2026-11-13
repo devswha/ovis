@@ -568,7 +568,15 @@ describe("AgentSidebar fold memory", () => {
     await act(async () => { renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: node }); });
     // Then it is the popover, and it says the reason in full under the row's name.
     expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
-    expect(renderer!.root.findByProps({ role: "menu" }).findByProps({ className: "row-menu-alert" }).children).toEqual(["Needs permission: Allow bash?"]);
+    const reason = renderer!.root.findByProps({ role: "menu" }).findByProps({ className: "row-menu-alert" });
+    expect(reason.children).toEqual(["Needs permission: Allow bash?"]);
+    // And the menu is described by it: a screen reader inside a menu reads its items, and nothing between them.
+    expect(reason.props.id).toEqual(expect.any(String));
+    expect(renderer!.root.findByProps({ role: "menu" }).props["aria-describedby"]).toBe(reason.props.id);
+    // When an agent that waits for nothing opens its menu, then nothing describes that one.
+    await act(async () => { renderer!.root.findByProps({ "data-machine": "local", "data-pane": "w1E:p1" }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: node }); });
+    expect(renderer!.root.findByProps({ role: "menu" }).findAllByProps({ className: "row-menu-alert" })).toHaveLength(0);
+    expect(renderer!.root.findByProps({ role: "menu" }).props["aria-describedby"]).toBeUndefined();
   });
 
   it("opens every folded group while the filter is in use, and leaves the stored fold alone (#3505)", async () => {

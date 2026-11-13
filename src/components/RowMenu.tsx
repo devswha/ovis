@@ -8,7 +8,7 @@
  * unless what an item mounted (a rename field, a confirm) takes it first: the button is focused
  * in a layout cleanup, before a new field's autoFocus and a dialog's own focus.
  */
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, type LucideIcon } from "lucide-react";
 
@@ -88,6 +88,7 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
   const t = useT();
   const sheet = useMediaQuery(SHEET_QUERY);
   const surface = useRef<HTMLDivElement>(null);
+  const alertId = useId();
   // the letters typed so far and when the last came: a long list (a tab strip's More) is searched by its
   // items' first letters, as a native menu is (G-160)
   const typed = useRef<{ text: string; at: number }>({ text: "", at: 0 });
@@ -291,8 +292,9 @@ export function RowMenu({ anchor, point, restoreFocusTo, title, subtitle, alert,
   }
 
   return createPortal(
-    <div ref={surface} className={`menu row-menu${overModal ? " is-over-modal" : ""}${variant === "paths" ? " row-menu-paths" : ""}`} role="menu" aria-label={title} style={place ?? { visibility: "hidden" }} onKeyDown={onKeyDown} onBlur={onBlur}>
-      {(header || alert) && <div className="row-menu-header" role="presentation">{header}{alert && <span className="row-menu-alert">{alert}</span>}</div>}
+    <div ref={surface} className={`menu row-menu${overModal ? " is-over-modal" : ""}${variant === "paths" ? " row-menu-paths" : ""}`} role="menu" aria-label={title} aria-describedby={alert ? alertId : undefined} style={place ?? { visibility: "hidden" }} onKeyDown={onKeyDown} onBlur={onBlur}>
+      {/* the reason describes the menu: a screen reader inside a menu reads its items, and nothing that stands between them */}
+      {(header || alert) && <div className="row-menu-header" role="presentation">{header}{alert && <span id={alertId} className="row-menu-alert">{alert}</span>}</div>}
       {items.map((item) => (
         <Fragment key={item.id}>
           {item.divider && <span className="row-menu-divider" role="separator" />}
