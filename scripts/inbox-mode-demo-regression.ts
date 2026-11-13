@@ -461,6 +461,8 @@ try {
           await page.locator(".prompt-card").first().waitFor();
 
           await backToList(page);
+          // the reader's place after Back is the row whose thread it left
+          assert.equal(await page.evaluate(() => document.activeElement?.closest(".inbox-item")?.getAttribute("data-pane") ?? null), BLOCKED, "Back from a thread gives the focus to that thread's row");
           assert.equal(await page.locator(".inbox-filter-toggle.is-on").getAttribute("aria-label"), "Filter by state: Needs you");
           await rowCount(page, 1);
           await paneHiddenUnderList(page, "the opened pane stays mounted under the list, hidden");
@@ -901,6 +903,7 @@ try {
             await page.locator(".inbox-search-input").waitFor();
             await page.keyboard.press("Escape");
             await page.locator(".inbox-search-input").waitFor({ state: "detached" });
+            assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-search-toggle") === true), true, "the search put away gives the focus to the button that opened it");
 
             // a narrowed window is the phone layout with the thread kept, and back: the column's list, drawn again for
             // the wider window, leaves the focus in the composer the reader is typing in

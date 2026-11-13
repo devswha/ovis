@@ -2312,8 +2312,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   list draws (a finish that was read is ready), and inside a state in the order the Agents list
   grouped by state uses: this device's Settings → Within a state (the longest in the state
   first by default, each PC's rows apart; Name by the one-line title the Agents list's row
-  draws). While a finger went down in the list in the last second, or the focus is inside it,
-  the rows keep the order last drawn: a row never moves under a finger.
+  draws). While a finger went down in the list in the last second, or the keyboard's focus is
+  on a row (a focus drawn with its ring: the one a thread's Back gives a row on a touch screen
+  holds nothing), the rows keep the order last drawn: a row never moves under a finger.
 - The state filter is one choice among **All**, **Needs you**, **Working** and **Done**, the
   Agents list's group headings for the same states, opened from its round button (lucide
   `ListFilter`) as a `RowMenu` of radio items, a sheet with a radio group at 640px and below;
@@ -2397,9 +2398,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     `role="status"`): "Choose one from the list to open its chat here." It names no agent: the word is
     drawn nowhere in the mode's own chrome.
 - The focus. The list takes the keyboard focus, on its own section, each time it opens: the
-  page's start on it, a way in, a Back onto it. A change of width that only draws it again
-  takes none: a window widened past a phone's with a thread open leaves the focus in the
-  thread's composer. Back to Ovis takes the control that was pressed away with the mode's
+  page's start on it, a way in, a Back onto it. Opened by Back from a thread it gives the focus
+  to that thread's row while the list still draws it (a filter or a search may leave it out:
+  then the section), so a keyboard or a screen reader keeps its place. A change of width that
+  only draws it again takes none: a window widened past a phone's with a thread open leaves the
+  focus in the thread's composer. The column's search field, put away by Escape, gives the focus
+  to the round Search button that opened it. Back to Ovis takes the control that was pressed away with the mode's
   shell: a focus left nowhere goes to the classic header's workspace-list toggle (the drawer's
   on a phone, the sidebar's from 769px), as it does whenever the control that held it is gone
   (lib/focus.ts). Where something took it meanwhile it stays there: the pane's composer on a

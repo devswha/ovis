@@ -65,7 +65,7 @@ describe("useInboxShell", () => {
   let reactAct: PropertyDescriptor | undefined;
   let calls: string[];
   let shell: ReturnType<typeof useInboxShell>;
-  interface Place { inMode: boolean; shown: boolean; selectedPaneId: string | null; linkLanded: boolean }
+  interface Place { inMode: boolean; shown: boolean; selectedPaneId: string | null; linkLanded: boolean; thread?: string | null }
 
   beforeEach(() => {
     reactAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
@@ -85,7 +85,7 @@ describe("useInboxShell", () => {
   const setDrawerOpen = (open: boolean): void => { calls.push(`drawer ${open}`); };
   const hideFile = (): void => { calls.push("hide file"); };
   function Probe(place: Place) {
-    shell = useInboxShell({ ...place, show, enter, setDrawerOpen, hideFile });
+    shell = useInboxShell({ thread: null, ...place, show, enter, setDrawerOpen, hideFile });
     return null;
   }
   const draw = async (place: Place): Promise<void> => {
@@ -101,6 +101,37 @@ describe("useInboxShell", () => {
     await act(async () => { shell.enterInbox(); });
     // the file is hidden before the mode's entry is pushed: its own entry stays under it, so Back shows it again
     expect(calls).toEqual(["drawer false", "hide file", "enter", "show"]);
+  });
+
+  it("names the row a Back onto the list returns to: the thread that was shown, and none for a list opened any other way", async () => {
+    // Given a thread of the mode, then Back onto the list.
+    await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
+    expect(shell.returnTo).toBeNull();
+    await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true, thread: null });
+    expect(shell.returnTo).toBe("local:p1");
+
+    // When another thread opens, and the mode is then left and entered again from the classic app.
+    await draw({ inMode: true, shown: false, selectedPaneId: "p2", linkLanded: true, thread: "local:p2" });
+    expect(shell.returnTo).toBeNull();
+    // leaving asks a frame of the window for the focus's sake (below): this case has no use for it
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { requestAnimationFrame: () => 0 } });
+    try {
+      await draw({ inMode: false, shown: false, selectedPaneId: "p2", linkLanded: true, thread: null });
+      await draw({ inMode: true, shown: true, selectedPaneId: "p2", linkLanded: true, thread: null });
+    } finally {
+      if (saved) Object.defineProperty(globalThis, "window", saved);
+      else Reflect.deleteProperty(globalThis, "window");
+    }
+
+    // Then that list was opened by a way in, not by a Back: it returns to no row.
+    expect(shell.returnTo).toBeNull();
+  });
+
+  it("returns to no row when the list opens for a link whose pane is gone: no thread was shown", async () => {
+    await draw({ inMode: true, shown: false, selectedPaneId: null, linkLanded: false, thread: null });
+    await draw({ inMode: true, shown: true, selectedPaneId: "p9", linkLanded: true, thread: null });
+    expect(shell.returnTo).toBeNull();
   });
 
   it("puts the drawer away when the mode's shell stands, however it came to (a Forward onto its entry)", async () => {

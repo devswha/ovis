@@ -127,6 +127,8 @@ describe("InboxList", () => {
     connection?: HeaderConnection;
     /** how many times the list has opened (lib/useInbox.ts), and the opening it last took the focus for: a fresh opening unless a case says not */
     opening?: number; focusTaken?: number;
+    /** the row (inboxKey) whose thread a Back just left: the list's opening gives it the focus */
+    returnTo?: string | null;
     /** how far the scroller can scroll at first: a scrollTop past it is clamped, as a browser does */
     scrollMax?: number;
     more?: Parameters<typeof InboxList>[0]["more"]; note?: ReactNode; onExit?: () => void;
@@ -135,14 +137,14 @@ describe("InboxList", () => {
   }
   // each drawn host node's stand-in, by its class (the section by its tag), and every focus call made on them
   let nodes = new Map<string, { scrollTop: number; focus(options?: FocusOptions): void }>();
-  let focused: { node: string; options?: FocusOptions }[] = [];
+  let focused: { node: string; options?: FocusOptions; label?: string }[] = [];
   let scroll = { current: 0 };
   let taken = { current: 0 };
   let scrollMax = Number.POSITIVE_INFINITY;
   let drawn: { machines: Machine[]; options: DrawOptions } = { machines: [], options: {} };
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <InboxList machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
-      filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} focus={{ opening: options.opening ?? 1, taken }}
+      filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} focus={{ opening: options.opening ?? 1, taken, row: options.returnTo ?? null }}
       onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} waits={waits} more={options.more} note={options.note} onExit={options.onExit} connection={options.connection ?? null} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
@@ -154,13 +156,16 @@ describe("InboxList", () => {
     drawn = { machines, options };
     await act(async () => {
       renderer = create(view(machines, options), { createNodeMock: (element) => {
-        // by the first class, the section by its tag
-        const name = element.type === "section" ? "section" : String((element.props as { className?: string }).className ?? element.type).split(" ")[0]!;
+        // by the first class, the section by its tag, and one of the list's icon buttons by its own class
+        const classes = String((element.props as { className?: string }).className ?? element.type).split(" ");
+        const name = element.type === "section" ? "section" : classes[0] === "icon-button" ? classes.find((part) => part.startsWith("inbox-") && part !== "inbox-round") ?? classes[0] : classes[0]!;
+        const label = (element.props as { "aria-label"?: string })["aria-label"];
         let top = 0;
         const node = {
           get scrollTop() { return top; },
           set scrollTop(value: number) { top = Math.min(value, scrollMax); },
-          focus(focusOptions?: FocusOptions) { focused.push({ node: name, options: focusOptions }); },
+          // a row says which one it is by its spoken name
+          focus(focusOptions?: FocusOptions) { focused.push({ node: name, options: focusOptions, ...(name === "inbox-row" ? { label } : {}) }); },
         };
         nodes.set(name, node);
         return node;
@@ -467,11 +472,20 @@ describe("InboxList", () => {
     const moved = statusOf({ "w1E:p1": "blocked" });
     expect(inboxOrder(roster(), moved).map((row) => row.entry.pane.pane_id)).not.toEqual(before);
     const list = () => byClass(root, "inbox-rows")[0]!;
-    await act(async () => { list().props.onFocus(); });
+    /** a focus landing on a row, with the keyboard's ring drawn or not */
+    const focusOn = (ring: boolean) => ({ target: { matches: (selector: string) => ring && selector === ":focus-visible" } });
+    await act(async () => { list().props.onFocus(focusOn(true)); });
     await redraw({ activity: moved });
     expect(order(root)).toEqual(before);
     await act(async () => { list().props.onBlur({ relatedTarget: null, currentTarget: {} }); });
     expect(order(root)).toEqual(inboxOrder(roster(), moved).map((row) => row.entry.pane.pane_id));
+
+    // a focus no ring shows (the row a thread's Back returns to, on a touch screen) is nobody's place: the rows follow
+    await redraw({ activity });
+    await act(async () => { list().props.onFocus(focusOn(false)); });
+    await redraw({ activity: moved });
+    expect(order(root)).toEqual(inboxOrder(roster(), moved).map((row) => row.entry.pane.pane_id));
+    await act(async () => { list().props.onBlur({ relatedTarget: null, currentTarget: {} }); });
 
     await redraw({ activity });
     await act(async () => { list().props.onPointerDown(); });
@@ -485,6 +499,22 @@ describe("InboxList", () => {
     expect(focused).toEqual([{ node: "section", options: { preventScroll: true } }]);
     await act(async () => { byClass(root, "inbox-scroll")[0]!.props.onScroll({ currentTarget: { scrollTop: 610 } }); });
     expect(scroll.current).toBe(610);
+  });
+
+  it("gives the focus to the row whose thread a Back just left, and to its own section when that row is not drawn", async () => {
+    // Given a list opened by Back from the thread of w1C (lib/useInbox.ts says which row was open).
+    const root = await draw(roster(), { opening: 2, focusTaken: 1, returnTo: "local:w1C:p1" });
+
+    // Then the reader's place is that row, with no jump of the scroll.
+    const spoken = item(root, "w1C:p1").findByType("button").props["aria-label"] as string;
+    expect(focused).toEqual([{ node: "inbox-row", options: { preventScroll: true }, label: spoken }]);
+    await act(async () => { renderer?.unmount(); });
+
+    // Given the same Back with a filter that leaves that row out of the list.
+    await draw(roster(), { opening: 2, focusTaken: 1, returnTo: "local:w1C:p1", filter: "blocked" });
+
+    // Then the list's section takes the focus.
+    expect(focused).toEqual([{ node: "section", options: { preventScroll: true } }]);
   });
 
   it("takes the focus once for each time it opens, and none when it is only drawn again for another width", async () => {
@@ -766,6 +796,8 @@ describe("InboxList", () => {
       expect(byClass(root, "inbox-search").length).toBe(1);
       await act(async () => { field().props.onKeyDown({ key: "Escape", preventDefault() {} }); });
       expect(byClass(root, "inbox-search").length).toBe(0);
+      // the field went from under the focus: the button that opened it has it, not nothing
+      expect(focused.at(-1)?.node).toBe("inbox-search-toggle");
     });
 
     it("keeps its search field shown while a query narrows the list, whatever its button is asked", async () => {

@@ -73,7 +73,7 @@ export function useInboxWaits(waits: InboxWaits, machines: readonly Machine[], a
  * (Back to Ovis, the system Back), the mode takes its controls with it: a focus left nowhere goes to the classic
  * header's workspace-list toggle, as it does whenever the control that had it is gone (lib/focus.ts).
  */
-export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded }: {
+export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded, thread }: {
   /** the mode's shell stands: the mode is on and the setup guide does not hold the classic shell */
   inMode: boolean;
   shown: boolean;
@@ -84,7 +84,9 @@ export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideF
   hideFile(): void;
   selectedPaneId: string | null;
   linkLanded: boolean;
-}): { enterInbox(): void } {
+  /** the thread the mode shows, by its row's key (lib/agentInbox.ts inboxKey); none on the list and in the classic app */
+  thread: string | null;
+}): { enterInbox(): void; returnTo: string | null } {
   useEffect(() => { if (inMode) setDrawerOpen(false); }, [inMode, setDrawerOpen]);
   useEffect(() => { if (inMode && !shown && selectedPaneId === null && linkLanded) show(); }, [inMode, shown, selectedPaneId, linkLanded, show]);
   const wasInMode = useRef(inMode);
@@ -94,7 +96,17 @@ export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideF
     if (!inMode) focusWorkspaceListToggle("lost");
   }, [inMode]);
   const enterInbox = useCallback((): void => { setDrawerOpen(false); hideFile(); enter(); show(); }, [setDrawerOpen, hideFile, enter, show]);
-  return { enterInbox };
+  // The row a list opened by Back from a thread gives the focus to (components/InboxList.tsx): the thread that was
+  // shown, so a keyboard or a screen reader keeps its place. A list opened any other way (the page's start, a way
+  // in, a link whose pane is gone) returns to none and takes the focus itself. Set in the render that opens the
+  // list, so the list drawn by that render already sees it.
+  const [was, setWas] = useState({ thread, inMode });
+  const [returnTo, setReturnTo] = useState<string | null>(null);
+  if (was.thread !== thread || was.inMode !== inMode) {
+    setWas({ thread, inMode });
+    setReturnTo(inMode && was.inMode && thread === null && shown ? was.thread : null);
+  }
+  return { enterInbox, returnTo };
 }
 
 /** The history entry's mark that it was pushed on leaving the list: Back on such an entry returns to it. */

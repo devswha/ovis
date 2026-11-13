@@ -352,7 +352,8 @@ export function App() {
   // is still current: the push takes that entry over (lib/sheetHistory.ts), and no entry is left between. The shell's
   // own part (the drawer put away, the list shown for a mode with no pane) is lib/useInbox.ts useInboxShell.
   const { leave: leaveMode } = inboxMode;
-  const { enterInbox } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded });
+  const { enterInbox, returnTo } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded,
+    thread: inMode && !inbox.shown && selectedPaneId !== null && linkLanded ? sidebarPinKey(selectedMachineId, selectedPaneId) : null });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself
   const modeOffered = INBOX_MODE_OFFERED && !guideShown;
 
@@ -956,7 +957,7 @@ export function App() {
   // there is no note.
   const listNote = herdrPrefixWaiting ? t("herdr prefix: press a key") : note;
   const modeList = (column: boolean): ReactNode => (
-    <InboxList machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={inbox.focus}
+    <InboxList machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
       current={column && !inbox.shown && selectedPaneId !== null ? sidebarPinKey(selectedMachineId, selectedPaneId) : null}
       onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
       onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads} waits={inbox.waits}

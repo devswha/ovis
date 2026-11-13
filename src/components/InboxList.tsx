@@ -46,8 +46,11 @@ export interface InboxListProps {
   query: string;
   onQuery(query: string): void;
   scroll: RefObject<number>;
-  /** how many times the list has opened, and the opening it last took the focus for (lib/useInbox.ts) */
-  focus: { opening: number; taken: RefObject<number> };
+  /**
+   * How many times the list has opened and the opening it last took the focus for (lib/useInbox.ts), and the row
+   * (inboxKey) that opening gives the focus to: the one whose thread a Back just left; none on any other opening.
+   */
+  focus: { opening: number; taken: RefObject<number>; row?: string | null };
   /** the row (inboxKey) whose thread shows beside the list */
   current?: string | null;
   onOpen(machineId: string, paneId: string): void;
@@ -102,6 +105,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   const root = useRef<HTMLElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
+  const searchToggle = useRef<HTMLButtonElement>(null);
   const { settings, resolvedLanguage } = useSettings();
   // at a phone's width a menu of the list's is a sheet, a dialog (RowMenu): its button says which
   const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
@@ -125,8 +129,10 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   };
   const found = inboxSearched(inboxFiltered(all, filter, activity), query, machines, t, wordsOf);
 
-  // a state change never moves a row under a finger or the focus (AgentSidebar.tsx): while either is in the list,
-  // rows keep the order last drawn; the reader's own doing (a filter, a query) draws them as they are at once
+  // a state change never moves a row under a finger or the keyboard's focus (AgentSidebar.tsx): while either is in
+  // the list, rows keep the order last drawn; the reader's own doing (a filter, a query) draws them as they are at
+  // once. Only a focus drawn with its ring holds them: the one this list gives a row after a thread's Back is no
+  // one's place on a touch screen, and held there it would keep a new question from rising to the top
   const [focusIn, setFocusIn] = useState(false);
   const [pressHeld, setPressHeld] = useState(false);
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -156,12 +162,15 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
     if (node.scrollTop === restoring.current) restoring.current = null;
   }, [questions, summaries]);
   // The list takes the focus once for each time it opens. One only drawn again for another width finds its opening's
-  // focus taken, and leaves the focus where it is: in the composer of the thread it now stands beside.
-  const { opening, taken } = focus;
+  // focus taken, and leaves the focus where it is: in the composer of the thread it now stands beside. Opened by
+  // Back from a thread, it gives the focus to that thread's row while it still draws it: the reader's place.
+  const { opening, taken, row: returnTo = null } = focus;
+  const rowNodes = useRef(new Map<string, HTMLButtonElement>());
   useLayoutEffect(() => {
     if (taken.current === opening) return;
     taken.current = opening;
-    root.current?.focus({ preventScroll: true });
+    ((returnTo === null ? undefined : rowNodes.current.get(returnTo)) ?? root.current)?.focus({ preventScroll: true });
+    // the row is the opening's, read as the opening changes
   }, [opening, taken]);
 
   const [pcMenu, setPcMenu] = useState<HTMLElement | null>(null);
@@ -234,7 +243,8 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
     // a first Escape takes the words away, the next one the field
     event.preventDefault();
     if (query !== "") onQuery("");
-    else setSearchAsked(false);
+    // the field goes from under the focus: the button that opened it takes it
+    else { setSearchAsked(false); searchToggle.current?.focus(); }
   };
   const searchField = searchOpen && (
     <div className="inbox-search" role="search">
@@ -280,7 +290,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
         {wide ? <>
           {connectionLine}
           {searchField}
-          <button type="button" className="icon-button inbox-round inbox-search-toggle" aria-label={t("Search")} title={t("Search")} aria-expanded={searchOpen}
+          <button type="button" ref={searchToggle} className="icon-button inbox-round inbox-search-toggle" aria-label={t("Search")} title={t("Search")} aria-expanded={searchOpen}
             onClick={() => { if (!searchOpen) setSearchAsked(true); else if (query === "") setSearchAsked(false); else search.current?.focus(); }}>
             <Search aria-hidden="true" />
           </button>
@@ -295,7 +305,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       <div className="inbox-scroll" ref={scroller} onScroll={(event) => { if (restoring.current === null) scroll.current = event.currentTarget.scrollTop; }}>
         {empty !== null ? <p className="inbox-empty" role="status">{empty}</p> : (
           <ul className="inbox-rows" onPointerDown={holdAfterPress} onTouchEnd={holdAfterPress}
-            onFocus={() => setFocusIn(true)} onBlur={(event) => { if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }}>
+            onFocus={(event) => setFocusIn(event.target.matches(":focus-visible"))} onBlur={(event) => { if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }}>
             {rows.map((row) => {
               const open = wide && row.key === current;
               const words = <span className="inbox-words" dir="auto">{row.line}</span>;
@@ -308,6 +318,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
               return (
                 <li key={row.key} className={`inbox-item${row.online ? "" : " is-offline"}${row.asks ? " is-asking" : ""}${open ? " is-current" : ""}`} data-machine={row.machine.id} data-pane={row.pane.pane_id} data-state={row.group}>
                   <button type="button" className="inbox-row" disabled={!row.online} aria-label={spoken} aria-current={open ? "true" : undefined}
+                    ref={(node) => { if (node) rowNodes.current.set(row.key, node); else rowNodes.current.delete(row.key); }}
                     title={wide ? [row.title, row.line, at === null ? null : `${age} · ${at.toLocaleString(resolvedLanguage)}`].filter((part) => part !== null).join("\n") : undefined}
                     onPointerDown={(event) => { if (event.button === 0 && row.online) pressPane?.(row.machine.id, row.pane.pane_id); }}
                     onClick={() => onOpen(row.machine.id, row.pane.pane_id)}>
