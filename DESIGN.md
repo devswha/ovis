@@ -1822,9 +1822,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   away says none, and a pane gone from its roster for thirty days is forgotten. The times are
   stamped in one place for the whole page (lib/useAgentStateSince.ts) and every list reads them:
   those of the PCs the page has looked at, and no other. A roster is looked at in the commit that
-  draws it, before it is painted, so no list shows for a frame a time its look takes back. They are
-  redrawn every 30 seconds while the list is open, in steps, never as a running clock. The format
-  and the done-and-idle rule are herdr-app's agents mod's.
+  draws it, before it is painted, so a list already drawn shows for no frame a time its look takes
+  back; one first drawn with that roster learns of the look a frame later. They are redrawn every
+  30 seconds while the list is open, in steps, never as a running clock. The format and the
+  done-and-idle rule are herdr-app's agents mod's.
 - Brief (the Agents list by state). Primary action: open the agent a row names. Priorities: who
   needs the reader, what works, what just finished; then how long each has been so. Required
   content: the Agents head with its fold; each state's heading with its word, count and caret;

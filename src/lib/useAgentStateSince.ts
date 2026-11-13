@@ -43,7 +43,8 @@ export function useAgentStateStamps(): StateStamps {
  * to be true. A look is made in the commit that draws its roster, before the browser paints it: a
  * roster painted before its look would say, for a frame, each time that look then takes back (after
  * a reload, every kept time of a PC whose herdr counts nothing). A list first drawn in that very
- * commit shows no time until the look is told to it.
+ * commit is told of the look a frame late: until then it reads what the look before it left, which
+ * at a page's first roster is no time at all.
  */
 export function useAgentStateStamping(machines: readonly Machine[], activity: SidebarActivity): void {
   const looks = useMemo(() => stateLooks(machines, (machineId, pane) => activity.status(machineId, pane)), [machines, activity]);
