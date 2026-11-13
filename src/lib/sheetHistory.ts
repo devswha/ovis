@@ -172,13 +172,15 @@ let climbing: { key: string; owner: string; state: unknown; href: string } | nul
 let took = false;
 /**
  * The entry the app is on while the history is off it: the user's Back or Forward left it, and a
- * sheet with no entry of its own refused (`by`). The history is on its way onto it again. Kept
- * through a way back the browser drops (another traversal overtook it), until the history is on it
- * again, a traversal lands that no sheet refuses, or an entry is pushed. It holds a traversal onto
- * that entry only while the sheet that refused is up: with the sheet gone (answered from another
- * device) and the way back lost, the user's own Forward onto the entry is the app's to follow.
+ * sheet with no entry of its own refused (`by`). The history is on its way onto it again
+ * (`pending`, until the browser drops that way, or the time a step takes has passed with no
+ * landing). Kept through a way back the browser drops (another traversal overtook it), until the
+ * history is on it again, a traversal lands that no sheet refuses, or an entry is pushed. A landing
+ * on it is held while its way back is pending, or the sheet that refused is up: with the way back
+ * lost and that sheet gone (answered from another device), the user's own Forward onto the entry
+ * is the app's to follow.
  */
-let stood: { key: string; by: string } | null = null;
+let stood: { key: string; by: string; pending: boolean } | null = null;
 /** whether the popstate being dispatched is a step of that: the traversal a sheet refused, or the way back (sheetStep.holds) */
 let holding = false;
 /** each sheet's entry by that key, where the browser gives one */
@@ -510,8 +512,8 @@ if (typeof window !== "undefined") {
       }
       return;
     }
-    if (stood !== null && here?.key === stood.key && open.has(stood.by)) {
-      // on the entry a refused Back or Forward left, under the sheet that refused: its way back, and no traversal of the user's
+    if (stood !== null && here?.key === stood.key && (stood.pending || open.has(stood.by))) {
+      // on the entry a refused Back or Forward left, by its way back or under the sheet that refused: no traversal of the user's
       stood = null;
       seen = sheetOf(event.state);
       steppedOff = true;
@@ -608,16 +610,19 @@ if (typeof window !== "undefined") {
     // (sheetStep.holds). Where either entry is one with no key (a browser that tells none, an entry
     // this module cannot place) the traversal is left as it landed, and Back from the first entry
     // leaves the app with no popstate to refuse
-    const onto = refuser !== null && step === null && from === null && was !== null ? { key: stood?.key ?? was.key, by: refuser } : null;
+    const onto = refuser !== null && step === null && from === null && was !== null ? { key: stood?.key ?? was.key, by: refuser, pending: true } : null;
     if (onto !== null && here !== null && here.key !== onto.key) {
       steppedOff = true;
       holding = true;
       for (const kept of again) { open.set(kept.id, kept.onBack); if (kept.under) covered.add(kept.id); }
       stood = onto;
-      // a way back the browser drops (another traversal overtook it) is taken again when that one lands
+      // a way back the browser drops (another traversal overtook it) is taken again when that one
+      // lands. Dropped, or with no landing in the time a step takes, it is pending no longer
+      const lost = (): void => { onto.pending = false; };
       const way = navigation()!.traverseTo(onto.key);
-      way.committed.catch(() => undefined);
+      way.committed.catch(lost);
       way.finished.catch(() => undefined);
+      setTimeout(lost, LANDING_MS);
       return;
     }
     // a traversal no sheet refused is the app's to follow, from wherever a dropped way back left it

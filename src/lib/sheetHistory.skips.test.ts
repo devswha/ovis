@@ -472,6 +472,32 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     h.back(); await settled();
     expect(fake.at()).toBe(start);
   });
+
+  it("holds the landing of a way back still on its way when the request that refused it closed meanwhile: a sheet that opened since is not asked", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    h.pushState({ pane: "c" }, "", "/?pane=c");
+    h.back(); await settled();
+    const entry = fake.key();
+    const leave = enter(() => false);
+    // the app's listener, added after the module's: as the refused Back lands, the request is answered from another device and another one shows
+    const held: boolean[] = [];
+    const next: { asked: number; leave?: () => void } = { asked: 0 };
+    let listening = true;
+    fake.window.addEventListener("popstate", (event) => {
+      if (!listening) return;
+      held.push(sheetStep.holds(event as unknown as Event));
+      if (next.leave === undefined) { leave(); next.leave = enter(() => { next.asked += 1; }); }
+    });
+    h.back(); await settled();
+    // on B again by the way asked for: held as before, and no Back for the request that showed meanwhile
+    expect(fake.key()).toBe(entry); expect(held).toEqual([true, true]); expect(next.asked).toBe(0);
+    listening = false;
+    next.leave?.(); await settled();
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
+  });
 });
 
 describe("a sheet that stays up under a navigation which took its entry", () => {
@@ -706,6 +732,32 @@ describe("a phone's sheet where Back skips an entry made with no tap, in a brows
     leave(); await settled();
     h.back(); await settled();
     expect(fake.at()).toBe(start); expect(sheetHistory.sheetSteppedOff()).toBe(false);
+  });
+
+  it("waits no longer than a step takes for a way back that landed nowhere: with the request gone, the user's Forward onto the entry is the app's to follow", async () => {
+    const start = fake.at();
+    fake.tap();
+    h.pushState({ pane: "b" }, "", "/?pane=b");
+    h.pushState({ pane: "c" }, "", "/?pane=c");
+    h.back(); await settled();
+    const held: boolean[] = [];
+    let listening = true;
+    fake.window.addEventListener("popstate", (event) => { if (listening) held.push(sheetStep.holds(event as unknown as Event)); });
+    const leave = enter(() => false);
+    // the request refuses Back, and the step back onto B lands nowhere: a browser with no Navigation API tells nothing of it
+    fake.drop(true);
+    h.back(); await settled();
+    fake.drop(false);
+    expect(fake.at()).toBe(start); expect(held).toEqual([true]);
+    // answered from another device, once the time a step takes has passed
+    leave(); await settled();
+    jest.advanceTimersByTime(1000);
+    h.forward(); await settled();
+    expect(fake.at()).toBe(start + 1);
+    expect(held).toEqual([true, false]); expect(sheetHistory.sheetSteppedOff()).toBe(false);
+    listening = false;
+    h.back(); await settled();
+    expect(fake.at()).toBe(start);
   });
 
   it("leaves a staying sheet under a navigation while Back moves between the navigation's own entries, and gives it its entry back after", async () => {
