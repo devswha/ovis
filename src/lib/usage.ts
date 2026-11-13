@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ProviderUsage, StatuslineState, UsageCredits, UsageProviderId, UsageRecorder, UsageReport, UsageWindow } from "../../shared/protocol.ts";
+import { RECORDED_STALE_AFTER_MS } from "../../shared/usage.ts";
 import { ApiError, fetchStatusline, fetchUsage, setStatusline } from "./api.ts";
 import type { UsageCount, UsageGlance } from "./settings.ts";
 import { currentLocale, t } from "./i18n.ts";
@@ -28,7 +29,12 @@ export const WINDOW_LABEL: Readonly<Record<UsageWindow["kind"], string>> = {
 };
 
 /** The tools whose own record of an account's limits the server reads, as their users know them. */
-export const RECORDER_NAME: Readonly<Record<UsageRecorder, string>> = { omp: "Oh My Pi" };
+export const RECORDER_NAME: Readonly<Record<UsageRecorder, string>> = { omp: "Oh My Pi", gjc: "Gajae Code" };
+
+/** A recorder's name; its id for one this page does not know yet (a newer server's). */
+function recorderName(by: string): string {
+  return (RECORDER_NAME as Readonly<Record<string, string | undefined>>)[by] ?? by;
+}
 
 /** A pane's agent selects a provider, not an inferred active account. */
 export function providerForAgent(agent: string | null | undefined): UsageProviderId | null {
@@ -96,7 +102,77 @@ export function isHubAccount(usage: ProviderUsage): boolean {
 
 /** Whose record an account's numbers are ("Recorded by Oh My Pi"); null for a reading the server made itself. */
 export function recordedBy(usage: ProviderUsage): string | null {
-  return usage.recorded ? t("Recorded by {tool}", { tool: RECORDER_NAME[usage.recorded.by] }) : null;
+  return usage.recorded ? t("Recorded by {tool}", { tool: recorderName(usage.recorded.by) }) : null;
+}
+
+/** For a recorder this page does not know yet: as long as any tool it knows is given. */
+const LONGEST_STALE_AFTER_MS = Math.max(...Object.values(RECORDED_STALE_AFTER_MS));
+
+/**
+ * This device's two clocks, read together. A correction can set the wall clock back or forward; the running one only
+ * moves on, but stands still on some devices while they sleep.
+ */
+export interface DeviceTime {
+  readonly wall: number;
+  readonly running: number;
+}
+
+const deviceTime = (): DeviceTime => ({ wall: Date.now(), running: performance.now() });
+
+/**
+ * The time gone by from one reading to a later one: the longer of the two clocks' answers. A sleep shortens one and a
+ * wall clock set back the other, and neither may make a record younger than it is.
+ */
+export function goneBy(from: DeviceTime, to: DeviceTime): number {
+  return Math.max(0, to.wall - from.wall, to.running - from.running);
+}
+
+/**
+ * What the PC last said, to be aged on this device: `report` without the PC's time, the one object handed on while
+ * the PC keeps saying the same; `serverTime`, the PC's clock in its latest answer; `heardAt`, when that one arrived.
+ */
+export interface HeldReport {
+  readonly report: UsageReport;
+  readonly serverTime: string | undefined;
+  readonly heardAt: DeviceTime;
+}
+
+/** What to hold once `next` arrives: the report object in hand while `next` says the same but for the PC's time, so that an unchanged answer redraws nothing. */
+export function heldReport(held: HeldReport | null, next: UsageReport, heardAt: DeviceTime): HeldReport {
+  const { server_time: serverTime, ...said } = next;
+  return { report: held !== null && JSON.stringify(held.report) === JSON.stringify(said) ? held.report : said, serverTime, heardAt };
+}
+
+/**
+ * How old a record the PC has just called current was when the PC said so: the PC's time less the record's, both on
+ * the PC's clock, so that no device's clock is held against the PC's. An older server says no time. Then this
+ * device's clock is asked, and believed only where it agrees with the PC: between no age and `limit`, past which the
+ * PC would have called the record stale. A clock far from the PC's is thus not believed, and the record counts as
+ * just read.
+ */
+function ageWhenHeard(held: HeldReport, checkedAt: string | null, limit: number): number {
+  if (checkedAt === null) return 0;
+  if (held.serverTime !== undefined) {
+    const seen = Date.parse(held.serverTime) - Date.parse(checkedAt);
+    return Number.isFinite(seen) ? Math.max(0, seen) : 0;
+  }
+  const guessed = held.heardAt.wall - Date.parse(checkedAt);
+  return guessed >= 0 && guessed <= limit ? guessed : 0;
+}
+
+/**
+ * The report in hand, `since` milliseconds after the PC's last answer: a record older by then than its tool leaves
+ * between reads is stale, whatever the PC said of it. Its age is the one it had when the PC last answered plus the time
+ * gone by on this device since. The held report itself where nothing has aged.
+ */
+export function agedReport(held: HeldReport, since: number): UsageReport {
+  const aged = (usage: ProviderUsage): ProviderUsage => {
+    if (!usage.recorded || usage.recorded.stale) return usage;
+    const limit = (RECORDED_STALE_AFTER_MS as Readonly<Record<string, number | undefined>>)[usage.recorded.by] ?? LONGEST_STALE_AFTER_MS;
+    return ageWhenHeard(held, usage.checked_at, limit) + since > limit ? { ...usage, recorded: { ...usage.recorded, stale: true } } : usage;
+  };
+  const providers = held.report.providers.map(aged);
+  return providers.some((usage, index) => usage !== held.report.providers[index]) ? { ...held.report, providers } : held.report;
 }
 
 /**
@@ -105,7 +181,7 @@ export function recordedBy(usage: ProviderUsage): string | null {
  */
 export function recordedNote(usage: ProviderUsage, now: number): readonly string[] | null {
   if (!usage.recorded) return null;
-  const by = t("Recorded by {tool}, {when}", { tool: RECORDER_NAME[usage.recorded.by], when: lastSeen(usage.checked_at, now) });
+  const by = t("Recorded by {tool}, {when}", { tool: recorderName(usage.recorded.by), when: lastSeen(usage.checked_at, now) });
   return usage.recorded.stale ? [by, t("It may have changed since.")] : [by];
 }
 
@@ -204,23 +280,33 @@ export function moveInOrder(shown: readonly string[], saved: readonly string[], 
 }
 
 export function useUsage(enabled: boolean) {
-  const [report, setReport] = useState<UsageReport | null>(null);
+  const [held, setHeld] = useState<HeldReport | null>(null);
   const [loading, setLoading] = useState(false);
+  /**
+   * How long the PC has been silent, from its last answer (`from`) up to the last ask (`at`). At each ask it is the
+   * longer of two: what it was plus what surely went by since the ask before, which is the running clock's stretch; and
+   * what the two clocks say of the whole time since the answer. So a clock put right takes nothing back and no record
+   * grows younger, a clock set back and forward again counts for nothing, and a sleep still counts.
+   */
+  const [silence, setSilence] = useState<{ readonly since: number; readonly at: DeviceTime; readonly from: DeviceTime }>(() => { const opened = deviceTime(); return { since: 0, at: opened, from: opened }; });
   const visible = usePageVisible();
   const generation = useRef(0);
 
   const load = useCallback(async (refresh: boolean) => {
     const current = ++generation.current;
     setLoading(true);
+    // asked, not yet answered: a server that never answers must not leave the report in hand as young as it arrived
+    const askedAt = deviceTime();
+    setSilence((before) => ({ since: Math.max(before.since + Math.max(0, askedAt.running - before.at.running), goneBy(before.from, askedAt)), at: askedAt, from: before.from }));
     try {
       const next = await fetchUsage(refresh);
-      if (current === generation.current) setReport((previous) => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
-    } catch { /* offline or restarting: the last report stays */ }
+      if (current === generation.current) { const heardAt = deviceTime(); setHeld((previous) => heldReport(previous, next, heardAt)); setSilence({ since: 0, at: heardAt, from: heardAt }); }
+    } catch { /* offline or restarting: the last report stays, and ages with each ask */ }
     finally { if (current === generation.current) setLoading(false); }
   }, []);
 
   useEffect(() => {
-    if (!enabled) { generation.current++; setReport(null); setLoading(false); return; }
+    if (!enabled) { generation.current++; setHeld(null); setLoading(false); return; }
     if (!visible) return;
     void load(false);
     const timer = setInterval(() => void load(false), POLL_MS);
@@ -235,6 +321,7 @@ export function useUsage(enabled: boolean) {
   }, [enabled, load]);
 
   const refresh = useCallback(() => { if (enabled) void load(true); }, [enabled, load]);
+  const report = useMemo(() => held === null ? null : agedReport(held, silence.since), [held, silence.since]);
   return { report, loading, refresh };
 }
 

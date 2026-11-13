@@ -423,6 +423,37 @@ async function checkRecordedAccounts(browser: Browser, origin: string): Promise<
     await signedIn.close();
   }
 
+  // a device whose clock runs an hour ahead of the PC's: a record the PC saw read four minutes ago is no older for that.
+  // With the PC out of reach, the report the page holds ages by the time gone by on the device
+  const kept = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+  try {
+    await staged(kept, () => ({ server_time: at(-1), providers: [{ id: "claude", key: "claude:kept", account: "kept@example.com", plan: null, problem: null, checked_at: at(-1 - 4 / 60), recorded: { by: "gjc", stale: false, signed_in: false }, windows: [
+      { kind: "session", scope: null, used_percent: 40, resets_at: at(2), starts_at: at(2 - 5) },
+    ] }] }));
+    const page = await kept.newPage();
+    await page.clock.install();
+    await page.goto(origin);
+    const strip = page.locator(".usage-strip");
+    await strip.waitFor();
+    assert.deepEqual(await chips(page), [["60%", "is-recorded"]]);
+    // out of reach the quiet way: no request to it returns any more, so no failure tells the page
+    await kept.route("**/api/usage*", () => {});
+    // meanwhile the device's clock is put right, a quarter of an hour back: that takes nothing off the record's age
+    await page.clock.setSystemTime(Date.now() - 15 * 60_000);
+    // twelve minutes with the lid shut: the page asks once, in vain, and the record is 16 minutes old
+    await page.clock.fastForward(12 * 60_000);
+    await page.locator(".usage-chip.is-stale").waitFor();
+    assert.deepEqual(await chips(page), [["60%", "is-recorded", "is-stale"]]);
+    await strip.click();
+    const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+    await popover.waitFor();
+    const [lines] = await notes(popover);
+    assert.match(lines?.[0] ?? "", /^Recorded by Gajae Code, /);
+    assert.equal(lines?.[1], "It may have changed since.");
+  } finally {
+    await kept.close();
+  }
+
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, locale: "en-US" });
   try {
     await staged(phone);

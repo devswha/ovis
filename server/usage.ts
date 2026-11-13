@@ -31,6 +31,7 @@ import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageR
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
+import { gjcRecorded } from "./usage-recorded-gjc.ts";
 import { ompRecorded } from "./usage-recorded-omp.ts";
 
 export const FRESH_MS = 5 * 60_000;
@@ -378,7 +379,7 @@ function claudeCredits(value: unknown): UsageCredits | null {
 
 const claude: UsageProvider = {
   id: "claude",
-  recorded: [ompRecorded],
+  recorded: [ompRecorded, gjcRecorded],
   async signIns(ctx) {
     return (await Promise.all(claudeHomes(ctx).map((home) => claudeFound(ctx, home)))).flat();
   },
@@ -1195,10 +1196,11 @@ export class UsageService {
     }
     // a provider with an account found here needs nothing more; one with none names what it could not look with (a hub's accounts are not this PC's)
     const missingCommands = [...missing].filter(([id]) => !usages.flat().some((usage) => usage.id === id)).map(([provider, command]) => ({ provider, command }));
-    return { providers: [...byKey.values(), ...await this.additional(refresh, skipped)], ...(missingCommands.length > 0 ? { missing_commands: missingCommands } : {}) };
+    const additional = await this.additional(refresh, skipped);
+    // the clock as the report leaves, every provider waited for: a page counts a record's age from this time on
+    return { server_time: new Date(this.ctx.now()).toISOString(), providers: [...byKey.values(), ...additional], ...(missingCommands.length > 0 ? { missing_commands: missingCommands } : {}) };
   }
 
-  /** `incomplete`: a command it looks with is missing, so the search is not kept: the next report looks again, finding a sign-in once it is installed */
   /** What `source` recorded: its store is read when the last read is MIN_REFRESH_MS old, not once for every report. */
   private recordOf(source: RecordedSource, now: number): RecordedReading[] {
     const kept = this.records.get(source);
@@ -1208,6 +1210,7 @@ export class UsageService {
     return readings;
   }
 
+  /** `incomplete`: a command it looks with is missing, so the search is not kept: the next report looks again, finding a sign-in once it is installed */
   private async collectProvider(provider: UsageProvider, now: number, refresh: boolean, incomplete: boolean): Promise<ProviderUsage[]> {
     const search = this.searches.get(provider.id);
     // an account's readAt is never later than its provider's, so a forced search may ask each again
