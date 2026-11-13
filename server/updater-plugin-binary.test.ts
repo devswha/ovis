@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PLUGIN_BINARY_REASON, Updater } from "./updater.ts";
+import { PLUGIN_BINARY_REASON, pluginBinaryOf, Updater } from "./updater.ts";
 
 // A herdr plugin checkout that scripts/plugin-launch.ts runs as the release's binary: the server's root is the release
 // folder inside the checkout's .ovis/server, where git still finds the checkout. Settings must say the update runs
@@ -23,6 +23,13 @@ function pluginCheckout(): { checkout: string; root: string; stateDir: string } 
   mkdirSync(root, { recursive: true });
   return { checkout, root, stateDir: join(scratch, "state") };
 }
+
+it("marks only a compiled server under the plugin's launcher as the plugin's binary", () => {
+  const { checkout } = pluginCheckout();
+  expect(pluginBinaryOf(checkout, true)).toEqual({ checkout, version: "0.5.4" });
+  expect(pluginBinaryOf(checkout, false)).toBeUndefined();
+  expect(pluginBinaryOf(undefined, true)).toBeUndefined();
+});
 
 it("tells a plugin's compiled server to update through herdr, and offers no in-app update", async () => {
   const { checkout, root, stateDir } = pluginCheckout();

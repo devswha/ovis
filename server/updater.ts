@@ -41,6 +41,13 @@ export function readNotesFile(path: string): string {
 const SHA = /^[0-9a-f]{40,64}$/;
 const NOT_MAIN_REASON = "Switch the source checkout to main to update.";
 /** A herdr plugin running the release's compiled server (scripts/plugin-launch.ts): herdr updates it, not this app */
+/** The herdr plugin checkout that runs this server as its compiled binary, and its version; nothing for a server run from
+ * source (it updates as a checkout) or without the launcher's OVIS_PLUGIN_CHECKOUT. */
+export function pluginBinaryOf(checkout: string | undefined, compiled: boolean): { checkout: string; version: string } | undefined {
+  if (!compiled || !checkout) return undefined;
+  try { return { checkout, version: String((JSON.parse(readFileSync(join(checkout, "package.json"), "utf8")) as { version?: unknown }).version) }; }
+  catch { return { checkout, version: "" }; }
+}
 export const PLUGIN_BINARY_REASON = "Ovis runs here as the herdr plugin's compiled server: update it with herdr (herdr plugin update devswha.ovis), then restart Ovis.";
 
 /** Shown when the launcher runs from an installed release instead of the checkout it was built from (#1373). */

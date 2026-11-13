@@ -695,6 +695,15 @@ export async function stop(dependencies: StopDependencies = stopDependencies): P
   }
 }
 
+/** The creation time (ms) `start` recorded on Windows for the server under `pid`, or null when it kept none for it. */
+function recordedWindowsBirth(pid: number): number | null {
+  try {
+    const owner = JSON.parse(readFileSync(OWNER_FILE, "utf8")) as { pid?: unknown; birth?: unknown };
+    const birth = parseBirth(owner.birth);
+    return owner.pid === pid && birth?.platform === "win32" ? Number(birth.value) : null;
+  } catch { return null; }
+}
+
 async function stopInTurn(dependencies: StopDependencies): Promise<number> {
   const pid = recordedPid();
   if (pid === null) {
@@ -709,9 +718,15 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
     const recordedAt = statSync(PID_FILE).mtimeMs;
     const processes = await dependencies.processTable();
     const owner = processes.find(row => row.pid === pid);
-    const argv = windowsArgv(owner?.commandLine ?? "");
-    if (!owner || !startedByThisPlugin(owner.path ?? "", argv)
-      || owner.started === undefined || owner.started > recordedAt
+    // The identity start recorded (the pid and the creation time Windows gives it) decides, whichever installation
+    // folder runs this stop: herdr plugin update builds the new version in a new one while the old server runs on. A
+    // record without a birth (none could be read) falls back to the server's form and folder.
+    const birth = recordedWindowsBirth(pid);
+    const identified = birth !== null
+      ? owner?.started !== undefined && owner.started === birth
+      : owner !== undefined && startedByThisPlugin(owner.path ?? "", windowsArgv(owner.commandLine ?? ""))
+        && owner.started !== undefined && owner.started <= recordedAt;
+    if (!owner || !identified
       || !existsSync(PID_FILE) || statSync(PID_FILE).mtimeMs !== recordedAt
       || Number(readFileSync(PID_FILE, "utf8").trim()) !== pid) {
       process.stderr.write("could not verify the recorded Ovis process; it was left running and its pid file was kept\n");

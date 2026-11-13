@@ -132,6 +132,17 @@ describe.skipIf(process.platform === "win32")("install.sh installs the release's
     });
   }
 
+  it("keeps the release bin named before an install, for a server still running from it, and drops it at the next", () => {
+    const { releases, key, run, ovis } = pc();
+    const kept = () => readdirSync(join(ovis, "releases")).sort().map((name) => name.split("-")[0]);
+    for (const version of ["1.2.3", "1.2.4", "1.2.5"]) release(releases, version, key.privateKeyPem);
+    expect(run("install_binary 1.2.3").code).toBe(0);
+    expect(run("install_binary 1.2.4").code).toBe(0);
+    expect(kept()).toEqual(["1.2.3", "1.2.4"]);
+    expect(run("install_binary 1.2.5").code).toBe(0);
+    expect(kept()).toEqual(["1.2.4", "1.2.5"]);
+  });
+
   it("refuses a client archive with a member outside its folder, though the right key signed it", () => {
     const { releases, key, run, ovis } = pc();
     const dir = release(releases, "1.2.3", key.privateKeyPem);

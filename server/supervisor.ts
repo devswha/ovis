@@ -14,6 +14,7 @@ import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } fr
 import { herdrMayListen, herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
 import { COMPILED, ENTRIES, entryCommand, ROOT } from "./entries.ts";
+import { pluginBinaryOf } from "./updater.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
 import { runCommand, updateChannel, Updater, type Release } from "./updater.ts";
 
@@ -234,19 +235,13 @@ export async function runSupervisor(root = ROOT) {
     });
   }
   const pluginRoot = process.env["HERDR_PLUGIN_ROOT"];
-  /** the plugin checkout that runs this compiled server (scripts/plugin-launch.ts), and its version, else nothing */
-  const pluginBinaryOf = (checkout: string | undefined): { checkout: string; version: string } | undefined => {
-    if (!COMPILED || !checkout) return undefined;
-    try { return { checkout, version: String((JSON.parse(readFileSync(join(checkout, "package.json"), "utf8")) as { version?: unknown }).version) }; }
-    catch { return { checkout, version: "" }; }
-  };
   // only a launcher-started supervisor can hand over: run directly, it keeps serving the update itself
   const launched = typeof process.send === "function";
   const updater = new Updater({ root, stateDir, autoUpdate: process.env["OVIS_AUTO_UPDATE"] === "1", publish,
     channel: () => updateChannel(process.env, appStateDir),
     pluginCheckout: pluginRoot !== undefined && resolve(pluginRoot) === root,
     // the herdr plugin's launcher runs this compiled server from its checkout's .ovis/server: herdr updates it
-    pluginBinary: pluginBinaryOf(process.env["OVIS_PLUGIN_CHECKOUT"]),
+    pluginBinary: pluginBinaryOf(process.env["OVIS_PLUGIN_CHECKOUT"], COMPILED),
     notice: process.env["OVIS_SUPERVISOR_FALLBACK"]
       ? "The updated supervisor failed to start, so the previous one is running this version. The next update tries again."
       : undefined,
