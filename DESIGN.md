@@ -2369,10 +2369,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Working"). While the connection has something to say the line says that instead
   (**Reconnecting…**, **Connected**; lib/headerConnection.ts), in its own colour.
 - The list says the same word, so its rows are never shown as they last were with no sign:
-  one quiet line (`.inbox-connection`, `role="status"`, `--fs-xs`, `--text-dim`), centred
-  between a phone's two top controls on the surface's own colour, so a row that scrolls under
-  it does not show through, and leading the column's top row on a wide window, where the
-  search field takes its place while open (the word is still said, not drawn). Nothing is
+  one quiet line (`.inbox-connection`, `role="status"`, `--fs-xs`, `--text-dim`). On a phone it
+  floats over the rows as the two round controls do, so it is drawn as they are: a small fully
+  round pill on the raised surface (`--bg-elevated`, the hairline `--border`,
+  `--shadow-card`), centred between the two controls on their centre line. On a wide window
+  the column's top row floats over nothing, and the word leads it as a plain line; the search
+  field takes its place while open (the word is still said, not drawn). Nothing is
   drawn while the connection has nothing to say, and on a phone the header's note, which
   stands in the same place, goes first. The word comes from the pane under the list: a list
   no pane was opened under since the page loaded has no connection of a pane to speak of.

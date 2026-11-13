@@ -82,8 +82,9 @@
 }
 
 /* What the connection has to say (Reconnecting…, then Connected for a moment), centred between a phone's two top
-   controls: quiet words on the surface's own colour, so a row that scrolls under them does not show through. They
-   take no press. */
+   controls, on their centre line. It floats over the rows as they do, so it is drawn as they are: a small round
+   pill on the raised surface, with the hairline edge and the soft shadow, and a row that scrolls under it passes
+   under a thing of the page, not under a patch of the page's colour. It takes no press. */
 .mode-inbox .inbox-top > .inbox-connection {
   position: absolute;
   inset-block: 0;
@@ -93,8 +94,10 @@
   margin: auto;
   padding: var(--space-1) var(--space-2-5);
   overflow: hidden;
+  border: var(--hairline) solid var(--border);
   border-radius: var(--radius-pill);
-  background: var(--bg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-card);
   color: var(--text-dim);
   font-size: var(--fs-xs);
   text-overflow: ellipsis;
@@ -427,9 +430,6 @@
   text-align: center;
 }
 
-/* ---------- from 769px: the column beside the thread ---------- */
-
-/* its rows fill as the sidebar's do (--side-hover, --side-selected: Sidebar.css, .sidebar) */
 /* what happened, and under it the next step where there is one: each a line of its own at every width, so neither
    sentence runs into the other or ends on a word left alone. One too long for a narrow window breaks into even
    lines, between words (Korean keeps each word whole, styles.css) */
@@ -438,6 +438,9 @@
   text-wrap: balance;
 }
 
+/* ---------- from 769px: the column beside the thread ---------- */
+
+/* its rows fill as the sidebar's do (--side-hover, --side-selected: Sidebar.css, .sidebar) */
 .mode-inbox.is-wide {
   --inbox-avatar: var(--avatar-size);
   position: relative;
@@ -466,7 +469,8 @@
   height: var(--inbox-zone-h);
 }
 
-/* in the column the connection's words lead the top row, on the column's own surface */
+/* in the column the top row floats over nothing: the connection's words lead it as a plain line, on the column's
+   own surface */
 .mode-inbox.is-wide .inbox-top > .inbox-connection {
   position: static;
   flex: 0 1 auto;
@@ -476,8 +480,10 @@
   margin: 0;
   margin-inline-end: auto;
   padding: 0;
+  border: 0;
   border-radius: 0;
   background: none;
+  box-shadow: none;
 }
 
 .mode-inbox.is-wide .inbox-foot {

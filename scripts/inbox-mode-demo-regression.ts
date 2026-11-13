@@ -1270,9 +1270,29 @@ try {
             node.parentElement!.append(probe);
             const want = { color: getComputedStyle(probe).color, size: getComputedStyle(probe).fontSize };
             probe.remove();
-            return { centre: box.left + box.width / 2, left: box.left, size: style.fontSize, color: style.color, want };
+            // a round control of the same top row: what the line is drawn like where it floats over the rows
+            const control = document.querySelector(".mode-inbox .inbox-top .inbox-round");
+            const disc = control?.getBoundingClientRect();
+            const surface = (of: CSSStyleDeclaration) => ({ fill: of.backgroundColor, edge: `${of.borderTopWidth} ${of.borderTopStyle} ${of.borderTopColor}`, shadow: of.boxShadow });
+            return {
+              centre: box.left + box.width / 2, left: box.left, size: style.fontSize, color: style.color, want,
+              middle: box.top + box.height / 2, height: box.height, radius: Number.parseFloat(style.borderTopLeftRadius),
+              surface: surface(style), round: control ? surface(getComputedStyle(control)) : null, discMiddle: disc ? disc.top + disc.height / 2 : null,
+            };
           });
           assert.deepEqual([drawn.color, drawn.size], [drawn.want.color, drawn.want.size], "the line is --text-dim at --fs-xs");
+          if (wide) {
+            // the column's top row floats over nothing: a plain line, with no surface of its own
+            assert.deepEqual([drawn.surface.fill, drawn.surface.shadow], ["rgba(0, 0, 0, 0)", "none"], "in the column the line has no fill and no shadow");
+            assert.match(drawn.surface.edge, /^0px /, "in the column the line has no edge");
+          } else {
+            // over the rows it is a small round pill on the round controls' raised surface, on their centre line
+            assert.deepEqual(drawn.surface, drawn.round, "a phone's line is drawn on the round controls' surface: their fill, hairline edge and shadow");
+            assert.notEqual(drawn.surface.shadow, "none", "the pill casts the controls' shadow");
+            assert.ok(drawn.radius >= drawn.height / 2, `the pill is fully round: a radius of ${drawn.radius} for a height of ${drawn.height}`);
+            assert.ok(drawn.discMiddle !== null, "a round control stands in a phone's top row");
+            near(drawn.middle, drawn.discMiddle, 0.5, "the pill stands on the round controls' centre line");
+          }
           if (wide) near(drawn.left, 16, 1, "the line leads the column's top row");
           else near(drawn.centre, viewport.width / 2, 1, "the line is centred between the two top controls");
           // Connected is said for two seconds: caught in the mutation that draws it, so a slow run cannot miss it
@@ -1288,7 +1308,7 @@ try {
           }));
           assert.equal(back, "Connected", "back, the line says so");
           await line.waitFor({ state: "detached" });
-          console.log(`PASS on ${at} the list says Reconnecting… in one quiet line while the connection is lost, Connected when it is back, and then nothing`);
+          console.log(`PASS on ${at} the list says Reconnecting… in one quiet line (${wide ? "a plain line leading the column's top row" : "a round pill on the round controls' surface and centre line"}) while the connection is lost, Connected when it is back, and then nothing`);
         }, viewport);
       }
 
