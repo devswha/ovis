@@ -204,6 +204,41 @@ describe("the tab strip on a PC the Herdr app lays out", () => {
     await withFetch(async () => act(async () => input().props.onKeyDown({ key: "Enter", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 13 } })));
   });
 
+  it("keeps one half's unfinished name when the other half of a split on the same workspace opens another", async () => {
+    await draw(TUI, snapshot.workspaces[0]!, snapshot.workspaces[0]!);
+    const first = () => renderer!.root.findAllByProps({ "data-tab-id": "w1:t1" })[0]!;
+    const input = () => renderer!.root.findByProps({ className: "input tab-strip-rename" });
+    await act(async () => first().props.onDoubleClick());
+    await act(async () => input().props.onChange({ target: { value: "keep me" } }));
+    await act(async () => input().props.onKeyDown({ key: "Escape", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 27 } }));
+
+    await draw(TUI, snapshot.workspaces[0]!, { ...snapshot.workspaces[0]!, workspace_id: "w-other" });
+
+    await act(async () => first().props.onDoubleClick());
+    expect(input().props.value).toBe("keep me");
+    await withFetch(async () => act(async () => input().props.onKeyDown({ key: "Enter", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 13 } })));
+  });
+
+  it("keeps a workspace's unfinished name while its strip moves, and drops it once its last strip goes", async () => {
+    await draw(TUI);
+    const input = () => renderer!.root.findByProps({ className: "input tab-strip-rename" });
+    await act(async () => tab().props.onDoubleClick());
+    const saved = input().props.value as string;
+    await act(async () => input().props.onChange({ target: { value: "moving" } }));
+    await act(async () => input().props.onKeyDown({ key: "Escape", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 27 } }));
+
+    // the row moving (a turn, the placement): the strip goes and comes back in one commit
+    await draw(TUI, null, snapshot.workspaces[0]!);
+    await act(async () => tab().props.onDoubleClick());
+    expect(input().props.value).toBe("moving");
+    await act(async () => input().props.onKeyDown({ key: "Escape", stopPropagation() {}, nativeEvent: { isComposing: false, keyCode: 27 } }));
+
+    await draw(TUI, null);
+    await draw(TUI);
+    await act(async () => tab().props.onDoubleClick());
+    expect(input().props.value).toBe(saved);
+  });
+
   it("reopens a field moved by a turn with the name just sent, before herdr confirms it", async () => {
     await withFetch(async () => {
       await draw(TUI);

@@ -59,6 +59,8 @@ let focusHandoff: { workspaceId: string; wide: boolean; at: number } | null = nu
  *  within FOCUS_HANDOFF_MS */
 const renameDraftStore = new Map<string, string>();
 let renameHandoff: { owner: string; tabId: string; value: string; layout: string; at: number } | null = null;
+/** strips showing each PC and workspace: its drafts go when the last one does (a split view's halves share them) */
+const stripsShowing = new Map<string, number>();
 /** which side of the widths that move the strip (the header's row from 769px, a phone's sheets to 640px) the window is on */
 const stripLayout = (): string => typeof window === "undefined" || !window.matchMedia ? "" : `${window.matchMedia(HEADER_TABS_QUERY).matches}|${window.matchMedia(SHEET_QUERY).matches}`;
 const FOCUS_HANDOFF_MS = 500;
@@ -162,6 +164,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const editingNow = useRef(editing);
   editingNow.current = editing;
   useLayoutEffect(() => {
+    stripsShowing.set(owner, (stripsShowing.get(owner) ?? 0) + 1);
     const handoff = renameHandoff;
     renameHandoff = null;
     // the strip moves with the window's width and with the phone's tab placement (chosen here or in another tab)
@@ -172,6 +175,13 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     return () => {
       const open = editingNow.current;
       if (open) renameHandoff = { owner, tabId: open.tabId, value: open.value, layout: mountedIn, at: performance.now() };
+      stripsShowing.set(owner, (stripsShowing.get(owner) ?? 1) - 1);
+      // after the commit: a turned phone or a moved row mounts this workspace's strip again in the same one
+      queueMicrotask(() => {
+        if ((stripsShowing.get(owner) ?? 0) > 0) return;
+        stripsShowing.delete(owner);
+        for (const key of renameDraftStore.keys()) if ((JSON.parse(key) as [string, string])[0] === owner) renameDraftStore.delete(key);
+      });
     };
   }, [owner]);
   const previousOwner = useRef(owner);
@@ -185,9 +195,6 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   useEffect(() => () => { if (longPress.current) window.clearTimeout(longPress.current.timer); }, []);
   useLayoutEffect(() => {
     if (previousOwner.current === owner) return;
-    // the names left unfinished in the workspace this strip leaves are not offered at a later rename there; another
-    // strip's (a split view's other half) stay
-    for (const key of renameDraftStore.keys()) if ((JSON.parse(key) as [string, string])[0] === previousOwner.current) renameDraftStore.delete(key);
     previousOwner.current = owner;
     // a press held across the change (an alert opening another PC) would open the previous PC's tab menu over this one's
     cancelLongPress();
