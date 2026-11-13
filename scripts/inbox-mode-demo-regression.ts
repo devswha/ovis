@@ -441,7 +441,7 @@ try {
           assert.equal(await page.locator('.row-sheet [role="menu"] [role="menuitemradio"]').count(), 4, "the four filters are one menu of radio items");
           assert.equal(await page.locator('.row-sheet [role="menuitemradio"][aria-checked="true"]').getAttribute("data-item"), "all");
           // the keyboard as a menu's radio items take it: the focus starts on the chosen one, the arrows walk the four and
-          // choose nothing, Tab takes them as one stop before Cancel and comes back to the chosen one
+          // choose nothing, Tab takes them as one stop before Cancel, from any of them, and comes back to the chosen one
           const focusedItem = (want: string | null, why: string): Promise<unknown> => page.waitForFunction((item) => {
             const at = document.activeElement;
             return item === null ? at?.classList.contains("row-sheet-cancel") === true : at?.getAttribute("data-item") === item;
@@ -453,12 +453,16 @@ try {
           await page.keyboard.press("ArrowUp");
           await focusedItem("done", "ArrowUp from the first filter goes round to the last");
           assert.equal(await page.locator('.row-sheet [role="menuitemradio"][aria-checked="true"]').getAttribute("data-item"), "all", "the arrows choose nothing");
+          await page.keyboard.press("ArrowUp");
+          await focusedItem("working", "ArrowUp moves to the filter before");
           await page.keyboard.press("Tab");
-          await focusedItem(null, "Tab leaves the four filters for Cancel");
+          await focusedItem(null, "Tab from a middle filter leaves the four for Cancel");
           await page.keyboard.press("Tab");
           await focusedItem("all", "Tab comes back to the filters on the chosen one");
           await page.keyboard.press("Shift+Tab");
           await focusedItem(null, "Shift+Tab leaves the four filters for Cancel");
+          await page.keyboard.press("Shift+Tab");
+          await focusedItem("all", "Shift+Tab from Cancel comes back to the chosen filter, not the last one");
           await page.locator('.row-sheet [data-item="working"]').tap();
           await sheetClosed(page);
           await rowCount(page, 1);
@@ -466,6 +470,7 @@ try {
           assert.equal(await page.locator(".inbox-filter-toggle.is-on").getAttribute("aria-label"), "Filter by state: Working");
           await openSheet(page, ".inbox-filter-toggle");
           assert.equal(await page.locator('.row-sheet [role="menuitemradio"][aria-checked="true"]').getAttribute("data-item"), "working");
+          await focusedItem("working", "the sheet opens on the chosen filter, not the first one");
           await page.locator('.row-sheet [data-item="all"]').tap();
           await sheetClosed(page);
           await rowCount(page, 6);
