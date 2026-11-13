@@ -5,6 +5,22 @@ import "./SidebarResizer.css";
 import { useT } from "../lib/i18n.ts";
 import { clampSidebarWidth, keyedSidebarWidth, sidebarMaxWidth, SIDEBAR_MIN_WIDTH, storeSidebarWidth } from "../lib/sidebarWidth.ts";
 
+/**
+ * Whether (x, y) lies on the drawn scrollbar of a scrolling list inside `sidebar`. Read through the
+ * grip, which lies over the sidebar's right edge where such a scrollbar stands. An overlay scrollbar
+ * takes no width and is not found.
+ */
+function onListScrollbar(sidebar: Element | null | undefined, x: number, y: number): boolean {
+  if (!sidebar) return false;
+  return document.elementsFromPoint(x, y).some((element) => {
+    if (!(element instanceof HTMLElement) || element === sidebar || !sidebar.contains(element) || element.scrollHeight <= element.clientHeight) return false;
+    const border = parseFloat(getComputedStyle(element).borderRightWidth) || 0;
+    const bar = element.offsetWidth - element.clientWidth - element.clientLeft - border;
+    const right = element.getBoundingClientRect().right - border;
+    return bar > 0 && x >= right - bar && x < right;
+  });
+}
+
 export interface SidebarResizerProps {
   /** the chosen width in px; null is the density's own */
   width: number | null;
@@ -20,6 +36,9 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<{ left: number; grip: number; width: number; moved: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
+  // the pointer rests on a list's scrollbar under the grip: the grip lets it through to that scrollbar,
+  // and the strip beside it still resizes. Held while a button is down, so no press changes hands
+  const [yielding, setYielding] = useState(false);
   // what the sidebar measures now: the default width is a token, and a narrow window caps a chosen one
   const [shown, setShown] = useState(width ?? SIDEBAR_MIN_WIDTH);
   // the widest the keys allow in this window; a resize can move it while the sidebar's own width holds
@@ -39,6 +58,18 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
     const observer = new ResizeObserver(() => { measure(); });
     observer.observe(sidebar);
     return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    const onPointerMove = (event: globalThis.PointerEvent): void => {
+      if (event.buttons !== 0 || event.pointerType === "touch") return;
+      const grip = ref.current;
+      if (!grip) return;
+      const box = grip.getBoundingClientRect();
+      const over = event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom;
+      setYielding(over && onListScrollbar(grip.parentElement, event.clientX, event.clientY));
+    };
+    window.addEventListener("pointermove", onPointerMove, { passive: true });
+    return () => window.removeEventListener("pointermove", onPointerMove);
   }, []);
   useEffect(() => {
     const onWindowResize = (): void => { measure(); };
@@ -90,7 +121,7 @@ export function SidebarResizer({ width, onResize }: SidebarResizerProps) {
   return (
     <div
       ref={ref}
-      className={`sidebar-resizer${dragging ? " is-dragging" : ""}`}
+      className={`sidebar-resizer${dragging ? " is-dragging" : ""}${yielding ? " is-yielding" : ""}`}
       role="separator"
       tabIndex={0}
       aria-orientation="vertical"

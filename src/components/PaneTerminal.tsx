@@ -1370,6 +1370,7 @@ export function PaneTerminal({
             onCommandScreenClosed={onCommandScreenClosed}
             onOutcomes={onChatOutcomes}
             interactive={!viewOnly && role === "interact"}
+            watching={authWatching}
             quotable={!secretActive}
             cwd={cwd}
             promptContext={[agentDisplayLabel(agent), workspaceLabel, cwd, machineName].filter((part): part is string => part !== null && part !== "").join(" · ")}
