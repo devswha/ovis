@@ -16,7 +16,8 @@ import { newSummaryReads } from "./useInboxSummaries.ts";
  * enters the mode and shows its list; and a mode with no pane to show a thread of shows its list, once the page's
  * link has landed. Left by any way
  * (Back to Ovis, the system Back), the mode takes its controls with it: a focus left nowhere goes to the classic
- * header's workspace-list toggle, as it does whenever the control that had it is gone (lib/focus.ts).
+ * header's workspace-list toggle, as it does whenever the control that had it is gone (lib/focus.ts). A row's thread
+ * takes the list off a phone's screen the same way, and the focus goes to the thread's Back.
  */
 export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded, thread }: {
   /** the mode's shell stands: the mode is on and the setup guide does not hold the classic shell */
@@ -40,6 +41,19 @@ export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideF
     wasInMode.current = inMode;
     if (!inMode) focusWorkspaceListToggle("lost");
   }, [inMode]);
+  // A row's thread takes the list off a phone's screen, and the row that had the focus with it: a focus left nowhere
+  // goes to the thread's Back, which stands in the drawer toggle's place (lib/focus.ts) and raises no keyboard on a
+  // touch screen. Where the pointer is fine the pane the row picked has taken the typing by then
+  // (components/PaneTerminal.tsx), and on a wide window the row is still there: a focus that is somewhere stays.
+  // Only a thread the list opened: a page that opens on one, and a thread that takes another's place, move no focus.
+  const listed = useRef(false);
+  useEffect(() => {
+    if (!inMode) { listed.current = false; return; }
+    if (shown) { listed.current = true; return; }
+    if (thread === null || !listed.current) return;
+    listed.current = false;
+    focusWorkspaceListToggle("lost");
+  }, [inMode, shown, thread]);
   const enterInbox = useCallback((): void => { setDrawerOpen(false); hideFile(); enter(); show(); }, [setDrawerOpen, hideFile, enter, show]);
   // The row a list opened by Back from a thread gives the focus to (components/InboxList.tsx): the thread that was
   // shown, so a keyboard or a screen reader keeps its place. A list opened any other way (the page's start, a way

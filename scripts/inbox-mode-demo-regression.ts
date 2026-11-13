@@ -279,9 +279,8 @@ async function shot(page: Page, name: string): Promise<void> {
  * settings record: `phoneInbox` in a seed is stored there, and a seed without it leaves the device starting in the
  * classic app. A block that fails says where and is counted; the blocks after it still run.
  */
-async function withPage(browser: Browser, base: string, settings: Settings, path: string, what: string, run: (page: Page) => Promise<void>, viewport: { width: number; height: number } = PHONE): Promise<void> {
-  const wide = viewport.width >= 769;
-  const context = await browser.newContext({ viewport, isMobile: !wide, hasTouch: !wide, locale: "en-US" });
+async function withPage(browser: Browser, base: string, settings: Settings, path: string, what: string, run: (page: Page) => Promise<void>, viewport: { width: number; height: number } = PHONE, touch: boolean = viewport.width < 769): Promise<void> {
+  const context = await browser.newContext({ viewport, isMobile: touch, hasTouch: touch, locale: "en-US" });
   try {
     await context.addInitScript((seed) => {
       // the blank page the tab began on, which Back out of the app returns to, has no storage to seed
@@ -1101,6 +1100,26 @@ try {
         await page.waitForFunction(() => document.activeElement?.classList.contains("sidebar-toggle") === true, undefined, { timeout: 5_000 });
         console.log("PASS Back to Ovis leaves the focus on the classic header's toggle: the drawer's on a phone, the sidebar's on a wide window");
       }, desktop);
+
+      // ---- the focus when the keyboard opens a row on a phone's layout ----
+      // The thread takes the list off the screen, and the row that had the focus with it. Under a coarse pointer the
+      // focus goes to the thread's Back, which raises no keyboard; under a fine one (a narrow desktop window) the
+      // pane the row picked takes the typing, as on a wide window.
+      for (const [pointer, viewport, touch] of [["coarse", PHONE, true], ["coarse", { width: 430, height: 932 }, true], ["fine", { width: 430, height: 900 }, false]] as const) {
+        await withPage(browser, base, light, "/?app=inbox", `the focus after Enter on a row, at ${viewport.width} under a ${pointer} pointer`, async (page) => {
+          await listScreen(page);
+          await rowCount(page, 6);
+          assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), touch, `the pointer is ${pointer}`);
+          await row(page, WORKING).focus();
+          await page.keyboard.press("Enter");
+          await page.locator("#inbox-back").waitFor();
+          await page.locator(".thread-title").waitFor();
+          const landed = await page.waitForFunction((coarse) => coarse ? document.activeElement?.id === "inbox-back" : document.activeElement?.classList.contains("composer-text") === true, touch, { timeout: 5_000 }).then(() => true, () => false);
+          const at = await page.evaluate(() => `${document.activeElement?.tagName.toLowerCase()}${document.activeElement?.id ? `#${document.activeElement.id}` : ""}.${document.activeElement?.className}`);
+          assert.ok(landed, `the focus is in the thread, on ${touch ? "its Back button" : "the composer"}: it is on ${at}`);
+          console.log(`PASS at ${viewport.width} under a ${pointer} pointer, Enter on a row opens its thread with the focus on ${touch ? "the header's Back" : "the composer"}`);
+        }, viewport, touch);
+      }
 
       // ---- the command palette from the mode's More ----
       await withPage(browser, base, light, "/?app=inbox", "the command palette from the list's More", async (page) => {

@@ -57,12 +57,12 @@ describe("useInboxShell", () => {
     expect(shell.returnTo).toBe("local:p1");
 
     // When another thread opens, and the mode is then left and entered again from the classic app.
-    await draw({ inMode: true, shown: false, selectedPaneId: "p2", linkLanded: true, thread: "local:p2" });
-    expect(shell.returnTo).toBeNull();
-    // leaving asks a frame of the window for the focus's sake (below): this case has no use for it
+    // a thread the list opens, and leaving, each ask a frame of the window for the focus's sake (below): this case has no use for it
     const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
     Object.defineProperty(globalThis, "window", { configurable: true, value: { requestAnimationFrame: () => 0 } });
     try {
+      await draw({ inMode: true, shown: false, selectedPaneId: "p2", linkLanded: true, thread: "local:p2" });
+      expect(shell.returnTo).toBeNull();
       await draw({ inMode: false, shown: false, selectedPaneId: "p2", linkLanded: true, thread: null });
       await draw({ inMode: true, shown: true, selectedPaneId: "p2", linkLanded: true, thread: null });
     } finally {
@@ -108,6 +108,46 @@ describe("useInboxShell", () => {
       calls = [];
       page.activeElement = {};
       await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
+      expect(calls).toEqual([]);
+    } finally {
+      for (const [key, descriptor] of Object.entries(saved)) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    }
+  });
+
+  it("gives a focus that a row's thread left nowhere to the thread's Back, and leaves one that is somewhere", async () => {
+    const saved = { document: Object.getOwnPropertyDescriptor(globalThis, "document"), window: Object.getOwnPropertyDescriptor(globalThis, "window") };
+    const body = {};
+    const page = { activeElement: body as unknown, body, back: [{ getClientRects: () => [{}], focus: () => { calls.push("focus back"); } }] };
+    Object.defineProperty(globalThis, "document", { configurable: true, value: {
+      get activeElement() { return page.activeElement; }, body,
+      querySelector: () => null,
+      // a phone's thread draws Back in the drawer toggle's place: no toggle is shown
+      querySelectorAll: (selector: string) => selector.includes(".inbox-back") ? page.back : [],
+    } });
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { requestAnimationFrame: (run: () => void) => { run(); return 0; } } });
+    try {
+      // Given a page that opens on a thread: nothing was taken from the reader, and the focus is left alone.
+      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
+      expect(calls).toEqual(["drawer false"]);
+
+      // Given the list, and a row opened from the keyboard: the list left the screen with the row that had the focus.
+      await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true, thread: null });
+      calls = [];
+      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
+      expect(calls).toEqual(["focus back"]);
+
+      // a thread that takes that thread's place was not opened from the list: nothing more is asked
+      await draw({ inMode: true, shown: false, selectedPaneId: "p2", linkLanded: true, thread: "local:p2" });
+      expect(calls).toEqual(["focus back"]);
+
+      // Given the list again, and a row whose pane takes the typing as it is picked (a pointer that is fine).
+      await draw({ inMode: true, shown: true, selectedPaneId: "p2", linkLanded: true, thread: null });
+      calls = [];
+      page.activeElement = {};
+      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
       expect(calls).toEqual([]);
     } finally {
       for (const [key, descriptor] of Object.entries(saved)) {
