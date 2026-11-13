@@ -59,7 +59,7 @@ describe("useInboxMode", () => {
   async function mount(addresses: string[], read = true, startsIn = false): Promise<void> {
     entries = addresses.map((address) => ({ state: null, url: new URL(`http://localhost:7317${address}`) }));
     index = entries.length - 1;
-    function Probe() { mode = useInboxMode({ read, startsIn }); return null; }
+    function Probe() { mode = useInboxMode({ read, startsIn: () => startsIn }); return null; }
     await act(async () => { renderer = create(createElement(Probe)); });
     window.addEventListener("popstate", () => { heardAfter += 1; });
     loadWrites = writes;
@@ -166,6 +166,18 @@ describe("useInboxMode", () => {
     await mount(["/"], false, true);
     expect(mode.on).toBe(false);
     expect(loadWrites).toEqual([]);
+  });
+
+  it("hands the shell one ref for its blocked drawer, set from the mode the page loads in", async () => {
+    await mount(["/?app=inbox"]);
+    const blocked = mode.drawerBlocked;
+    expect(blocked.current).toBe(true);
+    // the shell says later whether its drawer is blocked (the setup guide keeps the classic one): the ref is the same object
+    await act(async () => { mode.leave(); });
+    expect(mode.drawerBlocked).toBe(blocked);
+    await act(async () => { renderer?.unmount(); });
+    await mount(["/"]);
+    expect(mode.drawerBlocked.current).toBe(false);
   });
 
   it("writes the mode into the hosted shell's fragment", async () => {

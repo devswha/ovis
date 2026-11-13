@@ -7,7 +7,7 @@
  * device setting says so (Settings → Agent inbox on a phone) starts in the mode: its address takes the mark by a
  * replace, so Back on its list still leaves the app.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { inboxStartsOpen } from "./agentInbox.ts";
 import { NAV_KEY, type AppLink } from "./deepLink.ts";
 import { pageAddress, pageSearch } from "./pageQuery.ts";
@@ -66,20 +66,28 @@ export interface InboxMode {
   enter(): void;
   /** out of it, by one history entry */
   leave(): void;
+  /**
+   * Whether the shell has no drawer, for what asks outside a render (lib/useSidebarLayout.ts: a press, an edge
+   * swipe). It starts as the mode the page loads in; the shell then says each render whether the mode's shell
+   * stands, which the setup guide may hold back.
+   */
+  drawerBlocked: RefObject<boolean>;
 }
 
 /**
  * The mode the address names, kept in step with Back and Forward. Its popstate listener only reads: every
  * listener after it hears the same event (src/conventions.test.ts).
  */
-export function useInboxMode({ read = inboxModeRead(), startsIn = false }: {
+export function useInboxMode({ read = inboxModeRead(), startsIn }: {
   read?: boolean;
-  /** this device starts in the mode whatever its address says: read once, as the page loads */
-  startsIn?: boolean;
+  /** whether this device starts in the mode whatever its address says: asked once, as the page loads */
+  startsIn?: () => boolean;
 } = {}): InboxMode {
-  const [on, setOn] = useState(() => read && (startsIn || inboxAddress(pageSearch())));
+  const [starts] = useState(() => read && startsIn?.() === true);
+  const [on, setOn] = useState(() => starts || (read && inboxAddress(pageSearch())));
+  const drawerBlocked = useRef(on);
   useEffect(() => {
-    if (!read || !startsIn || inboxAddress(pageSearch())) return;
+    if (!starts || inboxAddress(pageSearch())) return;
     window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, withInboxAddress(pageSearch(), true), window.location.hash));
     // at load only: where the device starts, not where it stays
   }, []);
@@ -98,5 +106,5 @@ export function useInboxMode({ read = inboxModeRead(), startsIn = false }: {
   const enter = useCallback((): void => go(true), [go]);
   const leave = useCallback((): void => go(false), [go]);
   const at = useCallback((): boolean => read && inboxAddress(pageSearch()), [read]);
-  return { on, at, enter, leave };
+  return { on, at, enter, leave, drawerBlocked };
 }

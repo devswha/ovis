@@ -63,6 +63,27 @@ export function useInboxWaits(waits: InboxWaits, machines: readonly Machine[], a
   }, [waits, enabled, signature]);
 }
 
+/**
+ * The shell's part in the mode's coming and going (App.tsx). The drawer is put away whenever the mode's shell stands,
+ * however it came to (its entry, a Forward onto it); the way in closes the drawer, enters the mode and shows its
+ * list; and a mode with no pane to show a thread of shows its list, once the page's link has landed.
+ */
+export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, selectedPaneId, linkLanded }: {
+  /** the mode's shell stands: the mode is on and the setup guide does not hold the classic shell */
+  inMode: boolean;
+  shown: boolean;
+  show(): void;
+  enter(): void;
+  setDrawerOpen(open: boolean): void;
+  selectedPaneId: string | null;
+  linkLanded: boolean;
+}): { enterInbox(): void } {
+  useEffect(() => { if (inMode) setDrawerOpen(false); }, [inMode, setDrawerOpen]);
+  useEffect(() => { if (inMode && !shown && selectedPaneId === null && linkLanded) show(); }, [inMode, shown, selectedPaneId, linkLanded, show]);
+  const enterInbox = useCallback((): void => { setDrawerOpen(false); enter(); show(); }, [setDrawerOpen, enter, show]);
+  return { enterInbox };
+}
+
 /** The history entry's mark that it was pushed on leaving the list: Back on such an entry returns to it. */
 export const INBOX_FROM_KEY = "ovis:from-inbox";
 

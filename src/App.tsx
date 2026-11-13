@@ -136,7 +136,7 @@ import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks 
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
-import { useInbox, useInboxWaits } from "./lib/useInbox.ts";
+import { useInbox, useInboxShell, useInboxWaits } from "./lib/useInbox.ts";
 import { INBOX_MODE_OFFERED, startsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
@@ -255,11 +255,8 @@ export function App() {
   // the inbox mode (lib/inboxMode.ts): the list and the thread a row opens in the shell's place, which then has no drawer.
   // Settings → Agent inbox on a phone: this device starts in it at a phone's width (lib/inboxMode.ts startsInInbox),
   // and is free to leave it for the rest of the page's life
-  const [startsIn] = useState(() => startsInInbox(phoneInboxOn(settings), window.matchMedia?.(SHEET_QUERY).matches === true, initialLink));
-  const inboxMode = useInboxMode({ startsIn });
-  const drawerBlocked = useRef(inboxMode.on);
-  drawerBlocked.current = inboxMode.on;
-  const { drawerOpen, setDrawerOpen, drawerOpenRef, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink, drawerBlocked });
+  const inboxMode = useInboxMode({ startsIn: () => startsInInbox(phoneInboxOn(settings), window.matchMedia?.(SHEET_QUERY).matches === true, initialLink) });
+  const { drawerOpen, setDrawerOpen, drawerOpenRef, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink, drawerBlocked: inboxMode.drawerBlocked });
   // the mode's list: it stands in the pane's place until a pane is picked (lib/useInbox.ts)
   const inbox = useInbox({ on: inboxMode.on, initialLink, drawerOpenRef });
   // Settings → Show the sidebar on hover: the collapsed sidebar over the pane for a moment (lib/sidebarPeek.ts)
@@ -343,14 +340,13 @@ export function App() {
   const guideShown = setupGuide.guide !== null && !setupGuide.paused;
   // the mode's shell. The setup guide stands in the pane's place before any workspace exists: it keeps the classic one
   const inMode = inboxMode.on && !guideShown;
-  drawerBlocked.current = inMode;
-  useEffect(() => { if (inMode) setDrawerOpen(false); }, [inMode, setDrawerOpen]);
+  inboxMode.drawerBlocked.current = inMode;
   // Into the mode, onto its list, and out of it, onto the app as it was (the pane a thread showed, or the one under
   // the list): one history entry each way, so Back undoes it. On a phone More's item runs while its sheet's own entry
-  // is still current: the push takes that entry over (lib/sheetHistory.ts), and no entry is left between.
-  const { enter: enterMode, leave: leaveMode } = inboxMode;
-  const { show: showInbox } = inbox;
-  const enterInbox = useCallback((): void => { setDrawerOpen(false); enterMode(); showInbox(); }, [setDrawerOpen, enterMode, showInbox]);
+  // is still current: the push takes that entry over (lib/sheetHistory.ts), and no entry is left between. The shell's
+  // own part (the drawer put away, the list shown for a mode with no pane) is lib/useInbox.ts useInboxShell.
+  const { leave: leaveMode } = inboxMode;
+  const { enterInbox } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show, enter: inboxMode.enter, setDrawerOpen, selectedPaneId, linkLanded });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself
   const modeOffered = INBOX_MODE_OFFERED && !guideShown;
 
@@ -914,7 +910,6 @@ export function App() {
   // list is the screen), and a mode left with no pane to show a thread of shows its list
   const paneSplit = splitOn && !inMode;
   const listScreen = inMode && inbox.shown && !inboxWide;
-  useEffect(() => { if (inMode && !inbox.shown && selectedPaneId === null && linkLanded) showInbox(); }, [inMode, inbox.shown, selectedPaneId, linkLanded, showInbox]);
 
   if (locked === null) {
     // the auth state is unknown until /api/health or /api/session answers (ten seconds when

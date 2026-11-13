@@ -5,7 +5,7 @@ import type { AppLink } from "./deepLink.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import type { SidebarActivity } from "./sidebarActivity.tsx";
-import { INBOX_FROM_KEY, InboxWaits, useInbox, useInboxWaits } from "./useInbox.ts";
+import { INBOX_FROM_KEY, InboxWaits, useInbox, useInboxShell, useInboxWaits } from "./useInbox.ts";
 import { QuestionReads } from "./useInboxQuestions.ts";
 import { SummaryReads } from "./useInboxSummaries.ts";
 
@@ -57,6 +57,65 @@ describe("useInboxWaits", () => {
     // turned off again: the starts are let go
     await draw(false);
     expect(waits.current().size).toBe(0);
+  });
+});
+
+describe("useInboxShell", () => {
+  let renderer: ReactTestRenderer | undefined;
+  let reactAct: PropertyDescriptor | undefined;
+  let calls: string[];
+  let shell: ReturnType<typeof useInboxShell>;
+  interface Place { inMode: boolean; shown: boolean; selectedPaneId: string | null; linkLanded: boolean }
+
+  beforeEach(() => {
+    reactAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    calls = [];
+  });
+
+  afterEach(async () => {
+    await act(async () => { renderer?.unmount(); });
+    renderer = undefined;
+    if (reactAct) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", reactAct);
+    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  });
+
+  const show = (): void => { calls.push("show"); };
+  const enter = (): void => { calls.push("enter"); };
+  const setDrawerOpen = (open: boolean): void => { calls.push(`drawer ${open}`); };
+  function Probe(place: Place) {
+    shell = useInboxShell({ ...place, show, enter, setDrawerOpen });
+    return null;
+  }
+  const draw = async (place: Place): Promise<void> => {
+    await act(async () => {
+      if (renderer) renderer.update(createElement(Probe, place));
+      else renderer = create(createElement(Probe, place));
+    });
+  };
+
+  it("leaves the classic app alone, and its way in closes the drawer, enters the mode and shows the list", async () => {
+    await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
+    expect(calls).toEqual([]);
+    await act(async () => { shell.enterInbox(); });
+    expect(calls).toEqual(["drawer false", "enter", "show"]);
+  });
+
+  it("puts the drawer away when the mode's shell stands, however it came to (a Forward onto its entry)", async () => {
+    await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
+    await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true });
+    expect(calls).toEqual(["drawer false"]);
+  });
+
+  it("shows the list for a mode with no pane to show a thread of, once the page's link has landed", async () => {
+    await draw({ inMode: true, shown: false, selectedPaneId: null, linkLanded: false });
+    expect(calls).toEqual(["drawer false"]);
+    await draw({ inMode: true, shown: false, selectedPaneId: null, linkLanded: true });
+    expect(calls).toEqual(["drawer false", "show"]);
+    // the list shown, or a pane picked: nothing more is asked
+    await draw({ inMode: true, shown: true, selectedPaneId: null, linkLanded: true });
+    await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true });
+    expect(calls).toEqual(["drawer false", "show"]);
   });
 });
 

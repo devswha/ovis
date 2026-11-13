@@ -62,7 +62,7 @@ describe("the inbox mode in the history", () => {
   /** whether the device starts in the mode (Settings → Agent inbox on a phone) */
   let startsIn: boolean;
   function Probe({ link }: { link: AppLink | null }) {
-    const mode = useInboxMode({ read: true, startsIn });
+    const mode = useInboxMode({ read: true, startsIn: () => startsIn });
     const inbox = useInbox({ on: mode.on, initialLink: link, drawerOpenRef: refs.drawerOpen });
     shell = { mode, inbox };
     const machine = { id: "local", name: "workstation", kind: "local", enabled: true, state: "connected", error: null, snapshot } as Machine;
