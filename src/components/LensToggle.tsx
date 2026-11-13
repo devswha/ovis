@@ -8,8 +8,9 @@ import { useT } from "../lib/i18n.ts";
  * ends it. Mod+Shift+J and the palette's item run the same switch.
  *
  * In the inbox mode it is a thread's monitor button (`thread`): the same switch, said as a screen that shows the
- * agent's terminal in the thread's place and gives the chat back, and drawn as one of the mode's round controls
- * where the thread's controls float (`round`).
+ * agent's terminal in the thread's place and gives the chat back. In a phone thread's header it is a plain icon
+ * button, as Back and More beside it are; where the thread's controls float it is one of the mode's round controls
+ * (`round`).
  */
 export function LensToggle({ view, peek, terminalAttach, title, onToggle, thread = false, round = false }: {
   view: PaneView;
@@ -29,7 +30,7 @@ export function LensToggle({ view, peek, terminalAttach, title, onToggle, thread
   // a Windows PC's live terminal is not there yet: the button says so, as the wide switch's pill does
   const soon = toTerminal && !terminalAttach;
   return (
-    <button type="button" className={`icon-button ${round ? "inbox-round" : "is-outlined"} lens-toggle`} data-view={shown}
+    <button type="button" className={`icon-button${round ? " inbox-round" : thread ? "" : " is-outlined"} lens-toggle`} data-view={shown}
       aria-label={soon ? `${label} · ${t("soon")}` : label}
       title={soon ? t("Live terminal: coming to Windows PCs once herdr can attach there") : title(label)}
       onClick={onToggle}>

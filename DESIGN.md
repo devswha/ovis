@@ -2316,8 +2316,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - A phone's thread is the agent's existing chat under the app's glass header (`--header-h`),
   with its prompt card docked above the composer and nothing restyled. The header holds
   **Back** (`#inbox-back`, a chevron), the thread's title (`.thread-title`), the monitor button
-  and More, each button `--touch-target-header`. The title is the agent's round mark at
-  `--avatar-size`, then the name (`--fs-md`, `--fw-semibold`) over one line (`--fs-xs`,
+  and More, each button `--touch-target-header` and the three one family: plain icon buttons
+  with no box of their own (the classic header's lens button is outlined; a thread's is not).
+  The title is the agent's round mark at `--avatar-size`, then the name (`--fs-md`,
+  `--fw-semibold`) over one line (`--fs-xs`,
   `--text-dim`) that says the state in the filters' words (**Needs you**, **Working**, **Done**,
   **Ready**; **Terminal** for a pane that runs no agent; **Offline**), after **View only** on a
   watching device and, with more than one PC shown, after the PC's name ("mac-mini ·

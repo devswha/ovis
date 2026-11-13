@@ -55,7 +55,9 @@ it("is an inbox mode thread's monitor button: it shows the terminal in the threa
   expect(draw("chat", false, false, { thread: true })).toContain('aria-label="Show the terminal · soon"');
 });
 
-it("is outlined in the app's header and one of the mode's round controls where a thread's controls float", () => {
+it("is outlined in the app's header, a plain button of a phone thread's header, and one of the mode's round controls where a thread's controls float", () => {
   expect(draw("chat")).toContain('class="icon-button is-outlined lens-toggle"');
+  // beside Back and More, which have no box: the three are one family, in either lens
+  for (const view of ["chat", "terminal"] as const) expect(draw(view, false, true, { thread: true })).toContain('class="icon-button lens-toggle"');
   expect(draw("chat", false, true, { thread: true, round: true })).toContain('class="icon-button inbox-round lens-toggle"');
 });
