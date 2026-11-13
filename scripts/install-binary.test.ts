@@ -381,9 +381,11 @@ exec "${Bun.which("tar")}" "$@"`);
   it("never runs a PTY host other than the one the signed manifest names, and installs the server without it", () => {
     const { releases, key, run, ovis, home } = pc();
     const ranAt = join(home, "host-ran");
-    const dir = release(releases, "1.2.3", key.privateKeyPem, `#!/bin/sh\nexit 2\n`);
-    // a mirror's host: it would run, and say so, were it taken
-    for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `#!/bin/sh\n: > "${ranAt}"\n[ $# -gt 0 ] && exit 0\necho "pty-sidecar: usage: ovis-pty-sidecar" >&2\nexit 2\n`, { mode: 0o755 });
+    const signed = (marker: string) => `#!/bin/sh\n: > "${marker}"\n[ $# -gt 0 ] && exit 0\necho "pty-sidecar: usage: ovis-pty-sidecar" >&2\nexit 2\n`;
+    const dir = release(releases, "1.2.3", key.privateKeyPem, signed(join(home, "host-RAN")));
+    // a mirror's host of the very same size: it would run, and say so, were it taken
+    for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), signed(ranAt), { mode: 0o755 });
+    expect(signed(ranAt).length).toBe(signed(join(home, "host-RAN")).length);
     const result = run("install_binary 1.2.3");
     expect(result.code, result.out).toBe(0);
     expect(result.out).toContain("does not match its SHA-256 and size in ovis-server.json, so it is not run");

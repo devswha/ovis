@@ -340,5 +340,8 @@ describe("the Rust PTY hosts in the signed manifest", () => {
     const without = signedRelease();
     resigned(without.dir, without.privateKeyPem, (text) => { const { pty: _, ...rest } = JSON.parse(text); return `${JSON.stringify(rest, null, 2)}\n`; });
     rejects(without.dir, without.publicKey, "exactly schema, version, sources, assets, dist and pty");
+    const extra = signedRelease();
+    resigned(extra.dir, extra.privateKeyPem, (text) => { const parsed = JSON.parse(text); parsed.pty["windows-x64"] = parsed.pty["linux-x64"]; return `${JSON.stringify(parsed, null, 2)}\n`; });
+    rejects(extra.dir, extra.publicKey, "must name exactly the Rust PTY hosts");
   });
 });
