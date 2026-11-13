@@ -118,7 +118,8 @@ describe("the herdr plugin's launcher", () => {
 });
 
 describe("the launcher's child", () => {
-  it("gets the SIGTERM sent to the launcher, and the launcher exits as the child did", async () => {
+  // POSIX signals: on Windows herdr runs scripts/plugin.ps1, and no SIGTERM or SIGHUP reaches a launcher there
+  it.skipIf(process.platform === "win32")("gets the SIGTERM sent to the launcher, and the launcher exits as the child did", async () => {
     const ready = join(scratch, "ready");
     const got = join(scratch, "got");
     const script = `const { run } = await import(${JSON.stringify(join(import.meta.dir, "plugin-launch.ts"))});
