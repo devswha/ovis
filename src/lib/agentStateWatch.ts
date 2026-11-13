@@ -139,7 +139,9 @@ export const stateWatch = {
    * The stamping keeps the watch while its page lives, from the page's start: nothing is known
    * yet and no stream is open (App keeps it before the roster stream first opens), so what a page
    * before it knew is not this one's. `look` is called, in the batch that draws it, with how to
-   * read a roster that cannot date what it brings. Hands back the watch's end.
+   * read a roster that cannot date what it brings. Hands back the watch's end. The watch has one
+   * keeper at a time: keeping it starts it anew, so a second keeper would take the first one's
+   * knowledge with it. A list that wants the times reads the stamps (lib/useAgentStateSince.ts).
    */
   keep(look: (look: UnseenLook) => void): () => void {
     unseen = look;
