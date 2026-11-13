@@ -221,7 +221,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   const searchField = searchOpen && (
     <div className="inbox-search" role="search">
       {!wide && <Search className="inbox-search-glass" aria-hidden="true" />}
-      <input ref={search} className="input inbox-search-input" type="search" value={query} placeholder={t("Search")} aria-label={t("Search agents")}
+      <input ref={search} className="input inbox-search-input" type="search" value={query} placeholder={t("Search")} aria-label={t("Search")}
         autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="search" onChange={(event) => onQuery(event.currentTarget.value)} onKeyDown={closeSearch} />
       {query !== "" && <button type="button" className="inbox-search-clear" aria-label={t("Clear search")} onClick={() => { onQuery(""); search.current?.focus(); }}><X aria-hidden="true" /></button>}
     </div>
@@ -257,7 +257,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       <div className="inbox-top">
         {wide ? <>
           {searchField}
-          <button type="button" className="icon-button inbox-round inbox-search-toggle" aria-label={t("Search agents")} title={t("Search agents")} aria-expanded={searchOpen}
+          <button type="button" className="icon-button inbox-round inbox-search-toggle" aria-label={t("Search")} title={t("Search")} aria-expanded={searchOpen}
             onClick={() => { if (!searchOpen) setSearchAsked(true); else if (query === "") setSearchAsked(false); else search.current?.focus(); }}>
             <Search aria-hidden="true" />
           </button>
@@ -305,7 +305,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
       </div>
       <div className="inbox-foot">
         {wide ? <>
-          {onExit ? <button type="button" className="inbox-exit" onClick={onExit}>
+          {onExit ? <button type="button" className="btn btn-ghost sidebar-footer-action inbox-exit" onClick={onExit}>
             <img src="/icons/icon-192.png?v=sheep1" alt="" width="22" height="22" className="inbox-exit-mark" />
             <span className="inbox-exit-label">{t("Back to Ovis")}</span>
           </button> : null}

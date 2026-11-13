@@ -1,5 +1,5 @@
 /**
- * The phone's agent inbox (components/AgentInbox.tsx): every shown PC's agents in one list, the ones
+ * The agent inbox's list (components/InboxList.tsx): every shown PC's agents in one list, the ones
  * that need the reader first, narrowed by state. Built on the Agents list's own rows and shown state
  * (lib/agentRoster.ts, lib/sidebarActivity.tsx), so the two never disagree.
  */
@@ -132,7 +132,7 @@ export function inboxChip(group: AgentGroup, status: AgentStatus | undefined, su
   return group === "done" && summary?.failed === true ? "failed" : knownStatus(status);
 }
 
-/** Whether a phone opens on the list: the address names no pane, workspace or file. */
+/** Whether the inbox mode opens on its list: the address names no pane, workspace or file. */
 export function inboxStartsOpen(enabled: boolean, link: AppLink | null): boolean {
   return enabled && !(link !== null && Boolean(link.pane || link.workspace || fileFromLink(link)));
 }

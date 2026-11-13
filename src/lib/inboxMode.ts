@@ -3,10 +3,13 @@
  * phone and on a desktop (components/InboxList.tsx, components/InboxMode.tsx). The address says the mode
  * (`?app=inbox`), in a parameter of its own that lib/deepLink.ts leaves in place while the app moves between panes,
  * so a reload, a link, Back and Forward agree on where the app is. A change of mode is one history entry in either
- * direction, and Back undoes it; a page that opened in the mode has nothing of the app under it.
+ * direction, and Back undoes it; a page that opened in the mode has nothing of the app under it. A phone whose
+ * device setting says so (Settings → Agent inbox on a phone) starts in the mode: its address takes the mark by a
+ * replace, so Back on its list still leaves the app.
  */
 import { useCallback, useEffect, useState } from "react";
-import { NAV_KEY } from "./deepLink.ts";
+import { inboxStartsOpen } from "./agentInbox.ts";
+import { NAV_KEY, type AppLink } from "./deepLink.ts";
 import { pageAddress, pageSearch } from "./pageQuery.ts";
 
 declare const __HERDR_TEST_HOOKS__: boolean | undefined;
@@ -41,6 +44,16 @@ export function withInboxAddress(search: string, inbox: boolean): string {
   return text ? `?${text}` : "";
 }
 
+/**
+ * Whether a page starts in the mode on this device (Settings → Agent inbox on a phone): a phone-width window whose
+ * address is the app's own start, which opens the list, or names a pane (a tapped alert, a link), which opens that
+ * pane's thread with the list behind its Back. An address that names only a workspace or a file opens as it always
+ * did, and so does every wider window.
+ */
+export function startsInInbox(setting: boolean, phone: boolean, link: AppLink | null): boolean {
+  return setting && phone && (inboxStartsOpen(true, link) || Boolean(link?.pane));
+}
+
 export interface InboxMode {
   /** the app is in the inbox mode */
   on: boolean;
@@ -59,8 +72,17 @@ export interface InboxMode {
  * The mode the address names, kept in step with Back and Forward. Its popstate listener only reads: every
  * listener after it hears the same event (src/conventions.test.ts).
  */
-export function useInboxMode({ read = inboxModeRead() }: { read?: boolean } = {}): InboxMode {
-  const [on, setOn] = useState(() => read && inboxAddress(pageSearch()));
+export function useInboxMode({ read = inboxModeRead(), startsIn = false }: {
+  read?: boolean;
+  /** this device starts in the mode whatever its address says: read once, as the page loads */
+  startsIn?: boolean;
+} = {}): InboxMode {
+  const [on, setOn] = useState(() => read && (startsIn || inboxAddress(pageSearch())));
+  useEffect(() => {
+    if (!read || !startsIn || inboxAddress(pageSearch())) return;
+    window.history.replaceState(window.history.state, "", pageAddress(window.location.pathname, withInboxAddress(pageSearch(), true), window.location.hash));
+    // at load only: where the device starts, not where it stays
+  }, []);
   useEffect(() => {
     if (!read) return;
     const onPop = (): void => setOn(inboxAddress(pageSearch()));

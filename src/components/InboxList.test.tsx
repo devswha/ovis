@@ -599,7 +599,8 @@ describe("InboxList", () => {
     expect([more.props["aria-label"], more.props["aria-haspopup"], more.props["aria-expanded"]]).toEqual(["More", "dialog", false]);
     await act(async () => { more.props.onClick({ currentTarget: anchor }); });
     expect(pressed).toEqual([anchor]);
-    expect(root.findByProps({ type: "search" }).props.placeholder).toBe("Search");
+    const field = root.findByProps({ type: "search" });
+    expect([field.props.placeholder, field.props["aria-label"]]).toEqual(["Search", "Search"]);
   });
 
   describe("as the column beside a thread", () => {
@@ -649,7 +650,7 @@ describe("InboxList", () => {
       const root = await draw(roster(), { wide: true, onExit: () => { left += 1; } });
       const foot = byClass(root, "inbox-foot")[0]!;
       const [exit] = foot.findAll((node) => node.type === "button");
-      expect(String(exit!.props.className)).toBe("inbox-exit");
+      expect(String(exit!.props.className)).toBe("btn btn-ghost sidebar-footer-action inbox-exit");
       expect(text(exit!)).toBe("Back to Ovis");
       expect(exit!.findByType("img").props.src).toBe("/icons/icon-192.png?v=sheep1");
       await act(async () => { exit!.props.onClick(); });

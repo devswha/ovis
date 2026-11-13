@@ -475,7 +475,7 @@ it("in the inbox mode another thread takes the thread's entry and keeps its mark
 });
 
 it("outside the inbox mode a move between two panes opened from the list is still an entry", async () => {
-  // Given a phone's list (the setting's, no mode) with p1 opened from it.
+  // Given a list that is enabled while the mode's shell is not drawn (the setup guide stands over it), with p1 opened from it.
   place = { ...place, paneId: "p1", mode: false, inbox: { open: false, enabled: true } };
   await mount(["", P1]);
   entries[1]!.state = FROM_INBOX;

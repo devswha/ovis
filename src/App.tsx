@@ -137,8 +137,7 @@ import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitVi
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
 import { useInbox, useInboxWaits } from "./lib/useInbox.ts";
-import { AgentInbox } from "./components/AgentInbox.tsx";
-import { INBOX_MODE_OFFERED, useInboxMode } from "./lib/inboxMode.ts";
+import { INBOX_MODE_OFFERED, startsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
@@ -253,14 +252,16 @@ export function App() {
   const { selectedPaneId, setSelectedPaneId, notificationViewTarget, setNotificationViewTarget, terminalPeek, setTerminalPeek, endPeek, pendingLink, linkLanded, setLinkLanded, rosterSeq, linkSince, selectionSince, rosterTick, setRosterTick, linkTick, setLinkTick } = useSelectionState({ initialLink });
   const { otherRecheck, otherRosterTick, setOtherRosterTick } = useSplitRecheck();
   const { rosterIn, pendingFile, selectionHint, setHeaderNote, note, autoSelected, setAutoSelected } = useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, pendingLink, rosterSeq, setRosterTick, linkLanded, t });
-  // the inbox mode (lib/inboxMode.ts): the list and the thread a row opens in the shell's place, which then has no drawer
-  const inboxMode = useInboxMode();
+  // the inbox mode (lib/inboxMode.ts): the list and the thread a row opens in the shell's place, which then has no drawer.
+  // Settings → Agent inbox on a phone: this device starts in it at a phone's width (lib/inboxMode.ts startsInInbox),
+  // and is free to leave it for the rest of the page's life
+  const [startsIn] = useState(() => startsInInbox(phoneInboxOn(settings), window.matchMedia?.(SHEET_QUERY).matches === true, initialLink));
+  const inboxMode = useInboxMode({ startsIn });
   const drawerBlocked = useRef(inboxMode.on);
   drawerBlocked.current = inboxMode.on;
   const { drawerOpen, setDrawerOpen, drawerOpenRef, wideScreen, sidebarCollapsed, setSidebarCollapsed, sidebarWidth, setSidebarWidth, filePanelAvailable, filePanelWidth, setFilePanelWidth, sidebarFilterRequest, openSidebarFilter } = useSidebarLayout({ initialLink, drawerBlocked });
-  // the agent inbox: the list that stands in the pane's place until a pane is picked (lib/useInbox.ts), a phone's
-  // by its setting and the mode's at every width
-  const inbox = useInbox({ setting: inboxMode.on || phoneInboxOn(settings), anyWidth: inboxMode.on, initialLink, drawerOpenRef });
+  // the mode's list: it stands in the pane's place until a pane is picked (lib/useInbox.ts)
+  const inbox = useInbox({ on: inboxMode.on, initialLink, drawerOpenRef });
   // Settings → Show the sidebar on hover: the collapsed sidebar over the pane for a moment (lib/sidebarPeek.ts)
   const { peeking: sidebarPeeking, sidebarRef: peekSidebarRef, toggleRef: peekToggleRef, toggleHandlers: peekToggleHandlers, sidebarHandlers: peekSidebarHandlers } = useSidebarPeek(settings.sidebarPeek && wideScreen && sidebarCollapsed);
   const { selectionRef, movingPanes } = useSelectionMark({ selectedMachineId, selectedPaneId });
@@ -446,7 +447,7 @@ export function App() {
 
 
   const { selectedPane } = useSelectedPane({ snapshot, selectedPaneId });
-  // held only while a pane is shown: one hidden under the phone's list keeps no screen on
+  // held only while a pane is shown: one hidden under the inbox mode's list keeps no screen on
   useScreenWakeLock(settings.keepScreenOn && locked === false && selectedPane !== null && !inbox.shown);
   const { selectedWorkspace, presentedPaneId } = useSelectedLayout({ selectedPane, snapshot, drawerOpen: drawerOpen || inbox.shown, selectedMachineId, selectedPaneId, setSelectedPaneId, setAutoSelected });
   // the selected pane has a tab strip to rename in: its pane and workspace are in the roster
@@ -503,12 +504,11 @@ export function App() {
 
   const { splitOn, others, shownSlots, rects, follows, activateSlot, closeSlot, selectInSlot, dockSide, splitDragOn, paneDragOver, paneDragLeave, paneDrop, dividers, resizeDivider, gridPreview } = useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, gridDrop, gridDropRef, clearDropPreview, tabDrag, showGridDrop, hideDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, markMove, swapPanes, movePanes, followPaneMove, arrangeRefused: (machineId) => !appLayoutOn(machineId).arrange });
 
-  // the New workspace dialog over a phone's list is a sheet: Back closes it onto the list instead of
+  // the New workspace dialog over the mode's list on a phone is a sheet: Back closes it onto the list instead of
   // leaving the app. Its entry is made before the address bar writes the dialog's address over it.
   // While its create is in flight Back refuses, as the dialog's own ways out do: what comes of it lands in the dialog
   usePhoneSheetBack(() => { if (newSessionPending.current) return false; closeNewSession(); }, newSessionOpen && inbox.shown);
-  // until the setting's own list on a phone is the mode's too, a place with no pane is a list's under either
-  useAddressBar({ inbox, mode: { on: inMode, lands: () => inboxMode.at() || (phoneInboxOn(settings) && window.matchMedia?.(SHEET_QUERY).matches === true) }, newSessionOpen, newSessionMachineId, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, newSessionPending, setHeaderNote, selectionRef });
+  useAddressBar({ inbox, mode: { on: inMode, lands: inboxMode.at }, newSessionOpen, newSessionMachineId, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, newSessionPending, setHeaderNote, selectionRef });
 
 
   const { bell, alertsOffDot } = alertsBell({ t, alertsOn, notifications, pushOn, enableNotifications, disableNotifications });
@@ -548,7 +548,7 @@ export function App() {
     return { machineId, workspace, cwd: workspace.worktree?.checkout_path ?? inFront?.cwd ?? null, agent: inFront?.agent ?? null, panes };
   };
 
-  // a pane hidden under the phone's list is not closed, typed into, split or zoomed by a key: the shortcuts listen on the window, past its inert slot
+  // a pane hidden under the mode's list is not closed, typed into, split or zoomed by a key: the shortcuts listen on the window, past its inert slot
   // nor is an inbox mode thread: the mode's shell has no tab row, split or pane menu to close from
   const closeOffered = selectedPane !== null && auth?.role !== "watch" && !guideShown && !inbox.shown && !inMode && !paneLocked(selectedPane.pane_id);
   const actions = useMemo<AppActions>(
@@ -604,7 +604,7 @@ export function App() {
         setNewTab(null);
         setNewSessionOpen(true);
       },
-      // a tab beside the pane hidden under the phone's list is not made by a key, nor one beside an inbox mode thread
+      // a tab beside the pane hidden under the mode's list is not made by a key, nor one beside an inbox mode thread
       // (the mode draws no tab row); a named workspace's is
       openNewTab: (target) => {
         if (target === undefined && (inbox.shown || inMode)) return;
@@ -851,7 +851,6 @@ export function App() {
   const inboxBack = inbox.enabled && !inbox.shown && !drawerOpen && !guideShown && !inboxWide;
   const moreItems: RowMenuItem[] = [
     ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(sessionTally.waiting), icon: CircleHelp, run: openNextWaiting }] : []),
-    ...(inboxBack ? [{ id: "open-drawer", label: t("Open workspace list"), icon: Menu, run: () => setDrawerOpen(true) }] : []),
     // first at every width: a phone's header has no palette button, and a touch screen no shortcut
     { id: "palette", label: t("Search panes and actions"), icon: Search, ...(paletteKeys ? { hint: paletteKeys } : {}), run: () => openPalette() },
     ...(foldFind && more ? [{ id: "find-group", label: t("Find…"), icon: TextSearch, run: () => openMoreGroup("find", more.anchor) }] : findInTerminal),
@@ -1000,7 +999,7 @@ export function App() {
             buttons sit in the bar */}
         <div className="header-side">
           {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} />}
-          {inboxBack ? <button type="button" id="inbox-back" className="icon-button inbox-back" aria-label={inMode ? t("Back") : t("Back to agents")} title={inMode ? t("Back") : t("Back to agents")} onClick={inbox.back}><ChevronLeft /></button> : <button
+          {inboxBack ? <button type="button" id="inbox-back" className="icon-button inbox-back" aria-label={t("Back")} title={t("Back")} onClick={inbox.back}><ChevronLeft /></button> : <button
             type="button"
             id="drawer-toggle"
             className="icon-button drawer-toggle"
@@ -1179,7 +1178,7 @@ export function App() {
                 <ConnectionRouteMark portal={auth?.via === "portal"} ingress={security.state === "known" ? security.summary.observed_ingress : null} />
               </div>
             ) : undefined}
-            items={inMode ? modeMoreItems : inbox.shown ? moreItems.filter((item) => item.id === "next-waiting" || item.id === "palette" || item.id === "alerts" || item.id === "enter-inbox") : moreItems}
+            items={inMode ? modeMoreItems : moreItems}
             onClose={closeMore}
           />
         )}
@@ -1414,9 +1413,6 @@ export function App() {
               </PaneFollowContext.Provider></SlotSessions></AppLayoutContext.Provider></MachineContext.Provider>
             );
           })}
-          {inbox.shown && !inMode && <AgentInbox machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll}
-            onOpen={(machineId, paneId) => selectTarget(machineId, paneId, "chat")}
-            onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads} waits={inbox.waits} />}
           {/* the mode's list is the screen on a phone; from 769px it is the column, and a pane with no thread says so */}
           {listScreen && modeList(false)}
           {inboxWide && inbox.shown && <InboxUnchosen />}

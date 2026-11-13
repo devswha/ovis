@@ -2,8 +2,8 @@
  * Where focus goes when the control that had it is gone: Add PC closed Settings behind it, a
  * closed row left the roster. The header's workspace-list toggle is the control nearest the PC
  * list, and one of the two is always shown: the drawer's on a phone, the sidebar's on a desktop.
- * A phone's thread opened from the agent list draws Back to agents in the drawer toggle's place:
- * the focus goes there when no toggle is shown.
+ * A phone's thread in the inbox mode draws Back in the drawer toggle's place: the focus goes there
+ * when no toggle is shown.
  * Runs a frame later, once React has taken the vanished control out of the document.
  */
 export function focusWorkspaceListToggle(): void {

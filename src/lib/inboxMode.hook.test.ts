@@ -15,6 +15,8 @@ describe("useInboxMode", () => {
   let listeners: Array<(event: Event) => void>;
   /** what a listener registered after the hook's saw of each pop: the event must reach it */
   let heardAfter: number;
+  /** the history writes made as the page loaded */
+  let loadWrites: string[];
 
   beforeEach(() => {
     for (const key of ["window", "document", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -54,12 +56,13 @@ describe("useInboxMode", () => {
     descriptors.clear();
   });
 
-  async function mount(addresses: string[], read = true): Promise<void> {
+  async function mount(addresses: string[], read = true, startsIn = false): Promise<void> {
     entries = addresses.map((address) => ({ state: null, url: new URL(`http://localhost:7317${address}`) }));
     index = entries.length - 1;
-    function Probe() { mode = useInboxMode({ read }); return null; }
+    function Probe() { mode = useInboxMode({ read, startsIn }); return null; }
     await act(async () => { renderer = create(createElement(Probe)); });
     window.addEventListener("popstate", () => { heardAfter += 1; });
+    loadWrites = writes;
     writes = [];
   }
   const back = (): Promise<void> => act(async () => { window.history.go(-1); });
@@ -141,6 +144,28 @@ describe("useInboxMode", () => {
     expect(writes).toEqual([]);
     expect(searches()).toEqual(["?app=inbox&pane=p1"]);
     expect(listeners).toHaveLength(1);
+  });
+
+  it("starts in the mode on a device that says so, its address taking the mark by a replace with nothing pushed", async () => {
+    await mount(["/"], true, true);
+    expect([mode.on, mode.at()]).toEqual([true, true]);
+    expect(loadWrites).toEqual(["replaceState 0 ?app=inbox"]);
+    expect(entries).toHaveLength(1);
+    await act(async () => { renderer?.unmount(); });
+
+    // a tapped alert's address keeps its pane: the mode opens on that thread
+    await mount(["/?pane=p1&view=chat"], true, true);
+    expect(mode.on).toBe(true);
+    expect(loadWrites).toEqual(["replaceState 0 ?pane=p1&view=chat&app=inbox"]);
+    await act(async () => { renderer?.unmount(); });
+
+    // an address already the mode's is left as it is, and a build that does not read the mode starts nowhere
+    await mount(["/?app=inbox"], true, true);
+    expect(loadWrites).toEqual([]);
+    await act(async () => { renderer?.unmount(); });
+    await mount(["/"], false, true);
+    expect(mode.on).toBe(false);
+    expect(loadWrites).toEqual([]);
   });
 
   it("writes the mode into the hosted shell's fragment", async () => {

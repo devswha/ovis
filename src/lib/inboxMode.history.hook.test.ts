@@ -59,9 +59,11 @@ describe("the inbox mode in the history", () => {
     drawerOpen: { current: false } as RefObject<boolean>,
   };
 
+  /** whether the device starts in the mode (Settings → Agent inbox on a phone) */
+  let startsIn: boolean;
   function Probe({ link }: { link: AppLink | null }) {
-    const mode = useInboxMode({ read: true });
-    const inbox = useInbox({ setting: mode.on, anyWidth: true, initialLink: link, drawerOpenRef: refs.drawerOpen });
+    const mode = useInboxMode({ read: true, startsIn });
+    const inbox = useInbox({ on: mode.on, initialLink: link, drawerOpenRef: refs.drawerOpen });
     shell = { mode, inbox };
     const machine = { id: "local", name: "workstation", kind: "local", enabled: true, state: "connected", error: null, snapshot } as Machine;
     const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId) as HerdrPane;
@@ -88,6 +90,7 @@ describe("the inbox mode in the history", () => {
     for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     listeners = [];
+    startsIn = false;
     // the app picks a pane as its selection does (lib/useSelection.ts): a pick leaves the list
     refs.selectTarget.current = (_machineId, picked) => { if (picked !== null) { paneId = picked; shell.inbox.leave(); draw(); } };
     const write = (method: "pushState" | "replaceState") => (state: unknown, _unused: string, url?: string): void => {
@@ -240,6 +243,32 @@ describe("the inbox mode in the history", () => {
 
     await act(async () => { shell.inbox.back(); });
 
+    expect(screen()).toBe("list:p1");
+    expect(addresses()).toEqual([LIST]);
+  });
+
+  it("a device that starts in the inbox opens the app's start on the list by a replace, with nothing under it", async () => {
+    startsIn = true;
+    await open([""], "p1");
+
+    expect(screen()).toBe("list:p1");
+    expect(addresses()).toEqual([LIST]);
+
+    // a row is one entry above the list, and Back from it is the list: one more Back leaves the app
+    await openRow("p2");
+    await back();
+    expect(screen()).toBe("list:p2");
+    expect([index, addresses()]).toEqual([0, [LIST, thread(P2)]]);
+  });
+
+  it("a device that starts in the inbox opens a pane's address as that pane's thread, the list behind its Back", async () => {
+    startsIn = true;
+    await open([P1], "p1");
+
+    expect(screen()).toBe("thread:p1");
+    expect(addresses()).toEqual([thread(P1)]);
+
+    await act(async () => { shell.inbox.back(); });
     expect(screen()).toBe("list:p1");
     expect(addresses()).toEqual([LIST]);
   });

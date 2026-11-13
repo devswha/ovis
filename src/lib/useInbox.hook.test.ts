@@ -96,9 +96,9 @@ describe("useInbox", () => {
     descriptors.clear();
   });
 
-  async function mount(setting: boolean, initialLink: AppLink | null = null, anyWidth = false): Promise<void> {
+  async function mount(on: boolean, initialLink: AppLink | null = null): Promise<void> {
     function Probe() {
-      inbox = useInbox({ setting, initialLink, drawerOpenRef, anyWidth });
+      inbox = useInbox({ on, initialLink, drawerOpenRef });
       return null;
     }
     await act(async () => { renderer = create(createElement(Probe)); });
@@ -106,7 +106,7 @@ describe("useInbox", () => {
 
   const paneLink: AppLink = { machine: "local", workspace: "w1", pane: "p1", view: "chat", settings: null };
 
-  it("opens on a phone with the setting and no link, cold, and covers the selected pane", async () => {
+  it("opens in the mode with no link, cold, and covers the selected pane", async () => {
     await mount(true);
 
     expect([inbox.enabled, inbox.shown, inbox.cold]).toEqual([true, true, true]);
@@ -152,35 +152,18 @@ describe("useInbox", () => {
     expect([inbox.enabled, inbox.shown]).toEqual([true, false]);
   });
 
-  it("is never shown in a window wider than a phone, nor with the setting off", async () => {
-    phone = false;
-    await mount(true);
-    await act(async () => { inbox.show(); });
-    expect([inbox.enabled, inbox.shown]).toEqual([false, false]);
-    await act(async () => { renderer?.unmount(); });
-
-    phone = true;
+  it("is never shown outside the mode", async () => {
     await mount(false);
     await act(async () => { inbox.show(); });
     expect([inbox.enabled, inbox.shown]).toEqual([false, false]);
   });
 
-  it("is a place at every width when asked to be: offered and open in a window wider than a phone", async () => {
+  it("is a place of the mode at every width: a window wider than a phone opens on it too", async () => {
     phone = false;
-    await mount(true, null, true);
+    await mount(true);
     expect([inbox.enabled, inbox.shown, inbox.cold]).toEqual([true, true, true]);
     await act(async () => { inbox.leave(); });
     expect([inbox.enabled, inbox.shown]).toEqual([true, false]);
-    await act(async () => { renderer?.unmount(); });
-
-    // a link to a pane opens on it, as on a phone
-    await mount(true, paneLink, true);
-    expect([inbox.enabled, inbox.shown]).toEqual([true, false]);
-    await act(async () => { renderer?.unmount(); });
-
-    // the setting still decides: off, no width shows it
-    await mount(false, null, true);
-    expect([inbox.enabled, inbox.shown]).toEqual([false, false]);
   });
 
   it("covers the pane while the drawer is open", async () => {

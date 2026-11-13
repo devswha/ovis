@@ -1,11 +1,6 @@
 /* The inbox mode's list (InboxList.tsx). On a phone it is the screen: one flat surface, two round controls floating
    at its top and a round button and a search pill at its foot, the rows scrolling under both. From 769px it is the
-   column beside the thread it opens (.is-wide), its controls in a top row and a foot of its own.
-
-   Its parts share their names with the phone's agent list of the classic shell (AgentInbox.css), whose rules are
-   written for the bare names. Every rule here is scoped under .mode-inbox, and the few properties that list sets
-   and this one does not are reset where they would reach (marked "the classic list's"), so the two can be on one
-   page. */
+   column beside the thread it opens (.is-wide), its controls in a top row and a foot of its own. */
 .mode-inbox {
   /* a round control: a finger's size here, the density's control in the column under a fine pointer */
   --inbox-control: var(--touch-target);
@@ -34,8 +29,6 @@
 .mode-inbox .inbox-scroll {
   position: absolute;
   inset: 0;
-  /* the classic list's scroller is a flex column */
-  display: block;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-block: calc(var(--inbox-control) + var(--space-4)) calc(var(--inbox-control) + var(--space-3) * 2 + env(safe-area-inset-bottom, 0px));
@@ -134,8 +127,6 @@
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  /* the classic list's field has margins of its own */
-  margin: 0;
 }
 
 .mode-inbox .inbox-search-glass {
@@ -276,17 +267,12 @@
   flex-direction: column;
   gap: var(--space-half);
   min-width: 0;
-  /* the classic list's rows are ruled off under their text: no rule and no room for one here */
-  margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: 0;
 }
 
 /* the time stands on the name's middle, not on its baseline */
 .mode-inbox .inbox-line {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
   gap: var(--space-2);
   min-width: 0;
 }
@@ -320,14 +306,9 @@
 
 /* one line, whatever the agent wrote: a line break in its words reads as a space */
 .mode-inbox .inbox-words {
-  /* the classic list's words are a box clamped to two lines */
-  display: block;
   flex: 1 1 auto;
   min-width: 0;
-  margin-top: 0;
   overflow: hidden;
-  overflow-wrap: normal;
-  -webkit-line-clamp: none;
   color: var(--text-dim);
   font-size: var(--fs-row-sub);
   line-height: var(--lh-base);
@@ -360,6 +341,12 @@
   flex: none;
   width: auto;
   height: auto;
+}
+
+/* an unread finish's check is a box turned 45 degrees (Sidebar.css), which draws it about 2.5px wider on each side
+   than its layout box: it gets that room here, so its drawn edge stands on the row's inset as a dot's does */
+.mode-inbox .inbox-state > .sidebar-status[data-status="done"] .sidebar-status-dot {
+  margin-inline: calc(var(--space-half) + var(--hairline) / 2);
 }
 
 /* loading, none, no match: one quiet line where the rows would be */
@@ -412,34 +399,17 @@
   min-width: 0;
 }
 
-/* Back to Ovis: the app's mark and the words, where the classic sidebar's foot has the way in. Its fill under a
-   pointer reaches --space-2 past the mark, which stays on the column's inset. */
+/* Back to Ovis: the sidebar foot's own action (Sidebar.css), as wide as its words, where the classic sidebar's
+   foot has the way in. The app's mark stands in its icon's place, on the column's inset: the fill under a pointer
+   reaches --space-2 past it. */
 .mode-inbox .inbox-exit {
-  display: inline-flex;
-  align-items: center;
   flex: 0 1 auto;
   gap: var(--space-2-5);
+  width: auto;
   min-width: 0;
   height: var(--inbox-control);
   margin-inline-start: calc(-1 * var(--space-2));
   padding: 0 var(--space-3) 0 var(--space-2);
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-pill);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--fs-md);
-  cursor: pointer;
-}
-
-.mode-inbox .inbox-exit:active {
-  background: var(--side-hover);
-}
-
-@media (hover: hover) {
-  .mode-inbox .inbox-exit:hover {
-    background: var(--side-hover);
-  }
 }
 
 .mode-inbox .inbox-exit-mark {
