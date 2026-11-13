@@ -249,6 +249,8 @@ async function withPage(browser: Browser, base: string, settings: Settings, path
   const context = await browser.newContext({ viewport, isMobile: !wide, hasTouch: !wide, locale: "en-US" });
   try {
     await context.addInitScript((seed) => {
+      // the blank page the tab began on, which Back out of the app returns to, has no storage to seed
+      if (location.protocol === "about:") return;
       if (sessionStorage.getItem("inbox-mode-regression:seeded")) return;
       sessionStorage.setItem("inbox-mode-regression:seeded", "1");
       const { phoneInbox, ...settings } = seed;
@@ -506,7 +508,7 @@ try {
           await listScreen(page);
           await rowCount(page, 6);
           // the page's first entry is the list's: nothing of the app lies under it
-          await page.evaluate(() => history.back());
+          await page.goBack({ waitUntil: "commit" });
           await page.waitForURL("about:blank");
           pass(10, "opened by its own address, Back on the list leaves the app");
         });
@@ -600,7 +602,7 @@ try {
           await listScreen(page);
           await rowCount(page, 6);
           assert.equal(await page.locator(".pane-slot").count(), 0);
-          await page.evaluate(() => history.back());
+          await page.goBack({ waitUntil: "commit" });
           await page.waitForURL("about:blank");
           pass(16, "with Agent inbox on a phone on, a phone's cold start is the mode's list, and Back leaves the app");
         });
