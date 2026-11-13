@@ -2387,7 +2387,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   rows (the roster's event stream, lib/useMachineRoster.ts `rosterConnection`), whether or not a
   pane is mounted under the list, a cold load of the mode's own address included: Reconnecting…
   while it is lost after the page had it, Connected for a moment when it is back. A thread says
-  its own pane's word under its name.
+  its own pane's word under its name; on a wide window, with a thread open beside the list, the
+  column says its word only where it differs from the one the thread's chip says: one fact, one
+  place.
 - The monitor button (`LensToggle` `thread`; lucide `Monitor`, **Show the terminal**, then
   **Show the chat**) runs the lens switch for the thread's pane: the terminal already mounted
   under the chat is shown in the thread's place and no second connection is made. Everything

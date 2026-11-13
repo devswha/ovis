@@ -1510,6 +1510,17 @@ try {
         }, viewport);
       }
 
+      // ---- one word for a lost connection beside a wide thread ----
+      await withPage(browser, base, light, `/?app=inbox&pane=${encodeURIComponent(WORKING)}&view=chat&demo_connection=switch`, "one word for a lost connection beside a wide thread", async (page) => {
+        await page.locator(".thread-chip").waitFor();
+        await page.locator(".conn-live").waitFor({ state: "attached" });
+        await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
+        await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
+        await page.locator(".thread-chip-state.is-reconnecting").waitFor();
+        assert.equal(await page.locator(".inbox-column .inbox-top .inbox-connection").count(), 0, "the column does not say what the thread's chip says");
+        console.log("PASS on a wide window a lost connection is said once, by the thread's chip, while the column's word would say the same");
+      }, desktop);
+
       // ---- a list whose load failed ----
       // A cold list whose roster could not be read says so, with the cause and a Retry, never Loading… for ever; Retry
       // loads it again.
