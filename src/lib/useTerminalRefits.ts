@@ -206,6 +206,17 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     }
     if (term && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows);
   }, [covered]);
+  // A connection made again while the list covers the pane attaches it keeping the size the pty has: the pane sizes
+  // nothing there, and another device may have sized the pty meanwhile. The hold it had as the list covered it
+  // (heldAtCover) stays, and the pane shown again asks for its grid, which it no longer holds
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!covered || socket === null) return;
+    return socket.onBeforeReplay(() => {
+      const pane = paneRef.current;
+      if (pane !== null && socket.holdsSize(pane)) socket.keepSize(pane, false);
+    });
+  }, [covered]);
 
   // the split's other half took this tab's grid: this half lets the pty go and draws it at that grid;
   // made the active half, it fits its own screen and takes the pty, as a pane shown again does
