@@ -14,8 +14,9 @@ import { ZH } from "../src/lib/i18n.zh.ts";
 // never by their pixels or their words: what an option draws stays inside its track, a chosen option holds its own
 // label, and no label leaves its option or lies on its neighbour. A phone drew a second outline around every chosen
 // option (the option's finger-sized hit box wore the shadow meant for the pill inside it), and at 360px the four
-// phrases of Agents order lay over each other. All files and HTTP traffic stay in this disposable, loopback-only
-// app; no herdr session is opened.
+// phrases of Agents order lay over each other. A read-only fact beside its label (Devices, Access) keeps its own width
+// up to its cap: on a phone those shrank beside a long description until they broke one letter to a line. All files
+// and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-segmented-"));
 
 type Language = "en" | "ko" | "ja" | "zh";
@@ -114,6 +115,34 @@ async function settingsIn(browser: Browser, url: string, language: Language, wid
   return { page, errors, close: () => context.close() };
 }
 
+/**
+ * On a phone (the stylesheet's 640px), the facts of the open dialog that are narrower than their own text on one line
+ * while their cap (their max-width, of their row) has room for more: a fact squeezed by the text beside it. One line
+ * each. A desktop's row has the room, and its facts keep the layout they had.
+ */
+const squeezedFacts = (page: Page): Promise<string[]> => page.locator(".settings-dialog").evaluate((dialog) => {
+  const found: string[] = [];
+  if (!matchMedia("(max-width: 640px)").matches) return found;
+  for (const fact of dialog.querySelectorAll<HTMLElement>(".settings-fact")) {
+    const drawn = fact.getBoundingClientRect().width;
+    const row = fact.parentElement;
+    if (drawn === 0 || row === null) continue;
+    const rowStyle = getComputedStyle(row);
+    const room = row.clientWidth - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight);
+    const max = getComputedStyle(fact).maxWidth;
+    const cap = max === "none" ? room : max.endsWith("%") ? room * parseFloat(max) / 100 : parseFloat(max);
+    // its width on one line, read with the row's limits lifted for one layout and put back at once
+    const before = fact.getAttribute("style");
+    fact.style.setProperty("flex", "none");
+    fact.style.setProperty("max-width", "none");
+    fact.style.setProperty("width", "max-content");
+    const natural = fact.getBoundingClientRect().width;
+    if (before === null) fact.removeAttribute("style"); else fact.setAttribute("style", before);
+    if (drawn + 0.5 < Math.min(natural, cap)) found.push(`the fact "${fact.textContent?.trim() ?? ""}" is ${Math.round(drawn * 10) / 10}px wide, while its text takes ${Math.round(natural * 10) / 10}px and its cap is ${Math.round(cap * 10) / 10}px`);
+  }
+  return found;
+});
+
 /** Chooses an option with a finger and waits until it is the pressed one and the page is drawn with it. */
 async function choose(page: Page, option: Locator): Promise<void> {
   await option.tap();
@@ -142,6 +171,7 @@ async function everyPage(page: Page, language: Language, where: string): Promise
     await settled(page);
     const read = await segmented(page);
     assert.deepEqual(read.defects, [], `${name} ${where}`);
+    assert.deepEqual(await squeezedFacts(page), [], `${name}'s facts ${where}`);
     seen += read.seen;
   }
   return seen;
@@ -183,7 +213,7 @@ try {
           await close();
         }
       }
-      console.log("PASS on a phone at 390, 360 and 320px, in English, Korean, Japanese and Chinese, every Settings page's segmented controls draw inside their tracks and hold their labels");
+      console.log("PASS on a phone at 390, 360 and 320px, in English, Korean, Japanese and Chinese, every Settings page's segmented controls draw inside their tracks and hold their labels, and no fact is squeezed");
 
       // the owner's phone: every choice of the four-option control in turn holds its own label, on its own cell
       {

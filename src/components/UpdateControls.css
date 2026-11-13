@@ -18,6 +18,7 @@
 }
 
 .settings-updates .settings-row > .settings-fact {
+  flex-shrink: 1;
   max-width: none;
   overflow-wrap: normal;
 }
