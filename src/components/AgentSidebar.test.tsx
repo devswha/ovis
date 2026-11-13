@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest, setSystemTime } from "bun:test";
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
@@ -627,6 +627,50 @@ describe("AgentSidebar fold memory", () => {
       // And a page loaded once the agent has ended another turn says no time: the server counted that finish.
       await act(async () => { renderer!.unmount(); });
       await act(async () => { renderer = create(groupedList(inactive, at("idle", 52, 2))); });
+      expect(since()).toEqual([]);
+    } finally {
+      await act(async () => { renderer?.unmount(); });
+      renderer = undefined;
+      jest.useRealTimers();
+      setSystemTime();
+    }
+  });
+
+  it("looks at a roster in the commit that draws it, so no frame is painted with a time the look takes back (#3505)", async () => {
+    const start = 1_800_000_000_000;
+    const loaded = roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
+      ...machine.snapshot, finish_epoch: "server-1",
+      panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "working" as const, finish_id: 0 } : pane),
+      agents: machine.snapshot.agents.map((agent) => agent.pane_id === paneId ? { ...agent, agent_status: "working" as const, state_change_seq: 50 } : agent),
+    } }));
+    const terminal = loaded.flatMap((machine) => machine.snapshot?.panes ?? []).find((pane) => pane.pane_id === paneId)!.terminal_id;
+    // Given a time this device kept of the agent at work ten hours ago, under a counter herdr has since moved past: the
+    // agent rested and went back to work while no page was open, so nothing proves that time.
+    stored.set("ovis:agent-state-since", JSON.stringify({ version: 1, pcs: { local: { lifetime: null, epoch: "server-1", rows: { [paneId]: { state: "working", at: start - 10 * 3_600_000, terminal, seq: 40, finish: 0 } } } } }));
+    const kept = (): unknown => JSON.parse(stored.get("ovis:agent-state-since") ?? "{}").pcs?.local?.rows?.[paneId];
+    // what the device keeps of it once a roster's commit is laid out, which is all that is done before the browser paints
+    const beforePaint: unknown[] = [];
+    function LaidOut({ machines }: { machines: Machine[] }) {
+      useLayoutEffect(() => { if (machines.length > 0) beforePaint.push(kept()); });
+      return null;
+    }
+    const page = (machines: Machine[]) => <SettingsProvider>
+      <Stamping machines={machines} />
+      <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+        <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+      </SidebarFilterProvider>
+      <LaidOut machines={machines} />
+    </SettingsProvider>;
+    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(start));
+    try {
+      // When the page loads, as the app does with no roster yet, and its roster then comes.
+      await act(async () => { renderer = create(page([])); });
+      expect(kept()).toBeDefined();
+      await act(async () => { renderer!.update(page(loaded)); });
+      // Then the look that takes the time back was made in the commit that drew the roster, and the row says none.
+      expect(beforePaint).toEqual([undefined]);
       expect(since()).toEqual([]);
     } finally {
       await act(async () => { renderer?.unmount(); });

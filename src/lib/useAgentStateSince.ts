@@ -3,7 +3,7 @@
  * that says how long an agent has been in its state. App runs the stamping for as long as the page
  * lives, so a change is stamped whether or not a list is in sight; the lists only read.
  */
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type { Machine } from "../../shared/machines.ts";
 import { advanceStateStamps, loadStateStamps, saveStateStamps, stateLooks, type LastLook, type StateStamps } from "./agentStateSince.ts";
@@ -37,6 +37,11 @@ export function useAgentStateStamps(): StateStamps {
  * be read or written (private mode), the page goes by the stamps it made itself. Where the page was
  * not told of its PCs for too long (lib/agentStateWatch.ts), a look dates nothing: what the page
  * saw before does not tell when a state began.
+ *
+ * A look is made in the commit that draws its roster, before the browser paints it. The lists read
+ * the stamps as the last look left them, which at a page's load is as the device kept them: a
+ * roster painted before its look would say, for a frame, each time that look then takes back
+ * (after a reload, every kept time of a PC whose herdr counts nothing).
  */
 export function useAgentStateStamping(machines: readonly Machine[], activity: SidebarActivity): void {
   const looks = useMemo(() => stateLooks(machines, (machineId, pane) => activity.status(machineId, pane)), [machines, activity]);
@@ -48,7 +53,7 @@ export function useAgentStateStamping(machines: readonly Machine[], activity: Si
   const [unseen, setUnseen] = useState<{ round: number; look: UnseenLook }>({ round: 0, look: "first" });
   // what the page carries from one look to the next: its own stamps, the states it saw last, whether the storage still takes them, and the last such roster it looked at
   const carried = useRef<{ own: StateStamps; last: LastLook; kept: boolean; round: number } | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const page = carried.current ??= { own: loadStateStamps() ?? NONE, last: new Map(), kept: true, round: unseen.round };
     const told = page.round !== unseen.round ? unseen.look : null;
     page.round = unseen.round;
