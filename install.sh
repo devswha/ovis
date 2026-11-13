@@ -41,8 +41,8 @@
 # Run it again at any time: what is already there is kept, and step 3 is repeated.
 #   OVIS_REF=<branch or tag>   install that ref instead of the latest release (a branch: from source)
 #   OVIS_RELEASES_URL=<https:// address or file:// folder>   where releases are downloaded from,
-#     laid out as GitHub's (<url>/v<version>/<file>); the pinned key checks the server and its client from
-#     any of them, but the Rust PTY host only against that release's own unsigned ovis-pty-sidecar.json
+#     laid out as GitHub's (<url>/v<version>/<file>); the pinned key checks the server, its client and the
+#     Rust PTY host from any of them the same
 #   OVIS_FROM_SOURCE=1   install from source as before the compiled server
 #   OVIS_RUNTIME=herdr|herdr-core   pick the runtime instead of going by what is installed
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
@@ -901,11 +901,12 @@ pick_checker() {
 # The entry for $2 (a platform, or dist for the client) in the checked manifest $1, as scripts/server-manifest.ts
 # writes it (two-space JSON, which the signature vouches for byte for byte): $entry_file, $entry_sha, $entry_size.
 manifest_entry() {
-  if [ "$2" = dist ]; then
-    entry=$(sed -n '/^  "dist": {$/,/^  }/p' "$1")
-  else
-    entry=$(sed -n "/^    \"$2\": {\$/,/^    }/p" "$1")
-  fi
+  # by section: the PTY hosts' keys repeat platform names
+  case "$2" in
+    dist) entry=$(sed -n '/^  "dist": {$/,/^  }/p' "$1") ;;
+    pty-*) entry=$(sed -n '/^  "pty": {$/,/^  }/p' "$1" | sed -n "/^    \"${2#pty-}\": {\$/,/^    }/p") ;;
+    *) entry=$(sed -n '/^  "assets": {$/,/^  }/p' "$1" | sed -n "/^    \"$2\": {\$/,/^    }/p") ;;
+  esac
   entry_file=$(printf '%s\n' "$entry" | sed -n 's/^ *"file": "\([^"]*\)",$/\1/p')
   entry_sha=$(printf '%s\n' "$entry" | sed -n 's/^ *"sha256": "\([0-9a-f]\{64\}\)",$/\1/p')
   entry_size=$(printf '%s\n' "$entry" | sed -n 's/^ *"size": \([0-9]\{1,15\}\)$/\1/p')
@@ -933,32 +934,26 @@ take() {
   [ "$got_sha" = "$entry_sha" ] || refuse "$1 does not match its SHA-256 in ovis-server.json (got $got_sha)"
 }
 
-# The release's Rust PTY host into $stage/bin, checked against the SHA-256 its own manifest names and run
-# once here; the record beside it is what the server checks before it runs it (server/pty/host.ts).
-# Without one that runs, terminals are mirrored: nothing here fails the install.
+# The release's Rust PTY host into $stage/bin, only the one the signed ovis-server.json names (its SHA-256 and size
+# there, never another file's word for it), run once here; the record beside it is what the server checks before it
+# runs it (server/pty/host.ts). Without one that runs, terminals are mirrored: nothing here fails the install.
 binary_pty_host() {
   case "$platform" in
     linux-x64 | linux-arm64) pty_asset=$platform ;;
     darwin-*) pty_asset=darwin-universal ;;
     *) return 0 ;;
   esac
-  if ! fetch "$at/ovis-pty-sidecar.json" "$verify_dir/pty.json" 65536 2>/dev/null; then
-    say "the release has no Rust PTY host, so terminals are mirrored"
-    return 0
-  fi
-  pty_version=$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$verify_dir/pty.json")
-  pty_crate=$(sed -n 's/^  "crate": "\([0-9a-f]\{40\}\)",$/\1/p' "$verify_dir/pty.json")
-  pty_entry=$(sed -n "/^    \"$platform\": {\$/,/^    }/p" "$verify_dir/pty.json")
-  pty_file=$(printf '%s\n' "$pty_entry" | sed -n 's/^ *"file": "\([^"]*\)",$/\1/p')
-  pty_sha=$(printf '%s\n' "$pty_entry" | sed -n 's/^ *"sha256": "\([0-9a-f]\{64\}\)"$/\1/p')
-  if [ "$pty_version" != "$version" ] || [ "$pty_file" != "ovis-pty-sidecar-$pty_asset" ] || [ -z "$pty_sha" ]; then
-    say "the release's ovis-pty-sidecar.json names no host for $platform and v$version, so terminals are mirrored"
+  manifest_entry "$stage/ovis-server.json" "pty-$pty_asset"
+  pty_file=$entry_file pty_sha=$entry_sha pty_size=$entry_size
+  if [ "$pty_file" != "ovis-pty-sidecar-$pty_asset" ] || [ -z "$pty_sha" ] || [ -z "$pty_size" ]; then
+    say "the signed ovis-server.json names no Rust PTY host for $platform, so terminals are mirrored"
     return 0
   fi
   mkdir -p "$stage/bin"
-  if ! fetch "$at/$pty_file" "$stage/bin/ovis-pty-sidecar" 100000000 || [ "$(sha256 "$stage/bin/ovis-pty-sidecar")" != "$pty_sha" ]; then
+  if ! fetch "$at/$pty_file" "$stage/bin/ovis-pty-sidecar" "$pty_size" || [ "$(wc -c <"$stage/bin/ovis-pty-sidecar" | tr -d ' ')" != "$pty_size" ] ||
+    [ "$(sha256 "$stage/bin/ovis-pty-sidecar")" != "$pty_sha" ]; then
     rm -rf "$stage/bin"
-    say "the Rust PTY host did not download or does not match its SHA-256, so terminals are mirrored"
+    say "the Rust PTY host did not download or does not match its SHA-256 and size in ovis-server.json, so it is not run and terminals are mirrored"
     return 0
   fi
   chmod 755 "$stage/bin/ovis-pty-sidecar"
@@ -967,7 +962,7 @@ binary_pty_host() {
     say "the Rust PTY host does not run on this PC, so terminals are mirrored"
     return 0
   fi
-  printf '{"crate":"%s","sha256":"%s","version":"%s"}\n' "$pty_crate" "$pty_sha" "$version" >"$stage/bin/ovis-pty-sidecar.json"
+  printf '{"sha256":"%s","version":"%s"}\n' "$pty_sha" "$version" >"$stage/bin/ovis-pty-sidecar.json"
 }
 
 # One install at a time in OVIS_HOME: $OVIS_HOME/.install.lock, made by mkdir (atomic) and holding this

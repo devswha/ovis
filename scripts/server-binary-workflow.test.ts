@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, signManifest, verifyRelease, writeManifest } from "./server-manifest.ts";
+import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, verifyRelease, writeManifest } from "./server-manifest.ts";
 import { parseWorkflow, root } from "./shell-workflow-rules.ts";
 
 /**
@@ -51,6 +51,7 @@ function signedFolder(temp: string): { publicKey: string; privateKeyPem: string 
   const dir = join(temp, "server-binary");
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
+  for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
   writeFileSync(join(dir, DIST_ARCHIVE), "the built client\n");
   writeManifest(dir, { version: "1.2.3", sources });
   const { privateKeyPem, publicKey } = generateKeyPair();
@@ -69,13 +70,16 @@ function trusting(script: string, publicKey: string): string {
  * publish's own lines from the server files to `gh release create`, run with a `gh` that records its arguments: what
  * the release would get, or the refusal. `trust` runs them trusting the test's key instead of the committed one.
  */
-function runAttach(prepare: (dir: string, privateKeyPem: string) => void, trust = true): { code: number; attached: string[]; err: string } {
+function runAttach(prepare: (dir: string, privateKeyPem: string) => void, trust = true, builtHost?: string): { code: number; attached: string[]; err: string } {
   const temp = mkdtempSync(join(tmpdir(), "ovis-attach-step-"));
   try {
     const { publicKey, privateKeyPem } = signedFolder(temp);
     prepare(join(temp, "server-binary"), privateKeyPem);
     mkdirSync(join(temp, "pty-sidecar"));
     writeFileSync(join(temp, "pty-sidecar", "ovis-pty-sidecar.json"), "{}");
+    // the hosts pty-sidecar.yml built, which the signed manifest names
+    for (const build of PTY_ASSETS) if (existsSync(join(temp, "server-binary", ptyFile(build)))) copyFileSync(join(temp, "server-binary", ptyFile(build)), join(temp, "pty-sidecar", ptyFile(build)));
+    if (builtHost !== undefined) writeFileSync(join(temp, "pty-sidecar", ptyFile("linux-x64")), builtHost);
     mkdirSync(join(temp, "stub"));
     writeFileSync(join(temp, "stub", "gh"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(temp, "gh-args")}"\n`);
     chmodSync(join(temp, "stub", "gh"), 0o755);
@@ -112,6 +116,13 @@ test("publish attaches nothing else that lands in the server folder, such as a k
   expect(runAttach((dir) => writeFileSync(join(dir, "ovis-server-extra"), "x")).attached).toEqual([]);
 });
 
+test("publish attaches no PTY host but the one ovis-server.json signed", () => {
+  const result = runAttach(() => {}, true, "another host\n");
+  expect(result.code).not.toBe(0);
+  expect(result.attached).toEqual([]);
+});
+
+
 test("publish refuses server files signed for another version than the one it releases", () => {
   // signed again by the same key: the signature holds, only the version check can refuse it
   const { code, err, attached } = runAttach((dir, privateKeyPem) => {
@@ -129,6 +140,7 @@ function runSignStep(key: string, trust?: string): { code: number; err: string; 
   const dir = join(temp, "server-binary");
   mkdirSync(dir);
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
+  for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
   writeFileSync(join(dir, DIST_ARCHIVE), "the built client\n");
   writeManifest(dir, { version: "1.2.3", sources });
   const script = step("server-binary-sign", "Sign the manifest").run!;

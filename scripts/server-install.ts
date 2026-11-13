@@ -5,7 +5,8 @@
  * it names have been checked; then one rename makes the new release the one that runs:
  *
  *   <home>/bin -> releases/<version>-<id>   the release that runs: ovis-server(.exe), dist/, the manifest and its
- *                                           signature as they were checked, bin/ovis-pty-sidecar(.json) when given
+ *                                           signature as they were checked, and bin/ovis-pty-sidecar(.json): the
+ *                                           Rust PTY host the signed manifest names, when it runs here
  *   <home>/releases/.stage-<id>             a download in progress; one an interrupted run left is removed first
  *
  * On Windows, where a link needs rights a user may not have, bin is the release folder itself, moved in by two
@@ -21,7 +22,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, RELEASE_PUBLIC_KEY, type ReleaseAsset, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
+import { runsHere } from "./pty-sidecar.ts";
+import { binaryName, checkManifest, DIST_ARCHIVE, MANIFEST, ptyAssetFor, RELEASE_PUBLIC_KEY, type ReleaseAsset, releaseFile, SERVER_PLATFORMS, type ServerPlatform, SIGNATURE } from "./server-manifest.ts";
 
 export const DEFAULT_RELEASES = "https://github.com/devswha/ovis/releases/download";
 const MANIFEST_LIMIT = 64 * 1024;
@@ -86,6 +88,29 @@ export async function download(url: string, limit: number, name: string, fetchFi
 }
 
 /** `asset` from the release at `at`, only when its size and SHA-256 are what the checked manifest names. */
+/**
+ * The Rust PTY host the signed manifest names for `platform`, into `bin` with the record server/pty/host.ts checks, and
+ * only after its size and SHA-256 match the manifest and it runs here: no other file's word for a host is taken. Any
+ * failure leaves no host, and terminals mirrored; it never fails the install. What it did, in a few words.
+ */
+async function ptyHost(at: string, hosts: Record<string, ReleaseAsset>, platform: ServerPlatform, version: string, bin: string, options: InstallServerOptions): Promise<string> {
+  const build = ptyAssetFor(platform);
+  if (!build) return "no Rust PTY host on this platform";
+  let bytes: Uint8Array;
+  try { bytes = await checked(at, hosts[build]!, options.fetchFile); }
+  catch (error) { return `the Rust PTY host was not taken (${(error as Error).message}), so terminals are mirrored`; }
+  mkdirSync(bin, { recursive: true });
+  const target = join(bin, "ovis-pty-sidecar");
+  writeFileSync(target, bytes, { mode: 0o755 });
+  chmodSync(target, 0o755);
+  if (!(options.ptyRuns ?? runsHere)(target)) {
+    rmSync(bin, { recursive: true, force: true });
+    return "the Rust PTY host does not run on this PC, so terminals are mirrored";
+  }
+  writeFileSync(`${target}.json`, `${JSON.stringify({ sha256: hosts[build]!.sha256, version })}\n`);
+  return "the Rust PTY host checked against ovis-server.json";
+}
+
 async function checked(at: string, asset: ReleaseAsset, fetchFile?: typeof fetch): Promise<Uint8Array> {
   const bytes = await download(`${at}/${asset.file}`, asset.size, asset.file, fetchFile);
   if (!bytes) throw new Error(`${at}/${asset.file} does not exist; nothing was changed`);
@@ -253,8 +278,10 @@ export interface InstallServerOptions {
   releases?: string;
   /** a test's own key; the launcher passes none, so only RELEASE_PUBLIC_KEY is trusted */
   publicKey?: string;
-  /** puts the Rust PTY host at the path it is given (scripts/pty-sidecar.ts install); its failure leaves terminals mirrored */
-  ptyHost?: (target: string) => Promise<{ ok: boolean; message: string }>;
+  /** whether a downloaded Rust PTY host runs on this PC (scripts/pty-sidecar.ts runsHere), and a call made once every
+   * file is checked and before anything moves: tests */
+  ptyRuns?: (path: string) => boolean;
+  inWindow?: () => Promise<void>;
   /** how long to wait for another install's lock, how a file is fetched, and a call made when the lock is found held: tests */
   lockWaitMs?: number;
   onLockWait?: () => void;
@@ -310,7 +337,8 @@ async function installLocked(options: InstallServerOptions, platform: ServerPlat
     rmSync(join(stage, DIST_ARCHIVE));
     writeFileSync(join(stage, MANIFEST), manifestBytes);
     writeFileSync(join(stage, SIGNATURE), signature);
-    if (options.ptyHost) host = `; ${(await options.ptyHost(join(stage, "bin", "ovis-pty-sidecar"))).message}`;
+    host = `; ${await ptyHost(at, manifest.pty, platform, version, join(stage, "bin"), options)}`;
+    await options.inWindow?.();
     // the release bin names now: a server started from it may still run, so it stays until the next install
     try { previous = WINDOWS ? null : realpathSync(join(home, "bin")).split(/[/\\]/).at(-1)!; } catch { previous = null; }
     renameSync(stage, join(releases, name));

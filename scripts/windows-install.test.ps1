@@ -439,7 +439,7 @@ public static class ImmediateGh {
 // <release folder> <scripts/server-manifest.ts>: v1.2.3 to v1.2.7 signed by one key, v1.2.5 then again by another,
 // v1.2.6 with a manifest for 1.2.2; prints the first key's public half
 const [releases, module] = process.argv.slice(2);
-const { generateKeyPair, releaseFile, SERVER_PLATFORMS, DIST_ARCHIVE, signManifest, writeManifest } = await import(module);
+const { generateKeyPair, releaseFile, SERVER_PLATFORMS, DIST_ARCHIVE, PTY_ASSETS, ptyFile, signManifest, writeManifest } = await import(module);
 const { mkdirSync, writeFileSync } = await import("node:fs");
 const { join } = await import("node:path");
 const key = generateKeyPair();
@@ -449,6 +449,7 @@ for (const version of ["1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7"]) {
   mkdirSync(dir, { recursive: true });
   mkdirSync(client, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `ovis-server ${version} for ${platform}\n`);
+  for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
   writeFileSync(join(client, "index.html"), `<!doctype html><title>${version}</title>`);
   if (Bun.spawnSync(["tar", "-czf", join(dir, DIST_ARCHIVE), "-C", client, "."]).exitCode !== 0) throw new Error("tar failed");
   writeManifest(dir, { version: version === "1.2.6" ? "1.2.2" : version, sources: { server: "a".repeat(40), shared: "b".repeat(40) } });

@@ -34,6 +34,14 @@ export const RELEASE_PUBLIC_KEY = "C8+dOD0gpFHoy008ZqHO89vXutaLqlt5uWyIh250OiY="
 /** The name a platform's binary has in a release. */
 export const releaseFile = (platform: ServerPlatform): string => `ovis-server-${platform}${platform === "windows-x64" ? ".exe" : ""}`;
 /** The name the binary has where it runs, beside dist/. */
+/** The Rust PTY host builds a release carries (pty-sidecar.yml): one per Linux CPU and one universal macOS binary */
+export const PTY_ASSETS = ["linux-x64", "linux-arm64", "darwin-universal"] as const;
+export type PtyAsset = typeof PTY_ASSETS[number];
+export const ptyFile = (asset: PtyAsset): string => `ovis-pty-sidecar-${asset}`;
+/** The PTY host build a server platform runs, or null where there is none (Windows mirrors its panes). */
+export const ptyAssetFor = (platform: ServerPlatform): PtyAsset | null =>
+  platform === "windows-x64" ? null : platform.startsWith("darwin-") ? "darwin-universal" : platform as PtyAsset;
+
 export const binaryName = (platform: ServerPlatform): string => (platform === "windows-x64" ? "ovis-server.exe" : "ovis-server");
 
 export interface ReleaseAsset { file: string; sha256: string; size: number }
@@ -46,9 +54,11 @@ export interface ServerManifest {
   sources: { server: string; shared: string };
   assets: Record<ServerPlatform, ReleaseAsset>;
   dist: ReleaseAsset;
+  /** the Rust PTY hosts, signed with the server: an installer runs no host but the one named here */
+  pty: Record<PtyAsset, ReleaseAsset>;
 }
 /** every file the manifest vouches for, in the order the sums file lists them */
-const RELEASE_FILES = (): string[] => [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE];
+const RELEASE_FILES = (): string[] => [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, ...PTY_ASSETS.map(ptyFile)];
 
 const root = resolve(import.meta.dir, "..");
 const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
@@ -78,7 +88,8 @@ export function writeManifest(dir: string, release: { version: string; sources: 
     return { file, sha256: sha256(bytes), size: bytes.length };
   };
   const assets = Object.fromEntries(SERVER_PLATFORMS.map((platform) => [platform, asset(releaseFile(platform))])) as ServerManifest["assets"];
-  const manifest: ServerManifest = { schema: MANIFEST_SCHEMA, version: release.version, sources: release.sources, assets, dist: asset(DIST_ARCHIVE) };
+  const pty = Object.fromEntries(PTY_ASSETS.map((build) => [build, asset(ptyFile(build))])) as ServerManifest["pty"];
+  const manifest: ServerManifest = { schema: MANIFEST_SCHEMA, version: release.version, sources: release.sources, assets, dist: asset(DIST_ARCHIVE), pty };
   rmSync(join(dir, SIGNATURE), { force: true });
   writeFileSync(join(dir, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(dir, SUMS), sumsOf(manifest));
@@ -125,7 +136,7 @@ export function signManifest(dir: string, privateKeyPem: string): string {
 }
 
 /** the sums file a manifest goes with: one line per file, as sha256sum writes them */
-const sumsOf = (manifest: ServerManifest): string => [...SERVER_PLATFORMS.map((platform) => manifest.assets[platform]), manifest.dist].map(({ sha256: digest, file }) => `${digest}  ${file}\n`).join("");
+const sumsOf = (manifest: ServerManifest): string => [...SERVER_PLATFORMS.map((platform) => manifest.assets[platform]), manifest.dist, ...PTY_ASSETS.map((build) => manifest.pty[build])].map(({ sha256: digest, file }) => `${digest}  ${file}\n`).join("");
 
 const sameKeys = (value: unknown, keys: readonly string[]): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) && JSON.stringify(Object.keys(value)) === JSON.stringify(keys);
@@ -146,7 +157,7 @@ function canonicalManifest(bytes: Buffer): ServerManifest | string {
   } catch {
     return `${MANIFEST} is not JSON`;
   }
-  if (!sameKeys(parsed, ["schema", "version", "sources", "assets", "dist"])) return `${MANIFEST} must hold exactly schema, version, sources, assets and dist`;
+  if (!sameKeys(parsed, ["schema", "version", "sources", "assets", "dist", "pty"])) return `${MANIFEST} must hold exactly schema, version, sources, assets, dist and pty`;
   if (parsed["schema"] !== MANIFEST_SCHEMA) return `${MANIFEST} is schema ${JSON.stringify(parsed["schema"])}, and this reader knows only schema ${MANIFEST_SCHEMA}`;
   if (typeof parsed["version"] !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(parsed["version"])) return `${MANIFEST} names no version`;
   const sources = parsed["sources"];
@@ -157,6 +168,11 @@ function canonicalManifest(bytes: Buffer): ServerManifest | string {
     if (!isAsset(assets[platform], releaseFile(platform))) return `${platform}: ${MANIFEST} must name ${releaseFile(platform)}, its SHA-256 and its size, and nothing else`;
   }
   if (!isAsset(parsed["dist"], DIST_ARCHIVE)) return `${MANIFEST} must name ${DIST_ARCHIVE}, its SHA-256 and its size, and nothing else`;
+  const pty = parsed["pty"];
+  if (!sameKeys(pty, PTY_ASSETS)) return `${MANIFEST} must name exactly the Rust PTY hosts ${PTY_ASSETS.join(", ")}`;
+  for (const build of PTY_ASSETS) {
+    if (!isAsset(pty[build], ptyFile(build))) return `${build}: ${MANIFEST} must name ${ptyFile(build)}, its SHA-256 and its size, and nothing else`;
+  }
   if (bytes.toString("utf8") !== `${JSON.stringify(parsed, null, 2)}\n`) return `${MANIFEST} is not in its canonical form (a duplicate key, other spacing or another encoding)`;
   return parsed as unknown as ServerManifest;
 }
@@ -202,7 +218,7 @@ export function verifyRelease(dir: string, publicKey: string, expected: { versio
     const manifest = checkManifest(readFileSync(join(dir, MANIFEST)), readFileSync(join(dir, SIGNATURE), "utf8"), publicKey, expected);
     if (typeof manifest === "string") return { ok: false, problems: [manifest] };
     const problems: string[] = [];
-    for (const [name, { file, sha256: digest, size }] of [...SERVER_PLATFORMS.map((platform) => [platform, manifest.assets[platform]] as const), ["client", manifest.dist] as const]) {
+    for (const [name, { file, sha256: digest, size }] of [...SERVER_PLATFORMS.map((platform) => [platform, manifest.assets[platform]] as const), ["client", manifest.dist] as const, ...PTY_ASSETS.map((build) => [`PTY host ${build}`, manifest.pty[build]] as const)]) {
       if (!present.includes(file)) problems.push(`${name}: ${file} is missing`);
       else {
         const bytes = readFileSync(join(dir, file));

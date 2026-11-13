@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { DIST_ARCHIVE, generateKeyPair, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
 
 /**
  * install.sh's binary install (install_binary), run under /bin/sh from a copy of the script whose one pinned key line
@@ -29,10 +29,11 @@ function testCopy(publicKey: string): string {
   return INSTALLER.replace(KEY_LINE, `\nRELEASE_PUBLIC_KEY="${publicKey}"\n`).slice(0, -'main "$@"\n'.length);
 }
 
-function release(base: string, version: string, privateKeyPem: string): string {
+function release(base: string, version: string, privateKeyPem: string, host?: string): string {
   const dir = join(base, `v${version}`);
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `#!/bin/sh\necho ovis-server ${version} "$@"\n`);
+  for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), host ?? `pty host ${build}\n`, { mode: 0o755 });
   const client = join(base, `client-${version}`);
   mkdirSync(client, { recursive: true });
   writeFileSync(join(client, "index.html"), `<!doctype html><title>${version}</title>`);
@@ -359,6 +360,34 @@ exec "${Bun.which("tar")}" "$@"`);
     expect(run(`launcher_text > "${launcher}" && chmod 755 "${launcher}"`).code).toBe(0);
     const result = Bun.spawnSync([launcher, "status"], { env: { HOME: home, PATH: "/usr/bin:/bin" }, stdout: "pipe", stderr: "pipe" });
     expect(result.stdout.toString().trim()).toBe(join(home, ".local", "bin", "herdr"));
+  });
+
+  it("runs only the PTY host the signed manifest names, whatever ovis-pty-sidecar.json says", () => {
+    const { releases, key, run, ovis, home } = pc();
+    const ranAt = join(home, "host-ran");
+    const dir = release(releases, "1.2.3", key.privateKeyPem, `#!/bin/sh\n: > "${ranAt}"\n[ $# -gt 0 ] && exit 0\necho "pty-sidecar: usage: ovis-pty-sidecar" >&2\nexit 2\n`);
+    const host = join(dir, ptyFile(PLATFORM.startsWith("darwin") ? "darwin-universal" : PLATFORM as "linux-x64"));
+    // the unsigned manifest of the hosts names another file's hash: it is not read
+    writeFileSync(join(dir, "ovis-pty-sidecar.json"), JSON.stringify({ version: "1.2.3", crate: "c".repeat(40), assets: {} }));
+    const result = run("install_binary 1.2.3");
+    expect(result.code, result.out).toBe(0);
+    expect(existsSync(ranAt), result.out).toBe(true);
+    expect(sha256(join(ovis, "bin", "bin", "ovis-pty-sidecar"))).toBe(sha256(host));
+    expect(JSON.parse(readFileSync(join(ovis, "bin", "bin", "ovis-pty-sidecar.json"), "utf8"))).toEqual({ sha256: sha256(host), version: "1.2.3" });
+  });
+
+  it("never runs a PTY host other than the one the signed manifest names, and installs the server without it", () => {
+    const { releases, key, run, ovis, home } = pc();
+    const ranAt = join(home, "host-ran");
+    const dir = release(releases, "1.2.3", key.privateKeyPem, `#!/bin/sh\nexit 2\n`);
+    // a mirror's host: it would run, and say so, were it taken
+    for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `#!/bin/sh\n: > "${ranAt}"\n[ $# -gt 0 ] && exit 0\necho "pty-sidecar: usage: ovis-pty-sidecar" >&2\nexit 2\n`, { mode: 0o755 });
+    const result = run("install_binary 1.2.3");
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toContain("does not match its SHA-256 and size in ovis-server.json, so it is not run");
+    expect(existsSync(ranAt)).toBe(false);
+    expect(existsSync(join(ovis, "bin", "bin", "ovis-pty-sidecar"))).toBe(false);
+    expect(existsSync(join(ovis, "bin", "ovis-server"))).toBe(true);
   });
 
   it("replaces nothing that is not its own: a bin folder someone made stays", () => {

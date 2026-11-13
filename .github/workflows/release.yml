@@ -69,7 +69,8 @@ jobs:
   # shared/, SHA-256 and size of each file), ovis-server.SHA256SUMS and the manifest's Ed25519 signature,
   # ovis-server.json.sig. Bun compiles every platform's binary here; nothing in it runs a secret.
   server-binary:
-    needs: preflight
+    # the Rust PTY hosts go under the signed manifest too: an installer runs no host the manifest does not name
+    needs: [preflight, pty-sidecar]
     runs-on: ${{ vars.CI_SELF_HOSTED_LABELS && fromJSON(vars.CI_SELF_HOSTED_LABELS) || 'ubuntu-24.04' }}
     timeout-minutes: 20
     permissions:
@@ -83,10 +84,17 @@ jobs:
         with:
           cache: restore
       - run: bun install --frozen-lockfile
-      - name: Build the five binaries, the client and their manifest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ovis-pty-sidecar
+          path: ${{ runner.temp }}/pty-sidecar
+      - name: Build the five binaries, the client and their manifest, which names the PTY hosts too
         run: |
           bun run build
           bun scripts/build-server.ts release "$RUNNER_TEMP/server-binary"
+          for host in ovis-pty-sidecar-linux-x64 ovis-pty-sidecar-linux-arm64 ovis-pty-sidecar-darwin-universal; do
+            cp "$RUNNER_TEMP/pty-sidecar/$host" "$RUNNER_TEMP/server-binary/$host"
+          done
           bun scripts/build-server.ts manifest "$RUNNER_TEMP/server-binary"
       # the binary for this runner answers before anything is signed
       - name: The Linux x64 binary runs
@@ -215,6 +223,10 @@ jobs:
           # sign job reports about itself): a file anything else left in the folder is refused, never attached
           server_files=(ovis-server-linux-x64 ovis-server-linux-arm64 ovis-server-darwin-arm64 ovis-server-darwin-x64 ovis-server-windows-x64.exe ovis-dist.tar.gz ovis-server.json ovis-server.json.sig ovis-server.SHA256SUMS)
           bun scripts/build-server.ts verify "$RUNNER_TEMP/server-binary" --expect-version "$RELEASE_VERSION"
+          # the PTY hosts attached are the very ones ovis-server.json signed
+          for host in ovis-pty-sidecar-linux-x64 ovis-pty-sidecar-linux-arm64 ovis-pty-sidecar-darwin-universal; do
+            cmp "$RUNNER_TEMP/pty-sidecar/$host" "$RUNNER_TEMP/server-binary/$host"
+          done
           gh release create "v$RELEASE_VERSION" "$RUNNER_TEMP"/pty-sidecar/* "${server_files[@]/#/$RUNNER_TEMP/server-binary/}" --target "$GITHUB_SHA" --title "Ovis v$RELEASE_VERSION" --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
   # The hosted shell (https://app.ovis.sh/) is built from the release tag and nothing else. shell-build
   # builds and packs it without any secret; shell-deploy waits for the `production` environment's

@@ -21,7 +21,6 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { install as installPtyHost } from "./pty-sidecar.ts";
 import { hostPlatform, installServer, NoBinaryRelease, releasesBase } from "./server-install.ts";
 
 const root = resolve(import.meta.dir, "..");
@@ -78,8 +77,7 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
   try {
     const result = await installServer({
       home, version, fetchFile,
-      // the Rust PTY host of the same release, for Linux and macOS; without it terminals are mirrored
-      ...(platform === "windows-x64" ? {} : { ptyHost: (target: string) => installPtyHost({ target, releases: releasesBase(process.env["OVIS_RELEASES_URL"]) }) }),
+      // the Rust PTY host comes with it, the one the signed manifest names (scripts/server-install.ts)
     });
     if (result.installed || command === "install") console.error(`Ovis: ${result.message}`);
     binary = result.binary;

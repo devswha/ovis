@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, MANIFEST, releaseFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { DIST_ARCHIVE, generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
 import { download, installServer, NoBinaryRelease, releasesBase, verifiedInstall } from "./server-install.ts";
 
 /**
@@ -25,10 +25,11 @@ const sources = { server: "a".repeat(40), shared: "b".repeat(40) };
 const PLATFORM = "linux-x64";
 
 /** `<base>/v<version>/`: five stand-in binaries, the client archive, the manifest and its signature */
-function release(base: string, version: string, privateKeyPem: string, client: Record<string, string> = { "index.html": "<!doctype html>" }): string {
+function release(base: string, version: string, privateKeyPem: string, client: Record<string, string> = { "index.html": "<!doctype html>" }, host?: string): string {
   const dir = join(base, `v${version}`);
   mkdirSync(dir, { recursive: true });
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `#!/bin/sh\necho ovis-server ${version} ${platform}\n`);
+  for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), host ?? `pty host ${build}\n`);
   const tree = join(base, `client-${version}`);
   mkdirSync(tree, { recursive: true });
   for (const [name, text] of Object.entries(client)) writeFileSync(join(tree, name), text);
@@ -184,6 +185,28 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     expect(existsSync(join(home, "bin", "dist", "index.html"))).toBe(true);
   });
 
+  it("takes only the PTY host the signed manifest names: a tampered ovis-pty-sidecar.json is not read, a replaced host never runs", async () => {
+    const root = scratch();
+    const releases = join(root, "release");
+    const key = generateKeyPair();
+    const dir = release(releases, "1.2.3", key.privateKeyPem, undefined, "the signed host\n");
+    writeFileSync(join(dir, "ovis-pty-sidecar.json"), JSON.stringify({ version: "1.2.3", crate: "c".repeat(40), assets: {} }));
+    const ran: string[] = [];
+    const install = (home: string) => installServer({ home, version: "1.2.3", platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey,
+      ptyRuns: (path) => { ran.push(readFileSync(path, "utf8")); return true; } });
+    const first = await install(join(root, "home"));
+    expect(first.message).toContain("the Rust PTY host checked against ovis-server.json");
+    expect(ran).toEqual(["the signed host\n"]);
+    expect(JSON.parse(readFileSync(join(root, "home", "bin", "bin", "ovis-pty-sidecar.json"), "utf8")).sha256)
+      .toBe(createHash("sha256").update("the signed host\n").digest("hex"));
+    writeFileSync(join(dir, ptyFile("linux-x64")), "a mirror's host\n");
+    const second = await install(join(root, "other"));
+    expect(second.installed).toBe(true);
+    expect(second.message).toContain("the Rust PTY host was not taken");
+    expect(ran).toEqual(["the signed host\n"]);
+    expect(existsSync(join(root, "other", "bin", "bin", "ovis-pty-sidecar"))).toBe(false);
+  });
+
   it("runs an installed release only while its kept manifest still verifies and the binary matches it", async () => {
     const { install, home, key, binary } = fixture();
     await install();
@@ -218,13 +241,12 @@ describe.skipIf(process.platform === "win32")("installing the server from a rele
     const install = (version: string, hold: boolean) => installServer({
       home, version, platform: PLATFORM, releases: `file://${releases}`, publicKey: key.publicKey, onLockWait: hold ? undefined : waited,
       // in the window (both files checked, nothing moved yet); the first waits, at most 2 s, for the second to arrive
-      ptyHost: async () => {
+      inWindow: async () => {
         events.push(`${version} in`);
         if (!hold) secondIn = true;
         // the first goes on once the second waits for the lock, or (only without a lock) reaches this window itself
         if (hold) await Promise.race([secondWaits, new Promise<void>((resolve) => { const check = setInterval(() => { if (secondIn) { clearInterval(check); resolve(); } }, 10); })]);
         events.push(`${version} out`);
-        return { ok: false, message: "no host" };
       },
     });
     await Promise.all([install("1.2.3", true), install("1.2.4", false)]);

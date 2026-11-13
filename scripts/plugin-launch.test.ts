@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { main } from "./plugin-launch.ts";
-import { generateKeyPair, MANIFEST, releaseFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
+import { generateKeyPair, MANIFEST, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, signManifest, writeManifest } from "./server-manifest.ts";
 
 /**
  * scripts/plugin-launch.ts's choice between the release's binary and this checkout's sources (INSTALL.md, "Binary or
@@ -69,6 +69,7 @@ describe("the herdr plugin's launcher", () => {
     const dir = join(scratch, "release", `v${version}`);
     mkdirSync(dir, { recursive: true });
     for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
+    for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
     writeFileSync(join(dir, "ovis-dist.tar.gz"), "client\n");
     writeManifest(dir, { version, sources: { server: "a".repeat(40), shared: "b".repeat(40) } });
     signManifest(dir, generateKeyPair().privateKeyPem);

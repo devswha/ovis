@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIST_ARCHIVE, generateKeyPair, MANIFEST, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, SIGNATURE, signManifest, SUMS, verifyRelease, writeManifest } from "./server-manifest.ts";
+import { DIST_ARCHIVE, generateKeyPair, MANIFEST, RELEASE_PUBLIC_KEY, releaseFile, PTY_ASSETS, ptyFile, SERVER_PLATFORMS, SIGNATURE, signManifest, SUMS, verifyRelease, writeManifest } from "./server-manifest.ts";
 
 /** a signed release folder and the key that signs it, for attacks that change something and sign again */
 function signedRelease(): { dir: string; privateKeyPem: string; publicKey: string } {
@@ -35,10 +35,11 @@ function releaseDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "ovis-server-release-"));
   dirs.push(dir);
   for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), `binary for ${platform}\n`);
+  for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
   writeFileSync(join(dir, DIST_ARCHIVE), "the built client\n");
   return dir;
 }
-const RELEASE_FILES = [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE];
+const RELEASE_FILES = [...SERVER_PLATFORMS.map(releaseFile), DIST_ARCHIVE, ...PTY_ASSETS.map(ptyFile)];
 const sources = { server: "a".repeat(40), shared: "b".repeat(40) };
 const sha256 = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const script = join(import.meta.dir, "build-server.ts");
@@ -245,7 +246,7 @@ describe("verify accepts only the release as written, even when the key signed s
     rejects(extraPlatform.dir, extraPlatform.publicKey, "platforms");
     const unknownField = signedRelease();
     resigned(unknownField.dir, unknownField.privateKeyPem, (text) => text.replace('{\n  "schema"', '{\n  "channel": "beta",\n  "schema"'));
-    rejects(unknownField.dir, unknownField.publicKey, "exactly schema, version, sources, assets and dist");
+    rejects(unknownField.dir, unknownField.publicKey, "exactly schema, version, sources, assets, dist and pty");
     for (const bogusFirst of [true, false]) {
       const duplicate = signedRelease();
       resigned(duplicate.dir, duplicate.privateKeyPem, (text) => {
@@ -257,7 +258,7 @@ describe("verify accepts only the release as written, even when the key signed s
     }
     const notObject = signedRelease();
     resigned(notObject.dir, notObject.privateKeyPem, () => "[]\n");
-    rejects(notObject.dir, notObject.publicKey, "exactly schema, version, sources, assets and dist");
+    rejects(notObject.dir, notObject.publicKey, "exactly schema, version, sources, assets, dist and pty");
     const notJson = signedRelease();
     resigned(notJson.dir, notJson.privateKeyPem, () => "{\n");
     rejects(notJson.dir, notJson.publicKey, "not JSON");
@@ -316,5 +317,28 @@ describe("verify accepts only the release as written, even when the key signed s
     expect(malformed.code).toBe(1);
     expect(malformed.err.trim().split("\n")).toHaveLength(1);
     for (const args of [["--public-key"], ["--other", "x"], ["--public-key", publicKey, "--public-key", publicKey]]) expect(cli(["verify", dir, ...args]).code).toBe(2);
+  });
+});
+
+describe("the Rust PTY hosts in the signed manifest", () => {
+  it("names each host with its SHA-256 and size, and lists them in the sums", () => {
+    const dir = releaseDir();
+    const manifest = writeManifest(dir, { version: "1.2.3", sources });
+    for (const build of PTY_ASSETS) {
+      expect(manifest.pty[build]).toEqual({ file: ptyFile(build), sha256: sha256(join(dir, ptyFile(build))), size: readFileSync(join(dir, ptyFile(build))).length });
+      expect(readFileSync(join(dir, "ovis-server.SHA256SUMS"), "utf8")).toContain(`${sha256(join(dir, ptyFile(build)))}  ${ptyFile(build)}\n`);
+    }
+  });
+
+  it("refuses a host entry changed after signing, a host file replaced, and a manifest signed without the hosts", () => {
+    const edited = signedRelease();
+    writeFileSync(join(edited.dir, MANIFEST), readFileSync(join(edited.dir, MANIFEST), "utf8").replace(sha256(join(edited.dir, ptyFile("linux-x64"))), "0".repeat(64)));
+    rejects(edited.dir, edited.publicKey, "signature");
+    const replaced = signedRelease();
+    writeFileSync(join(replaced.dir, ptyFile("darwin-universal")), "a mirror's host\n");
+    rejects(replaced.dir, replaced.publicKey, "PTY host darwin-universal: ovis-pty-sidecar-darwin-universal does not match its SHA-256 and size");
+    const without = signedRelease();
+    resigned(without.dir, without.privateKeyPem, (text) => { const { pty: _, ...rest } = JSON.parse(text); return `${JSON.stringify(rest, null, 2)}\n`; });
+    rejects(without.dir, without.publicKey, "exactly schema, version, sources, assets, dist and pty");
   });
 });
