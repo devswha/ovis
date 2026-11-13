@@ -2376,8 +2376,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the column's top row floats over nothing, and the word leads it as a plain line; the search
   field takes its place while open (the word is still said, not drawn). Nothing is
   drawn while the connection has nothing to say, and on a phone the header's note, which
-  stands in the same place, goes first. The word comes from the pane under the list: a list
-  no pane was opened under since the page loaded has no connection of a pane to speak of.
+  stands in the same place, goes first. The word is the one of the stream that feeds the list's
+  rows (the roster's event stream, lib/useMachineRoster.ts `rosterConnection`), whether or not a
+  pane is mounted under the list, a cold load of the mode's own address included: Reconnecting…
+  while it is lost after the page had it, Connected for a moment when it is back. A thread says
+  its own pane's word under its name.
 - The monitor button (`LensToggle` `thread`; lucide `Monitor`, **Show the terminal**, then
   **Show the chat**) runs the lens switch for the thread's pane: the terminal already mounted
   under the chat is shown in the thread's place and no second connection is made. Everything

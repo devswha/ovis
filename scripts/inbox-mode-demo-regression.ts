@@ -23,6 +23,12 @@ declare global {
       resizes: { pane: string; cols: number; rows: number }[];
       /** every frame a pane's terminal sent since the page loaded, on any of the page's sockets: attach, detach, resize, release-size */
       frames: { type: string; pane: string; cols?: number; rows?: number }[];
+      /**
+       * loses the roster's event stream, and gives it back, as a browser's EventSource does while it reconnects: the
+       * demo carries the roster on its stand-in for the stream, which its own connection switch does not reach
+       */
+      dropRoster(): void;
+      restoreRoster(): void;
     };
     /** every shell the page has committed since its document began, in order (the first-paint step notes them) */
     inboxShells: string[];
@@ -131,6 +137,12 @@ function installInboxFixture(): void {
       save();
       send({ type: "machine-message", machine_id: "local", message: { type: "pane-status", pane_id: paneId, agent_status: status, finish_id: finish, finish_epoch: `${state.epoch}:local` } });
       await this.publish();
+    },
+    dropRoster() {
+      for (const source of sources) { Object.assign(source, { readyState: 0 }); source.onerror?.(new Event("error")); }
+    },
+    restoreRoster() {
+      for (const source of sources) { Object.assign(source, { readyState: 1 }); source.onopen?.(new Event("open")); }
     },
   };
 }
@@ -1326,23 +1338,33 @@ try {
       });
 
       // ---- the list says when the connection is lost ----
+      // The line follows the stream that feeds the list's rows, whether or not a pane is mounted under it: entered
+      // from a pane, and on a cold load of the mode's own address, where none is.
+      for (const [route, path] of [["entered from a pane", `/?pane=${encodeURIComponent(WORKING)}&view=chat&demo_connection=switch`], ["opened cold, no pane mounted", "/?app=inbox&demo_connection=switch"]] as const)
       for (const viewport of [PHONE, desktop]) {
         const wide = viewport.width >= 769;
-        const at = wide ? "a wide window" : "a phone";
-        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat&demo_connection=switch`, `the list while the connection is lost, on ${at}`, async (page) => {
+        const at = `${wide ? "a wide window" : "a phone"}, ${route}`;
+        await withPage(browser, base, light, path, `the list while the connection is lost, on ${at}`, async (page) => {
           const line = page.locator(".mode-inbox .inbox-top .inbox-connection");
-          // the pane's own connection is up before the list covers it: only a connection that was had can be lost
-          await page.locator(".conn-live").waitFor({ state: "attached" });
-          if (wide) {
-            await page.locator(".header-more-button").click();
-            await page.locator('.row-menu [data-item="enter-inbox"]').click();
-            await page.locator(".inbox-column .mode-inbox").waitFor();
-          } else await enterFromMore(page);
+          if (route === "entered from a pane") {
+            // the pane's own connection is up before the list covers it
+            await page.locator(".conn-live").waitFor({ state: "attached" });
+            if (wide) {
+              await page.locator(".header-more-button").click();
+              await page.locator('.row-menu [data-item="enter-inbox"]').click();
+              await page.locator(".inbox-column .mode-inbox").waitFor();
+            } else await enterFromMore(page);
+          } else {
+            await page.locator(".mode-inbox").waitFor();
+            assert.deepEqual([await page.locator(".pane-slot").count(), await page.locator(".conn-live").count()], [0, 0], "a cold load of the list mounts no pane, and no pane's connection says anything");
+          }
           await rowCount(page, 6);
           assert.equal(await line.count(), 0, "connected, the list draws no line");
           assert.equal(await page.locator('.mode-inbox .inbox-top [role="status"]').count() >= 1, true, "the status line is in the document before it has a word");
-          await page.evaluate(() => window.herdrDemoLoseConnection());
-          await line.getByText("Reconnecting…").waitFor();
+          // the bridge's connection is lost: the page's sockets, and the stream that feeds the roster
+          await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
+          await line.waitFor();
+          assert.equal(await line.getAttribute("role"), "status", "the line is a status");
           const drawn = await line.evaluate((node) => {
             const box = node.getBoundingClientRect();
             const style = getComputedStyle(node);
@@ -1386,6 +1408,7 @@ try {
             });
             observer.observe(top, { subtree: true, childList: true, characterData: true, attributes: true });
             window.herdrDemoRestoreConnection();
+            window.inboxFixture.restoreRoster();
             window.dispatchEvent(new Event("online"));
           }));
           assert.equal(back, "Connected", "back, the line says so");

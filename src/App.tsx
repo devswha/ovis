@@ -326,7 +326,7 @@ export function App() {
     await readLocalHealth();
   }, []);
   usePairFromAddress({ locked, pairCode, auth, consumePairCode, onPaired, loadHealth });
-  const { snapshotRequests, reorderCoordinator, load, scheduleRefetch, onRosterStream } = useRosterLoader({ locked, healthFailing: localFreshness === "unknown" || localFreshness === "unavailable", rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer });
+  const { snapshotRequests, reorderCoordinator, load, scheduleRefetch, onRosterStream, rosterConnection } = useRosterLoader({ locked, healthFailing: localFreshness === "unknown" || localFreshness === "unavailable", rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer });
 
   const { dropIn, chime, onRoster, onPaneStatus, onPaneExited } = useAlertSignals({ settings, selectionRef, drawerOpenRef: inbox.coveredRef, splitRef, splitShownRef, machinesRef, alertsRef, alertsOnRef, pushOnRef, statusRef, turnStartRef, lastTurnRef, alertSoundRef });
 
@@ -971,9 +971,9 @@ export function App() {
 
   // The mode's list: the screen on a phone, where More is its own control (the shell draws no header over it) and
   // the header's note stands between its top controls; the column from 769px, where its row for the open thread is
-  // the selected one. What the connection has to say (the word a thread says under its name) is said on the list
-  // too, which otherwise shows its rows as they last were with no sign: on a phone where the note stands, while
-  // there is no note.
+  // the selected one. What the stream that feeds its rows has to say is said on the list, which otherwise shows its
+  // rows as they last were with no sign, whether or not a pane is mounted under it (a thread says its own pane's
+  // word): on a phone where the note stands, while there is no note.
   const listNote = herdrPrefixWaiting ? t("herdr prefix: press a key") : note;
   const modeList = (column: boolean): ReactNode => (
     <InboxList machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
@@ -982,7 +982,7 @@ export function App() {
       onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads}
       more={{ label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
       onExit={leaveMode}
-      note={column ? undefined : <HeaderNote note={listNote} />} connection={column || listNote === null ? headerConnection : null} />
+      note={column ? undefined : <HeaderNote note={listNote} />} connection={column || listNote === null ? rosterConnection : null} />
   );
   // More's button: a square of the header's, or one of the mode's round controls over the wide pane
   const moreButton = (round: boolean): ReactNode => (
