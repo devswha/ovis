@@ -223,11 +223,12 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   // the sheet of PCs is for a choice among two or more: it closes when that choice goes, and stays closed if it comes back
   useEffect(() => { if (connected.length < 2) setPcMenu(null); }, [connected.length]);
   const emptyWhy = inboxEmpty(machines, all.length, rows.length);
-  // The mode's own three lines, each saying what happened and, where there is something to do, what: the round plus
-  // starts a workspace, and is named only where it is drawn. None says what the rows are: the mode's chrome does not.
-  const empty = emptyWhy === "loading" ? t("Loading…")
-    : emptyWhy === "none" ? (offerNew ? t("Nothing is running yet. Use + to start a workspace.") : t("Nothing is running yet"))
-    : emptyWhy === "no-match" ? t("No results") : null;
+  // The mode's own three empty states, each saying what happened and, where there is something to do, what, on a
+  // line of its own: the round plus starts a workspace, and is named only where it is drawn. None says what the
+  // rows are: the mode's chrome does not.
+  const empty = emptyWhy === "loading" ? [t("Loading…")]
+    : emptyWhy === "none" ? (offerNew ? [t("Nothing is running yet"), t("Use + to start a workspace")] : [t("Nothing is running yet")])
+    : emptyWhy === "no-match" ? [t("No results")] : null;
 
   /** a state's mark as the Agents list's rows end with it (Sidebar.tsx): drawn only for the states that have one */
   const drawsMark = (status: AgentStatus | undefined): boolean => statusIndicators !== "classic" || agentGroup(status) !== "idle";
@@ -305,7 +306,7 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
         </>}
       </div>
       <div className="inbox-scroll" ref={scroller} onScroll={(event) => { if (restoring.current === null) scroll.current = event.currentTarget.scrollTop; }}>
-        {empty !== null ? <p className="inbox-empty" role="status">{empty}</p> : (
+        {empty !== null ? <p className="inbox-empty" role="status">{empty.flatMap((line, at) => [...(at > 0 ? [" "] : []), <span key={line}>{line}</span>])}</p> : (
           <ul className="inbox-rows" onPointerDown={holdAfterPress} onTouchEnd={holdAfterPress}
             onFocus={(event) => setFocusIn(event.target.matches(":focus-visible"))} onBlur={(event) => { if (!(typeof Node === "function" && event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setFocusIn(false); }}>
             {rows.map((row) => {

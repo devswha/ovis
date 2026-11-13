@@ -35,7 +35,7 @@ export const SIDEBAR_KO: Record<string, string> = {
   "No agents running": "실행 중인 에이전트가 없습니다",
   "Clear search": "검색어 지우기",
   "Nothing is running yet": "아직 실행 중인 것이 없습니다",
-  "Nothing is running yet. Use + to start a workspace.": "아직 실행 중인 것이 없습니다. + 버튼으로 워크스페이스를 시작하세요.",
+  "Use + to start a workspace": "+ 버튼으로 워크스페이스를 시작하세요",
   "No results": "결과 없음",
   "You: {text}": "나: {text}",
   "Turn failed": "오류",

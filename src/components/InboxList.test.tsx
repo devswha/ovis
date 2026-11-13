@@ -394,7 +394,11 @@ describe("InboxList", () => {
     // nothing runs, and the round plus is there to start a workspace with
     const none = await draw(empty());
     expect(byClass(none, "inbox-add").length).toBe(1);
-    expect(byClass(none, "inbox-empty").map(text)).toEqual(["Nothing is running yet. Use + to start a workspace."]);
+    // what happened and the next step are two lines, each a block of its own, with a space between them for a reader
+    // that takes the status as one text
+    const lines = (root: ReactTestInstance) => byClass(root, "inbox-empty")[0]!.findAll((node) => node.type === "span").map(text);
+    expect(lines(none)).toEqual(["Nothing is running yet", "Use + to start a workspace"]);
+    expect(byClass(none, "inbox-empty").map(text)).toEqual(["Nothing is running yet Use + to start a workspace"]);
     await act(async () => { renderer?.unmount(); });
 
     // no plus is offered to a watching device, nor with no PC connected: the line names none

@@ -430,6 +430,14 @@
 /* ---------- from 769px: the column beside the thread ---------- */
 
 /* its rows fill as the sidebar's do (--side-hover, --side-selected: Sidebar.css, .sidebar) */
+/* what happened, and under it the next step where there is one: each a line of its own at every width, so neither
+   sentence runs into the other or ends on a word left alone. One too long for a narrow window breaks into even
+   lines, between words (Korean keeps each word whole, styles.css) */
+.mode-inbox .inbox-empty > span {
+  display: block;
+  text-wrap: balance;
+}
+
 .mode-inbox.is-wide {
   --inbox-avatar: var(--avatar-size);
   position: relative;

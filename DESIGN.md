@@ -2347,10 +2347,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   narrows the list to the words a row shows: the labels the sidebar's filter matches with the
   command palette's fuzzy match (lib/sidebarFilter.ts), and the agent's own words on the row
   when they hold the query as typed, in any letter case; never a working directory or a
-  transcript. Loading, nothing running and no match are one centred `--text-dim` line where
-  the rows would be, each saying what happened and, where there is something to do, what:
-  **Loading…**; **Nothing is running yet. Use + to start a workspace.**, without its second
-  sentence where the plus is not drawn (a watching device, no connected PC); **No results**.
+  transcript. Loading, nothing running and no match are centred `--text-dim` lines where
+  the rows would be, each saying what happened and, where there is something to do, what, on a
+  line of its own under it at every width (two blocks; one too long for a narrow window breaks
+  into even lines, between words): **Loading…**; **Nothing is running yet**, then **Use + to
+  start a workspace**, left out where the plus is not drawn (a watching device, no connected
+  PC); **No results**.
   None says what the rows are, as nothing else in the mode's chrome does; the classic Agents
   list keeps its own lines. The filter, the query and the scroll offset are kept while a thread
   is open.
