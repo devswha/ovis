@@ -236,19 +236,19 @@
 /* An installed desktop app with the title bar folded away has no header to drag the window by or to keep clear
    of the window's controls (styles.css does both for the classic header): the two top bands do it here. */
 @media (display-mode: window-controls-overlay) {
-  .inbox-list.is-wide .inbox-top,
+  .mode-inbox.is-wide .inbox-top,
   .thread-top {
     -webkit-app-region: drag;
     app-region: drag;
   }
 
-  .inbox-list.is-wide .inbox-top :is(button, input),
+  .mode-inbox.is-wide .inbox-top :is(button, input),
   .thread-top :is(button, .thread-chip) {
     -webkit-app-region: no-drag;
     app-region: no-drag;
   }
 
-  .inbox-list.is-wide .inbox-top {
+  .mode-inbox.is-wide .inbox-top {
     padding-inline-start: calc(var(--space-4) + env(titlebar-area-x, 0px));
   }
 
@@ -258,6 +258,6 @@
 }
 
 /* an iPad home-screen app in a window has the window's controls over its top-left corner (lib/viewport.ts) */
-:root[data-window-controls] .inbox-list .inbox-top {
+:root[data-window-controls] .mode-inbox .inbox-top {
   padding-inline-start: calc(var(--window-controls-w, 72px) + env(safe-area-inset-left, 0px));
 }

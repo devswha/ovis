@@ -874,7 +874,7 @@ export function App() {
   // From 769px the list is beside the thread and each has a More of its own: the column's holds the app's items, the
   // pane's the thread's. Which one is open is told by where its button stands.
   const fromMore = (id: string): RowMenuItem[] => moreItems.filter((item) => item.id === id);
-  const moreOnList = inbox.shown || (more !== null && more.anchor.closest(".inbox-list") !== null);
+  const moreOnList = inbox.shown || (more !== null && more.anchor.closest(".mode-inbox") !== null);
   const modeThreadItems: RowMenuItem[] = [
     ...fromMore("next-waiting"), ...fromMore("find-group"), ...fromMore("find"),
     ...(foldFind ? [] : paneMoreItems.filter((item) => item.id === "search-conversation")),
