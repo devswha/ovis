@@ -2202,7 +2202,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - **Open agent inbox** enters it: More's last group in the classic header at every width, a row
   at the sidebar's foot (the drawer's on a phone; Sidebar roster row and footer), and a row of
   the command palette. **Back to Ovis** leaves it: first in the mode's More, at the column's
-  foot on a wide window, and in the palette. The setup guide has the classic shell to itself
+  foot on a wide window, and in the palette. Entering leaves a file open over the pane behind,
+  as a move to another pane does: its viewer closes, its own entry stays under the mode's, and
+  Back shows the pane with its file again. The setup guide has the classic shell to itself
   and shows no entry. A watching device may use the mode and is offered no New workspace.
 - Settings → Appearance → More settings → Sidebar → **Agent inbox on a phone** (this device's
   choice, off by default, its stored key unchanged) is where a phone starts: a window at most

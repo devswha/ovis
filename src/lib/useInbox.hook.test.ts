@@ -83,8 +83,9 @@ describe("useInboxShell", () => {
   const show = (): void => { calls.push("show"); };
   const enter = (): void => { calls.push("enter"); };
   const setDrawerOpen = (open: boolean): void => { calls.push(`drawer ${open}`); };
+  const hideFile = (): void => { calls.push("hide file"); };
   function Probe(place: Place) {
-    shell = useInboxShell({ ...place, show, enter, setDrawerOpen });
+    shell = useInboxShell({ ...place, show, enter, setDrawerOpen, hideFile });
     return null;
   }
   const draw = async (place: Place): Promise<void> => {
@@ -94,11 +95,12 @@ describe("useInboxShell", () => {
     });
   };
 
-  it("leaves the classic app alone, and its way in closes the drawer, enters the mode and shows the list", async () => {
+  it("leaves the classic app alone, and its way in closes the drawer, leaves an open file behind, enters the mode and shows the list", async () => {
     await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
     expect(calls).toEqual([]);
     await act(async () => { shell.enterInbox(); });
-    expect(calls).toEqual(["drawer false", "enter", "show"]);
+    // the file is hidden before the mode's entry is pushed: its own entry stays under it, so Back shows it again
+    expect(calls).toEqual(["drawer false", "hide file", "enter", "show"]);
   });
 
   it("puts the drawer away when the mode's shell stands, however it came to (a Forward onto its entry)", async () => {

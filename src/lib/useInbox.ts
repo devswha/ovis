@@ -66,18 +66,22 @@ export function useInboxWaits(waits: InboxWaits, machines: readonly Machine[], a
 
 /**
  * The shell's part in the mode's coming and going (App.tsx). The drawer is put away whenever the mode's shell stands,
- * however it came to (its entry, a Forward onto it); the way in closes the drawer, enters the mode and shows its
- * list; and a mode with no pane to show a thread of shows its list, once the page's link has landed. Left by any way
+ * however it came to (its entry, a Forward onto it); the way in closes the drawer, leaves a file open over the pane
+ * behind (its viewer closes and its own entry stays under the mode's, so Back shows the pane with its file again),
+ * enters the mode and shows its list; and a mode with no pane to show a thread of shows its list, once the page's
+ * link has landed. Left by any way
  * (Back to Ovis, the system Back), the mode takes its controls with it: a focus left nowhere goes to the classic
  * header's workspace-list toggle, as it does whenever the control that had it is gone (lib/focus.ts).
  */
-export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, selectedPaneId, linkLanded }: {
+export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded }: {
   /** the mode's shell stands: the mode is on and the setup guide does not hold the classic shell */
   inMode: boolean;
   shown: boolean;
   show(): void;
   enter(): void;
   setDrawerOpen(open: boolean): void;
+  /** closes the file viewer and keeps the file's history entry (lib/useFileViewer.ts) */
+  hideFile(): void;
   selectedPaneId: string | null;
   linkLanded: boolean;
 }): { enterInbox(): void } {
@@ -89,7 +93,7 @@ export function useInboxShell({ inMode, shown, show, enter, setDrawerOpen, selec
     wasInMode.current = inMode;
     if (!inMode) focusWorkspaceListToggle("lost");
   }, [inMode]);
-  const enterInbox = useCallback((): void => { setDrawerOpen(false); enter(); show(); }, [setDrawerOpen, enter, show]);
+  const enterInbox = useCallback((): void => { setDrawerOpen(false); hideFile(); enter(); show(); }, [setDrawerOpen, hideFile, enter, show]);
   return { enterInbox };
 }
 

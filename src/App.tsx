@@ -288,7 +288,7 @@ export function App() {
   const paneActionsRef = useRef<((target: HerdrPane) => RowMenuItem[]) | null>(null);
   // a locked pinned agent's menu has no Close (PaneCanvas): neither has the Close pane shortcut or palette row
   const paneLocked = usePaneLocked(selectedMachineId);
-  const { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
+  const { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, hideFile, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
   // a diff's line notes go to its own pane: none while this window only watches that pane
   const diffPaneObserving = usePaneObserving(diffViewing?.paneId ? paneStorageId(diffViewing.machineId, diffViewing.paneId) : null);
   const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, setSettingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
@@ -352,7 +352,7 @@ export function App() {
   // is still current: the push takes that entry over (lib/sheetHistory.ts), and no entry is left between. The shell's
   // own part (the drawer put away, the list shown for a mode with no pane) is lib/useInbox.ts useInboxShell.
   const { leave: leaveMode } = inboxMode;
-  const { enterInbox } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show, enter: inboxMode.enter, setDrawerOpen, selectedPaneId, linkLanded });
+  const { enterInbox } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself
   const modeOffered = INBOX_MODE_OFFERED && !guideShown;
 

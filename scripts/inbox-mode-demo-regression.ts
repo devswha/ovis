@@ -1036,6 +1036,28 @@ try {
         console.log("PASS Search panes and actions in the list's More opens the command palette over the list on a phone, and Back closes it");
       });
 
+      // ---- entering the mode with a file open over the pane ----
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat&file=README.md`, "entering the mode with a file open over the pane", async (page) => {
+        await page.locator(".file-viewer").waitFor();
+        // the viewer is modal: the palette, which opens over it, is the way in that still answers
+        await page.keyboard.press("Control+Shift+K");
+        await page.locator(".command-palette .palette-search input").fill(">open agent inbox");
+        await page.locator(".command-palette .menu-item-main", { hasText: "Open agent inbox" }).waitFor();
+        await page.keyboard.press("Enter");
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await page.locator(".file-viewer").waitFor({ state: "detached" });
+        await page.locator(".inbox-unchosen").waitFor();
+        assert.equal(await page.evaluate(() => new URLSearchParams(location.search).get("file")), null, "the list's address names no file");
+        await addressIs(page, { app: "inbox", pane: null }, "the mode opens on its list");
+        // the file's own entry is under the mode's: Back shows the pane with its file again
+        await page.goBack();
+        await page.locator(".file-viewer").waitFor();
+        await page.locator(".mode-inbox").waitFor({ state: "detached" });
+        assert.equal(await page.evaluate(() => new URLSearchParams(location.search).get("file")), "README.md");
+        await addressIs(page, { app: null, pane: WORKING }, "Back returns to the pane the file is open on");
+        console.log("PASS entering the mode with a file open over the pane closes the viewer and opens the list; Back shows the pane with its file again");
+      }, desktop);
+
       // ---- the system Back with the pane's More open ----
       await withPage(browser, base, light, "/?app=inbox", "the system Back with the pane's More open in a wide thread", async (page) => {
         await page.locator(".inbox-column .mode-inbox").waitFor();
