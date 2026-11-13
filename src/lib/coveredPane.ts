@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useLayoutEffect, useRef, type RefObject } from "react";
 
 const SLOTS = ":scope > .pane-slot";
 const KEPT = "data-kept-box";
@@ -9,46 +9,22 @@ const SIDES = ["left", "top", "width", "height"] as const;
  * list takes the shell's bars away, from 769px it draws its column whether or not the classic sidebar was open, and a
  * classic split becomes one pane, so laid out again under the list the pane would have another box than the one its
  * pty was sized to. It sizes nothing while covered (PaneCoveredContext); held in its box, its terminal does not even
- * see a change. Each pane's box is noted as it is shown and never while the list covers it, and a pane whose box was
- * never seen is left to the layout.
+ * see a change.
+ *
+ * Each pane's box is read as the list is about to cover it: the render that says so runs before React writes any of
+ * it to the page, which still lies as the pane was shown, in the classic app or in a thread. Nothing is read at any
+ * other time and nothing is watched, so the classic app, where no list covers a pane, does none of this. A pane
+ * that was not on the page then (one a page opened under its list) is left to the layout.
  */
 export function useKeptPaneBoxes(area: RefObject<HTMLElement | null>, covered: boolean): void {
   const boxes = useRef(new WeakMap<Element, { left: number; top: number; width: number; height: number }>());
-  const coveredRef = useRef(covered);
-  coveredRef.current = covered;
-  const watch = useRef<ResizeObserver | null>(null);
-  const watched = useRef(new Set<Element>());
-  useEffect(() => {
-    if (typeof ResizeObserver !== "function") return;
-    const observer = new ResizeObserver((entries) => {
-      if (coveredRef.current) return;
-      for (const entry of entries) boxes.current.set(entry.target, entry.target.getBoundingClientRect());
-    });
-    watch.current = observer;
-    return () => {
-      observer.disconnect();
-      watch.current = null;
-      watched.current.clear();
-    };
-  }, []);
-  // a split adds and removes panes: the ones there now are watched, and one that left the page is let go, so the
-  // watch never keeps a closed pane's terminal alive
-  useEffect(() => {
-    const observer = watch.current;
-    if (observer === null) return;
-    const here = new Set<Element>(area.current?.querySelectorAll(SLOTS) ?? []);
-    for (const slot of watched.current) {
-      if (here.has(slot)) continue;
-      observer.unobserve(slot);
-      watched.current.delete(slot);
-    }
-    for (const slot of here) {
-      if (watched.current.has(slot)) continue;
-      observer.observe(slot);
-      watched.current.add(slot);
-    }
-  });
+  /** whether the list covered the panes as the page was last written */
+  const wasCovered = useRef(false);
+  if (covered && !wasCovered.current) {
+    for (const slot of area.current?.querySelectorAll(SLOTS) ?? []) boxes.current.set(slot, slot.getBoundingClientRect());
+  }
   useLayoutEffect(() => {
+    wasCovered.current = covered;
     const host = area.current;
     if (!covered || host === null) return;
     const origin = host.getBoundingClientRect();

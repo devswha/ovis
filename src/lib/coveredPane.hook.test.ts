@@ -8,6 +8,8 @@ interface Box { left: number; top: number; width: number; height: number }
 /** a pane slot as the hook reads and writes it: its box, its kept-box attribute and the custom properties that carry the box */
 class FakeSlot {
   box: Box;
+  /** how often its box was read */
+  reads = 0;
   readonly attributes = new Map<string, string>();
   readonly properties = new Map<string, string>();
   readonly style = {
@@ -15,7 +17,7 @@ class FakeSlot {
     removeProperty: (name: string): void => { this.properties.delete(name); },
   };
   constructor(box: Box) { this.box = box; }
-  getBoundingClientRect(): Box { return { ...this.box }; }
+  getBoundingClientRect(): Box { this.reads += 1; return { ...this.box }; }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
   removeAttribute(name: string): void { this.attributes.delete(name); }
   kept(): Record<string, string> | null {
@@ -26,28 +28,28 @@ class FakeSlot {
 describe("useKeptPaneBoxes", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let renderer: ReactTestRenderer | undefined;
-  let observed: Set<FakeSlot>;
-  let notify: (slots: FakeSlot[]) => void;
   let slots: FakeSlot[];
   let areaBox: Box;
+  /** how often the pane area was asked for its panes or its own box, and how many observers of any kind were made */
+  let asked: { panes: number; box: number; observers: number };
   const area = { current: null } as unknown as RefObject<HTMLElement | null>;
 
   beforeEach(() => {
-    for (const key of ["ResizeObserver", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["ResizeObserver", "MutationObserver", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    observed = new Set();
-    notify = () => {};
-    Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: class {
-      constructor(callback: (entries: { target: FakeSlot }[]) => void) { notify = (changed) => callback(changed.map((target) => ({ target }))); }
-      observe(target: FakeSlot): void { observed.add(target); }
-      unobserve(target: FakeSlot): void { observed.delete(target); }
-      disconnect(): void { observed.clear(); }
-    } });
+    asked = { panes: 0, box: 0, observers: 0 };
+    const Observer = class {
+      constructor() { asked.observers += 1; }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    };
+    for (const key of ["ResizeObserver", "MutationObserver"]) Object.defineProperty(globalThis, key, { configurable: true, value: Observer });
     slots = [];
     areaBox = { left: 0, top: 52, width: 390, height: 792 };
     (area as { current: unknown }).current = {
-      querySelectorAll: () => slots,
-      getBoundingClientRect: () => ({ ...areaBox }),
+      querySelectorAll: () => { asked.panes += 1; return slots; },
+      getBoundingClientRect: () => { asked.box += 1; return { ...areaBox }; },
     };
   });
 
@@ -77,8 +79,6 @@ describe("useKeptPaneBoxes", () => {
     const slot = new FakeSlot({ left: 0, top: 52, width: 390, height: 792 });
     slots = [slot];
     await draw(false);
-    expect(observed.has(slot)).toBe(true);
-    notify([slot]);
     expect(slot.kept()).toBeNull();
 
     // When the list covers it and the header is gone: the pane area starts at the screen's top.
@@ -96,47 +96,55 @@ describe("useKeptPaneBoxes", () => {
     expect(slot.properties.size).toBe(0);
   });
 
-  it("notes no box while the list covers the pane: the one it keeps is the last it was shown in", async () => {
+  it("reads a pane's box as the list is about to cover it and not while it is covered: the box it keeps is the last it was shown in", async () => {
     const slot = new FakeSlot({ left: 0, top: 42, width: 1440, height: 830 });
     slots = [slot];
     await draw(false);
-    notify([slot]);
     // a wide window whose classic sidebar is collapsed: the mode draws its column, and the area moves and narrows
     areaBox = { left: 320, top: 0, width: 1120, height: 900 };
     await draw(true);
     expect(slot.kept()).toEqual({ "--kept-left": "-320px", "--kept-top": "42px", "--kept-width": "1440px", "--kept-height": "830px" });
+
     // the window is resized under the list: what the pane's element measures now is not a box it was shown in
     slot.box = { left: 0, top: 42, width: 1000, height: 600 };
-    notify([slot]);
-    await draw(false);
     await draw(true);
     expect(slot.kept()).toEqual({ "--kept-left": "-320px", "--kept-top": "42px", "--kept-width": "1440px", "--kept-height": "830px" });
-  });
 
-  it("lets go of a pane that left the page", async () => {
-    const first = new FakeSlot({ left: 0, top: 42, width: 720, height: 830 });
-    const second = new FakeSlot({ left: 720, top: 42, width: 720, height: 830 });
-    slots = [first, second];
+    // a row opens it as a thread beside the column, and Back covers it again: the thread's box is the one it keeps now
     await draw(false);
-    expect([...observed]).toEqual([first, second]);
-    // the split ends: its second pane's element is gone
-    slots = [first];
-    await draw(false);
-    expect([...observed]).toEqual([first]);
-  });
-
-  it("leaves alone a pane whose box it never saw, and watches the panes a split adds", async () => {
-    const first = new FakeSlot({ left: 0, top: 42, width: 720, height: 830 });
-    slots = [first];
-    await draw(false);
-    notify([first]);
-    const second = new FakeSlot({ left: 720, top: 42, width: 720, height: 830 });
-    slots = [first, second];
-    await draw(false);
-    expect(observed.has(second)).toBe(true);
-    areaBox = { left: 0, top: 0, width: 1440, height: 900 };
+    slot.box = { left: 320, top: 0, width: 1120, height: 900 };
     await draw(true);
-    expect(first.kept()).toEqual({ "--kept-left": "0px", "--kept-top": "42px", "--kept-width": "720px", "--kept-height": "830px" });
-    expect(second.kept()).toBeNull();
+    expect(slot.kept()).toEqual({ "--kept-left": "0px", "--kept-top": "0px", "--kept-width": "1120px", "--kept-height": "900px" });
+  });
+
+  it("leaves alone a pane that came to the page under the list, until it has been shown", async () => {
+    // Given a page that opened on the mode's list: its pane is drawn under the list and was never shown.
+    areaBox = { left: 0, top: 0, width: 390, height: 844 };
+    await draw(true);
+    const slot = new FakeSlot({ left: 0, top: 0, width: 390, height: 844 });
+    slots = [slot];
+    await draw(true);
+    expect(slot.kept()).toBeNull();
+
+    // When a row shows it as a thread, and Back covers it.
+    await draw(false);
+    await draw(true);
+
+    // Then it keeps the thread's box.
+    expect(slot.kept()).toEqual({ "--kept-left": "0px", "--kept-top": "0px", "--kept-width": "390px", "--kept-height": "844px" });
+  });
+
+  it("reads nothing of the page and watches nothing while no list covers a pane, as in the classic app", async () => {
+    const slot = new FakeSlot({ left: 0, top: 52, width: 390, height: 792 });
+    slots = [slot];
+
+    // When the classic app draws, and draws again.
+    await draw(false);
+    await draw(false);
+    await draw(false);
+
+    // Then no pane was looked for, no box was read and no observer was made.
+    expect(asked).toEqual({ panes: 0, box: 0, observers: 0 });
+    expect(slot.reads).toBe(0);
   });
 });

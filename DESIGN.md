@@ -2501,7 +2501,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   from 769px it draws its column whether or not the classic sidebar was open, and a classic
   split becomes one pane, so a pane laid out again under the list would have another box than
   the one its pty was sized to. A covered pane therefore keeps the box it was shown in
-  (lib/coveredPane.ts notes each pane's box while it is shown and holds it there,
+  (lib/coveredPane.ts reads each pane's box as the list is about to cover it, and at no other
+  time, so the classic app reads and watches nothing for it; it holds the pane there,
   `.pane-slot[data-kept-box]`) and sizes nothing (`PaneCoveredContext`, as a split pane a phone
   keeps behind another sizes nothing), keeping its hold on the pty's size as it does under a
   phone's open drawer. Shown again it fits the box it is shown in and asks for that grid only

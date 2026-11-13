@@ -269,7 +269,8 @@ export function App() {
   const { selectionRef, movingPanes } = useSelectionMark({ selectedMachineId, selectedPaneId });
   const { lens, setLens, viewPicks, setViewPicks } = usePaneLensState();
   const { split, setSplit, soloSlot, endSplit, splitRef, splitShownRef, lastKeyAtRef, paneDragging, setPaneDragging, gridDrop, gridDropRef, showGridDrop, hideDropTarget, clearDropPreview, paneAreaRef, tabDrag, draggedPaneRef, markSwap, markMove } = useSplitState();
-  // a pane under the mode's list keeps the box it was shown in and sizes no pty (lib/coveredPane.ts)
+  // a pane under the mode's list keeps the box it was shown in and sizes no pty (lib/coveredPane.ts); the list
+  // covers a pane only in the mode, and the hook reads the page only as it does
   useKeptPaneBoxes(paneAreaRef, inbox.shown);
   const { paletteOpen, paletteQuery, openPalette, setPaletteOpen } = useCommandPalette();
   const paneControls = useRef<PaneControls | null>(null);
