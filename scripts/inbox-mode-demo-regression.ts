@@ -356,7 +356,8 @@ try {
           await questionShown(page);
           await summaryShown(page);
           await appFaces(page);
-          for (const selector of ABSENT) assert.equal(await page.locator(selector).count(), 0, `the mode draws no ${selector}`);
+          // drawn: the pane under the list keeps the classic shell's tab row, hidden with it, so its terminal keeps its box
+          for (const selector of ABSENT) assert.equal(await page.locator(selector).filter({ visible: true }).count(), 0, `the mode draws no ${selector}`);
           assert.equal(await page.locator(".mode-inbox :is(h1, h2, h3, h4, h5, h6, [role='heading'])").count(), 0, "the list has no heading");
           assert.equal(await page.locator(".mode-inbox").getAttribute("aria-label"), "Agent inbox");
           assert.equal(await page.locator(".mode-inbox .inbox-top button").count(), 2, "exactly two controls at the top");

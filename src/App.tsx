@@ -917,7 +917,11 @@ export function App() {
   // not in the inbox mode, whose shell has no tab row: its list draws no header, and a thread's holds Back and its title
   const phoneTabRow = tabsInHeader && !inbox.shown && !inMode;
   const workspaceTabCount = selectedPane ? snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0 : 0;
-  const stripInHeader = (wideScreen ? !splitOn && !tabsInHeader : phoneTabRow) && !guideShown && !inMode && snapshot !== null && selectedPane !== null && selectedWorkspace !== null;
+  // Where the classic shell draws the workspace's tabs: in the header's row, else as a row of the pane's own. The
+  // mode's shell draws neither, yet a terminal keeps the box classic gives it: a pane under the mode's list keeps
+  // the row it had (below, hidden with its pane), and a phone thread's terminal keeps that row's room (tabRoom)
+  const classicStripInHeader = (wideScreen ? !splitOn && !tabsInHeader : tabsInHeader) && !guideShown && snapshot !== null && selectedPane !== null && selectedWorkspace !== null;
+  const stripInHeader = classicStripInHeader && !inMode;
   // from 769px with a mouse the pane column ends in the Herdr app's status bar: where the pane is, its branch,
   // the connection. A touch screen keeps that room for its key bar and says them in More and the chip.
   const statusBarShown = wideScreen && keyboardLikely && selectedPane !== null && crumb !== null && !guideShown && !inMode;
@@ -928,6 +932,9 @@ export function App() {
   // list is the screen), and a mode left with no pane to show a thread of shows its list
   const paneSplit = splitOn && !inMode;
   const listScreen = inMode && inbox.shown && !inboxWide;
+  // a phone thread that shows its terminal, where the classic shell would draw the pane's own tab row over it: the
+  // thread keeps that row's room free, so the terminal's box, and its pty's size, are the ones classic gives it
+  const tabRoom = inMode && !inboxWide && !inbox.shown && selectedPane !== null && !chatShown && !tabRowHidden(cramped, workspaceTabCount, tabsInHeader);
 
   if (locked === null) {
     // the auth state is unknown until /api/health or /api/session answers (ten seconds when
@@ -1011,7 +1018,7 @@ export function App() {
   );
 
   return (
-    <MachineSessionsProvider sessions={machineSessions} machineIds={machines.map((machine) => machine.id)}><MachineContext.Provider value={selectedMachineId}><AppLayoutContext.Provider value={appLayout}><div className={`app${(inMode ? !inboxWide : sidebarCollapsed) ? " sidebar-collapsed" : ""}${inMode ? " is-inbox" : ""}${listScreen ? " is-inbox-list" : ""}${inboxWide ? " is-inbox-wide" : ""}${inboxWide && !inbox.shown && selectedPane !== null && !chatShown ? " is-inbox-terminal" : ""}`} style={sidebarWidth === null && filePanelWidth === null ? undefined : {
+    <MachineSessionsProvider sessions={machineSessions} machineIds={machines.map((machine) => machine.id)}><MachineContext.Provider value={selectedMachineId}><AppLayoutContext.Provider value={appLayout}><div className={`app${(inMode ? !inboxWide : sidebarCollapsed) ? " sidebar-collapsed" : ""}${inMode ? " is-inbox" : ""}${listScreen ? " is-inbox-list" : ""}${inboxWide ? " is-inbox-wide" : ""}${inboxWide && !inbox.shown && selectedPane !== null && !chatShown ? " is-inbox-terminal" : ""}${tabRoom ? " is-inbox-tab-room" : ""}`} style={sidebarWidth === null && filePanelWidth === null ? undefined : {
       ...(sidebarWidth === null ? {} : { "--sidebar-user-w": `${sidebarWidth}px` }),
       ...(filePanelWidth === null ? {} : { "--file-panel-user-w": `${filePanelWidth}px` }),
     } as CSSProperties}>
@@ -1347,8 +1354,9 @@ export function App() {
                 <RenderBoundary resetKey={`${machineId}:${paneId ?? ""}`} fallback={(retry) => <>{slotBar}<RegionCrash message={t("This pane can't be shown.")} retry={retry} onShown={active ? paneLost : undefined} /></>}>
                 <CrashProbe region="pane" />
                 {!(slotSnapshot && pane && workspace) && slotBar}
-                {/* an inbox mode thread has no tab row and no tab sheet */}
-                {slotSnapshot && pane && workspace && !(active && stripInHeader) && !inMode && (
+                {/* an inbox mode thread has no tab row and no tab sheet; a pane under the mode's list, hidden, keeps the
+                    row the classic shell gave it, so its terminal keeps its box */}
+                {slotSnapshot && pane && workspace && !(active && classicStripInHeader) && (!inMode || inbox.shown) && (
                   <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect}
                     inHeader={tabsInHeader} sheet={active ? tabSheet : null} onSheetClose={closeTabSheet} end={slotEnd} closable={auth?.role !== "watch"}
                     renameRequest={active && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}

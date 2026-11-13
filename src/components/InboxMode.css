@@ -220,6 +220,15 @@
   text-align: center;
 }
 
+/* A phone's thread under the terminal. Where the classic shell draws the workspace's tabs as a row of the pane's own
+   (under a phone's header: Settings → Tabs on a phone, TabStrip.css), a thread has no row and keeps that row's room
+   free above the terminal, on the terminal's surface: a finger's target and the row's hairline. The terminal's box
+   is then the one classic gives it, and showing it sizes its pty as classic does. */
+.app.is-inbox-tab-room .pane-split {
+  padding-top: calc(var(--touch-target) + var(--hairline));
+  background: var(--term-bg);
+}
+
 /* Under the terminal the pane's box is the one it has in the classic shell, so showing a thread's terminal sizes its
    pty as classic does. Where classic closes the pane column with a status bar (a mouse), the zone is taller than the
    classic header and the rest of the two bars' height is kept under the terminal. Where classic has no status bar (a

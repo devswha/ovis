@@ -2505,7 +2505,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `.pane-slot[data-kept-box]`) and sizes nothing (`PaneCoveredContext`, as a split pane a phone
   keeps behind another sizes nothing), keeping its hold on the pty's size as it does under a
   phone's open drawer. Shown again it fits the box it is shown in and asks for that grid only
-  where it differs: back in the box it had, it sends nothing. A thread opens on its chat (a
+  where it differs: back in the box it had, it sends nothing. The classic shell's tab row is
+  part of that box wherever it is a row of the pane's own (under a phone's header by default,
+  Settings → Tabs on a phone; each half of a split): the mode draws no tab row, so a pane under
+  the list keeps the row it had, hidden with it, and a phone thread that shows its terminal
+  keeps that row's room free above it, on the terminal's surface (`.app.is-inbox-tab-room`:
+  `--touch-target` and the row's hairline), where classic would draw the row. A thread opens
+  on its chat (a
   row, the next waiting agent), so its terminal is sized only when it is shown there. With the
   classic sidebar collapsed, or from a classic split, a thread's pane is not classic's (the
   column stands beside it, and it is one pane), so its terminal, once shown, has the thread's
