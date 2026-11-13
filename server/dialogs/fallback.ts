@@ -115,13 +115,15 @@ const WAITING_LINES: Readonly<Record<string, readonly WaitingLine[]>> = {
   // "◆ Waiting on answers for Option A or option B?      7.4s ⇣21.5k [stop]"
   grok: [{ pattern: /^(◆ Waiting on answers for \S(?:.*\S)?) {2,}(?:\d+m )?\d+(?:\.\d+)?s [⇣↓][\d.]+[kKmM]? \[stop\]$/u, steady: "$1 <time> <tokens> [stop]" }],
   hermes: [
-    // the question with its timer: "❓ Which color?  ( 57.9s · ↓ 34 tok)", "(01m05s · ↓ 34 tok)"
-    { pattern: new RegExp(`^(❓ \\S(?:.*\\S)?) {2}\\(\\s?${ELAPSED} · ↓ \\d+ tok\\)$`, "u"), steady: "$1  (<time> · ↓ <tokens> tok)" },
+    // the question with its timer, padded to six characters: "❓ Which color?  ( 57.9s · ↓ 34 tok)", "(01m05s · ↓ 34 tok)",
+    // and so "(  5.2s · ↓ 34 tok)" in its first ten seconds
+    { pattern: new RegExp(`^(❓ \\S(?:.*\\S)?) {2}\\(\\s*${ELAPSED} · ↓ [\\d.,]+[kKmM]? tok\\)$`, "u"), steady: "$1  (<time> · ↓ <tokens> tok)" },
     // the hint with the time left to answer: "↑/↓ to select, Enter to lock, Tab next question  (3542s)"
     { pattern: /^(↑\/↓ to select, Enter to lock\b.*\S) {2}\(\d+s\)$/u, steady: "$1  (<time left>)" },
-    // the status bar under it, every segment of which ticks up to its timer; the words it echoes after the timer stay:
+    // the status bar under it: the model's name first, then segments that each tick, up to its timer; the name and the
+    // words it echoes after the timer stay:
     // "☤ gpt-6-luna │ 12.7K/1.1M │ … │ ⏱ 1m 2s   ─ Use your…"
-    { pattern: new RegExp(`^☤ \\S.* │ ⏱ ${ELAPSED}(?: {2,}(\\S.*))?$`, "u"), steady: (_all, echo) => `☤ <status>${echo ? ` ${echo}` : ""}` },
+    { pattern: new RegExp(`^☤ ([^│\\s][^│]*?) │ (?:.* │ )?⏱ ${ELAPSED}(?: {2,}(\\S.*))?$`, "u"), steady: (_all, model, echo) => `☤ ${model} <status>${echo ? ` ${echo}` : ""}` },
   ],
   // "◈ Request user input Color — running (59s)", its glyph turning ◆/◈/◇
   muse: [{ pattern: new RegExp(`^[◆◈◇] (\\S(?:.*\\S)?) — running \\(${ELAPSED}\\)$`, "u"), steady: "◈ $1 — running (<time>)" }],
@@ -133,7 +135,7 @@ const WAITING_LINES: Readonly<Record<string, readonly WaitingLine[]>> = {
   "dsh-tui": [{ pattern: new RegExp(`^[\\u{1F311}-\\u{1F318}] (\\S(?:.*\\S)?) · ${ELAPSED} · ↑ [\\d.,]+[kKmM]? · ↓ [\\d.,]+[kKmM]? tokens$`, "u"), steady: "<moon> $1 · <time> · <tokens>" }],
 };
 
-interface WaitingLine { pattern: RegExp; steady: string | ((all: string, echo?: string) => string); each?: true }
+interface WaitingLine { pattern: RegExp; steady: string | ((all: string, ...groups: (string | undefined)[]) => string); each?: true }
 
 function waitingReader(rules: readonly WaitingLine[], shown: string[]): SteadyReader {
   const steadied = new Map<string, string>();
