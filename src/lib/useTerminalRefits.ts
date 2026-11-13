@@ -153,10 +153,14 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
 
   // hidden behind another pane of its split, the pane keeps the size the pty has; shown again, it
   // fits this screen and takes the pty, as a lens switch back to the terminal does
+  // a pane the list uncovered only to hide it (a thread drawn alone over its tab's split): whether it held the pty's
+  // size as the list covered it, kept for the list's return; shown again with no list over it, that is spent
+  const heldWhileHidden = useRef(false);
   const wasShown = useRef(shown);
   useEffect(() => {
     if (wasShown.current === shown) return;
     wasShown.current = shown;
+    if (shown && !covered) heldWhileHidden.current = false;
     const pane = paneRef.current;
     if (!pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
     if (!shown) { socketRef.current?.keepSize(pane); return; }
@@ -183,11 +187,13 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     wasCovered.current = covered;
     const pane = paneRef.current;
     if (covered) {
-      heldAtCover.current = pane !== null && socketRef.current?.holdsSize(pane) === true;
+      heldAtCover.current = heldWhileHidden.current || (pane !== null && socketRef.current?.holdsSize(pane) === true);
+      heldWhileHidden.current = false;
       return;
     }
     const held = heldAtCover.current;
     heldAtCover.current = false;
+    if (!shown) { heldWhileHidden.current = held; return; }
     if (!held || !pane || observeRef.current || fixedGridRef.current || chatViewRef.current) return;
     if (keyboardHoldsRef.current(true)) return;
     const term = termRef.current;

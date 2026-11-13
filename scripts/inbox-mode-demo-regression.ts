@@ -1097,6 +1097,44 @@ try {
         }, { width: 1440, height: 900 });
       }
 
+      // ---- a tab herdr split through a thread's terminal and back ----
+      // The thread draws its pane alone and the tab's other pane, hidden, lets the pty's size go; Back puts the list over
+      // both again, and Back to Ovis gives the other pane the hold it had before the mode: it asks once for the grid it
+      // held, as leaving straight from the thread does.
+      await withPage(browser, base, { language: "en", theme: "light" }, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "a tab herdr split through a thread's terminal and back", async (page) => {
+        await page.locator(".app-header.is-zoned").waitFor();
+        await page.keyboard.press("Control+Shift+K");
+        await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Split pane right");
+        await page.getByRole("option", { name: "Split pane right", exact: true }).click();
+        await page.waitForFunction(() => [...document.querySelectorAll("[data-layout-pane] .xterm-screen")].filter((screen) => screen.getBoundingClientRect().width > 0).length === 2, undefined, { timeout: 15_000 });
+        // fixed wait: the new pane's own attach and first sizing have gone out
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const other = await page.evaluate((working) => [...document.querySelectorAll("[data-layout-pane]")].map((frame) => frame.getAttribute("data-layout-pane")).find((pane) => pane !== null && pane !== working) ?? "", WORKING);
+        // the grid the other pane holds in classic: the last size it asked for, by its attach or a resize
+        const held = (await page.evaluate(() => window.inboxFixture.frames.slice())).filter((frame) => frame.pane === other && (frame.type === "attach" || frame.type === "resize")).at(-1);
+        assert.ok(other !== "" && held !== undefined, `the tab's other pane (${other}) holds the pty's size in classic`);
+        await page.locator(".header-more-button").click();
+        await page.locator('.row-menu [data-item="enter-inbox"]').click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        await page.locator(".thread-top .lens-toggle").click();
+        await page.locator('.thread-top .lens-toggle[data-view="terminal"]').waitFor();
+        await page.goBack();
+        await page.locator(".inbox-unchosen").waitFor();
+        // fixed wait: what the thread and the list's return send has gone out
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const before = await page.evaluate(() => window.inboxFixture.frames.length);
+        await page.locator(".inbox-exit").click();
+        await page.locator(".mode-inbox").waitFor({ state: "detached" });
+        await page.locator(".app-header.is-zoned").waitFor();
+        // fixed wait: the panes shown again have asked for what they ask for
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const sent = (await page.evaluate((count) => window.inboxFixture.frames.slice(count), before)).filter((frame) => frame.pane === other);
+        assert.deepEqual(sent, [{ type: "resize", pane: other, cols: held!.cols, rows: held!.rows }], `leaving, the tab's other pane asks once for the grid it held before the mode (${held!.cols} by ${held!.rows})`);
+        console.log(`PASS a tab herdr split through a thread's terminal and Back: Back to Ovis gives the tab's other pane (${other}) its hold back at ${held!.cols} by ${held!.rows}, asked once`);
+      }, { width: 1440, height: 900 });
+
       // ---- a classic split's thread is one pane at the pane area's width ----
       // Entered from a classic split, a row's thread is drawn at the whole pane area's width, not at the half's
       // rectangle the slot had in classic, and its terminal is sized to that box.
