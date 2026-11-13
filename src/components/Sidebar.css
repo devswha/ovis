@@ -1,6 +1,8 @@
-/* The navigation column's row fills, on its own surface: the sidebar's rows and the inbox mode's column
-   (InboxList.css), which stands in the sidebar's place. Aliases of existing tokens only. */
-.sidebar {
+/* The navigation column's row fills, on its own surface: the sidebar's rows (on .sidebar-shell, where they have
+   always been set) and the inbox mode's column (InboxList.css), which stands in the sidebar's place. Aliases of
+   existing tokens only. */
+.sidebar-shell,
+.sidebar.inbox-column {
   --side-hover: color-mix(in srgb, var(--bg-hover) 50%, var(--bg-nav));
   --side-selected: var(--bg-hover);
 }

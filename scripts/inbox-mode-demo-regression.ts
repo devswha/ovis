@@ -603,6 +603,13 @@ try {
           pass(11, "a cold address of a thread shows the thread, and the header's Back opens the list in its place, adding no entry");
         });
 
+        // the classic app's More header is main's: the header itself scrolls, capped at six lines; the path is no scroller
+        await withPage(browser, base, off, `/?pane=${encodeURIComponent(BLOCKED)}`, block("the classic app's More header as on main"), async (page) => {
+          await openSheet(page, ".header-more-button");
+          const roles = await page.locator(".row-sheet .header-more-crumb").evaluate((crumb) => { const path = crumb.querySelector(".header-more-path"); return { crumb: getComputedStyle(crumb).overflowY, cap: getComputedStyle(crumb).maxHeight, path: path ? getComputedStyle(path).overflowY : null, mode: crumb.classList.contains("is-inbox") }; });
+          assert.ok(roles.crumb === "auto" && roles.cap !== "none" && roles.path !== "auto" && !roles.mode, `classic's More header scrolls as a whole, as on main: ${JSON.stringify(roles)}`);
+          console.log("PASS the classic app's More header scrolls as a whole, capped at six lines, as on main");
+        });
         await withPage(browser, base, off, `/?pane=${encodeURIComponent(BLOCKED)}`, block("the way out from a thread, and Back through the mode to where it was entered"), async (page) => {
           await page.locator(".pane-slot").first().waitFor();
           await enterFromMore(page);
@@ -617,6 +624,8 @@ try {
           // the sheet's header (the pane's title, place, path, the session's lines, the route) is no scroller of its own
           const header = await page.locator(".row-sheet .header-more-crumb").evaluate((node) => ({ content: node.scrollHeight, box: node.clientHeight, lines: node.childElementCount }));
           assert.ok(header.lines >= 3 && header.content <= header.box, `More's header holds its ${header.lines} lines without scrolling: ${header.content}px in ${header.box}px`);
+          const roles = await page.locator(".row-sheet .header-more-crumb").evaluate((crumb) => { const path = crumb.querySelector(".header-more-path"); return { crumb: getComputedStyle(crumb).overflowY, path: path ? getComputedStyle(path).overflowY : null }; });
+          assert.ok(roles.crumb === "visible" && (roles.path === null || roles.path === "auto"), `a thread's More header is no scroller, only its path is: ${JSON.stringify(roles)}`);
           assert.equal(items[2], "next-waiting", `then the next agent that waits: ${items.join()}`);
           assert.ok(!items.includes("open-drawer"), `the mode has no drawer to open: ${items.join()}`);
           assert.deepEqual(items.slice(-2), ["alerts", "settings"], `the app's items end a thread's More: ${items.join()}`);

@@ -1200,7 +1200,7 @@ export function App() {
             anchor={more.anchor}
             title={t("More")}
             header={crumb && !inbox.shown && !(inMode && moreOnList) ? (
-              <div className="header-more-crumb">
+              <div className={`header-more-crumb${inMode ? " is-inbox" : ""}`}>
                 {/* the status bar says where the pane is; the session's lines and the route stay here */}
                 {/* the pane's whole title, which the header cuts short: a phone has no tooltip, so More says it, with the agent (G-069) */}
                 {!statusBarShown && selectedTitle !== null && <span className="header-more-title">{selectedAgent ? `${agentName(selectedAgent)} · ${selectedTitle}` : selectedTitle}</span>}

@@ -2989,11 +2989,13 @@ button {
 
 /* the menu's first thing, two lines on purpose: "PC › workspace", then the whole path in the
    mono face. It is where a touch screen reads the path. A path longer than six lines scrolls
-   in its own lines (.header-more-path), so the items under it stay on the screen; the lines
-   around it (the title, the place, the session's, the route) never make a scroller of the header. */
+   here, so the items under it stay on the screen. */
 .header-more-crumb {
   display: flex;
   flex-direction: column;
+  max-height: calc(6em * var(--lh-base));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   color: var(--text-dim);
   font-size: var(--fs-xs);
   line-height: var(--lh-base);
@@ -3008,10 +3010,6 @@ button {
 }
 
 .header-more-path {
-  flex: none;
-  max-height: calc(6em * var(--lh-base));
-  overflow-y: auto;
-  overscroll-behavior: contain;
   color: var(--text);
   font-family: var(--font-mono);
   white-space: pre-wrap;

@@ -296,3 +296,18 @@
 :root[data-window-controls] .mode-inbox .inbox-top {
   padding-inline-start: calc(var(--window-controls-w, 72px) + env(safe-area-inset-left, 0px));
 }
+
+/* More's header over a thread (App.tsx gives the crumb .is-inbox in the mode only): its fixed lines never make a
+   scroller of the header; only a path longer than six lines scrolls, in its own lines. The classic app's header
+   scrolls as a whole (styles.css .header-more-crumb). */
+.header-more-crumb.is-inbox {
+  max-height: none;
+  overflow-y: visible;
+}
+
+.header-more-crumb.is-inbox .header-more-path {
+  flex: none;
+  max-height: calc(6em * var(--lh-base));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}

@@ -2475,7 +2475,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it, and a touch screen no shortcut), **Alerts**, **Settings**. In a phone's thread also,
   between the first two and the last two, the next waiting agent, Find, **Browse files**,
   **Copy link** and what the pane's menu adds for what it shows (Search conversation, the
-  mirror's width, unsent text), under More's header of the pane's title, place and path. On a
+  mirror's width, unsent text), under More's header of the pane's title, place and path, whose fixed lines never scroll there:
+  only a path longer than six lines scrolls, in its own lines (`.header-more-crumb.is-inbox`; the
+  classic app's header scrolls as a whole). On a
   wide window each side has a More of its own: the column's holds the list's items but Back to
   Ovis, which stands in the foot under it, and the pane's the thread's. A More whose button leaves the screen closes with it: the system Back
   from a wide thread takes the pane's More away, and its open menu goes too (lib/moreMenu.ts).
@@ -3266,9 +3268,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   with the location on two lines, "PC › workspace" then the full path in mono. Where no status bar
   shows, the pane's whole title and its agent lead those lines (`.header-more-title`, `--text`
   `--fw-medium`, "Claude Code · Guard the export button"): the header cuts a long title short and a
-  touch has no tooltip, so More is where a phone reads it in full. Only the path scrolls, in
-  its own lines, once it is longer than six: the lines around it never make a scroller of the
-  menu's header. Its first item,
+  touch has no tooltip, so More is where a phone reads it in full. Its first item,
   at every width, is **Search panes and actions**, which opens the command palette (its shortcut
   as the item's hint where the pointer is fine); then **Find in terminal**, **Browse files** (at
   `<=768px` only: from `769px` Files is the header's own button), **Copy link** and **Alerts**,

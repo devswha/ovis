@@ -8,10 +8,6 @@
 - A row that needs you says how long it has waited where this device saw the wait begin, and
   otherwise the time of the agent's last message, so every row of the list has a time.
 
-### Changed
-- More's header keeps its fixed lines still and scrolls only a long path, so a phone's sheet no
-  longer scrolls its own header.
-
 ### Fixed
 - More closes when the button that opened it leaves the page (a Back that takes its screen away),
   instead of staying open over a screen it no longer belongs to.
