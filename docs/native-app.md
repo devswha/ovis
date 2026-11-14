@@ -392,11 +392,17 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   (`PCStore.sameOrigin`). A sign-in's steps and the redirects of the first load are judged before it.
   Opening or leaving a PC starts the activity again, so the next page is a first load and the
   old WebView goes with the old activity.
-- Until the PC answers, a native cover over the WebView says which PC is opening and offers
-  Change PC, as on iOS. After 20 seconds (`PCStore.ANSWER_SECONDS`, counted from Open on the connect
-  screen when it checked the address first, with at least 5 s left for the page) the app stops the load and
-  shows `error.html`, which says the PC did not answer and that a home network address does not
-  open over mobile data or another Wi-Fi; Chromium alone waits about two minutes. The first page
+- Until the PC's page shows, a native cover over the WebView says which PC is opening and offers
+  Change PC, as on iOS. When nothing at all has come back after 20 seconds (`PCStore.ANSWER_SECONDS`,
+  counted from Open on the connect screen when it checked the address first, with at least 5 s left
+  for the page) the app stops the load and shows `error.html`, which says the PC did not answer:
+  for a home network or tailnet address, that such an address does not open over mobile data or
+  another Wi-Fi; for a public server, that it may be down or out of the phone's reach. Chromium
+  alone waits about two minutes. A PC that answers over a slow link is never cut off while bytes
+  arrive (`OpeningWatch`, from the WebView's committed response and the app's received bytes,
+  `TrafficStats`): after 5 s the cover says the connection is slow and how much has arrived, and
+  after 20 s with nothing more it offers Keep waiting. On a 10 KB/s link the first paint needs
+  about 90 KB and a usable client about 1.1 MB (measured on main, 2026-11-14). The first page
   of a PC saved by its origin is checked once more (`PCStore.check`, with the WebView's cookies):
   one that answers but not as Ovis is not kept and gives way to `error.html`, which has Change PC,
   so a PC saved before that check (or one whose port another server took) never traps the app.

@@ -9,6 +9,9 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
+import android.os.SystemClock;
+import android.net.TrafficStats;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -95,8 +98,23 @@ public class MainActivity extends BridgeActivity {
     /** Covers the WebView, blank until the PC answers: which PC is opening, and Change PC (showOpening). */
     private View openingView;
 
-    /** Gives up on a PC that has not answered in ANSWER_SECONDS, where Chromium alone waits about two minutes. */
+    /**
+     * Looks at the open once a second while the cover is up (watchOpening): gives up on a PC from
+     * which nothing arrived in ANSWER_SECONDS, where Chromium alone waits about two minutes, and
+     * tells a slow or stalled link on the cover.
+     */
     private final Handler answerTimer = new Handler(Looper.getMainLooper());
+
+    /** What has arrived from the PC being opened, and when (null before the cover shows). */
+    private OpeningWatch watch;
+
+    /** The cover's spinner, its line and its Keep waiting, which change with the open's stage. */
+    private ProgressBar openingSpinner;
+    private TextView openingText;
+    private Button openingKeep;
+
+    /** The PC's name or address, as the cover names it. */
+    private String openingLabel;
 
     /** Whether the app gave up on the first page: the load it dropped may still report its end. */
     private boolean gaveUp;
@@ -339,6 +357,10 @@ public class MainActivity extends BridgeActivity {
                     @Override
                     public void onPageStarted(WebView webView) {
                         pageFailed = false;
+                        // WebView reports a main-frame page as started once its response has come: the
+                        // PC answered, and the page is on its way however slowly
+                        String url = webView.getUrl();
+                        if (watch != null && url != null && PCStore.belongs(url, pc)) watch.answered(SystemClock.elapsedRealtime());
                     }
 
                     @Override
@@ -408,9 +430,12 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * Covers the WebView until the PC answers (onPageCommitVisible), as the iOS app's cover does: which
-     * PC is opening, and Change PC, so an address that does not answer never leaves a blank screen.
-     * After ANSWER_SECONDS the app stops waiting and the error page says so, with Try again.
+     * Covers the WebView until the PC's page shows (onPageCommitVisible): which PC is opening, and
+     * Change PC, so an address that does not answer never leaves a blank screen. When nothing at all
+     * has arrived after ANSWER_SECONDS the app stops waiting and the error page says so, with Try
+     * again. A PC that answers over a slow link is never cut off while bytes arrive: the cover says
+     * the connection is slow and how much has come, and after STALL_MS with nothing more it offers
+     * Keep waiting (OpeningWatch).
      */
     private void showOpening(String pc) {
         String origin = PCStore.origin(pc);
@@ -428,6 +453,17 @@ public class MainActivity extends BridgeActivity {
         text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         text.setGravity(Gravity.CENTER);
         text.setPadding(0, pad / 2, 0, pad);
+        Button keep = new Button(this);
+        keep.setText(korean() ? "계속 기다리기" : "Keep waiting");
+        keep.setAllCaps(false);
+        keep.setTextColor(Color.parseColor("#12100e"));
+        keep.setBackgroundColor(Color.parseColor("#f0a830"));
+        keep.setPadding(pad, pad / 2, pad, pad / 2);
+        keep.setVisibility(View.GONE);
+        keep.setOnClickListener(v -> {
+            if (watch != null) watch.keepWaiting(SystemClock.elapsedRealtime());
+            showStage();
+        });
         Button change = new Button(this);
         change.setText(korean() ? "PC 바꾸기" : "Change PC");
         change.setAllCaps(false);
@@ -442,6 +478,9 @@ public class MainActivity extends BridgeActivity {
         stack.setPadding(pad, pad, pad, pad);
         stack.addView(spinner);
         stack.addView(text);
+        LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        gap.bottomMargin = pad / 2;
+        stack.addView(keep, gap);
         stack.addView(change);
         FrameLayout cover = new FrameLayout(this);
         cover.setBackgroundColor(Color.parseColor("#12100e"));
@@ -450,14 +489,53 @@ public class MainActivity extends BridgeActivity {
         cover.addView(stack, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
         addContentView(cover, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         openingView = cover;
-        answerTimer.postDelayed(() -> {
-            if (openingView == null || isFinishing() || isDestroyed()) return;
+        openingSpinner = spinner;
+        openingText = text;
+        openingKeep = keep;
+        openingLabel = label;
+        watch = new OpeningWatch(SystemClock.elapsedRealtime(), answerDelay(), TrafficStats.getUidRxBytes(Process.myUid()));
+        String host = origin == null ? pc : Uri.parse(origin).getAuthority();
+        answerTimer.postDelayed(() -> watchOpening(host), 1000);
+    }
+
+    /** Each second while the cover is up: what arrived, and what the cover says (OpeningWatch). */
+    private void watchOpening(String host) {
+        if (openingView == null || isFinishing() || isDestroyed()) return;
+        long now = SystemClock.elapsedRealtime();
+        watch.received(now, TrafficStats.getUidRxBytes(Process.myUid()));
+        if (watch.stage(now) == OpeningWatch.Stage.NO_ANSWER) {
             gaveUp = true;
-            String host = origin == null ? pc : Uri.parse(origin).getAuthority();
             PCStore.fail(host + " did not answer within " + PCStore.ANSWER_SECONDS + " seconds.", "timeout");
             bridge.getWebView().stopLoading();
             bridge.getWebView().loadUrl(bridge.getErrorUrl());
-        }, answerDelay());
+            return;
+        }
+        showStage();
+        answerTimer.postDelayed(() -> watchOpening(host), 1000);
+    }
+
+    /** The cover's line, spinner and Keep waiting for the open's stage now. */
+    private void showStage() {
+        if (openingView == null) return;
+        OpeningWatch.Stage stage = watch.stage(SystemClock.elapsedRealtime());
+        boolean ko = korean();
+        long kb = watch.bytesSoFar() / 1024;
+        String text;
+        if (stage == OpeningWatch.Stage.SLOW) {
+            text = ko
+                ? "연결이 느립니다. " + openingLabel + " 여는 중…" + (kb > 0 ? "\n" + kb + "KB 받음" : "")
+                : "Slow connection. Still opening " + openingLabel + "…" + (kb > 0 ? "\n" + kb + " KB so far" : "");
+        } else if (stage == OpeningWatch.Stage.STALLED) {
+            long seconds = OpeningWatch.STALL_MS / 1000;
+            text = ko
+                ? openingLabel + "에서 " + seconds + "초 동안 아무것도 오지 않았습니다. 연결이 끊겼을 수 있습니다."
+                : "Nothing has come from " + openingLabel + " for " + seconds + " seconds. The connection may have dropped.";
+        } else {
+            text = ko ? openingLabel + " 여는 중…" : "Opening " + openingLabel + "…";
+        }
+        openingText.setText(text);
+        openingSpinner.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.INVISIBLE : View.VISIBLE);
+        openingKeep.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.VISIBLE : View.GONE);
     }
 
     /**
