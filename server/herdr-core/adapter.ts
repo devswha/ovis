@@ -447,6 +447,8 @@ function herdrCode(error: HcError, missing: string): string {
 
 /** How long git's facts for a pane's folder are kept: a snapshot is read on every change in the core. */
 const CHECKOUT_FACTS_MS = 5_000;
+/** How long a snapshot waits on git for one folder's facts before drawing it without them. */
+const CHECKOUT_FACTS_WAIT_MS = 2_000;
 
 function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (live: ReadonlySet<string>) => void, options: AdapterOptions, sessionOf?: SessionOf): (request: Request) => Promise<Reply> {
   const platform = options.platform ?? process.platform;
@@ -471,7 +473,14 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     for (const [kept, entry] of checkoutFacts) if (entry.until <= now) checkoutFacts.delete(kept);
     const known = checkoutFacts.get(folder);
     if (known) return known.facts;
-    const facts = repositoryOf(folder).then((repository) => factsOf(repository, repository.checkout), () => null);
+    // only drawn, so a slow git (a network folder, a huge repository) draws the row flat rather than hold the snapshot
+    const facts = new Promise<WorkspaceWorktreeInfo | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), CHECKOUT_FACTS_WAIT_MS);
+      void repositoryOf(folder).then((repository) => factsOf(repository, repository.checkout), () => null).then((found) => {
+        clearTimeout(timer);
+        resolve(found);
+      });
+    });
     checkoutFacts.set(folder, { until: now + CHECKOUT_FACTS_MS, facts });
     return facts;
   };
@@ -484,21 +493,27 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       hc.hello(),
     ]);
     forgetTurns(new Set(list.terminals.map((terminal) => terminal.address)));
-    const shown = buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, coreHost(options.otherMachine, platform));
-    // herdr reports every workspace's checkout; hc has none, so a workspace no label claims (one the
-    // app arranges, or a checkout Ovis did not open) gets git's facts for its first pane's folder.
-    // Only shown: no label is written. Another machine's folders are not on this disk.
-    if (!options.otherMachine) {
-      await Promise.all(shown.workspaces.map(async (workspace) => {
-        if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) return;
-        const folder = shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
-        const facts = folder ? await factsOfFolder(folder) : null;
-        if (facts) workspace.worktree = facts;
-      }));
-    }
-    return { shown, own: ownsLayout(doc.value) };
+    return { shown: buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, coreHost(options.otherMachine, platform)), own: ownsLayout(doc.value) };
   };
   const snapshot = async (): Promise<SessionSnapshot> => (await read()).shown;
+  /**
+   * The snapshot as clients draw it. herdr reports every workspace's checkout; hc has none, so a
+   * workspace no label claims (one the app arranges, or a checkout Ovis did not open) gets git's facts
+   * for its first pane's folder, so its row nests under its repository. Only drawn: the calls that act
+   * on a checkout (remove, close a group, a new tab's label) read `snapshot()`, labeled facts alone.
+   * Another machine's folders are not on this disk.
+   */
+  const drawnSnapshot = async (): Promise<SessionSnapshot> => {
+    const shown = await snapshot();
+    if (options.otherMachine) return shown;
+    await Promise.all(shown.workspaces.map(async (workspace) => {
+      if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) return;
+      const folder = shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
+      const facts = folder ? await factsOfFolder(folder) : null;
+      if (facts) workspace.worktree = facts;
+    }));
+    return shown;
+  };
   /** The snapshot, for a call that changes the layout Ovis keeps in labels: refused where the Herdr app arranges this core. */
   const ownLayout = async (): Promise<SessionSnapshot> => {
     const { shown, own } = await read();
@@ -802,7 +817,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core", layout: { rename: own, split: arrange, move: own, arrange, worktrees: own && !options.otherMachine } } };
     },
     async "session.snapshot"() {
-      return { snapshot: await snapshot() };
+      return { snapshot: await drawnSnapshot() };
     },
     async "pane.get"(params) {
       return { pane: await paneOf(paneIdOf(params)) };

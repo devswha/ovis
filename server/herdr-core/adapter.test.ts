@@ -1046,6 +1046,12 @@ describe("herdr-core adapter, new and closed terminals", () => {
       expect([factsOf("t1"), factsOf("t2"), factsOf("t3")]).toEqual([head, { ...head, checkout_path: linked, is_linked_worktree: true }, null]);
       expect(core.runs).toEqual([]);
     }
+    // the facts are only drawn: a checkout no label claims is not Ovis's to remove, nor does it hold its repository's workspace open
+    const { socket, ends } = await labeling(start());
+    await expect(worktreeRemove("W", true, socket)).rejects.toMatchObject({ code: "not_linked_worktree" });
+    expect(existsSync(join(linked, "README.md"))).toBeTrue();
+    await workspaceClose("S", socket);
+    expect(ends).toEqual(["kill t1", "rm t1"]);
   });
 
   it("lists, makes and removes a worktree with a git before 2.36, whose worktree list has no -z", async () => {
