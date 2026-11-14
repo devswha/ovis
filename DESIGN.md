@@ -2533,7 +2533,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     the current place on a pale rounded fill. The mode's rail begins with the way out of the
     mode instead, and its foot holds the agents that wait, this device's alerts, Settings and
     the PC. Zed opens its panels from buttons in its status bar, Warp's vertical tabs are a
-    sidebar on the left, and T3 Code lists its threads in a sidebar: the mode's list is already
+    sidebar, and T3 Code lists its threads in a sidebar: the mode's list is already
     that sidebar, and its shell draws no status bar. No icon, colour or markup of any of them
     is used.
   - The list's top row has three round controls at its end, `--space-2-5` apart and `--space-4`
