@@ -84,9 +84,11 @@
   --sidebar-shown-w: max(min(var(--sidebar-user-w, var(--sidebar-w)), 50vw), calc(var(--inbox-rail-w) + var(--sidebar-min-w)));
 }
 
-/* the column is the rail, then the list, side by side where the classic sidebar stacks its sections */
+/* the column is the rail, then the list, side by side where the classic sidebar stacks its sections. Its start safe
+   area is the rail's own (InboxRail.css), whose surface and buttons run to the window's edge */
 .app.is-inbox-wide .inbox-column {
   flex-direction: row;
+  padding-left: 0;
 }
 
 .inbox-column,

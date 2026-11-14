@@ -4,17 +4,19 @@
 .inbox-rail {
   /* the current place's glyph is drawn heavier, as the open row's name is */
   --inbox-rail-stroke-current: 2.5;
+  /* the column's start safe area is the rail's: it stands clear of it, on a surface that runs to the window's edge */
+  --inbox-rail-box: calc(var(--inbox-rail-w) + env(safe-area-inset-left, 0px));
   display: flex;
-  flex: 0 0 var(--inbox-rail-w);
+  flex: 0 0 var(--inbox-rail-box);
   flex-direction: column;
   align-items: center;
   /* the two groups never touch, in a window too short to part them */
   gap: var(--space-2);
-  width: var(--inbox-rail-w);
+  width: var(--inbox-rail-box);
   min-height: 0;
   /* --space-3 from each edge: the end inset counts the rail's hairline, as the column's own insets count its seam */
   padding-block: var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
-  padding-inline: var(--space-3) calc(var(--space-3) - var(--hairline));
+  padding-inline: calc(var(--space-3) + env(safe-area-inset-left, 0px)) calc(var(--space-3) - var(--hairline));
   /* the column's own surface, and a line inside a region: the rail and the list are one region */
   background: var(--bg-nav);
   border-inline-end: var(--hairline) solid var(--border);
@@ -62,8 +64,8 @@
 
 /* A button answers from the window's start edge to the rail's end and half the gap above and below it, through
    an expander that draws nothing; the first reaches the window's top and the last its foot, so the window's two
-   corners are targets. The insets count the button's own transparent hairline, and the safe areas the column
-   keeps clear of. */
+   corners are targets. The insets count the button's own transparent hairline, and the safe areas the rail
+   keeps clear of: an expander ends at the rail's own edge, which clips what passes it. */
 .icon-button.inbox-rail-item::before {
   content: "";
   position: absolute;
@@ -72,7 +74,7 @@
 }
 
 .inbox-rail-group.is-top > .inbox-rail-item:first-child::before {
-  inset-block-start: calc(var(--space-3) * -1 - var(--hairline) - env(safe-area-inset-top, 0px));
+  inset-block-start: calc(var(--space-3) * -1 - var(--hairline));
 }
 
 .inbox-rail-group.is-lower > .inbox-rail-item:last-child::before {
