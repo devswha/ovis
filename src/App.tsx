@@ -1046,7 +1046,7 @@ export function App() {
         aria-label={round ? t("More") : moreLabel}
         title={round ? t("More") : moreLabel}
         aria-haspopup={isSheetWidth ? "dialog" : "menu"}
-        aria-expanded={(more !== null && !(inMode && moreOnList)) || groupItems.length > 0}
+        aria-expanded={(more !== null && !(inMode && moreOnList && !inboxWide)) || groupItems.length > 0}
         onClick={(event) => {
           const anchor = event.currentTarget;
           setMore((open) => (open ? null : { anchor }));

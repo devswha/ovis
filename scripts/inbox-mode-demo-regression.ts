@@ -2769,6 +2769,7 @@ try {
         await page.locator(".row-menu").waitFor();
         assert.deepEqual(await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["palette"],
           "the More over the empty pane holds the palette alone");
+        assert.equal(await page.locator(".thread-top .header-more-button").getAttribute("aria-expanded"), "true", "its button says its menu is open");
         await page.locator('.row-menu [data-item="palette"]').click();
         await page.locator(".command-palette").waitFor();
         await page.keyboard.press("Escape");
