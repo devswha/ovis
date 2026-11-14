@@ -1046,12 +1046,16 @@ describe("herdr-core adapter, new and closed terminals", () => {
       expect([factsOf("t1"), factsOf("t2"), factsOf("t3")]).toEqual([head, { ...head, checkout_path: linked, is_linked_worktree: true }, null]);
       expect(core.runs).toEqual([]);
     }
-    // the facts are only drawn: a checkout no label claims is not Ovis's to remove, nor does it hold its repository's workspace open
-    const { socket, ends } = await labeling(start());
-    await expect(worktreeRemove("W", true, socket)).rejects.toMatchObject({ code: "not_linked_worktree" });
-    expect(existsSync(join(linked, "README.md"))).toBeTrue();
-    await workspaceClose("S", socket);
-    expect(ends).toEqual(["kill t1", "rm t1"]);
+    // what the sidebar draws is what its actions do, as on herdr: the repository's workspace closes over the checkout as a group
+    const grouped = await labeling(start());
+    await expect(workspaceClose("S", grouped.socket)).rejects.toMatchObject({ code: "workspace_group_close_required" });
+    await workspaceClose("S", grouped.socket, true);
+    expect(grouped.ends).toEqual(["kill t1", "kill t2", "rm t1", "rm t2"]);
+    // and the checkout is removed once git says again that it is one of the repository's
+    const removing = await labeling(start());
+    expect(await worktreeRemove("W", false, removing.socket)).toMatchObject({ type: "worktree_removed", path: linked, forced: false });
+    expect(existsSync(linked)).toBeFalse();
+    expect(removing.ends).toEqual(["kill t2", "rm t2"]);
   });
 
   it("lists, makes and removes a worktree with a git before 2.36, whose worktree list has no -z", async () => {

@@ -466,23 +466,26 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
     return found;
   };
 
-  /** git's facts per folder, kept a few seconds (null outside git too), so a snapshot read spawns no git for a folder just asked about */
+  /**
+   * git's facts per folder (null outside git too), kept a few seconds after git answers, so a snapshot
+   * read spawns no git for a folder just asked about. A slow git (a network folder, a huge repository)
+   * leaves the row flat rather than hold the snapshot, and no second lookup starts until it answers.
+   */
   const checkoutFacts = new Map<string, { until: number; facts: Promise<WorkspaceWorktreeInfo | null> }>();
   const factsOfFolder = (folder: string): Promise<WorkspaceWorktreeInfo | null> => {
     const now = Date.now();
     for (const [kept, entry] of checkoutFacts) if (entry.until <= now) checkoutFacts.delete(kept);
     const known = checkoutFacts.get(folder);
     if (known) return known.facts;
-    // only drawn, so a slow git (a network folder, a huge repository) draws the row flat rather than hold the snapshot
-    const facts = new Promise<WorkspaceWorktreeInfo | null>((resolve) => {
-      const timer = setTimeout(() => resolve(null), CHECKOUT_FACTS_WAIT_MS);
-      void repositoryOf(folder).then((repository) => factsOf(repository, repository.checkout), () => null).then((found) => {
-        clearTimeout(timer);
-        resolve(found);
-      });
+    const entry = { until: Number.POSITIVE_INFINITY, facts: Promise.resolve<WorkspaceWorktreeInfo | null>(null) };
+    const answered = repositoryOf(folder).then((repository) => factsOf(repository, repository.checkout), () => null).then((found) => {
+      entry.until = Date.now() + CHECKOUT_FACTS_MS;
+      entry.facts = Promise.resolve(found);
+      return found;
     });
-    checkoutFacts.set(folder, { until: now + CHECKOUT_FACTS_MS, facts });
-    return facts;
+    entry.facts = Promise.race([answered, Bun.sleep(CHECKOUT_FACTS_WAIT_MS).then(() => null)]);
+    checkoutFacts.set(folder, entry);
+    return entry.facts;
   };
   /** herdr's snapshot of the core, and whether Ovis keeps its layout (ownsLayout), from one read of the app's document */
   const read = async (): Promise<{ shown: SessionSnapshot; own: boolean }> => {
@@ -493,27 +496,22 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       hc.hello(),
     ]);
     forgetTurns(new Set(list.terminals.map((terminal) => terminal.address)));
-    return { shown: buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, coreHost(options.otherMachine, platform)), own: ownsLayout(doc.value) };
+    const shown = buildSnapshot(list.terminals, doc.value, hello.version, firstTurn, ovis.value, sessionOf, coreHost(options.otherMachine, platform));
+    // herdr reports every workspace's checkout from git; hc has none, so a workspace no label claims (one
+    // the app arranges, or a checkout Ovis did not open) gets git's facts for its first pane's folder, as
+    // herdr's follow its workspace's folder. Clients draw and act on these as on herdr's: removing a
+    // checkout asks git again first. No label is written. Another machine's folders are not on this disk.
+    if (!options.otherMachine) {
+      await Promise.all(shown.workspaces.map(async (workspace) => {
+        if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) return;
+        const folder = shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
+        const facts = folder ? await factsOfFolder(folder) : null;
+        if (facts) workspace.worktree = facts;
+      }));
+    }
+    return { shown, own: ownsLayout(doc.value) };
   };
   const snapshot = async (): Promise<SessionSnapshot> => (await read()).shown;
-  /**
-   * The snapshot as clients draw it. herdr reports every workspace's checkout; hc has none, so a
-   * workspace no label claims (one the app arranges, or a checkout Ovis did not open) gets git's facts
-   * for its first pane's folder, so its row nests under its repository. Only drawn: the calls that act
-   * on a checkout (remove, close a group, a new tab's label) read `snapshot()`, labeled facts alone.
-   * Another machine's folders are not on this disk.
-   */
-  const drawnSnapshot = async (): Promise<SessionSnapshot> => {
-    const shown = await snapshot();
-    if (options.otherMachine) return shown;
-    await Promise.all(shown.workspaces.map(async (workspace) => {
-      if (workspace.worktree || workspace.workspace_id === OTHER_WORKSPACE_ID) return;
-      const folder = shown.panes.find((pane) => pane.workspace_id === workspace.workspace_id)?.cwd;
-      const facts = folder ? await factsOfFolder(folder) : null;
-      if (facts) workspace.worktree = facts;
-    }));
-    return shown;
-  };
   /** The snapshot, for a call that changes the layout Ovis keeps in labels: refused where the Herdr app arranges this core. */
   const ownLayout = async (): Promise<SessionSnapshot> => {
     const { shown, own } = await read();
@@ -817,7 +815,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       return { version: hello.version, protocol: HERDR_PROTOCOL, capabilities: { direct_terminal_attach: true, runtime: "herdr-core", layout: { rename: own, split: arrange, move: own, arrange, worktrees: own && !options.otherMachine } } };
     },
     async "session.snapshot"() {
-      return { snapshot: await drawnSnapshot() };
+      return { snapshot: await snapshot() };
     },
     async "pane.get"(params) {
       return { pane: await paneOf(paneIdOf(params)) };
