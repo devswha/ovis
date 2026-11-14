@@ -404,6 +404,7 @@ const BASE: Record<string, string> = {
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "릴레이를 켜면 기기 게이트가 닫힙니다. 그 뒤 새 브라우저는 페어링 코드나 접속 토큰이 필요합니다.",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "새 탭",
+  "New tab with agent…": "에이전트로 새 탭…",
   "New worktree": "새 워크트리",
   "Open worktree…": "워크트리 열기…",
   "Earlier sessions…": "이전 세션…",
