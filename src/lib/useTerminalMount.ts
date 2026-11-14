@@ -2627,6 +2627,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("touchend", onTouchEnd, { capture: true });
         host.removeEventListener("touchcancel", onTouchEnd, { capture: true });
         touchFling.dispose();
+        delete host.dataset.touchFling;
         touchPacer.dispose();
         cancelTouchRef.current = () => undefined;
         host.removeEventListener("gesturestart", onGesture);
