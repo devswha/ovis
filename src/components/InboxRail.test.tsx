@@ -266,6 +266,17 @@ describe("InboxRail", () => {
       expect([pcButton(root).props["aria-expanded"], menus().length]).toEqual([false, 0]);
     });
 
+    it("keeps a connected PC's row pressable while the page has lost its stream, as its rows in the list are, and says Reconnecting… of it", async () => {
+      const root = await draw({ pcs: pcs({ machines: [pc(), laptop(), pc("disconnected", { id: "studio", name: "Studio" })], connection: "reconnecting" }) });
+      await act(async () => { pcButton(root).props.onClick({ currentTarget: { isConnected: true } }); });
+      const menu = root.findAllByType(RowMenu)[0]!.props;
+      expect(menu.items.map((item: { id: string; hint: string; disabled: boolean }) => [item.id, item.hint, item.disabled])).toEqual([
+        ["local", "Reconnecting…", false], ["laptop", "Reconnecting…", false], ["studio", "Reconnecting…", true],
+      ]);
+      await act(async () => { menu.items[1]!.run(); });
+      expect(pressed).toEqual(["pc:laptop"]);
+    });
+
     it("takes no press before any PC is known: it keeps its place, named for the PCs", async () => {
       const root = await draw({ pcs: pcs({ machines: [] }) });
       expect([...named(pcButton(root)), pcButton(root).props.disabled, glyph(pcButton(root))]).toEqual(["PCs", "PCs", true, "lucide-monitor"]);

@@ -129,13 +129,14 @@ export function InboxRail({ onExit, onInbox, onPalette, waiting, alerts, onSetti
       </div>
       <p className="visually-hidden" role="status">{announced}</p>
       {/* One row per PC: its name, its state in words, the one the app is on marked. A press opens another connected
-          PC; the one the app is on is already open, and a PC that is away opens nothing, as its rows in the list. */}
+          PC; the one the app is on is already open, and a PC that is away opens nothing, as its rows in the list:
+          by the PC's own state, so a lost stream, which every row says, takes no row away. */}
       {pcMenu !== null && <RowMenu anchor={pcMenu} title={t("PCs")} align="start" onClose={() => setPcMenu(null)}
         items={machines.map((machine) => {
           const state = pcState(machine, connection);
           return {
             id: machine.id, label: machine.name, hint: pcWord(state, t), icon: state === "offline" ? MonitorOff : Monitor,
-            current: machine.id === selectedId, disabled: state !== "connected",
+            current: machine.id === selectedId, disabled: machine.state !== "connected",
             run: () => { if (machine.id !== selectedId) onSelect(machine.id); },
           };
         })} />}

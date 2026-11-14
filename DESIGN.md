@@ -1192,8 +1192,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   while the list and the thread scroll, and take no width from the pane -> fixed-sidenav-shell
   (https://github.com/changeroa/StyleGallery/blob/main/patterns/viewport-shell/fixed-sidenav-shell.md)
   around the list-detail above; scroll owner: none of its own (`.inbox-scroll` for the column
-  and the chat's transcript for the pane, as above); anti-patterns: a rail that scrolls, a rail
-  that narrows the pane, a control drawn both in the rail and in the list, a drawn order the
+  and the chat's transcript for the pane, as above; in a window too short for its buttons the
+  rail scrolls by itself, apart from both); anti-patterns: a rail that scrolls away with the
+  list or the thread, a rail that narrows the pane, a control drawn both in the rail and in the list, a drawn order the
   keyboard does not follow (the rail is first in the document, then the list, then the pane).
 
 ## 5. Components
@@ -2497,7 +2498,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     nothing to it. The keyboard's focus draws the app's ring, which fits inside the rail's
     insets. A button answers from the window's start edge to the rail's end and half the gap
     above and below it, through an expander that draws nothing; the first reaches the window's
-    top and the last its foot. Its tooltip is the native `title`.
+    top and the last its foot. Its tooltip is the native `title`. In a window too short for its
+    buttons (a phone on its side) the rail scrolls by itself, with no scrollbar drawn, so its
+    last button is still reached; nothing in it is squeezed.
   - The count is a button of its own: lucide `CircleHelp` under the app's waiting pill
     (`.header-more-dot.is-waiting[data-count]`), which hangs on the glyph's top end corner and
     is ringed with the fill it stands on, so its digits never touch the glyph. It says how many

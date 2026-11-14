@@ -4,7 +4,6 @@
 .inbox-rail {
   /* the current place's glyph is drawn heavier, as the open row's name is */
   --inbox-rail-stroke-current: 2.5;
-  box-sizing: border-box;
   display: flex;
   flex: 0 0 var(--inbox-rail-w);
   flex-direction: column;
@@ -19,10 +18,21 @@
   /* the column's own surface, and a line inside a region: the rail and the list are one region */
   background: var(--bg-nav);
   border-inline-end: var(--hairline) solid var(--border);
+  /* A window too short for its buttons (a phone on its side) scrolls the rail by itself, so its last button is
+     still reached. No scrollbar is drawn: one would take a fifth of the rail and push every button off its line. */
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: none;
 }
 
+.inbox-rail::-webkit-scrollbar {
+  display: none;
+}
+
+/* a group keeps its buttons' size in a window too short for them: the rail scrolls, nothing is squeezed */
 .inbox-rail-group {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   align-items: center;
   gap: var(--space-2);
