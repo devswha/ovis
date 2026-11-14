@@ -1066,7 +1066,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   not live, the offline pill and the More menu (`⋯`). From `769px` with one pane in view the row is
   a browser's tab strip (Chrome's, sized after the Herdr app's tab bar, THIRD_PARTY_NOTICES.md):
   the sidebar's head (`.header-side`: the Ovis wordmark, `src/assets/brand/logo-light.png`
-  or `logo-dark.png` by the resolved theme, then the palette and the sidebar toggle, as the Herdr
+  or `logo-dark.png` by the resolved theme, a button into the inbox mode (Inbox mode, below) wherever
+  the mode is offered, then the palette and the sidebar toggle, as the Herdr
   app orders them), then the workspace's tabs (`.header-tabs`), `+` right after the last tab,
   flexible space, and at the far end the Chat/Terminal switch, Files (`.header-files-button`, its
   glyph alone) and More as compact pills. The row is tinted with the accent (16% of `--accent`
@@ -2213,8 +2214,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   column beside an empty pane from 769px, at the width the column will have, with no control,
   since nothing answers yet. It never draws the classic header or sidebar, not for a frame.
 - **Open agent inbox** enters it: More's last group in the classic header at every width, a row
-  at the sidebar's foot (the drawer's on a phone; Sidebar roster row and footer), and a row of
-  the command palette. **Back to Ovis** leaves it: first in a phone's More, at the column's
+  at the sidebar's foot (the drawer's on a phone; Sidebar roster row and footer), a row of
+  the command palette, and from `769px` the Ovis wordmark at the sidebar's head
+  (`.sidebar-brand.is-entry`, a button named and titled **Open agent inbox**; drawn only with
+  the sidebar shown, so a phone has no such button; a button, so the installed app's title-bar
+  drag region gives it the click). Its hover and press fill as an icon button's. The design
+  follows this app's own entries into the mode: the wordmark runs the same way in as More's
+  item, the sidebar's foot row and the palette, under the same name. **Back to Ovis** leaves it: first in a phone's More, at the column's
   foot on a wide window (whose More does not say it a second time 40px above: one fact, one
   place), and in the palette, the app's own mark (`OvisMark`) standing for it in each. Entering leaves a file open over the pane behind,
   as a move to another pane does: its viewer closes, its own entry stays under the mode's, and

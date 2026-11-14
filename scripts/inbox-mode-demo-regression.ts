@@ -1966,6 +1966,47 @@ try {
         }
       }
 
+      // ---- the Ovis mark at the sidebar's head is a way in ----
+      // From a pane that shows its terminal it enters as every way in does there: the list, nothing chosen, and
+      // nothing sent to any pane's pty, on the way in or on Back to Ovis.
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "the Ovis mark at the top left enters the mode", async (page) => {
+        await page.locator(".app-header.is-zoned").waitFor();
+        const classic = await terminalBox(page);
+        // fixed wait: the page's own first sizing of the pane has gone out
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const sent = async (since: number): Promise<Window["inboxFixture"]["frames"]> => (await page.evaluate(() => window.inboxFixture.frames.slice())).slice(since)
+          .filter((frame) => frame.type === "attach" || frame.type === "detach" || frame.type === "resize" || frame.type === "release-size");
+        const before = await page.evaluate(() => window.inboxFixture.frames.length);
+        const mark = page.locator(".header-side .sidebar-brand");
+        assert.deepEqual(await mark.evaluate((node) => [node.tagName, node.getAttribute("aria-label"), node.getAttribute("title")]), ["BUTTON", "Open agent inbox", "Open agent inbox"],
+          "the Ovis mark at the top left is a button named, and titled, for the way in");
+        const entries = await historyLength(page);
+        await mark.click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await page.locator(".inbox-unchosen").waitFor();
+        await addressIs(page, { app: "inbox", pane: null }, "a click on the Ovis mark enters the mode on its list");
+        assert.equal(await historyLength(page), entries + 1, "entering is one entry");
+        assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open: the pane showed its terminal");
+        // fixed wait: nothing may be sent for any pane on the way in
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        assert.deepEqual(await sent(before), [], "entering from a pane on its terminal sends no attach, detach, size or release");
+        await page.locator(".inbox-exit").click();
+        await page.locator(".app-header.is-zoned").waitFor();
+        await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
+        await addressIs(page, { app: null, pane: WORKING }, "Back to Ovis shows the pane the classic app was on");
+        sameBox(await terminalBox(page), classic, "back in the classic app the terminal has the box it had");
+        // fixed wait: nothing may be sent for the pane shown again as it was
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        assert.deepEqual(await sent(before), [], "Back to Ovis sends no attach, detach, size or release");
+        const again = await historyLength(page);
+        await mark.focus();
+        await page.keyboard.press("Enter");
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await page.locator(".inbox-unchosen").waitFor();
+        assert.equal(await historyLength(page), again + 1, "Enter on the mark enters by one entry");
+        console.log("PASS at 1440 the Ovis mark at the sidebar's head is a button named Open agent inbox: a click, and Enter on it, enter the mode by one entry; from a pane on its terminal on the list with nothing chosen, and neither the way in nor Back to Ovis, which shows the terminal in its box, sends any pane an attach, detach, size or release");
+      }, desktop);
+
       if (errors.length > 0) {
         failures.push("page errors after the themes");
         console.log(`FAIL page errors after the themes: ${errors.join("; ")}`);

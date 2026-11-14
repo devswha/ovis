@@ -194,12 +194,21 @@ function ConnectionChip({ connected, word, title, quiet }: { connected: boolean;
   );
 }
 
-/** The sidebar's head (from 769px): the Ovis wordmark in the theme's colours (ovis-site's logo pair). */
-function SidebarBrand({ dark }: { dark: boolean }) {
-  return (
+/**
+ * The sidebar's head (from 769px): the Ovis wordmark in the theme's colours (ovis-site's logo pair). Where the inbox mode
+ * is offered it is a way into it, as the app icon at a desktop app's top left goes home.
+ */
+function SidebarBrand({ dark, onOpenInbox }: { dark: boolean; onOpenInbox: (() => void) | null }) {
+  const t = useT();
+  if (onOpenInbox === null) return (
     <div className="brand sidebar-brand">
       <img src={dark ? logoDark : logoLight} alt="Ovis" width="68" height="24" />
     </div>
+  );
+  return (
+    <button type="button" className="brand sidebar-brand is-entry" aria-label={t("Open agent inbox")} title={t("Open agent inbox")} onClick={onOpenInbox}>
+      <img src={dark ? logoDark : logoLight} alt="" width="68" height="24" />
+    </button>
   );
 }
 
@@ -1040,7 +1049,7 @@ export function App() {
             .header-side is the sidebar's own top row from 769px (styles.css); below that its
             buttons sit in the bar */}
         <div className="header-side">
-          {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} />}
+          {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} onOpenInbox={modeOffered ? enterInbox : null} />}
           {inboxBack ? <button type="button" id="inbox-back" className="icon-button inbox-back" aria-label={t("Back")} title={t("Back")} onClick={inbox.back}><ChevronLeft /></button> : <button
             type="button"
             id="drawer-toggle"
