@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import * as herdr from "./herdr/client.ts";
-import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { herdrRpc, sessionSnapshot, subscribeEvents, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { closeOpenCodeNative } from "./opencode-native.ts";
 import { forgetOpenCodeService, openCodeServiceOptions } from "./opencode-service.ts";
 import type { PanePromptResponse } from "../shared/protocol.ts";
@@ -103,12 +103,27 @@ async function openCodePane(label: string, session: string | null, cwd: string, 
   const created = await workspaceCreate({ cwd, label: `ovis-test-opencode-first-${label}` });
   workspaces.push(created.workspace.workspace_id);
   const pane = created.root_pane.pane_id;
-  await herdrRpc("pane.send_text", { pane_id: pane, text: `exec ${standIn} ${label}\n` });
-  let seen: unknown;
-  for (const deadline = Date.now() + 10_000; (seen = (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane))?.agent !== "opencode";) {
-    // what herdr last said of the pane, so a CI failure tells a slow start from a stand-in that never ran
-    if (Date.now() > deadline) throw new Error(`the OpenCode stand-in did not start: ${JSON.stringify(seen)} ${await paneProcesses(pane, cwd)}`);
-    await Bun.sleep(50);
+  // herdr names the pane's agent from its foreground process: heard as it happens, not polled
+  const watching = Promise.withResolvers<void>();
+  const detected = Promise.withResolvers<void>();
+  const subscription = subscribeEvents([{ type: "pane.agent_status_changed", pane_id: pane }], {
+    onStarted: () => watching.resolve(),
+    onEvent: (frame) => { if (frame.data?.agent === "opencode") detected.resolve(); },
+    onError: (error) => { watching.reject(error); detected.reject(error); },
+  });
+  try {
+    await watching.promise;
+    await herdrRpc("pane.send_text", { pane_id: pane, text: `exec ${standIn} ${label}\n` });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const started = await Promise.race([detected.promise.then(() => true), new Promise<false>((done) => { timer = setTimeout(() => done(false), 10_000); })]);
+    clearTimeout(timer);
+    if (!started) {
+      // what herdr last said of the pane, so a CI failure tells a slow start from a stand-in that never ran
+      const seen = (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane);
+      if (seen?.agent !== "opencode") throw new Error(`the OpenCode stand-in did not start: ${JSON.stringify(seen)} ${await paneProcesses(pane, cwd)}`);
+    }
+  } finally {
+    subscription.close();
   }
   if (session) await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:opencode", agent: "opencode", agent_session_id: session, session_start_source: "select" });
   await herdrRpc("pane.report_agent", { pane_id: pane, source: "herdr:opencode", agent: "opencode", ...(session ? { agent_session_id: session } : {}), state });
