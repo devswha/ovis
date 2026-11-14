@@ -257,6 +257,14 @@ const railButtons = (page: Page): Promise<RailButton[]> => page.locator(".inbox-
   };
 }));
 const railNames = async (page: Page): Promise<(string | null)[]> => (await railButtons(page)).map((button) => button.name);
+/** the rail's count says `count`, in its button's name and in its pill */
+async function railCounts(page: Page, count: number, what: string): Promise<void> {
+  const said = await page.waitForFunction((n) => {
+    const button = document.querySelector(".inbox-rail .inbox-rail-waiting");
+    return button?.getAttribute("aria-label") === `${n} waiting for you` && button.querySelector(".header-more-dot.is-waiting")?.getAttribute("data-count") === String(n);
+  }, count, { timeout: 10_000 }).then(() => true, () => false);
+  if (!said) assert.fail(`${what}: the rail's buttons are ${JSON.stringify(await railNames(page))}`);
+}
 /** the wide list's top row: the list and the rail before it, the row's controls from its start to its end, and what an overflow would show */
 interface TopRow { list: Box; rail: Box; controls: { kind: string; box: Box; hit: boolean; glyph: number[] }[]; sideways: number[] }
 const topRow = (page: Page): Promise<TopRow> => page.evaluate(() => {
@@ -2522,6 +2530,569 @@ try {
           console.log(`PASS beside ${reserved}px of a window's own controls (${what}, ${top.rail.w}px), under a coarse pointer with the sidebar at its least width, the list's three top controls are ${first.w.toFixed(1)}px, round, inside the list from ${first.x}px on, clear of those controls, of the rail and of each other`);
         }, desktop, true);
       }
+      // ---- the rail ----
+      // From 769px the mode's ways out and around are one column of icon buttons before the list (InboxRail.tsx): what
+      // each is named, where it stands, and how it is drawn at rest, under the pointer, under a press and under the
+      // keyboard's focus, in each theme.
+      for (const theme of ["light", "dark"]) {
+        await withPage(browser, base, { language: "en", theme }, "/?app=inbox", `${theme}: the rail's buttons, their names, their places and how they are drawn`, async (page) => {
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          await row(page, WORKING).click();
+          await page.locator(".thread-chip").waitFor();
+          const { height } = page.viewportSize()!;
+          // the pointer off every control
+          await page.mouse.move(700, 450);
+          assert.deepEqual(await page.locator(".inbox-column").evaluate((column) => {
+            const [first, second] = [...column.children];
+            return [first?.tagName, first?.className, first?.getAttribute("aria-label"), second?.classList.contains("mode-inbox")];
+          }), ["NAV", "inbox-rail", "Inbox mode", true], "the rail is a navigation named Inbox mode, the column's first part, before the list");
+          const buttons = await railButtons(page);
+          assert.deepEqual(buttons.map(({ kind, name, current, pressed, popup, expanded, glyph }) => [kind, name, current, pressed, popup, expanded, glyph]), [
+            ["inbox-rail-exit", "Back to Ovis", null, null, null, null, "ovis-mark"],
+            ["inbox-rail-place", "Agent inbox", "page", null, null, null, "lucide-inbox"],
+            ["inbox-rail-palette", "Search panes and actions", null, null, null, null, "lucide-search"],
+            ["inbox-rail-waiting", "1 waiting for you", null, null, null, null, "lucide-circle-question-mark"],
+            ["inbox-rail-alerts", "Alerts", null, "true", null, null, "lucide-bell"],
+            ["inbox-rail-settings", "Settings", null, null, null, null, "lucide-settings"],
+            ["inbox-rail-pcs", "PC workstation · Connected", null, null, "menu", "false", "lucide-monitor"],
+          ], "the rail's seven buttons from the Ovis mark down to the PC: each one's name, its state and its glyph");
+          const titles = buttons.map((button) => button.title ?? "");
+          assert.deepEqual([titles[0], titles[1], titles[3], titles[6]], ["Back to Ovis", "Agent inbox", "Open the next session waiting for you", "PC workstation · Connected"],
+            "a tooltip says its button's name, and the count's says what its press does");
+          // a tooltip carries its shortcut's keys after the words; the name is the words alone
+          assert.match(titles[2]!, /^Search panes and actions \(.+\)$/, "the palette's tooltip has its shortcut");
+          assert.match(titles[5]!, /^Settings \(.+\)$/, "Settings' tooltip has its shortcut");
+          assert.match(titles[4]!, /^Alerts on in the app\. /, "the bell's tooltip is the sentence that says how this device's alerts stand");
+          assert.deepEqual(buttons.map(({ box: at }) => [at.x, at.y, at.w, at.h]), [
+            [12, 12, 34, 34], [12, 62, 34, 34], [12, 104, 34, 34],
+            [12, height - 172, 34, 34], [12, height - 130, 34, 34], [12, height - 88, 34, 34], [12, height - 46, 34, 34],
+          ], "34px buttons 12px from the rail's sides: the mark at its top, the place and the palette under it, four at its foot, 8px apart");
+
+          /** a token as the browser computes it for one property, where the rail stands */
+          const token = (property: "background-color" | "color", value: string): Promise<string> => page.evaluate(([name, css]) => {
+            const probe = document.createElement("span");
+            probe.style.position = "absolute";
+            probe.style.setProperty(name, css);
+            document.querySelector(".inbox-rail")!.append(probe);
+            const computed = getComputedStyle(probe).getPropertyValue(name);
+            probe.remove();
+            return computed;
+          }, [property, value] as const);
+          const fill = {
+            rest: await token("background-color", "var(--bg-nav)"), hover: await token("background-color", "var(--side-hover)"),
+            current: await token("background-color", "var(--side-selected)"), press: await token("background-color", "color-mix(in srgb, var(--side-selected), var(--border-strong))"),
+          };
+          const ink = { rest: await token("color", "var(--text-dim)"), hover: await token("color", "var(--text)"), strong: await token("color", "var(--text-strong)") };
+          const drawn = (kind: string) => page.locator(`.inbox-rail .${kind}`).evaluate((node) => {
+            const style = getComputedStyle(node);
+            const glyph = node.querySelector("svg");
+            return { fill: style.backgroundColor, ink: style.color, edge: style.borderTopColor, outline: style.outlineStyle, shadow: style.boxShadow, stroke: glyph ? getComputedStyle(glyph).strokeWidth : null };
+          });
+          /** a button is drawn with a fill and a glyph's colour, once its change of state has run */
+          const draws = async (kind: string, wantFill: string, wantInk: string, what: string): Promise<void> => {
+            const settled = await page.waitForFunction(([selector, a, b]) => {
+              const style = getComputedStyle(document.querySelector(selector)!);
+              return style.backgroundColor === a && style.color === b;
+            }, [`.inbox-rail .${kind}`, wantFill, wantInk] as const, { timeout: 5_000 }).then(() => true, () => false);
+            if (!settled) assert.fail(`${what}: .${kind} is drawn ${JSON.stringify(await drawn(kind))}, wanted the fill ${wantFill} and the glyph ${wantInk}`);
+          };
+          const centre = async (kind: string): Promise<{ x: number; y: number }> => { const at = await box(page, `.inbox-rail .${kind}`); return { x: at.x + at.w / 2, y: at.y + at.h / 2 }; };
+
+          // at rest a button has no box of its own; the current place has the sidebar's selection, carried to a glyph
+          for (const kind of ["inbox-rail-exit", "inbox-rail-palette", "inbox-rail-waiting", "inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs"]) {
+            await draws(kind, fill.rest, ink.rest, "at rest a button stands on the rail's own surface, its glyph dim");
+          }
+          await draws("inbox-rail-place", fill.current, ink.strong, "the current place has the selection's fill and a strong glyph");
+          const place = await drawn("inbox-rail-place");
+          assert.deepEqual([place.edge, place.outline, place.shadow], ["rgba(0, 0, 0, 0)", "none", "none"], "the current place has no edge, outline or shadow: its fill and its glyph say it");
+          assert.deepEqual([place.stroke, (await drawn("inbox-rail-palette")).stroke], ["2.5px", "2px"], "the current place's glyph is drawn heavier than the others'");
+
+          // under the pointer, then under a press that is let go off the button, so nothing opens
+          const palette = await centre("inbox-rail-palette");
+          await page.mouse.move(palette.x, palette.y);
+          await draws("inbox-rail-palette", fill.hover, ink.hover, "under the pointer a button takes the sidebar's hover fill and a stronger glyph");
+          await page.mouse.down();
+          await draws("inbox-rail-palette", fill.press, ink.strong, "under a press it takes the list row's own press");
+          assert.equal((await drawn("inbox-rail-palette")).edge, "rgba(0, 0, 0, 0)", "a press draws no accent edge");
+          await page.mouse.move(700, 450);
+          await page.mouse.up();
+          await draws("inbox-rail-palette", fill.rest, ink.rest, "let go off it, the button is at rest again");
+          const here = await centre("inbox-rail-place");
+          await page.mouse.move(here.x, here.y);
+          await frames(page);
+          await draws("inbox-rail-place", fill.current, ink.strong, "the pointer adds nothing to the current place");
+          await page.mouse.down();
+          await draws("inbox-rail-place", fill.press, ink.strong, "a press on the current place is the row's own too");
+          await page.mouse.move(700, 450);
+          await page.mouse.up();
+          await draws("inbox-rail-place", fill.current, ink.strong, "let go off it, the current place is as it was");
+
+          // the keyboard's focus draws the app's ring, which fits inside the rail's 12px insets
+          await page.locator(".inbox-rail .inbox-rail-place").focus();
+          await page.keyboard.press("Tab");
+          const ring = await page.evaluate(() => {
+            const at = document.activeElement as HTMLElement;
+            const probe = document.createElement("span");
+            probe.style.cssText = "position: absolute; outline: var(--ring)";
+            at.parentElement!.append(probe);
+            const outline = (style: CSSStyleDeclaration): string => `${style.outlineWidth} ${style.outlineStyle} ${style.outlineColor}`;
+            const own = getComputedStyle(at);
+            const facts = { on: at.className, seen: at.matches(":focus-visible"), ring: outline(own), want: outline(getComputedStyle(probe)), reach: Number.parseFloat(own.outlineWidth) + Number.parseFloat(own.outlineOffset) };
+            probe.remove();
+            return facts;
+          });
+          assert.deepEqual([ring.on.includes("inbox-rail-palette"), ring.seen, ring.ring], [true, true, ring.want], "Tab from the place is on the palette, which draws the app's focus ring");
+          assert.ok(ring.reach > 0 && ring.reach <= 12, `the ring fits inside the rail's insets: it reaches ${ring.reach}px past the button`);
+
+          // a button answers from the window's start edge to the rail's end, and the window's two start corners are the first and the last one's
+          const answers = await page.evaluate(() => {
+            const kindAt = (x: number, y: number): string | null => {
+              const button = document.elementFromPoint(x, y)?.closest(".inbox-rail button");
+              return button ? [...button.classList].find((name) => name.startsWith("inbox-rail-") && name !== "inbox-rail-item") ?? null : null;
+            };
+            const end = document.querySelector(".inbox-rail")!.getBoundingClientRect().right;
+            return {
+              // a pixel in from each corner: a point on the window's last half pixel is outside it for the browser
+              corners: [kindAt(1, 1), kindAt(1, innerHeight - 1)],
+              sides: [...document.querySelectorAll(".inbox-rail button")].map((node) => { const r = node.getBoundingClientRect(); const middle = r.top + r.height / 2; return [kindAt(1, middle), kindAt(end - 2, middle)]; }),
+            };
+          });
+          assert.deepEqual(answers.corners, ["inbox-rail-exit", "inbox-rail-pcs"], "the window's top and bottom start corners press the rail's first and last buttons");
+          assert.deepEqual(answers.sides, buttons.map(({ kind }) => [kind, kind]), "each button answers from the window's start edge to the rail's end");
+          assert.equal(await page.locator(".command-palette").count(), 0, "no press that was let go off its button opened anything");
+          await addressIs(page, { app: "inbox", pane: WORKING }, "the thread is as it was");
+          console.log(`PASS ${theme}: the rail is a navigation named Inbox mode before the list, with seven 34px buttons named Back to Ovis, Agent inbox (the current page), Search panes and actions, 1 waiting for you, Alerts (pressed), Settings and PC workstation · Connected (a menu's button), each with its tooltip; at rest a button stands on the rail's surface, the current place on the selection's fill with a heavier glyph and no edge; the pointer and a press change a button's fill and glyph only, and add nothing to the current place but the press; the keyboard's focus draws the app's ring; each button answers from the window's edge to the rail's end, the window's corners included`);
+        }, desktop);
+      }
+      // ---- the rail in the keyboard's order, and under its keys ----
+      await withPage(browser, base, light, "/?app=inbox", "the rail in the keyboard's order, and under its keys", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        /** where the keyboard's focus is: a rail button, a control or a row of the list, the column's resize grip, the thread */
+        const stop = (): Promise<string> => page.evaluate(() => {
+          const at = document.activeElement;
+          if (at === null || at === document.body) return "nothing";
+          const own = (prefix: string, shared: string): string | undefined => [...at.classList].find((name) => name.startsWith(prefix) && name !== shared);
+          if (at.closest(".inbox-rail")) return own("inbox-rail-", "inbox-rail-item") ?? "the rail";
+          const item = at.closest(".mode-inbox .inbox-item");
+          if (item) return `row ${item.getAttribute("data-pane")}`;
+          if (at.closest(".mode-inbox")) return own("inbox-", "inbox-round") ?? "the list";
+          if (at.classList.contains("sidebar-resizer")) return "the resize grip";
+          return at.closest(".pane-column") ? "the thread" : `elsewhere (${at.className})`;
+        });
+        const focused = async (kind: string, what: string): Promise<void> => {
+          const there = await page.waitForFunction((name) => document.activeElement?.classList.contains(name) === true, kind, { timeout: 5_000 }).then(() => true, () => false);
+          if (!there) assert.fail(`${what}: the focus is on ${await stop()}`);
+        };
+        // Tab from the Ovis mark on, until the focus has left the column
+        await page.locator(".inbox-rail .inbox-rail-exit").focus();
+        const stops = [await stop()];
+        while (stops.length < 40 && /^(inbox-|row |the resize grip$)/.test(stops.at(-1)!)) {
+          await page.keyboard.press("Tab");
+          stops.push(await stop());
+        }
+        const listed = (await rows(page)).map((item) => `row ${item.pane}`);
+        assert.equal(listed.length, 6);
+        assert.deepEqual(stops, ["inbox-rail-exit", "inbox-rail-place", "inbox-rail-palette", "inbox-rail-waiting", "inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs",
+          "inbox-search-toggle", "inbox-filter-toggle", "inbox-add", ...listed, "the resize grip", "the thread"],
+          "Tab goes down the rail from the Ovis mark to the PC, then to the list's top row and its rows, the column's resize grip, and the thread");
+        await page.locator(".inbox-rail .inbox-rail-place").focus();
+        await page.keyboard.press("Shift+Tab");
+        assert.equal(await stop(), "inbox-rail-exit", "Shift+Tab goes back up the rail");
+
+        // Enter presses a rail button: the palette, which gives the focus back when Escape puts it away
+        await page.locator(".inbox-rail .inbox-rail-palette").focus();
+        await page.keyboard.press("Enter");
+        await page.locator(".command-palette").waitFor();
+        await page.keyboard.press("Escape");
+        await page.locator(".command-palette").waitFor({ state: "detached" });
+        await focused("inbox-rail-palette", "the palette put away gives the focus back to the rail's button");
+        // Space presses one too: the list of PCs, a menu that gives the focus back to its button when it closes
+        const pcs = page.locator(".inbox-rail .inbox-rail-pcs");
+        const menu = page.locator('.row-menu[role="menu"][aria-label="PCs"]');
+        await pcs.focus();
+        await page.keyboard.press("Space");
+        await menu.waitFor();
+        assert.equal(await pcs.getAttribute("aria-expanded"), "true", "the PC's button says its menu is open");
+        await page.keyboard.press("Escape");
+        await menu.waitFor({ state: "detached" });
+        await focused("inbox-rail-pcs", "the list of PCs closed gives the focus back to its button");
+        assert.equal(await pcs.getAttribute("aria-expanded"), "false", "and its button says the menu is closed");
+
+        // Enter on the Ovis mark leaves the mode by one entry, on the thread's pane, and the system Back undoes it
+        const leaving = await historyLength(page);
+        await page.locator(".inbox-rail .inbox-rail-exit").focus();
+        await page.keyboard.press("Enter");
+        await page.locator(".app-header.is-zoned").waitFor();
+        assert.equal(await page.locator(".inbox-rail").count(), 0, "the rail leaves with the mode");
+        await addressIs(page, { app: null, pane: WORKING }, "Enter on the Ovis mark opens the thread's pane in the classic app");
+        assert.equal(await historyLength(page), leaving + 1, "leaving is one entry");
+        await page.goBack();
+        await page.locator(".inbox-column .inbox-rail").waitFor();
+        await page.locator(".thread-chip").waitFor();
+        await addressIs(page, { app: "inbox", pane: WORKING }, "Back returns to the thread the mode was left on");
+        console.log(`PASS the keyboard's order is the rail's seven buttons from the Ovis mark down to the PC, the list's three top controls, its ${listed.length} rows, the column's resize grip, then the thread, and Shift+Tab goes back; Enter and Space press a rail button; the palette and the list of PCs give the focus back to their buttons; Enter on the Ovis mark leaves the mode by one entry that Back undoes`);
+      }, desktop);
+      // ---- each press of the rail ----
+      await withPage(browser, base, light, "/?app=inbox", "the rail's presses: the palette, alerts, Settings and the list of PCs", async (page) => {
+        // this device has answered the browser's question about notifications, with no: Alerts is then a plain switch
+        await page.context().addInitScript(() => { Object.defineProperty(Notification, "permission", { configurable: true, get: () => "denied" }); });
+        await page.reload();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        const rail = (kind: string) => page.locator(`.inbox-rail .inbox-rail-${kind}`);
+        const stays = (what: string): Promise<void> => addressIs(page, { app: "inbox", pane: WORKING }, what);
+        const focusedOn = async (kind: string, what: string): Promise<void> => {
+          const there = await page.waitForFunction((name) => document.activeElement?.classList.contains(name) === true, `inbox-rail-${kind}`, { timeout: 5_000 }).then(() => true, () => false);
+          if (!there) assert.fail(`${what}: the focus is on ${await page.evaluate(() => document.activeElement?.className ?? "nothing")}`);
+        };
+
+        // the magnifier opens the command palette over the mode, and the thread stays as it is
+        await rail("palette").click();
+        await page.locator(".command-palette").waitFor();
+        assert.equal(await page.locator(".inbox-column .inbox-rail").count(), 1, "the palette opens over the mode");
+        await page.keyboard.press("Escape");
+        await page.locator(".command-palette").waitFor({ state: "detached" });
+        await stays("the palette opened and put away leaves the thread open");
+
+        // the bell switches this device's alerts: off is another glyph and a button not pressed, and its sentence says how they stand
+        const bell = () => rail("alerts").evaluate((node) => [node.getAttribute("aria-label"), node.getAttribute("aria-pressed"), node.getAttribute("title"), [...node.querySelector("svg")!.classList].find((name) => name.startsWith("lucide-")) ?? null]);
+        /** the bell says `pressed`, and this device's stored choice is `stored` */
+        const switched = async (pressed: string, stored: boolean, what: string): Promise<void> => {
+          const done = await page.waitForFunction(([want, kept]) =>
+            document.querySelector(".inbox-rail .inbox-rail-alerts")?.getAttribute("aria-pressed") === want && JSON.parse(localStorage.getItem("ovis:settings") ?? "{}").alertsOn === kept,
+          [pressed, stored] as const, { timeout: 5_000 }).then(() => true, () => false);
+          if (!done) assert.fail(`${what}: the bell is ${JSON.stringify(await bell())}, and the device has stored ${await page.evaluate(() => localStorage.getItem("ovis:settings"))}`);
+        };
+        const on = ["Alerts", "true", "Alerts on in the app. Tap to turn them off", "lucide-bell"];
+        assert.deepEqual(await bell(), on, "on, the bell is pressed, and its tooltip says how this device's alerts stand");
+        await rail("alerts").click();
+        await switched("false", false, "a press turns this device's alerts off");
+        assert.deepEqual(await bell(), ["Alerts", "false", "Alerts off on this device. Tap to turn them on", "lucide-bell-off"], "off, the bell is another glyph and not pressed, under the same name");
+        assert.equal(await page.locator(".thread-top .header-more-dot").count(), 0, "the pane's More draws no mark for alerts that are off: the rail's bell says it");
+        await rail("alerts").click();
+        await switched("true", true, "a second press turns them on again");
+        assert.deepEqual(await bell(), on, "on again, the bell is as it was");
+
+        // the gear opens Settings, which gives the focus back to it
+        await rail("settings").click();
+        await page.locator(".settings-dialog").waitFor();
+        await page.keyboard.press("Escape");
+        await page.locator(".settings-dialog").waitFor({ state: "detached" });
+        await focusedOn("settings", "Settings closed gives the focus back to the rail's gear");
+        await stays("Settings opened and closed leaves the thread open");
+
+        // the PC opens the list of PCs: one row a PC, its name and its state in words, the one the app is on marked
+        const pcs = rail("pcs");
+        const menu = page.locator('.row-menu[role="menu"][aria-label="PCs"]');
+        const listed = () => menu.locator("[data-item]").evaluateAll((items) => items.map((item) => [item.getAttribute("data-item"), item.getAttribute("role"), item.querySelector(".menu-item-main")?.textContent ?? null, item.querySelector(".menu-item-hint")?.textContent ?? null, item.getAttribute("aria-current")]));
+        await pcs.click();
+        await menu.waitFor();
+        assert.equal(await pcs.getAttribute("aria-expanded"), "true", "the PC's button says its menu is open");
+        assert.deepEqual(await listed(), [["local", "menuitem", "workstation", "Connected", "true"]], "the list of PCs holds the one PC, connected, marked as the one the app is on");
+        // that PC is already open: its row closes the list and changes nothing
+        await menu.locator('[data-item="local"]').click();
+        await menu.waitFor({ state: "detached" });
+        await stays("the row of the PC the app is on leaves the thread as it is");
+        assert.equal(await page.locator(".thread-chip").count(), 1, "and its thread open");
+
+        // a second PC: the button says how many are connected, and the other PC's row opens that PC as the classic app
+        // does, with no thread of it chosen
+        await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
+        await rowCount(page, 12);
+        const summed = await page.waitForFunction(() => document.querySelector(".inbox-rail .inbox-rail-pcs")?.getAttribute("aria-label") === "PCs, 2 of 2 connected", undefined, { timeout: 5_000 }).then(() => true, () => false);
+        assert.ok(summed, `with two PCs the button says how many are connected: it says ${await pcs.getAttribute("aria-label")}`);
+        assert.equal(await pcs.getAttribute("title"), "PCs, 2 of 2 connected", "in its tooltip too");
+        await pcs.click();
+        await menu.waitFor();
+        assert.deepEqual(await listed(), [["local", "menuitem", "workstation", "Connected", "true"], ["laptop", "menuitem", "laptop", "Connected", null]], "the list holds both PCs, the one the app is on marked");
+        await menu.locator('[data-item="laptop"]').click();
+        await menu.waitFor({ state: "detached" });
+        await page.locator(".inbox-unchosen").waitFor();
+        assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "the other PC is opened with no thread of it chosen");
+        await rowCount(page, 12);
+        await pcs.click();
+        await menu.waitFor();
+        assert.deepEqual((await listed()).map((item) => [item[0], item[4]]), [["local", null], ["laptop", "true"]], "the PC the app is now on is the one marked");
+        await page.keyboard.press("Escape");
+        await menu.waitFor({ state: "detached" });
+        console.log("PASS the rail's magnifier opens the command palette over the mode; its bell switches this device's alerts off and on, by glyph, pressed state, tooltip and stored choice, the pane's More drawing no mark for it; its gear opens Settings, which gives the focus back; its PC opens the list of PCs with each one's name and state, the one the app is on marked, and with two PCs says 2 of 2 connected and opens the other PC with no thread chosen");
+      }, desktop);
+      // ---- the rail's place ----
+      // The mode has one place, which is always the current one: its button takes the list to its top and gives the
+      // list the keyboard, and opens or closes nothing. A window short enough for six rows to scroll.
+      await withPage(browser, base, light, "/?app=inbox", "the rail's place takes the list to its top and gives it the keyboard", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await row(page, WORKING).click();
+        await page.locator(".thread-chip").waitFor();
+        const list = ".inbox-column .inbox-scroll";
+        const top = (): Promise<number> => page.locator(list).evaluate((node) => node.scrollTop);
+        assert.ok(await page.locator(list).evaluate((node) => node.scrollHeight - node.clientHeight > 40), "six rows scroll on this short window");
+        await page.locator(list).evaluate((node) => { node.scrollTop = node.scrollHeight; });
+        await frames(page);
+        const scrolled = await top();
+        assert.ok(scrolled > 40, `the list is scrolled down: ${scrolled}px`);
+        const place = page.locator(".inbox-rail .inbox-rail-place");
+        assert.equal(await place.getAttribute("aria-current"), "page", "the place is the current one");
+        await place.click();
+        const atTop = await page.waitForFunction((selector) => document.querySelector(selector)!.scrollTop === 0, list, { timeout: 5_000 }).then(() => true, () => false);
+        assert.ok(atTop, `the place takes the list to its top: it is at ${await top()}px`);
+        assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".inbox-column .mode-inbox")), true, "the keyboard's focus is on the list");
+        await page.keyboard.press("Tab");
+        assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-search-toggle") === true), true, "the next Tab is the list's first control");
+        assert.equal(await place.getAttribute("aria-current"), "page", "the place is still the current one");
+        await addressIs(page, { app: "inbox", pane: WORKING }, "the place opens nothing and closes nothing");
+        assert.equal(await page.locator(".thread-chip").count(), 1, "the open thread stays beside the list");
+        // the list keeps the top it was sent to: nothing puts the old place back
+        await frames(page);
+        assert.equal(await top(), 0, "the list stays at its top");
+        console.log(`PASS the rail's place, the current page, takes a list scrolled ${Math.round(scrolled)}px down to its top and puts the keyboard's focus on the list, whose first control the next Tab reaches; the open thread and the address stay as they were`);
+      }, { width: 1440, height: 360 });
+      // ---- the rail's count ----
+      // The count is a button of its own, drawn only while its press has an agent to open: the agents that wait other
+      // than the open thread's, every one of them on the list alone. Nothing under it moves when it comes or goes.
+      await withPage(browser, base, light, "/?app=inbox", "the rail's count of the agents that wait, coming and going", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await questionShown(page);
+        const waiting = page.locator(".inbox-rail .inbox-rail-waiting");
+        /** where the three buttons under the count stand */
+        const under = async (): Promise<number[]> => (await railButtons(page)).filter((button) => ["inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs"].includes(button.kind)).map((button) => button.box.y);
+        const without = ["Back to Ovis", "Agent inbox", "Search panes and actions", "Alerts", "Settings", "PC workstation · Connected"];
+        // on the list alone the one agent that waits is another one
+        await railCounts(page, 1, "on the list alone the agent that waits is counted");
+        assert.deepEqual(await waiting.evaluate((node) => {
+          const pill = node.querySelector(".header-more-dot")!;
+          return [node.getAttribute("title"), pill.getAttribute("aria-hidden"), getComputedStyle(pill, "::after").content];
+        }), ["Open the next session waiting for you", "true", '"1"'], "the count is the app's waiting pill, hidden from a screen reader: the button's name says the number, its tooltip what a press does");
+        const places = await under();
+        assert.equal(places.length, 3);
+
+        // its press opens that agent's thread, whose own agent is not counted beside it: the count goes
+        await waiting.click();
+        await page.locator(".thread-chip").waitFor();
+        await addressIs(page, { app: "inbox", pane: BLOCKED }, "the count's press opens the agent that waits");
+        await waiting.waitFor({ state: "detached" });
+        assert.deepEqual(await railNames(page), without, "with no other agent waiting the rail draws no count");
+        assert.deepEqual(await under(), places, "nothing under the count moves when it goes");
+
+        // another agent begins to wait, then a second: the count comes back and says how many
+        await page.evaluate((pane) => window.inboxFixture.set(pane, "blocked"), WORKING);
+        await railCounts(page, 1, "another agent begins to wait");
+        await page.evaluate((pane) => window.inboxFixture.set(pane, "blocked"), DONE);
+        await railCounts(page, 2, "a second one begins to wait");
+        assert.deepEqual(await under(), places, "nothing under the count moves when it comes");
+
+        // the press opens one of the two, and the agent it left is counted in its place
+        await waiting.click();
+        const opened = await page.waitForFunction(([one, other]) => {
+          const pane = new URL(location.href).searchParams.get("pane");
+          return pane === one || pane === other ? pane : null;
+        }, [WORKING, DONE] as const, { timeout: 5_000 }).then((handle) => handle.jsonValue(), () => null);
+        assert.ok(opened !== null, `the count's press opens one of the two others that wait: the address says ${JSON.stringify(await address(page))}`);
+        await railCounts(page, 2, "from the thread it opened the count is of the two others");
+
+        // nobody waits any more: the count is gone again
+        for (const pane of [BLOCKED, WORKING, DONE]) await page.evaluate((id) => window.inboxFixture.set(id, "idle"), pane);
+        await waiting.waitFor({ state: "detached" });
+        assert.deepEqual(await railNames(page), without, "with nobody waiting the rail draws no count");
+        assert.deepEqual(await under(), places, "and the buttons under it are where they were");
+        console.log(`PASS the rail's count is the app's waiting pill under a name that says the number: 1 on the list alone, gone once its press has opened that agent's thread, back at 1 and then 2 as other agents begin to wait, still 2 from the thread its press opened (${opened}), and gone when nobody waits; Alerts, Settings and the PC never move`);
+      }, desktop);
+
+      // ---- the rail's count, and an agent that waits behind a tab's zoom ----
+      // The rail counts the agents its press can open. One that waits in a pane its tab's zoom hides keeps its row,
+      // which says that it waits, but no jump reaches it: it is not counted, and with no other one waiting the rail
+      // draws no count. The demo's herdr splits the waiting agent's tab and zooms it onto the new pane, as herdr does.
+      await withPage(browser, base, light, "/?app=inbox", "the rail's count and an agent that waits behind a tab's zoom", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await questionShown(page);
+        const waiting = page.locator(".inbox-rail .inbox-rail-waiting");
+        /** a layout request to the demo's herdr, as the app's own pane actions send it */
+        const herdr = (path: string, body: Record<string, unknown>): Promise<{ ok?: boolean; pane?: { pane_id?: string } }> =>
+          page.evaluate(async ([to, sent]) => (await fetch(to, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(sent) })).json(), [path, body] as const);
+        const waits = (pane: string): Promise<boolean> => page.evaluate((id) => document.querySelector(`.mode-inbox .inbox-item[data-pane="${id}"]`)?.getAttribute("data-state") === "blocked", pane);
+        const filterTo = async (choice: string, count: number): Promise<void> => {
+          await page.locator(".mode-inbox .inbox-filter-toggle").click();
+          await page.locator(`.row-menu [data-item="${choice}"]`).click();
+          await page.locator(".row-menu").waitFor({ state: "detached" });
+          await rowCount(page, count);
+        };
+        // two agents wait: the one that did from the start, and one more
+        await page.evaluate((pane) => window.inboxFixture.set(pane, "blocked"), WORKING);
+        await railCounts(page, 2, "on the list alone both agents that wait are counted");
+
+        // herdr splits the first one's tab and zooms it onto the new pane: that agent waits on, out of reach
+        const made = (await herdr("/api/pane/split", { pane_id: BLOCKED, direction: "right" })).pane?.pane_id ?? "";
+        assert.ok(made !== "", "the demo's herdr split the waiting agent's tab");
+        assert.equal((await herdr("/api/pane/zoom", { pane_id: made, mode: "on" })).ok, true, "and zoomed it onto the new pane");
+        await railCounts(page, 1, "the agent behind the zoom is not counted: one is left to open");
+        await rowCount(page, 6);
+        assert.equal(await waits(BLOCKED), true, "the agent behind the zoom keeps its row, which says that it waits");
+        // the count is not of the rows drawn: it stays while the list is filtered to Done, where no row waits
+        await filterTo("done", 1);
+        await railCounts(page, 1, "filtered to Done the count stays");
+        await filterTo("all", 6);
+
+        // the press opens the one in reach; then there is none left to open, though one still waits
+        await waiting.click();
+        await page.locator(".thread-chip").waitFor();
+        await addressIs(page, { app: "inbox", pane: WORKING }, "the count's press opens the agent in reach");
+        await waiting.waitFor({ state: "detached" });
+        assert.equal(await waits(BLOCKED), true, "the agent behind the zoom still waits in its row, and is not counted");
+        // a press on that agent's own row opens the pane its tab is zoomed onto, the one herdr shows, as every pick of a
+        // pane a zoom hides does; the thread that was open is one row away
+        await row(page, BLOCKED).click();
+        await addressIs(page, { app: "inbox", pane: made }, "the hidden agent's row opens the pane its tab is zoomed onto");
+        await row(page, WORKING).click();
+        await addressIs(page, { app: "inbox", pane: WORKING }, "the thread that was open is opened again by its row");
+        assert.equal(await waiting.count(), 0, "and there is still no agent in reach to count");
+
+        // the zoom taken off, that agent is in reach: counted again, and opened by the press
+        assert.equal((await herdr("/api/pane/zoom", { pane_id: made, mode: "off" })).ok, true, "herdr takes the zoom off");
+        await railCounts(page, 1, "with the zoom gone the agent is counted");
+        await waiting.click();
+        await addressIs(page, { app: "inbox", pane: BLOCKED }, "and the count's press opens it");
+        await railCounts(page, 1, "the agent whose thread was left is the one counted now");
+        console.log(`PASS the rail counts what its press can open: 2 with two agents waiting on the list alone, 1 once herdr zooms one's tab onto another pane (${made}), whose row still says it waits, the same under a filter; the press opens the agent in reach and the count goes while the other still waits, its own row opening the pane its tab is zoomed onto; with the zoom off that agent is counted and the press opens it`);
+      }, desktop);
+
+      // the same pane id on two PCs is two agents: each is counted, and the presses walk from one PC's to the other's
+      await withPage(browser, base, light, "/?app=inbox", "the rail's count over two PCs that hold the same pane ids", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
+        await rowCount(page, 12);
+        const waiting = page.locator(".inbox-rail .inbox-rail-waiting");
+        await railCounts(page, 2, "on the list alone the agent that waits on each PC is counted");
+        await waiting.click();
+        await page.locator(".thread-chip").waitFor();
+        await addressIs(page, { app: "inbox", machine: null, pane: BLOCKED }, "the first press opens the waiting agent of the PC the app is on");
+        await railCounts(page, 1, "the open thread's own agent is left out, the other PC's agent of the same id is not");
+        await waiting.click();
+        await addressIs(page, { app: "inbox", machine: "laptop", pane: BLOCKED }, "the next press opens the other PC's agent");
+        await railCounts(page, 1, "from there the first PC's agent is the one counted");
+        await waiting.click();
+        await addressIs(page, { app: "inbox", machine: null, pane: BLOCKED }, "and the next press comes round to it");
+        console.log("PASS with two PCs that hold the same pane ids the rail counts the agent that waits on each (2 on the list alone, 1 from either one's thread), and its presses open the first PC's, then the other PC's, then the first again");
+      }, desktop);
+      // ---- no rail under 769px ----
+      // The rail is the wide layout's: one pixel under 769px the window has none, and its list is the screen with its
+      // own controls, as on a phone. A window narrowed and widened again, with a mouse, then an upright phone.
+      await withPage(browser, base, light, "/?app=inbox", "no rail under 769px: a window narrowed and widened again", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        const shape = () => page.evaluate(() => {
+          const count = (selector: string): number => document.querySelectorAll(selector).length;
+          const rail = document.querySelector(".inbox-rail")?.getBoundingClientRect();
+          const list = document.querySelector(".mode-inbox")!.getBoundingClientRect();
+          return {
+            wide: count(".app.is-inbox-wide"), rail: rail ? [rail.left, rail.width] : null, list: [list.left, Math.round(list.width)],
+            more: count(".mode-inbox .inbox-more"), foot: count(".mode-inbox .inbox-foot"), filter: count(".mode-inbox .inbox-foot .inbox-filter-toggle"),
+            search: document.querySelector(".mode-inbox .inbox-search-toggle, .mode-inbox .inbox-search-input")?.getAttribute("aria-label") ?? null,
+            sideways: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          };
+        });
+        const wide = { wide: 1, rail: [0, 58], list: [58, 261], more: 0, foot: 0, filter: 0, search: "Search agents", sideways: 0 };
+        assert.deepEqual(await shape(), wide, "at 769px the rail is drawn and the list is beside it, with no More and no foot of its own");
+        await page.setViewportSize({ width: 768, height: 900 });
+        await page.locator(".inbox-rail").waitFor({ state: "detached" });
+        assert.deepEqual(await shape(), { wide: 0, rail: null, list: [0, 768], more: 1, foot: 1, filter: 1, search: "Search", sideways: 0 },
+          "at 768px no rail is drawn: the list is the screen, with its own More, its foot and its filter, and its search is the one search");
+        await rowCount(page, 6);
+        await page.setViewportSize({ width: 769, height: 900 });
+        await page.locator(".inbox-column .inbox-rail").waitFor();
+        assert.deepEqual(await shape(), wide, "widened to 769px again, the rail is back");
+        console.log("PASS at 769px the rail (58px) is drawn before a 261px list that has no More and no foot; at 768px no rail is drawn and the list is the 768px screen with its own More, foot, filter and Search; at 769px again the rail is back");
+      }, { width: 769, height: 900 }, false);
+
+      await withPage(browser, base, light, "/?app=inbox", "no rail on an upright phone", async (page) => {
+        await listScreen(page);
+        await rowCount(page, 6);
+        const drawn = (): Promise<number[]> => page.evaluate(() => [".inbox-rail", ".app.is-inbox-wide", ".mode-inbox .inbox-more", ".mode-inbox .inbox-add", ".mode-inbox .inbox-foot .inbox-filter-toggle", '.mode-inbox .inbox-foot .inbox-search-input[aria-label="Search"]']
+          .map((selector) => document.querySelectorAll(selector).length));
+        assert.deepEqual(await drawn(), [0, 0, 1, 1, 1, 1], "a phone draws no rail: its list has More and New workspace at its top, its filter and its search at its foot");
+        await openThread(page, WORKING);
+        assert.equal(await page.locator(".inbox-rail").count(), 0, "nor over a thread, which is the screen there");
+        console.log("PASS an upright phone draws no rail, on its list (More and New workspace at the top, the filter and Search at the foot) or over a thread");
+      });
+      // ---- the rail under a coarse pointer ----
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "the rail under a coarse pointer at 1440", async (page) => {
+        assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "the pointer is coarse");
+        await page.locator(".app-header.is-zoned").waitFor();
+        const classic = { sidebar: await box(page, "#workspace-drawer"), pane: await box(page, ".pane-column") };
+        await page.locator(".header-more-button").click();
+        await page.locator('[data-item="enter-inbox"]').first().click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await page.locator(".thread-chip").waitFor();
+        await rowCount(page, 6);
+        const { height } = page.viewportSize()!;
+        const [column, rail, list, pane] = await Promise.all([box(page, ".inbox-column"), box(page, ".inbox-column .inbox-rail"), box(page, ".inbox-column .mode-inbox"), box(page, ".pane-column")]);
+        assert.deepEqual([rail.x, rail.y, rail.w, rail.h], [0, 0, 68, height], "under a coarse pointer the rail is 68px wide, from the window's top to its foot");
+        assert.deepEqual([column.x, column.w], [classic.sidebar.x, classic.sidebar.w], "the column is still the classic sidebar's width");
+        assert.deepEqual([pane.x, pane.w], [classic.pane.x, classic.pane.w], "and the pane has the classic shell's box");
+        near(list.x, rail.right, 0.5, "the list begins where the rail ends");
+        assert.deepEqual((await railButtons(page)).map(({ kind, box: at }) => [kind, at.x, at.y, at.w, at.h]), [
+          ["inbox-rail-exit", 12, 12, 44, 44], ["inbox-rail-place", 12, 72, 44, 44], ["inbox-rail-palette", 12, 124, 44, 44],
+          ["inbox-rail-waiting", 12, height - 212, 44, 44], ["inbox-rail-alerts", 12, height - 160, 44, 44], ["inbox-rail-settings", 12, height - 108, 44, 44], ["inbox-rail-pcs", 12, height - 56, 44, 44],
+        ], "its seven buttons are 44px, 12px from the rail's sides, 8px apart");
+        const tops = await Promise.all([".inbox-search-toggle", ".inbox-filter-toggle", ".inbox-add"].map((selector) => box(page, `.mode-inbox ${selector}`)));
+        for (const each of tops) assert.deepEqual([each.w, each.h, each.y], [44, 44, 12], "the list's top controls are 44px too, on the line of the rail's first button");
+        // a pixel in from each corner: a point on the window's last half pixel is outside it for the browser
+        assert.deepEqual(await page.evaluate(() => [[1, 1], [1, innerHeight - 1]].map(([x, y]) => {
+          const button = document.elementFromPoint(x!, y!)?.closest(".inbox-rail button");
+          return button ? [...button.classList].find((name) => name.startsWith("inbox-rail-") && name !== "inbox-rail-item") ?? null : null;
+        })), ["inbox-rail-exit", "inbox-rail-pcs"], "the window's top and bottom start corners press the rail's first and last buttons");
+        console.log(`PASS under a coarse pointer at 1440 the rail is 68px wide with seven 44px buttons, the column the classic sidebar's (${column.w}px) and the pane the classic shell's (${pane.w}px from ${pane.x}), the list (${Math.round(list.w)}px) beside it with 44px top controls on the rail's first button's line, and the window's two start corners press the first and the last button`);
+      }, { width: 1440, height: 900 }, true);
+      // ---- the rail's PC with several PCs ----
+      // With several PCs the button says how many are connected, and its one dot is still the page's connection to
+      // them all, drawn by the same rule: none while connected, the reconnecting one while the stream that feeds the
+      // list is lost on the list alone, the connected one for the moment after, then none.
+      await withPage(browser, base, light, "/?app=inbox&demo_connection=switch", "the rail's PC with two PCs, connected and with the connection lost", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
+        await rowCount(page, 12);
+        const pc = page.locator(".inbox-rail .inbox-rail-pcs");
+        const dot = pc.locator(".inbox-rail-dot");
+        const menu = page.locator('.row-menu[role="menu"][aria-label="PCs"]');
+        /** the PC's button is named, and titled, `name` */
+        const named = async (name: string, what: string): Promise<void> => {
+          const said = await page.waitForFunction((want) => {
+            const button = document.querySelector(".inbox-rail .inbox-rail-pcs");
+            return button?.getAttribute("aria-label") === want && button.getAttribute("title") === want;
+          }, name, { timeout: 15_000 }).then(() => true, () => false);
+          if (!said) assert.fail(`${what}: the PC's button is named ${await pc.getAttribute("aria-label")}`);
+        };
+        await named("PCs, 2 of 2 connected", "with two PCs the button says how many are connected");
+        assert.equal(await dot.count(), 0, "connected, no dot is drawn, for one PC or for several");
+        // the stream that feeds the roster has opened: only a stream that was had can be lost
+        await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
+        await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
+        await named("PCs · Reconnecting…", "lost, the button says so of the PCs");
+        await pc.locator(".inbox-rail-dot.is-reconnecting").waitFor();
+        assert.equal(await dot.count(), 1, "one dot is drawn for the page's connection, never one a PC");
+        assert.equal(await page.locator('.inbox-rail > [role="status"]').textContent(), "Reconnecting…", "and the rail's status line says the word");
+        await pc.click();
+        await menu.waitFor();
+        assert.deepEqual(await menu.locator("[data-item]").evaluateAll((items) => items.map((item) => [item.getAttribute("data-item"), item.querySelector(".menu-item-hint")?.textContent ?? null])),
+          [["local", "Reconnecting…"], ["laptop", "Reconnecting…"]], "each PC's row says Reconnecting… while the page has lost its stream");
+        await page.keyboard.press("Escape");
+        await menu.waitFor({ state: "detached" });
+        // back: the count of connected PCs again, the connected dot for a moment, then none
+        await page.evaluate(() => { window.herdrDemoRestoreConnection(); window.inboxFixture.restoreRoster(); window.dispatchEvent(new Event("online")); });
+        await named("PCs, 2 of 2 connected", "back, the button counts the connected PCs again");
+        await dot.waitFor({ state: "detached" });
+        console.log("PASS with two PCs the rail's PC is named PCs, 2 of 2 connected and draws no dot; with the connection lost on the list alone it is named PCs · Reconnecting…, draws the one reconnecting dot, says the word in its status line and in each PC's row of its list; back, it counts the connected PCs again and then draws no dot");
+      }, desktop);
       if (errors.length > 0) {
         failures.push("page errors after the themes");
         console.log(`FAIL page errors after the themes: ${errors.join("; ")}`);
