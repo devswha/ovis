@@ -577,6 +577,7 @@ dependencies = [
  "hc-proto",
  "hc-tui",
  "hc-vt",
+ "libc",
  "ovis-tui-client",
  "ratatui",
  "tokio",

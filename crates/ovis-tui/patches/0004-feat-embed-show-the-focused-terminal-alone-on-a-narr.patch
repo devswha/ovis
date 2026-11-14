@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ovis-tui <ovis-tui@users.noreply.github.com>
 Date: Sun, 15 Nov 2026 01:09:55 +0900
-Subject: [PATCH 4/4] feat(embed): show the focused terminal alone on a narrow
+Subject: [PATCH 4/6] feat(embed): show the focused terminal alone on a narrow
  screen, on request
 
 With Embed::solo_on_narrow, a screen at or under the mobile width shows the focused tab's focused terminal alone, as a zoom does: a split at phone width leaves each pane too narrow to read. It is local to this client: its projection reads as zoomed, the shared layout document is not written, and a wider screen shows the split again. The default keeps today's layout.

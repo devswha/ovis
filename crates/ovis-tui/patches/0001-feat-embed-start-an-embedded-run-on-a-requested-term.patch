@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ovis-tui <ovis-tui@users.noreply.github.com>
 Date: Sat, 14 Nov 2026 23:59:37 +0900
-Subject: [PATCH 1/4] feat(embed): start an embedded run on a requested
+Subject: [PATCH 1/6] feat(embed): start an embedded run on a requested
  terminal
 
 A program that embeds the client (cli::run_embedded) can name the terminal to focus once the inventory first lists it: the same path as a pane-row click, taken once. A plain run is unchanged.

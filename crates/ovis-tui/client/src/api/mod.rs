@@ -9,7 +9,7 @@ mod session;
 pub use error::ApiError;
 pub use http::{Answer, AnswerOutcome, Client, Presented};
 pub use pane::{Conversation, Part, Prompt, PromptOption, Role, SeenFinish, Turn};
-pub use server::Server;
+pub use server::{Server, take_server_vars};
 pub use session::{AgentInfo, Health, Pane, Snapshot, Tab, Workspace, Worktree};
 
 /// The `pc` of this PC's own panes in `/api/seen` records (`LOCAL_MACHINE`, shared/machines.ts:7).

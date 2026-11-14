@@ -25,6 +25,10 @@ ovis-tui-client = { path = "client" }
 ratatui = { version = "0.30.2", default-features = false, features = ["std", "crossterm"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 
+# tests/no_core_start.rs hosts the program in a PTY with hc-tui's own test helper
+[dev-dependencies]
+libc = "0.2"
+
 [profile.release]
 lto = true
 codegen-units = 1

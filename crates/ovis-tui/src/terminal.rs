@@ -27,6 +27,7 @@ pub async fn open(
         focus: pane,
         discard_input_on_recovery: true,
         solo_on_narrow: true,
+        no_core_start: true,
     };
     let screen = hc_tui::cli::run_embedded(&setting.endpoint, &setting.env, embed);
     tokio::pin!(screen);
