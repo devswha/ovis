@@ -257,6 +257,37 @@ const railButtons = (page: Page): Promise<RailButton[]> => page.locator(".inbox-
   };
 }));
 const railNames = async (page: Page): Promise<(string | null)[]> => (await railButtons(page)).map((button) => button.name);
+/** the wide list's top row: the list and the rail before it, the row's controls from its start to its end, and what an overflow would show */
+interface TopRow { list: Box; rail: Box; controls: { kind: string; box: Box; hit: boolean; glyph: number[] }[]; sideways: number[] }
+const topRow = (page: Page): Promise<TopRow> => page.evaluate(() => {
+  const boxOf = (node: Element) => { const r = node.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height, right: r.right, bottom: r.bottom }; };
+  const list = document.querySelector<HTMLElement>(".inbox-column .mode-inbox")!;
+  const scroller = list.querySelector<HTMLElement>(".inbox-scroll")!;
+  return {
+    list: boxOf(list), rail: boxOf(document.querySelector(".inbox-column .inbox-rail")!),
+    controls: [...list.querySelectorAll(".inbox-top > :is(button, .inbox-search)")].map((node) => {
+      const at = boxOf(node);
+      const glyph = node.querySelector(":scope > svg")?.getBoundingClientRect();
+      return {
+        kind: [...node.classList].find((name) => name.startsWith("inbox-") && name !== "inbox-round") ?? "", box: at,
+        hit: document.elementFromPoint(at.x + at.w / 2, at.y + at.h / 2)?.closest(".inbox-top > *") === node, glyph: glyph ? [glyph.width, glyph.height] : [],
+      };
+    }),
+    sideways: [list.scrollWidth - list.clientWidth, scroller.scrollWidth - scroller.clientWidth, document.documentElement.scrollWidth - document.documentElement.clientWidth],
+  };
+});
+/** The top row's controls are inside the list, in their order, none over another or over the rail, each one hit at its middle, and nothing scrolls sideways. */
+function topRowFits(top: TopRow, what: string): void {
+  const places = `${top.controls.map((each) => `${each.kind} ${each.box.x} to ${each.box.right}`).join(", ")}, in a list from ${top.list.x} to ${top.list.right} after a rail that ends at ${top.rail.right}`;
+  assert.ok(top.controls.length >= 2, `${what}: the top row holds its controls: ${places}`);
+  let edge = Math.max(top.list.x, top.rail.right);
+  for (const each of top.controls) {
+    assert.ok(each.box.x >= edge - 0.1 && each.box.right <= top.list.right + 0.1, `${what}: ${each.kind} is inside the list, after the rail and the control before it: ${places}`);
+    assert.ok(each.hit, `${what}: ${each.kind} is hit at its middle: ${places}`);
+    edge = each.box.right;
+  }
+  assert.deepEqual(top.sideways, [0, 0, 0], `${what}: neither the list, its rows nor the page scrolls sideways`);
+}
 /** the list as a phone's screen: no header over it, and the mode's mark in the address */
 async function listScreen(page: Page): Promise<void> {
   await page.locator(".mode-inbox").waitFor();
@@ -2324,6 +2355,173 @@ try {
         console.log(`PASS a pane with no row in the list (${shell}, a shell) is entered on the list with nothing chosen, and Back to Ovis shows it again`);
       }, desktop);
 
+      // ---- the mode's column at every width of the sidebar ----
+      // The mode's column is the classic sidebar's own width at every width the sidebar can have (dragged to its least,
+      // left at its default, capped at half a narrow window), under a mouse and under a finger: the rail is cut out of
+      // it, so the pane beside it has the box the classic shell gives it, and neither the way in nor the way out
+      // refits a terminal. Leaving from the list, where the pane is held at the box it had, and leaving from a thread
+      // that shows its terminal, where nothing holds it, are checked apart: neither sends anything for the pane.
+      for (const setup of [
+        { name: "dragged to its least width", stored: "240", viewport: desktop, width: 240 },
+        { name: "at its default width", stored: null, viewport: desktop, width: 320 },
+        { name: "capped at half an 800px window", stored: "520", viewport: { width: 800, height: 900 }, width: 400 },
+      ]) for (const coarse of [false, true]) {
+        const pointer = coarse ? "a coarse pointer" : "a fine pointer";
+        await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, `the sidebar ${setup.name} under ${pointer}`, async (page) => {
+          const sent = (): Promise<Window["inboxFixture"]["frames"]> => page.evaluate(() => window.inboxFixture.frames.slice());
+          const enter = async (): Promise<void> => {
+            await page.locator(".header-more-button").click();
+            await page.locator('[data-item="enter-inbox"]').first().click();
+            await page.locator(".inbox-column .mode-inbox").waitFor();
+            await rowCount(page, 6);
+          };
+          const leave = async (): Promise<void> => {
+            await page.locator(".inbox-rail .inbox-rail-exit").click();
+            await page.locator(".mode-inbox").waitFor({ state: "detached" });
+            await page.locator(".app-header.is-zoned").waitFor();
+          };
+          assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), coarse, `the pointer is ${coarse ? "coarse" : "fine"}`);
+          // the width this device's sidebar was dragged to, which the page reads as it loads
+          await page.evaluate((stored) => { if (stored === null) localStorage.removeItem("ovis:sidebar-width"); else localStorage.setItem("ovis:sidebar-width", stored); }, setup.stored);
+          await page.reload();
+          await page.locator(".app-header.is-zoned").waitFor();
+          const classic = { sidebar: await box(page, "#workspace-drawer"), pane: await box(page, ".pane-column"), terminal: await terminalBox(page) };
+          assert.deepEqual([classic.sidebar.x, classic.sidebar.w], [0, setup.width], `the classic sidebar is ${setup.width}px wide`);
+          // fixed wait: the page's own first sizing of the pane has gone out
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          const before = (await sent()).length;
+
+          // into the mode, from a pane on its terminal: the list, with the pane under it
+          await enter();
+          await paneHiddenUnderList(page, "the pane is mounted under the list, hidden");
+          const control = coarse ? 44 : 34;
+          const [column, pane] = await Promise.all([box(page, ".inbox-column"), box(page, ".pane-column")]);
+          assert.deepEqual([column.x, column.w], [classic.sidebar.x, classic.sidebar.w], "the column is the classic sidebar's width: no wider for its rail");
+          assert.deepEqual([pane.x, pane.w], [classic.pane.x, classic.pane.w], "the pane has the box the classic shell gives it");
+          const top = await topRow(page);
+          assert.deepEqual([top.rail.x, top.rail.w], [0, control + 24], "the rail is cut out of the column");
+          near(top.list.x, top.rail.right, 0.5, "the list begins where the rail ends"); near(top.list.right, column.right, 1, "the list ends at the column's seam");
+          // the list's three top controls are whole, inside it, and reached by the keyboard after the rail
+          topRowFits(top, `in a ${Math.round(top.list.w)}px list`);
+          assert.deepEqual(top.controls.map((each) => [each.kind, each.box.w, each.box.h]), [["inbox-search-toggle", control, control], ["inbox-filter-toggle", control, control], ["inbox-add", control, control]],
+            `the three top controls keep their ${control}px`);
+          // the row has its full insets wherever it has the room: only under a finger at the sidebar's least width do its
+          // side insets give way to the rows' own, and its gaps to what is left
+          const tight = coarse && setup.width === 240;
+          near(column.right - top.controls[2]!.box.right, tight ? 12 : 16, 1, "the top controls from the column's edge");
+          near(top.controls[1]!.box.x - top.controls[0]!.box.right, tight ? 8 : 10, 1, "between the top controls");
+          await page.locator(".inbox-rail .inbox-rail-pcs").focus();
+          const reached: string[] = [];
+          for (let press = 0; press < 3; press++) {
+            await page.keyboard.press("Tab");
+            reached.push(await page.evaluate(() => [...(document.activeElement?.classList ?? [])].find((name) => name.startsWith("inbox-") && name !== "inbox-round") ?? ""));
+          }
+          assert.deepEqual(reached, ["inbox-search-toggle", "inbox-filter-toggle", "inbox-add"], "Tab goes from the rail's last button through the three top controls");
+
+          // out again from the list: the pane is shown in the box it had, and nothing was sent for it either way
+          await leave();
+          // fixed wait: no size may be sent for the pane shown again in the box it had
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          assert.deepEqual((await sent()).slice(before), [], "the way in and the way out from the list send no attach, detach, size or release");
+          sameBox(await terminalBox(page), classic.terminal, "left from the list, the terminal has the box it had");
+
+          // in again, and a thread with its terminal behind the monitor button: as wide and as tall as the classic shell showed it
+          await enter();
+          await row(page, WORKING).click();
+          await page.locator(".thread-chip").waitFor();
+          await page.locator(".thread-top .lens-toggle").click();
+          await page.locator('.thread-top .lens-toggle[data-view="terminal"]').waitFor();
+          const thread = await terminalBox(page);
+          near(thread.x, classic.terminal.x, 1, "the thread's terminal begins where classic's does");
+          near(thread.w, classic.terminal.w, 1, "the thread's terminal is as wide as classic's"); near(thread.h, classic.terminal.h, 1, "the thread's terminal is as tall as classic's");
+          // fixed wait: what showing the terminal asks of its pty has gone out
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          const shown = (await sent()).length;
+
+          // out by the rail's mark with the terminal still shown, which nothing holds at its box: nothing is sent for it
+          await leave();
+          await addressIs(page, { app: null, pane: WORKING }, "the rail's mark opens the thread's pane in the classic app");
+          sameBox(await terminalBox(page), classic.terminal, "left from the thread, the terminal has the box it had");
+          // fixed wait: no size may be sent for the terminal shown again where it was
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          assert.deepEqual((await sent()).slice(shown), [], "leaving by the rail's mark from a thread that shows its terminal sends no attach, detach, size or release");
+          console.log(`PASS with the sidebar ${setup.name} (${column.w}px) under ${pointer} the mode's column is the classic sidebar's and the pane the classic shell's (${pane.w}px from ${pane.x}); the rail (${top.rail.w}px) is cut out of it, and the list's three ${control}px top controls are whole inside the ${Math.round(top.list.w)}px it leaves, hit at their middles and reached by Tab, nothing scrolling sideways; the way in and out from the list sends nothing for the pane, a thread's terminal is classic's size (${Math.round(thread.w)} by ${Math.round(thread.h)}), and leaving by the rail's mark while it is shown sends no attach, detach, size or release`);
+        }, setup.viewport, coarse);
+      }
+
+      // ---- a list too narrow for its top controls ----
+      // A phone on its side has a side safe area, which the rail takes out of the column: with the sidebar at its least
+      // width the list is then narrower than three 44px controls. They shrink together and stay round, never under the
+      // 24px of a pointer's least target, so none stands over another or over the rail. The safe area is the browser's
+      // own override of it (the devtools protocol), as wide as an iPhone's on its side in either of its sizes.
+      for (const safe of [47, 59]) {
+        await withPage(browser, base, light, "/?app=inbox", `the top controls in a list narrowed by a ${safe}px side safe area`, async (page) => {
+          const session = await page.context().newCDPSession(page);
+          await session.send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, topMax: 0, left: safe, leftMax: safe, bottom: 0, bottomMax: 0, right: 0, rightMax: 0 } });
+          await page.evaluate(() => localStorage.setItem("ovis:sidebar-width", "240"));
+          await page.reload();
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          assert.equal(await page.evaluate(() => {
+            const probe = document.createElement("div");
+            probe.style.cssText = "position: absolute; padding-left: env(safe-area-inset-left, 0px)";
+            document.body.append(probe);
+            const inset = getComputedStyle(probe).paddingLeft;
+            probe.remove();
+            return inset;
+          }), `${safe}px`, "the browser reports the side safe area");
+          const top = await topRow(page);
+          assert.deepEqual([top.rail.x, top.rail.w, Math.round(top.list.w)], [0, 68 + safe, 171 - safe], "the rail takes the safe area out of the column, and the list has what is left");
+          topRowFits(top, `in a ${171 - safe}px list`);
+          assert.deepEqual(top.controls.map((each) => each.kind), ["inbox-search-toggle", "inbox-filter-toggle", "inbox-add"], "the row still holds its three controls");
+          const size = top.controls[0]!.box.w;
+          for (const each of top.controls) {
+            near(each.box.h, each.box.w, 0.1, `${each.kind} is round`); near(each.box.w, size, 0.1, "the three controls are one size");
+            assert.ok(each.box.w < 44 && each.box.w >= 24, `${each.kind} is smaller than 44px and no smaller than a pointer's least target: ${each.box.w}px`);
+            assert.deepEqual(each.glyph, [16, 16], `${each.kind}'s glyph keeps its size`);
+          }
+          // an open search field gives up its room first; its button then follows the same rule
+          await page.locator(".mode-inbox .inbox-search-toggle").click();
+          await page.locator(".mode-inbox .inbox-search-input").waitFor();
+          const open = await topRow(page);
+          topRowFits(open, `with the search field open in a ${171 - safe}px list`);
+          assert.deepEqual(open.controls.map((each) => each.kind), ["inbox-search", "inbox-search-toggle"], "the open field and its button are the row");
+          const button = open.controls[1]!.box;
+          near(button.h, button.w, 0.1, "the field's button is round");
+          assert.ok(button.w <= 44 && button.w >= 24, `the field's button is no larger than 44px and no smaller than a pointer's least target: ${button.w}px`);
+          console.log(`PASS in a list narrowed to ${171 - safe}px by a ${safe}px side safe area, under a coarse pointer with the sidebar at its least width, the three top controls shrink together to ${size.toFixed(1)}px, round, with their glyphs whole, inside the list and clear of the rail and of each other; an open search field (${Math.round(open.controls[0]!.box.w)}px) stands beside its ${button.w.toFixed(1)}px button; nothing scrolls sideways`);
+        }, desktop, true);
+      }
+
+      // A window's own controls over the row's start ask the row for what of them the rail does not already cover:
+      // nothing while they are narrower than the rail, the rest of them while they are wider, where the row's controls
+      // shrink clear of them. Only an iPad's home-screen app in a window has such controls, so the page is told of them
+      // here as lib/viewport.ts tells it there: the mark on the root and the controls' width.
+      for (const [reserved, what] of [[40, "narrower than the rail"], [136, "wider than the rail"]] as const) {
+        await withPage(browser, base, light, "/?app=inbox", `the top controls beside a window's own controls ${what}`, async (page) => {
+          await page.evaluate(() => localStorage.setItem("ovis:sidebar-width", "240"));
+          await page.reload();
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await rowCount(page, 6);
+          await page.evaluate((width) => {
+            document.documentElement.toggleAttribute("data-window-controls", true);
+            document.documentElement.style.setProperty("--window-controls-w", `${width}px`);
+          }, reserved);
+          await frames(page);
+          const top = await topRow(page);
+          topRowFits(top, `beside ${reserved}px of window controls`);
+          assert.deepEqual(top.controls.map((each) => each.kind), ["inbox-search-toggle", "inbox-filter-toggle", "inbox-add"], "the row still holds its three controls");
+          const first = top.controls[0]!.box;
+          assert.ok(first.x >= reserved, `the first control is clear of the window's controls: it begins at ${first.x}px, they end at ${reserved}px`);
+          near(first.x - top.list.x, 12 + Math.max(0, reserved - top.rail.w), 1, "the row's start inset is its own and what of the window's controls reaches past the rail");
+          for (const each of top.controls) {
+            near(each.box.h, each.box.w, 0.1, `${each.kind} is round`); near(each.box.w, first.w, 0.1, "the three controls are one size");
+            if (reserved <= top.rail.w) assert.equal(each.box.w, 44, `${each.kind} is whole: the rail covers the window's controls`);
+            else assert.ok(each.box.w < 44 && each.box.w >= 24, `${each.kind} is smaller than 44px and no smaller than a pointer's least target: ${each.box.w}px`);
+          }
+          console.log(`PASS beside ${reserved}px of a window's own controls (${what}, ${top.rail.w}px), under a coarse pointer with the sidebar at its least width, the list's three top controls are ${first.w.toFixed(1)}px, round, inside the list from ${first.x}px on, clear of those controls, of the rail and of each other`);
+        }, desktop, true);
+      }
       if (errors.length > 0) {
         failures.push("page errors after the themes");
         console.log(`FAIL page errors after the themes: ${errors.join("; ")}`);
