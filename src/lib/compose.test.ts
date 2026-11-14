@@ -128,6 +128,15 @@ describe("omo command completion", () => {
 describe("composerMessage and submitNote", () => {
   it("keeps the message as written for agent.prompt: inner newlines stay, the composer's own trailing ones go", () => {
     expect(composerMessage("line one\r\nline two\n\n")).toBe("line one\nline two");
+    // a command picked from the menu ends in a space (slashCommandReplacement): sent bare, as the agent's own menu
+    // runs it; OpenCode sends `/new ` as a prompt (#3813)
+    expect(composerMessage("/new ")).toBe("/new");
+    expect(composerPayload("/new \t ", true)).toBe("\u001b[200~/new\u001b[201~");
+    expect(composerMessage("$skill ")).toBe("$skill");
+    // anything after the command, or a space that is not trailing, is the user's text and stays
+    expect(composerMessage("/rename my title ")).toBe("/rename my title ");
+    expect(composerMessage("/new \nnext")).toBe("/new \nnext");
+    expect(composerMessage("plain ")).toBe("plain ");
     // line breaks that do not end the message are read in one pass, by the rule the server reads them with
     // (withoutTrailingBreaks): as a pattern they cost their count squared, a third of a second for the 20,000 the
     // composer takes
