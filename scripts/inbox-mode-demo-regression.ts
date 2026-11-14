@@ -1911,16 +1911,18 @@ try {
         await page.keyboard.press("Enter");
         await page.locator(".inbox-column .mode-inbox").waitFor();
         await page.locator(".file-viewer").waitFor({ state: "detached" });
+        await page.locator(".thread-chip").waitFor();
+        assert.equal(await page.evaluate(() => new URLSearchParams(location.search).get("file")), null, "the thread's address names no file");
+        await addressIs(page, { app: "inbox", pane: WORKING }, "the mode opens on the pane's thread");
+        // Back is the list the thread was opened from; the file's own entry is under the mode's: Back shows the pane with its file again
+        await page.goBack();
         await page.locator(".inbox-unchosen").waitFor();
-        assert.equal(await page.evaluate(() => new URLSearchParams(location.search).get("file")), null, "the list's address names no file");
-        await addressIs(page, { app: "inbox", pane: null }, "the mode opens on its list");
-        // the file's own entry is under the mode's: Back shows the pane with its file again
         await page.goBack();
         await page.locator(".file-viewer").waitFor();
         await page.locator(".mode-inbox").waitFor({ state: "detached" });
         assert.equal(await page.evaluate(() => new URLSearchParams(location.search).get("file")), "README.md");
         await addressIs(page, { app: null, pane: WORKING }, "Back returns to the pane the file is open on");
-        console.log("PASS entering the mode with a file open over the pane closes the viewer and opens the list; Back shows the pane with its file again");
+        console.log("PASS entering the mode with a file open over the pane closes the viewer and opens the pane's thread; Back is the list, and Back again shows the pane with its file");
       }, desktop);
 
       // ---- the system Back with the pane's More open ----
@@ -1965,6 +1967,251 @@ try {
           }, viewport);
         }
       }
+
+      // ---- the Ovis mark at the sidebar's head is a way in ----
+      // From a pane that shows its terminal it enters as every way in does there: the list, nothing chosen, and
+      // nothing sent to any pane's pty, on the way in or on Back to Ovis.
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "the Ovis mark at the top left enters the mode", async (page) => {
+        await page.locator(".app-header.is-zoned").waitFor();
+        const classic = await terminalBox(page);
+        // fixed wait: the page's own first sizing of the pane has gone out
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        const sent = async (since: number): Promise<Window["inboxFixture"]["frames"]> => (await page.evaluate(() => window.inboxFixture.frames.slice())).slice(since)
+          .filter((frame) => frame.type === "attach" || frame.type === "detach" || frame.type === "resize" || frame.type === "release-size");
+        const before = await page.evaluate(() => window.inboxFixture.frames.length);
+        const mark = page.locator(".header-side .sidebar-brand");
+        assert.deepEqual(await mark.evaluate((node) => [node.tagName, node.getAttribute("aria-label"), node.getAttribute("title")]), ["BUTTON", "Open agent inbox", "Open agent inbox"],
+          "the Ovis mark at the top left is a button named, and titled, for the way in");
+        assert.ok((await mark.boundingBox())!.height < 44, "with a mouse the mark keeps its slim box");
+        const entries = await historyLength(page);
+        await mark.click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await page.locator(".inbox-unchosen").waitFor();
+        await addressIs(page, { app: "inbox", pane: null }, "a click on the Ovis mark enters the mode on its list");
+        assert.equal(await historyLength(page), entries + 1, "entering is one entry");
+        assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open: the pane showed its terminal");
+        // fixed wait: nothing may be sent for any pane on the way in
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        assert.deepEqual(await sent(before), [], "entering from a pane on its terminal sends no attach, detach, size or release");
+        await page.locator(".inbox-exit").click();
+        await page.locator(".app-header.is-zoned").waitFor();
+        await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
+        await addressIs(page, { app: null, pane: WORKING }, "Back to Ovis shows the pane the classic app was on");
+        sameBox(await terminalBox(page), classic, "back in the classic app the terminal has the box it had");
+        // fixed wait: nothing may be sent for the pane shown again as it was
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        assert.deepEqual(await sent(before), [], "Back to Ovis sends no attach, detach, size or release");
+        const again = await historyLength(page);
+        await mark.focus();
+        await page.keyboard.press("Enter");
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await page.locator(".inbox-unchosen").waitFor();
+        assert.equal(await historyLength(page), again + 1, "Enter on the mark enters by one entry");
+        console.log("PASS at 1440 the Ovis mark at the sidebar's head is a button named Open agent inbox: a click, and Enter on it, enter the mode by one entry; from a pane on its terminal on the list with nothing chosen, and neither the way in nor Back to Ovis, which shows the terminal in its box, sends any pane an attach, detach, size or release");
+      }, desktop);
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "the Ovis mark under a finger from 769px", async (page) => {
+        await page.locator(".app-header.is-zoned").waitFor();
+        const target = (await page.locator(".header-side .sidebar-brand").boundingBox())!;
+        assert.ok(target.height >= 44 && target.width >= 44, `under a coarse pointer the mark is a 44px target: ${Math.round(target.width)} by ${Math.round(target.height)}`);
+        console.log(`PASS at 1024 under a coarse pointer the Ovis mark is a ${Math.round(target.width)} by ${Math.round(target.height)} target`);
+      }, { width: 1024, height: 768 }, true);
+
+      // ---- the classic app and the mode are one place ----
+      // The pane the classic app is on is the thread the mode opens, and the thread opened in the mode is the pane the
+      // classic app shows; a draft is the pane's in either; the thread's scroll, the list's scroll and its filter are
+      // where they were left after Back to Ovis and the way in again, and a reload keeps the thread, its draft and the
+      // filter. Eight rows that need the user (two PCs) give the list a scroll under a filter on a short window.
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "the classic app and the mode are one place", async (page) => {
+        const composer = page.locator("textarea.composer-text").first();
+        const draftIs = (text: string): Promise<boolean> => page.waitForFunction((want) => document.querySelector<HTMLTextAreaElement>("textarea.composer-text")?.value === want, text, { timeout: 5_000 }).then(() => true, () => false);
+        const scrolledTo = (selector: string, top: number): Promise<boolean> => page.waitForFunction(([where, at]) => {
+          const node = document.querySelector(where as string);
+          return node !== null && Math.abs(node.scrollTop - (at as number)) <= 2;
+        }, [selector, top] as const, { timeout: 5_000 }).then(() => true, () => false);
+        const scrollOf = (selector: string): Promise<number> => page.locator(selector).first().evaluate((node) => node.scrollTop);
+        const thread = `[data-layout-pane="${BLOCKED}"] .chat-view`;
+        const draftX = "a draft typed in the classic app";
+        const draftY = "a draft typed in the thread";
+        await page.locator(".app-header.is-zoned").waitFor();
+        await page.evaluate(() => (window as unknown as { __herdrDemoOrder: { addPc: () => string } }).__herdrDemoOrder.addPc());
+        for (const pane of IDLE) await page.evaluate((idle) => window.inboxFixture.set(idle, "done"), pane);
+        await composer.fill(draftX);
+        await page.locator('.view-switch .lens-option.is-chat[aria-pressed="true"]').waitFor();
+        const framesBefore = await page.evaluate(() => window.inboxFixture.frames.length);
+
+        // classic -> the mode: the pane the app is on, on its chat, is the thread open, with its draft
+        await page.locator(".header-more-button").click();
+        await page.locator('.row-menu [data-item="enter-inbox"]').click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await addressIs(page, { app: "inbox", pane: WORKING }, "entering opens the thread of the pane the classic app was on");
+        await page.locator(".thread-chip").waitFor();
+        assert.ok(await draftIs(draftX), `the thread has the draft typed in the classic app: it has "${await composer.inputValue()}"`);
+        // fixed wait: no size or release may be sent for a pane on the way in
+        await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+        assert.deepEqual((await page.evaluate((count) => window.inboxFixture.frames.slice(count), framesBefore)).filter((frame) => frame.type === "resize" || frame.type === "release-size"), [],
+          "entering on the pane's chat sends no size or release");
+
+        // in the mode: another thread, a draft, its scroll, the list's filter and scroll
+        await row(page, BLOCKED).click();
+        await addressIs(page, { app: "inbox", pane: BLOCKED }, "a row opens its thread");
+        await composer.fill(draftY);
+        await page.waitForFunction((selector) => { const node = document.querySelector(selector); return node !== null && node.scrollHeight - node.clientHeight > 100; }, thread, { timeout: 15_000 });
+        await page.locator(thread).evaluate((node) => { node.scrollTop = Math.round((node.scrollHeight - node.clientHeight) / 2); });
+        await frames(page);
+        const threadTop = await scrollOf(thread);
+        await page.locator(".inbox-filter-toggle").click();
+        await page.locator('.row-menu [data-item="done"]').click();
+        await rowCount(page, 8);
+        const filterLabel = await page.locator(".inbox-filter-toggle").getAttribute("aria-label");
+        const list = ".inbox-scroll";
+        assert.ok(await page.locator(list).evaluate((node) => node.scrollHeight - node.clientHeight > 40), "the filtered list scrolls on this window");
+        await page.locator(list).evaluate((node) => { node.scrollTop = node.scrollHeight; });
+        await frames(page);
+        const listTop = await scrollOf(list);
+
+        // the mode -> classic: the thread's pane, with its draft
+        await page.locator(".inbox-exit").click();
+        await page.locator(".app-header.is-zoned").waitFor();
+        await addressIs(page, { app: null, pane: BLOCKED }, "Back to Ovis shows the thread's pane in the classic app");
+        assert.ok(await draftIs(draftY), `the classic app's composer has the thread's draft: it has "${await composer.inputValue()}"`);
+
+        // in again: the same thread, its draft and scroll, the list's filter and scroll
+        await page.locator("#workspace-drawer .inbox-foot-entry").click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await addressIs(page, { app: "inbox", pane: BLOCKED }, "entering again opens the thread that was left");
+        assert.ok(await draftIs(draftY), `the thread's draft waits in its composer: it has "${await composer.inputValue()}"`);
+        assert.ok(await scrolledTo(thread, threadTop), `the thread is where it was left (${threadTop}px): it is at ${await scrollOf(thread)}px`);
+        assert.equal(await page.locator(".inbox-filter-toggle").getAttribute("aria-label"), filterLabel, "the list's filter is as it was left");
+        await rowCount(page, 8);
+        assert.ok(await scrolledTo(list, listTop), `the list is where it was left (${listTop}px): it is at ${await scrollOf(list)}px`);
+
+        // a reload keeps the thread, its draft and the filter
+        await page.reload();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await addressIs(page, { app: "inbox", pane: BLOCKED }, "a reload keeps the thread");
+        await page.locator(".thread-chip").waitFor();
+        assert.equal(await page.locator(".inbox-filter-toggle").getAttribute("aria-label"), filterLabel, "a reload keeps the list's filter");
+        assert.ok(await draftIs(draftY), `a reload keeps the thread's draft in its composer: it has "${await composer.inputValue()}"`);
+        console.log(`PASS classic and the mode are one place: entering opens the classic pane's thread with its draft; Back to Ovis shows the thread's pane with its draft; entering again keeps the thread, its draft, its scroll (${threadTop}px), the filter and the list's scroll (${listTop}px); a reload keeps the thread, its draft and the filter`);
+      }, { width: 1440, height: 480 });
+
+      // ---- a chat pane not drawn alone, or under a peek: the way in opens the list and sends nothing ----
+      // Its thread alone would hide or unmount what else the classic app draws (a herdr split's sibling, the app's own
+      // split's other half), or end a terminal peek: each gives up or asks a pty's size. So the way in opens the list,
+      // as the mode always did, and nothing is sent for any pane from before it through an untouched Back to Ovis.
+      const FLAKY = "w1H:p1";        // Claude, idle: a /btw sent to it opens a peek over its chat
+      const drawnScreens = (page: Page): Promise<Record<string, Box>> => page.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-layout-pane]")].flatMap((frame) => {
+        const screen = frame.querySelector(".xterm-screen");
+        if (!screen) return [];
+        const box = screen.getBoundingClientRect();
+        return box.width > 0 ? [[frame.getAttribute("data-layout-pane"), { x: box.x, y: box.y, w: box.width, h: box.height, right: box.right, bottom: box.bottom }]] : [];
+      })));
+      for (const setup of [
+        { name: "a herdr tab split, the selected pane on its chat beside a terminal", path: `/?pane=${encodeURIComponent(WORKING)}&view=chat`, pane: WORKING },
+        { name: "the classic app's split, the active half on its chat, the other on its terminal", path: `/?pane=${encodeURIComponent(WORKING)}&view=chat`, pane: WORKING },
+        { name: "a terminal peek over a chat pane", path: `/?pane=${encodeURIComponent(FLAKY)}&view=chat`, pane: FLAKY },
+      ]) {
+        await withPage(browser, base, light, setup.path, `the way in from ${setup.name} opens the list`, async (page) => {
+          await page.locator(".app-header.is-zoned").waitFor();
+          const chatOn = page.locator('.view-switch .lens-option.is-chat[aria-pressed="true"]');
+          if (setup.name.startsWith("a herdr")) {
+            await page.keyboard.press("Control+Shift+K");
+            await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Split pane right");
+            await page.getByRole("option", { name: "Split pane right", exact: true }).click();
+            await page.waitForFunction(() => document.querySelectorAll("[data-layout-pane]").length === 2, undefined, { timeout: 15_000 });
+            await page.locator(`[data-layout-pane="${WORKING}"] .chat-view`).click({ position: { x: 20, y: 20 } });
+          } else if (setup.name.startsWith("the classic")) {
+            await page.evaluate((split) => sessionStorage.setItem("ovis:split", JSON.stringify(split)), { other: { machineId: "local", paneId: BLOCKED }, bSide: "right", active: "a" });
+            await page.reload();
+            await page.locator(".app-header.is-zoned").waitFor();
+            await page.locator('.pane-slot[data-slot="b"]').click({ position: { x: 40, y: 80 } });
+            await addressIs(page, { pane: BLOCKED }, "the other half is the selected pane");
+            await page.locator(".view-switch .lens-option.is-terminal").click();
+            await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
+            await page.locator('.pane-slot[data-slot="a"] .chat-view').click({ position: { x: 20, y: 20 } });
+          } else {
+            await page.getByRole("textbox", { name: "Message", exact: true }).fill("/btw is the retry test flaky on CI too?");
+            await page.getByRole("button", { name: "Send message", exact: true }).click();
+            await page.locator(`.terminal-stack.is-chat.is-peek[data-pane-owner="${FLAKY}"]`).waitFor({ timeout: 15_000 });
+          }
+          await addressIs(page, { app: null, pane: setup.pane }, "the classic app is on the pane");
+          // under a peek the lens switch shows the terminal the peek draws; the pane's own lens is still its chat
+          if (!setup.name.startsWith("a terminal")) await chatOn.waitFor();
+          await page.waitForFunction(() => [...document.querySelectorAll(".xterm-screen")].some((screen) => screen.getBoundingClientRect().width > 0), undefined, { timeout: 15_000 });
+          // fixed wait: the staging's own attaches and sizes have gone out
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          const classic = await drawnScreens(page);
+          const before = await page.evaluate(() => window.inboxFixture.frames.length);
+
+          await page.locator(".header-more-button").click();
+          await page.locator('.row-menu [data-item="enter-inbox"]').click();
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await page.locator(".inbox-unchosen").waitFor();
+          await addressIs(page, { app: "inbox", pane: null }, "the way in opens the list");
+          assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open");
+          // fixed wait: nothing may be sent for a pane under the list
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await page.locator(".inbox-exit").click();
+          await page.locator(".mode-inbox").waitFor({ state: "detached" });
+          await page.locator(".app-header.is-zoned").waitFor();
+          // fixed wait: nothing may be sent for the panes shown again as they were
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          assert.deepEqual(await page.evaluate((count) => window.inboxFixture.frames.slice(count), before), [], "from before the way in through Back to Ovis no attach, detach, size or release is sent for any pane");
+          await addressIs(page, { app: null, pane: setup.pane }, "Back to Ovis shows the pane it was on");
+          if (setup.name.startsWith("a terminal")) await page.locator(`.terminal-stack.is-chat.is-peek[data-pane-owner="${FLAKY}"]`).waitFor({ timeout: 5_000 });
+          const after = await drawnScreens(page);
+          assert.deepEqual(Object.keys(after).sort(), Object.keys(classic).sort(), "the classic app draws the terminals it drew");
+          for (const [pane, was] of Object.entries(classic)) sameBox(after[pane]!, was, `${pane} has the box, and the grid, it had`);
+          console.log(`PASS the way in from ${setup.name} opens the list with nothing chosen; from before it through Back to Ovis no attach, detach, size or release is sent, and the classic app draws what it drew${setup.name.startsWith("a terminal") ? ", the peek still up" : ""}`);
+        }, desktop);
+      }
+
+      // ---- a phone entered again onto the thread it was left on: its Back is the list ----
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "a phone entered again onto the thread it was left on: its Back is the list", async (page) => {
+        await page.locator(".app-header.is-zoned").waitFor();
+        await enterFromMore(page);
+        await rowCount(page, 6);
+        await openThread(page, BLOCKED);
+        await openSheet(page, ".header-more-button");
+        await page.locator('.row-sheet [data-item="exit-inbox"]').tap();
+        await page.locator("#drawer-toggle").waitFor();
+        await addressIs(page, { app: null, pane: BLOCKED }, "Back to Ovis from the thread shows its pane in the classic app");
+        const entries = await historyLength(page);
+        await openSheet(page, ".header-more-button");
+        await page.locator('.row-sheet [data-item="enter-inbox"]').tap();
+        await page.locator("#inbox-back").waitFor();
+        await page.locator(".thread-title").waitFor();
+        await addressIs(page, { app: "inbox", pane: BLOCKED }, "entering again opens the thread the mode was left on");
+        assert.equal(await historyLength(page), entries + 2, "the way in is the list's entry and the thread's");
+        await page.locator("#inbox-back").tap();
+        await listScreen(page);
+        assert.equal(await historyLength(page), entries + 2, "the thread's Back steps back onto the list's entry");
+        await page.goBack();
+        await page.locator("#drawer-toggle").waitFor();
+        await addressIs(page, { app: null }, "the system Back from that list leaves the mode");
+        console.log("PASS on a phone, entering again opens the thread the mode was left on; its Back is the list, still the mode's, and the system Back from there is the classic app");
+      }, PHONE, true);
+
+      // ---- a shell's pane: the way in opens the list ----
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=terminal`, "a pane with no row in the list: the way in opens the list", async (page) => {
+        await page.locator(".app-header.is-zoned").waitFor();
+        await page.keyboard.press("Control+Shift+K");
+        await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Split pane right");
+        await page.getByRole("option", { name: "Split pane right", exact: true }).click();
+        await page.waitForFunction(() => [...document.querySelectorAll("[data-layout-pane] .xterm-screen")].filter((screen) => screen.getBoundingClientRect().width > 0).length === 2, undefined, { timeout: 15_000 });
+        const shell = await page.evaluate((working) => [...document.querySelectorAll("[data-layout-pane]")].map((frame) => frame.getAttribute("data-layout-pane")).find((pane) => pane !== null && pane !== working) ?? "", WORKING);
+        await page.locator(`[data-layout-pane="${shell}"] .xterm-screen`).click();
+        await addressIs(page, { pane: shell }, "the shell's pane is the one the classic app is on");
+        await page.locator(".header-more-button").click();
+        await page.locator('.row-menu [data-item="enter-inbox"]').click();
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await page.locator(".inbox-unchosen").waitFor();
+        assert.equal(await page.locator(".thread-chip").count(), 0, "no thread is opened for a pane with no row");
+        await page.locator(".inbox-exit").click();
+        await page.locator(".app-header.is-zoned").waitFor();
+        await addressIs(page, { app: null, pane: shell }, "Back to Ovis shows the shell's pane as it was");
+        console.log(`PASS a pane with no row in the list (${shell}, a shell) is entered on the list with nothing chosen, and Back to Ovis shows it again`);
+      }, desktop);
 
       if (errors.length > 0) {
         failures.push("page errors after the themes");

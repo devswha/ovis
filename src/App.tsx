@@ -66,7 +66,7 @@ import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.t
 import { useHerdrPrefixKeys } from "./lib/herdrKeys.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { useAnnouncedText } from "./lib/useAnnouncedText.ts";
-import { CRAMPED_QUERY, paneContextPress, tabRowHidden } from "./lib/paneCanvas.ts";
+import { CRAMPED_QUERY, paneContextPress, soloPane, tabRowHidden } from "./lib/paneCanvas.ts";
 import { useTabSheet } from "./lib/useTabSheet.ts";
 import type { AppActions, PaneView, PaneControls } from "./lib/actions.ts";
 import { removePushSubscription } from "./lib/push.ts";
@@ -137,7 +137,9 @@ import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks 
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
-import { useInbox, useInboxShell } from "./lib/useInbox.ts";
+import { useInbox, useInboxShell, wayInOpensThread } from "./lib/useInbox.ts";
+import { inboxOrder } from "./lib/agentInbox.ts";
+import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
@@ -194,12 +196,21 @@ function ConnectionChip({ connected, word, title, quiet }: { connected: boolean;
   );
 }
 
-/** The sidebar's head (from 769px): the Ovis wordmark in the theme's colours (ovis-site's logo pair). */
-function SidebarBrand({ dark }: { dark: boolean }) {
-  return (
+/**
+ * The sidebar's head (from 769px): the Ovis wordmark in the theme's colours (ovis-site's logo pair). Where the inbox mode
+ * is offered it is a way into it, as the app icon at a desktop app's top left goes home.
+ */
+function SidebarBrand({ dark, onOpenInbox }: { dark: boolean; onOpenInbox: (() => void) | null }) {
+  const t = useT();
+  if (onOpenInbox === null) return (
     <div className="brand sidebar-brand">
       <img src={dark ? logoDark : logoLight} alt="Ovis" width="68" height="24" />
     </div>
+  );
+  return (
+    <button type="button" className="brand sidebar-brand is-entry" aria-label={t("Open agent inbox")} title={t("Open agent inbox")} onClick={onOpenInbox}>
+      <img src={dark ? logoDark : logoLight} alt="" width="68" height="24" />
+    </button>
   );
 }
 
@@ -356,7 +367,26 @@ export function App() {
   // is still current: the push takes that entry over (lib/sheetHistory.ts), and no entry is left between. The shell's
   // own part (the drawer put away, the list shown for a mode with no pane) is lib/useInbox.ts useInboxShell.
   const { leave: leaveMode } = inboxMode;
-  const { enterInbox, returnTo } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded,
+  const { enterInbox, returnTo } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show,
+    // the way in opens the thread of the pane the app is on as its row would (InboxList's onOpen below), once the
+    // list has covered the panes
+    open: () => {
+      if (selectedPaneId === null) return;
+      activateSlotOf({ machineId: selectedMachineId, paneId: selectedPaneId });
+      selectTarget(selectedMachineId, selectedPaneId, "chat");
+    }, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded, wide: wideScreen,
+    // only a pane drawn alone on its chat with a row in the list (lib/agentInbox.ts inboxOrder, as the list draws it);
+    // the panes its tab draws as PaneCanvas counts them (lib/paneCanvas.ts soloPane, lib/layoutMap.ts layoutCells)
+    here: () => {
+      if (selectedPaneId === null || !linkLanded) return null;
+      const layout = snapshot?.layouts.find((item) => item.tab_id === selectedPane?.tab_id) ?? null;
+      const cells = layout ? layoutCells(layout).map((cell) => cell.paneId) : [selectedPaneId];
+      return wayInOpensThread({
+        hasRow: inboxOrder(sidebarMachines, activity).some((row) => row.machine.id === selectedMachineId && row.entry.pane.pane_id === selectedPaneId),
+        view, peek: terminalPeek !== null && terminalPeek.machineId === selectedMachineId && terminalPeek.paneId === selectedPaneId,
+        drawnPanes: soloPane(layout, cells, selectedPaneId, !wideScreen) === null ? cells.length : 1, splitShown: splitOn,
+      }) ? sidebarPinKey(selectedMachineId, selectedPaneId) : null;
+    },
     thread: inMode && !inbox.shown && selectedPaneId !== null && linkLanded ? sidebarPinKey(selectedMachineId, selectedPaneId) : null,
     focusInput: () => paneControls.current?.focusInput() });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself
@@ -1040,7 +1070,7 @@ export function App() {
             .header-side is the sidebar's own top row from 769px (styles.css); below that its
             buttons sit in the bar */}
         <div className="header-side">
-          {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} />}
+          {wideScreen && !sidebarCollapsed && !inMode && <SidebarBrand dark={resolvedTheme === "dark"} onOpenInbox={modeOffered ? enterInbox : null} />}
           {inboxBack ? <button type="button" id="inbox-back" className="icon-button inbox-back" aria-label={t("Back")} title={t("Back")} onClick={inbox.back}><ChevronLeft /></button> : <button
             type="button"
             id="drawer-toggle"

@@ -1066,7 +1066,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   not live, the offline pill and the More menu (`⋯`). From `769px` with one pane in view the row is
   a browser's tab strip (Chrome's, sized after the Herdr app's tab bar, THIRD_PARTY_NOTICES.md):
   the sidebar's head (`.header-side`: the Ovis wordmark, `src/assets/brand/logo-light.png`
-  or `logo-dark.png` by the resolved theme, then the palette and the sidebar toggle, as the Herdr
+  or `logo-dark.png` by the resolved theme, a button into the inbox mode (Inbox mode, below) wherever
+  the mode is offered, then the palette and the sidebar toggle, as the Herdr
   app orders them), then the workspace's tabs (`.header-tabs`), `+` right after the last tab,
   flexible space, and at the far end the Chat/Terminal switch, Files (`.header-files-button`, its
   glyph alone) and More as compact pills. The row is tinted with the accent (16% of `--accent`
@@ -2213,13 +2214,40 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   column beside an empty pane from 769px, at the width the column will have, with no control,
   since nothing answers yet. It never draws the classic header or sidebar, not for a frame.
 - **Open agent inbox** enters it: More's last group in the classic header at every width, a row
-  at the sidebar's foot (the drawer's on a phone; Sidebar roster row and footer), and a row of
-  the command palette. **Back to Ovis** leaves it: first in a phone's More, at the column's
+  at the sidebar's foot (the drawer's on a phone; Sidebar roster row and footer), a row of
+  the command palette, and from `769px` the Ovis wordmark at the sidebar's head
+  (`.sidebar-brand.is-entry`, a button named and titled **Open agent inbox**; drawn only with
+  the sidebar shown, so a phone has no such button; a button, so the installed app's title-bar
+  drag region gives it the click). Its hover and press fill as an icon button's. The design
+  follows this app's own entries into the mode: the wordmark runs the same way in as More's
+  item, the sidebar's foot row and the palette, under the same name. **Back to Ovis** leaves it: first in a phone's More, at the column's
   foot on a wide window (whose More does not say it a second time 40px above: one fact, one
   place), and in the palette, the app's own mark (`OvisMark`) standing for it in each. Entering leaves a file open over the pane behind,
   as a move to another pane does: its viewer closes, its own entry stays under the mode's, and
   Back shows the pane with its file again. The setup guide has the classic shell to itself
   and shows no entry. A watching device may use the mode and is offered no New workspace.
+- The classic app and the mode are two views of one place: the conversation the classic app
+  shows is the thread the mode opens, and a thread opened in the mode is the pane the classic
+  app shows when the mode is left. Opening a row is selecting its pane; browsing the list (its
+  filter, search, scroll) selects nothing. A draft and a chat's scroll are the pane's own
+  (lib/composerDraft.ts, lib/chatScrollMemory.ts), so each view shows the other's; nothing
+  typed is sent, a draft waits in the composer. From `769px` every way in opens on the
+  conversation the classic app shows when the pane it is on has a row in the list and the app
+  draws it alone (no split of the app's own shown, and its tab draws that one pane: a one-pane
+  tab or one zoomed onto it), on its chat with no terminal peek over it (lib/useInbox.ts
+  `wayInOpensThread`): its thread opens beside the list, as a row opens it (the list's entry,
+  then the thread's, so the thread's Back is the list). Every other pane (on its terminal,
+  under a peek, beside another pane, with no row, or none chosen) enters on the list with
+  nothing chosen, as before: its thread alone would hide or unmount what else is drawn, end the
+  peek or change the lens, each of which gives up or asks a pty's size. So the way in, and an
+  untouched Back to Ovis, send no attach, detach, size or release to any pane. On a phone,
+  whose list is the mode's screen, a way in opens the list, unless the mode was left on the
+  thread of that same pane: then that thread. The list's filter, search text and scroll are
+  kept in the tab's session storage, beside the chat positions and the split: leaving, entering
+  again and a reload find them as left, and a duplicated tab starts from a copy. The wordmark
+  under a coarse pointer is as tall as the header's touch targets there. The design follows
+  this app's own model, not another app's: one selection, one draft store and one chat-scroll memory that
+  both views read, so neither view keeps a copy to save and restore.
 - Settings → Appearance → More settings → Sidebar → **Start in the agent inbox on a phone** (this device's
   choice, off by default, its stored key unchanged) is where a phone starts: a window at most
   640px wide (`SHEET_QUERY`) whose address is the app's own start opens the mode's list, and
