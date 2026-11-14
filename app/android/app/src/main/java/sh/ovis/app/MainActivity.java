@@ -114,6 +114,36 @@ public class MainActivity extends BridgeActivity {
     private Button openingKeep;
     private Button openingRetry;
 
+    /** The cover's bar once the PC has answered: how much of the page's files has come, when their sizes are known. */
+    private ProgressBar openingBar;
+
+    /** The PC being opened, and the sum of its page's file sizes (0 unknown, -1 not asked yet), from PAGE_SCRIPT. */
+    private String openingPc;
+    private long pageBytes = -1;
+
+    /**
+     * Asked of the PC's page each second while the cover is up: whether the client is up (its root
+     * no longer holds index.html's loading spinner; null when the page has no root, so it is not
+     * the client), and the sum of the sizes of the page and the files it starts with, from a HEAD of
+     * each (0 when any of them gives no Content-Length, as a proxy that streams compressed files
+     * does; -1 until they answer).
+     */
+    private static final String PAGE_SCRIPT =
+        "(() => {" +
+        "  const root = document.getElementById('root');" +
+        "  const loading = document.readyState === 'loading';" +
+        "  if (!loading && window.__ovisOpeningSize === undefined) {" +
+        "    window.__ovisOpeningSize = -1;" +
+        "    const files = [location.href.split('#')[0], ...Array.from(document.querySelectorAll('script[src], link[rel=stylesheet][href], link[rel=modulepreload][href]'), (e) => e.src || e.href)];" +
+        "    Promise.all(files.map((file) => fetch(file, { method: 'HEAD', credentials: 'include', cache: 'no-store' }).then((r) => {" +
+        "      const size = Number(r.headers.get('content-length'));" +
+        "      if (!r.ok || !(size > 0)) throw new Error('no size');" +
+        "      return size;" +
+        "    }))).then((sizes) => { window.__ovisOpeningSize = sizes.reduce((a, b) => a + b, 0); }, () => { window.__ovisOpeningSize = 0; });" +
+        "  }" +
+        "  return JSON.stringify({ client: root ? !root.querySelector(':scope > .boot') && !loading : null, size: window.__ovisOpeningSize ?? -1 });" +
+        "})()";
+
     /** The PC's name or address, as the cover names it, and its host:port, as the error page's reason names it. */
     private String openingLabel;
     private String openingHost;
@@ -368,9 +398,11 @@ public class MainActivity extends BridgeActivity {
                     @Override
                     public void onPageCommitVisible(WebView webView, String url) {
                         // the main frame's first page is on screen, before its pictures or scripts finish:
-                        // the PC's, a sign-in's or the error page
+                        // the PC's, a sign-in's or the error page. The PC's own page keeps the cover, with
+                        // its bar, until the client is up (watchOpening): until then it shows only its
+                        // loading spinner, for minutes on a slow link
                         pageShown = true;
-                        hideOpening();
+                        if (url == null || !PCStore.belongs(url, pc)) hideOpening();
                     }
 
                     @Override
@@ -446,6 +478,11 @@ public class MainActivity extends BridgeActivity {
         float density = getResources().getDisplayMetrics().density;
         int pad = Math.round(24 * density);
 
+        ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(1000);
+        bar.setProgressTintList(android.content.res.ColorStateList.valueOf(Color.parseColor("#f0a830")));
+        bar.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(Color.parseColor("#f0a830")));
+        bar.setVisibility(View.GONE);
         ProgressBar spinner = new ProgressBar(this);
         spinner.setIndeterminate(true);
         spinner.setIndeterminateTintList(android.content.res.ColorStateList.valueOf(Color.parseColor("#f0a830")));
@@ -487,6 +524,7 @@ public class MainActivity extends BridgeActivity {
         stack.setGravity(Gravity.CENTER);
         stack.setPadding(pad, pad, pad, pad);
         stack.addView(spinner);
+        stack.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         stack.addView(text);
         LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         gap.bottomMargin = pad / 2;
@@ -504,6 +542,8 @@ public class MainActivity extends BridgeActivity {
         openingText = text;
         openingKeep = keep;
         openingRetry = retry;
+        openingBar = bar;
+        openingPc = pc;
         openingLabel = label;
         openingHost = origin == null ? pc : Uri.parse(origin).getAuthority();
         watch = new OpeningWatch(SystemClock.elapsedRealtime(), answerDelay(), TrafficStats.getUidRxBytes(Process.myUid()));
@@ -528,7 +568,27 @@ public class MainActivity extends BridgeActivity {
             return;
         }
         showStage();
+        askPage();
         answerTimer.postDelayed(this::watchOpening, 1000);
+    }
+
+    /** Asks the PC's page, once it has answered, whether the client is up and how big its files are (PAGE_SCRIPT). */
+    private void askPage() {
+        WebView view = bridge.getWebView();
+        String url = view.getUrl();
+        if (!watch.isAnswered() || url == null || !PCStore.belongs(url, openingPc)) return;
+        view.evaluateJavascript(PAGE_SCRIPT, (value) -> {
+            if (openingView == null || value == null || "null".equals(value)) return;
+            try {
+                org.json.JSONObject page = new org.json.JSONObject(new org.json.JSONArray("[" + value + "]").getString(0));
+                long size = page.optLong("size", -1);
+                if (size >= 0) pageBytes = size;
+                // the client drew its first frame, or this page is not the client: the cover goes
+                if (page.isNull("client") ? pageShown : page.optBoolean("client")) hideOpening();
+            } catch (org.json.JSONException unreadable) {
+                // a page that answered something else: asked again in a second
+            }
+        });
     }
 
     @Override
@@ -553,11 +613,14 @@ public class MainActivity extends BridgeActivity {
         OpeningWatch.Stage stage = watch.stage(SystemClock.elapsedRealtime());
         boolean ko = korean();
         long kb = watch.bytesSoFar() / 1024;
+        long totalKb = pageBytes > 0 ? (pageBytes + 1023) / 1024 : 0;
+        int permille = watch.permille(pageBytes);
+        String amount = kb <= 0 ? "" : totalKb > 0
+            ? (ko ? String.format(Locale.getDefault(), "\n%,dKB / %,dKB 받음", Math.min(kb, totalKb), totalKb) : String.format(Locale.getDefault(), "\n%,d KB of %,d KB", Math.min(kb, totalKb), totalKb))
+            : (ko ? String.format(Locale.getDefault(), "\n%,dKB 받음", kb) : String.format(Locale.getDefault(), "\n%,d KB so far", kb));
         String text;
         if (stage == OpeningWatch.Stage.SLOW) {
-            text = ko
-                ? "연결이 느립니다. " + openingLabel + " 여는 중…" + (kb > 0 ? "\n" + kb + "KB 받음" : "")
-                : "Slow connection. Still opening " + openingLabel + "…" + (kb > 0 ? "\n" + kb + " KB so far" : "");
+            text = (ko ? "연결이 느립니다. " + openingLabel + " 여는 중…" : "Slow connection. Still opening " + openingLabel + "…") + amount;
         } else if (stage == OpeningWatch.Stage.STALLED) {
             long seconds = OpeningWatch.STALL_MS / 1000;
             text = ko
@@ -567,7 +630,12 @@ public class MainActivity extends BridgeActivity {
             text = ko ? openingLabel + " 여는 중…" : "Opening " + openingLabel + "…";
         }
         openingText.setText(text);
-        openingSpinner.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.INVISIBLE : View.VISIBLE);
+        // the spinner until the PC answers; then the bar, filling when the page's sizes are known
+        boolean bar = watch.isAnswered() && stage != OpeningWatch.Stage.STALLED;
+        openingBar.setVisibility(bar ? View.VISIBLE : View.GONE);
+        openingBar.setIndeterminate(permille < 0);
+        if (permille >= 0) openingBar.setProgress(permille);
+        openingSpinner.setVisibility(bar ? View.GONE : stage == OpeningWatch.Stage.STALLED ? View.INVISIBLE : View.VISIBLE);
         openingKeep.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.VISIBLE : View.GONE);
         openingRetry.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.VISIBLE : View.GONE);
     }

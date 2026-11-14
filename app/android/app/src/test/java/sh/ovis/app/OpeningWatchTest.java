@@ -98,6 +98,34 @@ public class OpeningWatchTest {
     }
 
     @Test
+    public void theBarFollowsTheBytesAndNeverGoesBackOrFills() {
+        OpeningWatch watch = new OpeningWatch(0, LIMIT, 1000);
+        watch.answered(500);
+        long total = 100000;
+        assertEquals(0, watch.permille(total));
+        watch.received(1000, 1000 + 25000);
+        assertEquals(250, watch.permille(total));
+        // the sizes, learned later, came out larger: the bar holds where it was
+        assertEquals(250, watch.permille(total * 2));
+        watch.received(2000, 1000 + 99000);
+        assertEquals(OpeningWatch.MAX_PERMILLE, watch.permille(total));
+        // TLS and headers take it past the files' total: still not full
+        watch.received(3000, 1000 + 130000);
+        assertEquals(OpeningWatch.MAX_PERMILLE, watch.permille(total));
+    }
+
+    @Test
+    public void theBarIsUnknownWithoutSizesOrAByteCount() {
+        OpeningWatch watch = new OpeningWatch(0, LIMIT, 0);
+        watch.received(1000, 50000);
+        assertEquals(-1, watch.permille(0));
+        assertEquals(-1, watch.permille(-1));
+        OpeningWatch uncounted = new OpeningWatch(0, LIMIT, -1);
+        uncounted.answered(1000);
+        assertEquals(-1, uncounted.permille(100000));
+    }
+
+    @Test
     public void aShorterLimitFromTheConnectScreenHolds() {
         // the connect screen's check used most of the limit: the cover gets what is left
         OpeningWatch watch = new OpeningWatch(0, PCStore.PAGE_FLOOR_MS, 0);

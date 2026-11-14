@@ -44,6 +44,15 @@ final class OpeningWatch {
     /** The longest an open waits for an answer however many bytes come. */
     static final long UNANSWERED_MAX_MS = 60000;
 
+    /**
+     * The most the bar shows, in thousandths, until the client is up: the byte count includes TLS and
+     * headers, so it can reach the files' total before the last of them has arrived, and the
+     * script still has to run.
+     */
+    static final int MAX_PERMILLE = 950;
+
+    private int shownPermille = -1;
+
     private final long startedAt;
     private final long answerLimitMs;
     private final long baseBytes;
@@ -85,6 +94,23 @@ final class OpeningWatch {
     /** Bytes received since the open started, 0 where the phone cannot count them. */
     long bytesSoFar() {
         return baseBytes < 0 ? 0 : lastBytes - baseBytes;
+    }
+
+    /**
+     * How far the page's files have come, in thousandths of `expectedBytes` (the sum of their sizes),
+     * or -1 when that is unknown (0 or less) or the phone cannot count bytes. Never less than it said
+     * before, and never more than MAX_PERMILLE.
+     */
+    int permille(long expectedBytes) {
+        if (expectedBytes <= 0 || baseBytes < 0) return -1;
+        int now = (int) Math.min(MAX_PERMILLE, bytesSoFar() * 1000 / expectedBytes);
+        shownPermille = Math.max(shownPermille, now);
+        return shownPermille;
+    }
+
+    /** Whether the PC's page has answered (answered). */
+    boolean isAnswered() {
+        return answered;
     }
 
     /** Whether bytes came but the page never answered: a connection that opened, and no response on it. */

@@ -404,7 +404,14 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   page"). A PC whose page has answered is never cut off (`OpeningWatch`, from the WebView's
   committed response and the app's received bytes, `TrafficStats`): after 5 s the cover says the
   connection is slow and how much has arrived, and after 20 s with nothing more it offers Keep
-  waiting and Try again. On a 10 KB/s link the first paint needs
+  waiting and Try again. Once the PC has answered, the cover stays until the client is up (its
+  root no longer holds index.html's loading spinner; a page with no root, such as a sign-in, lifts
+  it when shown) and shows a bar: filled by the bytes received against the sizes of the page and
+  the files it starts with (a HEAD of each from the page, so with the page's own encoding and
+  cookies), indeterminate when any of them gives no Content-Length; it never goes back and stops at
+  95 % until the client is up. The page's files are content-hashed and cached a year, so once an
+  open has finished a second one fetches only index.html (1.6 s at 10 KB/s, against 126 s for the
+  first); a new release names new files, and each PC's origin keeps its own copy. On a 10 KB/s link the first paint needs
   about 90 KB and a usable client about 1.1 MB (measured on main, 2026-11-14). The first page
   of a PC saved by its origin is checked once more (`PCStore.check`, with the WebView's cookies):
   one that answers but not as Ovis is not kept and gives way to `error.html`, which has Change PC,
