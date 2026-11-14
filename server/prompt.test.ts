@@ -660,6 +660,31 @@ Ready to submit your answers?
 `);
     expect(bash).toMatchObject({ kind: "approval", title: "Bash command", question: "Do you want to proceed?", body: "rm -rf junk\nDelete the junk directory" });
     expect(labels(bash)).toEqual(["Yes", "Yes, and always allow access to /tmp/prompt-lab/junk from this project", "Yes, and switch to auto mode · auto mode handles these prompts for you", "No"]);
+    // a safety-check hold hides the numbers and opens on No: the card still offers both
+    const held = parseInteractivePrompt("claude", `
+● claude.ai Claude Docs - batch (MCP)(container: {"kind":"project"})
+────────────────────────────────────────
+ Tool use
+   claude.ai Claude Docs - batch (MCP)
+ A save or delete of a project doc. It needs a person's approval.
+ Claude Code's automatic safety check flagged this action, so the action hasn't run.
+ Do you want to proceed?
+   Yes
+ ❯ No
+ Esc to cancel
+`);
+    expect(held).toMatchObject({ kind: "approval", title: "Tool use", question: "Do you want to proceed?" });
+    expect(labels(held)).toEqual(["Yes", "No"]);
+    expect(answerKeys(held!, { option_index: 0 })).toEqual([{ keys: ["up"] }, { keys: ["enter"] }]);
+    // other unnumbered lines under the question are no such menu
+    expect(parseInteractivePrompt("claude", `
+────────────────────────────────────────
+ Tool use
+ Do you want to proceed?
+   Something else
+ ❯ No
+ Esc to cancel
+`)).toBeNull();
     // a narrow pane wraps a long option: its label still reads whole
     const wrapped = parseInteractivePrompt("claude", `
 ────────────────────────────────────────

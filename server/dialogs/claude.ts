@@ -2,7 +2,7 @@ import type { DialogReader } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
 import { type InteractivePromptAnswer, type InteractivePromptStep } from "../../shared/protocol.ts";
 import { piActiveTab } from "./pi-ask-tabs.ts";
-import { ANSI_RE, onePerPass, type CardWords, KEY, NUMBERED_OPTION_RE, type ParsedPrompt, SELECTED_RE, SOLID_RULE_RE, cleanLine, englishOf, findLastIndex, finishPrompt, own, isDivider, joinWrapped, keySteps, listNames, listRows, menuRows, navigationKeys, nearestQuestion, normalizeText, parseNumberedRows, screenWidth, sequentialRows, sliderKeys, wrapped } from "./shared.ts";
+import { ANSI_RE, onePerPass, type CardWords, KEY, NUMBERED_OPTION_RE, type NumberedRow, type ParsedPrompt, SELECTED_RE, SOLID_RULE_RE, cleanLine, englishOf, findLastIndex, finishPrompt, own, isDivider, joinWrapped, keySteps, listNames, listRows, menuRows, navigationKeys, nearestQuestion, normalizeText, parseNumberedRows, screenWidth, sequentialRows, sliderKeys, wrapped } from "./shared.ts";
 
 // several questions navigate between tabs: "Tab/Arrow keys to navigate"
 export const CLAUDE_ASK_HINT_RE = /enter to select.*(?:↑\/↓|tab\/arrow keys) to navigate.*esc to cancel/i;
@@ -589,7 +589,9 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
   if (questionIndex < 0) return null;
   // options end at the key hint: a line under the last one is then only its wrapped label
   const hintIndex = findLastIndex(lines, (_, index) => /esc to cancel/i.test(wrapped(lines, index)));
-  const rows = parseNumberedRows(lines, questionIndex + 1, hintIndex > questionIndex ? hintIndex : lines.length);
+  const rowsEnd = hintIndex > questionIndex ? hintIndex : lines.length;
+  const numbered = parseNumberedRows(lines, questionIndex + 1, rowsEnd);
+  const rows = numbered.length > 0 ? numbered : heldApprovalRows(lines, questionIndex + 1, rowsEnd);
   if (!sequentialRows(rows) || rows.length < 2 || rows.filter((row) => row.selected).length !== 1) return null;
   // a hint of its own under the last row and over the last hint, whole or wrapped by a narrow
   // pane: the panel was answered, and what ends the screen now is another prompt ("Password:"
@@ -642,6 +644,31 @@ function parseClaudeApproval(screen: string): ParsedPrompt | null {
     responder: "claude-approval", menuLabels: rows.map((row) => row.label), selectedIndex: rows.findIndex((row) => row.selected),
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
   });
+}
+
+/**
+ * An approval Claude Code's safety check held (`defaultToNo`: "Claude Code's automatic safety
+ * check flagged this action, so the action hasn't run") hides its numbers so that no single
+ * key approves it, and opens on No (2.1.323):
+ *
+ *   Do you want to proceed?
+ *     Yes
+ *   ❯ No
+ *
+ *   Esc to cancel
+ *
+ * Only Yes/No rows count: any other line between the question and the hint is not such a menu.
+ */
+function heldApprovalRows(lines: string[], start: number, end: number): NumberedRow[] {
+  const rows: NumberedRow[] = [];
+  for (let index = start; index < end; index += 1) {
+    const text = cleanLine(lines[index]!);
+    if (!text || isDivider(text)) continue;
+    const label = text.replace(SELECTED_RE, "").trim();
+    if (!/^(?:Yes|No)\b/i.test(label)) return [];
+    rows.push({ number: rows.length + 1, label, selected: SELECTED_RE.test(text), checked: false, lineIndex: index });
+  }
+  return rows.length >= 2 && rows.length <= 4 ? rows : [];
 }
 
 /**
