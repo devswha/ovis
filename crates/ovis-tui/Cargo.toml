@@ -1,0 +1,31 @@
+# The client library builds and tests without hc-tui; upstream/ keeps its own workspace.
+[workspace]
+members = ["client"]
+exclude = ["upstream"]
+
+[package]
+name = "ovis-tui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Terminal client for Ovis on herdr-core: the Ovis inbox first, hc-tui's sidebar, tabs and splits for the terminals"
+
+[[bin]]
+name = "ovis-tui"
+path = "src/main.rs"
+
+# hc-tui is not copied into this repository. prepare.sh fetches the commit UPSTREAM pins into
+# ./upstream and applies ./patches; these paths exist after it has run.
+[dependencies]
+hc-proto = { path = "upstream/crates/hc-proto" }
+hc-tui = { path = "upstream/crates/hc-tui" }
+hc-vt = { path = "upstream/crates/hc-vt" }
+ovis-tui-client = { path = "client" }
+ratatui = { version = "0.30.2", default-features = false, features = ["std", "crossterm"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
