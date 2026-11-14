@@ -8,6 +8,9 @@ import { updateStateDir } from "./update-state.ts";
 import { spawnSync } from "node:child_process";
 import { symlinkSync } from "node:fs";
 import { HERDR_SOCKET_PATH } from "../shared/protocol.ts";
+import { hostPlatform } from "../scripts/server-install.ts";
+import { DIST_ARCHIVE, generateKeyPair, MANIFEST, PTY_ASSETS, ptyFile, RELEASE_PUBLIC_KEY, releaseFile, SERVER_PLATFORMS, signManifest, writeManifest } from "../scripts/server-manifest.ts";
+import { createHash } from "node:crypto";
 import type { UpdateCommand } from "../shared/update.ts";
 
 let directory: string, upstream: string, root: string, stateDir: string;
@@ -83,7 +86,7 @@ function bridgePort(): number {
  * they run with it as $HOME and keep their state in the default dir under it, as an install not
  * told OVIS_STATE_DIR does.
  */
-async function managedFixture(supervisor?: string, slowHealth = false, home?: string) {
+async function managedFixture(supervisor?: string, slowHealth = false, home?: string, own = tagSupervisor()) {
   updater.stop();
   mkdirSync(join(upstream, "server"), { recursive: true });
   // The bridge is this repository's server code started from a file in the fixture's tree. A real bridge's code is in
@@ -115,8 +118,11 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
   // what the launcher, the supervisor and the bridge print: a failed test prints it
   const log = join(directory, "managed.log");
   // its own config home: the launcher links the default state dirs it finds there
+  // releases of the compiled server come from a folder of the test's own: none until a test publishes one
+  mkdirSync(join(directory, "releases"), { recursive: true });
   const env: Record<string, string | undefined> = { ...process.env, PORT: String(port), HOST: "127.0.0.1", OVIS_STATE_DIR: stateDir,
-    XDG_CONFIG_HOME: join(directory, "config"), OVIS_TOKEN: "test-managed-token", OVIS_AUTO_UPDATE: "0", SUPERVISOR_MARKER: join(directory, "marker") };
+    XDG_CONFIG_HOME: join(directory, "config"), OVIS_TOKEN: "test-managed-token", OVIS_AUTO_UPDATE: "0", SUPERVISOR_MARKER: join(directory, "marker"),
+    OVIS_RELEASES_URL: `file://${join(directory, "releases")}` };
   if (home !== undefined) {
     for (const name of ["OVIS_STATE_DIR", "XDG_CONFIG_HOME"]) delete env[name];
     // herdr's socket stays the test session's (scripts/test-herdr.ts sets it): it is looked for under $HOME otherwise
@@ -128,7 +134,7 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
     const output = openSync(log, "a");
     try {
       return Bun.spawn([process.execPath, "--eval",
-        `import {runManaged} from ${JSON.stringify(join(import.meta.dir, "managed.ts"))}; await runManaged(${JSON.stringify(root)});`], {
+        `import {runManaged} from ${JSON.stringify(join(import.meta.dir, "managed.ts"))}; await runManaged(${JSON.stringify(root)}, ${JSON.stringify(own)});`], {
         env, stdout: output, stderr: output,
       });
     } finally {
@@ -153,7 +159,7 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
       : { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify({ expected_revision: offered }) });
     expect(response.status).toBe(202);
   };
-  const health = async () => (await (await fetch(`${origin}/api/health`)).json()) as { web_ui: { revision: string; boot_id: string } };
+  const health = async () => (await (await fetch(`${origin}/api/health`)).json()) as { web_ui: { revision: string; boot_id: string; server_id?: string } };
   /** Print the update status and the managed processes' output when the test fails, then fail as it did. */
   const explain = async (error: unknown): Promise<never> => {
     console.error(`managed update status: ${JSON.stringify(await readStatus())}`);
@@ -161,6 +167,15 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
     throw error;
   };
   return { launch, readStatus, until, request, health, origin, explain };
+}
+/**
+ * The checkout's own supervisor as the launcher runs it in these tests: the updater from before the bridge release,
+ * which follows `v*` tags and builds them, as every install before the crossing still does.
+ */
+function tagSupervisor(): string {
+  const file = join(directory, "tag-supervisor.ts");
+  writeFileSync(file, `await (await import(${JSON.stringify(join(import.meta.dir, "supervisor.ts"))})).runSupervisor(process.env.OVIS_SOURCE_ROOT, { fromTags: true });\n`);
+  return file;
 }
 /** A release's own supervisor: records that it ran, then runs the real one (or fails on purpose). */
 const releaseSupervisor = (broken = false) => broken ? "process.exit(3);\n" : `
@@ -173,7 +188,7 @@ const releaseSupervisor = (broken = false) => broken ? "process.exit(3);\n" : `
  * The real supervisor and the files it imports, copied into the fixture's tree: an installed release
  * then runs it from its own folder and finds its state from there, as a real one does.
  */
-function copySupervisor(into: string) {
+function copySupervisor(into: string, publicKey?: string) {
   const transpiler = new Bun.Transpiler({ loader: "ts" });
   const repo = resolve(import.meta.dir, "..");
   const files = [join(import.meta.dir, "supervisor.ts")];
@@ -181,7 +196,10 @@ function copySupervisor(into: string) {
     const source = readFileSync(file, "utf8");
     const copy = join(into, relative(repo, file));
     mkdirSync(dirname(copy), { recursive: true });
-    writeFileSync(copy, source);
+    // a copy that trusts the test's key in place of the committed one, as a release signed with it would need
+    const line = `export const RELEASE_PUBLIC_KEY = "${RELEASE_PUBLIC_KEY}";`;
+    if (publicKey !== undefined && source.includes(line)) writeFileSync(copy, source.replace(line, `export const RELEASE_PUBLIC_KEY = "${publicKey}";`));
+    else writeFileSync(copy, source);
     // what it loads as it starts, not the entries server/entries.ts names by import(): those are the whole server
     for (const { path, kind } of transpiler.scanImports(source)) {
       if (kind !== "import-statement") continue;
@@ -925,6 +943,66 @@ describe("managed source updates with real Git repositories and builds", () => {
     }
   }, 60_000);
 
+  it("keeps an installed release's record when Ovis is stopped while that release still starts", async () => {
+    // runSupervisor in a stand-in child, as above: the installed release's bridge never passes its health check and
+    // takes 1.5 s to stop, as a busy one does; the supervisor is stopped while its first start still waits for it. A stop
+    // is no failed release: current.json stays, and the next start runs that release again
+    const root = mkdtempSync(join(directory, "stop-root-"));
+    const appState = mkdtempSync(join(directory, "stop-state-"));
+    // a port nothing listens on: Bun.spawn and fetch are stand-ins, so nothing binds it, but it keys the update state
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    const port = listener.port;
+    listener.stop(true);
+    const updates = updateStateDir(root, port, appState);
+    mkdirSync(updates, { recursive: true });
+    const release = join(updates, "release-installed");
+    mkdirSync(release);
+    const record = JSON.stringify({ directory: release, revision: "1".repeat(40), source_revision: "0".repeat(40) });
+    writeFileSync(join(updates, "current.json"), record);
+    const script = join(appState, "stop-stand-in.ts");
+    writeFileSync(script, `
+      import { mock } from "bun:test";
+      const updater = ${JSON.stringify(join(import.meta.dir, "updater.ts"))};
+      const real = await import(updater);
+      class Saved extends real.Updater {
+        override async initialize() { return JSON.parse(${JSON.stringify(record)}); }
+        override start() {}
+      }
+      mock.module(updater, () => ({ ...real, Updater: Saved }));
+      Bun.spawn = (() => {
+        let done = (_code: number) => {};
+        const exited = new Promise<number>((resolve) => { done = resolve; });
+        const child = { exitCode: null as number | null, exited, send() {},
+          kill() { setTimeout(() => { child.exitCode = 0; done(0); }, 1500); } };
+        console.log("spawned");
+        return child;
+      }) as unknown as typeof Bun.spawn;
+      globalThis.fetch = (async () => { throw new Error("not up yet"); }) as unknown as typeof fetch;
+      await (await import(${JSON.stringify(join(import.meta.dir, "supervisor.ts"))})).runSupervisor(${JSON.stringify(root)});
+    `);
+    const child = Bun.spawn([process.execPath, script], { env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", OVIS_STATE_DIR: appState,
+      XDG_CONFIG_HOME: join(appState, "config"), HERDR_SOCKET: join(appState, "no-herdr.sock"), OVIS_AUTO_UPDATE: "0" }, stdout: "pipe", stderr: "pipe" });
+    const errors = new Response(child.stderr).text();
+    const timer = setTimeout(() => child.kill("SIGKILL"), 15_000); // a wedged stand-in must not hang the run
+    try {
+      // the stand-in says when the release's bridge is started, and is stopped while that start still waits
+      const reader = child.stdout.getReader();
+      let said = "";
+      while (!said.includes("spawned")) {
+        const { done, value } = await reader.read();
+        if (done) throw new Error(`the release's bridge was never started:\n${await errors}`);
+        said += new TextDecoder().decode(value);
+      }
+      reader.releaseLock();
+      child.kill("SIGTERM");
+      await child.exited;
+      expect(existsSync(join(updates, "current.json")), await errors).toBe(true);
+      expect(readFileSync(join(updates, "current.json"), "utf8")).toBe(record);
+    } finally {
+      clearTimeout(timer);
+    }
+  }, 20_000);
+
   it("holds the timer off after a user's own failed unshallow fetch too", async () => {
     // a user's Check skips the backoff, but its failure still starts one: the timer that comes
     // next does not fetch the history again (#1252)
@@ -1420,6 +1498,153 @@ describe("managed source updates with real Git repositories and builds", () => {
       await handle.exited;
     }
   }, 30_000);
+
+  /**
+   * A release of the compiled server for the crossing tests, signed with `key`: its binary for this platform is a
+   * stand-in that runs the supervisor of `source` (this repository's, copied to trust the key) and the fixture's bridge,
+   * as the compiled server runs them, and notes each entry it runs in `ran`. `spoil` corrupts the binary after signing.
+   */
+  function binaryRelease(version: string, key: { privateKeyPem: string }, source: string, ran: string, spoil = false): string {
+    const bridge = join(directory, "binary-bridge.ts");
+    writeFileSync(bridge, `
+      const { createServer } = await import(${JSON.stringify(join(import.meta.dir, "index.ts"))});
+      const { connectUpdater } = await import(${JSON.stringify(join(import.meta.dir, "update-api.ts"))});
+      const server = createServer({ updates: connectUpdater() });
+      process.on('SIGTERM', () => { server.stop(); setTimeout(() => process.exit(0), 50); });
+      process.on('disconnect', () => { server.stop(); process.exit(0); });
+    `);
+    const standIn = `#!/bin/sh\necho "$1" >> "${ran}"\ncase "$1" in\n  supervisor) exec "${process.execPath}" "${join(source, "server", "supervisor.ts")}" ;;\n  serve) exec "${process.execPath}" "${bridge}" ;;\nesac\nexit 2\n`;
+    const dir = join(directory, "releases", `ovis-${version}`);
+    mkdirSync(dir, { recursive: true });
+    for (const platform of SERVER_PLATFORMS) writeFileSync(join(dir, releaseFile(platform)), platform === hostPlatform() ? standIn : `other ${platform}\n`);
+    for (const build of PTY_ASSETS) writeFileSync(join(dir, ptyFile(build)), `pty host ${build}\n`);
+    const client = join(directory, `client-${version}`);
+    mkdirSync(client, { recursive: true });
+    writeFileSync(join(client, "index.html"), `<!doctype html><title>${version}</title>`);
+    expect(spawnSync("tar", ["-czf", join(dir, DIST_ARCHIVE), "-C", client, "."]).status).toBe(0);
+    writeManifest(dir, { version, sources: { server: "a".repeat(40), shared: "b".repeat(40) } });
+    signManifest(dir, key.privateKeyPem);
+    if (spoil) writeFileSync(join(dir, releaseFile(hostPlatform()!)), standIn.replace("exit 2", "exit 3"));
+    return createHash("sha256").update(readFileSync(join(dir, MANIFEST))).digest("hex");
+  }
+  /** The fixture at `version`: its package.json names it, as a release's does. */
+  const atVersion = (version: string) => writeFileSync(join(upstream, "package.json"), JSON.stringify({ name: "updater-fixture", version, scripts: {
+    typecheck: "bun --eval 'process.exit(0)'", build: "bun build-fixture.ts",
+  } }));
+  /** The files of the app's state a crossing must leave byte for byte: the paired devices and the relay identity (server_id). */
+  const kept = () => Object.fromEntries(["devices.json", join("relay", "identity.json")].filter((file) => existsSync(join(stateDir, file)))
+    .map((file) => [file, createHash("sha256").update(readFileSync(join(stateDir, file))).digest("hex")]));
+  const crossing = !liveHerdr || process.platform === "win32" || !hostPlatform();
+
+  it.skipIf(crossing)("crosses from the source checkout to the binary release through POST /api/updates/install", async () => {
+    const key = generateKeyPair();
+    const source = join(directory, "keyed");
+    copySupervisor(source, key.publicKey);
+    atVersion("0.1.0");
+    // the checkout runs the bridge release's updater: the one that reads releases
+    const { launch, readStatus, until, request, health, explain } = await managedFixture(undefined, false, undefined, join(source, "server", "supervisor.ts"));
+    const ran = join(directory, "binary-ran");
+    const handle = launch();
+    try {
+      await until(async () => (await readStatus())?.managed === true && (await readStatus())?.current_version === "0.1.0");
+      const before = { state: kept(), serverId: (await health()).web_ui.server_id, checkout: spawnSync("git", ["-C", root, "status", "--porcelain"]).stdout.toString() };
+      const target = binaryRelease("0.2.0", key, source, ran);
+      await request("check");
+      await until(async () => (await readStatus())?.available === true);
+      expect((await readStatus())?.latest_version).toBe("0.2.0");
+      await request("install");
+      await until(async () => { const s = await readStatus(); return s?.current_revision === target && s.phase === "idle"; });
+      expect((await readStatus())).toMatchObject({ current_version: "0.2.0", error: null });
+      expect((await health()).web_ui.revision).toBe(target);
+      // the bridge ran from the binary, and so does the supervisor the launcher handed over to
+      expect(readFileSync(ran, "utf8").split("\n").filter(Boolean)).toEqual(["serve", "supervisor", "serve"]);
+      expect(kept()).toEqual(before.state);
+      expect((await health()).web_ui.server_id).toBe(before.serverId);
+      expect(spawnSync("git", ["-C", root, "status", "--porcelain"]).stdout.toString()).toBe(before.checkout);
+      // a restart of the launcher from the old checkout serves from the binary again
+      handle.kill("SIGTERM");
+      await handle.exited;
+      const again = launch();
+      try {
+        await until(async () => { const s = await readStatus(); return s?.current_revision === target && s.phase === "idle"; });
+        expect((await health()).web_ui.revision).toBe(target);
+      } finally {
+        again.kill("SIGTERM");
+        await again.exited;
+      }
+    } catch (error) {
+      await explain(error);
+    } finally {
+      handle.kill("SIGTERM");
+      await handle.exited;
+    }
+  }, 60_000);
+
+  it.skipIf(crossing)("refuses a binary release that fails its checksum, and version N keeps running", async () => {
+    const key = generateKeyPair();
+    const source = join(directory, "keyed");
+    copySupervisor(source, key.publicKey);
+    atVersion("0.1.0");
+    const { launch, readStatus, until, request, health, explain } = await managedFixture(undefined, false, undefined, join(source, "server", "supervisor.ts"));
+    const handle = launch();
+    try {
+      await until(async () => (await readStatus())?.managed === true && (await readStatus())?.current_version === "0.1.0");
+      const running = (await readStatus())!.current_revision!;
+      const files = () => spawnSync("sh", ["-c", `find "${root}" -path "${root}/.git" -prune -o -type f -print | sort | xargs sha256sum`]).stdout.toString();
+      const before = { checkout: files(), state: kept() };
+      binaryRelease("0.2.0", key, source, join(directory, "binary-ran"), true);
+      await request("check");
+      await until(async () => (await readStatus())?.available === true);
+      await request("install");
+      await until(async () => (await readStatus())?.phase === "error");
+      expect((await readStatus())?.error).toContain("does not match its SHA-256 in ovis-server.json");
+      expect((await readStatus())).toMatchObject({ current_revision: running, current_version: "0.1.0" });
+      expect((await health()).web_ui.revision).toBe(running);
+      expect(existsSync(join(directory, "binary-ran"))).toBe(false);
+      expect(files()).toBe(before.checkout);
+      expect(kept()).toEqual(before.state);
+    } catch (error) {
+      await explain(error);
+    } finally {
+      handle.kill("SIGTERM");
+      await handle.exited;
+    }
+  }, 60_000);
+
+  it.skipIf(crossing)("reaches the binary in two ordinary updates from the release before the bridge", async () => {
+    const key = generateKeyPair();
+    atVersion("0.1.0");
+    // the release before the bridge runs the updater that follows tags
+    const { launch, readStatus, until, request, health, explain } = await managedFixture();
+    const handle = launch();
+    try {
+      await until(async () => (await readStatus())?.managed === true && (await readStatus())?.current_version === "0.1.0");
+      // the bridge: a v* tag of the full sources, whose supervisor is the updater that reads releases
+      copySupervisor(upstream, key.publicKey);
+      atVersion("0.2.0");
+      const bridge = await release("bridge", "v0.2.0");
+      await request("check");
+      await until(async () => (await readStatus())?.available === true);
+      await request("install");
+      await until(async () => { const s = await readStatus(); return s?.current_revision === bridge && s.phase === "idle"; });
+      // and the release after it is the compiled server's, under its own name: no tag
+      const source = join(directory, "keyed");
+      copySupervisor(source, key.publicKey);
+      const target = binaryRelease("0.3.0", key, source, join(directory, "binary-ran"));
+      await request("check");
+      await until(async () => (await readStatus())?.available === true);
+      expect((await readStatus())?.latest_version).toBe("0.3.0");
+      await request("install");
+      await until(async () => { const s = await readStatus(); return s?.current_revision === target && s.phase === "idle"; });
+      expect((await readStatus())?.current_version).toBe("0.3.0");
+      expect((await health()).web_ui.revision).toBe(target);
+    } catch (error) {
+      await explain(error);
+    } finally {
+      handle.kill("SIGTERM");
+      await handle.exited;
+    }
+  }, 90_000);
 });
 
 describe("a command that times out or is cancelled", () => {

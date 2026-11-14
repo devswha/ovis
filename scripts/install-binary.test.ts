@@ -526,6 +526,37 @@ exec "${Bun.which("cat")}" "$@"`);
     expect(snapshot(ovis)).toEqual(before);
   });
 
+  it("installs from source only when the manifest is not there (404), and fails on any other HTTP error", () => {
+    const { run, standIn, home } = pc();
+    // an https mirror whose manifest answers with the status the test names; nothing else is fetched before it
+    for (const [status, source] of [["404", true], ["403", false], ["410", false], ["500", false]] as const) {
+      standIn("curl", `for arg; do case "$arg" in *ovis-server.json) printf '%s' "${status}"; exit 0 ;; esac; done\nexit 99`);
+      const result = run('pick_install; echo "PICKED binary=$binary"', { OVIS_RELEASES_URL: "https://releases.example/ovis", OVIS_REF: "v1.2.3", PATH: `${join(home, "..", "stand-ins")}:/usr/bin:/bin` });
+      if (source) {
+        expect(result.out, status).toContain("ships no compiled server, so it is installed from source");
+        expect(result.out, status).toContain("PICKED binary=0");
+      } else {
+        expect(result.code, status).not.toBe(0);
+        expect(result.out, status).toContain("could not reach https://releases.example/ovis/v1.2.3");
+        expect(result.out, status).not.toContain("PICKED");
+      }
+    }
+  });
+
+  it("breaks a lock whose pid now runs a process started at another time than its holder", () => {
+    const { releases, key, run, ovis } = pc({ lockWait: 3 });
+    release(releases, "1.2.3", key.privateKeyPem);
+    const lock = join(ovis, ".install.lock");
+    mkdirSync(lock, { recursive: true });
+    // a live pid (this test's own), with the start time of a holder long gone
+    writeFileSync(join(lock, "pid"), `${process.pid}\n`);
+    writeFileSync(join(lock, "started"), "Thu Jan 1 00:00:00 1970\n");
+    const result = run("install_binary 1.2.3");
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toContain("installed Ovis 1.2.3");
+    expect(existsSync(lock)).toBe(false);
+  });
+
   it("keeps a binary install as it is when the latest release cannot be checked", () => {
     const { releases, key, run, ovis } = pc();
     release(releases, "1.2.3", key.privateKeyPem);

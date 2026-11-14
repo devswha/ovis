@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DESKTOP_APP_UPDATES, noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type UpdateRequest, type UpdateStatus, INSTALL_ID } from "../shared/update.ts";
-import { connectUpdater, handleUpdateRequest, servedRevision, type UpdateService } from "./update-api.ts";
+import { connectUpdater, handleUpdateRequest, servedRevision, type UpdateService, oldLauncherReason } from "./update-api.ts";
 
 const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -183,6 +183,71 @@ describe("a manual install", () => {
     expect(updates.status().revision_bound_install).toBeUndefined();
     expect(await answer(handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", updates))).toEqual({ status: 409, code: "update_restart_required" });
     expect(sent).toEqual([{ type: "update-status-request" }]);
+  });
+
+  it("gives the 0.2.0 commands with the folder as one literal word, whatever the folder's name holds", () => {
+    // pasted into a shell with a stand-in git: git gets exactly that folder, and nothing in its name runs
+    const scratch = mkdtempSync(join(tmpdir(), "ovis-020-paste-"));
+    try {
+      const bin = join(scratch, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "git"), `#!/bin/sh\nfor arg; do printf '%s\\n' "$arg"; done > "${join(scratch, "args")}"\n`, { mode: 0o755 });
+      const pasted = (checkout: string | null) => {
+        const command = /run: (git -C .+? pull --ff-only origin main) \(or,/.exec(oldLauncherReason(checkout))?.[1];
+        expect(command).toBeDefined();
+        const run = Bun.spawnSync(["sh", "-c", command!], { cwd: scratch, env: { PATH: `${bin}:/usr/bin:/bin` }, stderr: "pipe" });
+        expect(run.exitCode, run.stderr.toString()).toBe(0);
+        return readFileSync(join(scratch, "args"), "utf8").split("\n").slice(0, -1);
+      };
+      const folder = join(scratch, `a'b"c$(touch ran-1)d\`touch ran-2\`e`);
+      expect(pasted(folder)).toEqual(["-C", folder, "pull", "--ff-only", "origin", "main"]);
+      // the placeholder where the folder cannot be told, pasted unchanged: one word for git, no file written or read
+      const before = readdirSync(scratch).sort();
+      const [, placeholder, ...rest] = pasted(null);
+      expect(rest).toEqual(["pull", "--ff-only", "origin", "main"]);
+      expect(placeholder).not.toMatch(/[\s<>]/);
+      expect(readdirSync(scratch).sort()).toEqual(before);
+      expect(readdirSync(scratch).filter((name) => name.startsWith("ran-"))).toEqual([]);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it("tells a bridge the launcher of 0.2.0 started to update its checkout, the only way on from there", async () => {
+    // that launcher is its own supervisor and starts the bridge with no source root, in a release it cloned from the
+    // checkout: git's reflog there names the checkout, which the commands to run then name
+    let deliver: (message: unknown) => void = () => {};
+    const connect = (env: Record<string, string | undefined>, cwd = process.cwd()) =>
+      connectUpdater({ send() {}, onMessage: (listener) => { deliver = listener; } }, env, cwd);
+    const { revision_bound_install: _, ...older } = offer();
+    const release = mkdtempSync(join(tmpdir(), "ovis-020-release-"));
+    mkdirSync(join(release, ".git", "logs"), { recursive: true });
+    writeFileSync(join(release, ".git", "logs", "HEAD"), `${"0".repeat(40)} ${"1".repeat(40)} t <t@t> 1700000000 +0000\tclone: from /home/me/herdr-web-ui\n`);
+    try {
+      const under020 = connect({ OVIS_MANAGED: "1", HERDR_WEB_MANAGED: "1" }, release);
+      deliver({ type: "update-status", status: { ...older, available: false } });
+      expect(under020.status()).toMatchObject({ available: false, blocked_reason: oldLauncherReason("/home/me/herdr-web-ui") });
+      expect(under020.status().blocked_reason).toContain("'/home/me/herdr-web-ui'");
+      const refused = await handleUpdateRequest(install(JSON.stringify({ expected_revision: offered })), "/api/updates/install", under020);
+      expect(refused.status).toBe(409);
+      expect(((await refused.json()) as { error: { message: string } }).error.message).toBe(oldLauncherReason("/home/me/herdr-web-ui"));
+      // a release whose clone cannot be told gives the same commands, with the folder left for the person to fill in
+      const unknown = connect({ OVIS_MANAGED: "1" }, mkdtempSync(join(tmpdir(), "ovis-020-bare-")));
+      deliver({ type: "update-status", status: { ...older, available: false } });
+      expect(unknown.status().blocked_reason).toBe(oldLauncherReason(null));
+    } finally {
+      rmSync(release, { recursive: true, force: true });
+    }
+    // a later launcher's old supervisor (a source root handed down) keeps the restart advice, which helps there
+    for (const env of [{ OVIS_MANAGED: "1", OVIS_SOURCE_ROOT: "/checkout" }, { OVIS_MANAGED: "1", HERDR_WEB_SOURCE_ROOT: "/checkout" }]) {
+      const later = connect(env);
+      deliver({ type: "update-status", status: older });
+      expect(later.status().blocked_reason).toBe(older.blocked_reason);
+    }
+    // a supervisor that installs the revision asked for is not the launcher of 0.2.0's, whatever the environment says
+    const current = connect({ OVIS_MANAGED: "1" });
+    deliver({ type: "update-status", status: offer() });
+    expect(current.status().blocked_reason).toBe(offer().blocked_reason);
   });
 });
 

@@ -5,9 +5,16 @@ import { basename, dirname, join, resolve } from "node:path";
 import { CHECKOUT_CHANGED_REASON, noInstalledNotes, readUpdateChannel, type UpdateChannel, noUpdateNotes, unmanagedUpdateStatus, type InstalledNotes, type UpdateCommand, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
 import { compareVersions, releaseNotes, releaseSummaries, SUMMARIES_FILE } from "./release-notes.ts";
 import { releaseIn } from "./update-state.ts";
+import { buildCommit, newerVersion, offeredRelease, releaseNameVersion, stagedRelease, stageBinaryRelease, type BinaryOffer } from "./update-artifact.ts";
+import type { ServerPlatform } from "../scripts/server-manifest.ts";
 
 export interface Release {
+  /** for a binary release (`distribution: "binary"`) the SHA-256 of its signed manifest, else the commit it was built from */
   directory: string; revision: string; source_revision: string;
+  /** a release of the compiled server (server/update-artifact.ts), and its version; absent for a build of the sources */
+  distribution?: "binary"; version?: string;
+  /** a binary release's client build commit (its dist/build.json): the revision reported to pages, which compare it with their own */
+  build_revision?: string;
   /**
    * The version this release replaced and when, written by the supervisor that installed it.
    * Absent from a release installed by a supervisor older than these fields.
@@ -119,6 +126,17 @@ function packageVersion(directory: string): string | null {
     return typeof version === "string" ? version : null;
   } catch { return null; }
 }
+/** The version a release runs: a binary release's own record, a build's package.json. */
+const releaseVersion = (release: Release): string | null => release.distribution === "binary" ? release.version ?? null : packageVersion(release.directory);
+/**
+ * The revision a release is told by (status current_revision, OVIS_REVISION, its installed notes): the commit its client
+ * was built from, which a page compares with its own build. For a binary release that is its build commit when it has
+ * one; its id (the manifest's SHA-256) stays what offers, installs and current.json name.
+ */
+export const reportedRevision = (release: Release): string => release.build_revision ?? release.revision;
+
+/** Shown by a compiled supervisor that does not run from a binary release installed for this checkout. */
+export const COMPILED_RELEASE_REASON = "This compiled server does not run from an update installed for this source checkout. Restart Ovis from its source checkout (the herdr plugin's Stop, then Start, or bun run start there) to update.";
 
 /** How long a timed-out or cancelled command has to end itself before it is killed outright. */
 const KILL_GRACE_MS = 2_000;
@@ -240,6 +258,8 @@ export class Updater {
   private initialTimer?: ReturnType<typeof setTimeout>;
   private sourceRevision = "";
   private failedRevision: string | null = null;
+  /** the binary release the last check offered, as its manifest was checked */
+  private offer: BinaryOffer | null = null;
   /** When a failed unshallow fetch may be tried again (#1252); a time already past, the initial
    * 0 included, holds nothing off. */
   private unshallowRetryAt = 0;
@@ -254,6 +274,13 @@ export class Updater {
     pluginBinary?: { checkout: string; version: string };
     /** a compiled server install.sh or install.ps1 installed: running the installer again updates it (todo 7: in-app) */
     installedBinary?: boolean;
+    /**
+     * Where the releases of the compiled server come from (server/update-artifact.ts): given, the updater offers and
+     * installs those, never a tag; `base` is OVIS_RELEASES_URL (GitHub's when unset), `publicKey` the committed key.
+     */
+    releases?: { base: string | undefined; publicKey: string; platform: ServerPlatform | null; fetchFile?: typeof fetch; ptyRuns?: (path: string) => boolean };
+    /** this updater runs inside the compiled server, from the binary release `ownRelease` (its bin/ is the server's root) */
+    compiled?: { ownRelease: string };
     /** Runs once a release is installed and active; the supervisor hands itself over here. */
     afterInstall?: (release: Release) => void | Promise<void>;
     /** A standing problem to report in every status (a supervisor that fell back to its predecessor). */
@@ -292,6 +319,7 @@ export class Updater {
       this.patch({ managed: false, blocked_reason: INSTALLED_BINARY_REASON });
       return this.release;
     }
+    if (this.options.compiled) return this.initializeCompiled(this.options.compiled.ownRelease);
     try {
       this.sourceRevision = await this.git("rev-parse", "HEAD");
       if (!SHA.test(this.sourceRevision)) throw new Error("Invalid source revision");
@@ -307,14 +335,61 @@ export class Updater {
           // Only directories created by this updater may be resumed, under this state dir's name for them.
           const directory = saved.source_revision === this.sourceRevision && SHA.test(saved.revision)
             ? releaseIn(this.options.stateDir, saved.directory) : null;
-          if (directory !== null && await runCommand(directory, ["git", "rev-parse", "HEAD"]) === saved.revision) this.release = { ...saved, directory };
+          if (directory !== null && saved.distribution === "binary") this.release = this.binaryRelease(saved, directory) ?? this.release;
+          else if (directory !== null && await runCommand(directory, ["git", "rev-parse", "HEAD"]) === saved.revision) this.release = { ...saved, directory };
         } catch { /* missing/stale release: use the source checkout */ }
       }
       this.installed = this.brought(this.release);
-      this.patch({ current_revision: this.release.revision, current_version: packageVersion(this.release.directory), blocked_reason: reason });
+      this.patch({ current_revision: reportedRevision(this.release), current_version: releaseVersion(this.release), blocked_reason: reason });
     } catch {
       this.patch({ managed: false, blocked_reason: "Updates require a Git checkout on the main branch." });
     }
+    return this.release;
+  }
+
+  /** `saved` (current.json's record) of a binary release in `directory`, as it still checks; null when it does not. */
+  private binaryRelease(saved: Release, directory: string): Release | null {
+    const { releases } = this.options;
+    if (!releases?.platform || typeof saved.version !== "string") return null;
+    const staged = stagedRelease(directory, releases.publicKey, saved.version, releases.platform);
+    if (!staged || staged.revision !== saved.revision) return null;
+    const { build_revision: _recorded, ...rest } = saved;
+    return { ...rest, directory, distribution: "binary", version: staged.version, ...(staged.build_revision ? { build_revision: staged.build_revision } : {}) };
+  }
+
+  /**
+   * Inside the compiled server the release that runs is the binary release it was started from, whatever else
+   * current.json names: never a build of the sources, which its Bun-less binary cannot build or run (and whose revision
+   * it would report while running its own code). One that is not a binary release of this checkout's update state is
+   * not managed.
+   */
+  private async initializeCompiled(ownRelease: string): Promise<Release | null> {
+    const unmanaged = () => { this.patch({ managed: false, blocked_reason: COMPILED_RELEASE_REASON }); return null; };
+    try {
+      this.sourceRevision = await this.git("rev-parse", "HEAD");
+      if (!SHA.test(this.sourceRevision)) throw new Error("Invalid source revision");
+    } catch { return unmanaged(); }
+    const directory = releaseIn(this.options.stateDir, ownRelease);
+    if (directory === null) return unmanaged();
+    let saved: Partial<Release> = {};
+    try {
+      const recorded = JSON.parse(readFileSync(join(this.options.stateDir, "current.json"), "utf8")) as Release;
+      if (releaseIn(this.options.stateDir, recorded.directory) === directory) saved = recorded;
+    } catch { /* no record: the release's own manifest names it */ }
+    let version = typeof saved.version === "string" ? saved.version : null;
+    if (version === null) {
+      try { version = (JSON.parse(readFileSync(join(directory, "bin", "ovis-server.json"), "utf8")) as { version?: unknown }).version as string; } catch { return unmanaged(); }
+    }
+    const { releases } = this.options;
+    const staged = releases?.platform && typeof version === "string" ? stagedRelease(directory, releases.publicKey, version, releases.platform) : null;
+    if (!staged) return unmanaged();
+    const { build_revision: _recorded, ...rest } = saved;
+    this.release = { ...rest, directory, revision: staged.revision, source_revision: this.sourceRevision, distribution: "binary", version: staged.version,
+      ...(staged.build_revision ? { build_revision: staged.build_revision } : {}) };
+    this.installed = this.brought(this.release);
+    let reason: string | null;
+    try { reason = await this.sourceBlock(); } catch { reason = "Updates require a Git checkout on the main branch."; }
+    this.patch({ current_revision: reportedRevision(this.release), current_version: staged.version, blocked_reason: reason });
     return this.release;
   }
 
@@ -326,9 +401,9 @@ export class Updater {
    * here, since an install keeps the release it replaces and the source checkout stays.
    */
   private brought(release: Release): InstalledNotes {
-    const none = { ...noInstalledNotes(), revision: release.revision };
+    const none = { ...noInstalledNotes(), revision: reportedRevision(release) };
     if (release.directory === this.options.root) return none;
-    const version = packageVersion(release.directory);
+    const version = releaseVersion(release);
     if (!version) return none;
     let previous: string | null = null;
     if (release.installed_at !== undefined) previous = typeof release.previous_version === "string" ? release.previous_version : null;
@@ -359,7 +434,7 @@ export class Updater {
       try { summaries = read(SUMMARIES_FILE); } catch { /* none */ }
       notes = releaseNotes(changelog, previous, version, undefined, releaseSummaries(summaries));
     } catch { /* a release without a changelog: the update is told without notes */ }
-    return { revision: release.revision, version, previous_version: previous, installed_at, ...notes };
+    return { revision: reportedRevision(release), version, previous_version: previous, installed_at, ...notes };
   }
 
   private async sourceBlock(): Promise<string | null> {
@@ -403,6 +478,7 @@ export class Updater {
     this.patch({ phase: "checking", error: this.options.notice ?? null, error_code: null, blocked_reason: null, channel, ...kept });
     const reason = await this.sourceBlock();
     if (reason) { this.patch({ blocked_reason: reason, checked_at: new Date().toISOString(), available: false }); return; }
+    if (this.options.releases) return this.discoverRelease(channel);
     // Only published releases update installs: commits pushed to main without a tag stay put. The
     // beta channel also takes the beta tags CI makes on green main.
     const betas = channel === "beta" ? ["+refs/tags/beta/*:refs/tags/beta/*"] : [];
@@ -432,6 +508,60 @@ export class Updater {
     // a beta is told by the releases up to its base version: its own changes have no section yet
     this.notes = available ? await this.changes(target, tagVersion(latest).replace(/-beta\.\d+$/, "")) : noUpdateNotes();
     this.patch({ latest_revision: target, latest_version: tagVersion(latest), checked_at, blocked_reason: block, available });
+  }
+
+  /**
+   * From the bridge release on: the newest release of the compiled server the channel takes (server/update-artifact.ts),
+   * under the names the release workflows publish, offered only when it is newer than the version that runs, so
+   * neither a signed older release nor the one running comes back. Its id is its manifest's SHA-256; its notes are
+   * its tag's changelog, read through the checkout's origin as an update from source reads them.
+   */
+  private async discoverRelease(channel: UpdateChannel) {
+    const { releases } = this.options;
+    const checked_at = new Date().toISOString();
+    if (!releases?.platform) {
+      this.offer = null;
+      this.patch({ latest_revision: null, latest_version: null, checked_at, available: false, blocked_reason: "No release of Ovis has a compiled server for this platform." });
+      return;
+    }
+    const running = await this.runningVersion();
+    const offer = running === null ? null : await offeredRelease({ base: releases.base, channel, publicKey: releases.publicKey, newerThan: running, fetchFile: releases.fetchFile });
+    const available = offer !== null && offer.revision !== this.release!.revision;
+    this.offer = available ? offer : null;
+    this.notes = available ? await this.tagNotes(offer.tag, offer.revision, offer.version) : noUpdateNotes();
+    // nothing newer: the latest is the release that runs, told as pages compare it (its build commit, as current_revision),
+    // never as a manifest's id, which a page would take for another release on offer
+    const latest = available ? { latest_revision: offer.revision, latest_version: offer.version }
+      : running !== null ? { latest_revision: reportedRevision(this.release!), latest_version: this.status.current_version } : { latest_revision: null, latest_version: null };
+    this.patch({ ...latest, checked_at, blocked_reason: null, available });
+  }
+
+  /**
+   * The version the running release is, as offers compare it: a binary release's own; for a build of the sources the
+   * tag its commit carries, since a beta's package.json names only its base version (a build of `beta/v0.6.0-beta.1`
+   * says 0.6.0, and would never take `0.6.0-beta.2`); a stable tag over a beta, and package.json where none is told.
+   */
+  private async runningVersion(): Promise<string | null> {
+    const release = this.release!;
+    const version = this.status.current_version;
+    if (release.distribution === "binary" || version === null) return version;
+    let tags: string[] = [];
+    try { tags = (await this.git("tag", "--points-at", release.revision, "--list", "v*", "beta/v*")).split("\n").map((tag) => tag.trim()); }
+    catch { return version; }
+    const versions = tags.map(releaseNameVersion).filter((told): told is string => told !== null && told.replace(/-beta\.\d+$/, "") === version);
+    if (versions.includes(version)) return version;
+    return versions.reduce<string | null>((best, told) => (best === null || newerVersion(told, best) ? told : best), null) ?? version;
+  }
+
+  /**
+   * What a binary release brings, from its tag's own CHANGELOG.md fetched from the checkout's origin (the release
+   * workflows tag the commit they publish); nothing where that tag cannot be fetched. Display only: what is installed
+   * is checked against the signed manifest alone.
+   */
+  private async tagNotes(tag: string, revision: string, version: string): Promise<UpdateNotes> {
+    try { await this.fetchInto(() => this.git("fetch", "--no-tags", "--no-write-fetch-head", "origin", `+refs/tags/${tag}:refs/tags/${tag}`)); }
+    catch { return { ...noUpdateNotes(), revision }; }
+    return { ...(await this.changes(`refs/tags/${tag}`, version.replace(/-beta\.\d+$/, ""))), revision };
   }
 
   /**
@@ -552,26 +682,42 @@ export class Updater {
         this.installing = new AbortController();
         const signal = AbortSignal.any([this.controller.signal, this.installing.signal]);
         this.patch({ phase: "building", step: "download" });
-        stage = mkdtempSync(join(this.options.stateDir, "release-"));
-        // Network filesystems and low-memory builds can take minutes even without a network fetch.
-        const run = (args: string[], timeout = 10 * 60_000) => runCommand(stage!, args, signal, timeout);
-        await run(["git", "clone", "--quiet", "--no-checkout", "--no-hardlinks", this.options.root, "."]);
-        await run(["git", "fetch", "--quiet", this.options.root, revision]);
-        await run(["git", "checkout", "--quiet", "--detach", revision]);
-        // The clone's origin must keep pointing at the user's chosen upstream.
-        await run(["git", "remote", "set-url", "origin", await this.git("remote", "get-url", "origin")]);
-        this.patch({ step: "dependencies" });
-        await run([process.execPath, "install", "--frozen-lockfile"]);
-        this.patch({ step: "typecheck" });
-        // --bun: tsc's `#!/usr/bin/env node` would otherwise run on whatever node herdr's PATH has first, which
-        // may be older than tsc supports now that install.sh no longer puts its own Node there (#596)
-        await run([process.execPath, "--bun", "run", "typecheck"]);
-        this.patch({ step: "build" });
-        await run([process.execPath, "run", "build"]);
-        // the release's Rust PTY host, checked against its manifest; without it the release runs the Node sidecar
-        if (existsSync(join(stage, "scripts", "pty-sidecar.ts"))) {
-          try { console.log((await run([process.execPath, "scripts/pty-sidecar.ts", "install"], 120_000))); }
-          catch (error) { console.error("Rust PTY host install failed; the release uses the Node PTY sidecar", error); }
+        const offer = this.offer;
+        const binary = Boolean(this.options.releases);
+        // with releases given, only the binary release checked is installed: nothing is ever built from source there
+        // (in the compiled server, process.execPath is the server itself, not a Bun to build with)
+        if (binary || this.options.compiled) {
+          if (!offer || offer.revision !== revision || !this.options.releases?.platform) throw new Error("The release on offer was not checked, so nothing was installed. Check again first.");
+          const staged = await stageBinaryRelease(offer, { stateDir: this.options.stateDir, platform: this.options.releases.platform, publicKey: this.options.releases.publicKey, signal,
+            fetchFile: this.options.releases.fetchFile, ptyRuns: this.options.releases.ptyRuns });
+          stage = staged.directory;
+          console.log(`Ovis ${offer.version}: ${staged.host}`);
+          // its notes beside it, from its tag as the offer read them: what the installed update told is read from there
+          for (const file of ["CHANGELOG.md", SUMMARIES_FILE]) {
+            try { writeFileSync(join(stage, file), await this.git("show", `refs/tags/${offer.tag}:${file}`)); } catch { /* told without them */ }
+          }
+        } else {
+          stage = mkdtempSync(join(this.options.stateDir, "release-"));
+          // Network filesystems and low-memory builds can take minutes even without a network fetch.
+          const run = (args: string[], timeout = 10 * 60_000) => runCommand(stage!, args, signal, timeout);
+          await run(["git", "clone", "--quiet", "--no-checkout", "--no-hardlinks", this.options.root, "."]);
+          await run(["git", "fetch", "--quiet", this.options.root, revision]);
+          await run(["git", "checkout", "--quiet", "--detach", revision]);
+          // The clone's origin must keep pointing at the user's chosen upstream.
+          await run(["git", "remote", "set-url", "origin", await this.git("remote", "get-url", "origin")]);
+          this.patch({ step: "dependencies" });
+          await run([process.execPath, "install", "--frozen-lockfile"]);
+          this.patch({ step: "typecheck" });
+          // --bun: tsc's `#!/usr/bin/env node` would otherwise run on whatever node herdr's PATH has first, which
+          // may be older than tsc supports now that install.sh no longer puts its own Node there (#596)
+          await run([process.execPath, "--bun", "run", "typecheck"]);
+          this.patch({ step: "build" });
+          await run([process.execPath, "run", "build"]);
+          // the release's Rust PTY host, checked against its manifest; without it the release runs the Node sidecar
+          if (existsSync(join(stage, "scripts", "pty-sidecar.ts"))) {
+            try { console.log((await run([process.execPath, "scripts/pty-sidecar.ts", "install"], 120_000))); }
+            catch (error) { console.error("Rust PTY host install failed; the release uses the Node PTY sidecar", error); }
+          }
         }
         const reason = await this.sourceBlock();
         // the checkout changed while the release built: the offer ends with the block, as a check's would
@@ -584,8 +730,10 @@ export class Updater {
         this.installing = null;
         const previous = this.release;
         // what it replaces, on record for the supervisor the release starts: that one was not here for the install
+        // a binary release's record keeps the shape every launcher reads (directory, source_revision), and says what it is
         const next: Release = { directory: stage, revision, source_revision: this.sourceRevision,
-          previous_version: previous ? packageVersion(previous.directory) : null, installed_at: new Date().toISOString() };
+          previous_version: previous ? releaseVersion(previous) : null, installed_at: new Date().toISOString(),
+          ...(binary || this.options.compiled ? { distribution: "binary" as const, version: offer!.version, ...(buildCommit(stage) ? { build_revision: buildCommit(stage)! } : {}) } : {}) };
         this.patch({ phase: "restarting", step: "restart" });
         await this.options.activate(next, () => {
           const file = join(this.options.stateDir, "current.json");
@@ -594,10 +742,11 @@ export class Updater {
         });
         this.release = next;
         stage = null;
+        this.offer = null;
         this.notes = noUpdateNotes();
         // a supervisor that stays (one run directly, without the launcher) tells it from here on
         this.installed = this.brought(next);
-        this.patch({ current_revision: revision, current_version: packageVersion(next.directory), available: false });
+        this.patch({ current_revision: reportedRevision(next), current_version: releaseVersion(next), available: false });
         this.failedRevision = null;
         rmSync(join(this.options.stateDir, "failed.json"), { force: true });
         // every release held here is named under this state dir (initialize names a resumed one so), so a

@@ -932,6 +932,41 @@ key from anywhere else. `OVIS_RELEASES_URL` (https://, or a `file://` folder lai
 (`scripts/server-artifact.ts`), and no server sources. The builds are reproducible with the same Bun: CI pins Bun 1.4.2,
 so CI's hashes differ from ones built with another Bun.
 
+### Updates from a source checkout to the binary
+
+An install from source (a git checkout started with `bun run start`, the herdr plugin's source path, an older
+`install.sh`) updates in the app ([server/updater.ts](../server/updater.ts)). Up to the bridge release that update
+fetched `v*` tags and built them; from the bridge release on it reads releases of the compiled server instead
+([server/update-artifact.ts](../server/update-artifact.ts)): the newest release at `OVIS_RELEASES_URL` (GitHub's
+releases, listed through its API, or a `file://` folder laid out as GitHub's downloads), under the names the release
+workflows publish: `v<version>` (release.yml), `beta/v<version>-beta.<n>` (beta.yml's tags, on the beta channel) or
+`ovis-<version>`. It is offered only when it is newer than the version that runs (for a source build, the tag its
+commit carries: a beta's package.json names only its base version). A release that ships no `ovis-server.json` is
+passed over for an older one. Its `ovis-server.json` must be
+signed by `RELEASE_PUBLIC_KEY` and name that very version before any other file is downloaded; then the binary and the
+client are checked against it and staged as `<update state>/release-*`: `bin/` holds the server, and
+`server/supervisor.ts` is a few lines that every launcher since updates replaced the supervisor runs with its Bun
+(`server/update-artifact.test.ts` starts each one), which run
+`bin/ovis-server supervisor`. `current.json` keeps the shape those launchers read, with `"distribution": "binary"`,
+so a restart from the old checkout (the plugin's Stop and Start, `bun run start`) serves the binary again. Before it runs anything, that
+`server/supervisor.ts` checks the manifest's signature, that it names the version staged, and the binary's SHA-256 again; a file changed
+since makes it exit,
+and the launcher falls back to the checkout's own supervisor. Pages are told the commit the release's client was built
+from (its `dist/build.json`), as with a build of the sources; the manifest's SHA-256 stays the release's id in offers,
+installs and `current.json`, and a check that finds nothing newer names the running release by that build commit. Nothing in
+the checkout or the app's state changes, and a release that fails a check leaves the running one as it was. The
+compiled supervisor runs only the binary release it was started from and never builds from source. A launcher from
+before updates replaced the supervisor (the launcher of 0.2.0, which hands its bridge no `OVIS_SOURCE_ROOT`) never
+runs an installed release, so under it the app installs nothing and shows instead the commands that update its checkout
+and restart Ovis (`oldLauncherReason` in [server/update-api.ts](../server/update-api.ts)); after them, its next update
+is its first release of the compiled server.
+
+The bridge is one release: the first `v*` release made the usual way from a commit that holds this updater and still
+the whole source tree. Every install from before reaches it by its own update; its next update installs the next
+release's compiled server, under the same `v<version>` name. A beta tag is offered once beta.yml publishes it as a
+release with a signed `ovis-server.json`; until then the beta channel takes the stable releases. The offer's notes
+are its tag's `CHANGELOG.md`, read through the checkout's origin, and kept beside the installed release.
+
 ### The server binary's signing key
 
 The private key is the secret `OVIS_SERVER_SIGNING_KEY` of the GitHub environment `release-signing`, whose

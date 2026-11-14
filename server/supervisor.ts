@@ -6,8 +6,10 @@
  */
 import "./adopt-legacy-env.ts";
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
+import { RELEASE_PUBLIC_KEY } from "../scripts/server-manifest.ts";
+import { hostPlatform } from "../scripts/server-install.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
 import { restoreRuntime } from "./herdr-core/runtime-file.ts";
 import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
@@ -16,7 +18,7 @@ import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
 import { COMPILED, ENTRIES, entryCommand, ROOT } from "./entries.ts";
 import { installedBinaryAt, pluginBinaryOf } from "./updater.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
-import { runCommand, updateChannel, Updater, type Release } from "./updater.ts";
+import { reportedRevision, runCommand, updateChannel, Updater, type Release } from "./updater.ts";
 
 /** After a try at the Rust PTY host, the next supervisor start waits this long before another (as the unshallow fetch does, #1252). */
 const RUST_HOST_RETRY_MS = 6 * 60 * 60_000;
@@ -43,7 +45,8 @@ const RUST_HOST_STOP_MS = 7_000;
  */
 function installMissingRustHost(directory: string, signal: AbortSignal): Promise<void> | null {
   const bin = join(directory, "bin");
-  if (process.platform === "win32" || !existsSync(join(directory, "scripts", "pty-sidecar.ts"))
+  // the compiled server has no Bun to run the script with (process.execPath is itself), and a binary release has none
+  if (COMPILED || process.platform === "win32" || !existsSync(join(directory, "scripts", "pty-sidecar.ts"))
     || existsSync(join(bin, "ovis-pty-sidecar.json"))) return null;
   const attempt = join(bin, "ovis-pty-sidecar.attempt");
   try {
@@ -71,7 +74,11 @@ async function boundedStop(try_: Promise<void>, directory: string): Promise<void
   if (outcome === "late") console.warn(`Rust PTY host install in ${directory} did not end ${RUST_HOST_STOP_MS / 1000} s after it was stopped; exiting anyway. A process of it may still run.`);
 }
 
-export async function runSupervisor(root = ROOT) {
+/**
+ * `fromTags`: update as the updater did before the bridge release, from `v*` tags built from source, never from a
+ * release of the compiled server: what older installs still run, for tests of that path and of the crossing.
+ */
+export async function runSupervisor(root = ROOT, { fromTags = false }: { fromTags?: boolean } = {}) {
   root = resolve(root);
   // as the server reads it (server/index.ts): an empty PORT is the default, and both name the same saved runtime file
   const port = Number(process.env["PORT"] || DEFAULT_PORT);
@@ -126,13 +133,18 @@ export async function runSupervisor(root = ROOT) {
     if (stopping) throw new Error("Server is stopping");
     const bootId = crypto.randomUUID();
     // OVIS_RUNTIME_SWITCH: this launcher restarts the bridge on a runtime chosen in Settings (restartForRuntime)
-    const settings = { OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release?.revision ?? "" };
-    // from source the path is relative to the release it runs in (its cwd), as the bridge's argv always was
-    const candidate = Bun.spawn(COMPILED ? entryCommand("serve") : [process.execPath, ENTRIES.serve], {
-      cwd: release?.directory ?? root, windowsHide: true, stdin: "ignore", stdout: "inherit", stderr: "inherit",
+    const settings = { OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release ? reportedRevision(release) : "" };
+    // a binary release runs its own binary, serving the client beside it, whatever this supervisor is: a compiled one
+    // never starts its own code under a release's revision. From source the path is relative to the release it runs in
+    // (its cwd), as the bridge's argv always was
+    const server = release?.distribution === "binary" ? join(release.directory, "bin") : null;
+    const environment: Record<string, string | undefined> = { ...process.env, ...(legacyStateDir === null ? settings : withLegacyNames(settings)), HERDR_SOCKET: socketPath };
+    if (server !== null) { environment["OVIS_ASSETS"] = server; delete environment["BUN_BE_BUN"]; }
+    const candidate = Bun.spawn(server !== null ? [join(server, process.platform === "win32" ? "ovis-server.exe" : "ovis-server"), "serve"] : COMPILED ? entryCommand("serve") : [process.execPath, ENTRIES.serve], {
+      cwd: server ?? release?.directory ?? root, windowsHide: true, stdin: "ignore", stdout: "inherit", stderr: "inherit",
       // a launcher from before the rename runs from a checkout from before it, where a release that
       // fails falls back to: that bridge reads its settings under the old names
-      env: { ...process.env, ...(legacyStateDir === null ? settings : withLegacyNames(settings)), HERDR_SOCKET: socketPath },
+      env: environment,
       ipc(message) {
         if (message?.type === "update-status-request") publish();
         // Settings saved another runtime (server/herdr-core/runtime-choice.ts): the bridge starts again on it
@@ -243,6 +255,10 @@ export async function runSupervisor(root = ROOT) {
     // the herdr plugin's launcher runs this compiled server from its checkout's .ovis/server: herdr updates it
     pluginBinary: pluginBinaryOf(process.env["OVIS_PLUGIN_CHECKOUT"], COMPILED),
     installedBinary: installedBinaryAt(root, COMPILED),
+    // from the bridge release on, updates are the compiled server's releases, checked against the committed key
+    ...(fromTags ? {} : { releases: { base: process.env["OVIS_RELEASES_URL"] || undefined, publicKey: RELEASE_PUBLIC_KEY, platform: hostPlatform() } }),
+    // the compiled server runs from a binary release's bin/ (server/update-artifact.ts), its root here
+    ...(COMPILED ? { compiled: { ownRelease: dirname(ROOT) } } : {}),
     notice: process.env["OVIS_SUPERVISOR_FALLBACK"]
       ? "The updated supervisor failed to start, so the previous one is running this version. The next update tries again."
       : undefined,
@@ -289,7 +305,8 @@ export async function runSupervisor(root = ROOT) {
     active = await updater.initialize();
     try { await launch(active); }
     catch (error) {
-      if (!active || active.directory === root) throw error;
+      // a stop that cut the start short is no failed release: its record stays for the next start
+      if (stopping || !active || active.directory === root) throw error;
       console.error("Saved release failed; starting the source checkout.", error);
       rmSync(join(stateDir, "current.json"), { force: true });
       active = await updater.initialize();
