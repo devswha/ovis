@@ -566,6 +566,18 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typedDraft("omp", screenFromAnsi(themed))).toBeFalse();
   });
 
+  test("omp 18.14's draft is read past an empty first row, an indented row and an empty row between, and as typed when it is the hint's words", () => {
+    const lines = readFileSync(join(FIXTURES, "omp/draft-lines-119.ansi"), "utf8");
+    // an empty first row, then a row indented past the editor's own three columns
+    expect(typedDraft("omp", screenFromAnsi(lines.replace("leftover draft", "").replace("second line", "    indented")))).toBeTrue();
+    // an empty row between two of the draft's rows
+    const rows = lines.replace("leftover draft", "").split("\n");
+    rows.splice(rows.findIndex((row) => row.includes("second line")), 0, "\r");
+    expect(typedDraft("omp", screenFromAnsi(rows.join("\n")))).toBeTrue();
+    // the hint's own words, typed in the typed colour
+    expect(typedDraft("omp", screenFromAnsi(readFileSync(join(FIXTURES, "omp/draft-typed-119.ansi"), "utf8").replace("leftover draft", "⇧⇥ to change thinking effort")))).toBeTrue();
+  });
+
   test("Kilo's box in a session, under its first answer, reads as on its home screen", () => {
     expect(typed("kilo", "kilo/draft-session-typed-119.ansi")).toBeTrue();
     expect(typed("kilo", "kilo/draft-session-empty-119.ansi")).toBeFalse();

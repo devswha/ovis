@@ -493,19 +493,25 @@ const kiloInputRow: InputRowRecognizer = (screen, typed) => {
 
 /**
  * omp 18.14 (recorded 2026-11-14, src/lib/fixtures-input-rows/README.md): its status line `π > … ▶` with no frame,
- * then the editor right under it, its first row `╰─ ` and the rows a draft runs onto indented three columns. The
- * empty editor holds only its `⇧⇥ to change thinking effort` hint, drawn in colours no typed text takes; the command
- * list draws under the editor. omp 18.8.7's framed editor (ompInputRow) was recorded only empty and reports no cells.
+ * then the editor right under it, its first row `╰─ ` and the rows a draft runs onto, each indented three columns
+ * (an empty row of the draft is blank). The empty editor holds only its `⇧⇥ to change thinking effort` hint, drawn in
+ * colours no typed text takes, so its cells are reported and typedDraft's colour test tells it from typed words; the
+ * command list draws under the editor. omp 18.8.7's framed editor (ompInputRow) was recorded only empty and reports
+ * no cells.
  */
 const ompDraftInputRow: InputRowRecognizer = (screen, typed) => {
   const bar = filled(screen).filter((index) => /^ ?π > .*▶/.test(screen.rows[index]!.text)).at(-1);
   if (bar === undefined || !screen.rows[bar + 1]?.text.startsWith("╰─")) return ompInputRow(screen);
+  // the draft's rows run on while they are indented three columns or blank; the last indented one ends it
   let end = bar + 2;
-  while (end < screen.rows.length && end < bar + 2 + BOX_MAX_ROWS && /^ {3}\S/.test(screen.rows[end]!.text)) end++;
+  for (let index = bar + 2; index < screen.rows.length && index < bar + 2 + BOX_MAX_ROWS; index++) {
+    const text = screen.rows[index]!.text;
+    if (text.trim() === "") continue;
+    if (!text.startsWith("   ")) break;
+    end = index + 1;
+  }
   const cells = screen.rows.slice(bar + 1, end).flatMap((row) => cellsFrom(row, 3));
-  const words = screen.rows.slice(bar + 1, end).map((row) => row.text.slice(3)).join("\n").replace(/⇧⇥ to change thinking effort$/, "").trim();
-  const under = screen.rows.slice(end).some((row) => row.text.trim() !== "");
-  if (words === "") return under ? "covered" : "ready";
+  if (cells.every(blank)) return screen.rows.slice(end).some((row) => row.text.trim() !== "") ? "covered" : "ready";
   typed?.push(...cells);
   return "draft";
 };
