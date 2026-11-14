@@ -1252,7 +1252,8 @@ export function Composer({
     <div className={`composer${notices ? " has-notices" : ""}`} role="group" aria-label={t("Message composer")} data-dictating={dictation.voice.state !== "idle" ? "" : undefined} inert={inert || undefined}>
       {greeting}
       {notices}
-      {/* no Tab key on a phone: the suggestion can be a chip there that fills the box, when Settings asks for it */}
+      {/* no Tab key on a phone: the suggestion can be a chip there that fills the box, when Settings asks for it; a tap
+          on the grey words in the box only focuses it, so the tap that starts the user's own reply never takes it */}
       {settings.suggestionChip && offered !== null && text === "" && (
         <div className="composer-quick composer-suggestion-row">
           <button type="button" className="composer-quick-reply composer-suggestion" title={t("Use the suggestion")} onClick={acceptSuggestion}>
@@ -1480,7 +1481,7 @@ export function Composer({
           // in a frame, after the caret of dictation held through the composition has landed
           setTimeout(() => requestAnimationFrame(() => { if (mounted.current) placeWaitingMentions(); }), 0);
         }}
-          className={`composer-text${settings.suggestionChip && offered !== null && text === "" ? " has-suggestion" : ""}`}
+          className="composer-text"
           rows={1}
           maxLength={MAX_COMPOSER_CHARS}
           value={text}
@@ -1512,17 +1513,6 @@ export function Composer({
             setNote((current) => typeof current === "object" && current !== null && "failure" in current ? current : pasteCutNote.current);
           }}
         />
-        {/* tapping the grey words takes the suggestion only when Settings asks for it: by default a tap there just focuses the box */}
-        {settings.suggestionChip && offered !== null && text === "" && (
-          <div className="composer-inline-suggestion">
-            <span role="button" tabIndex={-1} aria-label={t("Use the suggestion")}
-              onClick={acceptSuggestion} onKeyDown={(event) => {
-                if (event.key !== "Enter" && event.key !== " ") return;
-                event.preventDefault();
-                acceptSuggestion();
-              }}>{offered}</span>
-          </div>
-        )}
         <textarea
           ref={measurementRef}
           className="composer-measure"
