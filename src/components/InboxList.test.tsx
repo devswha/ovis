@@ -31,6 +31,7 @@ function RowMenu(_props: Parameters<typeof rowMenu.RowMenu>[0]) { return null; }
 await mock.module("./RowMenu.tsx", () => ({ ...rowMenu, RowMenu }));
 const { InboxList } = await import("./InboxList.tsx");
 const { newQuestionReads } = await import("../lib/useInboxQuestions.ts");
+type InboxListHandle = import("../lib/useInbox.ts").InboxListHandle;
 const { SummaryReads } = await import("../lib/useInboxSummaries.ts");
 const { useAgentStateStamping } = await import("../lib/useAgentStateSince.ts");
 
@@ -136,6 +137,8 @@ describe("InboxList", () => {
     /** how far the scroller can scroll at first: a scrollTop past it is clamped, as a browser does */
     scrollMax?: number;
     more?: Parameters<typeof InboxList>[0]["more"]; note?: ReactNode; onExit?: () => void;
+    /** what the shell asks of the list through (lib/useInbox.ts) */
+    handle?: { current: InboxListHandle | null };
     onFilter?: (filter: InboxFilter) => void; onQuery?: (query: string) => void;
     onOpen?: (machineId: string, paneId: string) => void; onNew?: (machineId: string) => void;
   }
@@ -148,7 +151,7 @@ describe("InboxList", () => {
   let drawn: { machines: Machine[]; options: DrawOptions } = { machines: [], options: {} };
   const view = (machines: Machine[], options: DrawOptions): ReactElement => <SettingsProvider><PanePressContext.Provider value={(machineId, paneId) => presses.push(`${machineId}/${paneId}`)}>
     <Stamping machines={machines} activity={options.activity ?? activity} />
-    <InboxList machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
+    <InboxList ref={options.handle} machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
       filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} focus={{ opening: options.opening ?? 1, taken, row: options.returnTo ?? null }}
       onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} more={options.more} note={options.note} onExit={options.onExit} connection={options.connection ?? null} failure={options.failure ?? null} />
   </PanePressContext.Provider></SettingsProvider>;
@@ -617,6 +620,25 @@ describe("InboxList", () => {
     expect(focused).toEqual([{ node: "section", options: { preventScroll: true } }]);
     await act(async () => { byClass(root, "inbox-scroll")[0]!.props.onScroll({ currentTarget: { scrollTop: 610 } }); });
     expect(scroll.current).toBe(610);
+  });
+
+  it("goes to its top and takes the focus on its own section when the shell asks, and the kept place is the top from then on", async () => {
+    // Given a list scrolled down, whose kept place is still being reached (its rows' words are not all back).
+    const handle: { current: InboxListHandle | null } = { current: null };
+    await draw(roster(), { wide: true, scrollTop: 240, scrollMax: 200, focusTaken: 1, handle });
+    expect([nodes.get("inbox-scroll")!.scrollTop, focused]).toEqual([200, []]);
+
+    // When the shell asks for the list's top (the rail's current place).
+    await act(async () => { handle.current!.toTop(); });
+
+    // Then the list is at its top with the focus on its section, without a scroll of the page.
+    expect([nodes.get("inbox-scroll")!.scrollTop, scroll.current]).toEqual([0, 0]);
+    expect(focused).toEqual([{ node: "section", options: { preventScroll: true } }]);
+
+    // And words that land later do not take it back to the place it had.
+    scrollMax = Number.POSITIVE_INFINITY;
+    await answerSummaries({ "w1E:p1": said("All six export tests pass.", ago(6.5)) });
+    expect(nodes.get("inbox-scroll")!.scrollTop).toBe(0);
   });
 
   it("gives the focus to the row whose thread a Back just left, and to its own section when that row is not drawn", async () => {

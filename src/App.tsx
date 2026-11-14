@@ -842,7 +842,7 @@ export function App() {
   const keyboardLikely = useMediaQuery("(hover: hover) and (pointer: fine)");
   const paletteKeys = keyboardLikely ? formatKeys(shortcutDisplayKeys("palette", settings.shortcutOverrides)).join("+") : "";
   // A tooltip follows the platform and the current binding, including a removed shortcut.
-  const shortcutTitle = (label: string, id: "palette" | "toggle-sidebar" | "toggle-view"): string => {
+  const shortcutTitle = (label: string, id: "palette" | "toggle-sidebar" | "toggle-view" | "settings"): string => {
     const keys = formatKeys(shortcutDisplayKeys(id, settings.shortcutOverrides));
     return keys.length === 0 ? label : `${label} (${keys.join("+")})`;
   };
@@ -1013,15 +1013,23 @@ export function App() {
   // rows as they last were with no sign, whether or not a pane is mounted under it (a thread says its own pane's
   // word): on a phone where the note stands, while there is no note.
   const listNote = herdrPrefixWaiting ? t("herdr prefix: press a key") : note;
+  // a row opens its agent's thread on its chat; the half of the app's own split that shows the pane becomes the
+  // active one first, so the pick never moves that pane into the other half
+  const openThread = (machineId: string, paneId: string): void => { activateSlotOf({ machineId, paneId }); selectTarget(machineId, paneId, "chat"); };
   const modeList = (column: boolean): ReactNode => (
-    <InboxList machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
+    <InboxList ref={inbox.list} machines={sidebarMachines} activity={activity} watching={auth?.role === "watch"} wide={column} filter={inbox.filter} onFilter={inbox.setFilter} query={inbox.query} onQuery={inbox.setQuery} scroll={inbox.scroll} focus={{ ...inbox.focus, row: returnTo }}
       current={column && !inbox.shown && selectedPaneId !== null ? sidebarPinKey(selectedMachineId, selectedPaneId) : null}
-      onOpen={(machineId, paneId) => { activateSlotOf({ machineId, paneId }); selectTarget(machineId, paneId, "chat"); }}
+      onOpen={openThread}
       onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads}
       more={{ label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
       onExit={leaveMode}
       note={column ? undefined : <HeaderNote note={listNote} />} connection={column || listNote === null ? (column && !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection ? null : rosterConnection) : null} failure={error === null ? null : { error, retry: load }} />
   );
+  // The rail's count (from 769px): the agents that wait other than the open thread's, which is what More counts over
+  // a phone's thread, and the press that opens the next of them as its row would. With no thread open every waiting
+  // agent is another one, the pane under the list included: the jump then starts from none.
+  const railNext = inboxWide && inbox.shown ? nextWaitingTarget(waitingRosters, { machineId: selectedMachineId, paneId: null }) : nextWaiting;
+  const railWaiting = waitingInMore && railNext !== null ? { count: moreWaiting, open: () => openThread(railNext.machineId, railNext.paneId) } : null;
   // More's button: a square of the header's, or one of the mode's round controls over the wide pane
   const moreButton = (round: boolean): ReactNode => (
     <span className="header-more">
@@ -1266,7 +1274,8 @@ export function App() {
             mode's rail comes first in that column, then the list, then the column's edge: the keyboard follows
             the drawn order */}
         {inMode ? (inboxWide && <aside className="sidebar inbox-column">
-          <InboxRail onExit={leaveMode} />
+          <InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} onPalette={() => openPalette()} waiting={railWaiting}
+            alerts={{ on: bell.on, title: bell.title, toggle: () => void bell.run() }} onSettings={actions.openSettings} shortcutTitle={shortcutTitle} />
           {modeList(true)}
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}

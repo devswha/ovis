@@ -2,11 +2,15 @@
    of its wide layout, before the list. Its width is the shell's (--inbox-rail-w, InboxMode.css), which cuts it out
    of the sidebar's width. Every value is one of the app's tokens. */
 .inbox-rail {
+  /* the current place's glyph is drawn heavier, as the open row's name is */
+  --inbox-rail-stroke-current: 2.5;
   box-sizing: border-box;
   display: flex;
   flex: 0 0 var(--inbox-rail-w);
   flex-direction: column;
   align-items: center;
+  /* the two groups never touch, in a window too short to part them */
+  gap: var(--space-2);
   width: var(--inbox-rail-w);
   min-height: 0;
   /* --space-3 from each edge: the end inset counts the rail's hairline, as the column's own insets count its seam */
@@ -24,9 +28,15 @@
   gap: var(--space-2);
 }
 
+/* the lower group is pushed to the rail's foot: its last button stands where the column's foot stood */
+.inbox-rail-group.is-lower {
+  margin-block-start: auto;
+}
+
 /* the icon button with no box at rest: a rail of raised discs would be the loudest thing in the window. It keeps
    one box in every state; only its fill and its glyph's colour change. */
 .icon-button.inbox-rail-item {
+  /* the fill the button stands on, which the count hung on it is ringed with */
   --rail-item-bg: var(--bg-nav);
   position: relative;
   width: var(--inbox-control);
@@ -39,8 +49,9 @@
 }
 
 /* A button answers from the window's start edge to the rail's end and half the gap above and below it, through
-   an expander that draws nothing; the first reaches the window's top, so the window's corner is a target. The
-   insets count the button's own transparent hairline, and the safe areas the column keeps clear of. */
+   an expander that draws nothing; the first reaches the window's top and the last its foot, so the window's two
+   corners are targets. The insets count the button's own transparent hairline, and the safe areas the column
+   keeps clear of. */
 .icon-button.inbox-rail-item::before {
   content: "";
   position: absolute;
@@ -50,6 +61,10 @@
 
 .inbox-rail-group.is-top > .inbox-rail-item:first-child::before {
   inset-block-start: calc(var(--space-3) * -1 - var(--hairline) - env(safe-area-inset-top, 0px));
+}
+
+.inbox-rail-group.is-lower > .inbox-rail-item:last-child::before {
+  inset-block-end: calc(var(--space-3) * -1 - var(--hairline) - env(safe-area-inset-bottom, 0px));
 }
 
 /* the way out stands apart from what follows it: twice the gap, which its own expander takes */
@@ -77,6 +92,37 @@
   background: var(--rail-item-bg);
   border-color: transparent;
   color: var(--text-strong);
+}
+
+/* The current place: the sidebar's own selection carried to a glyph, a tonal fill and a heavier, stronger glyph, as
+   the open row has the fill and a heavier name. No hue, border, stripe or outline. Hover adds nothing to it; a
+   press, which takes the list to its top, is the row's own. After the hover and press rules, which these outweigh. */
+.icon-button.inbox-rail-item[aria-current="page"],
+.icon-button.inbox-rail-item[aria-current="page"]:hover:not(:disabled) {
+  --rail-item-bg: var(--side-selected);
+  background: var(--rail-item-bg);
+  color: var(--text-strong);
+}
+
+.icon-button.inbox-rail-item[aria-current="page"]:active:not(:disabled) {
+  --rail-item-bg: color-mix(in srgb, var(--side-selected), var(--border-strong));
+  background: var(--rail-item-bg);
+}
+
+.icon-button.inbox-rail-item[aria-current="page"] svg {
+  stroke-width: var(--inbox-rail-stroke-current);
+}
+
+/* The count is the app's own waiting pill (styles.css, .header-more-dot.is-waiting[data-count]), hung on the
+   glyph's top end corner at either control size, with a ring of the fill under it so its digits never touch the
+   glyph. */
+.icon-button.inbox-rail-item > .header-more-dot {
+  top: calc((var(--inbox-control) - var(--icon-size)) / 2 - var(--space-1) - var(--hairline));
+  right: calc((var(--inbox-control) - var(--icon-size)) / 2 - var(--space-2));
+}
+
+.icon-button.inbox-rail-item > .header-more-dot.is-waiting[data-count]::after {
+  outline: var(--space-half) solid var(--rail-item-bg);
 }
 
 /* the app's own mark (OvisMark.tsx) in the button's middle, at the size it has wherever it stands for Back to Ovis */

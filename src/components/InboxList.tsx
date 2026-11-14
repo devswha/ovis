@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import { useContext, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref, type RefObject } from "react";
 import { Ellipsis, ListFilter, Monitor, Plus, Search, Terminal, TriangleAlert, X } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
@@ -18,6 +18,7 @@ import { SHEET_QUERY } from "../lib/sheets.ts";
 import type { SidebarActivity } from "../lib/sidebarActivity.tsx";
 import { agentContext, agentTabName, paneMark } from "../lib/sidebarAgents.ts";
 import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
+import type { InboxListHandle } from "../lib/useInbox.ts";
 import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/useInboxQuestions.ts";
 import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
@@ -38,6 +39,8 @@ export interface InboxMore {
 }
 
 export interface InboxListProps {
+  /** what the shell may ask of the list (lib/useInbox.ts): the rail's current place asks it for its top */
+  ref?: Ref<InboxListHandle>;
   machines: Machine[];
   activity: SidebarActivity;
   /** this device only watches: it is offered no New workspace */
@@ -103,7 +106,7 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
  * The inbox mode's list: every shown PC's agents, the ones that need the reader first, each a row of two lines.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function InboxList({ machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, onExit, note, connection = null, failure = null }: InboxListProps) {
+export function InboxList({ ref, machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, onExit, note, connection = null, failure = null }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
@@ -161,6 +164,16 @@ export function InboxList({ machines, activity, watching, wide, filter, onFilter
   // (the clamp's own) is not kept as the place; once they do, the place is theirs and is never set again
   const restoring = useRef<number | null>(scroll.current);
   const stopRestoring = (): void => { restoring.current = null; };
+  // asked for its top, the list is there at once (the place is the reader's from then on) and has the focus, on its
+  // own section as when it opens: the next Tab is its first control
+  useImperativeHandle(ref, () => ({
+    toTop() {
+      restoring.current = null;
+      if (scroller.current !== null) scroller.current.scrollTop = 0;
+      scroll.current = 0;
+      root.current?.focus({ preventScroll: true });
+    },
+  }), [scroll]);
   useLayoutEffect(() => {
     const node = scroller.current;
     if (node === null || restoring.current === null) return;
