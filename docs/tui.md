@@ -20,8 +20,10 @@ ovis tui --session work              # another herdr-core session
 It never starts a core. When none runs, it says so with the command that starts one
 (`hc server start`) and exits.
 
-Released installs do not ship the program yet. `ovis tui` runs `OVIS_TUI_BIN`, else `bin/ovis-tui`
-in the install, else a local build:
+Released installs do not ship the program yet. `ovis tui` runs `OVIS_TUI_BIN`, else `ovis-tui` in
+the install's `bin/` (beside the compiled `ovis-server`), else a build in the install's own checkout.
+A build anywhere else, such as another checkout, is found through `OVIS_TUI_BIN`: put
+`OVIS_TUI_BIN=/path/to/ovis-tui` in Ovis's settings file, or export it. To build it:
 
 ```bash
 crates/ovis-tui/prepare.sh           # fetches the pinned hc-tui and applies our patches

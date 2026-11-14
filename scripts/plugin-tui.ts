@@ -19,18 +19,23 @@ export type TuiLookup =
   | { readonly kind: "configured-missing"; readonly path: string }
   | { readonly kind: "missing"; readonly looked: readonly string[] };
 
-/** Where an install keeps the program: beside its PTY host (bin/), else a local build of the crate. */
+/**
+ * Where an install keeps the program: in its bin/ (a checkout's, beside its PTY host), beside the
+ * server itself (a compiled install's root is its bin/ already), else a local build of the crate.
+ */
 export function tuiPaths(root: string): readonly string[] {
-  return [join(root, "bin", TUI_NAME), join(root, "crates", "ovis-tui", "target", "release", TUI_NAME)];
+  return [join(root, "bin", TUI_NAME), join(root, TUI_NAME), join(root, "crates", "ovis-tui", "target", "release", TUI_NAME)];
 }
 
 export const isFile = (path: string): boolean => existsSync(path) && statSync(path).isFile();
 
 /** The program to run: OVIS_TUI_BIN from the merged settings, else the first of tuiPaths that is a file. */
-export function findTui(settings: Env, where: { readonly root: string; readonly home: string }, fileAt: (path: string) => boolean = isFile): TuiLookup {
+export function findTui(settings: Env, where: { readonly root: string; readonly home: string; readonly onPath?: (name: string) => string | null }, fileAt: (path: string) => boolean = isFile): TuiLookup {
   const configured = settings[TUI_BIN_VARIABLE] ?? "";
   if (configured !== "") {
-    const path = configured.startsWith("~/") ? join(where.home, configured.slice(2)) : configured;
+    // a bare name is what spawning it would run: the PATH's, so the file checked is the file run
+    const bare = !configured.includes("/");
+    const path = configured.startsWith("~/") ? join(where.home, configured.slice(2)) : bare ? ((where.onPath ?? Bun.which)(configured) ?? configured) : configured;
     return fileAt(path) ? { kind: "found", path } : { kind: "configured-missing", path };
   }
   const paths = tuiPaths(where.root);
@@ -39,7 +44,7 @@ export function findTui(settings: Env, where: { readonly root: string; readonly 
 }
 
 /** What the program never gets: it talks to herdr-core alone, and whatever it starts inherits its environment. */
-export const WITHHELD = ["OVIS_TOKEN", "OVIS_URL"] as const;
+export const WITHHELD = ["OVIS_TOKEN", "OVIS_URL", "HERDR_WEB_TOKEN"] as const;
 
 /** The program's environment: the caller's, without the Ovis server's token or address. */
 export function tuiEnv(caller: Env): Record<string, string> {

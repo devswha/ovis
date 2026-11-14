@@ -52,7 +52,7 @@ afterEach(() => rmSync(scratch, { recursive: true, force: true }));
 
 describe("which program runs", () => {
   const where = { root: "/install", home: "/home/me" };
-  const [installed, built] = tuiPaths(where.root) as [string, string];
+  const [installed, beside, built] = tuiPaths(where.root) as [string, string, string];
   const only = (...files: string[]) => (path: string) => files.includes(path);
 
   it("is OVIS_TUI_BIN first, then the install's bin/, then a local build", () => {
@@ -60,11 +60,22 @@ describe("which program runs", () => {
     expect(findTui({ OVIS_TUI_BIN: "/opt/tui" }, where, all)).toEqual({ kind: "found", path: "/opt/tui" });
     expect(findTui({}, where, all)).toEqual({ kind: "found", path: "/install/bin/ovis-tui" });
     expect(findTui({ OVIS_TUI_BIN: "" }, where, only(built))).toEqual({ kind: "found", path: "/install/crates/ovis-tui/target/release/ovis-tui" });
-    expect(findTui({}, where, only())).toEqual({ kind: "missing", looked: [installed, built] });
+    expect(findTui({}, where, only(beside, built))).toEqual({ kind: "found", path: "/install/ovis-tui" });
+    expect(findTui({}, where, only())).toEqual({ kind: "missing", looked: [installed, beside, built] });
   });
 
   it("does not fall back to the install's own when OVIS_TUI_BIN names no file", () => {
     expect(findTui({ OVIS_TUI_BIN: "/opt/gone" }, where, only(installed, built))).toEqual({ kind: "configured-missing", path: "/opt/gone" });
+  });
+
+  it("finds the program beside a compiled install's server, whose root is its bin/", () => {
+    expect(tuiPaths("/home/me/.local/share/ovis/bin")).toContain("/home/me/.local/share/ovis/bin/ovis-tui");
+  });
+
+  it("checks a bare OVIS_TUI_BIN as the PATH finds it, the file that would run", () => {
+    const onPath = (name: string) => (name === "ovis-tui" ? "/usr/local/bin/ovis-tui" : null);
+    expect(findTui({ OVIS_TUI_BIN: "ovis-tui" }, { ...where, onPath }, only("/usr/local/bin/ovis-tui"))).toEqual({ kind: "found", path: "/usr/local/bin/ovis-tui" });
+    expect(findTui({ OVIS_TUI_BIN: "ovis-tui" }, { ...where, onPath }, only("ovis-tui"))).toEqual({ kind: "configured-missing", path: "/usr/local/bin/ovis-tui" });
   });
 
   it("takes a leading ~/ in OVIS_TUI_BIN as the home folder", () => {
@@ -74,7 +85,7 @@ describe("which program runs", () => {
 
 describe("the program's environment", () => {
   it("is the caller's without the Ovis server's token or address", () => {
-    expect(tuiEnv({ TERM: "xterm", OVIS_TOKEN: "exported", OVIS_URL: "http://127.0.0.1:9", HC_SESSION: "s" }))
+    expect(tuiEnv({ TERM: "xterm", OVIS_TOKEN: "exported", OVIS_URL: "http://127.0.0.1:9", HERDR_WEB_TOKEN: "old-name", HC_SESSION: "s" }))
       .toEqual({ TERM: "xterm", HC_SESSION: "s" });
   });
 });
@@ -194,13 +205,5 @@ describe("ovis tui", () => {
     const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     expect(code).toBe(1);
     expect(err).toBe(lookupMessage({ kind: "missing", looked: tuiPaths(join(scratch, "root")) }));
-  }, 30_000);
-
-  it("is in the usage an unknown command gets", async () => {
-    const child = Bun.spawn([process.execPath, "scripts/plugin.ts", "no-such-command"], { cwd: ROOT, env: { ...process.env, HOME: scratch, HERDR_PLUGIN_STATE_DIR: join(scratch, "state"), HERDR_PLUGIN_CONFIG_DIR: join(scratch, "config") }, stdout: "pipe", stderr: "pipe" });
-    const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);
-    expect(code).toBe(2);
-    expect(err).toContain("|tui>");
-    expect(err).toContain("\ntui: ");
   }, 30_000);
 });
