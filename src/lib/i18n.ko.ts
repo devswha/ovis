@@ -114,6 +114,8 @@ const BASE: Record<string, string> = {
   // ---- settings ----
   "Settings": "설정",
   "PCs": "PC",
+  "PC {name}": "PC {name}",
+  "PCs, {n} of {m} connected": "PC {m}대 중 {n}대 연결됨",
   "Chat": "채팅",
   "Agent default": "에이전트 기본값",
   "Devices and PCs": "기기와 PC",

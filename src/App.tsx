@@ -1009,9 +1009,11 @@ export function App() {
 
   // The mode's list: the screen on a phone, where More is its own control (the shell draws no header over it) and
   // the header's note stands between its top controls; the column from 769px, after the mode's rail, where its row
-  // for the open thread is the selected one and it draws no More. What the stream that feeds its rows has to say is said on the list, which otherwise shows its
-  // rows as they last were with no sign, whether or not a pane is mounted under it (a thread says its own pane's
-  // word): on a phone where the note stands, while there is no note.
+  // for the open thread is the selected one and it draws no More. What the stream that feeds its rows has to say
+  // is said beside them, which otherwise show as they last were with no sign, whether or not a pane is mounted
+  // under the list (a thread says its own pane's word): on a phone by the list, where the note stands, while there
+  // is no note; from 769px by the rail's PC, which draws its dot only while the open thread's chip does not say
+  // the same word (one fact, one place).
   const listNote = herdrPrefixWaiting ? t("herdr prefix: press a key") : note;
   // a row opens its agent's thread on its chat; the half of the app's own split that shows the pane becomes the
   // active one first, so the pick never moves that pane into the other half
@@ -1022,7 +1024,7 @@ export function App() {
       onOpen={openThread}
       onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads}
       more={column ? undefined : { label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
-      note={column ? undefined : <HeaderNote note={listNote} />} connection={column || listNote === null ? (column && !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection ? null : rosterConnection) : null} failure={error === null ? null : { error, retry: load }} />
+      note={column ? undefined : <HeaderNote note={listNote} />} connection={!column && listNote === null ? rosterConnection : null} failure={error === null ? null : { error, retry: load }} />
   );
   // The rail's count (from 769px): the agents that wait other than the open thread's, which is what More counts over
   // a phone's thread, and the press that opens the next of them as its row would. With no thread open every waiting
@@ -1274,7 +1276,11 @@ export function App() {
             the drawn order */}
         {inMode ? (inboxWide && <aside className="sidebar inbox-column">
           <InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} onPalette={() => openPalette()} waiting={railWaiting}
-            alerts={{ on: bell.on, title: bell.title, toggle: () => void bell.run() }} onSettings={actions.openSettings} shortcutTitle={shortcutTitle} />
+            alerts={{ on: bell.on, title: bell.title, toggle: () => void bell.run() }} onSettings={actions.openSettings} shortcutTitle={shortcutTitle}
+            pcs={{ machines: sidebarMachines, selectedId: selectedMachineId, connection: rosterConnection,
+              saidByThread: !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection,
+              // a PC alone, as the classic app opens one: no thread of it is chosen, so the list stands with none open
+              onSelect: (machineId) => selectTarget(machineId, null) }} />
           {modeList(true)}
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}

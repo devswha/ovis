@@ -536,23 +536,6 @@
   pointer-events: auto;
 }
 
-/* in the column the top row floats over nothing: the connection's words lead it as a plain line, on the column's
-   own surface */
-.mode-inbox.is-wide .inbox-top > .inbox-connection {
-  position: static;
-  flex: 0 1 auto;
-  width: auto;
-  min-width: 0;
-  height: auto;
-  margin: 0;
-  margin-inline-end: auto;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: none;
-  box-shadow: none;
-}
-
 /* the column's controls rest on its surface: no shadow, and the smaller glyph of a pointer's control */
 .mode-inbox.is-wide .icon-button.inbox-round {
   box-shadow: none;

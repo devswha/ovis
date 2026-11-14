@@ -68,7 +68,10 @@ export interface InboxListProps {
   more?: InboxMore;
   /** the header's note, between a phone's two top controls: the list has no header to say it in */
   note?: ReactNode;
-  /** what the connection has to say (lib/headerConnection.ts), which a thread says under its name: one quiet line here */
+  /**
+   * what the connection has to say (lib/headerConnection.ts), which a thread says under its name: one quiet line here,
+   * where the list is the screen. Beside a thread the mode's rail says it (components/InboxRail.tsx), and the list none
+   */
   connection?: HeaderConnection;
   /** why the roster's last load failed (the read's own message), and the way to load it again: the read it starts, which
    *  the list waits on to say a Retry is on its way */
@@ -317,9 +320,9 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     </button>
   );
   // The connection's word, in the document before its words (lib/useAnnouncedText.ts) and drawn by nothing while there
-  // is none. The column's top row is the search field's while that is open: the word is still said, not drawn.
+  // is none: a phone's line, between its two top controls.
   const connectionWord = useAnnouncedText(connection === null ? null : t(connection === "connected" ? "Connected" : "Reconnecting…"));
-  const connectionLine = <p className={connectionWord === null || (wide && searchOpen) ? "visually-hidden" : "inbox-connection"} role="status">{connectionWord}</p>;
+  const connectionLine = <p className={connectionWord === null ? "visually-hidden" : "inbox-connection"} role="status">{connectionWord}</p>;
   const moreButton = more && (
     <button type="button" className="icon-button inbox-round inbox-more" aria-label={more.label} title={more.label}
       aria-haspopup={more.popup} aria-expanded={more.expanded} onClick={(event) => more.onPress(event.currentTarget)}>
@@ -335,7 +338,6 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
             opens on request and then takes the row: the filter and New workspace give way until it is put away, so
             a query has the room to be read. */}
         {wide ? <>
-          {connectionLine}
           {searchField}
           <button type="button" ref={searchToggle} className="icon-button inbox-round inbox-search-toggle" aria-label={searchLabel} title={searchLabel} aria-expanded={searchOpen}
             onClick={() => { if (!searchOpen) setSearchAsked(true); else if (query === "") setSearchAsked(false); else search.current?.focus(); }}>

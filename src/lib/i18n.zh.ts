@@ -118,6 +118,8 @@ const BASE: Record<string, string> = {
   // ---- settings ----
   "Settings": "设置",
   "PCs": "PC",
+  "PC {name}": "PC {name}",
+  "PCs, {n} of {m} connected": "{m} 台 PC 中已连接 {n} 台",
   "Chat": "聊天",
   "Agent default": "Agent 默认",
   "Devices and PCs": "设备和电脑",

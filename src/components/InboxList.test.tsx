@@ -550,15 +550,16 @@ describe("InboxList", () => {
     expect(line(root).map((node) => [node.props.className, text(node)])).toEqual([["visually-hidden", ""]]);
   });
 
-  it("gives the column's top row to the search field while it is open, the connection's word still said", async () => {
+  it("says nothing of the connection as the column beside a thread: the mode's rail says it there, whatever the list is handed", async () => {
     phone = false;
     const root = await draw(roster(), { wide: true, connection: "reconnecting" });
     await runFrames();
-    const line = () => byClass(root, "inbox-top")[0]!.findAll((node) => node.type === "p" && node.props.role === "status");
-    expect(line().map((node) => [node.props.className, text(node)])).toEqual([["inbox-connection", "Reconnecting…"]]);
+    // no line in the column's top row, drawn or only said, with its search field shut and with it open
+    const lines = () => byClass(root, "inbox-top")[0]!.findAll((node) => node.props.role === "status").length + byClass(root, "inbox-connection").length;
+    expect(lines()).toBe(0);
     await act(async () => { byClass(root, "inbox-search-toggle")[0]!.props.onClick(); });
     expect(byClass(root, "inbox-search-input").length).toBe(1);
-    expect(line().map((node) => [node.props.className, text(node)])).toEqual([["visually-hidden", "Reconnecting…"]]);
+    expect(lines()).toBe(0);
   });
 
   it("offers New workspace on the one connected PC, and none to a watching device", async () => {
