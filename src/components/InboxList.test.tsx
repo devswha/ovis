@@ -988,6 +988,25 @@ describe("InboxList", () => {
       expect(focused.at(-1)?.node).toBe("inbox-search-toggle");
     });
 
+    it("keeps a folded field open when Escape takes words typed before the column narrowed, and folds it on the next Escape", async () => {
+      const queries: string[] = [];
+      // the words were typed while the column had the room for the field, so Search was never pressed
+      const root = await draw(roster(), { wide: true, query: "export", onQuery: (query) => queries.push(query) });
+      const opened = () => String(byClass(root, "inbox-top")[0]!.props.className).split(" ").includes("is-search-open");
+      const field = () => root.findByProps({ type: "search" });
+      const escape = { key: "Escape", nativeEvent: { isComposing: false }, preventDefault() {} };
+      expect(opened()).toBe(true);
+      await act(async () => { field().props.onKeyDown(escape); });
+      expect(queries).toEqual([""]);
+      await redraw({ query: "" });
+      // the field holding the focus stays drawn
+      expect(opened()).toBe(true);
+      expect(focused.map((call) => call.node)).not.toContain("inbox-search-toggle");
+      await act(async () => { field().props.onKeyDown(escape); });
+      expect(opened()).toBe(false);
+      expect(focused.at(-1)?.node).toBe("inbox-search-toggle");
+    });
+
     it("keeps its always-shown search field and the focus in it on an Escape where the column has the room for it", async () => {
       const queries: string[] = [];
       const root = await draw(roster(), { wide: true, searchToggleHidden: true, onQuery: (query) => queries.push(query) });

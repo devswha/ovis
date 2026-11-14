@@ -287,10 +287,13 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     if (event.key !== "Escape" || !wide || event.nativeEvent.isComposing || event.keyCode === 229) return;
     // a first Escape takes the words away, the next one the field
     event.preventDefault();
-    if (query !== "") onQuery("");
-    // in a column that folds the field, it goes from under the focus and the button that opened it takes it; where the
-    // field is always shown it stays
-    else if (searchToggle.current && searchToggle.current.getClientRects().length > 0) { setSearchAsked(false); searchToggle.current.focus(); }
+    // in a column that folds the field (Search is drawn), words typed before it narrowed held it open: the field keeps
+    // the focus, so it stays open once they go
+    const folds = searchToggle.current !== null && searchToggle.current.getClientRects().length > 0;
+    if (query !== "") { onQuery(""); if (folds) setSearchAsked(true); }
+    // empty, in a column that folds the field, it goes from under the focus and the button that opened it takes it;
+    // where the field is always shown it stays
+    else if (folds) { setSearchAsked(false); searchToggle.current?.focus(); }
   };
   // Beside the rail the list's search says its scope, in its field and its button's name: the palette, which searches
   // panes and actions, is under its shortcut and the thread's More. Where the list is the screen it is the one search.
