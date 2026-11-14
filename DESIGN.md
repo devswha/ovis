@@ -1161,9 +1161,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   dialog, a menu or popover the focus is in or on, or a field in it whose Escape does something (a rename, a filter with
   words), takes it first; hidden with the focus in it, it hands the focus to its toggle; a click on the toggle
   keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
-  from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
+  from the left `24px` edge opens the drawer and a swipe to the left closes it. Away from that
+  edge, opening requires `dx >= 2 * |dy|` so diagonal scrolling stays with the page; strokes
+  starting on a split divider (`role="separator"`) or its children cannot open a closed drawer,
+  but still close an open drawer. Interior strokes remain uncancelled until they reach `56px`
+  horizontally at that angle, letting an initially flat stroke turn into vertical scrolling.
+  [Paseo phone web](https://github.com/getpaseo/paseo/blob/main/packages/app/src/mobile-panels/gesture-intent.ts)
+  keeps opening edge-only to protect interior scrollers. Ovis deliberately allows a flatter interior
+  stroke as agreed in [#2705](https://github.com/devswha/ovis/issues/2705), retaining its existing
+  horizontal-scroll, input, selection and modal exclusions. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half
   shows or a flick (`0.35` px/ms, not after a `100ms` rest) went that way, and slides the rest from there.
+  An interior opening released at or beyond `56px` stays open even when less than half shows,
+  so a slow stroke near the right edge works; reversing below that threshold or flicking left
+  can still close it. Edge-started strokes keep their original settling behavior.
 - The terminal stack contains a positioned terminal surface, then composer or key bar. The xterm
   mount stays alive under the chat lens; changing views never creates a second connection.
 - At `<=480px` the brand name, the offline pill and desktop-only control labels go, and the

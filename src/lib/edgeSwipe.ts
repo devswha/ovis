@@ -1,6 +1,7 @@
 /*
- * The workspace drawer follows a phone's finger: a swipe in from the left edge opens it,
- * as the menu button does, and a swipe to the left closes it again. Only at the drawer's
+ * The workspace drawer follows a phone's finger: a rightward swipe opens it, as the menu button
+ * does, and a swipe to the left closes it again. Away from the left edge the opening angle is
+ * flatter. Only at the drawer's
  * width (<=768px, styles.css) and only for a mostly horizontal stroke, so the terminal's
  * one-finger scrolling and the transcript's vertical scrolling keep working.
  *
@@ -10,7 +11,7 @@
  * of the way from there.
  */
 
-/** A stroke has to start this close to the left edge to open the drawer. */
+/** Inside this left edge, an opening stroke keeps the looser horizontal angle. */
 export const EDGE_PX = 24;
 /** How far a finger travels sideways before the drawer opens or closes. */
 export const SWIPE_PX = 56;
@@ -28,10 +29,14 @@ export type SwipeVerdict = "open" | "close" | "claim" | "pending" | "ignore";
  * swipe still short of SWIPE_PX: the caller keeps it from scrolling what lies under it.
  */
 export function swipeVerdict(drawerOpen: boolean, startX: number, dx: number, dy: number): SwipeVerdict {
-  if (!drawerOpen && startX > EDGE_PX) return "ignore";
   if (Math.abs(dx) < SLOP_PX && Math.abs(dy) < SLOP_PX) return "pending";
   if (Math.abs(dy) >= Math.abs(dx)) return "ignore";
-  if (!drawerOpen && dx > 0) return dx >= SWIPE_PX ? "open" : "claim";
+  if (!drawerOpen && dx > 0) {
+    if (startX > EDGE_PX && dx < 2 * Math.abs(dy)) return "ignore";
+    // Interior strokes may still become a page scroll: do not cancel their first flat move.
+    if (startX > EDGE_PX && dx < SWIPE_PX) return "pending";
+    return dx >= SWIPE_PX ? "open" : "claim";
+  }
   if (drawerOpen && dx < 0) return -dx >= SWIPE_PX ? "close" : "claim";
   return "ignore";
 }
@@ -68,6 +73,14 @@ function editable(target: EventTarget | null): boolean {
   return false;
 }
 
+/** A split divider owns sideways drags, including strokes on its child elements. */
+function onDivider(target: EventTarget | null): boolean {
+  for (let node = target as HTMLElement | null; node; node = node.parentElement) {
+    if (node.getAttribute?.("role") === "separator") return true;
+  }
+  return false;
+}
+
 /** Text is selected (the transcript's, a long press in the gutter): a stroke drags its handles. */
 function selecting(): boolean {
   const selection = document.getSelection?.() ?? null;
@@ -89,7 +102,7 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
     // the last stroke still holds the drawer: a second finger, or its end never came (the element
     // it began on left the page and took its touches with it). It lets go where it was first
     const open = follow !== null ? onEnd() : isOpen();
-    start = event.touches.length === 1 && touch && narrow.matches && document.querySelector(MODAL) === null && (open || !scrolledAside(event.target))
+    start = event.touches.length === 1 && touch && narrow.matches && document.querySelector(MODAL) === null && (open || (!scrolledAside(event.target) && !onDivider(event.target)))
       && !editable(event.target) && !selecting()
       ? { x: touch.clientX, y: touch.clientY, open, at: event.timeStamp } : null;
     claimed = false;
@@ -112,7 +125,9 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
     if (verdict === "ignore") { onEnd(); return; }
     claimed = true;
     // a recognised swipe belongs to the drawer, not to the terminal or list under the finger
-    event.preventDefault();
+    // After an uncancelled first move Chromium may send non-cancelable moves even on a
+    // horizontal stroke that scrolls nothing. The direction test still decides ownership.
+    if (event.cancelable !== false) event.preventDefault();
     event.stopPropagation();
     if (!done && (verdict === "open" || verdict === "close")) {
       state = verdict === "open";
@@ -147,6 +162,9 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
   /** Ends the stroke; returns what the drawer is set to now. */
   const onEnd = (event?: TouchEvent): boolean => {
     const held = follow;
+    // Near the right edge there may be too little room to reveal half the drawer. Reaching
+    // the interior opening threshold is enough, unless the finger flicked back to close it.
+    const interiorOpening = start !== null && !start.open && start.x > EDGE_PX && held !== null && held.x - start.x >= SWIPE_PX;
     start = null;
     claimed = false;
     done = false;
@@ -154,7 +172,8 @@ export function watchDrawerSwipe(isOpen: () => boolean, setOpen: (open: boolean)
     if (held === null) return state;
     // a finger that rested before it lifted, or a stroke handed back mid-way, flicks nothing
     const rested = event === undefined || event.timeStamp - held.at > REST_MS;
-    const open = drawerSettles(held.shown, held.width, rested ? 0 : held.speed);
+    const speed = rested ? 0 : held.speed;
+    const open = (interiorOpening && speed > -FLING_SPEED) || drawerSettles(held.shown, held.width, speed);
     if (open !== state) setOpen(open);
     state = open;
     // the stylesheet's slide takes it from where the finger left it to where it settles

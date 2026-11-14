@@ -7,8 +7,19 @@ describe("swipeVerdict", () => {
     expect(swipeVerdict(false, 4, SWIPE_PX, 5)).toBe("open");
   });
 
-  test("a stroke that starts away from the edge is the page's", () => {
-    expect(swipeVerdict(false, EDGE_PX + 1, SWIPE_PX * 2, 0)).toBe("ignore");
+  test("a flat rightward stroke opens from mid-screen, including the angle boundary", () => {
+    expect(swipeVerdict(false, 200, 20, 10)).toBe("pending");
+    expect(swipeVerdict(false, 200, SWIPE_PX, SWIPE_PX / 2)).toBe("open");
+    expect(swipeVerdict(false, 200, SWIPE_PX, -SWIPE_PX / 2)).toBe("open");
+    expect(swipeVerdict(false, 200, -SWIPE_PX, 0)).toBe("ignore");
+    expect(swipeVerdict(false, 200, 3, 2)).toBe("pending");
+  });
+
+  test("diagonal strokes scroll away from the edge, which keeps its looser angle", () => {
+    expect(swipeVerdict(false, EDGE_PX + 1, 56, 29)).toBe("ignore");
+    expect(swipeVerdict(false, 200, 56, -29)).toBe("ignore");
+    expect(swipeVerdict(false, EDGE_PX, 56, 40)).toBe("open");
+    expect(swipeVerdict(true, 200, -56, 40)).toBe("close");
   });
 
   test("a vertical stroke from the edge still scrolls", () => {
@@ -97,6 +108,27 @@ describe("watchDrawerSwipe", () => {
 
   test("a claimed stroke that comes back and goes on opens the drawer once, and keeps its moves", () => {
     expect(stroke([[4, 400], [24, 400], [6, 400], [70, 400], [90, 460], [120, 520]])).toEqual({ reached: 0, calls: [true] });
+  });
+
+  test("a flat mid-screen stroke opens and retains the stroke after opening", () => {
+    expect(stroke([[200, 300], [220, 305], [260, 320], [280, 370]])).toEqual({ reached: 1, calls: [true] });
+  });
+
+  test("an initially flat interior stroke turns into scrolling without cancelling either move", () => {
+    expect(stroke([[200, 300], [220, 302], [220, 370]])).toEqual({ reached: 2, calls: [] });
+  });
+
+  test("a diagonal mid-screen stroke stays with the page even if it later flattens", () => {
+    expect(stroke([[200, 300], [220, 311], [280, 311]])).toEqual({ reached: 2, calls: [] });
+  });
+
+  test("a divider excludes opening, but still permits closing the open drawer", () => {
+    const divider = { getAttribute: (name: string) => name === "role" ? "separator" : null, parentElement: null };
+    const child = { parentElement: divider };
+    for (const target of [divider, child]) {
+      expect(stroke([[200, 300], [230, 300], [280, 300]], false, target)).toEqual({ reached: 2, calls: [] });
+      expect(stroke([[200, 300], [170, 300], [120, 300]], true, target)).toEqual({ reached: 0, calls: [false] });
+    }
   });
 
   test("a vertical stroke from mid-screen belongs to the page", () => {
@@ -204,6 +236,46 @@ describe("watchDrawerSwipe", () => {
     expect(calls).toEqual([true]);
     stop();
     delete doc["getElementById"];
+  });
+
+  test("a decided flat interior move can open even when the browser no longer allows cancellation", () => {
+    const calls: boolean[] = [];
+    const stop = watchDrawerSwipe(() => false, (open) => calls.push(open));
+    listeners.get("touchstart")!({ touches: [{ clientX: 200, clientY: 300 }], target: null });
+    listeners.get("touchmove")!({ touches: [{ clientX: 270, clientY: 300 }], cancelable: false,
+      preventDefault: () => { throw new Error("must not call preventDefault on a non-cancelable event"); }, stopPropagation: () => {} });
+    expect(calls).toEqual([true]);
+    stop();
+  });
+
+  /** Timed moves with a real drawer stand-in, including a rested lift that cannot count as a flick. */
+  const timedStroke = (points: [number, number][], liftAt: number) => {
+    const drawer = { style: {} as Record<string, string>, getBoundingClientRect: () => ({ width: 300 }) };
+    const doc = (globalThis as Record<string, unknown>)["document"] as Record<string, unknown>;
+    doc["getElementById"] = () => drawer;
+    const calls: boolean[] = [];
+    const stop = watchDrawerSwipe(() => false, (open) => calls.push(open));
+    const event = ([x, at]: [number, number]) => ({ touches: [{ clientX: x, clientY: 400 }], timeStamp: at,
+      target: null, cancelable: true, preventDefault: () => {}, stopPropagation: () => {} });
+    listeners.get("touchstart")!(event(points[0]!));
+    for (const point of points.slice(1)) listeners.get("touchmove")!(event(point));
+    listeners.get("touchend")!({ touches: [], timeStamp: liftAt });
+    expect(drawer.style["transform"]).toBe("");
+    stop();
+    return calls;
+  };
+
+  test("a slow short opening from the right half stays open after a rested lift", () => {
+    expect(timedStroke([[320, 0], [340, 200], [360, 400], [380, 600]], 1600)).toEqual([true]);
+  });
+
+  test("an interior opening can still be reversed or flicked closed", () => {
+    expect(timedStroke([[320, 0], [380, 600], [330, 900]], 1600)).toEqual([true, false]);
+    expect(timedStroke([[200, 0], [360, 400], [300, 416]], 420)).toEqual([true, false]);
+  });
+
+  test("the edge keeps its existing half-width settling for a slow short stroke", () => {
+    expect(timedStroke([[4, 0], [64, 600]], 1600)).toEqual([true, false]);
   });
 
   test("a selection after the drawer moved leaves the stroke with it", () => {
