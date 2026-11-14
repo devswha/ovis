@@ -178,6 +178,26 @@ describe("the sidebar on a PC the Herdr app lays out", () => {
     }
   });
 
+  it("offers Collapse and Expand for a row's agents while Agents under workspaces is on, one fold per row (#3771)", async () => {
+    stored.set("ovis:sidebar-agent-tree", "true");
+    const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ error: "not_found" }, { status: 404 }), { preconnect: globalThis.fetch.preconnect }));
+    const withAgents = (shown: SessionSnapshot): SessionSnapshot => ({ ...shown, panes: shown.panes.map((entry) => ({ ...entry, agent: "claude" })) });
+    await draw(withAgents(roster([workspace("a"), workspace("root", worktree(false)), workspace("child", worktree(true))])), TUI, true);
+    expect((await menuOf("a")).filter((id) => id === "fold")).toEqual(["fold"]);
+    const fold = () => (renderer!.root.findByType(RowMenu).props.items as { id: string; label: string; run: () => void }[]).find((item) => item.id === "fold")!;
+    expect(fold().label).toBe("Collapse");
+    await act(async () => { fold().run(); renderer!.root.findByType(RowMenu).props.onClose(); });
+    expect(stored.get("ovis:workspace-agents-folded:local")).toBe(JSON.stringify(["a"]));
+    expect((await menuOf("a")).filter((id) => id === "fold")).toEqual(["fold"]);
+    expect(fold().label).toBe("Expand");
+    // a tab made from the folded row's menu unfolds it, so the new agent is in sight (#3772)
+    await act(async () => { (renderer!.root.findByType(RowMenu).props.items as { id: string; run: () => void }[]).find((item) => item.id === "new-tab")!.run(); renderer!.root.findByType(RowMenu).props.onClose(); });
+    expect(stored.get("ovis:workspace-agents-folded:local")).toBe(JSON.stringify([]));
+    // a repository's row keeps its one fold, its worktrees', which takes its agents with it
+    expect((await menuOf("root")).filter((id) => id === "fold")).toEqual(["fold"]);
+    fetch.mockRestore();
+  });
+
   it("lets a TUI PC's rows be dragged and moved with Alt+arrows", async () => {
     const coordinator = await draw(roster([workspace("a"), workspace("b")]), TUI);
     const reorder = spyOn(coordinator, "reorder").mockImplementation(async () => undefined);
