@@ -113,7 +113,7 @@ import { LensToggle } from "./components/LensToggle.tsx";
 import { PcLoadStatus } from "./components/MachineStats.tsx";
 import logoDark from "./assets/brand/logo-dark.png";
 import logoLight from "./assets/brand/logo-light.png";
-import { nextWaitingTarget, sessionCountsAcross, tabPosition, useDrawerDialog, useWaitingRosters, waitingElsewhere } from "./lib/headerSessions.ts";
+import { nextWaitingTarget, sessionCountsAcross, tabPosition, useDrawerDialog, useWaitingRosters, waitingElsewhere, waitingTargets } from "./lib/headerSessions.ts";
 import { selectionStill } from "./lib/selectionMark.ts";
 import { carryMovedPane, movedView } from "./lib/paneMove.ts";
 import { useScreenWakeLock } from "./lib/wakeLock.ts";
@@ -1026,11 +1026,14 @@ export function App() {
       more={column ? undefined : { label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
       note={column ? undefined : <HeaderNote note={listNote} />} connection={!column && listNote === null ? rosterConnection : null} failure={error === null ? null : { error, retry: load }} />
   );
-  // The rail's count (from 769px): the agents that wait other than the open thread's, which is what More counts over
-  // a phone's thread, and the press that opens the next of them as its row would. With no thread open every waiting
-  // agent is another one, the pane under the list included: the jump then starts from none.
-  const railNext = inboxWide && inbox.shown ? nextWaitingTarget(waitingRosters, { machineId: selectedMachineId, paneId: null }) : nextWaiting;
-  const railWaiting = waitingInMore && railNext !== null ? { count: moreWaiting, open: () => openThread(railNext.machineId, railNext.paneId) } : null;
+  // The rail's count (from 769px) is of the agents its press can open, and the press opens the next of them as its
+  // row would: both from one starting pane, the open thread's, or none while the list is alone (every waiting agent
+  // is another one then, the pane under the list included). So the button is drawn exactly while its press has a
+  // thread to open, and an agent that waits in a pane its tab's zoom hides, which no jump reaches, is not counted
+  // here, though More counts it over a phone's thread (lib/headerSessions.ts).
+  const railFrom = { machineId: selectedMachineId, paneId: inbox.shown ? null : selectedPaneId };
+  const railNext = inboxWide ? nextWaitingTarget(waitingRosters, railFrom) : null;
+  const railWaiting = railNext !== null ? { count: waitingTargets(waitingRosters, railFrom), open: () => openThread(railNext.machineId, railNext.paneId) } : null;
   // More's button: a square of the header's, or one of the mode's round controls over the wide pane
   const moreButton = (round: boolean): ReactNode => (
     <span className="header-more">

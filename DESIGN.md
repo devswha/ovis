@@ -2504,11 +2504,16 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     last button is still reached; nothing in it is squeezed.
   - The count is a button of its own: lucide `CircleHelp` under the app's waiting pill
     (`.header-more-dot.is-waiting[data-count]`), which hangs on the glyph's top end corner and
-    is ringed with the fill it stands on, so its digits never touch the glyph. It says how many
-    agents wait other than the open thread's, and every one that waits while no thread is
-    open. It is named **N waiting for you**, its tooltip says **Open the next session waiting
+    is ringed with the fill it stands on, so its digits never touch the glyph. It counts the
+    agents its press can open: those that wait other than the open thread's, every one that
+    waits while no thread is open, and never one in a pane its tab's zoom hides, which no jump
+    reaches (`waitingTargets` beside `nextWaitingTarget`, lib/headerSessions.ts, both from one
+    starting pane). An agent that waits behind a zoom keeps its row in the list, which says
+    that it waits; a press on that row opens the pane its tab is zoomed onto, the one herdr
+    shows, as every pick of a pane a zoom hides does (lib/useSelection.ts). The button is
+    named **N waiting for you**, its tooltip says **Open the next session waiting
     for you**, and a press opens the next of them as its row would. The pill is hidden from a
-    screen reader. With nobody waiting the button is not drawn; it is the first of the lower
+    screen reader. With none to open the button is not drawn; it is the first of the lower
     group, so nothing under it moves when it comes or goes.
   - The PC is the rail's last button (lucide `Monitor`; `MonitorOff` only while every PC is
     away). Its name and its tooltip say the one PC and how it stands (**PC workstation ·
@@ -2617,7 +2622,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   and the next waiting agent is offered only when there is another. From 769px no More carries
   a count and the pane's More has no next waiting agent: the rail's count says both, in that
   one place (the rail, above), and it stays true while the list is scrolled or filtered to
-  Working or Done. The list's More never counted.
+  Working or Done. A phone's More counts an agent that waits behind a tab's zoom, which the
+  rail's count, of what its press opens, leaves out. The list's More never counted.
 - The history. A change of mode is one entry in either direction, and Back undoes it: entered
   from a pane, the pane stays mounted under the list and Back on the list returns to it; left
   from a thread, the classic shell opens on that thread's pane. On a phone More's item runs
