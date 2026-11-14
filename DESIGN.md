@@ -2519,15 +2519,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     with its name and its state in words, the one the app is on marked (`aria-current`). A row
     of another connected PC opens that PC as the classic app opens one, with no thread chosen;
     a PC that is away opens nothing, as its rows in the list.
-  - The design follows the Claude app's collapsed sidebar on a wide window: a narrow strip of
-    icon-only controls down the window's start edge, its controls near the top and the account
-    at its foot, the current one on a pale rounded fill. It differs in standing beside the list
-    instead of in its place, in beginning with the way out of the mode, and in what its foot
-    holds (the agents that wait, this device's alerts, Settings and the PC, where Claude's has
-    the account). The Codex app lists its threads, search and other places in one wide sidebar,
-    T3 Code its threads and Warp's vertical tabs its tabs, and Zed keeps its panel buttons in
-    its status bar: the mode's list is already that sidebar, and its shell draws no status bar.
-    No icon, colour or markup of any of them is used.
+  - The design follows the strip of icon-only controls that Claude's web app (claude.ai) draws
+    down the left edge of a wide window: its controls near the top, the account at its foot,
+    the current place on a pale rounded fill. The mode's rail begins with the way out of the
+    mode instead, and its foot holds the agents that wait, this device's alerts, Settings and
+    the PC. Zed opens its panels from buttons in its status bar, Warp's vertical tabs are a
+    sidebar on the left, and T3 Code lists its threads in a sidebar: the mode's list is already
+    that sidebar, and its shell draws no status bar. No icon, colour or markup of any of them
+    is used.
   - The list's top row has three round controls at its end, `--space-2-5` apart and `--space-4`
     from the column's edge: **Search agents**, the state filter and **New workspace**. The
     search field opens when asked for and takes the row: the filter and New workspace give way
