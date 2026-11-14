@@ -1929,6 +1929,10 @@ try {
         await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
         await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
         await page.locator(".thread-chip-state.is-reconnecting").waitFor();
+        // the roster's stream is lost by itself, apart from the chip's own connection, and can be told later: the
+        // rail's own word for it is waited for before the rail is read
+        const told = await page.waitForFunction(() => document.querySelector(".inbox-rail .inbox-rail-pcs")?.getAttribute("aria-label") === "PC workstation · Reconnecting…", undefined, { timeout: 15_000 }).then(() => true, () => false);
+        assert.ok(told, `the rail's PC says the connection is lost: it is named ${await page.locator(".inbox-rail .inbox-rail-pcs").getAttribute("aria-label")}`);
         assert.equal(await page.locator(".inbox-column .inbox-top .inbox-connection").count(), 0, "the column does not say what the thread's chip says");
         // nor does the rail's PC, which says the list's word from 769px: no dot, and nothing in its status line, while
         // the chip says the same word. Its name still says how the PC stands
