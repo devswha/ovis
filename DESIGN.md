@@ -2552,7 +2552,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   one, as it does under a phone's open drawer. Shown again it fits the box it is shown in, and a
   pane that held the size as the list covered it asks for that grid only where it differs: back
   in the box it had, it sends nothing. One that held none (its chat shown, a split half that let
-  the size go or follows the other half's grid) takes none on its way out. A thread is one pane:
+  the size go or follows the other half's grid) takes none on its way out. A pane that becomes a
+  slot's pane while the list covers it (the selection's fallback when its pane exits, herdr
+  zooming another pane of the tab) takes no size there, and its terminal, mounted or shown under
+  the list, held none as the list covered the slot, so it asks for none on its way out either:
+  back in the classic app it takes its size at its next fit (the window resized, the page back
+  in use, the keyboard, its lens changed), where classic would have sized it at once. A thread
+  is one pane:
   once a row's thread is drawn the split's other halves leave the page, and a tab herdr split
   shows that pane alone; Back onto the list mounts them again under it, a second attach that
   keeps the size the pty has (keep_size) and so sizes nothing, each held at the box the list

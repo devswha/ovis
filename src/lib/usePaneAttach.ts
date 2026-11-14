@@ -151,7 +151,8 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       const away = !inUse();
       typeAheadRef.current(paneId);
       // a pane that comes to a slot under the inbox mode's list (the selection's fallback, herdr's zoom) takes no size
-      // there, as resume does; shown again it asks for the grid if the slot held the size (useTerminalRefits.ts)
+      // there, as resume does; back in the classic app it takes its size at its next fit, unless its terminal held
+      // the size as the list covered it and asks for the grid as the list goes (useTerminalRefits.ts)
       socket.attach(paneId, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || held);
       // no blur or hidden comes for a tab already out of use: it lets go of this pane after a moment too
       if (away) leaveRef.current();
