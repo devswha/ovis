@@ -425,6 +425,7 @@ const BASE: Record<string, string> = {
   "Split pane down": "패널을 아래로 분할",
   "Zoom or unzoom pane": "패널 확대 또는 해제",
   "Close pane": "패널 닫기",
+  "Close tab": "탭 닫기",
   "Plan: {done} of {total} done": "계획: {total}개 중 {done}개 완료",
   "Plan": "계획",
   "Something went wrong": "문제가 발생했습니다",

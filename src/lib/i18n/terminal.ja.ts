@@ -85,7 +85,6 @@ export const TERMINAL_JA: Record<string, string> = {
   "Not sent. Reconnect and try again.": "送信できませんでした。再接続してもう一度お試しください。",
   "The chat can't be shown. The terminal still works.": "チャットを表示できません。ターミナルは引き続き使えます。",
   "Tab {n}": "タブ {n}",
-  "Close tab": "タブを閉じる",
   "Tab name": "タブ名",
   "Actions for {tab}": "{tab} の操作",
   "Close {tab}": "{tab} を閉じる",

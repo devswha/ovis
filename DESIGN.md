@@ -5905,6 +5905,13 @@ until then the card's hairline is its edge in light.
   or file suggestions are; the palette opened over another dialog lists no Close pane. A second
   close in the same workspace waits until the roster has dropped the first, so it never takes the
   workspace's last pane without asking. There is no undo: herdr ends the pane's processes.
+  Close tab (a shortcut and a palette row, #3751) is the same verb one level up, as herdr's own
+  prefix+& and the Codex app's and T3 Code's close keys, again with no default key (⌘W and Ctrl+W
+  are the browser's): it runs the open tab's own Close from its row's menu, or from the pane's menu
+  where a lone tab on a cramped screen draws no row, so a busy tab or a workspace's last one asks
+  first, a tab holding a locked pane has none, and a watching device, the setup guide and the inbox
+  mode have no Close tab. One close per press, and none under a dialog, sheet, menu or open
+  suggestions, as Close pane.
 - Text-field selection and IME composition keep their keys. Focus-local list/tab navigation and
   reordering are separate from global bindings; they must not intercept terminal input.
   Global actions target the selected pane, and the original handled chord must never also reach its PTY.

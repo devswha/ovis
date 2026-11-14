@@ -427,6 +427,7 @@ const BASE: Record<string, string> = {
   "Split pane down": "ペインを下に分割",
   "Zoom or unzoom pane": "ペインのズームまたは解除",
   "Close pane": "ペインを閉じる",
+  "Close tab": "タブを閉じる",
   "Plan: {done} of {total} done": "計画: {total} 件中 {done} 件完了",
   "Plan": "計画",
   "Something went wrong": "問題が発生しました",
