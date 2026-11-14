@@ -37,3 +37,6 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo test --locked --workspace
+      - name: The patches' own tests
+        working-directory: crates/ovis-tui/upstream
+        run: cargo test --locked -p hc-tui
