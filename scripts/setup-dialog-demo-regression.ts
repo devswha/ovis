@@ -10,7 +10,10 @@
  *   opens a new workspace with the agent picked for you (one more in the sidebar) and closes the guide.
  * - The full path: Continue leads to the theme step, whose cards are a radio group (an arrow picks the next
  *   theme and the whole app takes it at once, the side panel naming it), then to Done, whose Start with
- *   <agent> is the step's one primary button and whose list names the theme picked. The head lists the
+ *   <agent> is the step's one primary button and whose list names the theme picked. Between the theme and Done,
+ *   Phone and alerts: Settings' Alert me when chips with their defaults, Send test showing one alert on this
+ *   computer at once (notifications recorded, none reach the desktop), the phone beside them; Done lists the
+ *   alerts chosen and offers the phone left for later. The head lists the
  *   steps, the current one marked. Back returns to the theme, then to the agents, and Escape closes the guide and records it closed (a reload shows no guide).
  *
  * With UI_EVIDENCE_DIR, each state is captured under setup-dialog/.
@@ -73,6 +76,14 @@ try {
         // a fresh run's guide, once: a reload keeps what the page wrote since
         if (sessionStorage.getItem("seeded") === null) { localStorage.setItem("ovis:setup-guide", guide); sessionStorage.setItem("seeded", "1"); }
       }, [theme, WELCOME] as const);
+      // notifications allowed, and every one shown is recorded instead of reaching the desktop
+      await context.addInitScript(() => {
+        const shown: string[] = [];
+        (window as unknown as { shownAlerts: string[] }).shownAlerts = shown;
+        class RecordedNotification { static permission = "granted"; static requestPermission = () => Promise.resolve("granted"); constructor(title: string) { shown.push(title); } addEventListener() {} close() {} }
+        Object.defineProperty(window, "Notification", { value: RecordedNotification, configurable: true });
+        if (typeof ServiceWorkerRegistration !== "undefined") ServiceWorkerRegistration.prototype.showNotification = function (title: string) { shown.push(title); return Promise.resolve(); };
+      });
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
@@ -145,7 +156,23 @@ try {
         assert.ok(await dialog.locator(".setup-side").getByText(picked).count() > 0, `the side panel names the theme picked ${at}`);
         await shot("3-theme");
 
-        // Continue: Done, its Start the one primary, the theme among the choices made; Back returns to the theme, then the agents
+        // Continue: phone and alerts. This computer's chips are Settings' own, and Send test shows one alert here at once
+        await footer.getByRole("button", { name: "Continue", exact: true }).click();
+        const touch = dialog.getByRole("heading", { name: "Stay in touch with your agents", exact: true });
+        await touch.waitFor();
+        await settled(page);
+        assert.equal(await focusedName(page), "Stay in touch with your agents", `the phone and alerts step's title takes the keyboard ${at}`);
+        assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "3Phoneandalerts", `the head marks Phone and alerts as the current step ${at}`);
+        const chips = dialog.getByRole("group", { name: "Alert me when", exact: true });
+        assert.deepEqual((await chips.getByRole("button", { pressed: true }).allInnerTexts()).map((text) => text.trim()), ["Needs input", "Needs permission", "Long turn finished"], `the default alerts ${at}`);
+        await dialog.getByRole("button", { name: "Send test", exact: true }).click();
+        await dialog.getByRole("status").filter({ hasText: "Test alert sent." }).waitFor();
+        assert.deepEqual(await page.evaluate(() => (window as unknown as { shownAlerts: string[] }).shownAlerts), ["Test alert"], `Send test shows one alert ${at}`);
+        assert.ok(await dialog.locator(".setup-side").getByText("On your phone", { exact: true }).count() > 0, `the phone is beside the alerts ${at}`);
+        await chips.getByRole("button", { name: "Any turn finished", exact: true }).click();
+        await shot("4-phone-alerts");
+
+        // Continue: Done, its Start the one primary, the choices made listed; Back returns to each step in turn
         await footer.getByRole("button", { name: "Continue", exact: true }).click();
         await dialog.getByRole("heading", { name: "Ovis is ready", exact: true }).waitFor();
         await settled(page);
@@ -154,8 +181,13 @@ try {
         assert.equal(await primary.count(), 1, `one primary button on Done ${at}`);
         assert.equal((await primary.innerText()).trim(), "Start with Claude Code", `Done's Start ${at}`);
         assert.ok(await dialog.locator(".setup-summary").getByText(picked, { exact: false }).count() > 0, `Done lists the theme picked ${at}`);
-        assert.equal(await steps.locator("li.is-done").count(), 2, `both steps are marked done on Done ${at}`);
-        await shot("4-done");
+        assert.equal(await steps.locator("li.is-done").count(), 3, `every step is marked done on Done ${at}`);
+        const summary = dialog.locator(".setup-summary");
+        assert.ok(await summary.getByText("Needs input, Needs permission, Any turn finished", { exact: true }).count() > 0, `Done lists the alerts chosen ${at}`);
+        assert.ok(await summary.getByRole("button", { name: "Connect now", exact: true }).count() > 0, `Done offers the phone left for later ${at}`);
+        await shot("5-done");
+        await dialog.locator(".setup-foot").getByRole("button", { name: "Back", exact: true }).click();
+        await touch.waitFor();
         await dialog.locator(".setup-foot").getByRole("button", { name: "Back", exact: true }).click();
         await look.waitFor();
         await dialog.locator(".setup-foot").getByRole("button", { name: "Back", exact: true }).click();
@@ -173,7 +205,7 @@ try {
           await dialog.waitFor({ state: "detached" });
           await page.waitForFunction((count) => document.querySelectorAll(".workspace-group[data-workspace]").length > count, before);
           assert.equal(JSON.parse((await page.evaluate(() => localStorage.getItem("ovis:setup-guide"))) ?? "{}").status, "closed", `the fast path closes the guide ${at}`);
-          await shot("5-started");
+          await shot("6-started");
           console.log(`PASS the guide is a 1200x675 dialog, keyboard inside it, and the fast path opens the first workspace in two clicks (${at})`);
 
           // stepped aside (a pane picked from the palette over it) the guide is no modal: the app's own check for one
@@ -192,6 +224,27 @@ try {
           await dialog.waitFor();
           assert.equal(await dialog.getAttribute("aria-modal"), "true", `resumed, the guide is a modal dialog again ${at}`);
           console.log(`PASS a stepped-aside guide is no modal dialog, and Back to setup makes it one again (${at})`);
+
+          // a device paired before the guide (the demo's list) is the phone: the step and Done name it. That this
+          // browser alone is no phone is a unit test (setupGuideFlow.test.ts otherDevice)
+          const other = await context.newPage();
+          try {
+            await other.goto(`${root}?demo_devices=list`);
+            const guide = other.getByRole("dialog", { name: DIALOG, exact: true });
+            await guide.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+            await guide.getByRole("heading", { name: "Pick your coding agent", exact: true }).waitFor();
+            await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+            await guide.getByRole("heading", { name: "Pick a look", exact: true }).waitFor();
+            await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+            await guide.locator(".setup-side").getByText("Pixel 9 is paired. Alerts can reach it too.", { exact: true }).waitFor();
+            await guide.locator(".setup-foot").getByRole("button", { name: "Continue", exact: true }).click();
+            await guide.getByRole("heading", { name: "Ovis is ready", exact: true }).waitFor();
+            const row = guide.locator(".setup-summary li").filter({ hasText: "Phone" });
+            assert.equal((await row.locator(".setup-summary-row > span").nth(1).innerText()).trim(), "Pixel 9", `Done names the paired phone ${at}`);
+          } finally {
+            await other.close();
+          }
+          console.log(`PASS the phone counts as paired only when another device is listed (${at})`);
         } else {
           // Escape closes it and records it closed: a reload shows no guide
           await page.keyboard.press("Escape");
