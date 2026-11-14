@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE } from "../../shared/submit-outcome.ts";
 import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
-import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
+import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -74,6 +74,18 @@ describe("omo command completion", () => {
     expect(slashCommandReplacement(builtin, "omo", slash)).toBe("/model ");
   });
 
+  it("sends a picked OpenCode built-in that takes no argument bare, and every other pick with its space (#3813)", () => {
+    const row = (name: string, source: SlashCommand["source"] = "builtin"): SlashCommand => ({ name, description: "", source });
+    expect(sendsBarePick(row("new"), "opencode")).toBeTrue();
+    expect(sendsBarePick(row("compact"), "opencode")).toBeTrue();
+    // OpenCode's own menu only types these, with their space, for Enter to send
+    for (const name of ["rename", "cd", "btw"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
+    for (const source of ["user", "project", "plugin", "skill"] as const) expect(sendsBarePick(row("hello", source), "opencode")).toBeFalse();
+    expect(sendsBarePick({ ...row("customize-opencode", "skill"), trigger: "@" }, "opencode")).toBeFalse();
+    // any other agent's pick keeps its space
+    for (const agent of ["claude", "codex", "omo", "pi", null]) expect(sendsBarePick(row("new"), agent)).toBeFalse();
+  });
+
   it("keeps Claude, Codex and pi filtering and insertion unchanged", () => {
     const claudeSkill = { name: "delegate", description: "", source: "skill" as const };
     const codexSkill = { ...claudeSkill, trigger: "$" as const };
@@ -128,15 +140,6 @@ describe("omo command completion", () => {
 describe("composerMessage and submitNote", () => {
   it("keeps the message as written for agent.prompt: inner newlines stay, the composer's own trailing ones go", () => {
     expect(composerMessage("line one\r\nline two\n\n")).toBe("line one\nline two");
-    // a command picked from the menu ends in a space (slashCommandReplacement): sent bare, as the agent's own menu
-    // runs it; OpenCode sends `/new ` as a prompt (#3813)
-    expect(composerMessage("/new ")).toBe("/new");
-    expect(composerPayload("/new \t ", true)).toBe("\u001b[200~/new\u001b[201~");
-    expect(composerMessage("$skill ")).toBe("$skill");
-    // anything after the command, or a space that is not trailing, is the user's text and stays
-    expect(composerMessage("/rename my title ")).toBe("/rename my title ");
-    expect(composerMessage("/new \nnext")).toBe("/new \nnext");
-    expect(composerMessage("plain ")).toBe("plain ");
     // line breaks that do not end the message are read in one pass, by the rule the server reads them with
     // (withoutTrailingBreaks): as a pattern they cost their count squared, a third of a second for the 20,000 the
     // composer takes

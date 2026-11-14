@@ -46,6 +46,7 @@ import {
   MAX_COMPOSER_CHARS,
   namesHiddenCommand,
   rankSlashCommands,
+  sendsBarePick,
   slashCommandReplacement,
   submitNote,
   terminalCommand,
@@ -684,6 +685,8 @@ export function Composer({
   const uploadsRunning = useRef(0);
   /** paths placed so far, by attachment id: ids follow pick order */
   const placedMentions = useRef(new Map<number, string>());
+  /** the box's text right after a pick that goes bare when sent unchanged (sendsBarePick), or null */
+  const barePick = useRef<string | null>(null);
   /** finished uploads whose paths wait for a /command or an IME composition to end, or for room */
   const waitingMentions = useRef<{ id: number; path: string; name: string }[]>([]);
 
@@ -726,6 +729,7 @@ export function Composer({
       const replacement = typeof choice === "string" ? `@${choice} `
         : currentTrigger.kind === "slash" ? slashCommandReplacement(choice, agent, currentTrigger) : atSkillReplacement(choice);
       const completed = applyCompletion(text, currentTrigger, replacement);
+      barePick.current = typeof choice !== "string" && currentTrigger.kind === "slash" && sendsBarePick(choice, agent) ? completed.text : null;
       setTextAndCaret(completed.text, completed.caret);
       setMenuDismissed(true);
       if (typeof choice !== "string") {
@@ -846,7 +850,9 @@ export function Composer({
     if (composingRef.current) return false;
     if (viewOnly || !connected || uploading || roomless || sending || (text.trim().length === 0 && carried.length === 0)) return false;
     if (terminalTyped?.name === "resume" && onOpenHistory) { setMenuDismissed(true); onOpenHistory(); return true; }
-    const message = carried.length > 0 ? messageWithComments(carried, text) : text;
+    // the pick alone, unchanged: its space only closed the menu here, and OpenCode would send `/new ` as a prompt
+    const picked = carried.length === 0 && text === barePick.current && /^\/\S+ $/u.test(text);
+    const message = carried.length > 0 ? messageWithComments(carried, text) : picked ? text.trimEnd() : text;
     if (message.length > MAX_COMPOSER_CHARS) { setNote(t("Too long with the comments: remove a comment or shorten the message.")); return false; }
     const sentComments = carried;
     const sent = text;

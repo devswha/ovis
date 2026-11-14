@@ -29,8 +29,6 @@ const PASTE_END = "\u001b[201~";
  * A whole paste marker pasted into it is dropped (until none is left, so dropping one cannot form another): it would
  * end the paste the message goes in early. Any other escape byte stays, and the bridge refuses the message for it.
  * One pass: each marker goes the moment its last byte arrives, so one that dropping another forms goes too.
- * A message that is one command and the space after it (a menu pick, slashCommandReplacement) goes bare: OpenCode runs
- * a command that takes no argument only from its own menu, and sends `/new ` as a prompt (#3813).
  */
 export function composerMessage(text: string): string {
   const kept: string[] = [];
@@ -39,8 +37,7 @@ export function composerMessage(text: string): string {
     const from = kept.length - PASTE_START.length;
     if (from >= 0 && kept[from] === "\u001b" && (kept.slice(from).join("") === PASTE_START || kept.slice(from).join("") === PASTE_END)) kept.length = from;
   }
-  const message = withoutTrailingBreaks(kept.join("")).replace(/\r\n?/g, "\n");
-  return /^[/$]\S+[ \t]+$/u.test(message) ? message.trimEnd() : message;
+  return withoutTrailingBreaks(kept.join("")).replace(/\r\n?/g, "\n");
 }
 
 /** The text a composer message types, without its submit (HerdrSocket.submit adds the Enter). */
@@ -475,6 +472,19 @@ export function commandGroup(command: SlashCommand): CommandGroup {
   if (terminalCommand(command)) return "terminal";
   if (command.source === "skill" && command.origin !== undefined) return `skill-${command.origin}`;
   return command.source;
+}
+
+/** OpenCode's built-ins that take an argument (2.2.7 TUI, `slash.arguments: true`): its own menu types them, with a space. */
+const OPENCODE_ARGUMENT_BUILTINS: ReadonlySet<string> = new Set(["cd", "rename", "btw"]);
+
+/**
+ * Whether a command picked from the menu and sent unchanged goes without the space the pick put after it. OpenCode runs
+ * a built-in that takes no argument only from its own menu, and sends `/new ` as a prompt (#3813). Its other commands
+ * (custom, project, plugin, and the built-ins that take an argument) only type `/name ` from its menu, and that space is
+ * what lets Enter send them, so they keep it, as every other agent's commands do.
+ */
+export function sendsBarePick(command: SlashCommand, agent: string | null): boolean {
+  return agent === "opencode" && command.source === "builtin" && (command.trigger ?? "/") === "/" && !OPENCODE_ARGUMENT_BUILTINS.has(command.name);
 }
 
 /** Multi-trigger skills use the typed prefix; others use the command's wire trigger. */
