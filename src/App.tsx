@@ -66,7 +66,7 @@ import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.t
 import { useHerdrPrefixKeys } from "./lib/herdrKeys.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { useAnnouncedText } from "./lib/useAnnouncedText.ts";
-import { CRAMPED_QUERY, paneContextPress, tabRowHidden } from "./lib/paneCanvas.ts";
+import { CRAMPED_QUERY, paneContextPress, soloPane, tabRowHidden } from "./lib/paneCanvas.ts";
 import { useTabSheet } from "./lib/useTabSheet.ts";
 import type { AppActions, PaneView, PaneControls } from "./lib/actions.ts";
 import { removePushSubscription } from "./lib/push.ts";
@@ -137,8 +137,9 @@ import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks 
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
-import { useInbox, useInboxShell } from "./lib/useInbox.ts";
+import { useInbox, useInboxShell, wayInOpensThread } from "./lib/useInbox.ts";
 import { inboxOrder } from "./lib/agentInbox.ts";
+import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
@@ -374,9 +375,18 @@ export function App() {
       activateSlotOf({ machineId: selectedMachineId, paneId: selectedPaneId });
       selectTarget(selectedMachineId, selectedPaneId, "chat");
     }, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded, wide: wideScreen,
-    // only a pane with a row in the list (lib/agentInbox.ts inboxOrder, as the list draws it) that shows its chat: a
-    // shell's, or a pane on its terminal (whose lens would change and release the pty's size), opens the list
-    here: () => selectedPaneId !== null && linkLanded && view === "chat" && inboxOrder(sidebarMachines, activity).some((row) => row.machine.id === selectedMachineId && row.entry.pane.pane_id === selectedPaneId) ? sidebarPinKey(selectedMachineId, selectedPaneId) : null,
+    // only a pane drawn alone on its chat with a row in the list (lib/agentInbox.ts inboxOrder, as the list draws it);
+    // the panes its tab draws as PaneCanvas counts them (lib/paneCanvas.ts soloPane, lib/layoutMap.ts layoutCells)
+    here: () => {
+      if (selectedPaneId === null || !linkLanded) return null;
+      const layout = snapshot?.layouts.find((item) => item.tab_id === selectedPane?.tab_id) ?? null;
+      const cells = layout ? layoutCells(layout).map((cell) => cell.paneId) : [selectedPaneId];
+      return wayInOpensThread({
+        hasRow: inboxOrder(sidebarMachines, activity).some((row) => row.machine.id === selectedMachineId && row.entry.pane.pane_id === selectedPaneId),
+        view, peek: terminalPeek !== null && terminalPeek.machineId === selectedMachineId && terminalPeek.paneId === selectedPaneId,
+        drawnPanes: soloPane(layout, cells, selectedPaneId, !wideScreen) === null ? cells.length : 1, splitShown: splitOn,
+      }) ? sidebarPinKey(selectedMachineId, selectedPaneId) : null;
+    },
     thread: inMode && !inbox.shown && selectedPaneId !== null && linkLanded ? sidebarPinKey(selectedMachineId, selectedPaneId) : null,
     focusInput: () => paneControls.current?.focusInput() });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself

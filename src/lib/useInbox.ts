@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { INBOX_FILTERS, inboxStartsOpen, type InboxFilter } from "./agentInbox.ts";
+import type { PaneView } from "./actions.ts";
 import type { AppLink } from "./deepLink.ts";
 import { focusWorkspaceListToggle } from "./focus.ts";
 import { newQuestionReads } from "./useInboxQuestions.ts";
@@ -110,6 +111,19 @@ export function useInboxShell({ inMode, shown, show, open, enter, setDrawerOpen,
     setReturnTo(inMode && was.inMode && thread === null && shown ? was.thread : null);
   }
   return { enterInbox, returnTo };
+}
+
+/**
+ * Whether the way in may open the thread of the pane the classic app is on: only a pane with a row in the list that the
+ * app draws alone (no split of the app's own shown, and its tab draws that one pane: a one-pane tab or one zoomed onto
+ * it), on its chat with no terminal peek over it. Opening its thread then changes nothing the classic app draws: a
+ * sibling or another half would be hidden or unmounted (a release, a detach), and a peek or a terminal would give up
+ * the pty's size. Every other pane enters on the list, as the mode always did.
+ */
+export function wayInOpensThread({ hasRow, view, peek, drawnPanes, splitShown }: {
+  hasRow: boolean; view: PaneView; peek: boolean; drawnPanes: number; splitShown: boolean;
+}): boolean {
+  return hasRow && !splitShown && drawnPanes === 1 && view === "chat" && !peek;
 }
 
 /** The history entry's mark that it was pushed on leaving the list: Back on such an entry returns to it. */

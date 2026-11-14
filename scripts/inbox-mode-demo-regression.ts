@@ -1982,6 +1982,7 @@ try {
         const mark = page.locator(".header-side .sidebar-brand");
         assert.deepEqual(await mark.evaluate((node) => [node.tagName, node.getAttribute("aria-label"), node.getAttribute("title")]), ["BUTTON", "Open agent inbox", "Open agent inbox"],
           "the Ovis mark at the top left is a button named, and titled, for the way in");
+        assert.ok((await mark.boundingBox())!.height < 44, "with a mouse the mark keeps its slim box");
         const entries = await historyLength(page);
         await mark.click();
         await page.locator(".inbox-column .mode-inbox").waitFor();
@@ -2008,6 +2009,12 @@ try {
         assert.equal(await historyLength(page), again + 1, "Enter on the mark enters by one entry");
         console.log("PASS at 1440 the Ovis mark at the sidebar's head is a button named Open agent inbox: a click, and Enter on it, enter the mode by one entry; from a pane on its terminal on the list with nothing chosen, and neither the way in nor Back to Ovis, which shows the terminal in its box, sends any pane an attach, detach, size or release");
       }, desktop);
+      await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "the Ovis mark under a finger from 769px", async (page) => {
+        await page.locator(".app-header.is-zoned").waitFor();
+        const target = (await page.locator(".header-side .sidebar-brand").boundingBox())!;
+        assert.ok(target.height >= 44 && target.width >= 44, `under a coarse pointer the mark is a 44px target: ${Math.round(target.width)} by ${Math.round(target.height)}`);
+        console.log(`PASS at 1024 under a coarse pointer the Ovis mark is a ${Math.round(target.width)} by ${Math.round(target.height)} target`);
+      }, { width: 1024, height: 768 }, true);
 
       // ---- the classic app and the mode are one place ----
       // The pane the classic app is on is the thread the mode opens, and the thread opened in the mode is the pane the
@@ -2087,6 +2094,77 @@ try {
         assert.ok(await draftIs(draftY), `a reload keeps the thread's draft in its composer: it has "${await composer.inputValue()}"`);
         console.log(`PASS classic and the mode are one place: entering opens the classic pane's thread with its draft; Back to Ovis shows the thread's pane with its draft; entering again keeps the thread, its draft, its scroll (${threadTop}px), the filter and the list's scroll (${listTop}px); a reload keeps the thread, its draft and the filter`);
       }, { width: 1440, height: 480 });
+
+      // ---- a chat pane not drawn alone, or under a peek: the way in opens the list and sends nothing ----
+      // Its thread alone would hide or unmount what else the classic app draws (a herdr split's sibling, the app's own
+      // split's other half), or end a terminal peek: each gives up or asks a pty's size. So the way in opens the list,
+      // as the mode always did, and nothing is sent for any pane from before it through an untouched Back to Ovis.
+      const FLAKY = "w1H:p1";        // Claude, idle: a /btw sent to it opens a peek over its chat
+      const drawnScreens = (page: Page): Promise<Record<string, Box>> => page.evaluate(() => Object.fromEntries([...document.querySelectorAll("[data-layout-pane]")].flatMap((frame) => {
+        const screen = frame.querySelector(".xterm-screen");
+        if (!screen) return [];
+        const box = screen.getBoundingClientRect();
+        return box.width > 0 ? [[frame.getAttribute("data-layout-pane"), { x: box.x, y: box.y, w: box.width, h: box.height, right: box.right, bottom: box.bottom }]] : [];
+      })));
+      for (const setup of [
+        { name: "a herdr tab split, the selected pane on its chat beside a terminal", path: `/?pane=${encodeURIComponent(WORKING)}&view=chat`, pane: WORKING },
+        { name: "the classic app's split, the active half on its chat, the other on its terminal", path: `/?pane=${encodeURIComponent(WORKING)}&view=chat`, pane: WORKING },
+        { name: "a terminal peek over a chat pane", path: `/?pane=${encodeURIComponent(FLAKY)}&view=chat`, pane: FLAKY },
+      ]) {
+        await withPage(browser, base, light, setup.path, `the way in from ${setup.name} opens the list`, async (page) => {
+          await page.locator(".app-header.is-zoned").waitFor();
+          const chatOn = page.locator('.view-switch .lens-option.is-chat[aria-pressed="true"]');
+          if (setup.name.startsWith("a herdr")) {
+            await page.keyboard.press("Control+Shift+K");
+            await page.getByRole("searchbox", { name: "Search panes and actions", exact: true }).fill("Split pane right");
+            await page.getByRole("option", { name: "Split pane right", exact: true }).click();
+            await page.waitForFunction(() => document.querySelectorAll("[data-layout-pane]").length === 2, undefined, { timeout: 15_000 });
+            await page.locator(`[data-layout-pane="${WORKING}"] .chat-view`).click({ position: { x: 20, y: 20 } });
+          } else if (setup.name.startsWith("the classic")) {
+            await page.evaluate((split) => sessionStorage.setItem("ovis:split", JSON.stringify(split)), { other: { machineId: "local", paneId: BLOCKED }, bSide: "right", active: "a" });
+            await page.reload();
+            await page.locator(".app-header.is-zoned").waitFor();
+            await page.locator('.pane-slot[data-slot="b"]').click({ position: { x: 40, y: 80 } });
+            await addressIs(page, { pane: BLOCKED }, "the other half is the selected pane");
+            await page.locator(".view-switch .lens-option.is-terminal").click();
+            await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
+            await page.locator('.pane-slot[data-slot="a"] .chat-view').click({ position: { x: 20, y: 20 } });
+          } else {
+            await page.getByRole("textbox", { name: "Message", exact: true }).fill("/btw is the retry test flaky on CI too?");
+            await page.getByRole("button", { name: "Send message", exact: true }).click();
+            await page.locator(`.terminal-stack.is-chat.is-peek[data-pane-owner="${FLAKY}"]`).waitFor({ timeout: 15_000 });
+          }
+          await addressIs(page, { app: null, pane: setup.pane }, "the classic app is on the pane");
+          // under a peek the lens switch shows the terminal the peek draws; the pane's own lens is still its chat
+          if (!setup.name.startsWith("a terminal")) await chatOn.waitFor();
+          await page.waitForFunction(() => [...document.querySelectorAll(".xterm-screen")].some((screen) => screen.getBoundingClientRect().width > 0), undefined, { timeout: 15_000 });
+          // fixed wait: the staging's own attaches and sizes have gone out
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          const classic = await drawnScreens(page);
+          const before = await page.evaluate(() => window.inboxFixture.frames.length);
+
+          await page.locator(".header-more-button").click();
+          await page.locator('.row-menu [data-item="enter-inbox"]').click();
+          await page.locator(".inbox-column .mode-inbox").waitFor();
+          await page.locator(".inbox-unchosen").waitFor();
+          await addressIs(page, { app: "inbox", pane: null }, "the way in opens the list");
+          assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open");
+          // fixed wait: nothing may be sent for a pane under the list
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          await page.locator(".inbox-exit").click();
+          await page.locator(".mode-inbox").waitFor({ state: "detached" });
+          await page.locator(".app-header.is-zoned").waitFor();
+          // fixed wait: nothing may be sent for the panes shown again as they were
+          await page.waitForTimeout(NO_RESIZE_WAIT_MS);
+          assert.deepEqual(await page.evaluate((count) => window.inboxFixture.frames.slice(count), before), [], "from before the way in through Back to Ovis no attach, detach, size or release is sent for any pane");
+          await addressIs(page, { app: null, pane: setup.pane }, "Back to Ovis shows the pane it was on");
+          if (setup.name.startsWith("a terminal")) await page.locator(`.terminal-stack.is-chat.is-peek[data-pane-owner="${FLAKY}"]`).waitFor({ timeout: 5_000 });
+          const after = await drawnScreens(page);
+          assert.deepEqual(Object.keys(after).sort(), Object.keys(classic).sort(), "the classic app draws the terminals it drew");
+          for (const [pane, was] of Object.entries(classic)) sameBox(after[pane]!, was, `${pane} has the box, and the grid, it had`);
+          console.log(`PASS the way in from ${setup.name} opens the list with nothing chosen; from before it through Back to Ovis no attach, detach, size or release is sent, and the classic app draws what it drew${setup.name.startsWith("a terminal") ? ", the peek still up" : ""}`);
+        }, desktop);
+      }
 
       // ---- a phone entered again onto the thread it was left on: its Back is the list ----
       await withPage(browser, base, light, `/?pane=${encodeURIComponent(WORKING)}&view=chat`, "a phone entered again onto the thread it was left on: its Back is the list", async (page) => {

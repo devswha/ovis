@@ -2,9 +2,27 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, type RefObject } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { AppLink } from "./deepLink.ts";
-import { INBOX_FROM_KEY, INBOX_LIST_KEY, useInbox, useInboxShell } from "./useInbox.ts";
+import { INBOX_FROM_KEY, INBOX_LIST_KEY, useInbox, useInboxShell, wayInOpensThread } from "./useInbox.ts";
 import { QuestionReads } from "./useInboxQuestions.ts";
 import { SummaryReads } from "./useInboxSummaries.ts";
+
+describe("wayInOpensThread", () => {
+  const lone = { hasRow: true, view: "chat", peek: false, drawnPanes: 1, splitShown: false } as const;
+
+  it("opens the thread of a pane with a row, drawn alone, on its chat with no peek over it", () => {
+    expect(wayInOpensThread(lone)).toBe(true);
+  });
+
+  it.each([
+    ["no row in the list (a shell)", { hasRow: false }],
+    ["its terminal shown", { view: "terminal" }],
+    ["a terminal peek over its chat", { peek: true }],
+    ["its tab drawing a herdr split", { drawnPanes: 2 }],
+    ["the app's own split shown", { splitShown: true }],
+  ] as const)("enters on the list for %s", (_case, change) => {
+    expect(wayInOpensThread({ ...lone, ...change })).toBe(false);
+  });
+});
 
 describe("useInboxShell", () => {
   let renderer: ReactTestRenderer | undefined;

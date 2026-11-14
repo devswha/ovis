@@ -2232,17 +2232,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   filter, search, scroll) selects nothing. A draft and a chat's scroll are the pane's own
   (lib/composerDraft.ts, lib/chatScrollMemory.ts), so each view shows the other's; nothing
   typed is sent, a draft waits in the composer. From `769px` every way in opens on the
-  conversation the classic app shows: when the pane it is on has a row in the list and shows
-  its chat, its thread opens beside the list, as a row opens it (the list's entry, then the
-  thread's, so the thread's Back is the list). From a pane on its terminal, one with no row (a
-  shell), or no pane chosen, it opens the list with nothing chosen, as before: opening that
-  pane's chat would change its lens and release its pty's size, and the way in sends no attach,
-  detach, size or release to any pane. On a phone, whose list is the mode's screen, a way in
-  opens the list, unless the mode was left on the thread of the pane the classic app still
-  shows on its chat: then that thread. The list's filter, search text and scroll are kept for
-  the tab (session storage, beside the chat positions and the split), so leaving, entering
-  again and a reload find them as left; a new tab starts fresh. The design follows this app's
-  own model, not another app's: one selection, one draft store and one chat-scroll memory that
+  conversation the classic app shows when the pane it is on has a row in the list and the app
+  draws it alone (no split of the app's own shown, and its tab draws that one pane: a one-pane
+  tab or one zoomed onto it), on its chat with no terminal peek over it (lib/useInbox.ts
+  `wayInOpensThread`): its thread opens beside the list, as a row opens it (the list's entry,
+  then the thread's, so the thread's Back is the list). Every other pane (on its terminal,
+  under a peek, beside another pane, with no row, or none chosen) enters on the list with
+  nothing chosen, as before: its thread alone would hide or unmount what else is drawn, end the
+  peek or change the lens, each of which gives up or asks a pty's size. So the way in, and an
+  untouched Back to Ovis, send no attach, detach, size or release to any pane. On a phone,
+  whose list is the mode's screen, a way in opens the list, unless the mode was left on the
+  thread of that same pane: then that thread. The list's filter, search text and scroll are
+  kept in the tab's session storage, beside the chat positions and the split: leaving, entering
+  again and a reload find them as left, and a duplicated tab starts from a copy. The wordmark
+  under a coarse pointer is as tall as the header's touch targets there. The design follows
+  this app's own model, not another app's: one selection, one draft store and one chat-scroll memory that
   both views read, so neither view keeps a copy to save and restore.
 - Settings → Appearance → More settings → Sidebar → **Start in the agent inbox on a phone** (this device's
   choice, off by default, its stored key unchanged) is where a phone starts: a window at most

@@ -2483,6 +2483,13 @@ button {
   }
 }
 
+/* under a finger (a tablet from 769px) as tall as the header's icon buttons there; a mouse keeps the slim one */
+@media (pointer: coarse) {
+  .sidebar-brand.is-entry {
+    min-height: var(--touch-target);
+  }
+}
+
 .sidebar-brand.is-entry:active {
   background: var(--bg-elevated);
 }
