@@ -9,6 +9,8 @@ mod theme;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    // SAFETY: the first thing the program does, while it is the only thread
+    let server_vars = unsafe { ovis_tui_client::api::take_server_vars() };
     match args::parse(std::env::args().skip(1)) {
         Ok(args::Action::Help) => {
             println!("{}", args::help());
@@ -18,7 +20,7 @@ fn main() -> ExitCode {
             println!("{}", args::version());
             ExitCode::SUCCESS
         }
-        Ok(args::Action::Run(options)) => match start(&options) {
+        Ok(args::Action::Run(options)) => match start(&options, server_vars) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 eprintln!("ovis-tui: {message}");
@@ -33,8 +35,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn start(options: &args::Options) -> Result<(), String> {
-    let setting = run::Setting::read(options)?;
+fn start(
+    options: &args::Options,
+    server_vars: std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    let setting = run::Setting::read(options, server_vars)?;
     if let Some(size) = options.dump {
         return dump::once(&setting, size);
     }

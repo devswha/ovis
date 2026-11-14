@@ -18,3 +18,8 @@ ureq = { version = "3", default-features = false }
 [[test]]
 name = "ui"
 path = "tests/ui/main.rs"
+
+[[test]]
+name = "child_env"
+path = "tests/child_env.rs"
+harness = false

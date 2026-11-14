@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ovis-tui <ovis-tui@users.noreply.github.com>
 Date: Sat, 14 Nov 2026 23:59:37 +0900
-Subject: [PATCH 2/4] feat(embed): refuse input typed while a wire recovers, on
+Subject: [PATCH 2/6] feat(embed): refuse input typed while a wire recovers, on
  request
 
 With Embed::discard_input_on_recovery, keys, pastes and mouse input that arrive while a pane's wire is down, reopening after a loss, or reopened and not yet painted are refused with the usual notice instead of queued for the recovered wire. The default keeps today's queueing.

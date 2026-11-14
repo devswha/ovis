@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ovis-tui <ovis-tui@users.noreply.github.com>
 Date: Sun, 15 Nov 2026 00:30:50 +0900
-Subject: [PATCH 3/4] feat(embed): export the mouse event types the reader hands
- out
+Subject: [PATCH 3/6] feat(embed): export the mouse event types the reader
+ hands out
 
 reader::Reader yields UiEvent::Mouse(MouseInput), whose types lived in a crate-private module: a program that embeds the reader could receive a mouse event and not name what it holds. They are exported beside UiEvent.
 ---

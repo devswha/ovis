@@ -12,6 +12,25 @@ pub struct Server {
     pub token: Option<String>,
 }
 
+/// The server's address and token, taken out of this process's environment: whatever this program
+/// starts inherits its environment, and the token must reach this program alone (a core started
+/// from it would hand the token to every agent).
+///
+/// # Safety
+/// Call it before any thread exists: it changes the process's environment.
+#[must_use]
+pub unsafe fn take_server_vars() -> BTreeMap<String, String> {
+    let vars = ["OVIS_URL", "HOST", "PORT", "OVIS_TOKEN"]
+        .into_iter()
+        .filter_map(|name| Some((name.to_owned(), std::env::var(name).ok()?)))
+        .collect();
+    for name in ["OVIS_TOKEN", "OVIS_URL"] {
+        // SAFETY: the caller guarantees no other thread reads or writes the environment yet
+        unsafe { std::env::remove_var(name) };
+    }
+    vars
+}
+
 /// The token is never printed, whatever prints a `Server`.
 impl std::fmt::Debug for Server {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

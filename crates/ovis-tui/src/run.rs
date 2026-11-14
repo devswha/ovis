@@ -10,6 +10,7 @@ use ovis_tui_client::api::Server;
 use ovis_tui_client::net::{Job, Net, Reply};
 use ovis_tui_client::resume::{self, Keeper, Place};
 use ovis_tui_client::ui::{Effect, Event, Looker, Scene, Setup, State};
+use std::os::unix::net::UnixStream;
 
 use crate::args::Options;
 use crate::screen::{self, Screen};
@@ -28,7 +29,7 @@ pub struct Setting {
 }
 
 impl Setting {
-    pub fn read(options: &Options) -> Result<Setting, String> {
+    pub fn read(options: &Options, mut vars: BTreeMap<String, String>) -> Result<Setting, String> {
         let mut env = endpoint::env_snapshot();
         // hc-tui's own release check would send this client's users to "hc-tui --upgrade"
         env.insert(
@@ -42,10 +43,6 @@ impl Setting {
             Endpoint::Local(local) => local.socket.display().to_string(),
             Endpoint::Remote(remote) => format!("{}:{}", remote.target, remote.session),
         };
-        let mut vars: BTreeMap<String, String> = ["OVIS_URL", "HOST", "PORT", "OVIS_TOKEN"]
-            .into_iter()
-            .filter_map(|name| Some((name.to_owned(), std::env::var(name).ok()?)))
-            .collect();
         if let Some(url) = &options.url {
             vars.insert("OVIS_URL".to_owned(), url.clone());
         }
@@ -75,6 +72,23 @@ impl PlaceFile {
         self.0 = None;
         Some(told)
     }
+}
+
+/// What to tell the user when the local core does not answer. This program never starts one: a core
+/// it started would inherit its environment, and Ovis never starts an engine on its own.
+fn core_down(endpoint: &Endpoint) -> Option<String> {
+    let Endpoint::Local(local) = endpoint else {
+        return None;
+    };
+    if UnixStream::connect(&local.socket).is_ok() {
+        return None;
+    }
+    let start = if local.session == "default" {
+        "hc server start".to_owned()
+    } else {
+        format!("HC_SESSION={} hc server start", local.session)
+    };
+    Some(format!("herdr-core is not running. Start it with: {start}"))
 }
 
 async fn until(due: Option<Instant>) {
@@ -115,6 +129,10 @@ pub async fn run(setting: &Setting) -> Result<(), String> {
                 Effect::Remember { spot, pane } => keeper.note(spot, pane, Instant::now()),
                 Effect::Quit => break 'run,
                 Effect::OpenTerminal(pane) => {
+                    if let Some(down) = core_down(&setting.endpoint) {
+                        state.notice = Some(down);
+                        continue;
+                    }
                     let unkept = place_file.write(keeper.take(None));
                     looker.away();
                     drop(screen);
