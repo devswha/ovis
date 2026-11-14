@@ -69,19 +69,17 @@
 
 /* ---------- from 769px: the list beside the thread ---------- */
 
-/* The list is in the sidebar's column, at the sidebar's own width, so the pane is as wide here as in the classic
-   shell and entering or leaving the mode refits no terminal. No bar crosses the window: the column's top
-   controls and the pane's zone share one band (--inbox-zone-h), and the seam runs from the window's top. */
+/* The list is in the sidebar's column, at the sidebar's own width (the shell's --sidebar-shown-w, styles.css), so
+   the pane is as wide here as in the classic shell and entering or leaving the mode refits no terminal. The
+   column's rail is cut out of that width, never added to it, at every width the sidebar can have: the list is what
+   the rail leaves, down to a sidebar at its least width (InboxList.css says how its top row fits there). No bar
+   crosses the window: the column's top controls and the pane's zone share one band (--inbox-zone-h), and the seam
+   runs from the window's top. */
 .app.is-inbox-wide {
   --inbox-control: var(--control-h);
   /* the rail (InboxRail.css): as wide as the band over the list is tall, so its first control stands in a square
      cell on the band's centre line, with the column's top controls and the thread's chip */
   --inbox-rail-w: var(--inbox-zone-h);
-  /* The rail is cut out of the sidebar's width, never added to it: the list is that width less the rail, and the
-     pane keeps the x and the width it has in the classic shell. The column is never narrower than the rail and a
-     list at the sidebar's own minimum: only a sidebar dragged under that is wider in the mode than in the classic
-     shell. The width is the shell's own (styles.css, .app), floored here so that everything that reads it agrees. */
-  --sidebar-shown-w: max(min(var(--sidebar-user-w, var(--sidebar-w)), 50vw), calc(var(--inbox-rail-w) + var(--sidebar-min-w)));
 }
 
 /* the column is the rail, then the list, side by side where the classic sidebar stacks its sections. Its start safe
@@ -298,9 +296,10 @@
     app-region: no-drag;
   }
 
-  /* the window's controls at its start reach past the rail only by what is left of them: the list begins after it */
+  /* the window's controls at its start reach past the rail only by what is left of them: the list begins after it
+     (the row's own start inset, and its gaps, count this one: InboxList.css) */
   .mode-inbox.is-wide .inbox-top {
-    padding-inline-start: max(var(--space-4), calc(var(--space-4) + env(titlebar-area-x, 0px) - var(--inbox-rail-w)));
+    --inbox-top-start: calc(var(--inbox-top-inset) + max(0px, env(titlebar-area-x, 0px) - var(--inbox-rail-w)));
   }
 
   .thread-top {
@@ -315,7 +314,8 @@
 
 /* beside the rail the list begins after most of that corner: its top row keeps clear of what is left of it */
 :root[data-window-controls] .mode-inbox.is-wide .inbox-top {
-  padding-inline-start: max(var(--space-4), calc(var(--space-4) + var(--window-controls-w, 72px) - var(--inbox-rail-w)));
+  --inbox-top-start: calc(var(--inbox-top-inset) + max(0px, var(--window-controls-w, 72px) - var(--inbox-rail-w)));
+  padding-inline-start: var(--inbox-top-start);
 }
 
 /* More's header over a thread (App.tsx gives the crumb .is-inbox in the mode only): its fixed lines never make a

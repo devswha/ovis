@@ -1,7 +1,6 @@
 /** The sidebar's width when the user has dragged its edge: per device, like the PC folds. */
 const KEY = "ovis:sidebar-width";
 
-/** the narrowest the edge can be dragged to; styles.css says the same as --sidebar-min-w, which the inbox mode's column reads */
 export const SIDEBAR_MIN_WIDTH = 240;
 export const SIDEBAR_MAX_WIDTH = 520;
 /** one arrow key press on the focused edge */

@@ -7,4 +7,4 @@
 ### Changed
 - In the desktop inbox the state filter stands beside Search and New workspace at the top of the
   list, and an open search field takes that row. The list has no foot and no More menu: what they
-  held is in the rail. A phone's inbox is as it was.
+  held is in the rail. In a window under 769px wide (a phone held upright) the inbox is as it was.

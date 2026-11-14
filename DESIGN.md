@@ -955,7 +955,6 @@ Comfortable values are `:root`; the final column is the complete compact overrid
 | `--header-h` | `52px` | `46px` | App header below `769px` |
 | `--header-h-wide` | `42px` | — | App header from `769px`, in either density (`--header-h` takes this value there) |
 | `--sidebar-w` | `320px` | `300px` | Sidebar/drawer; the default while the user has not dragged the sidebar's edge |
-| `--sidebar-min-w` | `240px` | — | The narrowest the sidebar's edge can be dragged to (lib/sidebarWidth.ts `SIDEBAR_MIN_WIDTH` keeps the drag to it); the inbox mode's column is never narrower than its rail plus this |
 | `--control-h` | `34px` | `32px` | Buttons and fields |
 | `--bar-control-h` | `28px` | — | Header pills, lens switch and tab overflow control |
 | `--tab-h` | `calc(var(--control-h) - 5px)` | — | Desktop header tab height |
@@ -2458,11 +2457,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--bg-nav`, at the sidebar's own width (`--sidebar-shown-w`, with the sidebar's resizer, which
   lets a mouse on the list's drawn scrollbar under it through to that scrollbar as it does in
   the sidebar): the rail first, then the list (`.mode-inbox.is-wide`). The rail is cut out of
-  that width, never added to it: the list is the sidebar's width less the rail (262px at the
-  default 320), and the pane has the x and the width it has in the classic shell. The column
-  is never drawn narrower than the rail plus the sidebar's own minimum (`--sidebar-min-w`:
-  298px with a mouse, 308px under a coarse pointer), so only a sidebar dragged under that is
-  wider in the mode than in the classic shell, its pane narrower by up to the rail. No
+  that width, never added to it, at every width the sidebar can have: the list is the
+  sidebar's width less the rail (262px at the default 320; 182px at the sidebar's least width
+  of 240px, 172px there under a coarse pointer), and the pane has the x and the width it has
+  in the classic shell beside its sidebar. A thread that shows its terminal has the box the
+  classic shell gives that pane, at every width of the sidebar, and leaving the mode from it
+  sends its pty no size (the cases where a thread's box is not classic's, a collapsed classic
+  sidebar among them, are under "A thread opens on its chat" below). No
   bar crosses the window: the column's top row and the zone over the pane are one band,
   `--control-h` plus twice `--space-3` tall, and the seam between the panes (`--divider`) runs
   from the window's top.
@@ -2531,7 +2532,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     that sidebar, and its shell draws no status bar. No icon, colour or markup of any of them
     is used.
   - The list's top row has three round controls at its end, `--space-2-5` apart and `--space-4`
-    from the column's edge: **Search agents**, the state filter and **New workspace**. The
+    from the column's edge: **Search agents**, the state filter and **New workspace**. In a
+    list too narrow for the row at those insets (a sidebar near its least width under a coarse
+    pointer, whose controls are 44px) the row gives way and its controls stay inside the
+    column: first its side insets, down to the rows' own `--space-3`, then its gaps, which
+    share what is left. The rows truncate their words as they always do, and nothing scrolls
+    sideways. The
     search field opens when asked for and takes the row: the filter and New workspace give way
     until it is put away, so a query has the room to be read in the narrower list (the field is
     then the whole row but its Search button). It takes the focus, stays while it holds words
