@@ -952,7 +952,11 @@ and the launcher falls back to the checkout's own supervisor. Pages are told the
 from (its `dist/build.json`), as with a build of the sources; the manifest's SHA-256 stays the release's id in offers,
 installs and `current.json`, and a check that finds nothing newer names the running release by that build commit. Nothing in
 the checkout or the app's state changes, and a release that fails a check leaves the running one as it was. The
-compiled supervisor runs only the binary release it was started from and never builds from source.
+compiled supervisor runs only the binary release it was started from and never builds from source. A launcher from
+before updates replaced the supervisor (the launcher of 0.2.0, which hands its bridge no `OVIS_SOURCE_ROOT`) never
+runs an installed release, so under it the app installs nothing and shows instead the commands that update its checkout
+and restart Ovis (`oldLauncherReason` in [server/update-api.ts](../server/update-api.ts)); after them, its next update
+is its first release of the compiled server.
 
 The bridge is one release: the first `v*` release made the usual way from a commit that holds this updater and still
 the whole source tree. Every install from before reaches it by its own update; its next update installs the next
