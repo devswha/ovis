@@ -1,6 +1,6 @@
-//! The program in a PTY with no core running and a fake `hc` on `PATH` that records any call: Enter
-//! does not start a core (nor anything that could hand the token to one) and the screen says how
-//! to start it.
+//! The program in a PTY with no core running and a fake `hc` on `PATH` that records any call: it
+//! starts no core (a core started from it would inherit its environment and hand it to every
+//! agent), says how to start one, and leaves.
 #![cfg(unix)]
 
 #[path = "../upstream/crates/hc-tui/tests/common/pty.rs"]
@@ -26,6 +26,18 @@ fn scratch() -> PathBuf {
     root
 }
 
+/// The hosted program, killed when the test ends however it ends: a failed assertion must not
+/// leave it running.
+struct Hosted(Pty);
+
+impl Drop for Hosted {
+    fn drop(&mut self) {
+        // it may have exited already: then there is nothing to kill
+        let _ = self.0.child.kill();
+        let _ = self.0.child.wait();
+    }
+}
+
 fn until_screen(pty: &Pty, vt: &mut Vt, words: &str) {
     let deadline = Instant::now() + DEADLINE;
     loop {
@@ -40,7 +52,7 @@ fn until_screen(pty: &Pty, vt: &mut Vt, words: &str) {
 }
 
 #[test]
-fn enter_with_no_core_running_starts_none_and_says_how() {
+fn with_no_core_running_it_starts_none_and_says_how() {
     let root = scratch();
     let record = root.join("hc.record");
     let hc = root.join("bin").join("hc");
@@ -62,35 +74,36 @@ fn enter_with_no_core_running_starts_none_and_says_how() {
         ("XDG_CONFIG_HOME", path("config")),
         ("XDG_RUNTIME_DIR", path("runtime")),
         ("HC_SESSION", "scratch".into()),
-        ("OVIS_URL", "http://127.0.0.1:1".into()),
         ("OVIS_TOKEN", "t0ken-for-this-test".into()),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_owned(), v))
     .collect();
-    let mut pty = Pty::spawn(
+    let mut hosted = Hosted(Pty::spawn(
         Path::new(env!("CARGO_BIN_EXE_ovis-tui")),
         &[],
         &env,
         &root.join("work"),
-        80,
+        120,
         24,
-    );
-    let mut vt = Vt::new(80, 24, 1000);
-    until_screen(&pty, &mut vt, "127.0.0.1:1");
-    pty.type_keys(b"\r");
-    until_screen(&pty, &mut vt, "HC_SESSION=scratch hc server start");
+    ));
+    let pty = &mut hosted.0;
+    let mut vt = Vt::new(120, 24, 1000);
+    until_screen(pty, &mut vt, "HC_SESSION=scratch hc server start");
+    let deadline = Instant::now() + DEADLINE;
+    let status = loop {
+        pty.pump(&mut vt);
+        if let Some(status) = pty.child.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "the program did not exit");
+        std::thread::sleep(POLL);
+    };
+    assert!(!status.success());
     assert!(
         !record.exists(),
         "hc was run: {}",
         fs::read_to_string(&record).unwrap_or_default()
     );
-    pty.type_keys(b"q");
-    let deadline = Instant::now() + DEADLINE;
-    while pty.child.try_wait().expect("try_wait").is_none() {
-        assert!(Instant::now() < deadline, "the program did not quit");
-        pty.pump(&mut vt);
-        std::thread::sleep(POLL);
-    }
     let _ = fs::remove_dir_all(&root);
 }

@@ -11,10 +11,6 @@ pub enum Action {
 pub struct Options {
     /// The herdr-core session: `--session`, else `HC_SESSION`, else `default`.
     pub session: Option<String>,
-    /// The Ovis server's origin: `--url`, else `OVIS_URL`, else `HOST` and `PORT`.
-    pub url: Option<String>,
-    /// Print one frame of this size and leave: `--dump-once COLSxROWS`.
-    pub dump: Option<(u16, u16)>,
 }
 
 pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Action, String> {
@@ -30,36 +26,17 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Action, String> {
         match name.as_str() {
             "-h" | "--help" => return Ok(Action::Help),
             "-V" | "--version" => return Ok(Action::Version),
-            "--session" => options.session = Some(value(&name, inline, &mut args)?),
-            "--url" => options.url = Some(value(&name, inline, &mut args)?),
-            "--dump-once" => options.dump = Some(size(&value(&name, inline, &mut args)?)?),
+            "--session" => {
+                let value = inline
+                    .or_else(|| args.next())
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| "--session needs a value".to_owned())?;
+                options.session = Some(value);
+            }
             other => return Err(format!("unexpected argument '{other}'")),
         }
     }
     Ok(Action::Run(options))
-}
-
-fn value(
-    name: &str,
-    inline: Option<String>,
-    rest: &mut impl Iterator<Item = String>,
-) -> Result<String, String> {
-    inline
-        .or_else(|| rest.next())
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{name} needs a value"))
-}
-
-fn size(text: &str) -> Result<(u16, u16), String> {
-    let parsed = text
-        .split_once('x')
-        .and_then(|(cols, rows)| Some((cols.parse::<u16>().ok()?, rows.parse::<u16>().ok()?)));
-    match parsed {
-        Some((cols, rows)) if cols >= 20 && rows >= 5 => Ok((cols, rows)),
-        _ => Err(format!(
-            "--dump-once takes COLSxROWS, at least 20x5 (got '{text}')"
-        )),
-    }
 }
 
 pub fn version() -> String {
@@ -70,25 +47,48 @@ pub fn help() -> String {
     format!(
         "\
 {}
-The Ovis inbox in a terminal, for herdr-core: the agents that wait for you, their question
-cards, and their terminals (hc-tui's sidebar, tabs and splits).
+herdr-core's terminals in this terminal, as herdr shows them: the sidebar of workspaces and
+agents with their state, tabs, splits and herdr's keys (from your herdr config). Ctrl+B q
+(herdr's detach key) leaves. It never starts a core: when none runs, it says how to start one.
 
 Usage: ovis-tui [OPTIONS]
 
 Options:
-      --session <NAME>        herdr-core session (default: $HC_SESSION or \"default\")
-      --url <ORIGIN>          this PC's Ovis server (default: $OVIS_URL, or $HOST and $PORT,
-                              or http://127.0.0.1:7317)
-      --dump-once <COLSxROWS> print one frame of that size and leave
-  -h, --help                  print this help
-  -V, --version               print the version
+      --session <NAME>  herdr-core session (default: $HC_SESSION or \"default\")
+  -h, --help            print this help
+  -V, --version         print the version
 
-Inbox keys: j/k or arrows move, enter opens, 1-9 answer the card, t terminal, m mark read,
-r refresh, b back, ? help, q quit. In a terminal, herdr's detach key (Ctrl+B q unless your
-herdr config binds another) comes back to the inbox.
-
-The terminal screen is hc-tui (https://github.com/followcat/hc-tui, Apache-2.0) with a few
-small changes of ours. Not affiliated with or endorsed by hc-tui or the Herdr project.",
+The screen is hc-tui (https://github.com/followcat/hc-tui, Apache-2.0) with a few small
+changes of ours. Not affiliated with or endorsed by hc-tui or the Herdr project.",
         version()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(args: &[&str]) -> Result<Action, String> {
+        parse(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
+    #[test]
+    fn the_session_comes_as_its_own_word_or_after_an_equals_sign() {
+        let named = |name: &str| {
+            Ok(Action::Run(Options {
+                session: Some(name.to_owned()),
+            }))
+        };
+        assert_eq!(parsed(&["--session", "work"]), named("work"));
+        assert_eq!(parsed(&["--session=work"]), named("work"));
+        assert_eq!(parsed(&[]), Ok(Action::Run(Options::default())));
+    }
+
+    #[test]
+    fn help_and_version_win_and_anything_unknown_is_refused() {
+        assert_eq!(parsed(&["--session", "x", "-h"]), Ok(Action::Help));
+        assert_eq!(parsed(&["-V"]), Ok(Action::Version));
+        assert!(parsed(&["--session"]).is_err());
+        assert!(parsed(&["--url", "http://x"]).is_err());
+    }
 }
