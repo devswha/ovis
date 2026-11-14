@@ -32,8 +32,8 @@ The build needs Rust and Zig 0.16 (hc-tui builds Ghostty's terminal library with
 
 ## On a phone over SSH
 
-At 45 to 60 columns (Termux, an iOS SSH app in portrait) the screen switches to hc-tui's phone
-layout and shows the focused terminal alone instead of its tab's whole split. Use the extra keys
+At 64 columns or fewer (hc-tui's `mobile_width_threshold`; Termux and iOS SSH apps in portrait
+are 45 to 60) the screen switches to hc-tui's phone layout and shows the focused terminal alone instead of its tab's whole split. Use the extra keys
 row's CTRL for `Ctrl+B`.
 
 When the connection drops, the client ends with it; run it again and it opens where you were.

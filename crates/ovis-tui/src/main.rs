@@ -92,7 +92,33 @@ fn core_down(endpoint: &Endpoint) -> Option<String> {
     let start = if local.session == "default" {
         "hc server start".to_owned()
     } else {
-        format!("HC_SESSION={} hc server start", local.session)
+        format!("HC_SESSION={} hc server start", shell_word(&local.session))
     };
     Some(format!("herdr-core is not running. Start it with: {start}"))
+}
+
+/// `word` as it is pasted into a shell: single-quoted unless it is a plain word.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'));
+    if plain {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_word;
+
+    #[test]
+    fn a_session_name_is_pasted_as_one_shell_word() {
+        assert_eq!(shell_word("work-2.b_c"), "work-2.b_c");
+        assert_eq!(shell_word("my session"), "'my session'");
+        assert_eq!(shell_word("it's; rm"), r"'it'\''s; rm'");
+        assert_eq!(shell_word(""), "''");
+    }
 }

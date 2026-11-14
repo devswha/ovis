@@ -23,11 +23,17 @@ stamp="$dest/.ovis-prepared"
 want=$( { printf '%s %s\n' "$HC_TUI_COMMIT" "$GHOSTTY_COMMIT"; for patch in "$here"/patches/*.patch; do [ -f "$patch" ] && cat "$patch"; done; } | sha256sum | cut -d' ' -f1)
 
 if [ -d "$dest/.git" ]; then
-  if [ -n "$(git -C "$dest" status --porcelain --untracked-files=no)" ]; then
-    echo "prepare.sh: $dest has edits of its own. Turn them into a patch in $here/patches (git -C upstream diff), or delete the folder, then run this again." >&2
+  # the tree is this script's own only while it is exactly the commit the script made last (the
+  # stamp's second line), or the bare pin, with no edits and no untracked files: anything else is
+  # someone's work, which is never deleted
+  made=$(sed -n 2p "$stamp" 2>/dev/null || true)
+  head=$(git -C "$dest" rev-parse HEAD 2>/dev/null || true)
+  edits=$(git -C "$dest" status --porcelain --ignore-submodules=untracked | grep -v -x '?? .ovis-prepared' || true)
+  if [ -n "$edits" ] || { [ "$head" != "$made" ] && [ "$head" != "$HC_TUI_COMMIT" ]; }; then
+    echo "prepare.sh: $dest has work of its own (edits, untracked files, or commits not exported to $here/patches). Export it (git -C upstream format-patch), or delete the folder, then run this again." >&2
     exit 1
   fi
-  if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
+  if [ "$(sed -n 1p "$stamp" 2>/dev/null || true)" = "$want" ]; then
     exit 0
   fi
 fi
@@ -52,5 +58,5 @@ done
 if [ "$applied" -gt 0 ]; then
   git -C "$dest" -c user.name=ovis-tui -c user.email=ovis-tui@users.noreply.github.com commit --quiet -m "Ovis patches on hc-tui $HC_TUI_TAG ($applied)"
 fi
-printf '%s\n' "$want" > "$stamp"
+printf '%s\n%s\n' "$want" "$(git -C "$dest" rev-parse HEAD)" > "$stamp"
 echo "prepare.sh: hc-tui $HC_TUI_TAG ($HC_TUI_COMMIT) with $applied patch(es) is in $dest"
