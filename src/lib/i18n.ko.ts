@@ -548,6 +548,7 @@ const BASE: Record<string, string> = {
   "Search": "검색",
   "Choose one from the list to open its chat here.": "목록에서 하나를 고르면 채팅이 여기에 열립니다.",
   "Agent inbox": "에이전트 인박스",
+  "Inbox mode": "인박스 모드",
   "Open agent inbox": "에이전트 인박스 열기",
   "Back to Ovis": "Ovis로 돌아가기",
   "Remove PC": "PC 제거",

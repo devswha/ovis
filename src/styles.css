@@ -163,6 +163,8 @@
   /* the header from 769px, in either density: one line beside the sidebar's own top row */
   --header-h-wide: 42px;
   --sidebar-w: 320px;
+  /* the narrowest the sidebar's edge can be dragged to (lib/sidebarWidth.ts SIDEBAR_MIN_WIDTH keeps the drag to it) */
+  --sidebar-min-w: 240px;
   --control-h: 34px;
   /* what the segmented track takes from --control-h above and below an option: its padding and
      hairline, both sides. An option is --control-h less this, and its touch expander grows from that */

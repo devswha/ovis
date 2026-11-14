@@ -955,6 +955,7 @@ Comfortable values are `:root`; the final column is the complete compact overrid
 | `--header-h` | `52px` | `46px` | App header below `769px` |
 | `--header-h-wide` | `42px` | — | App header from `769px`, in either density (`--header-h` takes this value there) |
 | `--sidebar-w` | `320px` | `300px` | Sidebar/drawer; the default while the user has not dragged the sidebar's edge |
+| `--sidebar-min-w` | `240px` | — | The narrowest the sidebar's edge can be dragged to (lib/sidebarWidth.ts `SIDEBAR_MIN_WIDTH` keeps the drag to it); the inbox mode's column is never narrower than its rail plus this |
 | `--control-h` | `34px` | `32px` | Buttons and fields |
 | `--bar-control-h` | `28px` | — | Header pills, lens switch and tab overflow control |
 | `--tab-h` | `calc(var(--control-h) - 5px)` | — | Desktop header tab height |

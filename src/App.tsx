@@ -143,6 +143,7 @@ import { layoutCells } from "./lib/layoutMap.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
+import { InboxRail } from "./components/InboxRail.tsx";
 import { OvisMark } from "./components/OvisMark.tsx";
 import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
@@ -1261,8 +1262,11 @@ export function App() {
       <PanePressContext.Provider value={pressPane}>
       <div className="app-body">
         {/* the inbox mode has no drawer and no workspace tree: its list stands in the pane's place, and from 769px
-            in the sidebar's own column, at the sidebar's width, so the pane is as wide as in the classic shell */}
+            in the sidebar's own column, at the sidebar's width, so the pane is as wide as in the classic shell. The
+            mode's rail comes first in that column, then the list, then the column's edge: the keyboard follows
+            the drawn order */}
         {inMode ? (inboxWide && <aside className="sidebar inbox-column">
+          <InboxRail onExit={leaveMode} />
           {modeList(true)}
           <SidebarResizer width={sidebarWidth} onResize={setSidebarWidth} />
         </aside>) : <aside id="workspace-drawer" className={`sidebar${drawerOpen ? " is-open" : ""}${sidebarPeeking ? " is-peek" : ""}`} role={drawerModal ? "dialog" : undefined} aria-modal={drawerModal ? true : undefined} tabIndex={drawerModal ? -1 : undefined} aria-label={drawerModal ? t("Workspace list") : undefined}
