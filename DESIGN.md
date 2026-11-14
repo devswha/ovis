@@ -1350,9 +1350,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   whole): a touch screen too wide for the sheet has no tooltip either. There it is the menu's
   description (`aria-describedby`): a screen reader inside a menu reads the items alone. The
   rows scroll between the head and Cancel (`.row-sheet-items`), which stay put, when the sheet's
-  92% of the screen cannot hold them. Escape, a press outside and
-  focus leaving it close it (on a desktop a scroll or a resize too), and focus returns to the
-  `⋯`. Arrow keys move between items. A row that leaves the roster takes its open menu with it.
+  92% of the screen cannot hold them. Escape and focus leaving it close it, and focus returns to
+  the `⋯`. A tap on the dimmed page closes a sheet and goes nowhere else: it closes on the
+  scrim's own click, so no part of the tap reaches the row or the pane behind, as a native
+  action sheet does. A press outside closes a popover and goes on to what was pressed; on a
+  desktop a scroll or a resize closes it too. Arrow keys move between items. A row that leaves the roster takes its open menu with it.
   A workspace right-click opens at the pointer and leaves pane selection and keyboard focus
   unchanged. It follows herdr's workspace scope: Rename, Close workspace/group, repository
   worktree actions, and Expand/Collapse for a group. Dismissal restores the prior focus. The
