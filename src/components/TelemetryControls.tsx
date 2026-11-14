@@ -14,8 +14,11 @@ import { SettingsGroup, SettingsRow, Toggle } from "./SettingsControls.tsx";
  * tab, and the server still waits a while before the first event so the switch behind What is sent
  * stops it. It stays one line on any width: its text opens Settings, which says what is sent in
  * full, and Turn off is the switch's off in one tap. Closing it only hides it in this tab.
+ * `inline` draws it as a line of the setup guide's welcome (components/SetupGuide.tsx), which a dialog
+ * over the page would otherwise cover: the sentence still opens Settings and Turn off is still there; the
+ * welcome itself goes, so it has no close of its own.
  */
-export function TelemetryNotice({ enabled, onOpen }: { enabled: boolean; onOpen: () => void }) {
+export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: boolean; onOpen: () => void; inline?: boolean }) {
   const t = useT();
   const [shown, setShown] = useState(false);
   const [closed, setClosed] = useState(false);
@@ -94,6 +97,11 @@ export function TelemetryNotice({ enabled, onOpen }: { enabled: boolean; onOpen:
     });
   };
   const text = offFailed ? t("Couldn't turn the counts off. Open Settings to use the switch.") : t("Ovis sends anonymous usage counts to improve it.");
+  if (inline) return <p className="setup-note setup-note-usage" role={offFailed ? "alert" : "status"}>
+    <ChartColumn aria-hidden="true" />
+    <button type="button" className="setup-link" aria-haspopup="dialog" onClick={onOpen}>{text}</button>
+    <button type="button" className="btn btn-ghost setup-note-off" disabled={turningOff} onClick={turnOff}>{t("Turn off")}</button>
+  </p>;
   return <div className="update-notice is-line is-telemetry" role={offFailed ? "alert" : "status"}>
     <button type="button" className="update-notice-text" title={text} aria-haspopup="dialog" onClick={() => { setClosed(true); onOpen(); }}>{text}</button>
     <button type="button" className="btn btn-ghost" disabled={turningOff} onClick={turnOff}>{t("Turn off")}</button>
