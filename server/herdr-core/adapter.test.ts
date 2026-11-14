@@ -983,7 +983,7 @@ describe("herdr-core adapter, new and closed terminals", () => {
     ]);
     expect((await worktreeList("S", socket)).source).toMatchObject({ repo_root: repo, source_checkout_path: repo, source_workspace_id: "S" });
     const created = await worktreeCreate({ workspaceId: "S", branch: "moved", path: join(dir, "old") }, socket);
-    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => [workspace.workspace_id, workspace.worktree?.repo_root ?? null])).toEqual([["N", null], ["S", repo], [created.workspace.workspace_id, repo]]);
+    expect((await sessionSnapshot(socket)).workspaces.map((workspace) => [workspace.workspace_id, workspace.worktree?.repo_root ?? null])).toEqual([["N", nested], ["S", repo], [created.workspace.workspace_id, repo]]);
     // a checkout moved away and another put where it was: neither is deleted for the old workspace
     expect(git("-C", repo, "worktree", "move", join(dir, "old"), join(dir, "new")).exitCode).toBe(0);
     await expect(worktreeRemove(created.workspace.workspace_id, true, socket)).rejects.toMatchObject({ code: "worktree_not_found" });
@@ -1025,6 +1025,27 @@ describe("herdr-core adapter, new and closed terminals", () => {
     await expect(worktreeCreate({ workspaceId: "E", branch: "first", path: join(dir, "first") }, empty.socket)).rejects.toMatchObject({ code: "worktree_create_failed", message: expect.stringMatching(/invalid reference: HEAD\b/u) });
     expect(existsSync(join(dir, "first"))).toBeFalse();
     expect([...runs, ...empty.runs]).toEqual([]);
+  });
+
+  it("nests a checkout no label claims under its repository's workspace by git, on a core Ovis lays out and on one the Herdr app arranges (#3781)", async () => {
+    const { dir, repo, git } = repository();
+    const linked = join(dir, "checkouts", "feature-x");
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "feature/x", linked).exitCode).toBe(0);
+    mkdirSync(join(linked, "src"));
+    mkdirSync(join(dir, "plain"));
+    const start = () => [
+      terminal("t1", { cwd: repo, labels: { "herdr.space": "S", "herdr.tab": "T" } }),
+      // a shell gone down into the checkout: its facts are the checkout's own
+      terminal("t2", { cwd: join(linked, "src"), labels: { "herdr.space": "W", "herdr.tab": "U" } }),
+      terminal("t3", { cwd: join(dir, "plain"), labels: { "herdr.space": "P", "herdr.tab": "V" } }),
+    ];
+    const head = { repo_key: realpathSync(join(repo, ".git")), repo_name: "app", repo_root: repo, checkout_path: repo, is_linked_worktree: false };
+    for (const core of [await labeling(start()), await living(start())]) {
+      const shown = await sessionSnapshot(core.socket);
+      const factsOf = (address: string) => shown.workspaces.find((workspace) => workspace.workspace_id === shown.panes.find((pane) => pane.pane_id === address)?.workspace_id)?.worktree ?? null;
+      expect([factsOf("t1"), factsOf("t2"), factsOf("t3")]).toEqual([head, { ...head, checkout_path: linked, is_linked_worktree: true }, null]);
+      expect(core.runs).toEqual([]);
+    }
   });
 
   it("lists, makes and removes a worktree with a git before 2.36, whose worktree list has no -z", async () => {
