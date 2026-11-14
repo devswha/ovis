@@ -112,9 +112,11 @@ public class MainActivity extends BridgeActivity {
     private ProgressBar openingSpinner;
     private TextView openingText;
     private Button openingKeep;
+    private Button openingRetry;
 
-    /** The PC's name or address, as the cover names it. */
+    /** The PC's name or address, as the cover names it, and its host:port, as the error page's reason names it. */
     private String openingLabel;
+    private String openingHost;
 
     /** Whether the app gave up on the first page: the load it dropped may still report its end. */
     private boolean gaveUp;
@@ -464,6 +466,14 @@ public class MainActivity extends BridgeActivity {
             if (watch != null) watch.keepWaiting(SystemClock.elapsedRealtime());
             showStage();
         });
+        Button retry = new Button(this);
+        retry.setText(korean() ? "다시 시도" : "Try again");
+        retry.setAllCaps(false);
+        retry.setTextColor(Color.parseColor("#f2ebdf"));
+        retry.setBackgroundColor(Color.parseColor("#181613"));
+        retry.setPadding(pad, pad / 2, pad, pad / 2);
+        retry.setVisibility(View.GONE);
+        retry.setOnClickListener(v -> retry());
         Button change = new Button(this);
         change.setText(korean() ? "PC 바꾸기" : "Change PC");
         change.setAllCaps(false);
@@ -481,6 +491,7 @@ public class MainActivity extends BridgeActivity {
         LinearLayout.LayoutParams gap = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         gap.bottomMargin = pad / 2;
         stack.addView(keep, gap);
+        stack.addView(retry, gap);
         stack.addView(change);
         FrameLayout cover = new FrameLayout(this);
         cover.setBackgroundColor(Color.parseColor("#12100e"));
@@ -492,26 +503,48 @@ public class MainActivity extends BridgeActivity {
         openingSpinner = spinner;
         openingText = text;
         openingKeep = keep;
+        openingRetry = retry;
         openingLabel = label;
+        openingHost = origin == null ? pc : Uri.parse(origin).getAuthority();
         watch = new OpeningWatch(SystemClock.elapsedRealtime(), answerDelay(), TrafficStats.getUidRxBytes(Process.myUid()));
-        String host = origin == null ? pc : Uri.parse(origin).getAuthority();
-        answerTimer.postDelayed(() -> watchOpening(host), 1000);
+        answerTimer.postDelayed(this::watchOpening, 1000);
     }
 
-    /** Each second while the cover is up: what arrived, and what the cover says (OpeningWatch). */
-    private void watchOpening(String host) {
+    /** Each second while the cover is up and the app is in front: what arrived, and what the cover says (OpeningWatch). */
+    private void watchOpening() {
         if (openingView == null || isFinishing() || isDestroyed()) return;
         long now = SystemClock.elapsedRealtime();
         watch.received(now, TrafficStats.getUidRxBytes(Process.myUid()));
         if (watch.stage(now) == OpeningWatch.Stage.NO_ANSWER) {
             gaveUp = true;
-            PCStore.fail(host + " did not answer within " + PCStore.ANSWER_SECONDS + " seconds.", "timeout");
+            PCStore.fail(
+                watch.connectedOnly()
+                    ? openingHost + " accepted the connection but sent no page."
+                    : openingHost + " did not answer within " + PCStore.ANSWER_SECONDS + " seconds.",
+                "timeout"
+            );
             bridge.getWebView().stopLoading();
             bridge.getWebView().loadUrl(bridge.getErrorUrl());
             return;
         }
         showStage();
-        answerTimer.postDelayed(() -> watchOpening(host), 1000);
+        answerTimer.postDelayed(this::watchOpening, 1000);
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        // the cover's tick stops in the background (onStop); back in front it looks again at once
+        if (openingView != null && watch != null) {
+            answerTimer.removeCallbacksAndMessages(null);
+            answerTimer.post(this::watchOpening);
+        }
+    }
+
+    @Override
+    public void onStop() {
+        answerTimer.removeCallbacksAndMessages(null);
+        super.onStop();
     }
 
     /** The cover's line, spinner and Keep waiting for the open's stage now. */
@@ -536,6 +569,7 @@ public class MainActivity extends BridgeActivity {
         openingText.setText(text);
         openingSpinner.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.INVISIBLE : View.VISIBLE);
         openingKeep.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.VISIBLE : View.GONE);
+        openingRetry.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.VISIBLE : View.GONE);
     }
 
     /**

@@ -36,18 +36,7 @@ export function shell(method, options = {}) {
  * cleartext to any host, as Android cannot limit it to address ranges.
  */
 export function publicHttp(url) {
-  if (url.protocol !== "http:") return false;
-  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const ipv4 = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
-  if (ipv4) {
-    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-    // 10/8, 127/8, 172.16/12, 192.168/16, link-local 169.254/16, and Tailscale's 100.64/10
-    return !(a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127));
-  }
-  // ::1, unique local fc00::/7 (Tailscale's fd7a:115c:a1e0::/48 among them) and link-local fe80::/10
-  if (host.includes(":")) return !(host === "::1" || /^f[cd]/.test(host) || /^fe[89ab]/.test(host));
-  // a one-word name (a MagicDNS short name, localhost) or a tailnet or home network name
-  return host.includes(".") && !/\.(ts\.net|local|lan|home\.arpa|internal)$/.test(host);
+  return url.protocol === "http:" && !homeHost(url.hostname);
 }
 
 /** Whether `hostname` (a URL's) is this phone itself: localhost, 127.0.0.0/8 or ::1. */
@@ -75,9 +64,12 @@ export function homeHost(hostname) {
   const ipv4 = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
   if (ipv4) {
     const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    // 10/8, 172.16/12, 192.168/16 and link-local 169.254/16 (127/8 and Tailscale's 100.64/10 above)
     return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
   }
+  // unique local fc00::/7 and link-local fe80::/10 (::1 above)
   if (host.includes(":")) return /^f[cd]/.test(host) || /^fe[89ab]/.test(host);
+  // a one-word name (a MagicDNS short name) or a home network name
   return !host.includes(".") || /\.(local|lan|home\.arpa|internal)$/.test(host);
 }
 

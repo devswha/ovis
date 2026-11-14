@@ -1,6 +1,8 @@
 package sh.ovis.app;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -13,6 +15,7 @@ public class OpeningWatchTest {
         watch.received(10000, 5000);
         assertEquals(OpeningWatch.Stage.OPENING, watch.stage(19999));
         assertEquals(OpeningWatch.Stage.NO_ANSWER, watch.stage(20000));
+        assertFalse(watch.connectedOnly());
     }
 
     @Test
@@ -40,11 +43,32 @@ public class OpeningWatchTest {
     }
 
     @Test
-    public void bytesWithoutThePagesAnswerCountAsAnAnswer() {
+    public void bytesStillComingBeforeTheAnswerPutTheLimitOff() {
         // a TLS handshake over a slow VPN: bytes come before the page's response
         OpeningWatch watch = new OpeningWatch(0, LIMIT, 100);
-        watch.received(8000, 100 + OpeningWatch.FIRST_BYTES);
-        assertEquals(OpeningWatch.Stage.SLOW, watch.stage(25000));
+        for (long at = 2000; at <= 30000; at += 2000) watch.received(at, 100 + at);
+        assertEquals(OpeningWatch.Stage.SLOW, watch.stage(30000 + OpeningWatch.QUIET_MS - 1));
+        watch.answered(31000);
+        assertEquals(OpeningWatch.Stage.SLOW, watch.stage(31000 + OpeningWatch.STALL_MS - 1));
+    }
+
+    @Test
+    public void aHandshakeWithNoResponseAfterItStillGivesUp() {
+        // a server or proxy that completes TLS and never sends a response
+        OpeningWatch watch = new OpeningWatch(0, LIMIT, 100);
+        watch.received(1000, 100 + 4000);
+        assertEquals(OpeningWatch.Stage.SLOW, watch.stage(LIMIT - 1));
+        assertEquals(OpeningWatch.Stage.NO_ANSWER, watch.stage(LIMIT));
+        assertTrue(watch.connectedOnly());
+    }
+
+    @Test
+    public void bytesWithoutAnAnswerNeverWaitPastTheCap() {
+        // other traffic of the app keeps arriving while the PC never responds
+        OpeningWatch watch = new OpeningWatch(0, LIMIT, 0);
+        for (long at = 1000; at < OpeningWatch.UNANSWERED_MAX_MS; at += 1000) watch.received(at, at * 2);
+        assertEquals(OpeningWatch.Stage.SLOW, watch.stage(OpeningWatch.UNANSWERED_MAX_MS - 1));
+        assertEquals(OpeningWatch.Stage.NO_ANSWER, watch.stage(OpeningWatch.UNANSWERED_MAX_MS));
     }
 
     @Test

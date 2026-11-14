@@ -1,6 +1,8 @@
 // The app's connect screen (app/web/shell.js): which typed or scanned addresses open a PC through
 // the Ovis relay, with offers made the way a PC makes them (shared/relay-offer.ts).
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 // @ts-expect-error app/web is plain JavaScript the app carries as is, without types
 import { APP_ORIGIN, homeHost, loopbackHost, openFailure, parseAddress, relayLink, tailnetHost } from "../app/web/shell.js";
 import { exportPublicKey, generateKeyPair } from "../shared/relay-e2ee.ts";
@@ -95,6 +97,25 @@ describe("why an address did not open", () => {
     for (const text of ["https://herdr.theworld.codes", "8.8.8.8", "172.32.0.1", "100.128.0.1", "http://[2001:db8::1]/", "https://local.example.com"]) {
       expect([text, homeHost(parseAddress(text).hostname)]).toEqual([text, false]);
     }
+  });
+
+  it("has error.html's own copy of homeHost agree with shell.js", () => {
+    const page = readFileSync(join(import.meta.dir, "../app/web/error.html"), "utf8");
+    const source = page.match(/function homeHost\(hostname\) \{[\s\S]*?\n {4}\}\n/)?.[0];
+    expect(source).toBeDefined();
+    const pageHomeHost = new Function(`${source}; return homeHost;`)() as (hostname: string) => boolean;
+    const hosts = ["192.168.0.10", "10.0.2.2", "172.16.0.1", "172.32.0.1", "169.254.1.2", "127.0.0.1", "100.64.0.1", "100.127.255.1", "100.128.0.1", "8.8.8.8",
+      "localhost", "app.localhost", "[::1]", "[fd00::1]", "[fe80::1]", "[fd7a:115c:a1e0::1]", "[2001:db8::1]", "studio", "pc.local", "pc.lan", "pc.home.arpa", "pc.internal",
+      "pc.tail1234.ts.net", "herdr.theworld.codes", "local.example.com"];
+    for (const host of hosts) expect([host, pageHomeHost(host)]).toEqual([host, homeHost(host)]);
+  });
+
+  it("blames the home network for a timeout only on a home network address", () => {
+    const home = openFailure(parseAddress("192.168.77.20:7317"), "timeout", "x");
+    const server = openFailure(parseAddress("https://herdr.theworld.codes"), "timeout", "x");
+    expect(home).toContain("home network");
+    expect(server).not.toContain("home network");
+    expect(server).not.toContain("firewall");
   });
 
   it("says nothing for a cancelled open and something for every other refusal", () => {

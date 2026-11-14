@@ -1,13 +1,17 @@
 package sh.ovis.app;
 
 /**
- * What MainActivity's cover says while a PC opens, from what has arrived and when. Only an address
- * from which nothing at all arrived gives up on its own (NO_ANSWER, after the answer limit): a slow
- * link that answers keeps loading as long as bytes come, and one that stops sending is told so
- * (STALLED), with Keep waiting, rather than called off. Times are in milliseconds on any one clock
- * (SystemClock.elapsedRealtime in the app); byte counts are the app's received total
- * (TrafficStats), which grows with anything the WebView receives, or a negative number where the
- * phone cannot count them.
+ * What MainActivity's cover says while a PC opens, from what has arrived and when. A PC whose first
+ * page has answered (its response committed) is never called off: it keeps loading as long as bytes
+ * come, and one that stops sending is told so (STALLED), with Keep waiting, rather than cut off.
+ * Before that answer the open gives up (NO_ANSWER) once the answer limit has passed with nothing
+ * arriving for QUIET_MS, or nothing at all, and in any case at UNANSWERED_MAX_MS: bytes alone (a
+ * slow TLS handshake) put it off, but a server that completes its handshake and never responds
+ * still gets the error page. Times are in milliseconds on any one clock (SystemClock.elapsedRealtime
+ * in the app); byte counts are the app's received total (TrafficStats), or a negative number where
+ * the phone cannot count them. That total is the whole app's, not this load's alone (a check still
+ * running from an earlier screen counts too), which is why bytes without an answer only put the
+ * limit off, never past UNANSWERED_MAX_MS.
  */
 final class OpeningWatch {
     enum Stage {
@@ -17,7 +21,7 @@ final class OpeningWatch {
         SLOW,
         /** It answered, then nothing arrived for STALL_MS. */
         STALLED,
-        /** Nothing at all arrived within the answer limit: the error page. */
+        /** No answer within the limit (connectedOnly says whether bytes came): the error page. */
         NO_ANSWER
     }
 
@@ -33,6 +37,12 @@ final class OpeningWatch {
      * only TCP's own packets, a few hundred bytes at most.
      */
     static final long FIRST_BYTES = 1024;
+
+    /** Before an answer, how long nothing may arrive once the answer limit has passed. */
+    static final long QUIET_MS = 5000;
+
+    /** The longest an open waits for an answer however many bytes come. */
+    static final long UNANSWERED_MAX_MS = 60000;
 
     private final long startedAt;
     private final long answerLimitMs;
@@ -77,12 +87,18 @@ final class OpeningWatch {
         return baseBytes < 0 ? 0 : lastBytes - baseBytes;
     }
 
-    boolean hasAnswered() {
-        return answered;
+    /** Whether bytes came but the page never answered: a connection that opened, and no response on it. */
+    boolean connectedOnly() {
+        return arrived && !answered;
     }
 
     Stage stage(long now) {
-        if (!arrived) return now - startedAt >= answerLimitMs ? Stage.NO_ANSWER : Stage.OPENING;
+        long elapsed = now - startedAt;
+        if (!answered) {
+            boolean quiet = !arrived || now - lastProgressAt >= QUIET_MS;
+            if ((elapsed >= answerLimitMs && quiet) || elapsed >= UNANSWERED_MAX_MS) return Stage.NO_ANSWER;
+            return arrived && elapsed >= SLOW_AFTER_MS ? Stage.SLOW : Stage.OPENING;
+        }
         if (now - lastProgressAt >= STALL_MS) return Stage.STALLED;
         return now - startedAt >= SLOW_AFTER_MS ? Stage.SLOW : Stage.OPENING;
     }
