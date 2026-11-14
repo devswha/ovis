@@ -944,7 +944,9 @@ export function App() {
   ];
   const modeAppItems: RowMenuItem[] = [...modeLeadItems, ...modeEndItems];
   // a phone's thread has the one More: the way out and the palette, then the thread's items, then the rest of the app's
-  const modeMoreItems: RowMenuItem[] = moreOnList ? modeAppItems : inboxWide ? [...fromMore("palette"), ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item)]
+  // beside the wide list with no thread open the pane's More is the palette's one way for a pointer or a finger
+  const paletteOnly = inboxWide && (inbox.shown || selectedPane === null);
+  const modeMoreItems: RowMenuItem[] = paletteOnly ? fromMore("palette") : moreOnList ? modeAppItems : inboxWide ? [...fromMore("palette"), ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item)]
     : [...modeLeadItems, ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item), ...modeEndItems];
 
   // the chat's surface is what the pane column shows: the header's pane zone and the tab strip
@@ -1343,7 +1345,7 @@ export function App() {
               <LensToggle view={view} peek={terminalPeek !== null} terminalAttach={terminalAttach} thread round
                 title={(label) => shortcutTitle(label, "toggle-view")} onToggle={actions.toggleView} />
               {moreButton(true)}
-            </> : null} />}
+            </> : moreButton(true)} />}
           {(inbox.shown && inbox.cold ? [] : shownSlots).map((slot) => {
             const active = !splitOn || split!.active === slot;
             const other = active || threadDrawn ? undefined : others.get(slot);

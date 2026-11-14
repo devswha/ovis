@@ -2541,7 +2541,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     `--space-2-5` apart and `--space-4` from the column's edge: the state filter and **New
     workspace** (where New workspace is not drawn, the field takes its room). The field has no
     button of its own while the list has the room for it: 256px and more, the default sidebar
-    with a mouse, where it shows about 94px of words (138px without New workspace). A narrower
+    with a mouse, where it shows about 94px of words (138px without New workspace); under a
+    coarse pointer a list just over 256px clips the field's placeholder. A narrower
     list, in which the field could not hold its own placeholder (at the sidebar's least width it
     would show one character), folds it into a round **Search** button at the row's start, and
     the row is three round controls. In a
@@ -2631,7 +2632,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   classic app's header scrolls as a whole). On a
   wide window the column has no More: Back to Ovis, Alerts and Settings are buttons of the rail,
   each in that one place, and the one More, over the pane, holds **Search panes and actions**
-  (the rail draws no magnifier, and a touch screen has no shortcut) and then the thread's items. A More whose button leaves the screen closes with it: the system Back
+  (the rail draws no magnifier, and a touch screen has no shortcut) and then the thread's items.
+  With the list alone, that More holds **Search panes and actions** alone: the palette's one way
+  there for a pointer or a finger. A More whose button leaves the screen closes with it: the system Back
   from a wide thread takes the pane's More away, and its open menu goes too (lib/moreMenu.ts).
 - What More counts in the mode. Over a phone's thread its dot and its name count the sessions
   that wait other than the thread's own, whose question is on the screen in its prompt card,
