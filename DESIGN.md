@@ -965,7 +965,7 @@ Comfortable values are `:root`; the final column is the complete compact overrid
 | `--pane-bar-h` | `30px` | — | Split pane header bar height |
 | `--split-hit-w` | `8px` | — | Split divider hit band |
 | `--segmented-inset` | `6px` | — | What the segmented track takes from `--control-h` above and below an option (its `2px` padding and the hairline, both sides): an option is `--control-h` less this, and on a coarse pointer so is the pill inside its `--touch-target` hit box |
-| `--touch-target` | `44px` | — | Coarse-pointer minimum: every control a finger can reach is at least this in both dimensions |
+| `--touch-target` | `44px` | — | Coarse-pointer minimum: every control a finger can reach is at least this in both dimensions (one exception: the inbox mode's top row in a list too narrow for its three controls, under The list's top row) |
 | `--pointer-target` | `24px` | — | Fine-pointer minimum hit area: a glyph button under `--control-h` (the chat's copy and format buttons, an attachment tile's X) keeps its look and reaches it through an invisible `::before` expander |
 | `--touch-target-header` | `44px` | — | The phone header's controls (`<=768px`) |
 | `--keybar-h` | `48px` | — | Terminal key bar |
@@ -2539,10 +2539,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   - The list's top row has three round controls at its end, `--space-2-5` apart and `--space-4`
     from the column's edge: **Search agents**, the state filter and **New workspace**. In a
     list too narrow for the row at those insets (a sidebar near its least width under a coarse
-    pointer, whose controls are 44px) the row gives way and its controls stay inside the
-    column: first its side insets, down to the rows' own `--space-3`, then its gaps, which
-    share what is left. The rows truncate their words as they always do, and nothing scrolls
-    sideways. The
+    pointer, whose controls are 44px) the row gives way, in this order: its side insets, down
+    to the rows' own `--space-3`; its gaps, down to none; then its controls, which shrink
+    together and stay round, their glyphs at their size, never under `--pointer-target`
+    (24px). The last step is the one place a control under a finger is smaller than
+    `--touch-target`: a phone on its side, whose side safe area the rail takes out of the
+    column, with the sidebar at its least width leaves a list of about 112px to 124px, and
+    the other way to fit three controls there is to draw one over the rail. Down to that
+    least size the controls are inside the list and none stands over another; an open search
+    field gives up its room before its button shrinks, down to its own insets (its start
+    padding and its clear button's room), under which it could not be drawn beside the
+    button. The rows truncate their words as they always do, and nothing scrolls sideways. The
     search field opens when asked for and takes the row: the filter and New workspace give way
     until it is put away, so a query has the room to be read in the narrower list (the field is
     then the whole row but its Search button). It takes the focus, stays while it holds words

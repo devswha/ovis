@@ -527,9 +527,10 @@
 /* The column ends in its seam (the sidebar's own edge, a hairline): the end inset is counted from the column's
    edge, so it takes the seam off. Search, the state filter and New workspace stand at the row's end.
    The rail is cut out of the sidebar's width, so a sidebar near its least width leaves a list narrower than this row
-   at its full insets (under a coarse pointer, whose controls are larger). The row then gives way, and its three
-   controls stay inside the list: first its side insets, down to the rows' own (--space-3), then its gaps, which
-   share what is left. The list is the size container this reads (cqi, below). */
+   at its full insets (under a coarse pointer, whose controls are larger). The row then gives way, in this order:
+   its side insets, down to the rows' own (--space-3); its gaps, down to none; then the controls themselves, down to
+   their least size (below). Until that is reached its controls are inside the list and none stands over another.
+   The list is the size container this reads (cqi, below). */
 .mode-inbox.is-wide .inbox-top {
   /* the row holds three controls at most */
   --inbox-top-controls: calc(var(--inbox-control) * 3);
@@ -540,10 +541,29 @@
   position: static;
   flex: 0 0 auto;
   justify-content: flex-end;
-  gap: min(var(--space-2-5), calc((100cqi - var(--inbox-top-controls) - var(--inbox-top-pad-start) - var(--inbox-top-pad-end)) / 2));
+  gap: clamp(0px, calc((100cqi - var(--inbox-top-controls) - var(--inbox-top-pad-start) - var(--inbox-top-pad-end)) / 2), var(--space-2-5));
   height: var(--inbox-zone-h);
   padding-inline: var(--inbox-top-pad-start) var(--inbox-top-pad-end);
   pointer-events: auto;
+}
+
+/* In a list too narrow for the row's controls at their size with no gap between them (a phone on its side, whose
+   side safe area the rail takes out of the column; a window's own controls over the row's start), they shrink
+   together and stay round, never under the least target a pointer gets (--pointer-target); their glyphs keep their
+   size. Wherever the row has the room they are exactly --inbox-control. */
+.mode-inbox.is-wide .inbox-top > .icon-button.inbox-round {
+  flex: 0 1 auto;
+  min-width: var(--pointer-target);
+  height: auto;
+  aspect-ratio: 1;
+}
+
+/* An open search field takes what the row has left, and gives it up before its button shrinks: down to its own
+   insets (its start padding and its clear button's room, between its two edges), narrower than which the field
+   cannot be drawn and would stand over its button. */
+.mode-inbox.is-wide .inbox-top > .inbox-search {
+  flex-basis: 0;
+  min-width: calc(var(--space-3) + var(--inbox-control) + var(--hairline) * 2);
 }
 
 /* the column's controls rest on its surface: no shadow, and the smaller glyph of a pointer's control */
