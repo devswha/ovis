@@ -1184,7 +1184,18 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
       assert.equal(await holder(), name, `${name} keeps the focus at ${end}px`);
       assert.equal(await button.getAttribute("aria-disabled"), "true", `${name} says it goes no further at ${end}px`);
       assert.equal(await other.getAttribute("aria-disabled"), null, "the other way is still open");
-      assert.equal(await button.evaluate((node) => getComputedStyle(node).opacity), "0.7", "it reads as a disabled icon button does");
+      // beside it, a really disabled icon button: the two rules must not drift apart
+      const disabledOpacity = await button.evaluate((node) => {
+        const twin = node.cloneNode(true) as HTMLButtonElement;
+        twin.removeAttribute("aria-disabled");
+        twin.disabled = true;
+        node.after(twin);
+        const opacity = getComputedStyle(twin).opacity;
+        twin.remove();
+        return opacity;
+      });
+      assert.notEqual(disabledOpacity, "1", "a disabled icon button is faded");
+      assert.equal(await button.evaluate((node) => getComputedStyle(node).opacity), disabledOpacity, "it reads as a disabled icon button does");
       await page.keyboard.press("Enter");
       // (Playwright waits for an aria-disabled button to be enabled: the click is forced, as a person's is)
       await button.click({ force: true });
@@ -1192,6 +1203,17 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
       assert.equal(await holder(), name, "and keeps the focus");
       await button.hover();
       assert.equal(await button.evaluate((node) => getComputedStyle(node).backgroundColor), "rgba(0, 0, 0, 0)", "and gets no hover plate");
+      // nor the look a live icon button takes while it is held down (.icon-button:active), as a disabled one takes none
+      const look = () => button.evaluate(async (node) => {
+        await Promise.all(node.getAnimations().map((animation) => animation.finished));
+        const style = getComputedStyle(node);
+        return [style.backgroundColor, style.borderColor, style.color].join(" / ");
+      });
+      const resting = await look();
+      await page.mouse.down();
+      const held = await look();
+      await page.mouse.up();
+      assert.equal(held, resting, `holding ${name} down at its end shows no press`);
     }
 
     // a device that only watches reads the same sentence
