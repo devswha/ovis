@@ -1,8 +1,8 @@
 /**
- * `tui`: runs the terminal client (crates/ovis-tui) in this terminal, pointed at this install's server.
+ * `tui`: runs the terminal client (crates/ovis-tui) in this terminal: herdr-core's terminals as herdr shows them.
  *
- * It neither starts nor asks the server anything: the program says itself whether a server answers, and it
- * is of use without one. It takes no turn in the plugin's lifecycle lock either.
+ * It neither starts nor asks the server anything, and the program never talks to it. It takes no turn in the
+ * plugin's lifecycle lock either.
  */
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -38,16 +38,13 @@ export function findTui(settings: Env, where: { readonly root: string; readonly 
   return path === undefined ? { kind: "missing", looked: paths } : { kind: "found", path };
 }
 
-/**
- * The program's environment: the caller's, with OVIS_URL (unless the caller exported one) and the
- * settings' token. The token goes only here: never into an argument, a file or the output.
- */
-export function tuiEnv(caller: Env, settings: Env, origin: string): Record<string, string> {
+/** What the program never gets: it talks to herdr-core alone, and whatever it starts inherits its environment. */
+export const WITHHELD = ["OVIS_TOKEN", "OVIS_URL"] as const;
+
+/** The program's environment: the caller's, without the Ovis server's token or address. */
+export function tuiEnv(caller: Env): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(caller)) if (value !== undefined) env[key] = value;
-  if ((env["OVIS_URL"] ?? "") === "") env["OVIS_URL"] = origin;
-  const token = settings["OVIS_TOKEN"] ?? "";
-  if (token !== "") env["OVIS_TOKEN"] = token;
+  for (const [key, value] of Object.entries(caller)) if (value !== undefined && !(WITHHELD as readonly string[]).includes(key)) env[key] = value;
   return env;
 }
 
@@ -83,8 +80,6 @@ export interface TuiOptions {
   readonly caller: Env;
   /** the plugin's merged settings: the process environment and its config files */
   readonly settings: Env;
-  /** the server's origin, as `status` prints it */
-  readonly origin: string;
   readonly err: (text: string) => void;
   /** where the launcher's signal handlers go: process.on for the command */
   readonly on: (signal: "SIGINT" | "SIGTERM" | "SIGHUP", handler: () => void) => void;
@@ -103,7 +98,7 @@ export async function runTui(args: readonly string[], options: TuiOptions): Prom
   }
   let child: Bun.Subprocess<"inherit", "inherit", "inherit">;
   try {
-    child = Bun.spawn([lookup.path, ...args], { env: tuiEnv(options.caller, options.settings, options.origin), stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    child = Bun.spawn([lookup.path, ...args], { env: tuiEnv(options.caller), stdin: "inherit", stdout: "inherit", stderr: "inherit" });
   } catch (error) {
     options.err(`ovis tui: could not run ${lookup.path}: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;

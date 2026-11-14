@@ -73,17 +73,9 @@ describe("which program runs", () => {
 });
 
 describe("the program's environment", () => {
-  it("adds the origin and the settings' token to the caller's", () => {
-    expect(tuiEnv({ TERM: "xterm", OVIS_TOKEN: "old" }, { OVIS_TOKEN: "secret" }, "http://127.0.0.1:7317"))
-      .toEqual({ TERM: "xterm", OVIS_URL: "http://127.0.0.1:7317", OVIS_TOKEN: "secret" });
-  });
-
-  it("keeps an OVIS_URL the caller exported", () => {
-    expect(tuiEnv({ OVIS_URL: "http://127.0.0.1:9" }, {}, "http://127.0.0.1:7317")["OVIS_URL"]).toBe("http://127.0.0.1:9");
-  });
-
-  it("has no OVIS_TOKEN at all when none is configured", () => {
-    expect(Object.keys(tuiEnv({ TERM: "xterm" }, { OVIS_TOKEN: "" }, "http://127.0.0.1:7317"))).not.toContain("OVIS_TOKEN");
+  it("is the caller's without the Ovis server's token or address", () => {
+    expect(tuiEnv({ TERM: "xterm", OVIS_TOKEN: "exported", OVIS_URL: "http://127.0.0.1:9", HC_SESSION: "s" }))
+      .toEqual({ TERM: "xterm", HC_SESSION: "s" });
   });
 });
 
@@ -94,7 +86,6 @@ describe("runTui", () => {
       platform: "linux",
       where: { root: join(scratch, "root"), home: scratch },
       settings: { OVIS_TUI_BIN: join(scratch, "ovis-tui"), OVIS_TOKEN: "secret" },
-      origin: "http://127.0.0.1:7317",
       err: (text) => said.push(text),
       on: () => undefined,
       ...extra,
@@ -103,14 +94,11 @@ describe("runTui", () => {
     };
   }
 
-  it("passes every argument through unchanged and the token in none of them", async () => {
+  it("passes every argument through unchanged, and no token, configured or exported", async () => {
     standIn(join(scratch, "ovis-tui"));
-    const args = ["--session", "two words", "", "--dump-once", "80x24"];
-    expect(await runTui(args, options())).toBe(0);
-    const seen = record();
-    expect(seen?.args).toEqual(args);
-    expect(seen?.args.some((arg) => arg.includes("secret"))).toBe(false);
-    expect(seen?.token).toBe("secret");
+    const args = ["--session", "two words", ""];
+    expect(await runTui(args, options({ caller: { OVIS_TOKEN: "exported" } }))).toBe(0);
+    expect(record()).toEqual({ args, url: "", token: null });
   });
 
   it("exits with the program's code, or 128 + the signal that ended it", async () => {
@@ -168,7 +156,7 @@ describe("ovis tui", () => {
     return { port: socket.port, seen, [Symbol.dispose]: () => socket.stop(true) };
   }
 
-  it("runs the program from the config's OVIS_TUI_BIN with the origin and token, and never asks the server", async () => {
+  it("runs the program from the config's OVIS_TUI_BIN without the token or address, and never asks the server", async () => {
     using port = listener();
     mkdirSync(join(scratch, "config"));
     writeFileSync(join(scratch, "config", "env"), `PORT=${port.port}\nOVIS_TOKEN=config-secret\nOVIS_TUI_BIN=~/tui/ovis-tui\n`);
@@ -177,16 +165,16 @@ describe("ovis tui", () => {
     const child = launch(["--session", "my session"], { STANDIN_EXIT: "7" });
     const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     expect(code, err).toBe(7);
-    expect(record()).toEqual({ args: ["--session", "my session"], url: `http://127.0.0.1:${port.port}`, token: "config-secret" });
+    expect(record()).toEqual({ args: ["--session", "my session"], url: "", token: null });
     expect(port.seen.connections).toBe(0);
   }, 30_000);
 
-  it("runs the install's bin/ovis-tui without a token when none is configured, and keeps the caller's OVIS_URL", async () => {
+  it("runs the install's bin/ovis-tui without the token and address the caller exported", async () => {
     standIn(join(scratch, "root", "bin", "ovis-tui"));
-    const child = launch([], { OVIS_URL: "http://127.0.0.1:9" });
+    const child = launch([], { OVIS_URL: "http://127.0.0.1:9", OVIS_TOKEN: "exported" });
     const [code, err] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     expect(code, err).toBe(0);
-    expect(record()).toEqual({ args: [], url: "http://127.0.0.1:9", token: null });
+    expect(record()).toEqual({ args: [], url: "", token: null });
   }, 30_000);
 
   it("is not ended by a SIGINT while the program runs", async () => {

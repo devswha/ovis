@@ -848,7 +848,7 @@ describe("add and login", () => {
       "usage: bun scripts/plugin.ts <start|stop|status|pair|link|add|login|phone|phone-setup|tui>",
       "add (also login, link): sign this PC in, then scan its QR code with a device of your Ovis account to add it (--approve: approve that device here instead; --print: write the QR code where there is no terminal).",
       "link --code: show a code and a QR code to pair one device instead.",
-      "tui: the Ovis inbox and herdr-core's terminals, in this terminal.",
+      "tui: herdr-core's terminals in this terminal, as herdr shows them.",
       "",
     ].join("\n"));
   });
