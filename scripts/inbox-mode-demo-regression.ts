@@ -273,7 +273,8 @@ const topRow = (page: Page): Promise<TopRow> => page.evaluate(() => {
   const scroller = list.querySelector<HTMLElement>(".inbox-scroll")!;
   return {
     list: boxOf(list), rail: boxOf(document.querySelector(".inbox-column .inbox-rail")!),
-    controls: [...list.querySelectorAll(".inbox-top > :is(button, .inbox-search)")].map((node) => {
+    // the drawn ones: a list with the room for its search field draws no Search button, a narrower one no closed field
+    controls: [...list.querySelectorAll(".inbox-top > :is(button, .inbox-search)")].filter((node) => node.getClientRects().length > 0).map((node) => {
       const at = boxOf(node);
       const glyph = node.querySelector(":scope > svg")?.getBoundingClientRect();
       return {
@@ -950,9 +951,14 @@ try {
             const [rail, list] = await Promise.all([box(page, ".inbox-column .inbox-rail"), box(page, ".inbox-column .mode-inbox")]);
             assert.deepEqual([rail.x, rail.y, rail.w, rail.h], [column.x, 0, 58, viewport.height], "the rail is 58px wide at the column's start, from the window's top to its foot");
             near(list.x, rail.right, 0.5, "the list begins where the rail ends"); near(list.right, column.right, 1, "the list ends at the column's seam");
-            const [search, filter, add] = await Promise.all([box(page, ".inbox-search-toggle"), box(page, ".inbox-filter-toggle"), box(page, ".inbox-add")]);
-            for (const control of [search, filter, add]) assert.deepEqual([control.w, control.h], [34, 34], "a round control is 34px under a fine pointer");
-            near(filter.x - search.right, 10, 2, "between the column's top controls"); near(add.x - filter.right, 10, 2, "between the column's top controls");
+            // the list has the room for its search field: always shown at the row's start, with no Search button, and the
+            // screen's one magnifier (the rail draws none)
+            const [search, filter, add] = await Promise.all([box(page, ".mode-inbox .inbox-search"), box(page, ".inbox-filter-toggle"), box(page, ".inbox-add")]);
+            assert.equal(await page.locator(".mode-inbox .inbox-search-toggle").isVisible(), false, "a list with the room for its field draws no Search button");
+            assert.equal(await page.locator(".inbox-rail svg.lucide-search").count(), 0, "the rail draws no magnifier");
+            for (const control of [filter, add]) assert.deepEqual([control.w, control.h], [34, 34], "a round control is 34px under a fine pointer");
+            near(search.x - list.x, 16, 1, "the search field from the list's start");
+            near(filter.x - search.right, 10, 2, "between the field and the filter"); near(add.x - filter.right, 10, 2, "between the column's top controls");
             near(column.right - add.right, 16, 1, "the top controls from the column's edge");
             for (const control of [search, filter, add]) near(control.y, 12, 2, "from the top");
             // the column has no foot: its filter stands in its top row, and its More and its way out are the rail's
@@ -1025,30 +1031,27 @@ try {
             await page.locator(".row-menu").waitFor();
             const threadItems = await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item")));
             assert.ok(threadItems.includes("copy-link") && threadItems.includes("files"), `the pane's More holds the thread's items: ${threadItems.join()}`);
-            for (const item of ["exit-inbox", "palette", "settings", "alerts", "next-waiting"]) assert.ok(!threadItems.includes(item), `the pane's More has no ${item}: ${threadItems.join()}`);
+            // the palette first, which the rail has no magnifier for and a touch screen no shortcut
+            assert.equal(threadItems[0], "palette", `the pane's More begins with the palette: ${threadItems.join()}`);
+            for (const item of ["exit-inbox", "settings", "alerts", "next-waiting"]) assert.ok(!threadItems.includes(item), `the pane's More has no ${item}: ${threadItems.join()}`);
             await page.keyboard.press("Escape");
             await page.locator(".row-menu").waitFor({ state: "detached" });
             // the column has no More: the three items it held, and the way out its foot held, are buttons of the rail, each once
             assert.equal(await page.locator(".inbox-column .inbox-more").count(), 0, "the column draws no More");
-            assert.deepEqual(await railNames(page), ["Back to Ovis", "Agent inbox", "Search panes and actions", "1 waiting for you", "Alerts", "Settings", "PC workstation · Connected"],
-              "the rail holds the way out and the app's items the column's More held, without a second one of any");
+            assert.deepEqual(await railNames(page), ["Back to Ovis", "Agent inbox", "1 waiting for you", "Alerts", "Settings", "PC workstation · Connected"],
+              "the rail holds the way out and the app's items the column's More held, without a second one of any, and no magnifier");
 
-            // the search field opens on request, takes the focus and the top row, and Escape puts it away once it is empty
-            await page.locator(".inbox-search-toggle").click();
-            await page.waitForFunction(() => document.activeElement?.classList.contains("inbox-search-input") === true);
-            // the filter and New workspace give way while the field is open: a query has the row but the field's own button
-            for (const selector of [".mode-inbox .inbox-filter-toggle", ".mode-inbox .inbox-add"]) assert.equal(await page.locator(selector).count(), 0, `the open search field takes the row: no ${selector}`);
-            const [field, opener] = await Promise.all([box(page, ".inbox-search-input"), box(page, ".inbox-search-toggle")]);
-            near(field.x - list.x, 16, 1, "the open field from the list's start"); near(opener.x - field.right, 10, 2, "between the open field and its button"); near(column.right - opener.right, 16, 1, "the field's button from the column's edge");
+            // the always-shown field: a query narrows the list beside the filter and New workspace, and Escape clears it,
+            // leaving the field and the focus where they are
+            await page.locator(".mode-inbox .inbox-search-input").click();
             await page.keyboard.type("export");
             await rowCount(page, 1);
+            for (const selector of [".mode-inbox .inbox-filter-toggle", ".mode-inbox .inbox-add"]) assert.equal(await page.locator(selector).isVisible(), true, `with a query, ${selector} stays in the row`);
             await page.keyboard.press("Escape");
             await rowCount(page, 6);
-            await page.locator(".inbox-search-input").waitFor();
             await page.keyboard.press("Escape");
-            await page.locator(".inbox-search-input").waitFor({ state: "detached" });
-            assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-search-toggle") === true), true, "the search put away gives the focus to the button that opened it");
-            for (const selector of [".mode-inbox .inbox-filter-toggle", ".mode-inbox .inbox-add"]) assert.equal(await page.locator(selector).count(), 1, `the search put away, ${selector} is in the row again`);
+            assert.equal(await page.locator(".mode-inbox .inbox-search-input").isVisible(), true, "an empty Escape leaves the always-shown field");
+            assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-search-input") === true), true, "and the focus in it");
 
             // a narrowed window is the phone layout with the thread kept, and back: the column's list, drawn again for
             // the wider window, leaves the focus in the composer the reader is typing in
@@ -1667,7 +1670,7 @@ try {
           for (const [selector, over, pressed] of [
             [`.mode-inbox .inbox-item[data-pane="${BLOCKED}"] .inbox-row`, sideHover, rowPress],
             [".inbox-rail .inbox-rail-exit", sideHover, rowPress],
-            [".inbox-column .inbox-search-toggle", hover, strong],
+            [".inbox-column .inbox-filter-toggle", hover, strong],
             [".thread-top .header-more-button", hover, strong],
           ] as const) {
             const at = await box(page, selector);
@@ -2409,10 +2412,24 @@ try {
           const top = await topRow(page);
           assert.deepEqual([top.rail.x, top.rail.w], [0, control + 24], "the rail is cut out of the column");
           near(top.list.x, top.rail.right, 0.5, "the list begins where the rail ends"); near(top.list.right, column.right, 1, "the list ends at the column's seam");
-          // the list's three top controls are whole, inside it, and reached by the keyboard after the rail
+          // the list's top controls are whole, inside it, and reached by the keyboard after the rail: its search field where
+          // the list has the room for it (256px and more), else the Search button that opens it
           topRowFits(top, `in a ${Math.round(top.list.w)}px list`);
-          assert.deepEqual(top.controls.map((each) => [each.kind, each.box.w, each.box.h]), [["inbox-search-toggle", control, control], ["inbox-filter-toggle", control, control], ["inbox-add", control, control]],
-            `the three top controls keep their ${control}px`);
+          const roomy = top.list.w >= 256;
+          assert.deepEqual(top.controls.map((each) => each.kind === "inbox-search" ? [each.kind] : [each.kind, each.box.w, each.box.h]),
+            [roomy ? ["inbox-search"] : ["inbox-search-toggle", control, control], ["inbox-filter-toggle", control, control], ["inbox-add", control, control]],
+            `in a ${Math.round(top.list.w)}px list the top row is ${roomy ? "the search field" : "Search"}, the filter and New workspace, the round ones at their ${control}px`);
+          if (roomy) {
+            // the reason for the list's least width for an always-shown field: the field holds its own placeholder
+            const [room, words] = await page.evaluate(() => {
+              const input = document.querySelector<HTMLInputElement>(".mode-inbox .inbox-search-input")!;
+              const style = getComputedStyle(input);
+              const pen = document.createElement("canvas").getContext("2d")!;
+              pen.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+              return [input.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight), pen.measureText(input.placeholder).width];
+            });
+            assert.ok(room >= words, `the always-shown field holds its placeholder: ${room}px of room for ${words.toFixed(1)}px of words`);
+          }
           // the row has its full insets wherever it has the room: only under a finger at the sidebar's least width do its
           // side insets give way to the rows' own, and its gaps to what is left
           const tight = coarse && setup.width === 240;
@@ -2424,7 +2441,7 @@ try {
             await page.keyboard.press("Tab");
             reached.push(await page.evaluate(() => [...(document.activeElement?.classList ?? [])].find((name) => name.startsWith("inbox-") && name !== "inbox-round") ?? ""));
           }
-          assert.deepEqual(reached, ["inbox-search-toggle", "inbox-filter-toggle", "inbox-add"], "Tab goes from the rail's last button through the three top controls");
+          assert.deepEqual(reached, [roomy ? "inbox-search-input" : "inbox-search-toggle", "inbox-filter-toggle", "inbox-add"], "Tab goes from the rail's last button through the top row");
 
           // out again from the list: the pane is shown in the box it had, and nothing was sent for it either way
           await leave();
@@ -2551,23 +2568,21 @@ try {
           assert.deepEqual(buttons.map(({ kind, name, current, pressed, popup, expanded, glyph }) => [kind, name, current, pressed, popup, expanded, glyph]), [
             ["inbox-rail-exit", "Back to Ovis", null, null, null, null, "ovis-mark"],
             ["inbox-rail-place", "Agent inbox", "page", null, null, null, "lucide-inbox"],
-            ["inbox-rail-palette", "Search panes and actions", null, null, null, null, "lucide-search"],
             ["inbox-rail-waiting", "1 waiting for you", null, null, null, null, "lucide-circle-question-mark"],
             ["inbox-rail-alerts", "Alerts", null, "true", null, null, "lucide-bell"],
             ["inbox-rail-settings", "Settings", null, null, null, null, "lucide-settings"],
             ["inbox-rail-pcs", "PC workstation · Connected", null, null, "menu", "false", "lucide-monitor"],
-          ], "the rail's seven buttons from the Ovis mark down to the PC: each one's name, its state and its glyph");
+          ], "the rail's six buttons from the Ovis mark down to the PC: each one's name, its state and its glyph; no magnifier");
           const titles = buttons.map((button) => button.title ?? "");
-          assert.deepEqual([titles[0], titles[1], titles[3], titles[6]], ["Back to Ovis", "Agent inbox", "Open the next session waiting for you", "PC workstation · Connected"],
+          assert.deepEqual([titles[0], titles[1], titles[2], titles[5]], ["Back to Ovis", "Agent inbox", "Open the next session waiting for you", "PC workstation · Connected"],
             "a tooltip says its button's name, and the count's says what its press does");
           // a tooltip carries its shortcut's keys after the words; the name is the words alone
-          assert.match(titles[2]!, /^Search panes and actions \(.+\)$/, "the palette's tooltip has its shortcut");
-          assert.match(titles[5]!, /^Settings \(.+\)$/, "Settings' tooltip has its shortcut");
-          assert.match(titles[4]!, /^Alerts on in the app\. /, "the bell's tooltip is the sentence that says how this device's alerts stand");
+          assert.match(titles[4]!, /^Settings \(.+\)$/, "Settings' tooltip has its shortcut");
+          assert.match(titles[3]!, /^Alerts on in the app\. /, "the bell's tooltip is the sentence that says how this device's alerts stand");
           assert.deepEqual(buttons.map(({ box: at }) => [at.x, at.y, at.w, at.h]), [
-            [12, 12, 34, 34], [12, 62, 34, 34], [12, 104, 34, 34],
+            [12, 12, 34, 34], [12, 62, 34, 34],
             [12, height - 172, 34, 34], [12, height - 130, 34, 34], [12, height - 88, 34, 34], [12, height - 46, 34, 34],
-          ], "34px buttons 12px from the rail's sides: the mark at its top, the place and the palette under it, four at its foot, 8px apart");
+          ], "34px buttons 12px from the rail's sides: the mark at its top, the place under it, four at its foot, 8px apart");
 
           /** a token as the browser computes it for one property, where the rail stands */
           const token = (property: "background-color" | "color", value: string): Promise<string> => page.evaluate(([name, css]) => {
@@ -2600,24 +2615,24 @@ try {
           const centre = async (kind: string): Promise<{ x: number; y: number }> => { const at = await box(page, `.inbox-rail .${kind}`); return { x: at.x + at.w / 2, y: at.y + at.h / 2 }; };
 
           // at rest a button has no box of its own; the current place has the sidebar's selection, carried to a glyph
-          for (const kind of ["inbox-rail-exit", "inbox-rail-palette", "inbox-rail-waiting", "inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs"]) {
+          for (const kind of ["inbox-rail-exit", "inbox-rail-waiting", "inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs"]) {
             await draws(kind, fill.rest, ink.rest, "at rest a button stands on the rail's own surface, its glyph dim");
           }
           await draws("inbox-rail-place", fill.current, ink.strong, "the current place has the selection's fill and a strong glyph");
           const place = await drawn("inbox-rail-place");
           assert.deepEqual([place.edge, place.outline, place.shadow], ["rgba(0, 0, 0, 0)", "none", "none"], "the current place has no edge, outline or shadow: its fill and its glyph say it");
-          assert.deepEqual([place.stroke, (await drawn("inbox-rail-palette")).stroke], ["2.5px", "2px"], "the current place's glyph is drawn heavier than the others'");
+          assert.deepEqual([place.stroke, (await drawn("inbox-rail-settings")).stroke], ["2.5px", "2px"], "the current place's glyph is drawn heavier than the others'");
 
           // under the pointer, then under a press that is let go off the button, so nothing opens
-          const palette = await centre("inbox-rail-palette");
-          await page.mouse.move(palette.x, palette.y);
-          await draws("inbox-rail-palette", fill.hover, ink.hover, "under the pointer a button takes the sidebar's hover fill and a stronger glyph");
+          const settings = await centre("inbox-rail-settings");
+          await page.mouse.move(settings.x, settings.y);
+          await draws("inbox-rail-settings", fill.hover, ink.hover, "under the pointer a button takes the sidebar's hover fill and a stronger glyph");
           await page.mouse.down();
-          await draws("inbox-rail-palette", fill.press, ink.strong, "under a press it takes the list row's own press");
-          assert.equal((await drawn("inbox-rail-palette")).edge, "rgba(0, 0, 0, 0)", "a press draws no accent edge");
+          await draws("inbox-rail-settings", fill.press, ink.strong, "under a press it takes the list row's own press");
+          assert.equal((await drawn("inbox-rail-settings")).edge, "rgba(0, 0, 0, 0)", "a press draws no accent edge");
           await page.mouse.move(700, 450);
           await page.mouse.up();
-          await draws("inbox-rail-palette", fill.rest, ink.rest, "let go off it, the button is at rest again");
+          await draws("inbox-rail-settings", fill.rest, ink.rest, "let go off it, the button is at rest again");
           const here = await centre("inbox-rail-place");
           await page.mouse.move(here.x, here.y);
           await frames(page);
@@ -2642,7 +2657,7 @@ try {
             probe.remove();
             return facts;
           });
-          assert.deepEqual([ring.on.includes("inbox-rail-palette"), ring.seen, ring.ring], [true, true, ring.want], "Tab from the place is on the palette, which draws the app's focus ring");
+          assert.deepEqual([ring.on.includes("inbox-rail-waiting"), ring.seen, ring.ring], [true, true, ring.want], "Tab from the place is on the count, which draws the app's focus ring");
           assert.ok(ring.reach > 0 && ring.reach <= 12, `the ring fits inside the rail's insets: it reaches ${ring.reach}px past the button`);
 
           // a button answers from the window's start edge to the rail's end, and the window's two start corners are the first and the last one's
@@ -2662,7 +2677,7 @@ try {
           assert.deepEqual(answers.sides, buttons.map(({ kind }) => [kind, kind]), "each button answers from the window's start edge to the rail's end");
           assert.equal(await page.locator(".command-palette").count(), 0, "no press that was let go off its button opened anything");
           await addressIs(page, { app: "inbox", pane: WORKING }, "the thread is as it was");
-          console.log(`PASS ${theme}: the rail is a navigation named Inbox mode before the list, with seven 34px buttons named Back to Ovis, Agent inbox (the current page), Search panes and actions, 1 waiting for you, Alerts (pressed), Settings and PC workstation · Connected (a menu's button), each with its tooltip; at rest a button stands on the rail's surface, the current place on the selection's fill with a heavier glyph and no edge; the pointer and a press change a button's fill and glyph only, and add nothing to the current place but the press; the keyboard's focus draws the app's ring; each button answers from the window's edge to the rail's end, the window's corners included`);
+          console.log(`PASS ${theme}: the rail is a navigation named Inbox mode before the list, with six 34px buttons named Back to Ovis, Agent inbox (the current page), 1 waiting for you, Alerts (pressed), Settings and PC workstation · Connected (a menu's button), each with its tooltip; at rest a button stands on the rail's surface, the current place on the selection's fill with a heavier glyph and no edge; the pointer and a press change a button's fill and glyph only, and add nothing to the current place but the press; the keyboard's focus draws the app's ring; each button answers from the window's edge to the rail's end, the window's corners included`);
         }, desktop);
       }
       // ---- the rail in the keyboard's order, and under its keys ----
@@ -2696,20 +2711,21 @@ try {
         }
         const listed = (await rows(page)).map((item) => `row ${item.pane}`);
         assert.equal(listed.length, 6);
-        assert.deepEqual(stops, ["inbox-rail-exit", "inbox-rail-place", "inbox-rail-palette", "inbox-rail-waiting", "inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs",
-          "inbox-search-toggle", "inbox-filter-toggle", "inbox-add", ...listed, "the resize grip", "the thread"],
+        assert.deepEqual(stops, ["inbox-rail-exit", "inbox-rail-place", "inbox-rail-waiting", "inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs",
+          "inbox-search-input", "inbox-filter-toggle", "inbox-add", ...listed, "the resize grip", "the thread"],
           "Tab goes down the rail from the Ovis mark to the PC, then to the list's top row and its rows, the column's resize grip, and the thread");
         await page.locator(".inbox-rail .inbox-rail-place").focus();
         await page.keyboard.press("Shift+Tab");
         assert.equal(await stop(), "inbox-rail-exit", "Shift+Tab goes back up the rail");
 
-        // Enter presses a rail button: the palette, which gives the focus back when Escape puts it away
-        await page.locator(".inbox-rail .inbox-rail-palette").focus();
+        // Enter presses a rail button: the bell, which switches this device's alerts and keeps the focus
+        const bell = page.locator(".inbox-rail .inbox-rail-alerts");
+        await bell.focus();
         await page.keyboard.press("Enter");
-        await page.locator(".command-palette").waitFor();
-        await page.keyboard.press("Escape");
-        await page.locator(".command-palette").waitFor({ state: "detached" });
-        await focused("inbox-rail-palette", "the palette put away gives the focus back to the rail's button");
+        await page.waitForFunction(() => document.querySelector(".inbox-rail .inbox-rail-alerts")?.getAttribute("aria-pressed") === "false");
+        await page.keyboard.press("Enter");
+        await page.waitForFunction(() => document.querySelector(".inbox-rail .inbox-rail-alerts")?.getAttribute("aria-pressed") === "true");
+        await focused("inbox-rail-alerts", "the bell pressed by Enter keeps the focus");
         // Space presses one too: the list of PCs, a menu that gives the focus back to its button when it closes
         const pcs = page.locator(".inbox-rail .inbox-rail-pcs");
         const menu = page.locator('.row-menu[role="menu"][aria-label="PCs"]');
@@ -2734,7 +2750,7 @@ try {
         await page.locator(".inbox-column .inbox-rail").waitFor();
         await page.locator(".thread-chip").waitFor();
         await addressIs(page, { app: "inbox", pane: WORKING }, "Back returns to the thread the mode was left on");
-        console.log(`PASS the keyboard's order is the rail's seven buttons from the Ovis mark down to the PC, the list's three top controls, its ${listed.length} rows, the column's resize grip, then the thread, and Shift+Tab goes back; Enter and Space press a rail button; the palette and the list of PCs give the focus back to their buttons; Enter on the Ovis mark leaves the mode by one entry that Back undoes`);
+        console.log(`PASS the keyboard's order is the rail's six buttons from the Ovis mark down to the PC, the list's search field, filter and New workspace, its ${listed.length} rows, the column's resize grip, then the thread, and Shift+Tab goes back; Enter and Space press a rail button; the palette and the list of PCs give the focus back to their buttons; Enter on the Ovis mark leaves the mode by one entry that Back undoes`);
       }, desktop);
       // ---- each press of the rail ----
       await withPage(browser, base, light, "/?app=inbox", "the rail's presses: the palette, alerts, Settings and the list of PCs", async (page) => {
@@ -2752,8 +2768,11 @@ try {
           if (!there) assert.fail(`${what}: the focus is on ${await page.evaluate(() => document.activeElement?.className ?? "nothing")}`);
         };
 
-        // the magnifier opens the command palette over the mode, and the thread stays as it is
-        await rail("palette").click();
+        // the rail has no magnifier: the thread's More opens the command palette over the mode, for a pointer or a finger
+        // with no shortcut, and the thread stays as it is
+        assert.equal(await rail("palette").count(), 0, "the rail draws no magnifier");
+        await page.locator(".thread-top .header-more-button").click();
+        await page.locator('.row-menu [data-item="palette"]').click();
         await page.locator(".command-palette").waitFor();
         assert.equal(await page.locator(".inbox-column .inbox-rail").count(), 1, "the palette opens over the mode");
         await page.keyboard.press("Escape");
@@ -2845,7 +2864,7 @@ try {
         assert.ok(atTop, `the place takes the list to its top: it is at ${await top()}px`);
         assert.equal(await page.evaluate(() => document.activeElement === document.querySelector(".inbox-column .mode-inbox")), true, "the keyboard's focus is on the list");
         await page.keyboard.press("Tab");
-        assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-search-toggle") === true), true, "the next Tab is the list's first control");
+        assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-search-input") === true), true, "the next Tab is the list's first control, its search field");
         assert.equal(await place.getAttribute("aria-current"), "page", "the place is still the current one");
         await addressIs(page, { app: "inbox", pane: WORKING }, "the place opens nothing and closes nothing");
         assert.equal(await page.locator(".thread-chip").count(), 1, "the open thread stays beside the list");
@@ -2864,7 +2883,7 @@ try {
         const waiting = page.locator(".inbox-rail .inbox-rail-waiting");
         /** where the three buttons under the count stand */
         const under = async (): Promise<number[]> => (await railButtons(page)).filter((button) => ["inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs"].includes(button.kind)).map((button) => button.box.y);
-        const without = ["Back to Ovis", "Agent inbox", "Search panes and actions", "Alerts", "Settings", "PC workstation · Connected"];
+        const without = ["Back to Ovis", "Agent inbox", "Alerts", "Settings", "PC workstation · Connected"];
         // on the list alone the one agent that waits is another one
         await railCounts(page, 1, "on the list alone the agent that waits is counted");
         assert.deepEqual(await waiting.evaluate((node) => {
@@ -3040,9 +3059,9 @@ try {
         assert.deepEqual([pane.x, pane.w], [classic.pane.x, classic.pane.w], "and the pane has the classic shell's box");
         near(list.x, rail.right, 0.5, "the list begins where the rail ends");
         assert.deepEqual((await railButtons(page)).map(({ kind, box: at }) => [kind, at.x, at.y, at.w, at.h]), [
-          ["inbox-rail-exit", 12, 12, 44, 44], ["inbox-rail-place", 12, 72, 44, 44], ["inbox-rail-palette", 12, 124, 44, 44],
+          ["inbox-rail-exit", 12, 12, 44, 44], ["inbox-rail-place", 12, 72, 44, 44],
           ["inbox-rail-waiting", 12, height - 212, 44, 44], ["inbox-rail-alerts", 12, height - 160, 44, 44], ["inbox-rail-settings", 12, height - 108, 44, 44], ["inbox-rail-pcs", 12, height - 56, 44, 44],
-        ], "its seven buttons are 44px, 12px from the rail's sides, 8px apart");
+        ], "its six buttons are 44px, 12px from the rail's sides, 8px apart");
         const tops = await Promise.all([".inbox-search-toggle", ".inbox-filter-toggle", ".inbox-add"].map((selector) => box(page, `.mode-inbox ${selector}`)));
         for (const each of tops) assert.deepEqual([each.w, each.h, each.y], [44, 44, 12], "the list's top controls are 44px too, on the line of the rail's first button");
         // a pixel in from each corner: a point on the window's last half pixel is outside it for the browser
@@ -3050,7 +3069,7 @@ try {
           const button = document.elementFromPoint(x!, y!)?.closest(".inbox-rail button");
           return button ? [...button.classList].find((name) => name.startsWith("inbox-rail-") && name !== "inbox-rail-item") ?? null : null;
         })), ["inbox-rail-exit", "inbox-rail-pcs"], "the window's top and bottom start corners press the rail's first and last buttons");
-        console.log(`PASS under a coarse pointer at 1440 the rail is 68px wide with seven 44px buttons, the column the classic sidebar's (${column.w}px) and the pane the classic shell's (${pane.w}px from ${pane.x}), the list (${Math.round(list.w)}px) beside it with 44px top controls on the rail's first button's line, and the window's two start corners press the first and the last button`);
+        console.log(`PASS under a coarse pointer at 1440 the rail is 68px wide with six 44px buttons, the column the classic sidebar's (${column.w}px) and the pane the classic shell's (${pane.w}px from ${pane.x}), the list (${Math.round(list.w)}px) beside it with 44px top controls on the rail's first button's line, and the window's two start corners press the first and the last button`);
       }, { width: 1440, height: 900 }, true);
       // ---- the rail's PC with several PCs ----
       // With several PCs the button says how many are connected, and its one dot is still the page's connection to
