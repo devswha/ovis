@@ -804,16 +804,10 @@ describe("connection-owned pending input", () => {
     const f = await setup("queued-model", agent, "");
     const message = await f.queue(1476, text);
     const delivered = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id && entry.outcome === "sent") === true);
-    const recorded = new Promise<void>((resolve, reject) => {
-      const watcher = watch(root, () => {
-        if (!f.bytes().endsWith("\r")) return;
-        clearTimeout(timeout); watcher.close(); resolve();
-      });
-      const timeout = setTimeout(() => { watcher.close(); reject(new Error("queued command was not recorded")); }, 8_000);
-    });
     // When the agent finishes its turn.
     await f.state("idle");
-    await Promise.all([delivered, recorded]);
+    // fs.watch can drop the recorder's last append (see record.cjs), so read the log until the Enter is in it
+    await Promise.all([delivered, f.waitBytes("\r")]);
     // Then the terminal receives the same command the immediate path would send.
     expect(f.bytes()).toBe(`${paste(expected)}\r`);
   });
