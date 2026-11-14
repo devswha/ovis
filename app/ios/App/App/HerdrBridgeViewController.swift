@@ -380,15 +380,14 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// Covers the web view until the client is up: before that it is blank, then index.html's
     /// loading spinner, for minutes on a slow link.
     private var openingView: UIView?
-    /// Looks at the open once a second while the cover is up (tick): gives up on a PC that has not
-    /// answered, instead of WebKit's own wait of a minute or more, and tells a slow or stalled page.
+    /// Looks at the open five times a second while the cover is up (tick): gives up on a PC that has not
+    /// answered, instead of WebKit's own wait of a minute or more, and tells a slow page.
     private var ticker: Timer?
     private var watch: OpeningWatch?
-    /// The cover's spinner, bar, text, Keep waiting and Try again, which change with the open's stage.
+    /// The cover's spinner, bar, text and Try again, which change with the open's stage.
     private var openingSpinner: UIActivityIndicatorView?
     private var openingBar: UIProgressView?
     private var openingLabel: UILabel?
-    private var openingKeep: UIButton?
     private var openingRetry: UIButton?
     /// The PC's name or address, as the cover names it.
     private var openingName = ""
@@ -396,10 +395,12 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     private var gaveUp = false
 
     /// Asked of the PC's page while the cover is up: whether the client is up, its root no longer
-    /// holding index.html's loading spinner, or the page is no client at all (no root).
+    /// holding index.html's loading spinner, or the page is no client at all (no root). The PC
+    /// answers before its page commits, and until then the web view holds its first, empty
+    /// document (about:blank), which has no root either: only an http(s) page counts.
     private static let clientUpScript = """
         (() => {
-          if (document.readyState === 'loading') return false;
+          if (!/^https?:$/.test(location.protocol) || document.readyState === 'loading') return false;
           const root = document.getElementById('root');
           return !root || !root.querySelector(':scope > .boot');
         })()
@@ -475,17 +476,18 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         if webView != nil, let origin = PCStore.current {
             showOpening(origin)
             watch = OpeningWatch(now: ProcessInfo.processInfo.systemUptime, answerLimit: TimeInterval(Self.answerSeconds))
-            ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick(origin) }
+            // often enough that the cover lifts within a fifth of a second of the client's first frame
+            ticker = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.tick(origin) }
         }
     }
 
     deinit { ticker?.invalidate() }
 
-    /// Each second while the cover is up: how far the page has come, and what the cover says.
+    /// Each tick while the cover is up: how far the page has come, and what the cover says.
     private func tick(_ origin: String) {
         guard let webView, openingView != nil, !gaveUp, var watch else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        watch.progress(webView.estimatedProgress, at: now)
+        watch.progress(webView.estimatedProgress)
         let stage = watch.stage(at: now)
         let shown = watch.shownProgress()
         self.watch = watch
@@ -520,21 +522,15 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         switch stage {
         case .slow:
             openingLabel?.text = ko ? "연결이 느립니다. \(openingName) 여는 중…" : "Slow connection. Still opening \(openingName)…"
-        case .stalled:
-            let seconds = Int(OpeningWatch.stallSeconds)
-            openingLabel?.text = ko
-                ? "\(openingName)에서 \(seconds)초 동안 아무것도 오지 않았습니다. 연결이 끊겼을 수 있습니다."
-                : "Nothing has come from \(openingName) for \(seconds) seconds. The connection may have dropped."
         case .opening, .noAnswer:
             openingLabel?.text = ko ? "\(openingName) 여는 중…" : "Opening \(openingName)…"
         }
         // the spinner until the PC answers; then the bar, filled as WebKit estimates the page's load
-        let bar = answered && stage != .stalled
-        openingBar?.isHidden = !bar
+        openingBar?.isHidden = !answered
         openingBar?.setProgress(Float(shown), animated: true)
-        openingSpinner?.isHidden = bar || stage == .stalled
-        openingKeep?.isHidden = stage != .stalled
-        openingRetry?.isHidden = stage != .stalled
+        openingSpinner?.isHidden = answered
+        // a slow open can always be started again
+        openingRetry?.isHidden = stage != .slow
     }
 
     private static var korean: Bool { Locale.preferredLanguages.first?.lowercased().hasPrefix("ko") ?? false }
@@ -570,21 +566,13 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         retry.tintColor = UIColor(red: 0xf0 / 255, green: 0xa8 / 255, blue: 0x30 / 255, alpha: 1)
         retry.titleLabel?.font = .preferredFont(forTextStyle: .headline)
         retry.isHidden = true
-        let keep = UIButton(type: .system, primaryAction: UIAction(title: Self.korean ? "계속 기다리기" : "Keep waiting") { [weak self] _ in
-            self?.watch?.keepWaiting(at: ProcessInfo.processInfo.systemUptime)
-            self?.openingKeep?.isHidden = true
-            self?.openingRetry?.isHidden = true
-        })
-        keep.tintColor = retry.tintColor
-        keep.titleLabel?.font = .preferredFont(forTextStyle: .headline)
-        keep.isHidden = true
         let bar = UIProgressView(progressViewStyle: .default)
         bar.progressTintColor = retry.tintColor
         bar.trackTintColor = UIColor(white: 1, alpha: 0.12)
         bar.isHidden = true
         bar.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = UIStackView(arrangedSubviews: [spinner, bar, label, keep, retry, change])
+        let stack = UIStackView(arrangedSubviews: [spinner, bar, label, retry, change])
         stack.axis = .vertical
         stack.alignment = .center
         stack.spacing = 16
@@ -619,7 +607,6 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         openingSpinner = spinner
         openingLabel = label
         openingRetry = retry
-        openingKeep = keep
         openingBar = bar
         openingName = host
     }
@@ -648,7 +635,6 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         openingSpinner?.stopAnimating()
         openingSpinner?.isHidden = true
         openingBar?.isHidden = true
-        openingKeep?.isHidden = true
         openingLabel?.text = text
         openingRetry?.isHidden = false
     }

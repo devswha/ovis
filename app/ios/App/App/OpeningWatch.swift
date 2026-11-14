@@ -1,11 +1,12 @@
 import Foundation
 
 /// What HerdrBridgeViewController's cover says while a PC opens, as OpeningWatch.java does on
-/// Android. iOS has no count of the bytes the app receives; the web view's estimatedProgress, which
-/// grows as the page and its files arrive, stands in for it once the PC has answered. Before that
-/// answer nothing is seen, so the open gives up when the answer limit passes. A PC that answered is
-/// never called off: while its page keeps coming the cover says the link is slow, and when nothing
-/// more comes for `stallSeconds` it offers Keep waiting and Try again. Times are seconds on one clock
+/// Android. iOS has no count of the bytes the app receives: the web view's estimatedProgress fills
+/// the bar once the PC has answered, but it does not move while one large file arrives (it held at
+/// about 40 % through the client's script on a 10 KB/s link), so it cannot tell a stalled link from a
+/// slow one and the cover never claims a stall. Before the answer nothing is seen, so the open gives
+/// up when the answer limit passes. A PC that answered is never called off: after
+/// `slowAfterSeconds` the cover says the link is slow, with Try again. Times are seconds on one clock
 /// (ProcessInfo.systemUptime in the app).
 struct OpeningWatch {
     enum Stage: Equatable {
@@ -13,16 +14,12 @@ struct OpeningWatch {
         case opening
         /// The PC answered and the page still has not shown: a slow link.
         case slow
-        /// It answered, then the page did not move for `stallSeconds`.
-        case stalled
         /// No answer within the limit: the cover says so, with Try again.
         case noAnswer
     }
 
     /// How long a first page may take before the cover calls the link slow.
     static let slowAfterSeconds: TimeInterval = 5
-    /// How long the page may not move, once the PC answered, before the cover says the link stalled.
-    static let stallSeconds: TimeInterval = 20
     /// The most the bar shows until the client is up: the page's load also has its script to run.
     static let maxShown = 0.95
 
@@ -30,31 +27,22 @@ struct OpeningWatch {
     private let answerLimit: TimeInterval
     private(set) var answered = false
     private var lastProgress = 0.0
-    private var lastProgressAt: TimeInterval
     private var shown = 0.0
 
     init(now: TimeInterval, answerLimit: TimeInterval) {
         startedAt = now
         self.answerLimit = answerLimit
-        lastProgressAt = now
     }
 
     /// The PC answered the first page.
     mutating func answer(at now: TimeInterval) {
         answered = true
-        lastProgressAt = now
     }
 
-    /// The web view's estimatedProgress is `fraction` at `now`: more than before is the page moving.
-    mutating func progress(_ fraction: Double, at now: TimeInterval) {
-        guard fraction > lastProgress else { return }
-        lastProgress = fraction
-        if answered { lastProgressAt = now }
-    }
-
-    /// Keep waiting on a stalled open: the stall is counted again from `now`.
-    mutating func keepWaiting(at now: TimeInterval) {
-        lastProgressAt = now
+    /// The web view's estimatedProgress is `fraction`: the bar's measure, once the PC has answered.
+    mutating func progress(_ fraction: Double) {
+        guard answered else { return }
+        lastProgress = max(lastProgress, fraction)
     }
 
     /// What the bar shows, 0 to maxShown: never less than before.
@@ -84,7 +72,6 @@ struct OpeningWatch {
     func stage(at now: TimeInterval) -> Stage {
         let elapsed = now - startedAt
         if !answered { return elapsed >= answerLimit ? .noAnswer : .opening }
-        if now - lastProgressAt >= Self.stallSeconds { return .stalled }
         return elapsed >= Self.slowAfterSeconds ? .slow : .opening
     }
 }
