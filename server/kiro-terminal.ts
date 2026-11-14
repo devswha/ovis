@@ -35,9 +35,10 @@ export function kiroNested(info: ProcessInfo | undefined, labelled: boolean, pla
 
 export function parseTerminalProcesses(text: string): TerminalProcess[] {
   return text.split("\n").flatMap((line) => {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+(.+)$/);
-    return match ? [{ pid: Number(match[1]), parent: Number(match[2]), group: Number(match[3]),
-      foreground: Number(match[4]), tty: match[5]!, command: match[6]!.trim() }] : [];
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s+(\S+)\s+(\S+)\s+(.+)$/);
+    // Zombies retain TTY/group metadata after exit; live S/R changes must not enter the binding identity.
+    return match && !match[6]!.startsWith("Z") ? [{ pid: Number(match[1]), parent: Number(match[2]), group: Number(match[3]),
+      foreground: Number(match[4]), tty: match[5]!, command: match[7]!.trim() }] : [];
   });
 }
 
@@ -61,8 +62,8 @@ export function nestedCodex(info: ProcessInfo | undefined, rows: readonly Termin
 }
 
 const exec = promisify(execFile);
-async function processTable(): Promise<TerminalProcess[]> {
-  const { stdout } = await exec("/bin/ps", ["-axo", "pid=,ppid=,pgid=,tpgid=,tty=,comm="],
+export async function processTable(): Promise<TerminalProcess[]> {
+  const { stdout } = await exec("/bin/ps", ["-axo", "pid=,ppid=,pgid=,tpgid=,tty=,stat=,comm="],
     { timeout: 2000, maxBuffer: 2 * 1024 * 1024 });
   return parseTerminalProcesses(stdout);
 }
