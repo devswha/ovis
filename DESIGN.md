@@ -2479,16 +2479,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     Ovis mark (**Back to Ovis**: `OvisMark` at `--mark-size`; it leaves the mode by one history
     entry, on the pane of the open thread), **Agent inbox** (lucide `Inbox`: the mode's one
     place, always the current one, `aria-current="page"`; a press takes the list to its top and
-    gives it the keyboard's focus) and **Search panes and actions** (lucide `Search`: the
-    command palette, its shortcut in the tooltip where one is set). Pushed to the foot, so that
+    gives it the keyboard's focus). It draws no magnifier: the list's search field is the
+    screen's one, and the command palette is under its shortcut and in the thread's More
+    (below), where a touch screen with no keyboard reaches it. Pushed to the foot, so that
     the last one stands where the list's foot stood: the count of the agents that wait (below),
     **Alerts** (lucide `Bell`, `BellOff` while they are off, `aria-pressed`, the bell's own
     sentence as its tooltip: this device's alerts), **Settings** (lucide `Settings`, its
     shortcut in the tooltip) and the PC (below). Each of them is in the rail and nowhere else
-    on a wide window. Beside the rail's magnifier the list's own search says its scope:
-    **Search agents**, in its button's name and tooltip and in its field.
+    on a wide window. The list's own search says its scope: **Search agents**, in its field and
+    in its button's name and tooltip.
   - A rail button is the icon button at `--inbox-control`, `--radius-md`, with an `--icon-size`
-    glyph, and no box at rest (a `--text-dim` glyph on the rail's surface): seven raised discs
+    glyph, and no box at rest (a `--text-dim` glyph on the rail's surface): six raised discs
     would be the loudest thing in the window. Under a hovering pointer it fills with
     `--side-hover` and its glyph takes `--text`; a press fills it half way from
     `--side-selected` to `--border-strong` under a `--text-strong` glyph, the list row's own
@@ -2536,8 +2537,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     sidebar, and T3 Code lists its threads in a sidebar: the mode's list is already
     that sidebar, and its shell draws no status bar. No icon, colour or markup of any of them
     is used.
-  - The list's top row has three round controls at its end, `--space-2-5` apart and `--space-4`
-    from the column's edge: **Search agents**, the state filter and **New workspace**. In a
+  - The list's top row holds its search field, always shown, then two round controls at its end,
+    `--space-2-5` apart and `--space-4` from the column's edge: the state filter and **New
+    workspace** (where New workspace is not drawn, the field takes its room). The field has no
+    button of its own while the list has the room for it: 256px and more, the default sidebar
+    with a mouse, where it shows about 94px of words (138px without New workspace). A narrower
+    list, in which the field could not hold its own placeholder (at the sidebar's least width it
+    would show one character), folds it into a round **Search** button at the row's start, and
+    the row is three round controls. In a
     list too narrow for the row at those insets (a sidebar near its least width under a coarse
     pointer, whose controls are 44px) the row gives way, in this order: its side insets, down
     to the rows' own `--space-3`; its gaps, down to none; then its controls, which shrink
@@ -2549,11 +2556,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
     least size the controls are inside the list and none stands over another; an open search
     field gives up its room before its button shrinks, down to its own insets (its start
     padding and its clear button's room), under which it could not be drawn beside the
-    button. The rows truncate their words as they always do, and nothing scrolls sideways. The
-    search field opens when asked for and takes the row: the filter and New workspace give way
-    until it is put away, so a query has the room to be read in the narrower list (the field is
+    button. The rows truncate their words as they always do, and nothing scrolls sideways. In
+    such a list the search field opens when asked for and takes the row: the filter and New
+    workspace give way until it is put away, so a query has the room to be read (the field is
     then the whole row but its Search button). It takes the focus, stays while it holds words
     (a query never narrows the list unseen), and Escape first clears it, then puts it away.
+    Where the field is always shown, Escape clears it and it stays, with the focus.
     Nothing in the row is filled but the filter's button while a filter other than All is on,
     the round control's own rule (above).
   - Rows are `--row-h` tall, `--space-1` apart and `--space-3` in from the list's two edges (the
@@ -2603,8 +2611,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   to that thread's row while the list still draws it (a filter or a search may leave it out:
   then the section), so a keyboard or a screen reader keeps its place. A change of width that
   only draws it again takes none: a window widened past a phone's with a thread open leaves the
-  focus in the thread's composer. The column's search field, put away by Escape, gives the focus
-  to the round Search button that opened it. On a wide window the keyboard's order is the drawn
+  focus in the thread's composer. The column's search field, put away by Escape in a list too
+  narrow to show it always, gives the focus to the round Search button that opened it. On a wide window the keyboard's order is the drawn
   one, which is the document's: the rail's buttons from the Ovis mark down to the PC, each a
   plain Tab stop that Enter and Space press, then the list's top row, its rows, the column's
   resize grip, and the thread. The rail's Agent inbox gives the focus to the list's section,
@@ -2621,8 +2629,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   mirror's width, unsent text), under More's header of the pane's title, place and path, whose fixed lines never scroll there:
   only a path longer than six lines scrolls, in its own lines (`.header-more-crumb.is-inbox`; the
   classic app's header scrolls as a whole). On a
-  wide window the column has no More: the list's four items are buttons of the rail, each in
-  that one place, and the one More, over the pane, holds the thread's items alone. A More whose button leaves the screen closes with it: the system Back
+  wide window the column has no More: Back to Ovis, Alerts and Settings are buttons of the rail,
+  each in that one place, and the one More, over the pane, holds **Search panes and actions**
+  (the rail draws no magnifier, and a touch screen has no shortcut) and then the thread's items. A More whose button leaves the screen closes with it: the system Back
   from a wide thread takes the pane's More away, and its open menu goes too (lib/moreMenu.ts).
 - What More counts in the mode. Over a phone's thread its dot and its name count the sessions
   that wait other than the thread's own, whose question is on the screen in its prompt card,

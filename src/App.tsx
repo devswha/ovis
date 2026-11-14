@@ -919,7 +919,8 @@ export function App() {
   // only what is the app's own (the list already shows who waits first); in a thread also what is about the thread,
   // the pane menu's items for what it shows among them. Settings stands last: the mode has no sidebar foot to hold it.
   // From 769px the app's own items are the buttons of the mode's rail (components/InboxRail.tsx), each in that one
-  // place: the column has no More, and the one over the pane holds the thread's items alone.
+  // place: the column has no More, and the one over the pane holds the thread's items after the palette, which the
+  // rail draws no magnifier for (the list's search field is the screen's one): a touch screen has no shortcut.
   const fromMore = (id: string): RowMenuItem[] => moreItems.filter((item) => item.id === id);
   const moreOnList = inbox.shown;
   const modeThreadItems: RowMenuItem[] = [
@@ -943,7 +944,7 @@ export function App() {
   ];
   const modeAppItems: RowMenuItem[] = [...modeLeadItems, ...modeEndItems];
   // a phone's thread has the one More: the way out and the palette, then the thread's items, then the rest of the app's
-  const modeMoreItems: RowMenuItem[] = moreOnList ? modeAppItems : inboxWide ? modeThreadItems
+  const modeMoreItems: RowMenuItem[] = moreOnList ? modeAppItems : inboxWide ? [...fromMore("palette"), ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item)]
     : [...modeLeadItems, ...modeThreadItems.map((item, index) => index === 0 ? { ...item, divider: true } : item), ...modeEndItems];
 
   // the chat's surface is what the pane column shows: the header's pane zone and the tab strip
@@ -1278,7 +1279,7 @@ export function App() {
             mode's rail comes first in that column, then the list, then the column's edge: the keyboard follows
             the drawn order */}
         {inMode ? (inboxWide && <aside className="sidebar inbox-column">
-          <InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} onPalette={() => openPalette()} waiting={railWaiting}
+          <InboxRail onExit={leaveMode} onInbox={() => inbox.list.current?.toTop()} waiting={railWaiting}
             alerts={{ on: bell.on, title: bell.title, toggle: () => void bell.run() }} onSettings={actions.openSettings} shortcutTitle={shortcutTitle}
             pcs={{ machines: sidebarMachines, selectedId: selectedMachineId, connection: rosterConnection,
               saidByThread: !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection,

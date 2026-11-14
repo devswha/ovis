@@ -4,12 +4,13 @@
  * width (InboxMode.css), so the pane beside the column is where the classic shell has it. A window under 769px
  * draws no rail: its list keeps its own controls.
  *
- * At its top: the way out, the mode's one place and the command palette. Pushed to its foot: the agents that wait,
- * this device's alerts, Settings and the PCs. Each of them is here and nowhere else in the wide layout: the column
- * has no More and no foot. A button says what it is in its name and its tooltip; no label is drawn.
+ * At its top: the way out and the mode's one place. Pushed to its foot: the agents that wait, this device's alerts,
+ * Settings and the PCs. Each of them is here and nowhere else in the wide layout: the column has no More and no foot.
+ * It draws no magnifier: the list's search field is the screen's one, and the command palette is under its shortcut
+ * and the thread's More (App.tsx). A button says what it is in its name and its tooltip; no label is drawn.
  */
 import { useState } from "react";
-import { Bell, BellOff, CircleHelp, Inbox, Monitor, MonitorOff, Search, Settings } from "lucide-react";
+import { Bell, BellOff, CircleHelp, Inbox, Monitor, MonitorOff, Settings } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { HeaderConnection } from "../lib/headerConnection.ts";
@@ -38,7 +39,6 @@ export interface InboxRailProps {
   onExit(): void;
   /** to the list's top, with the keyboard's focus on the list: the mode's one place, which is always the current one */
   onInbox(): void;
-  onPalette(): void;
   /** the agents that wait other than the open thread's, and the press that opens the next of them; null while none waits */
   waiting: { count: number; open(): void } | null;
   /** this device's alerts (lib/alertsBell.ts): whether they are on, the sentence that says how, and the press that switches them */
@@ -46,7 +46,7 @@ export interface InboxRailProps {
   onSettings(): void;
   pcs: InboxRailPcs;
   /** a tooltip with its shortcut's keys after it, where one is set (App.tsx) */
-  shortcutTitle(label: string, id: "palette" | "settings"): string;
+  shortcutTitle(label: string, id: "settings"): string;
 }
 
 type PcState = "connected" | "reconnecting" | "offline";
@@ -78,7 +78,7 @@ function pcsLabel({ machines, connection }: InboxRailPcs, t: Translate): string 
   return t("PCs, {n} of {m} connected", { n: machines.filter((machine) => machine.state === "connected").length, m: machines.length });
 }
 
-export function InboxRail({ onExit, onInbox, onPalette, waiting, alerts, onSettings, pcs, shortcutTitle }: InboxRailProps) {
+export function InboxRail({ onExit, onInbox, waiting, alerts, onSettings, pcs, shortcutTitle }: InboxRailProps) {
   const t = useT();
   const AlertsGlyph = alerts.on ? Bell : BellOff;
   const [pcMenu, setPcMenu] = useState<HTMLElement | null>(null);
@@ -99,9 +99,6 @@ export function InboxRail({ onExit, onInbox, onPalette, waiting, alerts, onSetti
         </button>
         <button type="button" className="icon-button inbox-rail-item inbox-rail-place" aria-label={t("Agent inbox")} title={t("Agent inbox")} aria-current="page" onClick={onInbox}>
           <Inbox aria-hidden="true" />
-        </button>
-        <button type="button" className="icon-button inbox-rail-item inbox-rail-palette" aria-label={t("Search panes and actions")} title={shortcutTitle(t("Search panes and actions"), "palette")} onClick={onPalette}>
-          <Search aria-hidden="true" />
         </button>
       </div>
       <div className="inbox-rail-group is-lower">

@@ -195,7 +195,8 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
 
   const [pcMenu, setPcMenu] = useState<HTMLElement | null>(null);
   const [filterMenu, setFilterMenu] = useState<HTMLElement | null>(null);
-  // the column's search field opens on request and stays while it holds words: a query never narrows the list unseen
+  // A column with the room always shows its search field (InboxList.css); a narrower one folds it into its button, and
+  // there it opens on request and stays while it holds words: a query never narrows the list unseen
   const [searchAsked, setSearchAsked] = useState(false);
   const searchOpen = !wide || searchAsked || query !== "";
   useLayoutEffect(() => { if (wide && searchAsked) search.current?.focus(); }, [wide, searchAsked]);
@@ -287,13 +288,14 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     // a first Escape takes the words away, the next one the field
     event.preventDefault();
     if (query !== "") onQuery("");
-    // the field goes from under the focus: the button that opened it takes it
-    else { setSearchAsked(false); searchToggle.current?.focus(); }
+    // in a column that folds the field, it goes from under the focus and the button that opened it takes it; where the
+    // field is always shown it stays
+    else if (searchToggle.current && searchToggle.current.getClientRects().length > 0) { setSearchAsked(false); searchToggle.current.focus(); }
   };
-  // Beside the rail the list's search is one of two magnifiers on the screen: it says its scope, in its button's name
-  // and in its field, and the rail's keeps the palette's own name. Where the list is the screen it is the one search.
+  // Beside the rail the list's search says its scope, in its field and its button's name: the palette, which searches
+  // panes and actions, is under its shortcut and the thread's More. Where the list is the screen it is the one search.
   const searchLabel = wide ? t("Search agents") : t("Search");
-  const searchField = searchOpen && (
+  const searchField = (searchOpen || wide) && (
     <div className="inbox-search" role="search">
       {!wide && <Search className="inbox-search-glass" aria-hidden="true" />}
       <input ref={search} className="input inbox-search-input" type="search" value={query} placeholder={searchLabel} aria-label={searchLabel}
@@ -333,18 +335,18 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   return (
     <section className={`mode-inbox${wide ? " is-wide" : ""}`} aria-label={t("Agent inbox")} tabIndex={-1} ref={root}
       onWheel={stopRestoring} onTouchStart={stopRestoring} onPointerDown={stopRestoring} onKeyDown={stopRestoring}>
-      <div className="inbox-top">
-        {/* The column's head, in one place: Search, the state filter and New workspace at its end. The search field
-            opens on request and then takes the row: the filter and New workspace give way until it is put away, so
-            a query has the room to be read. */}
+      <div className={`inbox-top${wide && searchOpen ? " is-search-open" : ""}`}>
+        {/* The column's head, in one place: the search field, the state filter and New workspace. A column too narrow
+            for the field beside them shows Search in its place; the field then opens on request and takes the row,
+            the filter and New workspace giving way until it is put away (InboxList.css). */}
         {wide ? <>
           {searchField}
           <button type="button" ref={searchToggle} className="icon-button inbox-round inbox-search-toggle" aria-label={searchLabel} title={searchLabel} aria-expanded={searchOpen}
             onClick={() => { if (!searchOpen) setSearchAsked(true); else if (query === "") setSearchAsked(false); else search.current?.focus(); }}>
             <Search aria-hidden="true" />
           </button>
-          {!searchOpen && filterButton}
-          {!searchOpen && newButton}
+          {filterButton}
+          {newButton}
         </> : <>
           {moreButton}
           {note}

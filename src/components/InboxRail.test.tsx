@@ -52,11 +52,11 @@ describe("InboxRail", () => {
   /** one connected PC, the one the app is on, and a connection with nothing to say */
   const pcs = (change: Partial<InboxRailPcs> = {}): InboxRailPcs => ({ machines: [pc()], selectedId: "local", connection: null, saidByThread: false, onSelect: (machineId) => pressed.push(`pc:${machineId}`), ...change });
   const props = (change: Partial<InboxRailProps> = {}): InboxRailProps => ({
-    onExit: () => pressed.push("exit"), onInbox: () => pressed.push("inbox"), onPalette: () => pressed.push("palette"),
+    onExit: () => pressed.push("exit"), onInbox: () => pressed.push("inbox"),
     waiting: null, alerts: { on: true, title: "Alerts on in the app. Tap to turn them off", toggle: () => pressed.push("alerts") },
     onSettings: () => pressed.push("settings"), pcs: pcs(),
     // the shell's own: a shortcut's keys after the label, where the shortcut has keys
-    shortcutTitle: (label, id) => id === "palette" ? `${label} (Ctrl+Shift+K)` : label,
+    shortcutTitle: (label, id) => id === "settings" ? `${label} (Ctrl+,)` : label,
     ...change,
   });
   const view = (change: Partial<InboxRailProps>) => createElement(SettingsProvider, null, createElement(InboxRail, props(change)));
@@ -79,11 +79,13 @@ describe("InboxRail", () => {
     expect(nav.props["aria-label"]).toBe("Inbox mode");
   });
 
-  it("holds the way out, the place and the palette at its top, then alerts, Settings and the PC in its lower group, each a plain button", async () => {
+  it("holds the way out and the place at its top, then alerts, Settings and the PC in its lower group, each a plain button, and no magnifier", async () => {
     const root = await draw();
     const groups = root.findAll((node) => node.type === "div" && String(node.props.className).split(" ").includes("inbox-rail-group"));
+    // the list's search field is the screen's one magnifier: the command palette is under its shortcut and the thread's More
+    expect(root.findAll((node) => node.type === "svg").some((node) => String(node.props.className).split(" ").includes("lucide-search"))).toBe(false);
     expect(groups.map((group) => [String(group.props.className).split(" ").at(-1), buttons(group).map(kind)])).toEqual([
-      ["is-top", ["inbox-rail-exit", "inbox-rail-place", "inbox-rail-palette"]],
+      ["is-top", ["inbox-rail-exit", "inbox-rail-place"]],
       ["is-lower", ["inbox-rail-alerts", "inbox-rail-settings", "inbox-rail-pcs"]],
     ]);
     // a plain Tab stop each: none is taken out of the keyboard's order or disabled
@@ -109,17 +111,6 @@ describe("InboxRail", () => {
     expect(buttons(root).filter((node) => node.props["aria-current"] !== undefined).map((node) => [kind(node), node.props["aria-current"]])).toEqual([["inbox-rail-place", "page"]]);
     await press(place);
     expect(pressed).toEqual(["inbox"]);
-  });
-
-  it("opens the command palette under the palette's own name, with its shortcut in the tooltip where one is set", async () => {
-    const root = await draw();
-    const palette = button(root, "palette");
-    expect(named(palette)).toEqual(["Search panes and actions", "Search panes and actions (Ctrl+Shift+K)"]);
-    await press(palette);
-    expect(pressed).toEqual(["palette"]);
-    // a shortcut with no keys: the tooltip is the name alone
-    await redraw({ shortcutTitle: (label) => label });
-    expect(named(button(root, "palette"))).toEqual(["Search panes and actions", "Search panes and actions"]);
   });
 
   it("draws the waiting count only while an agent waits, first in the lower group, and a press opens the next one", async () => {

@@ -566,6 +566,25 @@
   min-width: calc(var(--space-3) + var(--inbox-control) + var(--hairline) * 2);
 }
 
+/* A list with the room for it (256px and more: the default sidebar with a mouse) always shows its search field at the
+   row's start, before the filter and New workspace, and draws no Search button: the rail has no magnifier, so the
+   field is the only one on the screen. A narrower list, in which the field could not hold its own placeholder, folds it
+   into Search: the field is drawn only while it is open, and then takes the row, the filter and New workspace giving
+   way until it is put away. */
+@container (min-width: 256px) {
+  .mode-inbox.is-wide .inbox-top > .inbox-search-toggle {
+    display: none;
+  }
+}
+
+@container (max-width: 255.98px) {
+  .mode-inbox.is-wide .inbox-top:not(.is-search-open) > .inbox-search,
+  .mode-inbox.is-wide .inbox-top.is-search-open > .inbox-filter-toggle,
+  .mode-inbox.is-wide .inbox-top.is-search-open > .inbox-add {
+    display: none;
+  }
+}
+
 /* the column's controls rest on its surface: no shadow, and the smaller glyph of a pointer's control */
 .mode-inbox.is-wide .icon-button.inbox-round {
   box-shadow: none;
