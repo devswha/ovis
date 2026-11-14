@@ -1437,6 +1437,12 @@ try {
           if (wide) {
             await page.locator('.row-menu [data-item="enter-inbox"]').click();
             await page.locator(".inbox-column .mode-inbox").waitFor();
+            // a wide window's way in opens this pane's thread: Back from it is the list over the pane, which is read here
+            await page.locator(".thread-chip").waitFor();
+            await addressIs(page, { app: "inbox", pane: WORKING }, "a wide window's way in opens the pane's thread");
+            await page.goBack();
+            await page.locator(".inbox-unchosen").waitFor();
+            await paneHiddenUnderList(page, "Back from the thread, the pane is mounted under the list, hidden");
           } else {
             await page.locator(".row-sheet").waitFor();
             await press(page.locator('.row-sheet [data-item="enter-inbox"]'));
@@ -1733,7 +1739,10 @@ try {
 
       // ---- the list says when the connection is lost ----
       // The line follows the stream that feeds the list's rows, whether or not a pane is mounted under it: entered
-      // from a pane, and on a cold load of the mode's own address, where none is.
+      // from a pane, and on a cold load of the mode's own address, where none is. A wide window's way in opens that
+      // pane's thread, and beside a thread the column leaves the word to the thread's chip once the chip says it too
+      // (the next block): Back from the thread is the list over the pane, where the line is the list's own for as long
+      // as the connection is lost.
       for (const [route, path] of [["entered from a pane", `/?pane=${encodeURIComponent(WORKING)}&view=chat&demo_connection=switch`], ["opened cold, no pane mounted", "/?app=inbox&demo_connection=switch"]] as const)
       for (const viewport of [PHONE, desktop]) {
         const wide = viewport.width >= 769;
@@ -1747,6 +1756,11 @@ try {
               await page.locator(".header-more-button").click();
               await page.locator('.row-menu [data-item="enter-inbox"]').click();
               await page.locator(".inbox-column .mode-inbox").waitFor();
+              await page.locator(".thread-chip").waitFor();
+              await addressIs(page, { app: "inbox", pane: WORKING }, "a wide window's way in opens the pane's thread");
+              await page.goBack();
+              await page.locator(".inbox-unchosen").waitFor();
+              await paneHiddenUnderList(page, "Back from the thread, the pane is mounted under the list, hidden");
             } else await enterFromMore(page);
           } else {
             await page.locator(".mode-inbox").waitFor();
