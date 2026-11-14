@@ -646,8 +646,9 @@ export function Stepper({ label, value, text, min, max, decreaseLabel, increaseL
   pending.current = () => { if (typed !== null && typed !== value) onChange(typed); };
   useEffect(() => () => pending.current(), []);
   const stepper = (
+    // aria-disabled at an end, not disabled: a press keeps the focus on the button instead of dropping it to the page
     <div className="settings-stepper" role="group" aria-label={label} aria-describedby={sentence}>
-      <button type="button" className="icon-button" aria-label={decreaseLabel} title={decreaseLabel} disabled={current <= min} onClick={() => step(-1)}><Minus aria-hidden="true" /></button>
+      <button type="button" className="icon-button" aria-label={decreaseLabel} title={decreaseLabel} aria-disabled={current <= min || undefined} onClick={() => { if (current > min) step(-1); }}><Minus aria-hidden="true" /></button>
       {unit === undefined ? <output aria-live="polite">{text}</output> : <span className="settings-stepper-field">
         <input className="settings-stepper-value" type="text" inputMode="numeric" aria-label={label} title={range} value={shown}
           aria-describedby={range === undefined ? undefined : rangeId}
@@ -662,7 +663,7 @@ export function Stepper({ label, value, text, min, max, decreaseLabel, increaseL
         {/* the field is not announced as it changes: the size the -/+ buttons or a typed number set is */}
         <output className="visually-hidden" aria-live="polite">{text}</output>
       </span>}
-      <button type="button" className="icon-button" aria-label={increaseLabel} title={increaseLabel} disabled={current >= max} onClick={() => step(1)}><Plus aria-hidden="true" /></button>
+      <button type="button" className="icon-button" aria-label={increaseLabel} title={increaseLabel} aria-disabled={current >= max || undefined} onClick={() => { if (current < max) step(1); }}><Plus aria-hidden="true" /></button>
     </div>
   );
   if (unit === undefined || range === undefined) return stepper;

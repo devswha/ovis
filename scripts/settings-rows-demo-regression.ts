@@ -8,7 +8,7 @@ import { buildDemoApp, buildDevelopmentDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsFolds, openSettingsPage, themeSide } from "./settings-page.ts";
 import { SETTINGS, closeSettings, dialogOf, historyHolds, openPalette, openSettings } from "./settings-pages-harness.ts";
-import { DEFAULT_SETTINGS } from "../src/lib/settings.ts";
+import { DEFAULT_SETTINGS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN } from "../src/lib/settings.ts";
 
 // What Settings' pages hold, on the unmodified app over the demo's fixture transport: the dialog's
 // own search, the folded groups, the rows that merge or put back settings, the account's PCs and
@@ -1169,6 +1169,30 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     assert.equal(await describes(page.getByRole("button", { name: "Edit key bar", exact: true })), keyBarText, "Edit key bar is described by its row's sentence");
     await appearance(page);
     assert.equal(await describes(page.getByRole("textbox", { name: "Terminal font", exact: true })), await sentenceOf("Terminal font"), "the font field is described by its row's sentence");
+
+    // a stepper's button at its end keeps the keyboard's focus: it says it goes no further (aria-disabled) and reads as
+    // a disabled one, where a disabled button would drop the focus out of Settings to the page; a press there does nothing
+    const typedSize = page.getByRole("textbox", { name: "Terminal font size", exact: true });
+    const larger = page.getByRole("button", { name: "Increase terminal font size", exact: true });
+    const smaller = page.getByRole("button", { name: "Decrease terminal font size", exact: true });
+    for (const [button, other, end] of [[larger, smaller, TERMINAL_FONT_MAX], [smaller, larger, TERMINAL_FONT_MIN]] as const) {
+      const name = await button.getAttribute("aria-label");
+      await button.focus();
+      for (let press = Math.abs(end - Number(await typedSize.inputValue())); press > 0; press -= 1) await page.keyboard.press("Enter");
+      await page.waitForFunction((want) => document.querySelector<HTMLInputElement>('input[aria-label="Terminal font size"]')?.value === want, String(end));
+      const holder = () => page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.tagName ?? null);
+      assert.equal(await holder(), name, `${name} keeps the focus at ${end}px`);
+      assert.equal(await button.getAttribute("aria-disabled"), "true", `${name} says it goes no further at ${end}px`);
+      assert.equal(await other.getAttribute("aria-disabled"), null, "the other way is still open");
+      assert.equal(await button.evaluate((node) => getComputedStyle(node).opacity), "0.7", "it reads as a disabled icon button does");
+      await page.keyboard.press("Enter");
+      // (Playwright waits for an aria-disabled button to be enabled: the click is forced, as a person's is)
+      await button.click({ force: true });
+      assert.equal(await typedSize.inputValue(), String(end), `a press of ${name} at its end changes nothing`);
+      assert.equal(await holder(), name, "and keeps the focus");
+      await button.hover();
+      assert.equal(await button.evaluate((node) => getComputedStyle(node).backgroundColor), "rgba(0, 0, 0, 0)", "and gets no hover plate");
+    }
 
     // a device that only watches reads the same sentence
     await appearance(page, "&demo_devices=watch");

@@ -622,6 +622,18 @@
   }
 }
 
+/* an end's button reads as a disabled .icon-button does (styles.css) and keeps its focus (SettingsControls.tsx) */
+.settings-stepper > .icon-button[aria-disabled="true"] {
+  opacity: 0.7;
+  cursor: default;
+}
+
+@media (hover: hover) {
+  .settings-stepper > .icon-button[aria-disabled="true"]:hover {
+    background: transparent;
+  }
+}
+
 .settings-stepper output {
   min-width: 3.5em;
   color: var(--text-strong);
