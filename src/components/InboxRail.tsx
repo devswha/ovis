@@ -5,7 +5,8 @@
  * draws no rail: its list keeps its own controls.
  *
  * At its top: the way out, the mode's one place and the command palette. Pushed to its foot: the agents that wait,
- * this device's alerts and Settings. A button says what it is in its name and its tooltip; no label is drawn.
+ * this device's alerts and Settings. Each of them is here and nowhere else in the wide layout: the column has no
+ * More and no foot. A button says what it is in its name and its tooltip; no label is drawn.
  */
 import { Bell, BellOff, CircleHelp, Inbox, Search, Settings } from "lucide-react";
 

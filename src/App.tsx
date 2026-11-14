@@ -918,10 +918,10 @@ export function App() {
   // The inbox mode's More: what still means something in a shell with no drawer, tab row or status bar. On the list
   // only what is the app's own (the list already shows who waits first); in a thread also what is about the thread,
   // the pane menu's items for what it shows among them. Settings stands last: the mode has no sidebar foot to hold it.
-  // From 769px the list is beside the thread and each has a More of its own: the column's holds the app's items, the
-  // pane's the thread's. Which one is open is told by where its button stands.
+  // From 769px the app's own items are the buttons of the mode's rail (components/InboxRail.tsx), each in that one
+  // place: the column has no More, and the one over the pane holds the thread's items alone.
   const fromMore = (id: string): RowMenuItem[] => moreItems.filter((item) => item.id === id);
-  const moreOnList = inbox.shown || (more !== null && more.anchor.closest(".mode-inbox") !== null);
+  const moreOnList = inbox.shown;
   const modeThreadItems: RowMenuItem[] = [
     // beside the list the next session that waits is its first row: the pane's More does not say it again
     ...(inboxWide ? [] : fromMore("next-waiting")), ...fromMore("find-group"), ...fromMore("find"),
@@ -929,12 +929,12 @@ export function App() {
     ...fromMore("files"), ...fromMore("copy-link"),
     ...paneMoreItems.filter((item) => item.id === "mirror-width" || item.id === "recover-unsent"),
   ].map((item) => ({ ...item, divider: false }));
-  // The way out first on a phone, whose shell has no drawer or sidebar to leave by. On a wide window the column's
-  // foot is the way out (InboxList.tsx), 40px under this menu, and More does not say it twice. The app's own mark
-  // stands for it wherever it is drawn. Then the palette, as near the top as in the classic More and for its
-  // reason: the mode's shell has no palette button, and a touch screen no shortcut
+  // The way out first on a phone, whose shell has no drawer or sidebar to leave by (a wide window's is the mark at
+  // its rail's top, and no More there says it). The app's own mark stands for it wherever it is drawn. Then the
+  // palette, as near the top as in the classic More and for its reason: a phone's shell has no palette button, and
+  // a touch screen no shortcut
   const modeLeadItems: RowMenuItem[] = [
-    ...(inboxWide ? [] : [{ id: "exit-inbox", label: t("Back to Ovis"), icon: PanelsTopLeft, glyph: <OvisMark />, run: leaveMode }]),
+    { id: "exit-inbox", label: t("Back to Ovis"), icon: PanelsTopLeft, glyph: <OvisMark />, run: leaveMode },
     ...fromMore("palette"),
   ];
   const modeEndItems: RowMenuItem[] = [
@@ -1008,8 +1008,8 @@ export function App() {
   if (locked) return <AccessGate reason={lockReason} initialCode={pairCode} consumePairCode={consumePairCode} pairingUnconfirmed={pairingUnconfirmed} onPaired={onPaired} onUnlocked={unlock} />;
 
   // The mode's list: the screen on a phone, where More is its own control (the shell draws no header over it) and
-  // the header's note stands between its top controls; the column from 769px, where its row for the open thread is
-  // the selected one. What the stream that feeds its rows has to say is said on the list, which otherwise shows its
+  // the header's note stands between its top controls; the column from 769px, after the mode's rail, where its row
+  // for the open thread is the selected one and it draws no More. What the stream that feeds its rows has to say is said on the list, which otherwise shows its
   // rows as they last were with no sign, whether or not a pane is mounted under it (a thread says its own pane's
   // word): on a phone where the note stands, while there is no note.
   const listNote = herdrPrefixWaiting ? t("herdr prefix: press a key") : note;
@@ -1021,8 +1021,7 @@ export function App() {
       current={column && !inbox.shown && selectedPaneId !== null ? sidebarPinKey(selectedMachineId, selectedPaneId) : null}
       onOpen={openThread}
       onNew={openNewOn} questionReads={inbox.questionReads} summaryReads={inbox.summaryReads}
-      more={{ label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
-      onExit={leaveMode}
+      more={column ? undefined : { label: moreBase, expanded: more !== null && moreOnList, popup: isSheetWidth ? "dialog" : "menu", onPress: (anchor) => setMore((open) => (open ? null : { anchor })) }}
       note={column ? undefined : <HeaderNote note={listNote} />} connection={column || listNote === null ? (column && !inbox.shown && selectedPane !== null && note === null && rosterConnection === headerConnection ? null : rosterConnection) : null} failure={error === null ? null : { error, retry: load }} />
   );
   // The rail's count (from 769px): the agents that wait other than the open thread's, which is what More counts over
@@ -1048,7 +1047,7 @@ export function App() {
         <Ellipsis />
       </button>
       {/* the waiting dot carries the count (G-015): the number a phone otherwise reads only inside More */}
-      {/* the wide thread's More holds the thread's items alone: Alerts, and its dot's reason, are the column's */}
+      {/* the wide thread's More holds the thread's items alone: Alerts, and its dot's reason, are the rail's */}
       {waitingDot ? <span className="header-more-dot is-waiting" data-count={moreWaiting} aria-hidden="true" /> : alertsOffDot && !round && <span className="header-more-dot" aria-hidden="true" />}
     </span>
   );

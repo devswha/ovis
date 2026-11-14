@@ -122,7 +122,7 @@ export function InboxConnecting({ wide, sidebarWidth = null }: { wide: boolean; 
     <section className={`mode-inbox${wide ? " is-wide" : ""}`} aria-label={t("Agent inbox")}>
       <div className="inbox-top" />
       <div className="inbox-scroll"><p className={shown === null ? "visually-hidden" : "inbox-empty"} role="status">{shown}</p></div>
-      <div className="inbox-foot" />
+      {!wide && <div className="inbox-foot" />}
     </section>
   );
   return (

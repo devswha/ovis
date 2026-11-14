@@ -1,6 +1,6 @@
 /* The inbox mode's list (InboxList.tsx). On a phone it is the screen: one flat surface, two round controls floating
    at its top and a round button and a search pill at its foot, the rows scrolling under both. From 769px it is the
-   column beside the thread it opens (.is-wide), its controls in a top row and a foot of its own. */
+   column beside the thread it opens (.is-wide), after the mode's rail (InboxRail.css), its controls in a top row. */
 .mode-inbox {
   /* a round control's size (--inbox-control) and the band the column's top controls are centred in
      (--inbox-zone-h) are the shell's, which the pane's own controls share: InboxMode.css, .app.is-inbox */
@@ -524,20 +524,16 @@
   background: var(--bg-nav);
 }
 
-/* the column ends in its seam (the sidebar's own edge, a hairline): the end insets are counted from the column's
-   edge, so each takes the seam off */
-.mode-inbox.is-wide .inbox-top,
-.mode-inbox.is-wide .inbox-foot {
+/* the column ends in its seam (the sidebar's own edge, a hairline): the end inset is counted from the column's
+   edge, so it takes the seam off. Search, the state filter and New workspace stand at the row's end. */
+.mode-inbox.is-wide .inbox-top {
   position: static;
   flex: 0 0 auto;
-  padding-inline: var(--space-4) calc(var(--space-4) - var(--hairline));
-  pointer-events: auto;
-}
-
-.mode-inbox.is-wide .inbox-top {
   justify-content: flex-end;
   gap: var(--space-2-5);
   height: var(--inbox-zone-h);
+  padding-inline: var(--space-4) calc(var(--space-4) - var(--hairline));
+  pointer-events: auto;
 }
 
 /* in the column the top row floats over nothing: the connection's words lead it as a plain line, on the column's
@@ -555,43 +551,6 @@
   border-radius: 0;
   background: none;
   box-shadow: none;
-}
-
-.mode-inbox.is-wide .inbox-foot {
-  gap: var(--space-2);
-  padding-block: var(--space-3) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
-}
-
-.mode-inbox .inbox-foot-start {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-/* Back to Ovis: the sidebar foot's own action (Sidebar.css), as wide as its words, where the classic sidebar's
-   foot has the way in. The app's mark stands in its icon's place, on the column's inset: the fill under a pointer
-   reaches --space-2 past it. */
-.mode-inbox .inbox-exit {
-  flex: 0 1 auto;
-  gap: var(--space-2-5);
-  width: auto;
-  min-width: 0;
-  height: var(--inbox-control);
-  margin-inline-start: calc(-1 * var(--space-2));
-  padding: 0 var(--space-3) 0 var(--space-2);
-}
-
-.mode-inbox .inbox-exit-mark {
-  display: block;
-  flex: 0 0 auto;
-  width: var(--mark-size);
-  height: var(--mark-size);
-}
-
-.mode-inbox .inbox-exit-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* the column's controls rest on its surface: no shadow, and the smaller glyph of a pointer's control */
@@ -615,13 +574,14 @@
   height: var(--icon-size-md);
 }
 
-/* the first row starts --space-4 under the top controls: the band's own --space-3 and this */
+/* the first row starts --space-4 under the top controls: the band's own --space-3 and this. The rows run to the
+   column's foot, which holds nothing, and end clear of the bottom safe area. */
 .mode-inbox.is-wide .inbox-scroll {
   position: static;
   flex: 1 1 auto;
   min-height: 0;
   /* no end padding: the rows' own width leaves the end inset (below), and a scrollbar stands in it */
-  padding: var(--space-1) 0 var(--space-3) var(--space-3);
+  padding: var(--space-1) 0 calc(var(--space-3) + env(safe-area-inset-bottom, 0px)) var(--space-3);
   scroll-padding-block: var(--space-1);
 }
 
@@ -649,9 +609,8 @@
 
 /* A press is a step past hover that reads as one in both themes: the open row's own press, half way from the
    selection's fill to the strong edge's colour. After the hover rule, which it must outweigh under a pointer that is
-   over the row it presses. Back to Ovis at the foot answers a press the same way. */
-.mode-inbox.is-wide .inbox-row:active:not(:disabled),
-.mode-inbox.is-wide .inbox-exit:active:not(:disabled) {
+   over the row it presses. The rail's buttons answer a press the same way (InboxRail.css). */
+.mode-inbox.is-wide .inbox-row:active:not(:disabled) {
   background: color-mix(in srgb, var(--side-selected), var(--border-strong));
 }
 

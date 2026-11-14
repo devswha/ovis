@@ -136,7 +136,7 @@ describe("InboxList", () => {
     returnTo?: string | null;
     /** how far the scroller can scroll at first: a scrollTop past it is clamped, as a browser does */
     scrollMax?: number;
-    more?: Parameters<typeof InboxList>[0]["more"]; note?: ReactNode; onExit?: () => void;
+    more?: Parameters<typeof InboxList>[0]["more"]; note?: ReactNode;
     /** what the shell asks of the list through (lib/useInbox.ts) */
     handle?: { current: InboxListHandle | null };
     onFilter?: (filter: InboxFilter) => void; onQuery?: (query: string) => void;
@@ -153,7 +153,7 @@ describe("InboxList", () => {
     <Stamping machines={machines} activity={options.activity ?? activity} />
     <InboxList ref={options.handle} machines={machines} activity={options.activity ?? activity} watching={options.watching ?? false} wide={options.wide ?? false} current={options.current ?? null}
       filter={options.filter ?? "all"} onFilter={options.onFilter ?? (() => {})} query={options.query ?? ""} onQuery={options.onQuery ?? (() => {})} scroll={scroll} focus={{ opening: options.opening ?? 1, taken, row: options.returnTo ?? null }}
-      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} more={options.more} note={options.note} onExit={options.onExit} connection={options.connection ?? null} failure={options.failure ?? null} />
+      onOpen={options.onOpen ?? (() => {})} onNew={options.onNew ?? (() => {})} questionReads={questionReads} summaryReads={summaryReads} more={options.more} note={options.note} connection={options.connection ?? null} failure={options.failure ?? null} />
   </PanePressContext.Provider></SettingsProvider>;
   const draw = async (machines: Machine[], options: DrawOptions = {}) => {
     nodes = new Map();
@@ -905,12 +905,14 @@ describe("InboxList", () => {
       expect(byClass(root, "is-current")).toEqual([]);
     });
 
-    it("draws Search and New workspace in its top row and the filter and More at its foot, the state's mark at each row's end", async () => {
-      const root = await draw(roster(), { wide: true, more: { label: "More", expanded: true, popup: "menu", onPress() {} } });
+    it("draws Search, the state filter and New workspace in its top row and no foot, the state's mark at each row's end", async () => {
+      const root = await draw(roster(), { wide: true });
       const buttons = (zone: string) => byClass(root, zone)[0]!.findAll((node) => node.type === "button").map((node) => String(node.props.className).split(" ").find((name) => name.startsWith("inbox-") && name !== "inbox-round"));
-      expect(buttons("inbox-top")).toEqual(["inbox-search-toggle", "inbox-add"]);
-      expect(buttons("inbox-foot")).toEqual(["inbox-filter-toggle", "inbox-more"]);
-      expect(byClass(root, "inbox-more")[0]!.props["aria-expanded"]).toBe(true);
+      expect(buttons("inbox-top")).toEqual(["inbox-search-toggle", "inbox-filter-toggle", "inbox-add"]);
+      // the filter is the one the foot of a phone's list has: it says the filter that is on, and opens the same choice
+      const filter = byClass(root, "inbox-filter-toggle")[0]!;
+      expect([filter.props["aria-label"], filter.props["aria-haspopup"], filter.props["aria-expanded"]]).toEqual(["Filter by state", "menu", false]);
+      expect(byClass(root, "inbox-foot").length).toBe(0);
       const row = byClass(item(root, "w1D:p1"), "inbox-row")[0]!;
       // the mark is the row's last child, after the two lines, not on the words' line
       expect(byClass(row, "inbox-sub").length).toBe(0);
@@ -929,32 +931,36 @@ describe("InboxList", () => {
       expect(lines[2]).toStartWith("6m · ");
     });
 
-    it("draws Back to Ovis with the app's mark at its foot's start, and no way out where the list is the screen", async () => {
-      let left = 0;
-      const root = await draw(roster(), { wide: true, onExit: () => { left += 1; } });
-      const foot = byClass(root, "inbox-foot")[0]!;
-      const [exit] = foot.findAll((node) => node.type === "button");
-      expect(String(exit!.props.className)).toBe("btn btn-ghost sidebar-footer-action inbox-exit");
-      expect(text(exit!)).toBe("Back to Ovis");
-      expect(exit!.findByType("img").props.src).toBe("/icons/icon-192.png?v=sheep1");
-      await act(async () => { exit!.props.onClick(); });
-      expect(left).toBe(1);
-      await act(async () => { renderer?.unmount(); });
-      phone = true;
-      expect(byClass(await draw(roster(), { wide: false, onExit: () => {} }), "inbox-exit")).toEqual([]);
+    it("draws no More and no way out of its own: the mode's rail beside it holds them, whatever the shell hands the list", async () => {
+      // Given the column drawn with a More, as only the list that is the screen is given one.
+      const root = await draw(roster(), { wide: true, more: { label: "More", expanded: false, popup: "menu", onPress() {} } });
+
+      // Then the column draws neither More nor Back to Ovis, and no picture of the app's mark.
+      const drawn = root.findAll((node) => node.type === "button").map((node) => String(node.props["aria-label"] ?? text(node)));
+      expect(drawn.filter((name) => /Back to Ovis|More/.test(name))).toEqual([]);
+      expect([byClass(root, "inbox-more").length, byClass(root, "inbox-exit").length, root.findAll((node) => node.type === "img").length]).toEqual([0, 0, 0]);
     });
 
     it("opens its search field on request, focused, and puts it away with Escape once it is empty", async () => {
       const queries: string[] = [];
       const root = await draw(roster(), { wide: true, onQuery: (query) => queries.push(query) });
       const toggle = () => byClass(root, "inbox-search-toggle")[0]!;
+      /** the head's controls, in the order they are drawn and the keyboard walks them */
+      const head = () => byClass(root, "inbox-top")[0]!.findAll((node) => node.type === "button" || node.type === "input").map((node) => String(node.props.className).split(" ").find((name) => name.startsWith("inbox-") && name !== "inbox-round"));
       expect(byClass(root, "inbox-search").length).toBe(0);
       expect(toggle().props["aria-expanded"]).toBe(false);
+      expect(head()).toEqual(["inbox-search-toggle", "inbox-filter-toggle", "inbox-add"]);
+      // beside the rail's own magnifier the list's search says its scope, in its button's name and its tooltip
+      expect([toggle().props["aria-label"], toggle().props.title]).toEqual(["Search agents", "Search agents"]);
 
       await act(async () => { toggle().props.onClick(); });
       expect(byClass(root, "inbox-search").length).toBe(1);
       expect(toggle().props["aria-expanded"]).toBe(true);
       expect(focused.map((call) => call.node)).toContain("input");
+      // the open field takes the row: the filter and New workspace give way, and the button that opened it stays
+      expect(head()).toEqual(["inbox-search-input", "inbox-search-toggle"]);
+      const scoped = root.findByProps({ type: "search" });
+      expect([scoped.props.placeholder, scoped.props["aria-label"]]).toEqual(["Search agents", "Search agents"]);
 
       // with words in it, Escape takes the words and the field stays; empty, Escape puts it away
       await redraw({ query: "export" });
@@ -976,6 +982,8 @@ describe("InboxList", () => {
       expect(byClass(root, "inbox-search").length).toBe(0);
       // the field went from under the focus: the button that opened it has it, not nothing
       expect(focused.at(-1)?.node).toBe("inbox-search-toggle");
+      // and the row is the head's again
+      expect(head()).toEqual(["inbox-search-toggle", "inbox-filter-toggle", "inbox-add"]);
     });
 
     it("keeps its search field shown while a query narrows the list, whatever its button is asked", async () => {
@@ -983,6 +991,8 @@ describe("InboxList", () => {
       expect(byClass(root, "inbox-search").length).toBe(1);
       await act(async () => { byClass(root, "inbox-search-toggle")[0]!.props.onClick(); });
       expect(byClass(root, "inbox-search").length).toBe(1);
+      // the row stays the field's for as long as it holds words
+      expect(byClass(root, "inbox-filter-toggle").length + byClass(root, "inbox-add").length).toBe(0);
     });
   });
 });

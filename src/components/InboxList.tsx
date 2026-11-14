@@ -23,13 +23,12 @@ import { questionTargets, useInboxQuestions, type QuestionReads } from "../lib/u
 import { summaryTargets, useInboxSummaries, type RowSummary, type SummaryReads } from "../lib/useInboxSummaries.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { AgentMark } from "./AgentMark.tsx";
-import { OvisMark } from "./OvisMark.tsx";
 import { agentRowTitle, blockedNote, stateAge } from "./AgentSidebar.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { compactWorktreeName, StatusBadge } from "./Sidebar.tsx";
 import "./InboxList.css";
 
-/** More, drawn by the list (the top start control on a phone, the column's foot from 769px); the shell owns its menu. */
+/** More, drawn by the list where it is the screen (its top start control); the shell owns its menu. From 769px the mode's rail holds what it lists. */
 export interface InboxMore {
   label: string;
   expanded: boolean;
@@ -65,9 +64,8 @@ export interface InboxListProps {
   questionReads: QuestionReads;
   /** the page's reader of each row's last words (lib/useInbox.ts), which outlives this list */
   summaryReads: SummaryReads;
+  /** drawn only where the list is the screen: the column beside a thread has none */
   more?: InboxMore;
-  /** the way out of the mode, drawn at the column's foot where the classic sidebar's foot has the way in */
-  onExit?: () => void;
   /** the header's note, between a phone's two top controls: the list has no header to say it in */
   note?: ReactNode;
   /** what the connection has to say (lib/headerConnection.ts), which a thread says under its name: one quiet line here */
@@ -106,7 +104,7 @@ export function InboxAvatar({ mark }: { mark: string | null }) {
  * The inbox mode's list: every shown PC's agents, the ones that need the reader first, each a row of two lines.
  * A row opens its agent's chat; nothing is answered or typed from here.
  */
-export function InboxList({ ref, machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, onExit, note, connection = null, failure = null }: InboxListProps) {
+export function InboxList({ ref, machines, activity, watching, wide, filter, onFilter, query, onQuery, scroll, focus, current = null, onOpen, onNew, questionReads, summaryReads, more, note, connection = null, failure = null }: InboxListProps) {
   const t = useT();
   const pressPane = useContext(PanePressContext);
   const root = useRef<HTMLElement>(null);
@@ -289,10 +287,13 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     // the field goes from under the focus: the button that opened it takes it
     else { setSearchAsked(false); searchToggle.current?.focus(); }
   };
+  // Beside the rail the list's search is one of two magnifiers on the screen: it says its scope, in its button's name
+  // and in its field, and the rail's keeps the palette's own name. Where the list is the screen it is the one search.
+  const searchLabel = wide ? t("Search agents") : t("Search");
   const searchField = searchOpen && (
     <div className="inbox-search" role="search">
       {!wide && <Search className="inbox-search-glass" aria-hidden="true" />}
-      <input ref={search} className="input inbox-search-input" type="search" value={query} placeholder={t("Search")} aria-label={t("Search")}
+      <input ref={search} className="input inbox-search-input" type="search" value={query} placeholder={searchLabel} aria-label={searchLabel}
         autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="search" onChange={(event) => onQuery(event.currentTarget.value)} onKeyDown={closeSearch} />
       {query !== "" && <button type="button" className="inbox-search-clear" aria-label={t("Clear search")} onClick={() => { onQuery(""); search.current?.focus(); }}><X aria-hidden="true" /></button>}
     </div>
@@ -330,14 +331,18 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
     <section className={`mode-inbox${wide ? " is-wide" : ""}`} aria-label={t("Agent inbox")} tabIndex={-1} ref={root}
       onWheel={stopRestoring} onTouchStart={stopRestoring} onPointerDown={stopRestoring} onKeyDown={stopRestoring}>
       <div className="inbox-top">
+        {/* The column's head, in one place: Search, the state filter and New workspace at its end. The search field
+            opens on request and then takes the row: the filter and New workspace give way until it is put away, so
+            a query has the room to be read. */}
         {wide ? <>
           {connectionLine}
           {searchField}
-          <button type="button" ref={searchToggle} className="icon-button inbox-round inbox-search-toggle" aria-label={t("Search")} title={t("Search")} aria-expanded={searchOpen}
+          <button type="button" ref={searchToggle} className="icon-button inbox-round inbox-search-toggle" aria-label={searchLabel} title={searchLabel} aria-expanded={searchOpen}
             onClick={() => { if (!searchOpen) setSearchAsked(true); else if (query === "") setSearchAsked(false); else search.current?.focus(); }}>
             <Search aria-hidden="true" />
           </button>
-          {newButton}
+          {!searchOpen && filterButton}
+          {!searchOpen && newButton}
         </> : <>
           {moreButton}
           {note}
@@ -405,20 +410,11 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
           </ul>
         )}
       </div>
-      <div className="inbox-foot">
-        {wide ? <>
-          {onExit ? <button type="button" className="btn btn-ghost sidebar-footer-action inbox-exit" onClick={onExit}>
-            <OvisMark width="22" height="22" className="inbox-exit-mark" />
-            <span className="inbox-exit-label">{t("Back to Ovis")}</span>
-          </button> : null}
-          <span className="inbox-foot-start" />
-          {filterButton}
-          {moreButton}
-        </> : <>
-          {filterButton}
-          {searchField}
-        </>}
-      </div>
+      {/* the column has no foot: its filter is in its head, and the mode's rail holds the rest */}
+      {!wide && <div className="inbox-foot">
+        {filterButton}
+        {searchField}
+      </div>}
       {pcMenu !== null && !watching && connected.length > 1 && <RowMenu anchor={pcMenu} title={t("New workspace")} onClose={() => setPcMenu(null)}
         items={connected.map((machine) => ({ id: machine.id, label: machine.name, icon: Monitor, run: () => onNew(machine.id) }))} />}
       {filterMenu !== null && <RowMenu anchor={filterMenu} title={t("Filter by state")} choice onClose={() => setFilterMenu(null)}
