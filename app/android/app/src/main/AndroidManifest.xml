@@ -44,6 +44,13 @@
 
         </activity>
 
+        <!-- Add over SSH (OvisSshPlugin): not exported, only the app opens it -->
+        <activity
+            android:name=".SshSetupActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

@@ -108,6 +108,17 @@ if (ACCOUNT_SIGN_IN) {
   });
 }
 
+// a machine reached over SSH (Android's OvisSshPlugin): its own screen asks the rest
+const ssh = document.getElementById("ssh");
+if (android) {
+  ssh.hidden = false;
+  ssh.addEventListener("click", async () => {
+    error.textContent = "";
+    try { await window.Capacitor.nativePromise("OvisSsh", "add", {}); }
+    catch (err) { error.textContent = String(err?.message ?? err); }
+  });
+}
+
 document.getElementById("scan").addEventListener("click", async () => {
   error.textContent = "";
   try {
