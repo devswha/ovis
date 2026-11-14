@@ -5174,7 +5174,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   to a pane other people may be using. No app interaction precedent is claimed for the pacing.
 - A swipe still moving fast when the finger lifts glides on and slows to a stop, as a phone's own
   pages do (`lib/touchFling.ts`): its speed is the finger's travel over the last 100 ms, none when
-  it held still for 40 ms before the lift or moved slower than 0.3 px/ms (Android's
+  it held still for 40 ms before the lift, never got 8 px from where it began (a tap that jittered;
+  Android's touch slop, under which no fling starts) or moved slower than 0.3 px/ms (Android's
   `VelocityTracker` horizon and stopped time), at most 8 px/ms (Android's maximum fling), and it
   decays by 0.998 per millisecond (UIScrollView's normal deceleration), so a glide travels about
   half a second of the lift's speed. Each frame's travel becomes wheel steps through the same

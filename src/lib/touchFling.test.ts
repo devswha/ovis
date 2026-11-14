@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   createTouchFling, createVelocityTracker, FLING_DECELERATION, FLING_HORIZON_MS, FLING_MAX_VELOCITY, FLING_MIN_VELOCITY,
-  FLING_STOP_VELOCITY, FLING_STOPPED_MS, flingStep,
+  FLING_SLOP_PX, FLING_STOP_VELOCITY, FLING_STOPPED_MS, flingStep,
 } from "./touchFling.ts";
 import type { FrameClock } from "./touchWheelPacer.ts";
 
@@ -74,6 +74,21 @@ describe("the finger's speed at the lift", () => {
     expect(tracker.release(0)).toBe(FLING_MAX_VELOCITY);
     tracker.reset();
     expect(tracker.release(0)).toBe(0);
+  });
+
+  test("is none for a tap that jittered: under the touch slop no speed flings", () => {
+    // 3 px in 8 ms is 0.375 px/ms, over the slowest fling, and 2 px in one timestamp counts as 2 px/ms
+    for (const moves of [[[8, 3]], [[0, 2]], [[4, 2], [8, -3], [12, FLING_SLOP_PX - 1]]]) {
+      const tracker = createVelocityTracker();
+      tracker.add(0, 0);
+      for (const [t, position] of moves) tracker.add(t!, position!);
+      expect(tracker.release(moves.at(-1)![0]!)).toBe(0);
+    }
+    // the same speed past the slop flings
+    const tracker = createVelocityTracker();
+    tracker.add(0, 0);
+    tracker.add(24, FLING_SLOP_PX + 1);
+    expect(tracker.release(24)).toBeGreaterThan(FLING_MIN_VELOCITY);
   });
 });
 

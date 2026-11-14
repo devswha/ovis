@@ -2187,7 +2187,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
           // role change, even one before the lift, stops it, as they drop the swipe's queued reports
           // (sendTouchWheels' pacer checks them too)
           const current = (): boolean => !disposed && pane !== null && paneRef.current === pane && generation === outputGeneration
-            && !observeRef.current && !heldRef.current && !releasedRef.current && (!adopted() || scrollableMirror());
+            && !observeRef.current && !heldRef.current && !releasedRef.current && (!adopted() || scrollableMirror()) && socket.canInput(pane);
           // said on the terminal while it glides, for the browser regression to wait on
           host.dataset.touchFling = "";
           touchFling.start(velocity, (pixels) => {

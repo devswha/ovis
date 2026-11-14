@@ -6,6 +6,8 @@ export const FLING_HORIZON_MS = 100;
 export const FLING_STOPPED_MS = 40;
 /** Slowest lift, in CSS pixels per millisecond, that flings; a slower one is a drag that ends where the finger does. */
 export const FLING_MIN_VELOCITY = 0.3;
+/** A stroke that has not travelled this far, in CSS pixels, is a tap that jittered and never flings (Android's touch slop, 8 dp). */
+export const FLING_SLOP_PX = 8;
 /** Fastest fling, in CSS pixels per millisecond (Android's maximum fling velocity, 8000 dp/s). */
 export const FLING_MAX_VELOCITY = 8;
 /** A fling ends once it is this slow, in CSS pixels per millisecond. */
@@ -26,22 +28,25 @@ export interface VelocityTracker {
 
 /**
  * The finger's speed at the lift, from its travel over the last {@link FLING_HORIZON_MS}: 0 when
- * it had stopped ({@link FLING_STOPPED_MS}) or was slower than {@link FLING_MIN_VELOCITY}, and at
+ * it had stopped ({@link FLING_STOPPED_MS}), never went past {@link FLING_SLOP_PX}, or was slower than {@link FLING_MIN_VELOCITY}, and at
  * most {@link FLING_MAX_VELOCITY} either way. The sign is the travel's.
  */
 export function createVelocityTracker(): VelocityTracker {
   let samples: Array<{ time: number; position: number }> = [];
+  /** the farthest the stroke got from where it began: under the slop it is a tap, however fast its jitter */
+  let reach = 0;
   return {
-    reset() { samples = []; },
+    reset() { samples = []; reach = 0; },
     add(time, position) {
       if (!Number.isFinite(time) || !Number.isFinite(position)) return;
+      reach = Math.max(reach, Math.abs(position));
       samples.push({ time, position });
       // keep one sample from before the horizon: the travel across it still counts
       while (samples.length > 2 && time - samples[1]!.time > FLING_HORIZON_MS) samples.shift();
     },
     release(time) {
       const last = samples.at(-1);
-      if (!last || !Number.isFinite(time) || time - last.time > FLING_STOPPED_MS) return 0;
+      if (!last || !Number.isFinite(time) || time - last.time > FLING_STOPPED_MS || reach < FLING_SLOP_PX) return 0;
       const first = samples.find((sample) => last.time - sample.time <= FLING_HORIZON_MS && sample !== last) ?? samples.at(-2);
       if (!first) return 0;
       // events that share a timestamp still moved the finger: count them over one millisecond
