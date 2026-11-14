@@ -573,6 +573,17 @@ describe("listSessions", () => {
     } finally { writer?.close(); }
   });
 
+  /**
+   * Returns once the kernel's file clock has moved past `ctimeNs`. A kernel without fine-grained file timestamps (Linux
+   * before 6.13) stamps every change within one tick, a few milliseconds, with the same time: a change made in the tick of
+   * the one before looks like no change to a reader that compares times and sizes.
+   */
+  function afterFileClock(ctimeNs: bigint): void {
+    const probe = join(tmpdir(), `file-clock-${process.pid}`);
+    do writeFileSync(probe, ""); while (statSync(probe, { bigint: true }).ctimeNs <= ctimeNs);
+    rmSync(probe, { force: true });
+  }
+
   it("reads a WAL store immutable once more, writing nothing into it, when its writer came and went during the read", () => {
     const home = newHome();
     install("hermes", home);
@@ -589,6 +600,7 @@ describe("listSessions", () => {
       opened: (_path, immutable) => {
         reads++;
         if (!immutable || afterWriter) return;
+        afterFileClock(statSync(db, { bigint: true }).ctimeNs);
         const writer = new Database(db);
         writer.exec("UPDATE messages SET content = 'rewritten prompt' WHERE role = 'user'");
         writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");

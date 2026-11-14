@@ -720,6 +720,17 @@ it.skipIf(process.platform !== "linux")("reads the log again when it rotates whi
   }
 });
 
+/**
+ * Returns once the kernel's file clock has moved past `ctimeNs`. A kernel without fine-grained file timestamps (Linux
+ * before 6.13) stamps every change within one tick, a few milliseconds, with the same time: a change made in the tick of
+ * the one before looks like no change to a reader that compares times and sizes.
+ */
+function afterFileClock(ctimeNs: bigint): void {
+  const probe = join(tmpdir(), `file-clock-${process.pid}`);
+  do writeFileSync(probe, ""); while (statSync(probe, { bigint: true }).ctimeNs <= ctimeNs);
+  rmSync(probe, { force: true });
+}
+
 it.skipIf(process.platform !== "linux")("keeps a logged binding when only the log's timestamps change", async () => {
   const fixture = await logFixture([session]);
   const { environment, log, pid } = fixture;
@@ -734,6 +745,7 @@ it.skipIf(process.platform !== "linux")("keeps a logged binding when only the lo
     appendFileSync(log, register(other).slice(0, 60));
     expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_partial");
     // read afresh from its complete lines, as after any truncation: a new binding, not the cached one
+    afterFileClock(statSync(log, { bigint: true }).ctimeNs);
     fs.truncateSync(log, register(session).length);
     const reread = fixture.binding();
     expect(reread?.sessionId).toBe(session);
