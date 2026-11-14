@@ -70,10 +70,15 @@ describe("how the row menu closes from outside it", () => {
 
   it("keeps the sheet when a press begun in it is let go over the dimmed page", async () => {
     await draw(true);
+    // the press as a listener on the window sees it: outside the sheet's surface
+    await act(async () => { events.dispatchEvent(new Event("pointerdown")); });
+    expect(closes).toBe(0);
     await press("sheet", "click");
     const self = scrim();
     await act(async () => self.props.onClick({ target: self, currentTarget: self }));
     expect(closes).toBe(0);
+    await press("scrim", "click");
+    expect(closes).toBe(1);
   });
 
   it("closes a desktop's popover on a press outside it", async () => {

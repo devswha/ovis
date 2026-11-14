@@ -54,22 +54,29 @@ const pointAbove = (page: Page, selector: string, top: number): Promise<Point | 
 }, top);
 const topOf = (page: Page, selector: string): Promise<number> => page.locator(selector).first().evaluate((node) => node.getBoundingClientRect().top);
 
+/** a finger on a touch screen, or a mouse on a narrow window: both see the sheet */
+type Pointer = "touch" | "mouse";
+
 /**
- * One real touch tap at `point`, and what it reached: every event of it, once its click has come. The click comes
- * last, after the touch has ended and the mouse events the browser makes of it.
+ * One real tap (or mouse click) at `point`, and what it reached: every event of it. A touch's click comes last, after
+ * the touch has ended and the mouse events the browser makes of it, so it is waited for. A mouse click is done when
+ * its button is up: a press and a release on different elements (a sheet gone from under it) make no click at all.
  */
-async function tap(page: Page, point: Point): Promise<Seen[]> {
+async function tap(page: Page, point: Point, pointer: Pointer = "touch"): Promise<Seen[]> {
   await page.evaluate(() => { window.tapSeen.length = 0; });
-  await page.touchscreen.tap(point.x, point.y);
-  await page.waitForFunction(() => window.tapSeen.some((seen) => seen.type === "click"), undefined, { timeout: 5_000 });
+  if (pointer === "touch") {
+    await page.touchscreen.tap(point.x, point.y);
+    await page.waitForFunction(() => window.tapSeen.some((seen) => seen.type === "click"), undefined, { timeout: 5_000 });
+  } else await page.mouse.click(point.x, point.y);
   await frames(page);
   return page.evaluate(() => window.tapSeen);
 }
 /** what of the tap landed anywhere but on the scrim, in words */
 const behind = (seen: Seen[]): string[] => seen.filter((event) => !event.onScrim).map((event) => `${event.type} on ${event.target}`);
 
-async function withPhone(browser: Browser, base: string, path: string, what: string, run: (page: Page) => Promise<void>): Promise<void> {
-  const context = await browser.newContext({ viewport: PHONE, isMobile: true, hasTouch: true, locale: "en-US", userAgent: ANDROID_WEBVIEW });
+async function withPhone(browser: Browser, base: string, path: string, what: string, run: (page: Page) => Promise<void>, pointer: Pointer = "touch"): Promise<void> {
+  const touch = pointer === "touch";
+  const context = await browser.newContext(touch ? { viewport: PHONE, isMobile: true, hasTouch: true, locale: "en-US", userAgent: ANDROID_WEBVIEW } : { viewport: PHONE, locale: "en-US" });
   try {
     await context.addInitScript(() => {
       if (location.protocol === "about:") return;
@@ -92,13 +99,14 @@ async function withPhone(browser: Browser, base: string, path: string, what: str
 }
 
 /** A sheet of the mode's list, opened from `button`, then a tap on a row above it: the sheet goes and the list stays. */
-async function listSheet(page: Page, button: string, name: string): Promise<void> {
+async function listSheet(page: Page, button: string, name: string, pointer: Pointer = "touch"): Promise<void> {
   await page.locator(".mode-inbox .inbox-item").first().waitFor({ timeout: 20_000 });
-  await page.locator(button).tap();
+  if (pointer === "touch") await page.locator(button).tap();
+  else await page.locator(button).click();
   await page.locator(".row-sheet").waitFor();
   const point = await pointAbove(page, ".mode-inbox .inbox-item", await topOf(page, ".row-sheet"));
   assert.ok(point !== null, `a row of the list shows above the ${name}`);
-  const seen = await tap(page, point);
+  const seen = await tap(page, point, pointer);
   await page.locator(".row-sheet").waitFor({ state: "detached", timeout: 5_000 });
   const at = await address(page);
   assert.ok(await page.locator(".mode-inbox").count() === 1 && at.app === "inbox" && at.pane === null,
@@ -125,6 +133,7 @@ try {
     try {
       await withPhone(browser, base, "/?app=inbox", "(a) the list's More sheet: a tap on a row outside it closes it alone", (page) => listSheet(page, ".mode-inbox .inbox-more", "More sheet"));
       await withPhone(browser, base, "/?app=inbox", "(b) the state filter's sheet: a tap on a row outside it closes it alone", (page) => listSheet(page, ".mode-inbox .inbox-filter-toggle", "filter sheet"));
+      await withPhone(browser, base, "/?app=inbox", "(e) the list's More sheet under a mouse on a narrow window: a click on a row outside it closes it alone", (page) => listSheet(page, ".mode-inbox .inbox-more", "More sheet", "mouse"), "mouse");
 
       // Settings closes on its scrim's mousedown, after the touch has ended: the guard that a dialog's close leaves
       // the list alone too
