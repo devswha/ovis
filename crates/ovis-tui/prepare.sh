@@ -20,7 +20,17 @@ dest="$here/upstream"
 stamp="$dest/.ovis-prepared"
 
 # what the tree must be made from: the pin and the bytes of every patch, in order
-want=$( { printf '%s %s\n' "$HC_TUI_COMMIT" "$GHOSTTY_COMMIT"; for patch in "$here"/patches/*.patch; do [ -f "$patch" ] && cat "$patch"; done; } | sha256sum | cut -d' ' -f1)
+if command -v sha256sum >/dev/null 2>&1; then hash() { sha256sum; }
+elif command -v shasum >/dev/null 2>&1; then hash() { shasum -a 256; }
+else echo "prepare.sh: needs sha256sum or shasum" >&2; exit 1
+fi
+want=$( { printf '%s %s\n' "$HC_TUI_COMMIT" "$GHOSTTY_COMMIT"; for patch in "$here"/patches/*.patch; do [ -f "$patch" ] && cat "$patch"; done; } | hash | cut -d' ' -f1)
+[ -n "$want" ] || { echo "prepare.sh: could not hash the pin and the patches" >&2; exit 1; }
+
+if [ -e "$dest" ] && [ ! -d "$dest/.git" ] && [ -n "$(ls -A "$dest" 2>/dev/null)" ]; then
+  echo "prepare.sh: $dest is not a checkout this script made. Move it away, then run this again." >&2
+  exit 1
+fi
 
 if [ -d "$dest/.git" ]; then
   # the tree is this script's own only while it is exactly the commit the script made last (the
@@ -33,7 +43,8 @@ if [ -d "$dest/.git" ]; then
     echo "prepare.sh: $dest has work of its own (edits, untracked files, or commits not exported to $here/patches). Export it (git -C upstream format-patch), or delete the folder, then run this again." >&2
     exit 1
   fi
-  if [ "$(sed -n 1p "$stamp" 2>/dev/null || true)" = "$want" ]; then
+  # reused only when it is the very commit made for these patches: the bare pin is made again
+  if [ "$head" = "$made" ] && [ "$(sed -n 1p "$stamp" 2>/dev/null || true)" = "$want" ]; then
     exit 0
   fi
 fi

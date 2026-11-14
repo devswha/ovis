@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ovis-tui <ovis-tui@users.noreply.github.com>
 Date: Sun, 15 Nov 2026 04:18:39 +0900
-Subject: [PATCH 6/6] feat(embed): let an embedding program hide the version
+Subject: [PATCH 6/7] feat(embed): let an embedding program hide the version
  badge
 
 Embed::hide_version_badge leaves hc-tui's version out of the sidebar's top row and the phone header: in a program that embeds the client, the user runs that program, and hc-tui's version reads as its own.

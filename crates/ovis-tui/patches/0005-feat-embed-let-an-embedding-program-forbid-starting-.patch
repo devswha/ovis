@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: ovis-tui <ovis-tui@users.noreply.github.com>
 Date: Sun, 15 Nov 2026 03:54:35 +0900
-Subject: [PATCH 5/6] feat(embed): let an embedding program forbid starting a
+Subject: [PATCH 5/7] feat(embed): let an embedding program forbid starting a
  core
 
 Embed::no_core_start: run_embedded then never runs `hc server start`; a core that is not running stays so and the embedder says how to start it. A core start would hand the embedder's environment to the core and every program it starts.
