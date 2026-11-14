@@ -87,5 +87,6 @@ RUN chmod 0755 /opt/runner-hooks/job-started.sh
 ENV ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/runner-hooks/job-started.sh
 
 USER runner
+ENV USER=runner
 WORKDIR /home/runner/actions-runner
 ENTRYPOINT ["tini", "--", "/entrypoint.sh"]
