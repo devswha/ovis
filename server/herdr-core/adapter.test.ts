@@ -1038,6 +1038,8 @@ describe("herdr-core adapter, new and closed terminals", () => {
       // a shell gone down into the checkout: its facts are the checkout's own
       terminal("t2", { cwd: join(linked, "src"), labels: { "herdr.space": "W", "herdr.tab": "U" } }),
       terminal("t3", { cwd: join(dir, "plain"), labels: { "herdr.space": "P", "herdr.tab": "V" } }),
+      // a second workspace on the main checkout
+      terminal("t4", { cwd: repo, labels: { "herdr.space": "S2", "herdr.tab": "X" } }),
     ];
     const head = { repo_key: realpathSync(join(repo, ".git")), repo_name: "app", repo_root: repo, checkout_path: repo, is_linked_worktree: false };
     for (const core of [await labeling(start()), await living(start())]) {
@@ -1046,12 +1048,25 @@ describe("herdr-core adapter, new and closed terminals", () => {
       expect([factsOf("t1"), factsOf("t2"), factsOf("t3")]).toEqual([head, { ...head, checkout_path: linked, is_linked_worktree: true }, null]);
       expect(core.runs).toEqual([]);
     }
-    // what the sidebar draws is what its actions do, as on herdr: the repository's workspace closes over the checkout as a group
+    // what the sidebar draws is what its actions do, as on herdr: the repository's workspace closes over the
+    // repository's other workspaces as a group, the checkout's and the other one on the main checkout
     const grouped = await labeling(start());
     await expect(workspaceClose("S", grouped.socket)).rejects.toMatchObject({ code: "workspace_group_close_required" });
     await workspaceClose("S", grouped.socket, true);
-    expect(grouped.ends).toEqual(["kill t1", "kill t2", "rm t1", "rm t2"]);
-    // and the checkout is removed once git says again that it is one of the repository's
+    expect(grouped.ends).toEqual(["kill t1", "kill t2", "kill t4", "rm t1", "rm t2", "rm t4"]);
+    // a worktree opened from there labels the repository's workspace with its git folder, as on a core with no checkout git told of
+    const opening = start();
+    await worktreeCreate({ workspaceId: "S", branch: "next", path: join(dir, "next") }, (await labeling(opening)).socket);
+    expect(JSON.parse(opening[0]!.labels!["ovis.worktree"]!)).toMatchObject({ checkout_path: repo, is_linked_worktree: false, git_id: expect.any(String) });
+    // a checkout added again at the same path since git was asked is not the one drawn: it stays
+    const replacing = await labeling(start());
+    await sessionSnapshot(replacing.socket);
+    expect(git("-C", repo, "worktree", "remove", linked).exitCode).toBe(0);
+    expect(git("-C", repo, "worktree", "add", "-q", "-b", "feature/y", linked).exitCode).toBe(0);
+    mkdirSync(join(linked, "src"));
+    await expect(worktreeRemove("W", true, replacing.socket)).rejects.toMatchObject({ code: "worktree_not_found" });
+    expect(existsSync(linked)).toBeTrue();
+    // and a checkout is removed once git says again that it is the one drawn
     const removing = await labeling(start());
     expect(await worktreeRemove("W", false, removing.socket)).toMatchObject({ type: "worktree_removed", path: linked, forced: false });
     expect(existsSync(linked)).toBeFalse();

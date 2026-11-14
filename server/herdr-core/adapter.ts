@@ -472,13 +472,18 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
    * leaves the row flat rather than hold the snapshot, and no second lookup starts until it answers.
    */
   const checkoutFacts = new Map<string, { until: number; facts: Promise<WorkspaceWorktreeInfo | null> }>();
+  /** the git folder identity each checkout git's facts were read from had then, as a label keeps it: a checkout added again at the same path is not the one drawn */
+  const inferredGitIds = new Map<string, string | null>();
   const factsOfFolder = (folder: string): Promise<WorkspaceWorktreeInfo | null> => {
     const now = Date.now();
     for (const [kept, entry] of checkoutFacts) if (entry.until <= now) checkoutFacts.delete(kept);
     const known = checkoutFacts.get(folder);
     if (known) return known.facts;
     const entry = { until: Number.POSITIVE_INFINITY, facts: Promise.resolve<WorkspaceWorktreeInfo | null>(null) };
-    const answered = repositoryOf(folder).then((repository) => factsOf(repository, repository.checkout), () => null).then((found) => {
+    const answered = repositoryOf(folder).then((repository) => {
+      inferredGitIds.set(repository.checkout, gitDirIdentity(repository.git_dir));
+      return factsOf(repository, repository.checkout);
+    }, () => null).then((found) => {
       entry.until = Date.now() + CHECKOUT_FACTS_MS;
       entry.facts = Promise.resolve(found);
       return found;
@@ -780,7 +785,8 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
   const openCheckout = async (shown: SessionSnapshot, repository: Repository, checkout: string, name: string) => {
     const head = (await openWorkspaces(shown, repository)).get(repository.repo_root);
     // the repository's own checkout keeps its git folder in the common one
-    if (head && !shown.workspaces.find((workspace) => workspace.workspace_id === head)?.worktree) {
+    // (a label: facts git gave only for drawing keep no git folder identity)
+    if (head && !(await worktreeLabelOf(shown, head))[WORKTREE_LABEL]) {
       await label(shown.panes.filter((pane) => pane.workspace_id === head).map((pane) => pane.pane_id), { [WORKTREE_LABEL]: worktreeLabel(factsOf(repository, repository.repo_root), repository.repo_key) });
     }
     const own = checkout === repository.repo_root ? repository.repo_key : (await repositoryOf(checkout)).git_dir;
@@ -999,9 +1005,10 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       const shown = await snapshot();
       const panes = shown.panes.filter((pane) => pane.workspace_id === workspaceId);
       if (panes.length === 0) throw new AdapterError("workspace_not_found", `workspace ${workspaceId} not found`);
-      // as herdr: a repository's workspace closes over its open worktrees only when the group is meant
+      // as herdr: a repository's workspace closes over every other workspace of the repository (its open
+      // worktrees, and any other one on its main checkout) only when the group is meant
       const facts = shown.workspaces.find((candidate) => candidate.workspace_id === workspaceId)?.worktree;
-      const group = facts && !facts.is_linked_worktree ? shown.workspaces.filter((candidate) => candidate.worktree?.is_linked_worktree && candidate.worktree.repo_key === facts.repo_key).map((candidate) => candidate.workspace_id) : [];
+      const group = facts && !facts.is_linked_worktree ? shown.workspaces.filter((candidate) => candidate.workspace_id !== workspaceId && candidate.worktree?.repo_key === facts.repo_key).map((candidate) => candidate.workspace_id) : [];
       if (group.length > 0 && params["close_group"] !== true) throw new AdapterError("workspace_group_close_required", `workspace ${workspaceId} has open worktree workspaces: close the group`);
       await end([...panes, ...shown.panes.filter((pane) => group.includes(pane.workspace_id))].map((pane) => pane.pane_id));
       return { type: "ok" };
@@ -1280,6 +1287,7 @@ function createAnswers(hc: HcConnection, firstTurn: FirstTurn, forgetTurns: (liv
       gitId = labeledWorktree((await terminal(pane.pane_id)).labels)?.gitId ?? null;
       if (gitId) break;
     }
+    gitId ??= inferredGitIds.get(facts.checkout_path) ?? null;
     if (!now || now.repo_key !== facts.repo_key || now.checkout !== facts.checkout_path || now.checkout === now.repo_root || (gitId !== null && gitDirIdentity(now.git_dir) !== gitId)) {
       throw new AdapterError("worktree_not_found", `${facts.checkout_path} is no longer a worktree of ${facts.repo_name}`);
     }
