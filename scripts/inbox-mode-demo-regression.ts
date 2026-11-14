@@ -2725,13 +2725,6 @@ try {
         await page.keyboard.press("Shift+Tab");
         assert.equal(await stop(), "inbox-rail-exit", "Shift+Tab goes back up the rail");
 
-        // Enter presses a rail button: the gear, whose Settings give the focus back to it when Escape closes them
-        await page.locator(".inbox-rail .inbox-rail-settings").focus();
-        await page.keyboard.press("Enter");
-        await page.locator(".settings-dialog").waitFor();
-        await page.keyboard.press("Escape");
-        await page.locator(".settings-dialog").waitFor({ state: "detached" });
-        await focused("inbox-rail-settings", "Settings closed gives the focus back to the rail's gear");
         // Space presses one too: the list of PCs, a menu that gives the focus back to its button when it closes
         const pcs = page.locator(".inbox-rail .inbox-rail-pcs");
         const menu = page.locator('.row-menu[role="menu"][aria-label="PCs"]');
@@ -2756,6 +2749,14 @@ try {
         await page.locator(".inbox-column .inbox-rail").waitFor();
         await page.locator(".thread-chip").waitFor();
         await addressIs(page, { app: "inbox", pane: WORKING }, "Back returns to the thread the mode was left on");
+        // last, as its Settings dialog takes a history entry of its own: Enter presses a rail button, the gear, and Escape
+        // closing Settings gives the focus back to it
+        await page.locator(".inbox-rail .inbox-rail-settings").focus();
+        await page.keyboard.press("Enter");
+        await page.locator(".settings-dialog").waitFor();
+        await page.keyboard.press("Escape");
+        await page.locator(".settings-dialog").waitFor({ state: "detached" });
+        await focused("inbox-rail-settings", "Settings closed gives the focus back to the rail's gear");
         console.log(`PASS the keyboard's order is the rail's six buttons from the Ovis mark down to the PC, the list's search field, filter and New workspace, its ${listed.length} rows, the column's resize grip, then the thread, and Shift+Tab goes back; Enter and Space press a rail button; Settings and the list of PCs give the focus back to their buttons; Enter on the Ovis mark leaves the mode by one entry that Back undoes`);
       }, desktop);
       // ---- each press of the rail ----
