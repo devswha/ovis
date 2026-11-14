@@ -2226,6 +2226,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   as a move to another pane does: its viewer closes, its own entry stays under the mode's, and
   Back shows the pane with its file again. The setup guide has the classic shell to itself
   and shows no entry. A watching device may use the mode and is offered no New workspace.
+- The classic app and the mode are two views of one place: the conversation the classic app
+  shows is the thread the mode opens, and a thread opened in the mode is the pane the classic
+  app shows when the mode is left. Opening a row is selecting its pane; browsing the list (its
+  filter, search, scroll) selects nothing. A draft and a chat's scroll are the pane's own
+  (lib/composerDraft.ts, lib/chatScrollMemory.ts), so each view shows the other's; nothing
+  typed is sent, a draft waits in the composer. From `769px` every way in opens on the
+  conversation the classic app shows: when the pane it is on has a row in the list and shows
+  its chat, its thread opens beside the list, as a row opens it (the list's entry, then the
+  thread's, so the thread's Back is the list). From a pane on its terminal, one with no row (a
+  shell), or no pane chosen, it opens the list with nothing chosen, as before: opening that
+  pane's chat would change its lens and release its pty's size, and the way in sends no attach,
+  detach, size or release to any pane. On a phone, whose list is the mode's screen, a way in
+  opens the list, unless the mode was left on the thread of the pane the classic app still
+  shows on its chat: then that thread. The list's filter, search text and scroll are kept for
+  the tab (session storage, beside the chat positions and the split), so leaving, entering
+  again and a reload find them as left; a new tab starts fresh. The design follows this app's
+  own model, not another app's: one selection, one draft store and one chat-scroll memory that
+  both views read, so neither view keeps a copy to save and restore.
 - Settings → Appearance → More settings → Sidebar → **Start in the agent inbox on a phone** (this device's
   choice, off by default, its stored key unchanged) is where a phone starts: a window at most
   640px wide (`SHEET_QUERY`) whose address is the app's own start opens the mode's list, and

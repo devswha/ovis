@@ -138,6 +138,7 @@ import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitVi
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
 import { useInbox, useInboxShell } from "./lib/useInbox.ts";
+import { inboxOrder } from "./lib/agentInbox.ts";
 import { pageStartsInInbox, useInboxMode } from "./lib/inboxMode.ts";
 import { InboxList } from "./components/InboxList.tsx";
 import { InboxConnecting, InboxFootEntry, InboxUnchosen, ThreadTitle, ThreadTop } from "./components/InboxMode.tsx";
@@ -365,7 +366,17 @@ export function App() {
   // is still current: the push takes that entry over (lib/sheetHistory.ts), and no entry is left between. The shell's
   // own part (the drawer put away, the list shown for a mode with no pane) is lib/useInbox.ts useInboxShell.
   const { leave: leaveMode } = inboxMode;
-  const { enterInbox, returnTo } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded,
+  const { enterInbox, returnTo } = useInboxShell({ inMode, shown: inbox.shown, show: inbox.show,
+    // the way in opens the thread of the pane the app is on as its row would (InboxList's onOpen below), once the
+    // list has covered the panes
+    open: () => {
+      if (selectedPaneId === null) return;
+      activateSlotOf({ machineId: selectedMachineId, paneId: selectedPaneId });
+      selectTarget(selectedMachineId, selectedPaneId, "chat");
+    }, enter: inboxMode.enter, setDrawerOpen, hideFile, selectedPaneId, linkLanded, wide: wideScreen,
+    // only a pane with a row in the list (lib/agentInbox.ts inboxOrder, as the list draws it) that shows its chat: a
+    // shell's, or a pane on its terminal (whose lens would change and release the pty's size), opens the list
+    here: () => selectedPaneId !== null && linkLanded && view === "chat" && inboxOrder(sidebarMachines, activity).some((row) => row.machine.id === selectedMachineId && row.entry.pane.pane_id === selectedPaneId) ? sidebarPinKey(selectedMachineId, selectedPaneId) : null,
     thread: inMode && !inbox.shown && selectedPaneId !== null && linkLanded ? sidebarPinKey(selectedMachineId, selectedPaneId) : null,
     focusInput: () => paneControls.current?.focusInput() });
   // offered where the mode is, and not over the setup guide, which has the classic shell to itself
