@@ -2068,7 +2068,11 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   where it lands. Alt+Up/Down moves the focused row one step at a time.
   Dragging is disabled while a name field is open. Each workspace's `⋯` opens its row menu
   (`.row-menu-toggle`: no width at rest; shown on hover, focus, selection and while its menu is
-  open; always on touch; not drawn on a desktop, where a right-click opens the menu). Inline server failures
+  open; always on touch; not drawn on a desktop, where a right-click opens the menu). Second in
+  that menu, after Pin, **New tab with agent…** (lucide `Bot`, the tab row's own item) opens the
+  New tab dialog aimed at that workspace without opening it first (#3772), as the Codex app and
+  T3 Code start a thread from a project's row; it is left out on a watching device and on a PC
+  that is not connected. Inline server failures
   stay beside their workspace. A repository's workspace moves past the
   next or previous group with its worktrees, and a worktree moves among its siblings only.
   A dropped order shows at once and stays until herdr is known to have it, drawn in the same rows

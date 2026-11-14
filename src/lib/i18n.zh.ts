@@ -408,6 +408,7 @@ const BASE: Record<string, string> = {
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "开启中继后将关闭设备门槛：此后新的浏览器需要配对码或访问令牌。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新建标签页",
+  "New tab with agent…": "用 Agent 新建标签页…",
   "New worktree": "新建工作树",
   "Open worktree…": "打开工作树…",
   "Earlier sessions…": "之前的会话…",
