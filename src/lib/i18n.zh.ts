@@ -428,6 +428,7 @@ const BASE: Record<string, string> = {
   "Split pane down": "向下拆分窗格",
   "Zoom or unzoom pane": "放大或取消放大窗格",
   "Close pane": "关闭面板",
+  "Close tab": "关闭标签页",
   "Plan: {done} of {total} done": "计划：已完成 {done}/{total}",
   "Plan": "计划",
   "Something went wrong": "出了点问题",
