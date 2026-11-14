@@ -18,6 +18,8 @@ const COMMANDS: SlashCommand[] = [
   { name: "new", description: "a built-in without an argument", source: "builtin" },
   { name: "rename", description: "a built-in with an argument", source: "builtin" },
   { name: "hello", description: "a project command", source: "project" },
+  // a server command OpenCode's catalog marks builtin, which its own menu only types
+  { name: "review", description: "a server command", source: "builtin" },
 ];
 let renderer: ReactTestRenderer | undefined;
 
@@ -87,6 +89,7 @@ it.each([
   // OpenCode's own menu only types these with their space, which lets Enter send them
   ["an OpenCode project command", "opencode", "/hel", "/hello "],
   ["an OpenCode built-in that takes an argument", "opencode", "/ren", "/rename "],
+  ["an OpenCode server command marked builtin", "opencode", "/rev", "/review "],
   // any other agent's pick goes as it always did
   ["another agent's built-in", "claude", "/ne", "/new "],
 ])("keeps the space of %s", async (_name, agent, typed, expected) => {
@@ -102,4 +105,15 @@ it("sends a pick the user changed afterwards as typed, trailing space and all", 
   await type("/new ");
   await enter();
   expect(sent.map((call) => call[0])).toEqual(["/new "]);
+});
+
+it("forgets a pick once it is sent: the same words typed by hand later go as typed", async () => {
+  const sent: unknown[][] = [];
+  await act(async () => { renderer = create(<Composer paneId={pane} agent="opencode" agentStatus="idle" connected autoFocus={false} onSend={(...args) => { sent.push(args); return true; }} onAbort={() => {}} onUploadImage={async () => ""} />); });
+  await type("/ne");
+  await enter();
+  await enter();
+  await type("/new ");
+  await enter();
+  expect(sent.map((call) => call[0])).toEqual(["/new", "/new "]);
 });

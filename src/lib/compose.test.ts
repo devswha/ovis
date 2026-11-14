@@ -80,6 +80,8 @@ describe("omo command completion", () => {
     expect(sendsBarePick(row("compact"), "opencode")).toBeTrue();
     // OpenCode's own menu only types these, with their space, for Enter to send
     for (const name of ["rename", "cd", "btw"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
+    // the server's own commands, which Ovis lists as builtins (server/skills/opencode.ts), and any name OpenCode's TUI lacks
+    for (const name of ["init", "review", "hello"]) expect(sendsBarePick(row(name), "opencode")).toBeFalse();
     for (const source of ["user", "project", "plugin", "skill"] as const) expect(sendsBarePick(row("hello", source), "opencode")).toBeFalse();
     expect(sendsBarePick({ ...row("customize-opencode", "skill"), trigger: "@" }, "opencode")).toBeFalse();
     // any other agent's pick keeps its space

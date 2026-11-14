@@ -1512,6 +1512,8 @@ export function Composer({
           }}
           onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
           onChange={(event) => {
+            // typed or pasted: whatever the box holds now is the user's own text, never a pick (sendsBarePick)
+            barePick.current = null;
             setText(event.target.value);
             setCaret(event.target.selectionStart);
             setMenuDismissed(false);
