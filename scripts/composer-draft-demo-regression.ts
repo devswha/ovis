@@ -79,6 +79,9 @@ try {
         assert.equal(await page.locator(".composer-suggestion").count(), suggestionChip ? 1 : 0);
         assert.equal(await box.evaluate((node) => getComputedStyle(node, "::placeholder").color === "rgba(0, 0, 0, 0)"), false, "the placeholder itself shows the suggestion");
         await page.evaluate(() => Object.assign(window, { fitSubmitCount: 0 }));
+        // the box takes the focus when it mounts: it starts unfocused here, so only the tap can focus it
+        await box.evaluate((node) => node.blur());
+        assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("composer-text") ?? false), false, "the box starts unfocused");
         const bounds = await box.boundingBox();
         assert.ok(bounds);
         // a real touch sequence on the grey words, not a synthetic click
