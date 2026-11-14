@@ -229,9 +229,15 @@ What is there:
   PC's whole host stay in the app and shows `error.html` when the first load fails. Until the
   PC answers, a native cover says which PC is opening and offers Change PC; when a PC
   sends no answer within 20 seconds, the cover itself says so, with Try again and Change PC, and
-  for a Tailscale address that Tailscale may be off on the phone (WebKit alone waits a minute or
+  for a Tailscale address that Tailscale may be off on the phone, or for a public server that it
+  may be down or out of the phone's reach (WebKit alone waits a minute or
   more, which is what a phone with Tailscale off sees for a `.ts.net` address, and while that
-  connection hangs it did not paint the error page either). When a Tailscale address fails to
+  connection hangs it did not paint the error page either). A PC that answered is never cut off
+  (`OpeningWatch`): the cover stays until the client is up (its root no longer holds index.html's
+  loading spinner), with a bar filled from the web view's `estimatedProgress` (it never goes back
+  and stops at 95 %); after 5 s it says the connection is slow, and after 20 s with no progress it
+  offers Keep waiting and Try again. iOS has no count of the bytes received, so a TLS handshake
+  still under way at 20 s counts as no answer. When a Tailscale address fails to
   load, `error.html` (on Android too) adds the same note. A redirect of the address being opened
   to another origin is handled as on Android (see [The Android app](#the-android-app)), where
   Capacitor would send another host to Safari, except a sign-in in front of the PC: on iOS one
