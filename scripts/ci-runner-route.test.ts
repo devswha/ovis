@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +20,9 @@ afterAll(() => {
 });
 
 // A fake `gh` that answers the Actions API from the JSON files in $FAKE_GH and logs each call; a
-// missing file makes it fail like an API error.
+// missing file makes it fail like an API error, and a `fail-<file>` beside one makes the next call
+// for it print part of its answer and then fail, as a 502 on a later page does; a `refuse-<file>`
+// makes every call for it fail as the API's refusal (HTTP 404) does.
 const bin = tempDir();
 writeFileSync(join(bin, "gh"), `#!/bin/sh
 echo "$*" >> "$FAKE_GH/calls"
@@ -31,6 +33,8 @@ case "$3" in
   *status=queued*) f=queued ;;
   *) exit 1 ;;
 esac
+if [ -f "$FAKE_GH/refuse-$f" ]; then echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi
+if [ -f "$FAKE_GH/fail-$f" ]; then rm "$FAKE_GH/fail-$f"; cat "$FAKE_GH/$f.json"; echo "gh: Server Error (HTTP 502)" >&2; exit 1; fi
 cat "$FAKE_GH/$f.json"
 `);
 chmodSync(join(bin, "gh"), 0o755);
@@ -61,13 +65,19 @@ function route(env: Record<string, string>) {
   return result;
 }
 
-function routed(env: Record<string, string>): unknown {
+/** The two outputs: linux= for the Linux jobs, then fast= for Fast checks. */
+function outputs(env: Record<string, string>): { linux: unknown; fast: unknown } {
   const result = route(env);
   expect(result.status).toBe(0);
   const lines = result.stdout.trimEnd().split("\n");
-  expect(lines.length).toBe(1);
+  expect(lines.length).toBe(2);
   expect(lines[0]).toStartWith("linux=");
-  return JSON.parse(lines[0]!.slice("linux=".length));
+  expect(lines[1]).toStartWith("fast=");
+  return { linux: JSON.parse(lines[0]!.slice("linux=".length)), fast: JSON.parse(lines[1]!.slice("fast=".length)) };
+}
+
+function routed(env: Record<string, string>): unknown {
+  return outputs(env).linux;
 }
 
 describe.skipIf(process.platform === "win32")("CI runner route", () => {
@@ -97,7 +107,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       const full = actions({ in_progress: { 1: running(7), 2: running(1) } });
       rmSync(join(full, "jobs-2.json"));
       const result = route({ ...pr, FAKE_GH: full });
-      expect(result.stdout).toBe('linux="ubuntu-24.04"\n');
+      expect(result.stdout).toBe('linux="ubuntu-24.04"\nfast="ubuntu-24.04"\n');
       expect(result.stderr).not.toContain("::warning::");
     });
 
@@ -132,7 +142,7 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
       writeFileSync(join(state, "in_progress.json"), `{"workflow_runs":[]}\n{"workflow_runs":[{"id":1}]}\n`);
       // counted, not a failed count falling back to hosted
       const result = route({ ...pr, FAKE_GH: state });
-      expect(result.stdout).toBe('linux="ubuntu-24.04"\n');
+      expect(result.stdout).toBe('linux="ubuntu-24.04"\nfast="ubuntu-24.04"\n');
       expect(result.stderr).toContain("at least 7 of 10");
       expect(result.stderr).not.toContain("::warning::");
     });
@@ -154,11 +164,26 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     it("stays hosted when the jobs cannot be counted", () => {
       const result = route(pr);
       expect(result.status).toBe(0);
-      expect(result.stdout).toBe('linux="ubuntu-24.04"\n');
+      expect(result.stdout).toBe('linux="ubuntu-24.04"\nfast="ubuntu-24.04"\n');
       expect(result.stderr).toContain("::warning::");
       const broken = actions({ in_progress: { 1: running(1) } });
       rmSync(join(broken, "jobs-1.json"));
       expect(routed({ ...pr, FAKE_GH: broken })).toBe("ubuntu-24.04");
+    });
+
+    it("asks again when one read fails, and counts what it then reads once", () => {
+      // 12 running of 16 leave room for the run's 4 jobs; each part counted twice would leave none
+      const flaky = actions({ in_progress: { 1: running(6) }, queued: { 2: running(6) } });
+      for (const file of ["in_progress", "jobs-1", "jobs-2"]) writeFileSync(join(flaky, `fail-${file}`), "");
+      expect(routed({ ...pr, SELF_HOSTED_CAPACITY: "16", FAKE_GH: flaky })).toEqual(JSON.parse('["self-hosted","self-hosted-ovis"]'));
+    });
+
+    it("does not ask again what the API refused", () => {
+      const refused = actions({ in_progress: { 1: running(1) } });
+      writeFileSync(join(refused, "refuse-jobs-1"), "");
+      expect(routed({ ...pr, FAKE_GH: refused })).toBe("ubuntu-24.04");
+      const calls = readFileSync(join(refused, "calls"), "utf8").trim().split("\n");
+      expect(calls.filter((call) => call.includes("/runs/1/jobs"))).toHaveLength(1);
     });
 
     it("never asks the API for a fork, a configured label set or the hosted override", () => {
@@ -180,6 +205,60 @@ describe.skipIf(process.platform === "win32")("CI runner route", () => {
     expect(routed({ EVENT_NAME: "pull_request", HEAD_REPO: repo, CONFIGURED_LABELS: hosted })).toBe("ubuntu-24.04");
     expect(routed({ EVENT_NAME: "push", CONFIGURED_LABELS: hosted })).toBe("ubuntu-24.04");
     expect(routed({ EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: labels, CONFIGURED_LABELS: hosted })).toEqual(JSON.parse(labels));
+  });
+
+  describe("CI_LINUX_SELF_HOSTED_LABELS", () => {
+    const vm = '["self-hosted","ovis-vm"]';
+
+    it("moves the Linux jobs of a push and of a same-repository pull request", () => {
+      expect(routed({ EVENT_NAME: "push", REF: "refs/heads/topic", LINUX_LABELS: vm })).toEqual(["self-hosted", "ovis-vm"]);
+      expect(routed({ EVENT_NAME: "pull_request", HEAD_REPO: repo, LINUX_LABELS: vm })).toEqual(["self-hosted", "ovis-vm"]);
+      const result = route({ EVENT_NAME: "push", REF: "refs/heads/topic", LINUX_LABELS: vm });
+      expect(result.stderr).toContain("from repository variable CI_LINUX_SELF_HOSTED_LABELS");
+    });
+
+    it("leaves a tag push, a manual run and a workflow that calls ci.yml on CI_SELF_HOSTED_LABELS' routing", () => {
+      expect(routed({ EVENT_NAME: "push", REF: "refs/tags/v1.2.3", LINUX_LABELS: vm })).toEqual(["self-hosted", "self-hosted-ovis"]);
+      expect(routed({ EVENT_NAME: "workflow_dispatch", LINUX_LABELS: vm })).toBe("ubuntu-24.04");
+      expect(routed({ EVENT_NAME: "workflow_dispatch", LINUX_LABELS: vm, CONFIGURED_LABELS: '["self-hosted","self-hosted-ovis"]' })).toEqual(["self-hosted", "self-hosted-ovis"]);
+    });
+
+    it("never moves a fork pull request", () => {
+      expect(routed({ EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork", LINUX_LABELS: vm })).toBe("ubuntu-24.04");
+    });
+  });
+
+  describe("Fast checks", () => {
+    const vm = '["self-hosted","ovis-vm"]';
+    const pc = '["self-hosted","self-hosted-ovis"]';
+
+    it("of a manual run that names ovis-vm stay with the rest", () => {
+      expect(outputs({ EVENT_NAME: "workflow_dispatch", REQUESTED_LABELS: vm, FAST_LABELS: pc })).toEqual({ linux: ["self-hosted", "ovis-vm"], fast: ["self-hosted", "ovis-vm"] });
+    });
+
+    it("follow the Linux jobs when CI_FAST_SELF_HOSTED_LABELS is unset", () => {
+      expect(outputs({ EVENT_NAME: "push", CONFIGURED_LABELS: vm })).toEqual({ linux: ["self-hosted", "ovis-vm"], fast: ["self-hosted", "ovis-vm"] });
+    });
+
+    it("take CI_FAST_SELF_HOSTED_LABELS when the Linux jobs go to the VM runners", () => {
+      expect(outputs({ EVENT_NAME: "pull_request", HEAD_REPO: repo, CONFIGURED_LABELS: vm, FAST_LABELS: pc }))
+        .toEqual({ linux: ["self-hosted", "ovis-vm"], fast: ["self-hosted", "self-hosted-ovis"] });
+    });
+
+    it("ignore CI_FAST_SELF_HOSTED_LABELS when the Linux jobs do not go to the VM runners", () => {
+      expect(outputs({ EVENT_NAME: "push", FAST_LABELS: vm })).toEqual({ linux: ["self-hosted", "self-hosted-ovis"], fast: ["self-hosted", "self-hosted-ovis"] });
+    });
+
+    it("of a fork pull request stay hosted whatever CI_FAST_SELF_HOSTED_LABELS says", () => {
+      expect(outputs({ EVENT_NAME: "pull_request", HEAD_REPO: "someone/fork", CONFIGURED_LABELS: vm, FAST_LABELS: pc }))
+        .toEqual({ linux: "ubuntu-24.04", fast: "ubuntu-24.04" });
+    });
+
+    it("follow the Linux jobs when CI_FAST_SELF_HOSTED_LABELS is not a label list with self-hosted", () => {
+      for (const bad of ['"ubuntu-24.04"', '["self-hosted-ovis"]', "[]", "not json"]) {
+        expect(outputs({ EVENT_NAME: "push", CONFIGURED_LABELS: vm, FAST_LABELS: bad }).fast).toEqual(["self-hosted", "ovis-vm"]);
+      }
+    });
   });
 
   it("keeps a fork pull request hosted without the variable", () => {

@@ -6,6 +6,7 @@ import type { KeyBarKeyItem } from "../lib/keyBar.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { usePageVisible } from "../lib/visibility.ts";
 import { useSettings } from "../lib/settings.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { keepComputerLogin, readComputerLogin, useComputerSettings, viewerOptions, type ComputerSettings } from "../lib/computerSettings.ts";
 import { KeyBar } from "./KeyBar.tsx";
 import { SettingsRow, Segmented, Toggle } from "./SettingsControls.tsx";
@@ -178,7 +179,7 @@ export function ComputerView({ machineId, machineName, hidden }: { machineId: st
             onClick={() => setFull((value) => !value)}>
             {full ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
           </button>
-          {tuning && <ViewSettings settings={computer} onChange={setComputer} resizes={resizes} touch={coarse} rtt={rtt} />}
+          {tuning && <ViewSettings settings={computer} onChange={setComputer} resizes={resizes} touch={coarse} rtt={rtt} onClose={() => setTuning(false)} />}
         </div>
       </div>
       {coarse && <>
@@ -204,7 +205,8 @@ export function ComputerView({ machineId, machineName, hidden }: { machineId: st
 }
 
 /** The Computer view's settings for this PC, on this device. */
-function ViewSettings({ settings, onChange, resizes, touch, rtt }: { settings: ComputerSettings; onChange: (patch: Partial<ComputerSettings>) => void; resizes: boolean; touch: boolean; rtt: number | null }) {
+function ViewSettings({ settings, onChange, resizes, touch, rtt, onClose }: { settings: ComputerSettings; onChange: (patch: Partial<ComputerSettings>) => void; resizes: boolean; touch: boolean; rtt: number | null; onClose: () => void }) {
+  usePhoneSheetBack(onClose);
   return (
     <div className="computer-view-settings" role="dialog" aria-label={t("View settings")}>
       <header className="computer-view-settings-head">{t("View on this device")}</header>

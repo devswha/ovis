@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, Locator, Page } from "playwright-core";
 import type { PaneLayoutSnapshot, PaneSplit } from "../shared/protocol.ts";
-import { paneFocus, paneRead, paneRename, paneSplit, paneZoom, sessionSnapshot, tabClose, tabCreate, tabMove, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { paneClose, paneFocus, paneRead, paneRename, paneSplit, paneZoom, sessionSnapshot, tabClose, tabCreate, tabMove, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { sheetsSettled } from "./sheets-settled.ts";
 import { routeDrained } from "./drained-route.ts";
 import { chromePath } from "./chrome-path.ts";
@@ -42,7 +42,7 @@ async function openApp(page: Page, origin: string, paneId: string): Promise<void
   await page.goto(`${origin}/?pane=${encodeURIComponent(paneId)}`);
   await page.locator(".conn-live").waitFor();
   // a phone's header title lists the tabs in place of the row
-  if ((page.viewportSize()?.width ?? Infinity) <= 640) await page.locator(".app-header .context-tabs").waitFor();
+  if ((page.viewportSize()?.width ?? Infinity) <= 640) await page.locator(".app-header .header-tabs-sheet").waitFor();
   else await page.getByRole("tab", { name: TAB, exact: true }).waitFor();
   await screen(page, paneId).waitFor();
 }
@@ -60,7 +60,7 @@ async function paneMenu(page: Page, paneId: string): Promise<Locator> {
 
 async function checkDesktop(browser: Browser, origin: string, first: string, second: string, tabId: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
-  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
+  await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
   try {
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
@@ -590,7 +590,7 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
   // Start from a known native focus before checking that a reorder preserves it.
   await paneFocus(first);
   const context = await browser.newContext({ viewport, isMobile: true, hasTouch: true, locale: "en-US" });
-  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
+  await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
   try {
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
@@ -602,10 +602,10 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
     assert.equal(await frame(page, first).isVisible(), true, "the open pane is the one shown");
     assert.equal(await page.locator(".pane-frame").count(), 2, "its sibling stays mounted");
     assert.equal(await page.locator(".pane-divider").count(), 0, "a phone draws no split boundary");
-    // a phone's header title lists the tabs: no row, and More is the open tab's and pane's menu
-    assert.equal(await page.locator(".tab-strip").count(), 0, "the phone draws no tab row");
-    const titleBox = await rect(page.locator(".context.has-tabs"), "the header's title");
-    assert.ok(titleBox.width >= 44 && titleBox.height >= 44, "the title that lists the tabs is a touch-sized target");
+    // a phone whose tabs are in the header: no row under it, its chevron lists them, and More is the open tab's and pane's menu
+    assert.equal(await page.locator(".pane-slot .tab-strip").count(), 0, "the phone draws no tab row under the header");
+    const listBox = await rect(page.locator(".app-header .header-tabs-sheet"), "the header's chevron");
+    assert.ok(listBox.width >= 44 && listBox.height >= 44, "the chevron that lists the tabs is a touch-sized target");
     const touchMenu = page.locator(".header-more-button");
     const touchBox = await rect(touchMenu, "the header's More");
     assert.ok(touchBox.width >= 40 && touchBox.height >= 40, "More remains a touch-sized target");
@@ -617,8 +617,8 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
     const at = all.findIndex((item) => item === "canvas-first" || item === "canvas-second");
     const phoneItems = all.slice(at);
     assert.deepEqual(phoneItems.slice(0, 2).sort(), ["canvas-first", "canvas-second"], "the split tab's panes lead its actions in More on a phone");
-    // the pane's and the tab's actions fold into More's last item, opening a sheet of their own (G-143)
-    assert.deepEqual(phoneItems.slice(2), ["Pane and tab…"], "More ends in Pane and tab… on a phone");
+    // the pane's and the tab's actions fold into one item, opening a sheet of their own (G-143); the way into the agent inbox is More's last
+    assert.deepEqual(phoneItems.slice(2), ["Pane and tab…", "Open agent inbox"], "More ends in Pane and tab… and Open agent inbox on a phone");
     const paneSheet = page.getByRole("dialog", { name: "Pane and tab…", exact: true });
     const openPaneSheet = async (): Promise<void> => {
       await tabSheet.getByRole("button", { name: "Pane and tab…", exact: true }).tap();
@@ -659,17 +659,18 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
     await name.waitFor();
     await page.keyboard.press("Escape");
     await name.waitFor({ state: "detached" });
-    // the title's list moves the open tab, as the row's menu does
+    // the header's tab list moves the open tab, as the row's menu does
     const tabList = page.getByRole("dialog", { name: "Tabs of ovis-test-tab-menu", exact: true });
     const listTabs = async (): Promise<void> => {
-      await page.locator(".app-header .context-tabs").tap();
+      await page.locator(".app-header .header-tabs-sheet").tap();
       await tabList.waitFor();
       await sheetsSettled(page);
     };
     const owner = (await sessionSnapshot()).panes.find((pane) => pane.pane_id === first)!;
     const sibling = await tabCreate({ workspaceId: owner.workspace_id, label: "touch-reorder" });
     try {
-      await page.locator(".context-position").waitFor({ state: "attached" });
+      // the chevron counts the workspace's tabs from two
+      await page.locator(".app-header .header-tabs-count").waitFor({ state: "attached" });
       await listTabs();
       await tabList.getByRole("button", { name: "Move tab right", exact: true }).tap();
       await until(async () => (await sessionSnapshot()).tabs.filter((entry) => entry.workspace_id === owner.workspace_id)[0]?.tab_id === sibling.tab.tab_id, "the title's list reorders native tabs");
@@ -679,7 +680,7 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
       await tabList.getByRole("button", { name: "Move tab left", exact: true }).tap();
       await until(async () => (await sessionSnapshot()).tabs.filter((entry) => entry.workspace_id === owner.workspace_id)[0]?.tab_id === owner.tab_id, "the title's list restores original order");
     } finally { await tabClose(sibling.tab.tab_id); }
-    await page.locator(".context-position").waitFor({ state: "detached" });
+    await page.locator(".app-header .header-tabs-count").waitFor({ state: "detached" });
     assert.equal(await frame(page, first).locator(".pane-frame-menu").isVisible(), false, "the lone pane draws no ellipsis beside More");
     await touchMenu.tap();
     await tabSheet.waitFor();
@@ -736,9 +737,9 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
   } finally { await context.close(); }
 }
 
-async function checkTouchTablet(browser: Browser, origin: string, first: string): Promise<void> {
+async function checkTouchTablet(browser: Browser, origin: string, first: string, second: string): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1024, height: 768 }, hasTouch: true, locale: "en-US" });
-  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
+  await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
   try {
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
@@ -757,6 +758,31 @@ async function checkTouchTablet(browser: Browser, origin: string, first: string)
     await screenshot(page, "tablet-menu");
     await page.keyboard.press("Escape");
     await menu.waitFor({ state: "detached" });
+    // a split's dividers reach into the panes beside them, but never over a pane's own buttons there (#3564)
+    const lower = (await paneSplit(second, "down", false)).pane_id;
+    try {
+      await screen(page, lower).waitFor();
+      for (const pane of [first, second, lower]) {
+        for (const button of await frame(page, pane).locator(".pane-frame-head button").all()) {
+          const covered = await button.evaluate((node) => {
+            const box = node.getBoundingClientRect();
+            // each edge's middle, just inside it (a rounded corner is no part of the button)
+            const midX = (box.left + box.right) / 2, midY = (box.top + box.bottom) / 2;
+            return [[midX, box.top + 2], [box.right - 2, midY], [midX, box.bottom - 2], [box.left + 2, midY]]
+              .map(([x, y]) => document.elementFromPoint(x!, y!)).filter((hit) => hit === null || !node.contains(hit)).map((hit) => hit?.className ?? null);
+          });
+          assert.deepEqual(covered, [], `${await button.getAttribute("aria-label")} takes a tap on every edge`);
+        }
+      }
+      // a tap on the top edge of the lower pane's ellipsis opens its menu, not the divider above it
+      const ellipsis = frame(page, lower).locator(".pane-frame-menu");
+      const box = await rect(ellipsis, "the lower pane's ellipsis");
+      await page.touchscreen.tap(box.left + box.width / 2, box.top + 2);
+      const opened = await until(async () => await ellipsis.getAttribute("aria-expanded") === "true", "the lower pane's menu opens").then(() => true, () => false);
+      await screenshot(page, "tablet-split-ellipsis-tap");
+      assert.ok(opened, "a tap on the top of the lower pane's ellipsis opens the pane menu");
+      await page.keyboard.press("Escape");
+    } finally { await paneClose(lower); }
   } finally { await context.close(); }
 }
 
@@ -774,7 +800,7 @@ export async function checkTabMenu(browser: Browser, origin: string): Promise<vo
     // A phone's title lists the tabs at both sizes; compact-height lone tabs wider than a phone are
     // exercised in phone-glass-header-demo-regression.ts.
     for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 720 }]) await checkPhone(browser, origin, first, second, viewport);
-    await checkTouchTablet(browser, origin, first);
+    await checkTouchTablet(browser, origin, first, second);
     console.log("PASS native tab drag/keyboard/touch reorder, cancellation and failure handling, desktop context and keyboard tab menus, touch menu buttons, inactive-tab close, simultaneous split terminals, focus and input isolation, swap, split, divider drag, zoom and phone sheets");
   } finally {
     if (workspaceId) await workspaceClose(workspaceId).catch(() => undefined);

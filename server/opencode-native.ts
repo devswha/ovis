@@ -43,13 +43,13 @@ const WATCH_MS = 10 * 60_000;
 const WATCH_MAX = 64;
 const EARLY_MAX = 256;
 /** how long a pane's verified service and session are trusted without asking again (as openCodeService's) */
-const PANE_VERIFIED_MS = 5_000;
+export const PANE_VERIFIED_MS = 5_000;
 /**
  * The panes that keep the shared event stream open: each verified to run OpenCode v2 on the stream's
  * service with its session there. A pane's end, its agent changing, or a verification that now fails
  * releases it; the stream closes when no verified pane uses its service.
  */
-const verifiedPanes = new Map<string, { sessionID: string; key: string; until: number; generation: number }>();
+const verifiedPanes = new Map<string, { sessionID: string; key: string; until: number; generation: number; pid: number | null; started: number }>();
 let verificationGeneration = 0;
 /** A collector snapshot can release only ownership verified before its read began. */
 export function openCodeVerificationCheckpoint(): number { return verificationGeneration; }
@@ -63,8 +63,11 @@ export function openCodeVerificationCheckpoint(): number { return verificationGe
 type Verification = { cancelled: boolean; started: number };
 const inFlight = new Set<Verification>();
 const inFlightByPane = new Map<string, Set<Verification>>();
-/** the status collectors that end a pane: a verified pane is tracked so its close reaches releaseOpenCodePane */
-const paneTrackers = new Map<(paneId: string) => void, Set<string>>();
+/**
+ * the status collectors that end a pane: a verified pane is tracked so its close reaches releaseOpenCodePane.
+ * Each one's `refresh` asks it for a snapshot without registering any pane again.
+ */
+const paneTrackers = new Map<(paneId: string) => void, { handed: Set<string>; refresh: () => void }>();
 /** each tracker gets a pane once while it stays verified: tracking asks herdr for a snapshot */
 function handOver(track: (paneId: string) => void, handed: Set<string>, paneId: string): void {
   if (handed.has(paneId)) return;
@@ -73,13 +76,35 @@ function handOver(track: (paneId: string) => void, handed: Set<string>, paneId: 
 }
 
 /**
+ * herdr can change a pane's agent without a status event or a lifecycle frame (0.9.3 on a loaded host: OpenCode
+ * gone, the shell idle in front, and nothing said for its pane), so no snapshot would read it until the collector's
+ * backstop. While panes hold the stream, each one's collectors read it again whenever its verification is due
+ * (PANE_VERIFIED_MS): what that snapshot shows releases it as any other (server/core/status.ts, onReconciled).
+ * Each collector is only asked to read again: tracking a pane anew would make every snapshot already on its
+ * way older than the pane, so on a host where a read outlasts the recheck a pane gone would never be ended.
+ */
+let recheck: ReturnType<typeof setInterval> | null = null;
+function scheduleRecheck(): void {
+  if (recheck !== null) return;
+  recheck = setInterval(() => {
+    if (verifiedPanes.size === 0) { stopRecheck(); return; }
+    for (const { refresh } of paneTrackers.values()) refresh();
+  }, PANE_VERIFIED_MS);
+  recheck.unref?.();
+}
+function stopRecheck(): void {
+  if (recheck !== null) clearInterval(recheck);
+  recheck = null;
+}
+
+/**
  * A status hub's collector tracks verified OpenCode panes (server/core/status.ts): it gets every pane
  * verified now, and each one verified later, so a collector that replaces another misses no pane.
- * Returns its unregistration.
+ * `refresh` asks it for a snapshot, registering nothing. Returns its unregistration.
  */
-export function trackVerifiedOpenCodePanes(track: (paneId: string) => void): () => void {
+export function trackVerifiedOpenCodePanes(track: (paneId: string) => void, refresh: () => void): () => void {
   const handed = new Set<string>();
-  paneTrackers.set(track, handed);
+  paneTrackers.set(track, { handed, refresh });
   for (const paneId of verifiedPanes.keys()) handOver(track, handed, paneId);
   return () => { paneTrackers.delete(track); };
 }
@@ -195,12 +220,13 @@ export function closeOpenCodeNative(): void {
   for (const verification of inFlight) verification.cancelled = true;
   inFlight.clear();
   inFlightByPane.clear();
-  for (const handed of paneTrackers.values()) handed.clear();
+  for (const { handed } of paneTrackers.values()) handed.clear();
   stream?.close();
   stream = null;
   catalogs.clear();
   watches.length = 0;
   verifiedPanes.clear();
+  stopRecheck();
 }
 
 /**
@@ -215,8 +241,9 @@ export function releaseOpenCodePane(paneId: string, checkpoint = Infinity): void
   for (const verification of inFlightByPane.get(paneId) ?? []) if (verification.started > checkpoint) return;
   for (const verification of inFlightByPane.get(paneId) ?? []) { verification.cancelled = true; inFlight.delete(verification); }
   inFlightByPane.delete(paneId);
-  for (const handed of paneTrackers.values()) handed.delete(paneId);
+  for (const { handed } of paneTrackers.values()) handed.delete(paneId);
   verifiedPanes.delete(paneId);
+  if (verifiedPanes.size === 0) stopRecheck();
   for (let index = watches.length - 1; index >= 0; index--) if (watches[index]!.paneId === paneId) watches.splice(index, 1);
   if (stream && ![...verifiedPanes.values()].some((entry) => entry.key === stream!.key)) {
     stream.close();
@@ -227,6 +254,11 @@ export function releaseOpenCodePane(paneId: string, checkpoint = Infinity): void
 
 export function openCodeNativeState(): { stream: boolean; panes: string[] } {
   return { stream: stream !== null, panes: [...verifiedPanes.keys()] };
+}
+
+/** The OpenCode process a verified pane was last verified with, as herdr named it in front; null when unknown. */
+export function openCodePanePid(paneId: string): number | null {
+  return verifiedPanes.get(paneId)?.pid ?? null;
 }
 
 /** The verified service a pane's exact session lives in, or null (scan rows and screen paths stay). */
@@ -245,8 +277,12 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   let held: boolean;
   let service: OpenCodeService | null;
   let sessionID: string;
+  let pid: number | null = null;
   try {
-    const roots = paneId ? typingRoots(await paneProcessRoots(paneId, label)) : null;
+    const found = paneId ? await paneProcessRoots(paneId, label) : null;
+    // a pid herdr did not report comes back as -1: unknown, not a process
+    pid = found?.pid != null && found.pid > 0 ? found.pid : null;
+    const roots = found ? typingRoots(found) : null;
     if (verification.cancelled || resolveAgent(pane, roots).agent !== "opencode") return null;
     const id = opencodeSessionId(pane);
     if (!id) return null;
@@ -269,10 +305,17 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
   if (paneId === undefined) return { service: service!, sessionID };
   // a verified OpenCode v2 pane keeps its service's event stream open, so a later send's events are not missed
   const live = ensureStream(service!);
+  const earlier = verifiedPanes.get(paneId);
+  // An older verification ending after a newer one leaves the newer one's pid, even none: a read that names no process
+  // clears it, so a new OpenCode stopped before any read saw it is still looked for (stoppedAgentJob walks without one)
+  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid : pid;
+  // the latest start a committed pid came from: an older verification ending later never lowers it
+  const started = Math.max(verification.started, earlier?.started ?? 0);
   verifiedPanes.delete(paneId);
-  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration });
+  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid: known, started });
   // a pane closed without an exit frame ends only if its collector tracks it
-  for (const [track, handed] of paneTrackers) handOver(track, handed, paneId);
+  for (const [track, { handed }] of paneTrackers) handOver(track, handed, paneId);
+  scheduleRecheck();
   return { service: service!, sessionID };
 }
 

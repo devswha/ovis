@@ -100,7 +100,9 @@ export function webLikeHref(target: string): string | null {
  * files they wrote (`[report](/repo/out/REPORT.md)`, `[x](src/x.ts#L12)`, `[x](x.ts:12)`).
  * A line anchor (`#L12`, `:12`) stays for the viewer; other anchors are dropped. A line after a bare
  * word is a scheme's (`tel:123`), not a file's. The path is URL-encoded, as a `file:///` URI's is
- * (`/a%20b/%EC%95%B0.md`): it is decoded once, and kept as written when it is not valid encoding.
+ * (`/a%20b/%EC%95%B0.md`): it is decoded once, and kept as written when it is not valid encoding. A path
+ * that begins with two separators (`//nas/work/a.md`, a network share on a Windows PC) stays a link: whether it
+ * opens is the server's to say, which knows its system and where its panes work (server/windows-share.ts).
  */
 export function markdownFileTarget(href: string): string | null {
   const value = href.trim();

@@ -55,6 +55,30 @@ afterEach(() => {
 });
 
 /**
+ * A port for the managed bridge that nothing listens on, held for a moment to make sure, then given
+ * back. The bridge binds it three process starts later (launcher, supervisor, bridge), and again
+ * each time an update or a restart replaces the bridge.
+ *
+ * Below 32768, under the ports a system hands out on its own by default: Linux gives a listener on
+ * port 0 or an outgoing connection one from 32768 up (ip_local_port_range), macOS and Windows from
+ * 49152 up. A port asked of the system with port 0 and given back is one of those: the next
+ * `port: 0` server of a test file running beside this one can be handed it before the bridge binds
+ * it, and the bridge then fails to start (EADDRINUSE) while the test waits for its answer. Below
+ * 20000 too, where scripts/check.test.ts takes the ports of its runs: the unit tests run beside
+ * this file in `bun run check concurrent`.
+ */
+function bridgePort(): number {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const port = 10_000 + Math.floor(Math.random() * 10_000);
+    try {
+      Bun.listen({ hostname: "127.0.0.1", port, socket: { data() {} } }).stop(true);
+      return port;
+    } catch { /* taken: another port */ }
+  }
+  throw new Error("no free port for the managed bridge");
+}
+
+/**
  * A real launcher + supervisor + bridge on a free port, serving the fixture checkout. Given `home`,
  * they run with it as $HOME and keep their state in the default dir under it, as an install not
  * told OVIS_STATE_DIR does.
@@ -62,9 +86,12 @@ afterEach(() => {
 async function managedFixture(supervisor?: string, slowHealth = false, home?: string) {
   updater.stop();
   mkdirSync(join(upstream, "server"), { recursive: true });
+  // The bridge is this repository's server code started from a file in the fixture's tree. A real bridge's code is in
+  // the tree it serves; this one is told so before that code loads (server/entries.ts reads OVIS_ASSETS once, then)
   const entry = `
-    import { createServer } from ${JSON.stringify(join(import.meta.dir, "index.ts"))};
-    import { connectUpdater } from ${JSON.stringify(join(import.meta.dir, "update-api.ts"))};
+    process.env.OVIS_ASSETS = require("node:path").join(import.meta.dir, "..");
+    const { createServer } = await import(${JSON.stringify(join(import.meta.dir, "index.ts"))});
+    const { connectUpdater } = await import(${JSON.stringify(join(import.meta.dir, "update-api.ts"))});
     ${slowHealth ? `
     // a busy PC: the bridge answers, but its first six health checks outlast the supervisor's 1 s probe
     // timeout, so they are refused on any machine and the start takes about 6.6 s (fixed 800 ms let a
@@ -82,8 +109,7 @@ async function managedFixture(supervisor?: string, slowHealth = false, home?: st
   if (supervisor !== undefined) writeFileSync(join(upstream, "server/supervisor.ts"), supervisor);
   await commit("managed initial");
   await git(root, "pull", "--ff-only", "--quiet");
-  const reservation = Bun.serve({ port: 0, fetch: () => new Response() });
-  const port = reservation.port!; reservation.stop(true);
+  const port = bridgePort();
   const origin = `http://127.0.0.1:${port}`;
   const headers = { authorization: "Bearer test-managed-token", "x-herdr-update": "1" };
   // what the launcher, the supervisor and the bridge print: a failed test prints it
@@ -156,7 +182,9 @@ function copySupervisor(into: string) {
     const copy = join(into, relative(repo, file));
     mkdirSync(dirname(copy), { recursive: true });
     writeFileSync(copy, source);
-    for (const { path } of transpiler.scanImports(source)) {
+    // what it loads as it starts, not the entries server/entries.ts names by import(): those are the whole server
+    for (const { path, kind } of transpiler.scanImports(source)) {
+      if (kind !== "import-statement") continue;
       const imported = resolve(dirname(file), path);
       if (path.startsWith(".") && !files.includes(imported)) files.push(imported);
     }
@@ -827,7 +855,7 @@ describe("managed source updates with real Git repositories and builds", () => {
   it("takes a bridge by its own answer, or by the whole one when it predates the bridge-scope boot id, and tells it", async () => {
     // runSupervisor in a stand-in child, as above: the bridge is a fake whose health answers say what
     // a bridge of this revision says (its boot id and runtime in ?scope=bridge) or an older one (none)
-    const asked = async (older: boolean, herdrSocket?: string) => {
+    const asked = async (older: boolean, herdrSocket?: string, runtime = "herdr") => {
       const root = mkdtempSync(join(directory, "launch-root-"));
       const stateDir = mkdtempSync(join(directory, "launch-state-"));
       const record = join(stateDir, "launch-record.json");
@@ -851,7 +879,7 @@ describe("managed source updates with real Git repositories and builds", () => {
         globalThis.fetch = (async (url: string) => {
           urls.push(new URL(url).search);
           const bridge = new URL(url).search === "?scope=bridge";
-          return { ok: true, json: async () => bridge ? (${older} ? { ok: true } : { ok: true, web_ui: { boot_id: bootId }, runtime: "herdr" }) : { web_ui: { boot_id: bootId } } };
+          return { ok: true, json: async () => bridge ? (${older} ? { ok: true } : { ok: true, web_ui: { boot_id: bootId }, runtime: ${JSON.stringify(runtime)} }) : { web_ui: { boot_id: bootId } } };
         }) as unknown as typeof fetch;
         await (await import(${JSON.stringify(join(import.meta.dir, "supervisor.ts"))})).runSupervisor(${JSON.stringify(root)});
         writeFileSync(${JSON.stringify(record)}, JSON.stringify({ urls, sent }));
@@ -876,6 +904,8 @@ describe("managed source updates with real Git repositories and builds", () => {
     const older = await asked(true);
     expect(older.urls).toEqual(["?scope=bridge", ""]);
     expect(older.sent.filter((message) => message.type === "bridge-accepted")).toHaveLength(1);
+    // a runtime the bridge starts itself must answer, whichever it is: none is taken on the bridge's word alone
+    for (const runtime of ["herdr-core", "alt-runtime"]) expect((await asked(false, undefined, runtime)).urls).toEqual(["?scope=bridge", ""]);
     if (process.platform === "win32") return; // herdr's socket is a named pipe there: no unix socket file is left behind
     // a socket file a killed herdr left behind refuses the connect: herdr is stopped, as with no socket (#2670)
     const stale = join(mkdtempSync(join(directory, "stale-")), "herdr.sock");

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as darwinProcess from "./darwin-process.ts";
 import { Database } from "bun:sqlite";
 import { appendFileSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -31,7 +31,7 @@ import * as served from "./runtime/capabilities.ts";
 import { HERDR_CORE } from "./runtime/capabilities.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { launchedAgents } from "./launched-agents.ts";
-import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
+import { agyTranscriptPage, claudePanePid, claudePaneSession, ConversationReadPending, ConversationUnavailable, devinSessionForPane, forgetPaneTranscriptState, forgetTranscriptState, gjcTranscriptPath, HistoryChanged, isDevinProcess, isOmoProcess, ompSessionStore, paneConversation, paneProcessRoots, paneTranscript, parseClaudeTranscript, stoppedAgentJob, unwrapPastes, toolOutput, transcriptImage, transcriptImageAsync, transcriptPage, transcriptToolOutput, TRANSCRIPT_WINDOW_BYTES } from "./conversation.ts";
 
 it("labels only Claude's explicit end_turn text as final-answer evidence", () => {
   const entry = (stop_reason: string | null) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason, content: [{ type: "text", text: "Answer" }] } });
@@ -74,6 +74,86 @@ it("says the transcript file's size on the newest page only, and again once it g
     expect(newest.cursor).not.toBeNull();
     expect(transcriptPage("claude-transcript", file, { before: newest.cursor! }).transcript_bytes).toBeUndefined();
   } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+describe("an agent the shell stopped as a job", () => {
+  // Given /proc as Linux lays it out: each of the shell's threads lists its children, each child its state and argv.
+  const proc = mkdtempSync(join(tmpdir(), "stopped-job-proc-"));
+  const child = (pid: number, comm: string, state: string, argv: string[], parent = 41000) => {
+    mkdirSync(join(proc, String(pid)), { recursive: true });
+    writeFileSync(join(proc, String(pid), "stat"), `${pid} (${comm}) ${state} ${parent} ${pid} 41000 34816 41000 4194304`);
+    writeFileSync(join(proc, String(pid), "cmdline"), argv.map((word) => `${word}\0`).join(""));
+  };
+  const shell = (pid: number, threads: Record<string, number[]>) => {
+    for (const [thread, children] of Object.entries(threads)) {
+      mkdirSync(join(proc, String(pid), "task", thread), { recursive: true });
+      writeFileSync(join(proc, String(pid), "task", thread, "children"), children.map((id) => `${id} `).join(""));
+    }
+  };
+  child(41001, "opencode", "T", ["/usr/bin/opencode"]);
+  child(41002, "opencode", "S", ["/usr/bin/opencode"]);
+  child(41003, "vim", "T", ["vim", "notes.md"]);
+  child(41004, "node", "T", ["node", "/home/u/.npm/bin/opencode"]);
+  child(41005, "x) T (y", "S", ["/usr/bin/x"]);
+  child(41006, "opencode", "T", ["/bin/sh", "/home/u/bin/opencode"]);
+  shell(41000, { "41000": [41001] });
+  shell(42000, { "42000": [41002, 41003, 41005] });
+  shell(43000, { "43000": [], "43001": [41004] });
+  shell(45000, { "45000": [41006] });
+  // a wrapper the shell started, which runs the agent as its own child: the job's whole group is stopped
+  child(46001, "sh", "T", ["sh", "-c", "opencode; echo done"]);
+  child(46002, "opencode", "T", ["/usr/bin/opencode"]);
+  shell(46000, { "46000": [46001] });
+  shell(46001, { "46001": [46002] });
+  // npx: node runs npm's launcher, whose child runs OpenCode's package, whose child is the native binary
+  child(47001, "npm exec opencode", "T", ["node", "/usr/lib/node_modules/npm/bin/npx-cli.js", "opencode"]);
+  child(47002, "node", "T", ["node", "/home/u/.npm/_npx/1/node_modules/.bin/opencode"]);
+  child(47003, "opencode", "T", ["/home/u/.npm/_npx/1/node_modules/opencode-linux-x64/bin/opencode"]);
+  shell(47000, { "47000": [47001] });
+  shell(47001, { "47001": [47002] });
+  shell(47002, { "47002": [47003] });
+  // children lists that loop back to the shell (read while pids were reused): the walk still ends
+  child(48001, "sh", "T", ["sh"]);
+  shell(48000, { "48000": [48001] });
+  shell(48001, { "48001": [48000, 48001] });
+  // a shell with more processes than the walk reads, the stopped OpenCode under a launcher listed last
+  const crowd = Array.from({ length: 300 }, (_, index) => 49100 + index);
+  for (const pid of crowd) child(pid, "sleep", "S", ["sleep", "600"], 49000);
+  child(49001, "sh", "T", ["sh", "-c", "opencode"], 49000);
+  child(49002, "opencode", "T", ["/usr/bin/opencode"], 49001);
+  shell(49000, { "49000": [...crowd, 49001] });
+  shell(49001, { "49001": [49002] });
+  afterAll(() => rmSync(proc, { recursive: true, force: true }));
+
+  it.each([
+    { shell: 41000, found: true, case: "its stopped child is the agent" },
+    { shell: 42000, found: false, case: "the agent runs, and only another program or a lookalike name is stopped" },
+    { shell: 43000, found: true, case: "another thread started it, under an interpreter" },
+    { shell: 44000, found: false, case: "the shell is gone" },
+    { shell: 45000, found: true, case: "a script named after it runs under a shell" },
+    { shell: 46000, found: true, case: "a wrapper shell runs it as its child" },
+    { shell: 47000, found: true, case: "npx runs it a few processes down" },
+    { shell: 48000, found: false, case: "the children lists loop back to the shell" },
+  ])("finds the agent as a stopped job of the shell when $case", async ({ shell: pid, found }) => {
+    // When / Then
+    expect(await stoppedAgentJob(pid, "opencode", { proc })).toBe(found);
+  });
+
+  it.each([
+    { pid: 41001, found: true, case: "the stopped OpenCode is that process" },
+    { pid: 41009, found: false, case: "the stopped OpenCode is another one than that process" },
+  ])("counts only the pane's own OpenCode process once it is known, when $case", async ({ pid, found }) => {
+    // When / Then
+    expect(await stoppedAgentJob(41000, "opencode", { proc, pid })).toBe(found);
+  });
+
+  it.each([
+    { shell: 49000, found: true, case: "it is below that shell, past more processes than the walk reads" },
+    { shell: 41000, found: false, case: "it is below another shell" },
+  ])("follows the pane's own OpenCode up to the shell when $case", async ({ shell, found }) => {
+    // When / Then
+    expect(await stoppedAgentJob(shell, "opencode", { proc, pid: 49002 })).toBe(found);
+  });
 });
 
 describe("omo skill roots", () => {
@@ -3553,6 +3633,36 @@ describe("a page read that settles its transcript's revision off the event loop"
     restores.push(spyOn(omo, "omoSessionForPane").mockResolvedValue({ path: other, pending: null }));
     stat.release();
     expect(await output).toBeNull();
+  });
+
+  it("answers no tool output for an OmO pane another read saw bound to another session while it was resolved for the last time", async () => {
+    const omoPane = { pane_id: "omo-last", agent: "pi", agent_status: "idle", cwd: root } as HerdrPane;
+    const other = join(root, "other.jsonl");
+    writeFileSync(path, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_1", content: [{ type: "text", text: "old session" }] } }) + "\n");
+    writeFileSync(other, JSON.stringify({ type: "message", message: { role: "toolResult", toolCallId: "call_2", content: [{ type: "text", text: "new session" }] } }) + "\n");
+    const session = spyOn(omo, "omoSessionForPane").mockResolvedValue({ path, pending: null });
+    restores.push(
+      spyOn(herdr, "sessionSnapshot").mockResolvedValue({ panes: [omoPane], agents: [omoPane] } as unknown as SessionSnapshot),
+      spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ argv: ["node", "/home/u/.nvm/versions/node/v24.18.0/bin/omo"] }] } } as never),
+      session,
+    );
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
+    // the lookup's last resolution, begun before OmO started another session in the pane, is held: it
+    // will name the session the output was read from
+    const last = Promise.withResolvers<{ path: string; pending: null }>();
+    let resolving!: () => void;
+    const began = new Promise<void>((resolve) => { resolving = resolve; });
+    session.mockResolvedValueOnce({ path, pending: null }).mockImplementationOnce(() => { resolving(); return last.promise; });
+    const output = toolOutput(omoPane.pane_id, "call_1");
+    await began;
+    // meanwhile another read finds the pane on the new session
+    session.mockResolvedValue({ path: other, pending: null });
+    expect((await paneTranscript(omoPane.pane_id)).path).toBe(other);
+    last.resolve({ path, pending: null });
+    expect(await output).toBeNull();
+    // and with nothing seen in between, the same resolution answers
+    session.mockResolvedValue({ path, pending: null });
+    expect(await toolOutput(omoPane.pane_id, "call_1")).toBe("old session");
   });
 
   it("answers no tool output, not an error, for an OmO transcript replaced by rename while it settled", async () => {

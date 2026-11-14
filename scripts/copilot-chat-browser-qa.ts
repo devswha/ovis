@@ -116,7 +116,16 @@ console.log("fixture ready");`);
   appendFileSync(transcript, event("session.resume", { selectedModel: "fixture-model" })
     + event("user.message", { content: "Follow-up prompt" })
     + event("assistant.message", { content: "Follow-up answer.", phase: "final_answer", model: "fixture-model" }));
-  await log.getByText("Follow-up answer.", { exact: true }).waitFor();
+  // The opened tool output is reading there (#1388): unless the view is back at the end by then, the
+  // turn arrives under New messages, and the list does not draw a row that far below the view.
+  const followUp = log.getByText("Follow-up answer.", { exact: true });
+  const newMessages = page.locator(`.pane-frame[data-layout-pane="${pane}"]`).getByRole("button", { name: "New messages" });
+  await followUp.or(newMessages).first().waitFor();
+  // looked up and clicked in one step in the page: the list settling at its end in between unmounts the
+  // button, and a locator click would wait on a button that is gone. New messages only, not the icon-only
+  // Jump to latest that shares its class
+  await page.evaluate((pane) => document.querySelector<HTMLButtonElement>(`.pane-frame[data-layout-pane="${pane}"] .chat-new-messages:not(.is-icon)`)?.click(), pane);
+  await followUp.waitFor();
   appendFileSync(transcript, event("user.message", { content: "Finish task" })
     + event("assistant.message", { toolRequests: [{ toolCallId: "finish-call", name: "task_complete",
       arguments: { summary: "Autopilot finished this task." } }] })

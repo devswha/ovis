@@ -5,7 +5,7 @@
  * on the Windows runners of reusable CI and the remote-bundle workflow (#271).
  */
 import { expect, it, spyOn } from "bun:test";
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, watch, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,7 +18,8 @@ import { Database } from "bun:sqlite";
 import { codexRolloutPath, directoryKey, sameDirectory, storedCwdCondition } from "./codex.ts";
 import { gjcSessionFile, storeRelative } from "./gjc-runtime.ts";
 import { descendantArgv, windowsProcessTable } from "./windows-processes.ts";
-import { windowsHost } from "./remote-host.ts";
+import { windowsBridgeFiles, windowsHost } from "./remote-host.ts";
+import { bridgeRegistry } from "./bridge.ts";
 import type { SshConnection } from "./ssh.ts";
 import { psQuote } from "./powershell.ts";
 import { powershellNativeArgs, shellCommandLine } from "./shell-agent.ts";
@@ -146,6 +147,10 @@ it.skipIf(!onWindows)("waits when Windows accepts an interactive task without ru
 
 it.skipIf(!onWindows)("starts a desktop child outside the launcher, preserving quoted arguments and private environment, or waits without launching", async () => {
   const root = mkdtempSync(join(tmpdir(), "ovis-desktop-start-"));
+  const registry = join(root, "physical registry");
+  const legacy = join(root, "legacy registry");
+  mkdirSync(registry);
+  symlinkSync(registry, legacy, "junction");
   const resultPath = join(root, "result.json");
   const stopPath = join(root, "stop");
   const script = join(root, "child with spaces.ts");
@@ -165,7 +170,7 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
   process.env["OVIS_START_TEST_SECRET"] = sentinel;
   const failures: unknown[] = [];
   try {
-    const started = await startInteractiveWindowsHerdr(process.execPath, [script, "argument with spaces & 한글"], join(root, "herdr.log"));
+    const started = await startInteractiveWindowsHerdr(process.execPath, [script, "argument with spaces & 한글"], join(legacy, "herdr.log"));
     if (started === "waiting_login") {
       expect(existsSync(resultPath)).toBe(false);
     } else {
@@ -177,13 +182,15 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
       expect(child.args).toEqual(["argument with spaces & 한글"]);
       expect(() => process.kill(child.pid, 0)).not.toThrow();
     }
-    expect(readdirSync(root).filter((name) => name.startsWith("herdr-start-"))).toEqual([]);
+    expect(readdirSync(registry).filter((name) => name.startsWith("herdr-start-"))).toEqual([]);
   } catch (error) { failures.push(error); }
   try {
     await waiting.close();
     if (previous === undefined) delete process.env["OVIS_START_TEST_SECRET"]; else process.env["OVIS_START_TEST_SECRET"] = previous;
     // Only this fixture's child is stopped, never a herdr daemon or another test's task.
     if (pid !== undefined) try { process.kill(pid); } catch {}
+    // Remove the junction itself before recursively cleaning its target fixture.
+    await rm(legacy, { force: true, recursive: true });
     const cleanupBy = Date.now() + 5000;
     for (;;) {
       try { await rm(root, { recursive: true, force: true }); break; }
@@ -242,6 +249,82 @@ it.skipIf(!onWindows)("recognizes Windows Agy executable names and full paths re
   expect(isAgyProcessName("C:\\Programs\\agyx.exe")).toBe(false);
 }, 30_000);
 
+it.skipIf(!onWindows)("keeps the bridges in the migration junction's target, read without going through it (release QA 7c)", async () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "ovis-bridge-registry-")));
+  const before = process.env["USERPROFILE"];
+  const legacy = join(home, ".config", "herdr-web-ui");
+  try {
+    process.env["USERPROFILE"] = home;
+    // not migrated: the legacy folder, made or not
+    expect(bridgeRegistry()).toBe(join(legacy, "bridges"));
+    const target = join(home, ".config", "ovis");
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, legacy, "junction");
+    expect(bridgeRegistry()).toBe(join(target, "bridges"));
+  } finally {
+    if (before === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = before;
+    if (existsSync(legacy)) rmSync(legacy);
+    await rm(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
+}, 30_000);
+
+for (const migrated of [false, true]) {
+  it.skipIf(!onWindows)(`writes the Windows bridge launcher and reads startup status with migration junction=${migrated}`, async () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "ovis-registry-native-")));
+    const legacy = join(home, ".config", "herdr-web-ui");
+    const target = migrated ? join(home, "physical [%TEMP%] registry's folder") : legacy;
+    const registry = join(target, "bridges");
+    const session = migrated ? "web-qa" : undefined;
+    const files = windowsBridgeFiles(session);
+    const runPowerShell = async (script: string) => {
+      const wait = script.includes("Invoke-CimMethod") ? "; Wait-Process -Id $r.ProcessId -Timeout 15 -ErrorAction SilentlyContinue" : "";
+      const prefixed = `[Console]::OutputEncoding = New-Object Text.UTF8Encoding $false; $env:USERPROFILE=${psQuote(home)}; $env:APPDATA=${psQuote(home)}; $env:LOCALAPPDATA=${psQuote(home)}; $env:XDG_CONFIG_HOME=''; ${script}${wait}`;
+      const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== "psmodulepath"));
+      const child = Bun.spawn(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(prefixed, "utf16le").toString("base64")], { stdout: "pipe", stderr: "pipe", env });
+      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      if (code !== 0) throw new Error(stderr);
+      return stdout.replaceAll("\r\n", "\n").trim();
+    };
+    const ssh = { runPowerShell } as unknown as SshConnection;
+    try {
+      mkdirSync(registry, { recursive: true });
+      if (migrated) {
+        mkdirSync(join(home, ".config"));
+        symlinkSync(target, legacy, "junction");
+      }
+      const inspection = await windowsHost.inspect(ssh, session);
+      expect(inspection.registryDir).toBe(join(legacy, "bridges"));
+      const descriptor = { pid: 2147483647, port: 1, token: "fixture", socket_path: "C:\\herdr.sock", bridge_protocol: 1, bundle_version: REMOTE_BUNDLE_VERSION };
+      writeFileSync(join(registry, "fixture[1].json"), JSON.stringify(descriptor));
+      expect(await windowsHost.descriptors(ssh)).toEqual([descriptor]);
+      expect((await windowsHost.inspect(ssh, session)).descriptors).toEqual([descriptor]);
+      await windowsHost.stop(ssh, descriptor.pid);
+      expect(existsSync(join(registry, "fixture[1].json"))).toBe(false);
+      // the bundle's server, compiled as the bundle's is: the launcher runs `ovis-server.exe remote`
+      mkdirSync(inspection.runtimeDir, { recursive: true });
+      const standIn = join(home, "stand-in.ts");
+      writeFileSync(standIn, `await Bun.write(${JSON.stringify(join(home, "started.json"))}, JSON.stringify({ session: process.env.HERDR_REMOTE_SESSION ?? "", cwd: process.cwd(), entry: process.argv[2] })); console.log("bridge log line");`);
+      expect(Bun.spawnSync([process.execPath, "build", "--compile", standIn, "--outfile", join(inspection.runtimeDir, "ovis-server.exe")], { stdout: "ignore", stderr: "inherit" }).exitCode).toBe(0);
+      writeFileSync(join(registry, files.status), "interactive_failed: stale attempt");
+      await windowsHost.start(ssh, { session, herdrPath: "C:\\herdr.exe", inspection });
+      expect(JSON.parse(readFileSync(join(home, "started.json"), "utf8"))).toEqual({ session: session ?? "", cwd: home, entry: "remote" });
+      const launcher = readFileSync(join(registry, files.launcher), "utf8");
+      expect(launcher.startsWith("@echo off\r\n")).toBe(true);
+      expect(launcher).toContain(`set "HERDR_REMOTE_SESSION=${session ?? ""}"`);
+      // the log goes beside the launcher, in the registry's resolved folder: over SSH cmd.exe cannot open a path
+      // through the migration junction, and then never runs Bun (release QA 7c)
+      expect(launcher.toLowerCase()).not.toContain(legacy.toLowerCase());
+      expect(readFileSync(join(registry, files.log), "utf8")).toContain("bridge log line");
+      expect(existsSync(join(registry, files.status))).toBe(false);
+      writeFileSync(join(registry, files.status), "interactive_failed: this attempt");
+      expect(await windowsHost.startupNotice!(ssh, session)).toBe("this attempt");
+    } finally {
+      if (migrated && existsSync(legacy)) await runPowerShell(`[IO.Directory]::Delete(${psQuote(legacy)})`);
+      await rm(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    }
+  }, 60_000);
+}
+
 it.skipIf(!onWindows)("installs with native tar when PATH shadows tar, and preserves the runtime after bad extraction", async () => {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "herdr-bundle-native-")));
   const before = process.env["OVIS_BUNDLE_MANIFEST"];
@@ -258,8 +341,12 @@ it.skipIf(!onWindows)("installs with native tar when PATH shadows tar, and prese
   };
   const ssh = { runPowerShell, upload: async (source: string, destination: string) => copyFileSync(source, destination) } as unknown as SshConnection;
   try {
-    mkdirSync(join(home, "input", "bin"), { recursive: true });
-    copyFileSync(process.execPath, join(home, "input", "bin", "bun.exe"));
+    // the bundle's server, compiled as the bundle's is: the install runs `ovis-server.exe remote --help` and refuses a
+    // runtime it does not answer with exit 0; any other command fails
+    mkdirSync(join(home, "input"), { recursive: true });
+    const standIn = join(home, "stand-in.ts");
+    writeFileSync(standIn, `process.exit(process.argv[2] === "remote" && process.argv[3] === "--help" && process.argv.length === 4 ? 0 : 2);`);
+    expect(Bun.spawnSync([process.execPath, "build", "--compile", standIn, "--outfile", join(home, "input", "ovis-server.exe")], { stdout: "ignore", stderr: "inherit" }).exitCode).toBe(0);
     mkdirSync(join(home, "shadow"));
     // An invalid executable first on PATH must never handle this archive.
     writeFileSync(join(home, "shadow", "tar.exe"), "not a Windows executable");
@@ -269,7 +356,7 @@ it.skipIf(!onWindows)("installs with native tar when PATH shadows tar, and prese
     await writeManifest();
     process.env["OVIS_BUNDLE_MANIFEST"] = manifest;
     await windowsHost.installBundle(ssh, "win32-x64", AbortSignal.timeout(60_000));
-    expect(existsSync(join(runtime, "bin", "bun.exe"))).toBe(true);
+    expect(existsSync(join(runtime, "ovis-server.exe"))).toBe(true);
     const target = realpathSync(runtime);
     writeFileSync(join(home, "bundle.tgz"), "invalid archive with a valid manifest checksum");
     await writeManifest();

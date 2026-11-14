@@ -1,7 +1,7 @@
 import { expect, it, spyOn } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BRIDGE_PROTOCOL, type SetupJob, type SetupRequest } from "../shared/machines.ts";
@@ -12,6 +12,11 @@ import type { PushService } from "./push.ts";
 import { posixHost, windowsHost } from "./remote-host.ts";
 import { SshConnection } from "./ssh.ts";
 import { readProcessBirth } from "./process-owner.ts";
+import { tunnelRelays } from "./machine-tunnel.fixture.ts";
+
+// the bridge tokens of the cases already ended: a read one of their PCs still had under way (its move badge) may reach
+// the port its relay let go, now a later case's relay
+const retired = new Set<string>();
 
 // quiet: the live server cannot prove itself at first (no answer, an HTTP error); open: once chosen, it no longer can
 // unanswered other name: a live server of the account's, not answering, whose socket is not the core adapter's name
@@ -57,9 +62,9 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   const birth = readProcessBirth(process.pid);
   if (birth.state !== "identified") throw new Error("Test process birth unavailable");
   // birthless: an older server's registration, which recorded no process birth
-  const descriptor = { socket_path: socket, pid: process.pid, ...(outcome === "birthless" ? {} : { birth: birth.birth }), port: 12345, token: "a".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: false };
+  const descriptor = { socket_path: socket, pid: process.pid, ...(outcome === "birthless" ? {} : { birth: birth.birth }), port: 12345, token: randomBytes(32).toString("hex"), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: false };
   // default bridge: this app's bridge already serves the PC's default herdr socket, as on a saved PC that reconnects
-  const bridge = { socket_path: join(dir, ".config/herdr/herdr.sock"), pid: process.pid, port: 23456, token: "b".repeat(64), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
+  const bridge = { socket_path: join(dir, ".config/herdr/herdr.sock"), pid: process.pid, port: 23456, token: randomBytes(32).toString("hex"), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, managed_remote: true };
   // default herdr: that herdr also answers at its socket, so the PC's own Ovis lists it among the account's sessions
   // (chosen: by its socket on the card of a PC being added; installed: met by the connect an install ends with)
   const beside = outcome.startsWith("default herdr");
@@ -71,7 +76,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   // an older Ovis there, which names no herdr sessions in its answer
   const older = outcome.startsWith("older peer") || outcome === "default herdr older peer";
   // and this app's bridge serves the account's named session too, for a setup that chooses it
-  const workBridge = { ...bridge, socket_path: join(dir, ".config/herdr/sessions/work/herdr.sock"), port: 34567, token: "c".repeat(64) };
+  const workBridge = { ...bridge, socket_path: join(dir, ".config/herdr/sessions/work/herdr.sock"), port: 34567, token: randomBytes(32).toString("hex") };
   const listedHere = beside ? [bridge, workBridge, descriptor] : bridged ? [bridge, descriptor] : [descriptor];
   const registry = join(dir, ".config/herdr-web-ui/bridges");
   mkdirSync(registry, { recursive: true });
@@ -88,9 +93,9 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
   if (!herdr) sessions.length = 0;
   if (beside) sessions.push({ socket_path: bridge.socket_path, label: "Default session" } as typeof sessions[number]);
   const runtimeDir = join(dir, "runtime");
-  mkdirSync(join(runtimeDir, "bin"), { recursive: true });
-  symlinkSync(process.execPath, join(runtimeDir, "bin/bun"));
-  symlinkSync(import.meta.dir, join(runtimeDir, "server"));
+  mkdirSync(runtimeDir, { recursive: true });
+  // the bundle's server, as setup asks it: `ovis-server remote <request>`, run here from this checkout's entry
+  writeFileSync(join(runtimeDir, "ovis-server"), `#!/bin/sh\nshift\nexec "${process.execPath}" "${join(import.meta.dir, "remote-entry.ts")}" "$@"\n`, { mode: 0o755 });
   const relays: ReturnType<typeof Bun.serve>[] = [];
   let selected = false, starts = 0, installs = 0, answering = !quiet.includes(outcome) && outcome !== "unanswered, no bundle";
   // what the last bridge start was asked for
@@ -123,11 +128,15 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
     spyOn(posixHost, "alive").mockImplementation(async () => !selected || outcome !== "stopped after proof"),
     spyOn(posixHost, "installBundle").mockImplementation(async () => { installs++; }),
     spyOn(posixHost, "start").mockImplementation(async (_ssh, options) => { starts++; startedWith = options; throw new Error("must not start herdr"); }),
-    spyOn(SshConnection.prototype, "forward").mockImplementation(async (port, remotePort) => {
+    // the SSH tunnel to a bridge (machine-tunnel.fixture.ts)
+    ...tunnelRelays(relays, (remotePort) => {
       const served = remotePort === bridge.port && bridged ? bridge : remotePort === workBridge.port && beside ? workBridge : descriptor;
       expect(remotePort).toBe(served.port);
-      relays.push(Bun.serve({ port, hostname: "127.0.0.1", fetch(request, server) {
-        expect(request.headers.get("authorization")).toBe(`Bearer ${served.token}`);
+      return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch(request, server) {
+        // an ended case's token is refused, as a bridge refuses one it does not know; any other must be this bridge's
+        const authorization = request.headers.get("authorization");
+        if (authorization?.startsWith("Bearer ") && retired.has(authorization.slice("Bearer ".length))) return new Response(null, { status: 401 });
+        expect(authorization).toBe(`Bearer ${served.token}`);
         const path = new URL(request.url).pathname;
         if (path === "/api/bridge" && served !== descriptor) return Response.json({ ...served, socket_id: "fixture:tui", herdr: { protocol: 22, version: "0.9.0", runtime: "herdr" } });
         if (path === "/api/bridge") {
@@ -145,7 +154,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
         if (path === "/api/session") return Response.json({ snapshot: { panes: [], workspaces: [{ id: "core-work", name: "Existing core work" }] } });
         if (path === "/ws" && server.upgrade(request, { data: undefined })) return;
         return new Response(null, { status: 404 });
-      }, websocket: { message() {} } }));
+      }, websocket: { message() {} } });
     }),
   ];
   const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
@@ -265,6 +274,21 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       await reached(chosen, ["failed", "connected"]);
       expect(installs).toBe(1);
       expect(startedWith).toMatchObject({ herdr_socket: bridge.socket_path });
+      expect(startedWith?.start_new_herdr).toBeUndefined();
+      // A session named in the dialog gets no such row. Chosen, the row would be that session's socket, and the PC would
+      // be saved with the socket: after that PC restarts, its bridge would say the session no longer runs instead of
+      // starting it. Named, the session connects as before the card existed: the approval of what its setup installs
+      // there, then a bridge started for the session by its name, which starts it when absent
+      const typed = await add({ destination: "fixture-typed", session: "work" });
+      expect(typed.phase).toBe("approval");
+      expect(typed.action_required ?? null).toBeNull();
+      expect(typed.found_ovis).toBeUndefined();
+      expect(typed.found_herdr_sessions).toBeUndefined();
+      manager.action(typed.id, { action: "approve" });
+      await reached(typed, ["failed", "connected"]);
+      expect(installs).toBe(2);
+      expect(startedWith).toMatchObject({ session: "work" });
+      expect(startedWith?.herdr_socket).toBeUndefined();
       expect(startedWith?.start_new_herdr).toBeUndefined();
       return;
     }
@@ -429,6 +453,7 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       expect(retries).not.toHaveBeenCalled();
     }
   } finally {
+    for (const own of [descriptor, bridge, workBridge]) retired.add(own.token);
     manager.stop(); retries.mockRestore(); mocks.forEach((mock) => mock.mockRestore()); relays.forEach((relay) => relay.stop(true)); herdr?.stop(true); tui?.stop(true); adapter.stop(true); rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -557,5 +582,28 @@ it("spells the session's own socket beside the one chosen", async () => {
     expect(await posixHost.inspect(ssh, "work", work)).toMatchObject({ expectedSocket: work, defaultSocket: work });
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// a registration's port and token go into an SSH forward and a request header: one that is no port or no bridge token
+// of this app's opens no tunnel
+it.each([
+  ["port 0", { port: 0 }], ["port past 65535", { port: 65536 }], ["fractional port", { port: 1.5 }], ["port as text", { port: "12345" }],
+  ["short token", { token: "a".repeat(63) }], ["upper-case token", { token: "A".repeat(64) }], ["token with a newline", { token: `${"a".repeat(64)}\n` }], ["no token", { token: undefined }],
+] as const)("opens no tunnel for invalid bridge credentials: %s", async (_name, change) => {
+  const dir = mkdtempSync(join(tmpdir(), "machine-tunnel-credentials-"));
+  const manager = new MachineManager(dir, { seed() {} } as unknown as PushService, new CompletionTracker(null), async () => { throw new Error("isolated"); });
+  const forwards: number[] = [];
+  const ssh = { forward: async (_port: number, remotePort: number) => { forwards.push(remotePort); } } as unknown as SshConnection;
+  const tunnel = (manager as unknown as { tunnel(ssh: SshConnection, descriptor: unknown): Promise<{ url: string; token: string }> }).tunnel.bind(manager);
+  try {
+    const valid = { port: 12345, token: "a".repeat(64) };
+    // the same tunnel opens for a valid registration, so the refusal is the change's
+    expect(await tunnel(ssh, valid)).toMatchObject({ url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/), token: valid.token });
+    expect(forwards).toEqual([valid.port]);
+    await expect(tunnel(ssh, { ...valid, ...change })).rejects.toThrow("Invalid bridge credentials");
+    expect(forwards).toEqual([valid.port]);
+  } finally {
+    manager.stop(); rmSync(dir, { recursive: true, force: true });
   }
 });

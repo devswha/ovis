@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { REMOTE_BUNDLE_VERSION as RELEASE_VERSION } from "../shared/machines.ts";
 
 // Shared with the release guards so adding an input cannot silently leave automatic updates behind.
-export const BUNDLE_PATHSPECS = ["server", "shared", "integrations", "patches", "bun.lock", "scripts/build-remote-bundle.ts", "scripts/install-gjc-integration.ts", "scripts/install-pi-integration.ts", "scripts/pty-sidecar.ts", "crates/pty-sidecar"];
+export const BUNDLE_PATHSPECS = ["server", "shared", "integrations", "patches", "bun.lock", "scripts/build-remote-bundle.ts", "scripts/server-artifact.ts", "scripts/install-gjc-integration.ts", "scripts/install-pi-integration.ts", "scripts/pty-sidecar.ts", "crates/pty-sidecar"];
 export const bundleInput = (path: string): boolean => BUNDLE_PATHSPECS.some((spec) => path === spec || path.startsWith(`${spec}/`))
   && !path.endsWith(".test.ts") && !path.endsWith(".md") && !path.startsWith("server/fixtures/")
   && !path.split("/").some((part) => ["target", "node_modules", ".git"].includes(part));
@@ -57,7 +57,9 @@ export function runtimeBundleVersion(root: string): string {
 }
 
 // Freeze identity at process start: changing a checkout cannot relabel an already-running bridge.
-export const REMOTE_BUNDLE_VERSION = runtimeBundleVersion(resolve(import.meta.dir, ".."));
+declare const OVIS_BUNDLE_REVISION: string | undefined;
+export const REMOTE_BUNDLE_VERSION = typeof OVIS_BUNDLE_REVISION === "string"
+  ? OVIS_BUNDLE_REVISION : runtimeBundleVersion(resolve(import.meta.dir, ".."));
 
 /** Preserve upstream's refusal to replace a bridge from a newer compatibility release. */
 export function newerBundleRelease(version: unknown): boolean {

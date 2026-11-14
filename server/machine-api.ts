@@ -7,7 +7,7 @@ import { MAX_OMARCHY_THEME_BYTES, omarchyTheme } from "../shared/omarchy-theme.t
 import type { SharedPreferences } from "../shared/preferences.ts";
 import type { PanePromptResponse, SessionSnapshot } from "../shared/protocol.ts";
 import type { SeenFinish } from "../shared/seen.ts";
-import { MachineActionRequired, MachineManager, PcUpdateRefused } from "./machines.ts";
+import { AccountPcError, MachineActionRequired, MachineManager, PcUpdateRefused, type AccountPcFailure } from "./machines.ts";
 import { TypedCodeError, type TypedCodeFailure } from "../shared/relay-code-offer.ts";
 import type { OmarchyThemeStore } from "./omarchy-themes.ts";
 import { TailnetPcError } from "./tailnet-pcs.ts";
@@ -28,6 +28,11 @@ const fail = (code: string, message: string, status: number) => jsonResponse({ e
 const OWNER_ONLY = "Only the owner's own signed-in or paired devices can change this PC's PCs, from this app's own page.";
 const MOVE_OWNER_ONLY = "Only the owner, from a device signed in or paired to drive this PC, can move another PC";
 const MOVE_FROM_PAGE = "A move must come from this app's own page";
+
+/** POST /api/machines/relay/account/*: the status each refusal answers, as `account_pc_<failure>`. */
+const ACCOUNT_PC_STATUS: Record<AccountPcFailure, number> = {
+  invalid: 400, added: 409, self: 409, outdated: 409, offline: 502, gone: 410, busy: 409, refused: 403, declined: 403, cancelled: 499,
+};
 
 /** POST /api/machines/relay/code: why a typed code found no PC, as `typed_code_<failure>` (the app words each one). */
 const CODE_FAILURES: Record<TypedCodeFailure, [string, number]> = {
@@ -135,7 +140,7 @@ export const slowMachinePath = (path: string): boolean => path === "worktree/cre
  * forwards, so such a path must be no route at all rather than "some other route".
  */
 export const nonCanonicalPath = (pathname: string): boolean => pathname.includes("//") || (pathname.length > 1 && pathname.endsWith("/")) || /%2f|%5c/i.test(pathname);
-export const MACHINE_PROXY_PATH = /^(?:session|sessions\/(?:history|resume)|agents|agent-catalog(?:\/(?:install|sign-in))?|integrations|system|usage\/statusline|pane\/(?:read|scroll|find|selection|conversation(?:\/image|\/tool-output)?|commands|files|docs|omo-tasks|background-agent|plan|artifacts|btw|prompt|prompt\/answer|pi-voice|input|keys|close|rename|image|split|zoom|swap|move|resize|clear|focus)|workspace\/(?:create|rename|move|close|directories|diff\/files|diff\/file|diff\/refs|git\/log|git\/branches|git\/show|pr|pr\/log|pr\/merge)|worktree\/(?:create|list|inventory|open|remove|pull-requests|pull-request-fetch)|tab\/(?:create|rename|close|move|move-to-workspace)|layout\/ratio|agent\/(?:rename|commands)|plugins\/actions|plugin\/action|fs\/(?:stat|file|favicon|text))$/;
+export const MACHINE_PROXY_PATH = /^(?:session|sessions\/(?:history|resume)|agents|agent-catalog(?:\/(?:install|sign-in))?|integrations|system|usage\/statusline|pane\/(?:read|scroll|find|selection|conversation(?:\/image|\/tool-output)?|summary|commands|files|docs|omo-tasks|background-agent|plan|artifacts|btw|prompt|prompt\/answer|pi-voice|input|keys|close|rename|image|split|zoom|swap|move|resize|clear|focus)|workspace\/(?:create|rename|move|close|directories|diff\/files|diff\/file|diff\/refs|git\/log|git\/branches|git\/show|pr|pr\/log|pr\/merge)|worktree\/(?:create|list|inventory|open|remove|pull-requests|pull-request-fetch)|tab\/(?:create|rename|close|move|move-to-workspace)|layout\/ratio|agent\/(?:rename|commands)|plugins\/actions|plugin\/action|fs\/(?:stat|file|favicon|text))$/;
 
 
 /**
@@ -368,6 +373,44 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       setRequestRoute("/api/machines/read");
       return readFeed(request, manager, seen);
     }
+    // Add a connection → Ovis relay: another PC of the account, vouched for by this window's admission (docs/account.md,
+    // "Adding a PC of your account"). Only a window direct to this PC that drives it gets here (dispatch.ts)
+    if (parts[0] === "relay" && parts[1] === "account" && parts.length === 3) {
+      setRequestRoute(`/api/machines/relay/account/${parts[2]}`);
+      if (readOnly) return fail("read_only", "this device can only watch", 403);
+      if (request.method !== "POST") return fail("method_not_allowed", "Use POST", 405);
+      const body: unknown = await request.json().catch(() => null);
+      if (!isJsonObject(body)) return fail("invalid_body", "Expected a PC of the account", 400);
+      const refused = (error: unknown): Response => {
+        if (!(error instanceof AccountPcError)) throw error;
+        return fail(`account_pc_${error.failure}`, error.message, ACCOUNT_PC_STATUS[error.failure]);
+      };
+      if (parts[2] === "check") {
+        try { return jsonResponse({ pcs: await manager.checkAccountPcs(body.pcs) }, 200, { "cache-control": "no-store" }); }
+        catch (error) { return refused(error); }
+      }
+      if (parts[2] === "start") {
+        try { return jsonResponse(await manager.startAccountPc(body.pc)); }
+        catch (error) { return refused(error); }
+      }
+      if (parts[2] === "pair") {
+        // one line when the digits are known, then one with the PC added or why not; closing the request cancels it
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const line = (value: unknown): void => { try { controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`)); } catch { /* the window left */ } };
+            void manager.pairAccountPc(body.ticket, (digits) => line({ digits }), request.signal)
+              .then((machine) => line({ machine }), (error: unknown) => {
+                if (error instanceof AccountPcError) line({ error: { code: `account_pc_${error.failure}`, message: error.message } });
+                else line({ error: { code: "internal_error", message: error instanceof Error ? error.message : String(error) } });
+              })
+              .finally(() => { try { controller.close(); } catch { /* already closed */ } });
+          },
+        });
+        return new Response(stream, { headers: { "content-type": "application/x-ndjson", "cache-control": "no-store", "x-accel-buffering": "no" } });
+      }
+      return fail("not_found", "not found", 404);
+    }
     if (parts[0] === "ssh-candidates" && parts.length === 1) {
       setRequestRoute("/api/machines/ssh-candidates");
       // adding a PC is a driving device's; a watching one is not told which hosts this PC knows either
@@ -552,6 +595,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
       const watchedPrompt = readOnly && path === "pane/prompt";
       const target = new URL(`${endpoint.url}/api/${path}${url.search}`);
       if (watchedPrompt) target.searchParams.set("plan", "0");
+      // nor has it the PC run its shell profile again: the PC sees this server's full token, not the watch
+      if (readOnly && path === "agent-catalog") target.searchParams.delete("recheck");
       const untrack = manager.trackTerminal(id, () => abort.abort());
       // a move's PC reads its roster again once the move is confirmed, so its receipt is soon shown
       const moved = path === "workspace/move" && request.method === "POST" ? manager.refreshAfterMove(id) : null;

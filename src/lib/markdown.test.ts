@@ -7,7 +7,7 @@ import { FILE_LINK_COUNT, FILE_LINK_LIMIT, linkFilePaths } from "../components/F
 import { HighlightedCode } from "../components/HighlightedCode.tsx";
 import { OpenFileContext } from "./filePaths.ts";
 import { SettingsProvider } from "./settings.ts";
-import { FOLD_CODE_AFTER_LINES, FOLD_OUTPUT_CHARS, FOLDED_CODE_LINES, foldCode, foldToolOutput, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, shownText, trimUrl, type InlineNode, type ListBlock } from "../../shared/markdown.ts";
+import { FOLD_CODE_AFTER_LINES, FOLD_OUTPUT_CHARS, FOLDED_CODE_LINES, foldCode, foldToolOutput, inlineMarks, isTableSeparator, mathNestsTooDeep, parseInline, parseMarkdown, safeMarkdownHref, shownText, trimUrl, type InlineNode, type ListBlock, markdownFileTarget } from "../../shared/markdown.ts";
 
 describe("parseMarkdown", () => {
   it("renders inline and display math while leaving fenced code untouched", async () => {
@@ -153,6 +153,23 @@ describe("inline markdown", () => {
     }
     // the same share, its slashes written as JSON escapes
     expect(parseInline(':codex-file-citation{path="\\u002f\\u002fserver/share/a.txt" purpose="output"}').some((node) => node.type === "file")).toBe(false);
+  });
+
+  it("keeps a Markdown link to a path that begins with two separators a file link: the server says whether it opens", () => {
+    // on a Windows PC such a path is a network share. Whether it is another host's is the server's to say, which knows
+    // its system and the folders its panes work in (server/windows-share.ts): a pane on `//nas/work` links its own
+    // files this way, and on Linux and macOS the path is the local one
+    for (const [target, path] of [
+      ["//nas/work/report.md", "//nas/work/report.md"], ["//nas/work/report.md:12", "//nas/work/report.md:12"], ["//nas/work/a%20b.md#L3", "//nas/work/a b.md#L3"],
+      ["%5C%5Cnas%5Cwork%5Creport.md", "\\\\nas\\work\\report.md"], ["~///nas/work/report.md", "~///nas/work/report.md"],
+      ["//wsl$/Ubuntu/home/u/a.md", "//wsl$/Ubuntu/home/u/a.md"], ["//home/u/a.md", "//home/u/a.md"],
+    ] as const) {
+      expect(markdownFileTarget(target), target).toBe(path);
+      expect(parseInline(`[report](${target})`).find((node) => node.type === "file"), target).toMatchObject({ path });
+    }
+    expect(markdownFileTarget("\\\\nas\\work\\report.md")).toBe("\\\\nas\\work\\report.md");
+    // a file:/// link still names no share (fileUri.ts), as before
+    expect(markdownFileTarget("file:////nas/work/report.md")).toBeNull();
   });
 
   it("leaves the markdown after an unfinished Codex citation as markdown, and reads a brace inside a quoted path", () => {

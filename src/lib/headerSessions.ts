@@ -1,8 +1,7 @@
 /**
  * What the header says beyond the selected pane, on the same line: where its tab sits among its
- * workspace's tabs (n/m), how many sessions on the PC run, wait for an answer, or finished unseen,
- * and which waiting one a tap on that count opens next. The counts read each pane as the sidebar
- * draws it (lib/sidebarActivity.tsx): a finish looked at is ready again, not done.
+ * workspace's tabs (n/m), how many sessions wait for an answer, and which waiting one a tap on that
+ * count opens next. The count reads each pane as the sidebar draws it (lib/sidebarActivity.tsx).
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, type MutableRefObject } from "react";
 import type { Machine } from "../../shared/machines.ts";
@@ -31,22 +30,14 @@ export function tabPosition(roster: Roster, selectedPaneId: string | null): TabP
 }
 
 export interface SessionCounts {
-  working: number;
   /** waiting for the person: an approval, a question */
   waiting: number;
-  /** finished and not looked at yet */
-  done: number;
 }
 
-/** A turn that waits on its own background work is still running: it counts as working. */
+/** A turn that waits on its own background work is still running: it does not wait for the person. */
 export function sessionCounts<T extends PaneInfo>(panes: readonly T[], status: (pane: T) => AgentStatus | undefined): SessionCounts {
-  const counts: SessionCounts = { working: 0, waiting: 0, done: 0 };
-  for (const pane of rosterPanes(panes)) {
-    const value = knownStatus(status(pane));
-    if (value === "working" || value === "waiting") counts.working += 1;
-    else if (value === "blocked") counts.waiting += 1;
-    else if (value === "done") counts.done += 1;
-  }
+  const counts: SessionCounts = { waiting: 0 };
+  for (const pane of rosterPanes(panes)) if (knownStatus(status(pane)) === "blocked") counts.waiting += 1;
   return counts;
 }
 
@@ -60,14 +51,24 @@ export interface MachineRoster<T extends PaneInfo> {
 
 /** The counts over every connected PC: the "waiting for you" pill triages all of them, as the Agents list does. */
 export function sessionCountsAcross<T extends PaneInfo>(rosters: readonly MachineRoster<T>[]): SessionCounts {
-  const total: SessionCounts = { working: 0, waiting: 0, done: 0 };
-  for (const roster of rosters) {
-    const counts = sessionCounts(roster.panes, roster.status);
-    total.working += counts.working;
-    total.waiting += counts.waiting;
-    total.done += counts.done;
-  }
+  const total: SessionCounts = { waiting: 0 };
+  for (const roster of rosters) total.waiting += sessionCounts(roster.panes, roster.status).waiting;
   return total;
+}
+
+/**
+ * How many sessions wait for the person other than the selected pane: what More counts over an inbox mode thread,
+ * whose own agent's question is on the screen already. The pane left out is the one nextWaitingTarget never opens.
+ */
+export function waitingElsewhere<T extends PaneInfo>(rosters: readonly MachineRoster<T>[], selected: { machineId: string; paneId: string | null }): number {
+  let waiting = 0;
+  for (const roster of rosters) {
+    for (const pane of rosterPanes(roster.panes)) {
+      if (roster.machineId === selected.machineId && pane.pane_id === selected.paneId) continue;
+      if (knownStatus(roster.status(pane)) === "blocked") waiting += 1;
+    }
+  }
+  return waiting;
 }
 
 function hiddenByTabZoom<T extends PaneInfo>(panes: readonly T[], layouts: Layouts, pane: T): boolean {
@@ -121,12 +122,15 @@ export function useWaitingRosters(shown: readonly Machine[], selected: Machine |
   }, [shown, selected, status]);
 }
 
-/** The header's controls drawn over the open drawer, its top row: the toggle that closes it and New workspace's +. */
-const drawerHeaderStops = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(".app-header .drawer-toggle, .app-header .new-workspace-button")];
+/** The header's control drawn over the open drawer, its top row: the toggle that closes it. */
+const drawerHeaderStops = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(".app-header .drawer-toggle")];
+
+/** The header's button a closed drawer gives the focus back to: its toggle. */
+const drawerReturnButton = (): HTMLElement | null => document.querySelector<HTMLElement>(".app-header .drawer-toggle");
 
 /**
  * A phone's open drawer is a dialog over the pane (App.tsx gives it the role): Tab goes round its own controls
- * and the header's toggle and + drawn over it (its top row), the pane column is inert under it, and the focus
+ * and the header's toggle drawn over it (its top row), the pane column is inert under it, and the focus
  * goes back to the header toggle that opened it when it closes. It opens with the focus on its first control
  * that takes no typing: the filter's field would raise the keyboard on every open. Only a header control takes
  * the focus back: a terminal the drawer was swiped open over would raise the keyboard; a focus left in the
@@ -149,7 +153,7 @@ export function useDrawerDialog(open: boolean, setOpen: (open: boolean) => void,
     if (open || !wasOpen.current) return;
     const active = document.activeElement;
     const lost = active === null || active === document.body || (surface.current?.contains(active) ?? false);
-    const back = opener.current?.closest(".app-header") != null ? opener.current : escaped.current || lost ? document.querySelector<HTMLElement>(".app-header .drawer-toggle") : null;
+    const back = opener.current?.closest(".app-header") != null ? opener.current : escaped.current || lost ? drawerReturnButton() : null;
     opener.current = null;
     escaped.current = false;
     wasOpen.current = false;

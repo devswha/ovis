@@ -18,6 +18,7 @@ import type { SessionError } from "../../shared/relay-mux.ts";
 import type { RelayStatus, ServerMessage } from "../../shared/protocol.ts";
 import { createServer } from "../index.ts";
 import { loadRelayIdentity, relayIdentityPath } from "./identity.ts";
+import { handleRelayRequest } from "./routes.ts";
 import { RelayService } from "./service.ts";
 import type { RelayServiceOptions } from "./service.ts";
 import { bounded, deferred, TestClock } from "./test-helpers.ts";
@@ -287,6 +288,87 @@ it("reuses the active device pairing code for the relay offer", async () => {
   expect(paired.status).toBe(204);
   const subsequentOffer = await f.offer();
   expect(f.app.context.services.devices.activePairing()?.code).toBe(subsequentOffer.code);
+});
+
+it("ends the relay offer's code, and a typed code, with the paired device that asked for it", async () => {
+  const f = await fixture(false, { pairCodeRelay: "wss://pair.test" });
+  await f.start();
+  const devices = f.app.context.services.devices;
+  const guard = { origin: f.base, "x-herdr-machine": "1" };
+  // a device paired at this PC's own address, which asks with its own credential
+  const pairHere = async (label: string) => {
+    const paired = await fetch(`${f.base}/api/devices/pair`, {
+      method: "POST", headers: { ...guard, "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ code: devices.startPairing().code, label }),
+    });
+    expect(paired.status).toBe(200);
+    const { token } = await paired.json() as { token: string };
+    const id = devices.list(null).find((device) => device.label === label)!.id;
+    const ask = (path: string) => fetch(`${f.base}/api/relay${path}`, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1", authorization: `Device ${token}` } });
+    return { id, ask };
+  };
+  // the offer it asks for starts a code: that code goes when the device is revoked
+  const laptop = await pairHere("Laptop");
+  expect(devices.activePairing()).toBeNull();
+  expect((await laptop.ask("/offer")).status).toBe(200);
+  expect(devices.activePairing()).not.toBeNull();
+  devices.revoke(laptop.id);
+  expect(devices.activePairing()).toBeNull();
+  // so does this PC's own code once a device was handed it in an offer
+  const tablet = await pairHere("Tablet");
+  const own = await f.offer();
+  const handed = decodeOffer((await (await tablet.ask("/offer")).json() as { url: string }).url);
+  expect(handed?.code).toBe(own.code);
+  devices.revoke(tablet.id);
+  expect(devices.activePairing()).toBeNull();
+  // and the code to type it asked for, with the six digits behind it
+  const phone = await pairHere("Phone");
+  expect((await phone.ask("/code")).status).toBe(200);
+  expect(devices.activePairing()).not.toBeNull();
+  devices.revoke(phone.id);
+  expect(devices.activePairing()).toBeNull();
+  // a code this PC asked for itself outlives the removal of a device that never had it
+  const other = await pairHere("Other");
+  const kept = await f.offer();
+  devices.revoke(other.id);
+  expect(devices.activePairing()?.code).toBe(kept.code);
+  // a device revoked while its request was on its way is handed nothing and starts nothing
+  for (const path of ["/api/relay/offer", "/api/relay/code"]) {
+    const late = await handleRelayRequest(new Request(f.base + path, { method: "POST", headers: { origin: f.base, "x-herdr-update": "1" } }), path, f.app.context, other.id);
+    expect([path, late.status, await late.json()]).toEqual([path, 401, { error: { code: "unauthorized", message: "this device is no longer paired" } }]);
+  }
+});
+
+it("makes the relay tab's QR code only for a PC in no account, and takes it back when the PC joins one", async () => {
+  const f = await fixture();
+  await f.start();
+  const devices = f.app.context.services.devices;
+  // the relay tab's QR code says so (x-ovis-no-account-only); every other offer is what it was
+  const ask = (noAccountOnly: boolean) => fetch(`${f.base}/api/relay/offer`, { method: "POST",
+    headers: { origin: f.base, "x-herdr-update": "1", ...(noAccountOnly ? { "x-ovis-no-account-only": "1" } : {}) } });
+  const codeOf = async (response: Response) => {
+    expect(response.status).toBe(200);
+    return decodeOffer((await response.json() as { url: string }).url)!.code;
+  };
+  const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const key = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+  // paired long before, and signed in to an account since: it links itself while the QR code is on screen
+  const laptop = devices.pairRelay(devices.startPairing().code, "Laptop", key)!.device;
+  // a code another place shows as digits is never the one the QR code carries
+  devices.startPairing();
+  let started = 0;
+  devices.onPairingStarted(() => { started++; });
+  const qr = await codeOf(await ask(true));
+  expect([started, devices.activePairing()?.code]).toEqual([1, qr]);
+  // asked again, and by the page's other relay QR codes, it is the same code
+  expect([await codeOf(await ask(true)), await codeOf(await ask(false)), started]).toEqual([qr, qr, 1]);
+  expect(devices.linkAccountKey(laptop.id, key, key, "acct_1")).not.toBeNull();
+  // the PC is in an account: the code is taken back, and a page that still shows the QR code is refused a new one
+  expect(devices.activePairing()).toBeNull();
+  const refused = await ask(true);
+  expect([refused.status, await refused.json()]).toEqual([409, { error: { code: "in_account", message: "This PC is already in an Ovis account. Sign in to that account on the device to add it." } }]);
+  expect(devices.activePairing()).toBeNull();
+  expect(await codeOf(await ask(false))).toMatch(/^\d{6}$/);
 });
 
 it("names the PC in the relay offer as Ovis lists it", async () => {

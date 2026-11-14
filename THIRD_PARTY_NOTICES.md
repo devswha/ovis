@@ -43,6 +43,18 @@ computer and its branch. Its sizes and layout were adapted; no code was copied. 
 Apache License, Version 2.0 (<http://www.apache.org/licenses/LICENSE-2.0>), copyright the Herdr
 app's authors.
 
+## Herdr app agents list
+
+The Agents list's state headings that fold, and the time each row says its agent has been in its
+state (`src/components/AgentSidebar.tsx`, `src/lib/agentStateSince.ts`), follow the Herdr app's
+agents mod, <https://github.com/herdrdev/herdr-app> (`defaults/mods/agents/main.js`, commit
+`93b097f`): a section header in its state's colour that folds its rows and says their count, a
+time in the form `<1m`, `5m`, `2h`, `3d` counted from the state change the app saw and kept across
+restarts, done and idle counted as one state, and the time of an agent gone for thirty days
+forgotten. The behaviour was written anew for this app; no code was copied. Licensed under the
+Apache License, Version 2.0 (<http://www.apache.org/licenses/LICENSE-2.0>), copyright the Herdr
+app's authors.
+
 ## Agent of Empires request correlation
 
 `server/request-log.ts` adapts the request-completion boundary and client correlation-ID
@@ -119,6 +131,14 @@ their copyright notices, ship in the app as `out/THIRD_PARTY_LICENSES.txt`, whic
 Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil Labs, Inc. The MIT license text
 below applies. Mapping the tokens onto Ovis's theme roles and drawing the figure as an image are
 Ovis's own.
+
+## oh-my-pi theme dim colors
+
+`server/omp-input.ts` lists the `dim` colors of oh-my-pi's built-in themes (`OMP_DIM_TRUECOLOR`,
+`OMP_DIM_256`), taken from [`can1357/oh-my-pi`](https://github.com/can1357/oh-my-pi)
+`packages/tui/src/theme/defaults.json`, `dark.json` and `light.json` (omp 18.18), under MIT,
+Copyright (c) 2025 Mario Zechner, Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil
+Labs, Inc. The MIT license text below applies. Reading the screen with them is Ovis's own.
 
 ## Theme palettes
 

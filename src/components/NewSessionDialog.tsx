@@ -31,6 +31,7 @@ import { userErrorMessage, type UserError } from "../lib/userError.ts";
 import { focusInOtherModal, nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { catchTypeAhead } from "../lib/typeAhead.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
+import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { passingFolder, recentDirectories } from "../lib/recent-directories.ts";
 import { serverIdOfPath } from "../lib/shellMode.ts";
 
@@ -49,6 +50,8 @@ export interface NewSessionDialogProps {
   /** set, the dialog makes a tab in that workspace instead of a workspace */
   tab?: NewTabTarget | null;
   onClose: () => void;
+  /** whether a create is in flight, as it changes: the shell's own way out (a phone's Back over the list) refuses then, as the dialog's do */
+  onPending?: (pending: boolean) => void;
   /**
    * `agentStarted`: the pane runs the agent asked for, so it opens in an agent's lens; `messageWaits`: the
    * bridge queued the first message for the agent's first ready turn, or its text was kept in the chat's
@@ -148,7 +151,7 @@ export function insertToken(text: string, at: number, token: string): { text: st
   return { text: `${head}${after}`.slice(0, MAX_COMPOSER_CHARS), caret: Math.min(head.length, MAX_COMPOSER_CHARS) };
 }
 
-export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false, groupKept }: NewSessionDialogProps) {
+export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPending, onCreated, machineName, prefill = null, onDraft, worktrees = [], onOpenPane, watching = false, groupKept }: NewSessionDialogProps) {
   const t = useT();
   const { settings, update: updateSettings } = useSettings();
   const machineId = useMachineId();
@@ -176,6 +179,13 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   const skillFolder = tab ? tab.cwd : cwd.trim() || null;
   const [skills, setSkills] = useAgentSkills(open, agentKind, skillFolder, fetchAgentCommands, t);
   const [pending, setPending] = useState(false);
+  const onPendingRef = useRef(onPending);
+  onPendingRef.current = onPending;
+  // an unmount in flight (another PC's dialog) leaves nothing reported pending
+  useEffect(() => {
+    onPendingRef.current?.(pending);
+    return () => onPendingRef.current?.(false);
+  }, [pending]);
   const [error, setError] = useState<UserError | null>(null);
   const [cwdError, setCwdError] = useState<string | null>(null);
   const [createdPaneId, setCreatedPaneId] = useState<string | null>(null);
@@ -215,6 +225,12 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
   useEffect(() => { if (open) made.current = false; }, [open]);
   const surface = useFocusTrap<HTMLFormElement>(open, { initialFocus: firstFieldRef, shouldRestore: () => !made.current });
   useSheetSwipe(surface, pending ? null : onClose);
+  // Back closes the dialog as Escape does, and not while it is starting what was asked for. Opened from a
+  // sheet's item (the palette, a tab's sheet) it takes that sheet's entry, and the address it writes stays on it
+  usePhoneSheetBack(() => { if (pending) return false; onClose(); }, open);
+  // the folder browser and the setup of another agent are steps inside the dialog: Back takes each back first
+  usePhoneSheetBack(() => setBrowsing(false), open && browsing);
+  usePhoneSheetBack(() => setAdding(false), open && adding && !watching);
   const defaultCwdRef = useRef(defaultCwd);
   defaultCwdRef.current = defaultCwd;
   const prefillRef = useRef(prefill);

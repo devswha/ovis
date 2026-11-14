@@ -102,6 +102,7 @@ run_script scripts/key-bar-hold-repeat-regression.ts
 run_script scripts/settings-pages-demo-regression.ts
 run_script scripts/settings-palette-search-demo-regression.ts
 run_script scripts/settings-rows-demo-regression.ts
+run_script scripts/settings-segmented-demo-regression.ts
 run_script scripts/ideal-state-idle-regression.ts
 run_script scripts/agent-entry-points-demo-regression.ts
 run_script scripts/agents-sign-in-demo-regression.ts
@@ -164,6 +165,7 @@ run_script scripts/omp-codex-image-browser-qa.ts
 run_script scripts/grok-image-browser-qa.ts
 run_script scripts/copilot-image-browser-qa.ts
 run_script scripts/file-viewer-regression.ts
+run_script scripts/file-viewer-page-scripts-browser-qa.ts
 run_script scripts/text-file-edit-regression.ts
 run_script scripts/web-panel-mobile-regression.ts
 run_script scripts/palette-local-page-demo-regression.ts
@@ -180,6 +182,7 @@ run_script scripts/file-viewer-mobile-regression.ts
 run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
 run_script scripts/phone-safe-area-demo-regression.ts
+run_script scripts/phone-back-demo-regression.ts
 run_script scripts/header-context-demo-regression.ts
 run_script scripts/chat-greeting-demo-regression.ts
 run_script scripts/restored-draft-demo-regression.ts
@@ -207,6 +210,8 @@ run_script scripts/command-outcome-demo-regression.ts
 run_script scripts/chat-outcome-note-browser-qa.ts
 run_script scripts/prompt-card-lifetime-browser-qa.ts
 run_script scripts/sidebar-activity-demo-regression.ts
+run_script scripts/inbox-mode-demo-regression.ts
+run_script scripts/sheet-outside-tap-demo-regression.ts
 run_script scripts/sidebar-filter-demo-regression.ts
 run_script scripts/sidebar-declutter-demo-regression.ts
 run_script scripts/drawer-modal-regression.ts
@@ -226,8 +231,10 @@ run_script scripts/sidebar-context-ring-demo-regression.ts
 run_script scripts/sidebar-background-workspaces-demo-regression.ts
 run_script scripts/agent-helpers-fold-demo-regression.ts
 run_script scripts/sidebar-agent-tree-demo-regression.ts
+run_script scripts/sidebar-scrollbar-grip-demo-regression.ts
 run_script scripts/agent-lock-demo-regression.ts
 run_script scripts/agent-groups-demo-regression.ts
+run_script scripts/agent-state-groups-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
 run_script scripts/pane-mute-captures-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts
@@ -254,6 +261,8 @@ run_script scripts/phone-worktree-sheet-regression.ts
 run_script scripts/preferences-sync-regression.ts
 run_script scripts/machine-dialog-regression.ts
 run_script scripts/machine-conflict-regression.ts
+run_script scripts/relay-pairing-prompt-regression.ts
+run_script scripts/relay-account-pcs-regression.ts
 run_script scripts/machine-own-ovis-regression.ts
 run_script scripts/herdr-profiles-browser-qa.ts
 run_script scripts/relay-e2e-regression.ts

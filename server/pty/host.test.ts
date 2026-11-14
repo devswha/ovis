@@ -105,15 +105,19 @@ const fixtures = mkdtempSync(join(tmpdir(), "ovis-pty-host-"));
 afterAll(() => rmSync(fixtures, { recursive: true, force: true }));
 const NODE_HOST = join(import.meta.dir, "pty-host.mjs");
 const IDENTITY = 'if [ "$#" -eq 0 ]; then printf "pty-sidecar: usage: fixture\\n" >&2; exit 2; fi';
-const DELEGATE = `exec node '${NODE_HOST}' "$@"`;
+const quote = (path: string): string => `'${path.replaceAll("'", "'\\''")}'`;
+const DELEGATE = `exec node ${quote(NODE_HOST)} "$@"`;
 
 // No core dump from a process that crashes on purpose: with a relative core_pattern it would land in
 // the working directory, the checkout, where check.ts counts it as a source change. A piped one
 // (systemd-coredump) ignores a limit of 0 and reports the crash to the desktop on every run; a limit
 // of 1 byte keeps the kernel from starting it. `prlimit` is Linux's, and it cannot raise a hard limit
-// of 0; there, and where `prlimit` is missing, only `ulimit -c 0` applies, as before.
+// of 0; there, and where `prlimit` is missing, only `ulimit -c 0` applies, as before. Its path is
+// resolved here, as the tests without Node run their fixtures on a PATH of `/usr/bin:/bin` alone,
+// where a `prlimit` installed anywhere else is not found.
 // https://github.com/torvalds/linux/blob/028ef9c96e96197026887c0f092424679298aae8/fs/coredump.c#L978-L996
-const NO_CORE = "prlimit --pid $$ --core=1:1 2>/dev/null || ulimit -c 0";
+const PRLIMIT = Bun.which("prlimit");
+const NO_CORE = PRLIMIT === null ? "ulimit -c 0" : `${quote(PRLIMIT)} --pid $$ --core=1:1 2>/dev/null || ulimit -c 0`;
 const HARD_CORE_LIMIT = process.platform === "linux" ? /^Max core file size\s+\S+\s+(\S+)/m.exec(readFileSync("/proc/self/limits", "utf8"))?.[1] : undefined;
 
 function fakeHost(body: string, mode = 0o755, shebang = true): string {
@@ -123,8 +127,8 @@ function fakeHost(body: string, mode = 0o755, shebang = true): string {
   return path;
 }
 
-it.skipIf(process.platform !== "linux" || !Bun.which("prlimit") || HARD_CORE_LIMIT === "0")("runs the processes it crashes with a core limit of 1 byte, which no piped core_pattern is started for", () => {
-  const limits = Bun.spawnSync(["sh", "-c", `${NO_CORE}; grep 'Max core file size' /proc/$$/limits`], { stdout: "pipe", stderr: "pipe" });
+it.skipIf(process.platform !== "linux" || PRLIMIT === null || HARD_CORE_LIMIT === "0")("runs the processes it crashes with a core limit of 1 byte, which no piped core_pattern is started for, also on a PATH without `prlimit`", () => {
+  const limits = Bun.spawnSync(["/bin/sh", "-c", `${NO_CORE}; ${quote(Bun.which("grep") ?? "grep")} 'Max core file size' /proc/$$/limits`], { env: { PATH: fixtures }, stdout: "pipe", stderr: "pipe" });
   expect(limits.stdout.toString()).toMatch(/^Max core file size\s+1\s+1\s+bytes/);
 });
 
@@ -587,14 +591,19 @@ function parity(host: "node" | "rust") {
       } finally { ended.session.kill(); }
     }, 15_000);
 
-    // that wait ends the moment the command has exited: a plain exit is not held for it (timing is the
-    // behaviour here, bounded well past a host's start and well under the 200 ms wait plus a quiet one)
+    // that wait ends the moment the command has exited: a plain exit is not held for it. Time is the behaviour
+    // here, and it is counted from the command's own last act, not from the host's start: the start is most of
+    // a run, and it is what a busy machine stretches. The act is a file the command leaves, not output: the
+    // Node host reads a last byte together with the hangup, and ends that pty another way. The file's own time
+    // is the start of the count, the system's word for when the command wrote it: whatever this process does
+    // late only makes the span longer, never shorter. From the file the exit is about 20 ms away on the Node
+    // host, and 200 ms more when the wait is run out.
     it.skipIf(process.platform === "win32")("ends a plain exit without waiting out the hold for a closed terminal", async () => {
-      const started = performance.now();
-      const ended = run("sh", ["-c", "exit 7"]);
+      const leaving = join(mkdtempSync(join(fixtures, "leaving-")), "now");
+      const ended = run("sh", ["-c", ': > "$1"; exit 7', "sh", leaving]);
       try {
         expect(await ended.exited).toBe(7);
-        expect(performance.now() - started).toBeLessThan(150);
+        expect(Date.now() - statSync(leaving).mtimeMs).toBeLessThan(150);
       } finally { ended.session.kill(); }
     }, 15_000);
 

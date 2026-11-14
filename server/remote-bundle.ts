@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { REMOTE_BUNDLE_VERSION } from "./bundle-version.ts";
 import { REMOTE_BUNDLE_VERSION as RELEASE_VERSION } from "../shared/machines.ts";
 import { ensureSourceBundle } from "./source-bundle.ts";
+import { ROOT } from "./entries.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
 
 export interface BundleManifest {
@@ -18,7 +19,7 @@ export async function bundleManifestSource(platform: string, options: BundleSour
   if (configured) return configured;
   // Development installs can distribute locally built runtimes without publishing
   // a release. Resolve beside this server, never against its launch directory.
-  const local = join(options.directory ?? join(import.meta.dir, "..", "remote-bundles"), `manifest-${platform}.json`);
+  const local = join(options.directory ?? join(ROOT, "remote-bundles"), `manifest-${platform}.json`);
   // Only this source checkout may build; explicit manifests and test directories stay read-only.
   if (options.directory === undefined) await ensureSourceBundle(platform);
   try { await access(local); return local; }

@@ -13,6 +13,8 @@ import { restoreRuntime } from "./herdr-core/runtime-file.ts";
 import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
 import { herdrMayListen, herdrSocketPath } from "./herdr/client.ts";
 import { legacyLauncherStateDir, withLegacyNames } from "./legacy-env.ts";
+import { COMPILED, ENTRIES, entryCommand, ROOT } from "./entries.ts";
+import { installedBinaryAt, pluginBinaryOf } from "./updater.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
 import { runCommand, updateChannel, Updater, type Release } from "./updater.ts";
 
@@ -69,7 +71,7 @@ async function boundedStop(try_: Promise<void>, directory: string): Promise<void
   if (outcome === "late") console.warn(`Rust PTY host install in ${directory} did not end ${RUST_HOST_STOP_MS / 1000} s after it was stopped; exiting anyway. A process of it may still run.`);
 }
 
-export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
+export async function runSupervisor(root = ROOT) {
   root = resolve(root);
   // as the server reads it (server/index.ts): an empty PORT is the default, and both name the same saved runtime file
   const port = Number(process.env["PORT"] || DEFAULT_PORT);
@@ -79,7 +81,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   // a launcher from before the rename finds its releases only under the old state dir: the move
   // waits for a launcher of this version
   const legacyStateDir = legacyLauncherStateDir(process.env);
-  const supervisor = { root, port, directory: resolve(import.meta.dir, "..") };
+  const supervisor = { root, port, directory: ROOT };
   if (legacyStateDir === null) moveLegacyStateDir(process.env, supervisor);
   const appStateDir = resolve(legacyStateDir ?? defaultStateDir(process.env, supervisor));
   const socketPath = resolve(herdrSocketPath());
@@ -115,17 +117,18 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   }
   /**
    * Starts a bridge and waits for it: its own answer first (`?scope=bridge`, which never asks
-   * herdr), then the whole health answer when the runtime it says it serves must answer too:
-   * herdr-core, or herdr's TUI while its socket may be listening (herdrMayListen). A herdr TUI that
-   * is stopped is no failed start: Settings offers it, and the user starts herdr later. The bridge
-   * is told once it is taken.
+   * herdr), then the whole health answer when the runtime it says it serves must answer too: any
+   * runtime but herdr's TUI, and herdr's TUI while its socket may be listening (herdrMayListen). A
+   * herdr TUI that is stopped is no failed start: Settings offers it, and the user starts herdr
+   * later. The bridge is told once it is taken.
    */
   async function launch(release: Release | null) {
     if (stopping) throw new Error("Server is stopping");
     const bootId = crypto.randomUUID();
     // OVIS_RUNTIME_SWITCH: this launcher restarts the bridge on a runtime chosen in Settings (restartForRuntime)
     const settings = { OVIS_MANAGED: "1", OVIS_RUNTIME_SWITCH: "1", OVIS_BOOT_ID: bootId, OVIS_STATE_DIR: appStateDir, OVIS_REVISION: release?.revision ?? "" };
-    const candidate = Bun.spawn([process.execPath, "server/index.ts"], {
+    // from source the path is relative to the release it runs in (its cwd), as the bridge's argv always was
+    const candidate = Bun.spawn(COMPILED ? entryCommand("serve") : [process.execPath, ENTRIES.serve], {
       cwd: release?.directory ?? root, windowsHide: true, stdin: "ignore", stdout: "inherit", stderr: "inherit",
       // a launcher from before the rename runs from a checkout from before it, where a release that
       // fails falls back to: that bridge reads its settings under the old names
@@ -171,7 +174,8 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
         // to): the whole health answer is the only check it can pass, as it always was
         const older = bridge.ok && own.web_ui === undefined;
         if (older || bridge.ok && ours(own)) {
-          let ready = !older && own.runtime !== "herdr-core" && !await herdrMayListen(socketPath);
+          // only herdr's TUI may be stopped at a good start: a runtime the bridge started itself, any other, must answer
+          let ready = !older && (own.runtime === undefined || own.runtime === "herdr") && !await herdrMayListen(socketPath);
           if (!ready) {
             const response = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(1000) });
             ready = response.ok && ours(await response.json() as { web_ui?: { boot_id?: string } });
@@ -236,6 +240,9 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   const updater = new Updater({ root, stateDir, autoUpdate: process.env["OVIS_AUTO_UPDATE"] === "1", publish,
     channel: () => updateChannel(process.env, appStateDir),
     pluginCheckout: pluginRoot !== undefined && resolve(pluginRoot) === root,
+    // the herdr plugin's launcher runs this compiled server from its checkout's .ovis/server: herdr updates it
+    pluginBinary: pluginBinaryOf(process.env["OVIS_PLUGIN_CHECKOUT"], COMPILED),
+    installedBinary: installedBinaryAt(root, COMPILED),
     notice: process.env["OVIS_SUPERVISOR_FALLBACK"]
       ? "The updated supervisor failed to start, so the previous one is running this version. The next update tries again."
       : undefined,
@@ -305,4 +312,4 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   }
 }
 
-if (import.meta.main) await runSupervisor(process.env["OVIS_SOURCE_ROOT"] || resolve(import.meta.dir, ".."));
+if (import.meta.main) await runSupervisor(process.env["OVIS_SOURCE_ROOT"] || ROOT);

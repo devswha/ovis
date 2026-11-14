@@ -39,6 +39,7 @@ import { textEditAllowed } from "./file-edit.ts";
 import { handleFileRequest } from "./file-routes.ts";
 import { BACKGROUND_AGENT_PATH, handleBackgroundAgentRequest } from "./background-agent.ts";
 import { paneGet, ping } from "./herdr/client.ts";
+import { version } from "../package.json";
 import { RUNTIME_MOVE_PATH, RUNTIME_MOVE_ROUTE } from "./runtime-move.ts";
 import type { StopRefusal } from "./runtime-move-service.ts";
 import type { MoveService } from "./runtime-move-service.ts";
@@ -334,6 +335,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("owner-refusal");
     return jsonResponse({ error: { code: "owner_only", message: "Add PCs from your Tailscale on this PC itself, or from a device paired with it directly." } }, 403);
   }
+  // Another PC of the account is paired with this PC's server by a window direct to this PC that drives it (docs/account.md,
+  // "Adding a PC of your account"): a device on the relay, a Portal visitor or an open LAN window must not have this PC
+  // pair itself with whatever PC they name; a watching device is refused in machine-api.ts (read_only)
+  if (pathname.startsWith("/api/machines/relay/account/") && access.level === "full" && (access.via === "open" || access.via === "portal" || access.via === "relay")) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "Add PCs of your account on this PC itself, or from a device paired with it directly." } }, 403);
+  }
   // The SSH tab's list (hosts of this PC's ssh config with their user@hostname, and its Tailscale login's PCs) goes
   // only to clients that may drive this PC with full access: this PC itself, its access token, a device paired with
   // it directly to drive, and another PC on the owner's Tailscale login. Each of those can already open a terminal
@@ -402,7 +410,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // resume on agent.start and then its store check (machine-api.ts slowMachinePath)
       // a move's install there is waited for 200 s (machine-api.ts): this connection is held a little longer still
       const machinePathAsked = pathname.split("/").slice(4).join("/");
-      ctx.timeout(request, pathname === "/api/machines/events" ? 0 : machinePathAsked === "runtime/move/install" ? 210 : slowMachinePath(machinePathAsked) ? 180 : 80);
+      // a PC of the account's comparison waits up to PAIR_APPROVAL_MS for an approval on another device
+      ctx.timeout(request, pathname === "/api/machines/events" ? 0 : machinePathAsked === "runtime/move/install" ? 210 : slowMachinePath(machinePathAsked) || pathname === "/api/machines/relay/account/pair" ? 180 : 80);
       const deviceId = access.level === "full" ? access.device?.id : undefined;
       // a device's enrollment is news to every stream but the new device's own: one the stream's
       // device cookie names, or one this browser asked for itself (its stream key, server/devices.ts),
@@ -413,7 +422,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const issuedKey = presentedKeys.length === 0 && pathname === "/api/machines/events" ? newStreamKey() : null;
       const keys = issuedKey === null ? presentedKeys : [issuedKey];
       // a stream that came in through the open LAN is told nothing: every enrollment follows the write
-      // that closed the gate, so whoever holds it has no access left by the time there is news
+      // that closed the gate, which ends the stream (endWithGate below), so whoever held it has no access left
+      // by the time there is news
       const openAccess = access.level === "full" && access.via === "open";
       // a relay pairing waiting for approval reaches only a window that may approve it (server/relay/routes.ts):
       // driving, direct to this PC, and not a Portal visitor
@@ -430,7 +440,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         if (!approver) listener({ type: "relay-pairings", pairings: [] });
         return () => { stopPaired(); stopRemoved?.(); stopRelay?.(); };
       } };
-      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access), ctx.peer.kind === "relay" ? undefined : omarchyThemes);
+      // a stream ends with what let it in: a device's revoke, the gate closing on one the open LAN let in, Portal's recheck
+      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : openAccess ? (close) => devices.endWithGate(close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget, ownerAccess(access), ctx.peer.kind === "relay" ? undefined : omarchyThemes);
       response.headers.set("cache-control", "no-store");
       if (issuedKey !== null && response.ok) response.headers.append("set-cookie", streamCookie(issuedKey, isSecureRequest(request)));
       return response;
@@ -454,7 +465,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot,
           (browser) => ctx.services.relayReceiptIds.scope(machineId, principal, browser));
         await relay.ready;
-        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...recheck }) });
+        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...(access.level === "full" && access.via === "open" ? { open: true } : {}), ...recheck }) });
         if (upgraded) return undefined;
         relay.close();
       } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
@@ -497,7 +508,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
         return () => { stopPaired(); stopRemoved?.(); stopRelay?.(); };
       } },
     } : undefined;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }), ...recheck }) });
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ machineEvents, deviceId, readOnly, ...(openAccess && !bridgeAuthorized ? { open: true } : {}), bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }), ...recheck }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }
@@ -565,7 +576,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   }
   if (pathname.startsWith("/api/account/")) return handleAccountRequest(request, pathname, ctx, access);
   if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {
-    return handleRelayRequest(request, pathname, ctx);
+    // the paired device that asks, when one does: a pairing code it starts or is handed goes with it (DeviceStore.revoke)
+    return handleRelayRequest(request, pathname, ctx, access.level === "full" ? access.device?.id ?? null : null);
   }
   if (pathname === "/api/connection-diagnostics") { setRequestRoute(pathname); return clientConnectionLog.handle(request, client ?? "unknown"); }
   if (pathname === "/api/telemetry") { setRequestRoute(pathname); return handleTelemetryRequest(request, options.telemetry); }
@@ -664,7 +676,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       const info = await ping();
       // a forced answer (tests) and a runtime without the PTY sidecar are told the way a Windows herdr's own would be
       const herdr = attachableIdentity(info, sidecar);
-      return jsonResponse({ ok: true, herdr, auth, ...relay, ...exposure, ...(security ? { security } : {}), ...(herdr_core ? { herdr_core } : {}), ...(herdr_runtime ? { herdr_runtime } : {}),
+      // this server's own version (package.json, embedded in the compiled binary), told with the other facts to a client that got in
+      return jsonResponse({ ok: true, herdr, auth, ...(access.level === "full" ? { version } : {}), ...relay, ...exposure, ...(security ? { security } : {}), ...(herdr_core ? { herdr_core } : {}), ...(herdr_runtime ? { herdr_runtime } : {}),
         web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null, ...(serverId ? { server_id: serverId } : {}) } }, 200, securityHeaders);
     } catch (error) {
       const failed = errorResponse(error);
@@ -823,7 +836,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
 
   const installResponse = await agentInstaller.handle(request, pathname);
   if (installResponse) return installResponse;
-  const catalogResponse = await handleAgentCatalogRequest(request, pathname, agentDetector);
+  const catalogResponse = await handleAgentCatalogRequest(request, pathname, agentDetector, undefined, readOnly);
   if (catalogResponse) return catalogResponse;
 
   const integrationsResponse = await handleIntegrationsRequest(request, pathname);

@@ -165,6 +165,7 @@ describe("herdr socket", () => {
     "server/ssh-askpass.ts": "the SSH askpass helper's own private socket, not herdr's",
     "server/pi-voice.ts": "the pane's Pi live bridge socket, not herdr's",
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
+    "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",
   };
 
@@ -245,7 +246,6 @@ describe("runtime gates", () => {
     "server/runtime-move-run.ts": "the move goes from herdr to herdr-core",
     "server/runtime-move-service.ts": "the move goes from herdr to herdr-core",
     "server/index.ts": "a saved choice of herdr-core falls back to herdr when no hc is found",
-    "server/supervisor.ts": "the launcher reads which runtime the server it started says it serves",
     "server/machines.ts": "a remote PC's own Ovis is taken by the runtime its identity names",
     "server/conversation.ts": "the name of hc's program in an attach client's argv",
     "server/agents-routes.ts": "herdr itself starts two agent kinds without a manifest",
@@ -307,5 +307,33 @@ describe("remote PC bundle boundary", () => {
     expect(SRC_IMPORT.test("import { a } from \"./src-files.ts\";")).toBe(false);
     expect(leavesBundle("server/relay/pair-code.ts", "../../relay/pair-room.ts")).toBe(true);
     expect(leavesBundle("server/account/mailbox.ts", "../relay/identity.ts")).toBe(false);
+  });
+});
+
+describe("server entries", () => {
+  // The compiled binary (scripts/build-server.ts) has no .ts files: a child started by a source file's
+  // path works only from a checkout. server/entries.ts starts each entry, by file from source and by
+  // name in the binary (entryCommand).
+  const START_BY_PATH = /\bprocess\.execPath\s*,\s*\[?\s*(?:join\s*\(|resolve\s*\(|["'`][^"'`\n]*\.(?:ts|tsx|js|mjs)["'`])/;
+  const ALLOWED: Record<string, string> = {
+    "server/supervisor.ts": "installs the Rust PTY host with the script of a release checked out from source, which only the source updater makes",
+    "server/updater.ts": "builds a release checked out from source with that release's own scripts",
+  };
+
+  it("starts the server's own entries only through entryCommand", () => {
+    const starts = matches([...serverCode(), "scripts/plugin.ts"].filter((file) => file !== "server/entries.ts"), START_BY_PATH);
+    fail(starts.filter((start) => !(start.file in ALLOWED)).map((start) => start.at),
+      "Start the server's own code with entryCommand(name) from server/entries.ts (add the entry to ENTRIES), never with process.execPath and a .ts path: the compiled binary has no such file.");
+    const users = new Set(starts.map((start) => start.file));
+    fail(Object.keys(ALLOWED).filter((file) => !users.has(file)), "These files no longer start a file by path: remove them from ALLOWED in server/conventions.test.ts.");
+  });
+
+  it("knows a start by path from other uses of process.execPath", () => {
+    expect(START_BY_PATH.test("Bun.spawn([process.execPath, join(import.meta.dir, \"machine-entry.ts\")], {")).toBe(true);
+    expect(START_BY_PATH.test("Bun.spawn([process.execPath, \"server/index.ts\"], {")).toBe(true);
+    expect(START_BY_PATH.test("spawn(process.execPath, [join(ROOT, \"server\", \"managed.ts\")], {")).toBe(true);
+    expect(START_BY_PATH.test("run([process.execPath, \"install\", \"--frozen-lockfile\"])")).toBe(false);
+    expect(START_BY_PATH.test("[process.execPath, \"-e\", SCRIPT, String(pid)]")).toBe(false);
+    expect(START_BY_PATH.test("Bun.spawn(entryCommand(\"machine\"), {")).toBe(false);
   });
 });

@@ -36,7 +36,7 @@
 
 import { createHash, randomUUID, type Hash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync, type Stats } from "node:fs";
-import { open as openHandle, type FileHandle } from "node:fs/promises";
+import { open as openHandle, readdir, readFile, type FileHandle } from "node:fs/promises";
 import { readStatuslineContext } from "./statusline.ts";
 import { transcriptReader, type TranscriptFile } from "./transcript-reader.ts";
 import nodePath, { basename, dirname, relative, sep, type PlatformPath } from "node:path";
@@ -47,7 +47,7 @@ import { authorizedTranscript } from "./transcript-store.ts";
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
 import { herdrRpc, herdrSocketPath, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
-import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, type HistorySegment, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, parseCodexTranscript, readRange } from "./codex.ts";
+import { codexFreshSession, codexHistorySegments, createCodexTranscriptParser, type HistorySegment, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHomePlaced, paneCodexProcess, parseCodexTranscript, readRange } from "./codex.ts";
 import { awaited, CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscriptImage, DataUrlPictureScan, finish, finishAsync, forgetOmpBlobTypes, InlinePictureScan, MAX_IMAGE_BYTES, ompBlobAnchor, ompBlobDigest, ompBlobPictureSteps, type Steps } from "./codex-images.ts";
 import { type Held, heldOpenPlatform, openHeldDirectory } from "./held-open.ts";
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, darwinProcess, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, jobClaude, processClaudeConfigDir, windowsShellClaude } from "./claude-store.ts";
@@ -68,7 +68,7 @@ import { AGY_CATALOG_BYTES, AgyUnavailable, agyCatalogOffThread, agyDatabasePath
 import { agyFreshSession, resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
 import { FileBusyError } from "./file-pool.ts";
 import { museSession, museToolOutput, MuseUnavailable, parseMuseTranscript } from "./muse.ts";
-import { resolveMuseSession } from "./muse-store.ts";
+import { MuseLogUnreadable, resolveMuseSession } from "./muse-store.ts";
 import { LettaUnavailable, lettaToolOutputOffThread, parseLettaTranscript } from "./letta.ts";
 import { programName } from "./agent-identity.ts";
 import { lettaLocalSettings, resolveLettaTranscript } from "./letta-store.ts";
@@ -93,7 +93,6 @@ import { type ClaudeBranch, claudeForks, followClaudeBranch, type PromptChain, t
 import { copilotSetAside } from "./copilot.ts";
 import { DevinLockMissing, devinLockProof, devinSessionForPane, isDevinProcess, type DevinLockProof } from "./devin-session.ts";
 import { userHome } from "./user-home.ts";
-import { kiroCodexProcess } from "./kiro-terminal.ts";
 
 export { isOmoProcess } from "./omo.ts";
 export { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
@@ -1672,6 +1671,68 @@ export function agentProcesses<T extends { argv?: readonly string[] | null; argv
   return [...native, ...interpreted.filter((entry) => !native.includes(entry))];
 }
 
+/** How far stoppedAgentJob looks below the shell: a launcher (npx, a wrapper script) is a few levels deep at most. */
+const JOB_DEPTH = 6;
+const JOB_PROCESSES = 256;
+
+/**
+ * Whether the shell `shellPid` holds `agent` as a stopped job (Ctrl+Z): a process below the shell in state T. herdr
+ * names only the foreground process group, the shell's own while a job is stopped, as after the agent's exit
+ * (live-checked, herdr 0.9.5), so this reads Linux's /proc: the children of each thread of the shell and of each
+ * process below it (JOB_DEPTH levels, JOB_PROCESSES processes, each once), and each one's state and command line.
+ * Ctrl+Z stops the job's whole process group, so the agent itself is stopped even when a launcher (`npx opencode`,
+ * `sh -c 'opencode; …'`) is the shell's child. `pid`, when known, is the agent process the pane was verified with:
+ * only it counts, not another stopped copy of the agent, and it is followed up its parents to the shell instead, so
+ * a shell with more processes than the walk reads still finds it. Without /proc (macOS), or a process gone
+ * meanwhile, nothing is found.
+ */
+export async function stoppedAgentJob(shellPid: number, agent: string, { pid = null, proc = "/proc" }: { pid?: number | null; proc?: string } = {}): Promise<boolean> {
+  /** `pid (comm) state ppid …`: the command name may itself hold ") ", the fields follow its last one */
+  const stat = async (process: string): Promise<{ name: string; state: string; parent: string } | null> => {
+    const text = await readFile(`${proc}/${process}/stat`, "utf8").catch(() => "");
+    const open = text.indexOf("(");
+    const close = text.lastIndexOf(")");
+    if (open < 0 || close < open) return null;
+    const [state = "", parent = ""] = text.slice(close + 2).split(" ");
+    return { name: text.slice(open + 1, close), state, parent };
+  };
+  const isAgent = async (process: string, name: string): Promise<boolean> => {
+    const argv = (await readFile(`${proc}/${process}/cmdline`, "utf8").catch(() => "")).split("\0").filter(Boolean);
+    // its process name too, which herdr labels the pane by: a script named after the agent runs under its shell
+    return programName(name) === agent || agentProcesses([{ argv, name }], agent).length > 0;
+  };
+  if (pid !== null) {
+    const own = await stat(String(pid));
+    if (own?.state !== "T" || !await isAgent(String(pid), own.name)) return false;
+    let parent = own.parent;
+    for (let depth = 0; depth < JOB_DEPTH; depth++) {
+      if (parent === String(shellPid)) return true;
+      const next = await stat(parent);
+      if (next === null || next.parent === parent) return false;
+      parent = next.parent;
+    }
+    return false;
+  }
+  const seen = new Set([String(shellPid)]);
+  let level = [String(shellPid)];
+  for (let depth = 0; depth < JOB_DEPTH && level.length > 0; depth++) {
+    const next: string[] = [];
+    for (const parent of level) {
+      const threads = await readdir(`${proc}/${parent}/task`).catch(() => []);
+      const lists = await Promise.all(threads.map((thread) => readFile(`${proc}/${parent}/task/${thread}/children`, "utf8").catch(() => "")));
+      for (const child of lists.join(" ").split(/\s+/u).filter(Boolean)) {
+        if (seen.has(child) || seen.size > JOB_PROCESSES) continue;
+        seen.add(child);
+        next.push(child);
+        const found = await stat(child);
+        if (found?.state === "T" && await isAgent(child, found.name)) return true;
+      }
+    }
+    level = next;
+  }
+  return false;
+}
+
 /** Loaded roots and environment belong to the foreground agent, not the web server. */
 export async function paneProcessRoots(paneId: string, agent: string | null | undefined): Promise<{
   /** `held`: the omo process holds a session there (its own holder record), not only an omo-ai path in its argv. */
@@ -2184,7 +2245,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       agent = "kiro";
       if (known === undefined) known = (info?.process_info as KnownProcesses) ?? null;
     }
-    else if (await kiroCodexProcess(info?.process_info as ProcessInfo | undefined) !== null) agent = "codex";
+    else if (await paneCodexProcess(paneId, (info?.process_info as ProcessInfo | undefined) ?? null) !== null) agent = "codex";
   }
   // a Muse, Letta, dsh or Kiro pane's processes are asked for once, for omo and for its own binding
   if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui" || agent === "kiro") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
@@ -2206,7 +2267,10 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
       return { source: "grok-transcript", path: found };
     }
     if (agent === "muse") {
-      const path = await resolveMuseSession(pane, museData, known);
+      const path = await resolveMuseSession(pane, museData, known).catch((error: unknown) => {
+        if (error instanceof MuseLogUnreadable) throw new ConversationUnavailable("transcript_unreadable");
+        throw error;
+      });
       if (path === null) throw new ConversationUnavailable("no_session_path");
       return { source: "muse-transcript", path };
     }
@@ -3752,7 +3816,9 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
       let fresh: NativeTranscript;
       try { fresh = await paneTranscript(paneId, codexHome, undefined, undefined, opencodeDb, hermesHome, grokHome, museData); }
       catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
-      if (fresh.source !== transcript.source || fresh.path !== transcript.path) return null;
+      // nor one another read saw bound elsewhere while this resolution was under way: begun before the
+      // pane moved, it still names the session the output was read from
+      if (fresh.source !== transcript.source || fresh.path !== transcript.path || rebound(paneId, transcript)) return null;
     }
     output = settled.value;
   } else if (resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "codex-transcript") {
@@ -3770,7 +3836,9 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
       let fresh: NativeTranscript;
       try { fresh = await paneTranscript(paneId, codexHome, undefined, undefined, opencodeDb, hermesHome, grokHome, museData); }
       catch (error) { if (error instanceof ConversationUnavailable) return null; throw error; }
-      if (fresh.source !== transcript.source || fresh.path !== transcript.path) return null;
+      // nor one another read saw bound elsewhere while this resolution was under way: begun before the
+      // pane moved, it still names the conversation the output was read from
+      if (fresh.source !== transcript.source || fresh.path !== transcript.path || rebound(paneId, transcript)) return null;
     }
   } else output = resolved.source === "agy-transcript" ? await agyToolOutput(resolved.path, ref) : lookup();
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;

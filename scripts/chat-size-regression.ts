@@ -12,6 +12,7 @@ import { chromePath } from "./chrome-path.ts";
 import { pickLens, VIEW_BUTTON } from "./view-toggle.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
 import { clickTab } from "./tab-pick.ts";
+import { openLens } from "./header-lens.ts";
 
 /** how long a resize that should not happen gets to show up */
 const NO_RESIZE_WAIT_MS = 400;

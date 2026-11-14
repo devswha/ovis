@@ -5,6 +5,7 @@ import { mkdirSync } from "node:fs";
 import type { Browser } from "playwright-core";
 import { pickLens } from "./view-toggle.ts";
 import { shownRows } from "./shown-rows.ts";
+import { openLens } from "./header-lens.ts";
 
 /**
  * iPadOS 27 Safari with a Magic Keyboard sends each jamo as a printable keydown (its own keyCode,

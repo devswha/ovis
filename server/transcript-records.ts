@@ -1,4 +1,5 @@
 /** Shared native-record rules keep paging, rendering and on-demand results consistent. */
+import { askedQuestions } from "../shared/askQuestions.ts";
 import type { ConversationPart, ConversationTurn, GoalWaitSources, OmoTaskResult } from "../shared/protocol.ts";
 import type { SubagentDetail, TaskNotification } from "./claude-subagents.ts";
 import { skillInvocationPrompt, skillPromptMessage } from "./skill-activity.ts";
@@ -41,6 +42,27 @@ export function claudePeerNotice(value: unknown): Extract<ConversationPart, { ki
   const name = typeof origin.name === "string" && origin.name.trim() ? origin.name.trim() : /\bfrom-name="([^"]+)"/.exec(parsed?.[1] ?? "")?.[1] ?? "";
   return body.trim() ? { kind: "notice", text: body, source: `peer:${name}` } : null;
 }
+
+/**
+ * A background subagent's report sent back with SubagentHandback (Claude Code 2.1.30x): another
+ * session's message from the subagent's task, a one-line frame, then the report with every line
+ * indented two spaces. Its `<task-notification>` then only points at it (CLAUDE_HANDBACK_POINTER). Null for a
+ * report longer than a card holds (OMO_TASK_RESULT_MAX): it stays the message it came as, whole.
+ */
+export function claudeHandback(value: unknown): { taskId: string; report: string } | null {
+  const entry = record(value);
+  const queued = entry.type === "attachment" ? record(entry.attachment) : null;
+  const origin = record(queued !== null ? queued.origin : entry.origin);
+  const taskId = typeof origin.senderTaskId === "string" ? origin.senderTaskId : "";
+  const framed = typeof origin.body === "string" ? /^\[Subagent hand-back\][^\n]*\n([\s\S]*)$/.exec(origin.body) : null;
+  if (origin.kind !== "peer" || !taskId || framed === null) return null;
+  // blank rows around the report go, its first line's own indentation (a code block) stays
+  const report = framed[1]!.split("\n").map((line) => line.replace(/^ {2}/, "")).join("\n").replace(/^(?:[ \t]*\n)+/, "").trimEnd();
+  return report && report.length <= OMO_TASK_RESULT_MAX ? { taskId, report } : null;
+}
+
+/** A subagent's notification result that only says its report came as a SubagentHandback message, and from which task. */
+export const CLAUDE_HANDBACK_POINTER = /^This agent's report was delivered to you as a message from "([^"]+)" \(its SubagentHandback call\)/;
 
 /**
  * One delivery of another session's message, as Claude identifies it: the sender and its message id.
@@ -297,6 +319,8 @@ export function toolSummary(name: string, input: Record<string, unknown>): strin
     const titles = items.map((item) => label(item["task_summary"]) ?? label(item["description"])).filter((title) => title !== null);
     if (titles.length > 0) return titles.join(" · ").slice(0, 120);
   }
+  const asked = askedQuestions(name, input);
+  if (asked !== null) return asked.map((question) => question.question).join(" · ").slice(0, 120);
   // what the agent itself said the call is for: OmO's eval `summary`, the `description` Claude
   // gives a Bash command or a subagent's prompt. Another tool's `description` is its own data.
   const said = typeof input["code"] === "string" ? label(input["summary"])

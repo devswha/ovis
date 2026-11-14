@@ -110,6 +110,8 @@ async function phone(browser: Browser, settings: Settings, viewport = PHONE): Pr
   await context.addInitScript(({ key, settings, pane, height }) => {
     if (localStorage.getItem(key) === null) localStorage.setItem(key, JSON.stringify(settings));
     localStorage.setItem(`ovis:view:${pane}`, "terminal");
+    // a split tab's panes are listed in the header's More where the tabs are in the header (Settings -> Tabs on a phone)
+    if (localStorage.getItem("ovis:phone-tabs") === null) localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
     const visual = window.visualViewport!;
     let current = height;
     Object.defineProperty(visual, "height", { get: () => current });
@@ -411,6 +413,13 @@ async function currentModeKeyboard(browser: Browser): Promise<Record<string, unk
     await page.locator(".pane-frame:not(.is-hidden) .xterm-helper-textarea").focus();
     const gridDown = await control(page);
     assert.deepEqual([gridDown.active, gridDown.keyboard, gridDown.label], ["xterm-helper-textarea", false, "Show keyboard"], "the grid focused with the keyboard measured down");
+    // the focused grid draws no outline around the terminal, as in 0.5.1 (#3550): the pane's head says which pane takes keys
+    const outline = await page.evaluate(() => {
+      const terminal = document.querySelector<HTMLElement>(".pane-frame:not(.is-hidden) .pane-terminal")!;
+      const style = (selector: string) => getComputedStyle(terminal.querySelector(selector) ?? terminal);
+      return [getComputedStyle(terminal).outlineStyle, style(".xterm").boxShadow, style(".xterm-viewport").boxShadow];
+    });
+    assert.deepEqual(outline, ["none", "none", "none"], "the focused terminal has no outline ring (#3550)");
     await switchMode(page, "line");
     await flushTimers(page);
     const lineAgain = await control(page);

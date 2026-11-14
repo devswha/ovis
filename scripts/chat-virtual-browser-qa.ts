@@ -100,6 +100,27 @@ async function settleBottom(page: Page) {
     return node && node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
   });
 }
+/**
+ * The reader scrolls to the end until they are there. One jump from far up, with a row held (a selection or a
+ * focused button pins it), can land short: the rows it brings into view are measured after it, and on a phone's
+ * narrow rows the end then lay 6642 px further on, with nothing moving the view in the 15 s that followed (seen
+ * locally once in 18 runs, as in CI). A reader scrolls again from there, as this does each frame.
+ */
+async function readToBottom(page: Page) {
+  await page.waitForFunction(() => {
+    const node = document.querySelector<HTMLElement>(".chat-view");
+    if (!node) return false;
+    // the rows a scroll brings in are measured a frame or more after it: the end counts once the view has stayed
+    // at it through ten frames in a row, not on the first frame that reads it there
+    const atEnd = node.scrollHeight - node.clientHeight - node.scrollTop <= 1;
+    const qa = window as { qaAtEnd?: number };
+    if (!atEnd) { node.scrollTop = node.scrollHeight; qa.qaAtEnd = 0; return false; }
+    qa.qaAtEnd = (qa.qaAtEnd ?? 0) + 1;
+    if (qa.qaAtEnd < 10) return false;
+    qa.qaAtEnd = 0;
+    return true;
+  }, undefined, { polling: "raf" });
+}
 /** Until the view and the transcript's height have not changed for 20 frames: where the view rests. */
 async function settled(page: Page): Promise<number> {
   return await page.evaluate(() => new Promise<number>((resolve) => {
@@ -376,6 +397,38 @@ try {
     const after = await settled(page);
     assert.ok(Math.abs(after - before) <= 1, `unfolding the newest output keeps a following reader where they were: ${before} -> ${after}`);
     console.log(`PASS ${width}: unfolding the newest tool output at the end stops following and keeps the view`);
+    // The list's own scroll to the end is not over once it has moved the view: for 100 ms more it
+    // keeps that end in view as rows change size. A reader who unfolds the output within that time
+    // reads it too, and is not scrolled past it. The output is folded again where the reader
+    // stands, which leaves the view at the end: Jump to latest then moves nothing, so no scroll
+    // event ends the list's scroll early, and the unfold comes in the frame after that scroll starts.
+    await testRow.locator(".chat-tool-result-more[aria-expanded=true]").dispatchEvent("click");
+    await testRow.locator(".chat-tool-result-more[aria-expanded=false]").waitFor();
+    await settled(page);
+    await more.evaluate((button) => {
+      const view = button.closest(".chat-view")!;
+      const unfold: { from: number | null } = { from: null };
+      Object.assign(window, { unfoldDuringListScroll: unfold });
+      const scrollTo = Element.prototype.scrollTo;
+      Element.prototype.scrollTo = function (this: Element, ...args: [ScrollToOptions?] | [number, number]) {
+        (scrollTo as (this: Element, ...args: unknown[]) => void).apply(this, args);
+        // the list scrolls the chat with behavior "auto"; the chat's own scrolls are instant
+        const [options] = args;
+        if (this !== view || typeof options !== "object" || options.behavior !== "auto") return;
+        Element.prototype.scrollTo = scrollTo;
+        requestAnimationFrame(() => {
+          unfold.from = view.scrollTop;
+          button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+        });
+      };
+    });
+    await jump.click();
+    await testRow.locator(".chat-tool-result-more[aria-expanded=true]").waitFor();
+    const rested = await settled(page);
+    const from = await page.evaluate(() => (window as unknown as { unfoldDuringListScroll: { from: number | null } }).unfoldDuringListScroll.from);
+    assert.ok(from !== null && Math.abs(rested - from) <= 1, `unfolding an output while the list's own scroll to the end is on its way keeps the reader where they were: ${from} -> ${rested}`);
+    assert.ok(await jump.count() > 0, "a reader who unfolded an output while the list's scroll to the end was on its way is no longer following it");
+    console.log(`PASS ${width}: unfolding an output while the list's own scroll to the end is on its way keeps the view`);
     // back at the end and following it again, the reader folds the output: they stay at the new end,
     // following it, with Jump to latest hidden (not taken up to the output's top, still following an
     // end out of view, or at the end with Jump to latest shown)
@@ -688,6 +741,15 @@ try {
     assert.ok(await page.locator(".chat-view").evaluate((node) => node.scrollWidth <= node.clientWidth), "production terminal hierarchy has no horizontal overflow");
 
     await page.evaluate(() => window.chatQa.page(-1));
+    // The reader's place is read once the list has drawn the rows the PageUp uncovered: on a loaded
+    // runner it draws them a frame or more after the scroll, and until then the view's top is blank.
+    // Those rows come in at their estimated heights and the list holds them, so the first row drawn
+    // before them is not a place it keeps.
+    await page.waitForFunction(() => {
+      const view = document.querySelector<HTMLElement>(".chat-view")!;
+      const top = view.getBoundingClientRect().top;
+      return [...view.querySelectorAll<HTMLElement>("[data-chat-row]")].some((row) => { const box = row.getBoundingClientRect(); return box.top <= top + 1 && box.bottom > top; });
+    });
     const away = await metrics(page);
     assert.ok(away.bottom > 1 && away.anchor);
     revision = 101;
@@ -792,8 +854,7 @@ try {
     });
     assert.ok(boundarySelection?.includes("ROW--40"));
     await page.waitForFunction(() => Number(document.querySelector(".chat-view")?.getAttribute("data-chat-pinned")) > 0);
-    await page.locator(".chat-view").evaluate((node) => { node.scrollTop = node.scrollHeight; });
-    await settleBottom(page);
+    await readToBottom(page);
     assert.equal(await page.evaluate(() => getSelection()?.toString()), boundarySelection, "selection with an endpoint outside a row survives scrolling");
     await page.evaluate(() => getSelection()?.removeAllRanges());
     await page.waitForFunction(() => document.querySelector(".chat-view")?.getAttribute("data-chat-pinned") === "0");
@@ -818,8 +879,7 @@ try {
     const focusButton = work.locator(".work-row-head");
     await focusButton.focus();
     await page.waitForFunction(() => document.querySelector(".chat-view")?.getAttribute("data-chat-pinned") === "1");
-    await page.locator(".chat-view").evaluate((node) => { node.scrollTop = node.scrollHeight; });
-    await settleBottom(page);
+    await readToBottom(page);
     assert.ok(await focusButton.evaluate((button) => button === document.activeElement), "offscreen focused button stays focused");
     await focusButton.evaluate((button) => button.blur());
     await page.waitForFunction(() => document.querySelector(".chat-view")?.getAttribute("data-chat-pinned") === "0");

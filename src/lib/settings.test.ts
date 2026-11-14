@@ -12,7 +12,7 @@ import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems } from "./keyBar.ts";
 import { SHARED_SETTING_KEYS } from "../../shared/preferences.ts";
 import { NOTICE_VERSION, TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
 import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, wantsVoiceInput } from "./settings.ts";
-import { applyToDocument, loadSettings, pcLoadOn, saveBootRows, saveSettings, ENTER_SENDS_STORAGE_KEY, enterSendsOn } from "./settings.ts";
+import { applyToDocument, loadSettings, pcLoadOn, PHONE_INBOX_STORAGE_KEY, phoneInboxOn, saveBootRows, saveSettings, ENTER_SENDS_STORAGE_KEY, enterSendsOn } from "./settings.ts";
 import { customRow, NO_CUSTOM_THEMES, readThemeFile, withTheme } from "./customThemes.ts";
 import { CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY } from "./themeBoot.ts";
 import { sanitizeSettings as oldSanitizeSettings, saveSettings as oldSaveSettings } from "./settings.legacy-fixture.ts";
@@ -155,6 +155,23 @@ describe("saved theme migration", () => {
     expect(loadSettings().uiFontFamily).toBe("");
   });
 
+  it("keeps Tabs on a phone in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().phoneTabs).toBe("header");
+    saveSettings(sanitizeSettings({ phoneTabs: "header" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("phoneTabs");
+    expect(records.get("ovis:phone-tabs")).toBe(JSON.stringify("header"));
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().phoneTabs).toBe("header");
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), phoneTabs: "row" });
+    expect(loadSettings().phoneTabs).toBe("row");
+    records.set("ovis:phone-tabs", "not json");
+    expect(loadSettings().phoneTabs).toBe("header");
+    records.set("ovis:settings", JSON.stringify({ phoneTabs: "row" }));
+    records.delete("ovis:phone-tabs");
+    expect(loadSettings().phoneTabs).toBe("row");
+  });
+
   it("keeps Wrap to screen / Original width in its own key, out of an old tab's whole-record save", () => {
     saveSettings(sanitizeSettings({ terminalMirrorWrap: false }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalMirrorWrap");
@@ -197,6 +214,28 @@ describe("saved theme migration", () => {
     expect(loadSettings().pcLoad).toBeNull();
     records.set("ovis:pc-load", "not json");
     expect(loadSettings().pcLoad).toBeNull();
+  });
+
+  it("keeps the phone's agent inbox choice in its own key, out of an old tab's whole-record save, and unchosen until chosen", () => {
+    expect(loadSettings().phoneInbox).toBeNull();
+    for (const phoneInbox of [true, false]) {
+      saveSettings(sanitizeSettings({ phoneInbox }));
+      expect(records.get(PHONE_INBOX_STORAGE_KEY)).toBe(JSON.stringify(phoneInbox));
+      expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("phoneInbox");
+      oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+      // off is kept as false, told apart from no choice
+      expect(loadSettings().phoneInbox).toBe(phoneInbox);
+      expect(loadSettings().terminalFontSize).toBe(18);
+    }
+    saveSettings({ ...loadSettings(), phoneInbox: null });
+    expect(records.get(PHONE_INBOX_STORAGE_KEY)).toBe("null");
+    expect(loadSettings().phoneInbox).toBeNull();
+    records.set(PHONE_INBOX_STORAGE_KEY, "\"true\"");
+    expect(loadSettings().phoneInbox).toBeNull();
+    // the record's own field was never released: it is not read
+    records.delete(PHONE_INBOX_STORAGE_KEY);
+    putOld({ ...JSON.parse(records.get(main) ?? "{}"), phoneInbox: true });
+    expect(loadSettings().phoneInbox).toBeNull();
   });
 
   it("keeps the agent groups off until chosen, in keys of their own, out of an old tab's whole-record save", () => {
@@ -570,6 +609,19 @@ it("keeps the sidebar's hover peek off until this device turns it on, and keeps 
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("sidebarPeek");
 });
 
+it("keeps the phone's agent inbox off until this device turns it on, and keeps that choice its own", () => {
+  expect(DEFAULT_SETTINGS.phoneInbox).toBeNull();
+  expect(sanitizeSettings({}).phoneInbox).toBeNull();
+  for (const phoneInbox of ["true", 1, null]) expect(sanitizeSettings({ phoneInbox }).phoneInbox).toBeNull();
+  expect(sanitizeSettings({ phoneInbox: true }).phoneInbox).toBe(true);
+  expect(sanitizeSettings({ phoneInbox: false }).phoneInbox).toBe(false);
+  expect(phoneInboxOn({ phoneInbox: null })).toBe(false);
+  expect(phoneInboxOn({ phoneInbox: false })).toBe(false);
+  expect(phoneInboxOn({ phoneInbox: true })).toBe(true);
+  expect(SETTING_SCOPE.phoneInbox).toBe("device");
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("phoneInbox");
+});
+
 it("keeps herdr's prefix keys off until this device turns them on, and keeps that choice its own", () => {
   expect(sanitizeSettings({}).herdrPrefixKeys).toBe(false);
   expect(sanitizeSettings({ herdrPrefixKeys: true }).herdrPrefixKeys).toBe(true);
@@ -594,14 +646,14 @@ it("ignores what was saved for the rows Settings no longer has", () => {
   expect(telemetrySettingsSnapshot(settings).alertInApp).toBe(true);
 });
 
-it("shows no PC's load until this device chooses it, however many PCs are connected", () => {
+it("shows the selected PC's load until this device turns it off, however many PCs are connected", () => {
   const pc = (state: string) => ({ state });
   expect(sanitizeSettings({}).pcLoad).toBeNull();
   for (const pcLoad of ["true", 1, null]) expect(sanitizeSettings({ pcLoad }).pcLoad).toBeNull();
   expect(sanitizeSettings({ pcLoad: false }).pcLoad).toBe(false);
-  // unchosen: off, also with two PCs connected
-  expect(pcLoadOn({ pcLoad: null }, [pc("connected")])).toBe(false);
-  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("connected")])).toBe(false);
+  // unchosen: on, also with a lone PC
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected")])).toBe(true);
+  expect(pcLoadOn({ pcLoad: null }, [pc("connected"), pc("connected")])).toBe(true);
   // a choice holds whatever the roster says
   expect(pcLoadOn({ pcLoad: true }, [pc("connected")])).toBe(true);
   expect(pcLoadOn({ pcLoad: false }, [pc("connected"), pc("connected")])).toBe(false);
@@ -779,6 +831,12 @@ describe("telemetry settings snapshot", () => {
     for (const raw of ["private-terminal-font", "private-chat-font", "private-ui-font", "private quick reply", "private-order-account-id", "private-hidden-account-id"]) {
       expect(serialized).not.toContain(raw);
     }
+  });
+
+  it("defaults to tabs in the header and keeps the configurable row", () => {
+    expect(sanitizeSettings({}).phoneTabs).toBe("header");
+    expect(sanitizeSettings({ phoneTabs: "row" }).phoneTabs).toBe("row");
+    expect(sanitizeSettings({ phoneTabs: "sheet" }).phoneTabs).toBe("header");
   });
 
   it("reports every status indicator choice in a valid snapshot", () => {

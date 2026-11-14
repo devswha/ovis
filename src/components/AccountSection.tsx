@@ -1,6 +1,6 @@
 /**
  * Settings → Phone & devices → Account: sign in with GitHub, Google or Apple, see the account's PCs,
- * add or remove a sign-in method, sign out. The desktop app signs in through the system browser
+ * add or remove a sign-in method, sign out, delete the account. The desktop app signs in through the system browser
  * (lib/account/desktop.ts); a browser on the PC's own secure address, which no sign-in can be sent
  * back to, signs in with a code (lib/account/deviceSignIn.ts): one button and the Ovis link page
  * where the service has it, else the provider's device flow. Only
@@ -10,25 +10,31 @@
 import { useCallback, useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import type { AccountLimits } from "../../shared/protocol.ts";
-import { AddPcWaitOver, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, readAddPcWaiting, reopenAddWindow, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { AddPcWaitOver, closeAddWindow, keepAddPcWaiting, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type ListedPc } from "../lib/account/addThisPc.ts";
+import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
 import { desktopAccount, desktopProviders, desktopSignIn } from "../lib/account/desktop.ts";
-import { ApiError } from "../lib/api.ts";
+import { ApiError, fetchBridgeHealth, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
-import { within } from "../lib/account/join.ts";
+import { AccountPcError, within } from "../lib/account/join.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, offeredProviders, pcAccountServiceOf, sameSignIn, SignedOutError, type AccountIdentity, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
-import { indexedAccountStore, type AccountProvider, type AccountSession } from "../lib/account/store.ts";
+import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
 import { currentLocale, useT, type Translate } from "../lib/i18n.ts";
 import { inMacApp, inNativeApp } from "../lib/nativeApp.ts";
+import { pairThisBrowser, UnconfirmedPairing } from "../lib/pairing.ts";
 import { deviceLabel, deviceOs } from "../lib/phone.ts";
 import { AccountPcList, AccountSignIn, PROVIDER_NAMES, ProviderMark } from "./AccountPcs.tsx";
 import { QrCode } from "./QrCode.tsx";
+import { statusText } from "./RelayPanel.tsx";
 import { SettingsGroup, SettingsRow } from "./SettingsControls.tsx";
+
+/** A delete confirmed in this section, for the sign-in it was asked for (AccountSection's `deletion`). */
+interface Deletion { readonly session: AccountSession }
 
 type View =
   | { kind: "loading" }
-  | { kind: "signed-out"; error: string | null }
+  | { kind: "signed-out"; error: string | null; /** what just ended the sign-in as asked (the account was deleted) */ notice?: string }
   | { kind: "signing-in" }
   | { kind: "device-code"; provider: DeviceSignInProvider; userCode: string | null; verificationUri: string; verificationUriComplete: string | null }
   | { kind: "signed-in"; provider: AccountProvider; account: string; pcs: MyPc[] | null; methods: AccountIdentity[] | null; limits: AccountLimits | null; error: string | null };
@@ -111,18 +117,35 @@ export const ADDED_POLL_MS = 3_000;
 export const WAITING_MS = 30 * 60_000;
 /** How long the waiting screen gives this PC to answer one request: one that never answers does not hold the next. */
 export const ANSWER_MS = 10_000;
+/** How long a sign-in that just finished here is still listed by itself while this PC's account cannot be read. */
+export const SIGNED_IN_RETRY_MS = 60_000;
+/** How long a listing no press began, or the relay button's start, may take: after it the screen shows a button again. */
+export const ADDING_MS = 2 * REOPEN_MS;
 
 type AddThisPcState =
   | { kind: "hidden" }
   | { kind: "offer" }
-  /** `mark`: the wait as its tab keeps it (null without a stored sign-in to bind it to: such a wait is not resumed); `resumed`: taken up after a reload */
-  | { kind: "waiting"; name: string; until: number; mark: AddPcWaiting | null; resumed: boolean }
+  /** a sign-in just finished on this screen and the PC is being listed under it, without a press */
+  | { kind: "adding" }
+  /**
+   * that listing found the relay off: one button turns it on and lists, under `account` (the sign-in that just
+   * finished) and no other; `error`: why the last press did neither
+   */
+  | { kind: "relay-off"; account: string; error: string | null }
+  /**
+   * `mark`: the wait as its tab keeps it (null without a stored sign-in to bind it to: such a wait is not resumed);
+   * `resumed`: taken up after a reload; `signedIn`: begun by a sign-in on this screen, not by a press
+   */
+  | { kind: "waiting"; name: string; until: number; mark: AddPcWaiting | null; resumed: boolean; signedIn?: boolean }
   | { kind: "expired" }
   /** `enrolling`: the device that added the PC has not let the account's other devices in yet */
   | { kind: "done"; account: string; enrolling: boolean }
   | { kind: "error"; message: string };
 
 const pageHidden = (): boolean => typeof document !== "undefined" && document.hidden === true;
+
+/** The states that show a button to begin a wait: a copy in one of them takes up the wait another copy begins. */
+const offering = (state: AddThisPcState): boolean => state.kind === "offer" || state.kind === "expired" || state.kind === "error" || state.kind === "relay-off";
 
 const warned = (what: string) => (error: unknown): void => console.warn(what, error instanceof Error ? error.name : error);
 
@@ -132,6 +155,25 @@ function resumable(kept: AddPcWaiting, now: number): boolean {
   return kept.until > now && kept.until <= now + WAITING_MS && (pc === null || pc === kept.serverId);
 }
 
+/**
+ * Closes this PC's pairing window, so nothing more is taken through it; an older Ovis has no such route and lets it run out.
+ * A wait begun right after asks for its window only once this close was answered (`closeAddWindow`).
+ */
+function closeWindow(): void {
+  closeAddWindow().catch((error: unknown) => {
+    if (!(error instanceof ApiError && error.status === 404)) console.warn("Ovis: this PC's pairing window was not closed", error instanceof Error ? error.name : error);
+  });
+}
+
+/** Whether this tab keeps a wait that still runs: its window is then not closed under it. */
+const waitKept = (): boolean => { const kept = readAddPcWaiting(); return kept !== null && resumable(kept, Date.now()); };
+
+/**
+ * A sign-in that just finished on the screen, as AccountSection hands it to Add this PC once. `adds`: the button
+ * that began it said it adds this PC ("Sign in and add this PC"); only then is the PC listed without another press.
+ */
+export interface SignedInHere { readonly account: string; readonly adds: boolean }
+
 /** The listing two copies of the screen that wait on one wait (`until`) share, while it is on its way: the PC is listed once for both. */
 let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc> } | null = null;
 
@@ -139,16 +181,29 @@ let relistOnItsWay: { readonly until: number; readonly listed: Promise<ListedPc>
  * This PC, signed in and in no account yet: listed in the account with one tap, then it waits for a
  * device already in the account to add it, which the owner approves here (docs/account.md, "Adding a PC").
  * While it waits it keeps its pairing window open, for thirty minutes a press, and says when a device added it.
- * A reloaded tab takes the wait up again only on the same PC under the same account; nothing else is
- * listed or opened without a press. Two copies of this screen may be mounted at once (Settings over the
+ * A reloaded tab takes the wait up again only on the same PC under the same account: which PC answers is read
+ * (`pcAnswers`) before a wait has a window opened or says the PC was added. A sign-in that just
+ * finished on this screen through a button that said it adds this PC lists the PC and waits by itself
+ * (`signedInHere`), under its own account alone, with a window only this PC approves, and gives the button back
+ * when that gets no answer; a listing no press began is dropped when its screen goes, and the window it opened for
+ * nobody is closed. A sign-in whose button said nothing of adding lists and opens nothing: it gets the offer.
+ * The relay is never turned on without a press. Nothing else is listed or opened without one. A device that only
+ * watches this PC can list nothing, and is shown nothing. Two copies of this screen may be mounted at once (Settings over the
  * welcome): they share the wait their tab keeps, whichever of them began it, one that stops it stops the
  * other, and the PC is listed again once for both.
  */
-export function AddThisPc({ relayAbove = true, service }: {
+export function AddThisPc({ relayAbove = true, service, signedInHere, onListed }: {
   /** Settings has the relay's switch above; the welcome does not */
   relayAbove?: boolean;
+  /** this PC was just listed in the account, or a wait for it was taken up: the account's list is no longer the one read before */
+  onListed?: () => void;
   /** the account service the PC is listed with; the stored sign-in's when left out */
   service?: () => AccountService;
+  /**
+   * The sign-in that just finished on this screen, answered once (null after, and for a sign-in that was
+   * already there): only that one adds the PC without another press, and only when its button said so.
+   */
+  signedInHere?: () => SignedInHere | null;
 }) {
   const t = useT();
   const [state, setState] = useState<AddThisPcState>({ kind: "hidden" });
@@ -158,28 +213,64 @@ export function AddThisPc({ relayAbove = true, service }: {
     const session = await accountService().session();
     return session?.account === account ? { kind: "done", account, enrolling } : { kind: "hidden" };
   }, [accountService]);
+  // the listing a sign-in begins, as the latest render words it: the read below never runs again for a change of language
+  const afterSignIn = useEffectEvent((fresh: SignedInHere) => { if (fresh.adds) add(fresh.account); else offerAfterSignIn(fresh.account); });
   useEffect(() => {
     let live = true;
     let again: ReturnType<typeof setTimeout> | null = null;
     let waited = false;
+    const began = Date.now();
+    /**
+     * The sign-in that just finished here, taken once by this mount whatever comes of it, also when the PC's
+     * account could not be read: a later mount of this screen is no sign-in that just finished.
+     */
+    let fresh: SignedInHere | null = null;
+    let taken = false;
+    const takeFresh = (): SignedInHere | null => {
+      if (!taken) { taken = true; fresh = signedInHere?.() ?? null; }
+      return fresh;
+    };
+    /** that sign-in while it still counts as one that just finished: a minute, also for a PC that answered only after it */
+    const justSignedIn = (): SignedInHere | null => { const signedIn = takeFresh(); return Date.now() < began + SIGNED_IN_RETRY_MS ? signedIn : null; };
     const read = (): void => {
       again = null;
       within(ANSWER_MS, thisPcMembership()).then(async ({ account, enrolling }) => {
         if (!live) return;
+        const signedIn = justSignedIn();
         const stored = readAddPcWaiting();
         const kept = stored !== null && resumable(stored, Date.now()) ? stored : null;
         // a wait that is over, or another PC's, is forgotten; one still running stays kept as it is: another copy of this screen may be waiting on it
         if (kept === null) {
           keepAddPcWaiting(null);
-          if (account === null) setState({ kind: "offer" });
+          if (account !== null) return;
+          // a device that only watches this PC lists nothing (the PC refuses it the window): no listing, and no button that could only fail
+          const watching = await within(ANSWER_MS, fetchBridgeHealth()).then(({ auth }) => auth?.role === "watch", (error: unknown) => {
+            warned("Ovis: what this browser may do on this PC could not be read")(error);
+            return null;
+          });
+          if (!live || watching === true) return;
+          // while that could not be read nothing is listed without a press: the button, which the PC answers for itself
+          const adding = watching === null ? null : signedIn;
+          if (adding === null && !waitKept()) { setState({ kind: "offer" }); return; }
+          // the sign-in that just finished here adds the PC, when it is still the one stored: another, or none, starts from the offer
+          const session = await accountService().session().catch(() => undefined);
+          if (!live) return;
+          // another copy of this screen began a wait while this one read: this one goes on with it, and lists nothing itself
+          const begun = readAddPcWaiting();
+          if (begun !== null && resumable(begun, Date.now())) setState(session?.account === begun.account ? { kind: "waiting", name: begun.name, until: begun.until, mark: begun, resumed: false } : { kind: "offer" });
+          else if (adding !== null && session?.account === adding.account) afterSignIn(adding);
+          else setState({ kind: "offer" });
           return;
         }
         const session = await accountService().session().catch(() => undefined);
         if (!live) return;
         if (account !== null) {
+          // a device added this PC while the tab that waited for it was reloading: said only under the sign-in that waited, still
+          // stored, and only of the PC that waited (this address may answer for another PC of the account now)
+          const added = kept.account === account && session?.account === account && await within(ANSWER_MS, pcAnswers(kept.serverId));
+          if (!live) return;
           keepAddPcWaiting(null);
-          // a device added this PC while the tab that waited for it was reloading: said only under the sign-in that waited, still stored
-          if (kept.account === account && session?.account === account) setState({ kind: "done", account, enrolling });
+          if (added) setState({ kind: "done", account, enrolling });
           return;
         }
         // read again: while the sign-in was read, another copy of this screen may have stopped the wait, or begun one in its place
@@ -187,13 +278,29 @@ export function AddThisPc({ relayAbove = true, service }: {
         const running = now !== null && resumable(now, Date.now()) ? now : null;
         if (running === null) { setState({ kind: "offer" }); return; }
         // only the account the press was made under goes on waiting: another sign-in, or none, starts from the offer
-        if (session === undefined || session.account !== running.account) { keepAddPcWaiting(null); setState({ kind: "offer" }); return; }
+        if (session === undefined || session.account !== running.account) {
+          keepAddPcWaiting(null);
+          // a wait left under another sign-in than the one that just finished here: that one adds the PC
+          if (signedIn !== null && session?.account === signedIn.account) afterSignIn(signedIn);
+          else setState({ kind: "offer" });
+          return;
+        }
         // the screen was waiting when its tab reloaded: it goes on, within the thirty minutes of its press
         setState({ kind: "waiting", name: running.name, until: running.until, mark: running, resumed: true });
       }).catch((error: unknown) => {
         console.warn("Ovis: this PC's account could not be read", error instanceof Error ? error.name : error);
+        if (!live) return;
+        const signedIn = takeFresh();
         const stored = readAddPcWaiting();
-        if (!live || stored === null) return;
+        if (stored === null) {
+          // the PC refused this browser its account (403: one in only through an open device gate, or a Portal visitor):
+          // asking again gets the same answer, so it is not asked again
+          if (error instanceof AccountPcError && error.status === 403) return;
+          // a sign-in that just finished here is asked about too: closely for a minute, after which the PC is no longer
+          // listed without a press, then now and then, so its button comes once the PC answers again
+          if (signedIn !== null) again = setTimeout(read, Date.now() < began + SIGNED_IN_RETRY_MS ? ADDED_POLL_MS : REOPEN_MS);
+          return;
+        }
         // an Ovis that restarts under a reloaded waiting screen answers again soon: the wait is asked about until it does
         if (resumable(stored, Date.now())) { waited = true; again = setTimeout(read, ADDED_POLL_MS); }
         // the thirty minutes ended while it did not answer: said, so the screen is not left empty
@@ -202,12 +309,16 @@ export function AddThisPc({ relayAbove = true, service }: {
     };
     read();
     return () => { live = false; if (again !== null) clearTimeout(again); };
-  }, [accountService]);
+  }, [accountService, signedInHere]);
   /** the wait this copy's own press keeps: it is told of it like every copy, and begins it itself */
   const pressed = useRef<number | null>(null);
+  /** how many listings and relay starts this copy began: a window is closed late only while none began since */
+  const starts = useRef(0);
+  /** how often Stop waiting was pressed in this copy */
+  const stops = useRef(0);
   // a copy that shows the button takes up the wait another copy of this screen begins (Settings over the welcome):
   // closing that one then leaves this one waiting, and saying when the PC was added
-  const idle = state.kind === "offer" || state.kind === "expired" || state.kind === "error";
+  const idle = offering(state);
   useEffect(() => {
     if (!idle) return;
     let live = true;
@@ -218,13 +329,15 @@ export function AddThisPc({ relayAbove = true, service }: {
         // only under the sign-in the wait was begun in, and only while it is still the wait the tab keeps
         if (!live || session?.account !== kept.account || now === null || now.until !== kept.until) return;
         // the copy that began it opened the window itself
-        setState((current) => current.kind === "offer" || current.kind === "expired" || current.kind === "error" ? { kind: "waiting", name: now.name, until: now.until, mark: now, resumed: false } : current);
+        setState((current) => offering(current) ? { kind: "waiting", name: now.name, until: now.until, mark: now, resumed: false } : current);
       }, warned("Ovis: the account's sign-in could not be read"));
     });
     return () => { live = false; off(); };
   }, [idle, accountService]);
   // one object from the press (or the reload) until the wait ends: what it keeps for a reload changes in the effect alone
   const begun = state.kind === "waiting" ? state : null;
+  const listed = useEffectEvent(() => onListed?.());
+  useEffect(() => { if (begun !== null) listed(); }, [begun !== null]);
   useEffect(() => {
     if (begun === null) return;
     const until = begun.until;
@@ -244,6 +357,17 @@ export function AddThisPc({ relayAbove = true, service }: {
         : { kind: "offer" });
     };
     const stopped = (): void => { forget(); left(); };
+    const stopsThen = stops.current;
+    const startsThen = starts.current;
+    /**
+     * A reopen or a listing of this wait reached the PC after Stop waiting closed its window (here, or in another
+     * copy), and opened it again for nobody: closed once more, unless the person began another wait meanwhile.
+     */
+    const closeLate = (): boolean => {
+      if (!((stops.current !== stopsThen || withdrawn()) && starts.current === startsThen && !waitKept())) return false;
+      closeWindow();
+      return true;
+    };
     const expired = (): boolean => {
       if (Date.now() < until) return false;
       forget();
@@ -254,7 +378,9 @@ export function AddThisPc({ relayAbove = true, service }: {
     const stillSignedIn = async (): Promise<boolean> => mark === null || (await accountService().session())?.account === mark.account;
     /** The PC has an account: the screen says so, or shows nothing when it is not the one signed in to. */
     const joined = async (account: string, enrolling: boolean): Promise<void> => {
-      const next = await joinedAs(account, enrolling);
+      // believed only of the PC that waited: this address may answer for another PC now, one that has an account
+      // already, and of that one the screen says nothing, as on a page that kept no wait
+      const next: AddThisPcState = mark === null || await pcAnswers(mark.serverId) ? await joinedAs(account, enrolling) : { kind: "hidden" };
       if (!live) return;
       keepAddPcWaiting(null);
       setState(next);
@@ -268,9 +394,18 @@ export function AddThisPc({ relayAbove = true, service }: {
       within(ANSWER_MS, (async (): Promise<void> => {
         if (!await stillSignedIn()) { if (live) stopped(); return; }
         if (!live || withdrawn()) return;
+        // asked before the window, of a request that opens nothing: the address may answer for another PC than the
+        // one that waited, and no window is opened on that one
+        if (mark !== null && !await pcAnswers(mark.serverId)) { if (live) stopped(); return; }
+        if (!live || withdrawn()) return;
         const pc = await reopenAddWindow();
-        // the address now answers for another PC than the one that waited: its wait is not this one's
-        if (live && pc !== null && mark !== null && pc !== mark.serverId) stopped();
+        const closed = closeLate();
+        // it changed PC between that question and the window: the wait is not this one's
+        if (pc === null || mark === null || pc === mark.serverId) return;
+        if (live) stopped();
+        // and that request opened a window on the other PC, where no screen waits for anyone: closed again, unless
+        // it was just now, or the person began another wait meanwhile (whose window a close would take)
+        if (!closed && starts.current === startsThen && !waitKept()) closeWindow();
       })()).catch(warned("Ovis: this PC's pairing window was not reopened")).finally(() => { reopening = false; });
     };
     let asking = false;
@@ -299,6 +434,9 @@ export function AddThisPc({ relayAbove = true, service }: {
       /** the listing this attempt began, which the other copy on this wait joins rather than listing too */
       let mine: typeof relistOnItsWay = null;
       let over = false;
+      /** this attempt asked the PC for its window, and has not closed one it opened late yet */
+      let asked = false;
+      const closeAsked = (): void => { if (asked && closeLate()) asked = false; };
       within(2 * REOPEN_MS, (async (): Promise<boolean> => {
         const { account, enrolling } = await thisPcMembership();
         if (!live) return true;
@@ -316,7 +454,12 @@ export function AddThisPc({ relayAbove = true, service }: {
         // was stopped (here or in another copy) while the listing was on its way
         const wait = mark === null ? undefined : { serverId: mark.serverId, account: mark.account, running: (): boolean => live && !withdrawn() };
         const flying = shared && relistOnItsWay?.until === until ? relistOnItsWay : null;
+        asked = flying === null;
         const listed = flying?.listed ?? listThisPc(accountService(), { relistMs: RELIST_MS, for: wait });
+        // its request for the window may reach the PC only after this attempt was given up for getting no answer in
+        // time, and after Stop waiting closed the window: closed once more when the listing itself is over, and
+        // when the attempt is (a listing whose directory never answers is never over)
+        if (flying === null) void listed.then(closeAsked, closeAsked);
         if (shared && flying === null) relistOnItsWay = mine = { until, listed };
         await listed;
         if (!live) return true;
@@ -338,6 +481,7 @@ export function AddThisPc({ relayAbove = true, service }: {
       }).then((ok) => {
         // over with this attempt, also one that got no answer in time: the next attempt lists for itself
         over = true;
+        closeAsked();
         if (mine !== null && relistOnItsWay === mine) relistOnItsWay = null;
         // a wait that just ended (its effect is about to be left) has no listing due: never at once
         if (live && relisting === null) relisting = setTimeout(relist, ok ? due() || RELIST_MS : REOPEN_MS);
@@ -378,31 +522,172 @@ export function AddThisPc({ relayAbove = true, service }: {
     }, ADDED_POLL_MS);
     return () => { live = false; clearInterval(timer); };
   }, [settling]);
-  /** Lists this PC and waits, thirty minutes from this press. */
-  const add = (): void => {
-    (async (): Promise<AddThisPcState> => {
+  /** the listing, or relay start, begun last: one the screen gave up, or that a newer one replaced, changes nothing when it answers late */
+  const attempt = useRef(0);
+  /**
+   * What ends the attempt under way when its screen goes, for one that shows no button meanwhile (a listing no
+   * press began, the relay button's start): it is dropped, and the window it opened for nobody is closed.
+   * Null for a pressed listing, which goes on as it always did, and once the attempt is over.
+   */
+  const dropped = useRef<(() => void) | null>(null);
+  useEffect(() => () => { dropped.current?.(); dropped.current = null; }, []);
+  /**
+   * Lists this PC and waits, thirty minutes from this press, or from the sign-in that just finished here
+   * (`as`, its account): that one says what it is doing, lists under that account alone, is given up after
+   * `ADDING_MS` (the button again) or when its screen goes, and a relay that is off is offered with one button,
+   * never started. The window such an attempt opened is closed again when nobody comes to wait on it.
+   */
+  const add = (as: string | null = null): void => {
+    const mine = ++attempt.current;
+    const began = ++starts.current;
+    const current = (): boolean => attempt.current === mine;
+    if (as !== null) setState({ kind: "adding" });
+    /** how far a listing no press began came: its window open, its entry on the way to the directory */
+    let opened = false;
+    let writing = false;
+    let closed = false;
+    /** Closes the window this attempt opened, once: never under a wait the tab keeps, or a listing begun since. */
+    const closeOpened = (): void => {
+      if (!opened || closed || starts.current !== began || waitKept()) return;
+      closed = true;
+      closeWindow();
+    };
+    const drop = as === null ? null : (): void => { if (current()) attempt.current++; closeOpened(); };
+    dropped.current = drop;
+    const over = (): void => { if (dropped.current === drop) dropped.current = null; };
+    const reached = (step: "opened" | "writing"): void => { if (step === "opened") opened = true; else writing = true; };
+    const listing = (async (): Promise<AddThisPcState | null> => {
       // the window outlives a wait that stopped by up to ten minutes: a device may have added this PC through it, and then nothing is listed again
       const { account: joined, enrolling } = await thisPcMembership();
+      if (!current()) return null;
       if (joined !== null) { keepAddPcWaiting(null); return await joinedAs(joined, enrolling); }
-      const { name, serverId, account } = await listThisPc(accountService(), { relistMs: RELIST_MS });
+      const { name, serverId, account } = await listThisPc(accountService(), { relistMs: RELIST_MS, ...(as === null ? {} : { as: { account: as, running: current, reached } }) });
+      // given up meanwhile: the screen shows a button again, and no wait is kept behind it
+      if (!current()) return null;
       const now = Date.now();
       const mark = account === null ? null : { name, until: now + WAITING_MS, serverId, account, listedAt: now };
       pressed.current = mark?.until ?? null;
       keepAddPcWaiting(mark);
-      return { kind: "waiting", name, until: now + WAITING_MS, mark, resumed: false };
-    })().then(setState, (error: unknown) => {
+      return { kind: "waiting", name, until: now + WAITING_MS, mark, resumed: false, signedIn: as !== null };
+    })();
+    // a pressed listing keeps its button on screen meanwhile; one no press began shows none, so it is bounded
+    // an attempt given up, or whose screen went, while its window was still being opened: closed once it is open
+    if (as !== null) listing.then(() => {}, () => {}).then(() => { if (!current()) closeOpened(); });
+    (as === null ? listing : within(ADDING_MS, listing)).then((next) => { over(); if (next !== null && current()) setState(next); }, (error: unknown) => {
+      over();
+      if (!current()) return;
+      // what this attempt answers from now on (it got no answer in time) is dropped
+      attempt.current++;
       console.warn("Ovis: this PC was not listed in the account", error instanceof Error ? error.name : error);
-      setState({ kind: "error", message: error instanceof ApiError && error.code === "relay_off"
+      // nobody waits on the window a listing no press began opened
+      closeOpened();
+      // another sign-in, or none, is stored than the one that just finished here: nothing was listed, and the button lists under that one
+      if (as !== null && error instanceof AddPcWaitOver) { setState({ kind: "offer" }); return; }
+      const relayOff = error instanceof ApiError && error.code === "relay_off";
+      if (as !== null && relayOff) { setState({ kind: "relay-off", account: as, error: null }); return; }
+      setState({ kind: "error", message: relayOff
         ? relayAbove ? t("Turn on remote access through the Ovis relay above first.") : t("Turn on remote access through the Ovis relay in Settings → Devices and PCs first.")
-        : t("This PC could not be listed in your account. Try again.") });
+        // its entry was already on the way to the directory when the screen gave up: it may be listed all the same
+        : writing ? t("This PC may not have been listed in your account. Try again.") : t("This PC could not be listed in your account. Try again.") });
     });
   };
-  const stop = (): void => { keepAddPcWaiting(null); setState({ kind: "offer" }); };
+  /**
+   * A sign-in that just finished here through a button that said nothing of adding this PC: nothing is listed or
+   * opened. It gets the offer, and with the relay off the one button that turns it on and lists, under `account`.
+   */
+  const offerAfterSignIn = (account: string): void => {
+    const mine = ++attempt.current;
+    const current = (): boolean => attempt.current === mine;
+    const drop = (): void => { if (current()) attempt.current++; };
+    dropped.current = drop;
+    within(ANSWER_MS, fetchRelay()).then((relay) => relay.phase === "off", (error: unknown) => {
+      warned("Ovis: this PC's relay could not be read")(error);
+      return false;
+    }).then((off) => {
+      if (dropped.current === drop) dropped.current = null;
+      if (current()) setState(off ? { kind: "relay-off", account, error: null } : { kind: "offer" });
+    });
+  };
+  // what the relay's own switch says before it is turned on (Settings → Devices and PCs): this button turns it on too
+  const relayOff = state.kind === "relay-off";
+  const [closesGate, setClosesGate] = useState(false);
+  useEffect(() => {
+    if (!relayOff) return;
+    let live = true;
+    fetchBridgeHealth().then(({ security }) => { if (live) setClosesGate(security !== undefined && security.pairing_gate === "open" && !security.token_configured); },
+      warned("Ovis: this PC's access facts could not be read"));
+    return () => { live = false; };
+  }, [relayOff]);
+  /**
+   * The one press that turns the relay on and lists this PC, under the sign-in the button was offered to
+   * (`account`): with another one stored, or none, nothing is started and the plain offer comes back. A relay
+   * that may not start says why and nothing is listed; a start that does not answer within `ADDING_MS` gives
+   * the button back. Turning the relay on closes a device gate still open, which would shut out a browser in
+   * only because nothing is paired yet (auth via "open"). The PC refuses such a browser its account
+   * (server/dispatch.ts, owner_only), so this button is never offered to one; should how this browser is in
+   * have changed since, it pairs itself first, as the welcome's relay button does (SetupGuide), and the relay
+   * is not started when that, or reading how this browser is in, fails.
+   */
+  const startRelayAndAdd = (account: string): void => {
+    const mine = ++attempt.current;
+    starts.current++;
+    const current = (): boolean => attempt.current === mine;
+    // the screen shows no button meanwhile: a start that answers after its screen went lists nothing
+    const drop = (): void => { if (current()) attempt.current++; };
+    dropped.current = drop;
+    const over = (): void => { if (dropped.current === drop) dropped.current = null; };
+    setState({ kind: "adding" });
+    within(ADDING_MS, (async (): Promise<void> => {
+      const session = await accountService().session();
+      if (!current()) return;
+      if (session?.account !== account) { setState({ kind: "offer" }); return; }
+      const { auth } = await fetchBridgeHealth();
+      if (!current()) return;
+      if (auth?.via === "open") await pairThisBrowser();
+      if (!current()) return;
+      const status = await requestRelay("start");
+      if (!current()) return;
+      if (status.blocked !== null) { setState({ kind: "relay-off", account, error: statusText(t, status) }); return; }
+      if (status.phase === "off") { setState({ kind: "relay-off", account, error: t("The relay could not be turned on. Try again.") }); return; }
+      add(account);
+    })()).then(over, (error: unknown) => {
+      over();
+      if (!current()) return;
+      attempt.current++;
+      console.warn("Ovis: the relay was not turned on", error instanceof Error ? error.name : error);
+      setState({ kind: "relay-off", account, error: error instanceof UnconfirmedPairing
+        ? t("Could not confirm this browser is paired. Check that cookies are enabled, then try again.")
+        : t("The relay could not be turned on. Try again.") });
+    });
+  };
+  /**
+   * Stops waiting, in every copy of this screen, and closes the window on the PC so nothing more is taken;
+   * an older Ovis has no such route and lets it run out. A reopen or a listing still on its way to the PC may
+   * open the window again after that close: the wait's own effect closes it once more when they answer (`closeLate`),
+   * also a listing that was given up for getting no answer in time.
+   */
+  const stop = (): void => {
+    stops.current++;
+    keepAddPcWaiting(null);
+    setState({ kind: "offer" });
+    closeWindow();
+  };
   if (state.kind === "hidden") return null;
   return (
     <div className="settings-item account-add-pc">
-      {state.kind === "waiting" ? (
+      {state.kind === "adding" ? (
+        <p className="settings-description" role="status">{t("Signed in. Adding this PC to your account…")}</p>
+      ) : state.kind === "relay-off" ? (
         <>
+          <p className="settings-description">{t("Add this PC to your account, so every device of your account can use it with one approval.")}</p>
+          <p className="settings-description">{t("The Ovis relay lets your devices reach this PC from anywhere.")}</p>
+          {closesGate && <p className="settings-condition">{t("Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.")}</p>}
+          <button type="button" className="btn btn-primary" onClick={() => startRelayAndAdd(state.account)}>{t("Turn on the relay and add this PC")}</button>
+          {state.error !== null && <p className="settings-condition" role="alert">{state.error}</p>}
+        </>
+      ) : state.kind === "waiting" ? (
+        <>
+          {state.signedIn === true && <p className="settings-description">{t("Signed in. Adding this PC to your account…")}</p>}
           <p className="settings-description">{t("On a device already signed in to this account (the Ovis app or app.ovis.sh), choose Add on {name}. This screen then shows a six-digit number: type it there, then press Approve here. Keep this page open.", { name: state.name })}</p>
           <p className="settings-description">{t("Every device of your account can use this PC after that.")}</p>
           <p className="settings-description" role="status">{t("Waiting. The window reopens by itself if Ovis restarts.")}</p>
@@ -418,12 +703,12 @@ export function AddThisPc({ relayAbove = true, service }: {
       ) : state.kind === "expired" ? (
         <>
           <p className="settings-description" role="status">{t("This PC stopped waiting after 30 minutes.")}</p>
-          <button type="button" className="btn btn-primary" onClick={add}>{t("Keep waiting")}</button>
+          <button type="button" className="btn btn-primary" onClick={() => add()}>{t("Keep waiting")}</button>
         </>
       ) : (
         <>
           <p className="settings-description">{t("Add this PC to your account, so every device of your account can use it with one approval.")}</p>
-          <button type="button" className="btn btn-primary" onClick={add}>{t("Add this PC to my account")}</button>
+          <button type="button" className="btn btn-primary" onClick={() => add()}>{t("Add this PC to my account")}</button>
           {state.kind === "error" && <p className="settings-condition" role="alert">{state.message}</p>}
         </>
       )}
@@ -481,6 +766,10 @@ export function probeUntilReachable(probe: (live: () => boolean) => Promise<bool
 /** What Settings → Devices and PCs needs of the account: signed in or not, and the account's PCs for My devices. */
 export interface AccountState {
   signedIn: boolean; account: string | null; pcs: MyPc[] | null;
+  /** what the account signed in with; null signed out */
+  provider: AccountProvider | null;
+  /** the account's list was read and holds no PC (a list that could not be read is empty too, beside its error: not this) */
+  noPcs: boolean;
   /** false once the account service did not answer: the relay tab then offers the relay's own pairing (ConnectPhoneDialog) */
   reachable: boolean;
 }
@@ -512,8 +801,33 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
   const [unreachable, setUnreachable] = useState(false);
   /** a change to the ways in that waits for a fresh sign-in (403 reauth_required) */
-  const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | null>(null);
+  const [reauth, setReauth] = useState<{ action: "add" | "remove"; provider: AccountProvider } | { action: "delete"; provider: AccountProvider; deletion: Deletion } | null>(null);
+  /**
+   * Delete account was pressed once, for this sign-in: the same button now asks, says what goes, and its second press
+   * deletes this sign-in's account alone. A sign-out, a sign-in or another account shown drops the question.
+   */
+  const [deleteAsked, setDeleteAsked] = useState<AccountSession | null>(null);
+  /**
+   * The delete confirmed here, until it ends: a sign-out or a sign-in ends it, and every step of it after a wait (the
+   * sign-in again, the delete after it, what is drawn) goes on only while it is still this one.
+   */
+  const deletion = useRef<Deletion | null>(null);
+  /** the delete whose request is out: Delete account is held (disabled and busy) until it answers */
+  const [deleteOut, setDeleteOut] = useState<Deletion | null>(null);
+  /** the sign-in-again prompt, while it is for the account shown: a delete's prompt never carries over to another account */
+  const reauthShown = reauth !== null && (reauth.action !== "delete" || (view.kind === "signed-in" && reauth.deletion.session.account === view.account)) ? reauth : null;
   const deviceSignIn = useRef<AbortController | null>(null);
+  /**
+   * The sign-in that just finished on this screen, whether the button pressed for it said it adds this PC, and
+   * when it finished, until Add this PC takes it: only a sign-in whose button said so adds the PC by itself, and
+   * only for `SIGNED_IN_RETRY_MS`: one left untaken is none that just finished.
+   */
+  const signedInHere = useRef<(SignedInHere & { readonly at: number }) | null>(null);
+  const takeSignedInHere = useCallback((): SignedInHere | null => {
+    const fresh = signedInHere.current;
+    signedInHere.current = null;
+    return fresh !== null && Date.now() < fresh.at + SIGNED_IN_RETRY_MS ? { account: fresh.account, adds: fresh.adds } : null;
+  }, []);
   // the sign-in a device code actually started: the link page's, or a provider's own when it fell back
   const startedProvider = useRef<DeviceSignInProvider | null>(null);
   const service = bridge?.service ?? pcService;
@@ -544,7 +858,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     const show = (next: View) => { if (loads.current === generation) setView(next); };
     const service = new AccountService({ store: indexedAccountStore });
     const session = await service.session();
-    if (session === undefined) { show({ kind: "signed-out", error: null }); return; }
+    if (session === undefined) { signedInHere.current = null; show({ kind: "signed-out", error: null }); return; }
     const signedIn = { kind: "signed-in", provider: session.provider, account: session.account } as const;
     show({ ...signedIn, pcs: null, methods: null, limits: null, error: null });
     // the limits row is optional: read from the session's own service, apart, so it never holds up the rest
@@ -560,7 +874,11 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
       const { pcs, methods } = lists;
       setView((current) => ({ ...signedIn, pcs: myPcs(pcs, [], { now: Date.now() }), methods, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: null }));
     } catch (error) {
-      if (error instanceof SignedOutError) show({ kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") });
+      // a sign-in that ended is none that just finished: one stored again later (another tab) adds nothing by itself
+      if (error instanceof SignedOutError) {
+        if (loads.current === generation) signedInHere.current = null;
+        show({ kind: "signed-out", error: t("Your sign-in ended. Sign in again to see every PC of your account.") });
+      }
       else if (loads.current === generation) setView((current) => ({ ...signedIn, pcs: [], methods: null, limits: current.kind === "signed-in" && current.account === session.account ? current.limits : null, error: t("The account service could not be reached. The PCs this device is paired with still work.") }));
     }
   }, [t]);
@@ -577,10 +895,44 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   });
   useEffect(() => { recheckAccount(); }, [offered, load, recheck]);
   useEffect(() => {
-    onAccount?.({ signedIn: view.kind === "signed-in", account: view.kind === "signed-in" ? view.account : null, pcs: view.kind === "signed-in" ? view.pcs : null, reachable: !unreachable });
+    const signedIn = view.kind === "signed-in" ? view : null;
+    onAccount?.({ signedIn: signedIn !== null, account: signedIn?.account ?? null, pcs: signedIn?.pcs ?? null, provider: signedIn?.provider ?? null,
+      noPcs: signedIn !== null && signedIn.pcs !== null && signedIn.pcs.length === 0 && signedIn.error === null, reachable: !unreachable });
   }, [onAccount, view, unreachable]);
   // closing Settings ends a device sign-in still waiting: its session is then never kept
   useEffect(() => () => { deviceSignIn.current?.abort(); loads.current++; }, []);
+  // the link page's one button says what it leads to, only where the sign-in does add the PC: one in no account,
+  // with its relay on (the sign-in never turns it on), to a browser that drives it (a watching one lists nothing).
+  // What the button says at the press is what the sign-in does (`signIn`), so words read a moment ago never add
+  // the PC behind a plain "Sign in"; they follow the relay, which its switch in the same fold turns on and off:
+  // read again every few seconds while the page shows, and when Settings asks (`recheck`).
+  const signedOut = view.kind === "signed-out";
+  const [addsPc, setAddsPc] = useState(false);
+  useEffect(() => {
+    if (!linkPage || !signedOut) return;
+    let live = true;
+    /** whether this PC is in no account and this browser drives it; null until both were read */
+    let addable: boolean | null = null;
+    let reading = false;
+    const read = (): void => {
+      if (reading || pageHidden()) return;
+      reading = true;
+      within(ANSWER_MS, (async (): Promise<boolean> => {
+        const [facts, relay] = await Promise.all([
+          addable ?? Promise.all([thisPcInNoAccount(), fetchBridgeHealth()]).then(([none, { auth }]) => none && auth?.role !== "watch"),
+          fetchRelay(),
+        ]);
+        addable = facts;
+        return facts && relay.phase !== "off";
+      })()).then((adds) => { if (live) setAddsPc(adds); }, (error: unknown) => {
+        warned("Ovis: whether a sign-in adds this PC could not be read")(error);
+        if (live) setAddsPc(false);
+      }).finally(() => { reading = false; });
+    };
+    read();
+    const timer = setInterval(read, ADDED_POLL_MS);
+    return () => { live = false; clearInterval(timer); };
+  }, [linkPage, signedOut, recheck]);
 
   if (!offered) return null;
 
@@ -609,7 +961,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
   };
 
   /** A device sign-in on a PC's own page: shows the link page's or the provider's code until it is approved. */
-  const signInWithCode = (pcServiceOrigin: string, provider: DeviceSignInProvider): Promise<AccountSession> => {
+  const signInWithCode = (pcServiceOrigin: string, provider: DeviceSignInProvider, store: AccountStore = indexedAccountStore): Promise<AccountSession> => {
     cancelDeviceSignIn();
     const controller = new AbortController();
     deviceSignIn.current = controller;
@@ -619,8 +971,8 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
       const requester = { label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), os: deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0) };
       const started = provider === "ovis"
         // the link page busy or down: the provider's own device page instead, GitHub's where the service has it
-        ? await startLinkPageSignIn({ service: pcServiceOrigin, store: indexedAccountStore, requester }, offer?.device[0] ?? "github")
-        : await startDeviceSignIn({ service: pcServiceOrigin, store: indexedAccountStore, provider, requester });
+        ? await startLinkPageSignIn({ service: pcServiceOrigin, store, requester }, offer?.device[0] ?? "github")
+        : await startDeviceSignIn({ service: pcServiceOrigin, store, provider, requester });
       controller.signal.throwIfAborted();
       startedProvider.current = started.provider;
       setView({ kind: "device-code", provider: started.provider, userCode: started.userCode, verificationUri: started.verificationUri, verificationUriComplete: started.verificationUriComplete });
@@ -633,16 +985,30 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
    * link page, where the person picks GitHub or Google; a sign-in again for this same account passes
    * false, so it stays with the provider the account signed in with.
    */
-  const runSignIn = (provider: AccountProvider, viaLinkPage = linkPage): Promise<AccountSession> | null => {
-    if (bridge !== null) return desktopSignIn(provider, bridge, indexedAccountStore);
+  /** `store`: where the sign-in is kept; a sign-in again to delete holds it back (deleteAccount.ts, holdingSessionStore) */
+  const runSignIn = (provider: AccountProvider, viaLinkPage = linkPage, store: AccountStore = indexedAccountStore): Promise<AccountSession> | null => {
+    if (bridge !== null) return desktopSignIn(provider, bridge, store);
     if (pcService === null) return null;
-    if (viaLinkPage) return signInWithCode(pcService, "ovis");
-    return isDeviceProvider(provider) ? signInWithCode(pcService, provider) : null;
+    if (viaLinkPage) return signInWithCode(pcService, "ovis", store);
+    return isDeviceProvider(provider) ? signInWithCode(pcService, provider, store) : null;
   };
 
-  const signIn = (provider: AccountProvider): void => {
+  /**
+   * `addsPc`: what the button pressed said. Only a press of "Sign in and add this PC" adds the PC with the
+   * sign-in; a provider's own button, and the desktop app's, say nothing of it, so their sign-in adds nothing
+   * and Add this PC offers its button.
+   */
+  const signIn = (provider: AccountProvider, addsPc = false): void => {
+    deletion.current = null;
+    setDeleteAsked(null);
+    setReauth(null);
     if (bridge !== null) setView({ kind: "signing-in" });
-    runSignIn(provider)?.then(load, (error: unknown) => {
+    runSignIn(provider)?.then((session) => {
+      // this sign-in, and no other, is the one that just finished here (AddThisPc): it adds the PC without a
+      // second press only when its button said it would
+      signedInHere.current = { account: session.account, adds: addsPc, at: Date.now() };
+      return load();
+    }, (error: unknown) => {
       // cancelled, or Settings closed: the page already moved on
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
@@ -688,15 +1054,32 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
    * with the method this device uses, then repeat the change, on the same account only.
    */
   const signInAgain = (): void => {
-    if (reauth === null || view.kind !== "signed-in") return;
-    const { action, provider } = reauth;
+    if (reauthShown === null || view.kind !== "signed-in") return;
+    const { action, provider } = reauthShown;
     const { account, provider: current } = view;
+    const resumed = reauthShown.action === "delete" ? reauthShown.deletion : null;
+    if (resumed !== null && deletion.current !== resumed) return;
     setReauth(null);
-    runSignIn(current, false)?.then(async (session) => {
+    // a sign-in again for the same account is none that adds the PC: one left untaken does not outlive it either
+    signedInHere.current = null;
+    runSignIn(current, false, resumed === null ? indexedAccountStore : holdingSessionStore(indexedAccountStore))?.then(async (session) => {
+      if (resumed !== null) {
+        // kept only in the place of the sign-in the delete was asked for, while it is still on and still stored: a sign-out
+        // or another sign-in made meanwhile (here or in another tab) stays, and nothing is deleted
+        const goesOn = deletion.current === resumed && session.account === resumed.session.account && await installSignInAgain(indexedAccountStore, resumed.session, session, () => deletion.current === resumed);
+        if (deletion.current === resumed && !goesOn) deletion.current = null;
+        await load();
+        if (goesOn && deletion.current === resumed) runDelete(resumed, session);
+        return;
+      }
       await load();
       if (session.account !== account) return;
-      if (action === "add") addMethod(provider);
-      else removeMethod(provider);
+      switch (action) {
+        case "add": addMethod(provider); return;
+        case "remove": removeMethod(provider); return;
+        case "delete": return;
+        default: action satisfies never;
+      }
     }, async (error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
@@ -705,15 +1088,82 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     });
   };
 
+  /** The first press of Delete account: asks, for the sign-in stored now, when that is the account this section shows. */
+  const askDelete = (): void => {
+    if (deleteOut !== null) return;
+    setReauth(null);
+    void new AccountService({ store: indexedAccountStore }).session().then((session) => {
+      // another tab signed out, or in as someone else: the section reads what is stored now instead of asking
+      if (session === undefined || view.kind !== "signed-in" || session.account !== view.account) { void load(); return; }
+      setDeleteAsked(session);
+    }, (error: unknown) => console.warn("Ovis: the sign-in could not be read", error instanceof Error ? error.name : error));
+  };
+
+  /**
+   * Deletes the account of `session`, the sign-in the question was asked for or a sign-in again to its account
+   * (lib/account/deleteAccount.ts): one stored meanwhile (another tab) is never touched, and the section then reads
+   * it. The service wants a sign-in from the last ten minutes, as for a change to the ways in.
+   */
+  /** The confirming press: one delete, for the sign-in the question was asked for. */
+  const confirmDelete = (asked: AccountSession): void => {
+    if (deleteOut !== null) return;
+    const mine: Deletion = { session: asked };
+    deletion.current = mine;
+    runDelete(mine, asked);
+  };
+
+  /** One step of `mine`: deletes with `session` (its own sign-in, or a sign-in again to its account), while it is still on. */
+  const runDelete = (mine: Deletion, session: AccountSession): void => {
+    setDeleteAsked(null);
+    setDeleteOut(mine);
+    const service = new AccountService({ store: indexedAccountStore });
+    void deleteAccount({ service, accountStore: indexedAccountStore, session }).finally(() => {
+      setDeleteOut((out) => out === mine ? null : out);
+    }).then(() => {
+      // called off by a sign-out or a sign-in meanwhile: what that began is left be
+      if (deletion.current !== mine) return;
+      deletion.current = null;
+      cancelDeviceSignIn();
+      // a PC that waited to be added under the deleted account waits no longer
+      keepAddPcWaiting(null);
+      signedInHere.current = null;
+      loads.current++;
+      setReauth(null);
+      // a sign-in that took the deleted one's place while the delete was out stays (deleteAccount.ts): it is shown
+      void service.session().then((stored) => {
+        if (stored !== undefined) { void load(); return; }
+        setView((current) => current.kind === "signed-in" && current.account !== session.account ? current : { kind: "signed-out", error: null, notice: t("Your account was deleted.") });
+      }, () => { void load(); });
+    }, (error: unknown) => {
+      if (deletion.current !== mine) return;
+      console.warn("Ovis: the account was not deleted", error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
+      // the delete goes on only through the prompt to sign in again, which carries it
+      if (needsReauth(error)) { setReauth({ action: "delete", provider: session.provider, deletion: mine }); return; }
+      deletion.current = null;
+      // the sign-in ended meanwhile, or another took its place: the section reads what is stored now
+      if (error instanceof SignedOutError) { void load(); return; }
+      const message = error instanceof AccountServiceError && error.code === "subscription_active"
+        ? t("Cancel your subscription first, then delete the account.") : t("The account could not be deleted. Try again.");
+      setView((current) => current.kind === "signed-in" ? { ...current, error: message } : current);
+    });
+  };
+
   const signOut = (): void => {
+    deletion.current = null;
+    setDeleteAsked(null);
+    setReauth(null);
     cancelDeviceSignIn();
     // a PC that waited to be added under this sign-in waits no longer under the next one
     keepAddPcWaiting(null);
+    signedInHere.current = null;
     loads.current++;
     void new AccountService({ store: indexedAccountStore }).signOut()
       .catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error))
       .finally(() => setView({ kind: "signed-out", error: null }));
   };
+
+  /** the question Delete account asked, while the account it was asked for is the one shown */
+  const asked = view.kind === "signed-in" && deleteAsked?.account === view.account ? deleteAsked : null;
 
   const signInParts = (
     <>
@@ -722,11 +1172,12 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
           {linkPage
             ? (
               <div className="account-sign-in">
-                <button type="button" className="btn btn-primary account-provider" data-provider="ovis" onClick={() => signIn("github")}>{t("Sign in")}</button>
+                <button type="button" className="btn btn-primary account-provider" data-provider="ovis" onClick={() => signIn("github", addsPc)}>{addsPc ? t("Sign in and add this PC") : t("Sign in")}</button>
+                {view.notice !== undefined && view.error === null && <p className="account-fineprint account-notice" role="status">{view.notice}</p>}
                 {view.error !== null && <p className="account-error" role="alert">{view.error}</p>}
               </div>
             )
-            : <AccountSignIn onSignIn={signIn} error={view.error} providers={providers} />}
+            : <AccountSignIn onSignIn={(provider) => signIn(provider)} error={view.error} notice={view.notice ?? null} providers={providers} />}
         </div>
       )}
       {view.kind === "signing-in" && <SettingsRow label={t("Signing in…")} description={t("Finish signing in in your browser.")}>{null}</SettingsRow>}
@@ -769,7 +1220,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
     return (
       <div className="setup-signin">
         {view.kind === "signed-in"
-          ? <><p className="setup-signin-done" role="status">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}</p><AddThisPc relayAbove={false} /></>
+          ? <><p className="setup-signin-done" role="status">{t("Signed in with {provider}", { provider: PROVIDER_NAMES[view.provider] })}</p><AddThisPc relayAbove={false} signedInHere={takeSignedInHere} /></>
           : <>{welcome.lead}{signInParts}</>}
         {/* signed out only: a sign-in under way ends with its own Cancel, never folded away unnoticed by Not now */}
         {view.kind === "signed-out" && welcome.later}
@@ -816,7 +1267,7 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
                   </li>
                 ))}
               </ul>
-              {reauth !== null && (
+              {reauthShown !== null && reauthShown.action !== "delete" && (
                 <div className="account-reauth" role="alert">
                   <p className="settings-description">{bridge === null
                       // a sign-in again stays with this account's provider, at its own device page, never the link page's choice
@@ -837,8 +1288,29 @@ export function AccountSection({ onAccount, welcome, recheck = 0 }: {
               )}
             </div>
           )}
-          <AddThisPc />
+          {/* the page's "No PC in this account yet" would outlive the listing otherwise */}
+          <AddThisPc signedInHere={takeSignedInHere} onListed={() => { void load(); }} />
           {view.pcs !== null && onAccount === undefined && <div className="settings-item"><AccountPcList pcs={view.pcs} /></div>}
+          {/* last, and the same button asks before it deletes: what goes and what stays is said before the second press. A
+              PC's own page in a browser signs in with a device code or the link page, whose sign-in the service never lets
+              delete the account (web_sign_in_required): it says where to delete instead. */}
+          {bridge === null
+            ? <SettingsRow label={t("Delete account")} description={t("To delete your account, use the Ovis phone app, the desktop app or app.ovis.sh.")}>{null}</SettingsRow>
+            : <SettingsRow label={t("Delete account")}
+            description={asked !== null
+              ? <span role="status" data-testid="delete-account-says">{t("This deletes your Ovis account for good: your sign-in methods, your list of PCs and your plan. It cannot be undone. Devices stay paired with your PCs until you revoke them on each PC. A subscription that still renews has to be cancelled first.")}</span>
+              : t("Delete your Ovis account and everything the account service keeps for it.")}>
+            <button type="button" className={asked !== null ? "btn btn-danger" : "btn"} data-action="delete-account" data-confirm={asked !== null ? "delete-account" : undefined}
+              disabled={deleteOut !== null} aria-busy={deleteOut !== null ? "true" : undefined}
+              onClick={() => { if (asked !== null) confirmDelete(asked); else askDelete(); }}>{asked !== null ? t("Delete account for good?") : t("Delete account")}</button>
+            {asked !== null && <button type="button" className="btn btn-ghost" onClick={() => setDeleteAsked(null)}>{t("Cancel")}</button>}
+          </SettingsRow>}
+          {reauthShown?.action === "delete" && (
+            <div className="settings-item account-reauth" role="alert">
+              <p className="settings-description">{t("To delete your account, sign in again with {provider} first.", { provider: PROVIDER_NAMES[view.provider] })}</p>
+              <button type="button" className="btn btn-primary" onClick={signInAgain}>{t("Sign in again")}</button>
+            </div>
+          )}
           {view.error !== null && <p className="settings-condition" role="alert">{view.error}</p>}
         </>
       )}

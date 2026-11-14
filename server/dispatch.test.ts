@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleRequest, type ServerContext } from "./dispatch.ts";
@@ -250,4 +250,74 @@ it("refuses pairing without a code to an open LAN window, which never hears of a
     app.stop();
     rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+it("marks a socket that only the open LAN let in, one relayed to another PC too, and never one that holds the bridge token", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-open-mark-"));
+  const upstream = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(request, instance) { return instance.upgrade(request) ? undefined : new Response(null, { status: 426 }); },
+    websocket: { message() {} },
+  });
+  const endpoint = spyOn(MachineManager.prototype, "endpoint").mockImplementation((id) =>
+    id === "remote" ? { url: `http://127.0.0.1:${upstream.port}`, token: "remote" } : undefined);
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "", bridgeToken: "bridge-token", tailscaleOwner: null, sidecar: false });
+  const taken: { open?: boolean; bridge?: boolean; relay?: MachineRelay }[] = [];
+  const from = (address: string): ServerContext => ({
+    ...app.context, requestIP: () => ({ address }), timeout: () => {},
+    upgrade: (_request, options) => { taken.push(options.data); return true; },
+  });
+  const upgrade = async (ctx: ServerContext, path: string, headers: Record<string, string> = {}) => {
+    const response = await handleRequest(new Request(`http://127.0.0.1:${app.port}${path}`, { headers: { host: `127.0.0.1:${app.port}`, origin: `http://127.0.0.1:${app.port}`, ...headers } }), ctx);
+    expect(response).toBeUndefined();
+    return taken.at(-1)!;
+  };
+  try {
+    // another machine on the LAN while nothing is paired: the gate closing ends what it holds
+    const lan = from("192.168.0.20");
+    expect((await upgrade(lan, "/ws")).open).toBe(true);
+    const relayed = await upgrade(lan, "/ws?machine_id=remote");
+    expect([relayed.open, relayed.relay !== undefined]).toEqual([true, true]);
+    relayed.relay!.close();
+    // another Ovis server reading this PC over the address it is bound to: its bridge token let it in, whatever the gate
+    const bridged = await upgrade(lan, "/ws", { authorization: "Bearer bridge-token" });
+    expect([bridged.open, bridged.bridge]).toEqual([undefined, true]);
+    // a socket the same holder opens to another PC through this one is the open LAN's: the bridge token opens this
+    // PC's bridge, and a new request for that route is refused once the gate closes
+    const bridgedRelay = await upgrade(lan, "/ws?machine_id=remote", { authorization: "Bearer bridge-token" });
+    expect([bridgedRelay.open, bridgedRelay.relay !== undefined]).toEqual([true, true]);
+    bridgedRelay.relay!.close();
+    // this PC itself
+    expect((await upgrade(from("127.0.0.1"), "/ws")).open).toBeUndefined();
+  } finally {
+    app.stop(); endpoint.mockRestore(); upstream.stop(true);
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("tells the server's built version to a signed-in client only", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-dispatch-version-"));
+  const ping = spyOn(herdr, "ping").mockResolvedValue({ version: "fixture", protocol: 22, terminal_attach: false, terminal_mirror: true });
+  const built = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "owner-token", tailscaleOwner: null, machines: false, sidecar: false });
+  try {
+    const ctx: ServerContext = { ...app.context, requestIP: () => ({ address: "127.0.0.1" }), timeout() {}, upgrade() { throw new Error("Unexpected WebSocket upgrade"); } };
+    const health = async (headers: Record<string, string>, scope = "") =>
+      (await (await handleRequest(new Request(`http://127.0.0.1:${app.port}/api/health${scope}`, { headers: { host: `127.0.0.1:${app.port}`, ...headers } }), ctx))!.json()) as { auth: { authenticated: boolean; role?: string }; version?: unknown };
+    const owner = await health({ authorization: "Bearer owner-token" });
+    expect(owner.auth).toMatchObject({ authenticated: true, role: "drive" });
+    expect(owner.version).toBe(built);
+    const store = app.context.services.devices;
+    const watching = store.pair(store.startPairing().code, "Watcher", "watch");
+    if (!watching) throw new Error("Fixture pairing failed");
+    const watcher = await health({ cookie: `ovis_device=${watching.token}` });
+    expect(watcher.auth).toMatchObject({ authenticated: true, role: "watch" });
+    expect(watcher.version).toBe(built);
+    for (const headers of [{}, { authorization: "Bearer wrong" }] as Record<string, string>[]) {
+      const stranger = await health(headers);
+      expect(stranger.auth.authenticated).toBe(false);
+      expect(stranger).not.toHaveProperty("version");
+    }
+    expect(await health({}, "?scope=bridge")).not.toHaveProperty("version");
+  } finally { app.stop(); ping.mockRestore(); rmSync(stateDir, { recursive: true, force: true }); }
 });

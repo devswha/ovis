@@ -221,6 +221,8 @@ async function floors(browser: Browser, server: { port: number }): Promise<strin
       localStorage.setItem("ovis:settings", settings);
       // Files beside the pane is kept in a key of its own (lib/settings.ts)
       if (panel) localStorage.setItem("ovis:files-panel", "true");
+      // a phone's More carries the pane's actions (Rename pane, below) where its tabs are in the header (Settings -> Tabs on a phone)
+      localStorage.setItem("ovis:phone-tabs", JSON.stringify("header"));
     }, [JSON.stringify({ language: "en", theme: "dark", darkTheme: "codex", defaultView: "chat", alertsOn: false, ...settings }), filesPanel] as const);
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
@@ -322,7 +324,7 @@ async function scenario(browser: Browser, server: { port: number }, width: numbe
     assert.ok((await page.evaluate(() => (window as unknown as { tapTargetsHeld: number[] }).tapTargetsHeld)).includes(4500), `${label}: the demo's turn completion was held, so the plan chip stays at work`);
     await settle(page);
     await capture(page, label, "chat");
-    failures.push(...check(await measure(page, CHAT, phone), `${label} chat`));
+    failures.push(...check(await measure(page, chatTargets(phone), phone), `${label} chat`));
 
     await tap(".composer-controls-left .voice-mic");
     await page.locator('.composer .voice-pill.is-open[data-state="recording"]').waitFor();
@@ -347,7 +349,7 @@ async function scenario(browser: Browser, server: { port: number }, width: numbe
       await page.locator(".terminal-input .terminal-input-mic .voice-mic").waitFor();
       await settle(page);
       await capture(page, label, "terminal-line");
-      failures.push(...check(await measure(page, [...VIEW, ...LINE], phone), `${label} terminal line`));
+      failures.push(...check(await measure(page, [...view(phone), ...LINE], phone), `${label} terminal line`));
     }
     assert.deepEqual(errors, [], `${width}: no page errors`);
   } finally { await context.close(); }
