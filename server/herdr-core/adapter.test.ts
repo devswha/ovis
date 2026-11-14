@@ -1066,8 +1066,12 @@ describe("herdr-core adapter, new and closed terminals", () => {
     mkdirSync(join(linked, "src"));
     await expect(worktreeRemove("W", true, replacing.socket)).rejects.toMatchObject({ code: "worktree_not_found" });
     expect(existsSync(linked)).toBeTrue();
-    // and a checkout is removed once git says again that it is the one drawn
-    const removing = await labeling(start());
+    // and a checkout is removed once git says again that it is the one drawn: the workspace's own, though its shell has gone elsewhere since
+    const moving = start();
+    const removing = await labeling(moving);
+    await sessionSnapshot(removing.socket);
+    moving[1]!.cwd = repo;
+    expect((await sessionSnapshot(removing.socket)).workspaces.find((workspace) => workspace.workspace_id === "W")?.worktree).toMatchObject({ checkout_path: linked, is_linked_worktree: true });
     expect(await worktreeRemove("W", false, removing.socket)).toMatchObject({ type: "worktree_removed", path: linked, forced: false });
     expect(existsSync(linked)).toBeFalse();
     expect(removing.ends).toEqual(["kill t2", "rm t2"]);
