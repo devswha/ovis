@@ -130,7 +130,10 @@ jobs:
     name: Native macOS session identity
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: macos-15
+    # A stopgap: GitHub's arm64 macOS pool often gave this job no runner for 15 minutes, failing the run on the cancel,
+    # and the Intel pool takes jobs. GitHub has announced macos-15-intel's retirement, and on Intel this job no longer
+    # checks server/darwin-process.ts's kinfo_proc layout on a real arm64 Mac
+    runs-on: macos-15-intel
     timeout-minutes: 5
     env:
       HERDR_TEST_MODE: unit
