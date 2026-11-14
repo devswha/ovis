@@ -244,6 +244,19 @@ const near = (got: number, want: number, by: number, what: string): void => asse
 const sameBox = (got: Box, want: Box, what: string): void => {
   for (const side of ["x", "y", "w", "h"] as const) near(got[side], want[side], 0.5, `${what} (${side})`);
 };
+/** the rail's buttons from its top to its foot, as a pointer and a screen reader are told them, and where each stands */
+interface RailButton { kind: string; name: string | null; title: string | null; current: string | null; pressed: string | null; popup: string | null; expanded: string | null; glyph: string | null; box: Box }
+const railButtons = (page: Page): Promise<RailButton[]> => page.locator(".inbox-rail button").evaluateAll((nodes) => nodes.map((node) => {
+  const r = node.getBoundingClientRect();
+  return {
+    kind: [...node.classList].find((name) => name.startsWith("inbox-rail-") && name !== "inbox-rail-item") ?? "",
+    name: node.getAttribute("aria-label"), title: node.getAttribute("title"), current: node.getAttribute("aria-current"), pressed: node.getAttribute("aria-pressed"),
+    popup: node.getAttribute("aria-haspopup"), expanded: node.getAttribute("aria-expanded"),
+    glyph: node.querySelector("img.ovis-mark") ? "ovis-mark" : [...(node.querySelector("svg")?.classList ?? [])].find((name) => name.startsWith("lucide-")) ?? null,
+    box: { x: r.left, y: r.top, w: r.width, h: r.height, right: r.right, bottom: r.bottom },
+  };
+}));
+const railNames = async (page: Page): Promise<(string | null)[]> => (await railButtons(page)).map((button) => button.name);
 /** the list as a phone's screen: no header over it, and the mode's mark in the address */
 async function listScreen(page: Page): Promise<void> {
   await page.locator(".mode-inbox").waitFor();
@@ -884,18 +897,29 @@ try {
             assert.equal(await historyLength(page), entries + 1, "entering is one entry");
             assert.equal(await page.locator(".inbox-unchosen").textContent(), "Choose one from the list to open its chat here.");
             assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open while no agent is chosen");
-            for (const selector of [".tab-strip", ".view-switch", ".status-bar", "#drawer-toggle", "#workspace-drawer", ".sidebar-toggle", ".header-files-button", ".pane-split.is-split", ".mode-inbox time.inbox-time", ".header-more-dot"]) {
+            for (const selector of [".tab-strip", ".view-switch", ".status-bar", "#drawer-toggle", "#workspace-drawer", ".sidebar-toggle", ".header-files-button", ".pane-split.is-split", ".mode-inbox time.inbox-time"]) {
               assert.equal(await page.locator(selector).count(), 0, `the wide mode draws no ${selector}`);
             }
+            // the count a phone's More carries is the rail's from 769px: no other one is drawn
+            assert.equal(await page.locator(".header-more-dot").count(), await page.locator(".inbox-rail .header-more-dot").count(), "the wide mode draws no .header-more-dot but the rail's");
+            assert.equal(await page.locator('.inbox-rail .inbox-rail-waiting .header-more-dot.is-waiting[data-count="1"]').count(), 1, "the rail counts the one agent that waits");
             const column = await box(page, ".inbox-column");
             const pane = await box(page, ".pane-column");
             assert.deepEqual([column.x, column.w], [classic.sidebar.x, classic.sidebar.w], "the column is as wide as classic's sidebar");
             assert.deepEqual([pane.x, pane.w], [classic.pane.x, classic.pane.w], "the pane is as wide as in classic");
-            const [search, add, filter, more, exit] = await Promise.all([box(page, ".inbox-search-toggle"), box(page, ".inbox-add"), box(page, ".inbox-filter-toggle"), box(page, ".inbox-more"), box(page, ".inbox-exit")]);
-            for (const control of [search, add, filter, more]) assert.deepEqual([control.w, control.h], [34, 34], "a round control is 34px under a fine pointer");
-            near(add.x - search.right, 10, 2, "between the column's top controls"); near(column.right - add.right, 16, 1, "the top controls from the column's edge"); near(add.y, 12, 2, "from the top");
-            near(viewport.height - filter.bottom, 12, 2, "under the column's foot"); near(column.right - more.right, 16, 1, "the foot's controls from the column's edge"); near(more.x - filter.right, 8, 2, "between the foot's controls");
-            near(exit.x, 8, 2, "Back to Ovis at the foot's start");
+            // the rail is cut out of the column: the list begins where the rail ends and takes the rest
+            const [rail, list] = await Promise.all([box(page, ".inbox-column .inbox-rail"), box(page, ".inbox-column .mode-inbox")]);
+            assert.deepEqual([rail.x, rail.y, rail.w, rail.h], [column.x, 0, 58, viewport.height], "the rail is 58px wide at the column's start, from the window's top to its foot");
+            near(list.x, rail.right, 0.5, "the list begins where the rail ends"); near(list.right, column.right, 1, "the list ends at the column's seam");
+            const [search, filter, add] = await Promise.all([box(page, ".inbox-search-toggle"), box(page, ".inbox-filter-toggle"), box(page, ".inbox-add")]);
+            for (const control of [search, filter, add]) assert.deepEqual([control.w, control.h], [34, 34], "a round control is 34px under a fine pointer");
+            near(filter.x - search.right, 10, 2, "between the column's top controls"); near(add.x - filter.right, 10, 2, "between the column's top controls");
+            near(column.right - add.right, 16, 1, "the top controls from the column's edge");
+            for (const control of [search, filter, add]) near(control.y, 12, 2, "from the top");
+            // the column has no foot: its filter stands in its top row, and its More and its way out are the rail's
+            for (const selector of [".mode-inbox .inbox-foot", ".inbox-column .inbox-more", ".inbox-exit"]) assert.equal(await page.locator(selector).count(), 0, `the wide mode draws no ${selector}`);
+            const exit = await box(page, ".inbox-rail .inbox-rail-exit");
+            assert.deepEqual([exit.x, exit.y, exit.w, exit.h], [12, 12, 34, 34], "Back to Ovis at the rail's top, 12px from its top and from its sides");
             const wideRows = await page.locator(".mode-inbox .inbox-item").evaluateAll((items) => items.map((item) => {
               const r = item.querySelector(".inbox-row")!.getBoundingClientRect();
               const a = item.querySelector(".inbox-avatar")!.getBoundingClientRect();
@@ -904,7 +928,7 @@ try {
             near(wideRows[0]!.top - add.bottom, 16, 2, "the first row under the top controls");
             wideRows.forEach((item, index) => {
               near(item.bottom - item.top, 56, 2, "a wide row's height");
-              near(item.left - column.x, 12, 1, "a row's inset at the column's start"); near(column.right - item.right, 12, 1, "a row's inset at the column's end");
+              near(item.left - list.x, 12, 1, "a row's inset at the list's start, after the rail"); near(column.right - item.right, 12, 1, "a row's inset at the column's end");
               assert.equal(item.radius, "12px");
               assert.deepEqual(item.avatar, [32, 32, 8], "the mark is 32px, 8px inside the row");
               assert.deepEqual([item.nameSize, item.wordsSize], ["14px", "13px"]);
@@ -922,7 +946,7 @@ try {
             const threadEntries = await historyLength(page);
             const [chip, lens, paneMore] = await Promise.all([box(page, ".thread-chip"), box(page, ".thread-top .lens-toggle"), box(page, ".thread-top .header-more-button")]);
             const middle = (control: Box): number => control.y + control.h / 2;
-            for (const control of [add, chip, lens, paneMore]) near(middle(control), middle(search), 1, "the top controls and the chip on one centre line");
+            for (const control of [filter, add, exit, chip, lens, paneMore]) near(middle(control), middle(search), 1, "the top controls, the rail's first button and the chip on one centre line");
             near(chip.x + chip.w / 2, pane.x + pane.w / 2, 2, "the chip on the pane's middle");
             near(lens.y, 12, 2, "the pane's controls from its top"); near(pane.right - paneMore.right, 12, 2, "the pane's controls from its end");
             const lane = await page.evaluate(() => {
@@ -954,8 +978,9 @@ try {
             await monitor.click();
             await page.locator('.thread-top .lens-toggle[data-view="chat"]').waitFor();
 
-            // each side has a More of its own, and neither counts who waits: the list beside the thread shows it
-            assert.equal(await page.locator(".header-more-dot").count(), 0, "beside the list More carries no count");
+            // the one More of a wide window is the pane's, and it does not count who waits: the rail's count says it
+            assert.equal(await page.locator(".header-more-dot").count(), await page.locator(".inbox-rail .header-more-dot").count(), "beside the list More carries no count: the only one drawn is the rail's");
+            assert.equal(await page.locator('.inbox-rail .inbox-rail-waiting .header-more-dot.is-waiting[data-count="1"]').count(), 1, "the rail counts the agent that waits other than the open thread's");
             assert.equal(await page.locator(".thread-top .header-more-button").getAttribute("aria-label"), "More");
             await page.locator(".thread-top .header-more-button").click();
             await page.locator(".row-menu").waitFor();
@@ -964,15 +989,18 @@ try {
             for (const item of ["exit-inbox", "palette", "settings", "alerts", "next-waiting"]) assert.ok(!threadItems.includes(item), `the pane's More has no ${item}: ${threadItems.join()}`);
             await page.keyboard.press("Escape");
             await page.locator(".row-menu").waitFor({ state: "detached" });
-            await page.locator(".inbox-column .inbox-more").click();
-            await page.locator(".row-menu").waitFor();
-            assert.deepEqual(await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["palette", "alerts", "settings"], "the column's More holds the app's items, without the way out its foot holds");
-            await page.keyboard.press("Escape");
-            await page.locator(".row-menu").waitFor({ state: "detached" });
+            // the column has no More: the three items it held, and the way out its foot held, are buttons of the rail, each once
+            assert.equal(await page.locator(".inbox-column .inbox-more").count(), 0, "the column draws no More");
+            assert.deepEqual(await railNames(page), ["Back to Ovis", "Agent inbox", "Search panes and actions", "1 waiting for you", "Alerts", "Settings", "PC workstation · Connected"],
+              "the rail holds the way out and the app's items the column's More held, without a second one of any");
 
-            // the search field opens on request, takes the focus, and Escape puts it away once it is empty
+            // the search field opens on request, takes the focus and the top row, and Escape puts it away once it is empty
             await page.locator(".inbox-search-toggle").click();
             await page.waitForFunction(() => document.activeElement?.classList.contains("inbox-search-input") === true);
+            // the filter and New workspace give way while the field is open: a query has the row but the field's own button
+            for (const selector of [".mode-inbox .inbox-filter-toggle", ".mode-inbox .inbox-add"]) assert.equal(await page.locator(selector).count(), 0, `the open search field takes the row: no ${selector}`);
+            const [field, opener] = await Promise.all([box(page, ".inbox-search-input"), box(page, ".inbox-search-toggle")]);
+            near(field.x - list.x, 16, 1, "the open field from the list's start"); near(opener.x - field.right, 10, 2, "between the open field and its button"); near(column.right - opener.right, 16, 1, "the field's button from the column's edge");
             await page.keyboard.type("export");
             await rowCount(page, 1);
             await page.keyboard.press("Escape");
@@ -981,6 +1009,7 @@ try {
             await page.keyboard.press("Escape");
             await page.locator(".inbox-search-input").waitFor({ state: "detached" });
             assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-search-toggle") === true), true, "the search put away gives the focus to the button that opened it");
+            for (const selector of [".mode-inbox .inbox-filter-toggle", ".mode-inbox .inbox-add"]) assert.equal(await page.locator(selector).count(), 1, `the search put away, ${selector} is in the row again`);
 
             // a narrowed window is the phone layout with the thread kept, and back: the column's list, drawn again for
             // the wider window, leaves the focus in the composer the reader is typing in
@@ -996,21 +1025,33 @@ try {
             assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("composer-text") === true), true, "a list drawn again for a wider window takes no focus from the composer");
             await addressIs(page, { app: "inbox", pane: WORKING }, "a window narrowed and widened keeps the thread");
 
-            // Back from a thread is the list with no agent chosen; Back to Ovis at the foot opens the thread's pane in classic
+            // Back from a thread is the list with no agent chosen; the Ovis mark at the rail's top opens the thread's pane in classic
             await page.goBack();
             await page.locator(".inbox-unchosen").waitFor();
             assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0);
             await page.goForward();
             await page.locator(".thread-chip").waitFor();
-            assert.equal((await page.locator(".inbox-exit").textContent())?.trim(), "Back to Ovis");
-            await page.locator(".inbox-exit").click();
+            const wayOut = page.locator(".inbox-rail .inbox-rail-exit");
+            assert.deepEqual(await wayOut.evaluate((node) => [node.tagName, node.getAttribute("aria-label"), node.getAttribute("title"), node.querySelectorAll("img.ovis-mark").length]), ["BUTTON", "Back to Ovis", "Back to Ovis", 1],
+              "the Ovis mark at the rail's top is a button named, and titled, Back to Ovis");
+            const leaving = await historyLength(page);
+            await wayOut.click();
             await page.locator(".app-header.is-zoned").waitFor();
             await page.locator("#workspace-drawer").waitFor();
             assert.equal(await page.locator(".mode-inbox").count(), 0);
-            await addressIs(page, { app: null, pane: WORKING }, "Back to Ovis at the column's foot opens the thread's pane in the classic app");
+            assert.equal(await page.locator(".inbox-rail").count(), 0, "the rail leaves with the mode");
+            await addressIs(page, { app: null, pane: WORKING }, "Back to Ovis at the rail's top opens the thread's pane in the classic app");
+            assert.equal(await historyLength(page), leaving + 1, "leaving is one entry");
+            // the system Back undoes it: the mode again, on the thread it was left on
+            await page.goBack();
+            await page.locator(".inbox-column .inbox-rail").waitFor();
+            await page.locator(".thread-chip").waitFor();
+            await addressIs(page, { app: "inbox", pane: WORKING }, "Back from the classic app returns to the thread the mode was left on");
+            await page.goForward();
+            await page.locator(".app-header.is-zoned").waitFor();
             await page.locator("#workspace-drawer .inbox-foot-entry").click();
             await page.locator(".inbox-column .mode-inbox").waitFor();
-            pass(viewport.width === 1440 ? 24 : 25, `at ${at}: entered from More, the column is classic's sidebar (${column.w}px) and the pane classic's (${pane.w}px); 34px round controls on one centre line with the chip, 56px rows 4px apart with the open one current, the lane and the composer on one column; another row takes the thread's entry; the terminal is classic's size (${Math.round(terminal.w)} by ${Math.round(terminal.h)}); each side has its own More and neither counts who waits; a narrowed window keeps the thread; Back to Ovis at the foot and the sidebar's foot row lead out and in`);
+            pass(viewport.width === 1440 ? 24 : 25, `at ${at}: entered from More, the column is classic's sidebar (${column.w}px) and the pane classic's (${pane.w}px), the rail (${rail.w}px) cut out of the column and the list (${Math.round(list.w)}px) beside it; 34px round controls on one centre line with the rail's first button and the chip, the filter among them and no foot; 56px rows 4px apart with the open one current, the lane and the composer on one column; another row takes the thread's entry; the terminal is classic's size (${Math.round(terminal.w)} by ${Math.round(terminal.h)}); the one More is the pane's, and the rail holds the way out, the app's items and the count; the open search field takes the top row; a narrowed window keeps the thread; the Ovis mark at the rail's top leads out by one entry that Back undoes, and the sidebar's foot row leads in`);
           }, viewport);
         }
 
@@ -1055,7 +1096,7 @@ try {
           sameBox(await box(page, terminal), classic, "under the list the terminal keeps the box it had");
 
           // out again from the list: the pane is shown as it was
-          if (wide) await page.locator(".inbox-exit").click();
+          if (wide) await page.locator(".inbox-rail .inbox-rail-exit").click();
           else {
             await openSheet(page, ".inbox-more");
             await page.locator('.row-sheet [data-item="exit-inbox"]').tap();
@@ -1118,7 +1159,7 @@ try {
           await page.waitForTimeout(NO_RESIZE_WAIT_MS);
           assert.deepEqual((await frames()).slice(before), [], "entering the mode detaches no terminal, attaches none and sends no size or release");
 
-          await page.locator(".inbox-exit").click();
+          await page.locator(".inbox-rail .inbox-rail-exit").click();
           await page.locator(".mode-inbox").waitFor({ state: "detached" });
           await page.locator(".app-header.is-zoned").waitFor();
           // fixed wait: nothing may be sent for a split shown again as it was
@@ -1158,7 +1199,7 @@ try {
         // fixed wait: what the thread and the list's return send has gone out
         await page.waitForTimeout(NO_RESIZE_WAIT_MS);
         const before = await page.evaluate(() => window.inboxFixture.frames.length);
-        await page.locator(".inbox-exit").click();
+        await page.locator(".inbox-rail .inbox-rail-exit").click();
         await page.locator(".mode-inbox").waitFor({ state: "detached" });
         await page.locator(".app-header.is-zoned").waitFor();
         // fixed wait: the panes shown again have asked for what they ask for
@@ -1239,7 +1280,7 @@ try {
         await page.goBack();
         await page.locator(".inbox-unchosen").waitFor();
         await page.waitForFunction(() => document.querySelectorAll(".pane-slot").length === 2, undefined, { timeout: 5_000 });
-        await page.locator(".inbox-exit").click();
+        await page.locator(".inbox-rail .inbox-rail-exit").click();
         await page.locator(".mode-inbox").waitFor({ state: "detached" });
         await page.locator(".app-header.is-zoned").waitFor();
         // fixed wait: no size or release may be sent for the split shown again
@@ -1311,7 +1352,7 @@ try {
         assert.deepEqual(shown, [threadGrid], "showing the terminal in the thread asks once, for the grid the thread draws");
 
         // Back to Ovis from that thread: one size, classic's again
-        await page.locator(".inbox-exit").click();
+        await page.locator(".inbox-rail .inbox-rail-exit").click();
         await page.locator(".mode-inbox").waitFor({ state: "detached" });
         await page.locator(".app-header.is-zoned").waitFor();
         assert.deepEqual(await sizedAfter(before + 1, "the classic app after the thread"), [grid], "Back to Ovis from the thread asks once, for classic's grid");
@@ -1347,10 +1388,10 @@ try {
         await rowCount(page, 6);
         await row(page, WORKING).click();
         await page.locator(".thread-chip").waitFor();
-        await page.locator(".inbox-exit").click();
+        await page.locator(".inbox-rail .inbox-rail-exit").click();
         await page.locator(".mode-inbox").waitFor({ state: "detached" });
         await page.locator(".app-header.is-zoned").waitFor();
-        // the foot's button went with the column: the focus is on the classic header's sidebar toggle
+        // the rail's button went with the column: the focus is on the classic header's sidebar toggle
         await page.waitForFunction(() => document.activeElement?.classList.contains("sidebar-toggle") === true, undefined, { timeout: 5_000 });
         console.log("PASS Back to Ovis leaves the focus on the classic header's toggle: the drawer's on a phone, the sidebar's on a wide window");
       }, desktop);
@@ -1586,7 +1627,7 @@ try {
           }
           for (const [selector, over, pressed] of [
             [`.mode-inbox .inbox-item[data-pane="${BLOCKED}"] .inbox-row`, sideHover, rowPress],
-            [".inbox-exit", sideHover, rowPress],
+            [".inbox-rail .inbox-rail-exit", sideHover, rowPress],
             [".inbox-column .inbox-search-toggle", hover, strong],
             [".thread-top .header-more-button", hover, strong],
           ] as const) {
@@ -1614,11 +1655,14 @@ try {
           await rowCount(page, 6);
           const measure = () => page.evaluate(() => {
             const column = document.querySelector(".inbox-column")!.getBoundingClientRect();
+            // the rows' start inset is from the list's own start: the rail stands before the list in the column
+            const rail = document.querySelector(".inbox-column .inbox-rail")!.getBoundingClientRect();
+            const list = document.querySelector(".inbox-column .mode-inbox")!.getBoundingClientRect();
             const scroller = document.querySelector<HTMLElement>(".inbox-column .inbox-scroll")!;
             const rows = [...scroller.querySelectorAll(".inbox-row")].map((node) => node.getBoundingClientRect());
             return {
               bar: scroller.offsetWidth - scroller.clientWidth, scrolls: scroller.scrollHeight > scroller.clientHeight, sideways: scroller.scrollWidth - scroller.clientWidth,
-              start: rows.map((rect) => rect.left - column.left), end: rows.map((rect) => column.right - rect.right), width: rows.map((rect) => rect.width),
+              start: rows.map((rect) => rect.left - list.left), end: rows.map((rect) => column.right - rect.right), width: rows.map((rect) => rect.width), listStart: list.left - rail.right,
             };
           });
           const tall = await measure();
@@ -1628,7 +1672,8 @@ try {
           const short = await measure();
           assert.ok(short.bar > 0, `this browser's scrollbar takes room: ${short.bar}px`);
           for (const [name, facts] of [["without a scrollbar", tall], ["under a scrollbar", short]] as const) {
-            for (const inset of [...facts.start, ...facts.end]) near(inset, 12, 0.5, `a row's inset from the column's edge ${name}`);
+            assert.equal(facts.listStart, 0, `the list begins where the rail ends ${name}`);
+            for (const inset of [...facts.start, ...facts.end]) near(inset, 12, 0.5, `a row's inset from the list's start and the column's end ${name}`);
           }
           assert.deepEqual(short.width, tall.width, "the rows are as wide under the scrollbar as without it");
           assert.equal(short.sideways, 0, "nothing scrolls sideways");
@@ -1748,7 +1793,11 @@ try {
         const wide = viewport.width >= 769;
         const at = `${wide ? "a wide window" : "a phone"}, ${route}`;
         await withPage(browser, base, light, path, `the list while the connection is lost, on ${at}`, async (page) => {
+          // a phone's list says the word in a line of its own; from 769px the list draws none and the rail's PC says it
           const line = page.locator(".mode-inbox .inbox-top .inbox-connection");
+          const pc = page.locator(".inbox-rail .inbox-rail-pcs");
+          const dot = pc.locator(".inbox-rail-dot");
+          const status = page.locator(wide ? '.inbox-rail > [role="status"]' : '.mode-inbox .inbox-top [role="status"]');
           if (route === "entered from a pane") {
             // the pane's own connection is up before the list covers it
             await page.locator(".conn-live").waitFor({ state: "attached" });
@@ -1768,65 +1817,102 @@ try {
           }
           await rowCount(page, 6);
           assert.equal(await line.count(), 0, "connected, the list draws no line");
-          assert.equal(await page.locator('.mode-inbox .inbox-top [role="status"]').count() >= 1, true, "the status line is in the document before it has a word");
+          if (wide) {
+            assert.equal(await page.locator('.mode-inbox .inbox-top [role="status"]').count(), 0, "the wide list has no line for the connection, drawn or only said");
+            assert.deepEqual([await dot.count(), await pc.getAttribute("aria-label"), await pc.getAttribute("title")], [0, "PC workstation · Connected", "PC workstation · Connected"],
+              "connected, the rail's PC draws no dot and says so in its name and its tooltip");
+          }
+          assert.equal(await status.count() >= 1, true, "the status line is in the document before it has a word");
           // the stream that feeds the roster has opened (its first roster came): only a stream that was had can be lost;
           // a cold list draws its rows from the roster's first read, which can come before the stream opens
           await page.waitForFunction(() => window.inboxFixture.rosters > 0, undefined, { timeout: 15_000 });
           // the bridge's connection is lost: the page's sockets, and the stream that feeds the roster
           await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
-          await line.waitFor();
-          assert.equal(await line.getAttribute("role"), "status", "the line is a status");
-          const drawn = await line.evaluate((node) => {
-            const box = node.getBoundingClientRect();
-            const style = getComputedStyle(node);
-            // the two tokens as the browser computes them where the line stands
-            const probe = document.createElement("span");
-            probe.style.cssText = "color: var(--text-dim); font-size: var(--fs-xs)";
-            node.parentElement!.append(probe);
-            const want = { color: getComputedStyle(probe).color, size: getComputedStyle(probe).fontSize };
-            probe.remove();
-            // a round control of the same top row: what the line is drawn like where it floats over the rows
-            const control = document.querySelector(".mode-inbox .inbox-top .inbox-round");
-            const disc = control?.getBoundingClientRect();
-            const surface = (of: CSSStyleDeclaration) => ({ fill: of.backgroundColor, edge: `${of.borderTopWidth} ${of.borderTopStyle} ${of.borderTopColor}`, shadow: of.boxShadow });
-            return {
-              centre: box.left + box.width / 2, left: box.left, size: style.fontSize, color: style.color, want,
-              middle: box.top + box.height / 2, height: box.height, radius: Number.parseFloat(style.borderTopLeftRadius),
-              surface: surface(style), round: control ? surface(getComputedStyle(control)) : null, discMiddle: disc ? disc.top + disc.height / 2 : null,
-            };
-          });
-          assert.deepEqual([drawn.color, drawn.size], [drawn.want.color, drawn.want.size], "the line is --text-dim at --fs-xs");
           if (wide) {
-            // the column's top row floats over nothing: a plain line, with no surface of its own
-            assert.deepEqual([drawn.surface.fill, drawn.surface.shadow], ["rgba(0, 0, 0, 0)", "none"], "in the column the line has no fill and no shadow");
-            assert.match(drawn.surface.edge, /^0px /, "in the column the line has no edge");
+            // the list alone, with no thread's chip to say it: the rail's PC draws its dot, and the list still draws no line
+            await dot.waitFor();
+            assert.equal(await line.count(), 0, "lost, the wide list draws no line: the rail's PC says it");
+            const lost = await pc.evaluate((button) => {
+              const mark = button.querySelector(".inbox-rail-dot")!;
+              const glyph = button.querySelector("svg")!.getBoundingClientRect();
+              const box = mark.getBoundingClientRect();
+              const style = getComputedStyle(mark);
+              // the two tokens as the browser computes them where the dot stands
+              const probe = document.createElement("span");
+              probe.style.cssText = "position: absolute; color: var(--status-reconnecting); width: var(--dot-size)";
+              button.parentElement!.append(probe);
+              const want = { fill: getComputedStyle(probe).color, size: getComputedStyle(probe).width };
+              probe.remove();
+              return {
+                state: mark.className, hidden: mark.getAttribute("aria-hidden"), fill: style.backgroundColor, size: [`${box.width}px`, `${box.height}px`], want,
+                ring: style.outlineColor, on: getComputedStyle(button).backgroundColor, pulse: style.animationName,
+                corner: [box.left + box.width / 2 - glyph.right, box.top + box.height / 2 - glyph.bottom],
+                name: button.getAttribute("aria-label"), title: button.getAttribute("title"), said: button.closest(".inbox-rail")!.querySelector('[role="status"]')?.textContent ?? null,
+              };
+            });
+            assert.deepEqual([lost.name, lost.title, lost.said], ["PC workstation · Reconnecting…", "PC workstation · Reconnecting…", "Reconnecting…"], "lost, the rail's PC says Reconnecting… in its name and its tooltip, and its status line says it");
+            assert.deepEqual([lost.state, lost.hidden], ["inbox-rail-dot is-reconnecting", "true"], "its dot is drawn for the lost connection, as a drawing: the name says the word");
+            assert.deepEqual([lost.fill, lost.size], [lost.want.fill, [lost.want.size, lost.want.size]], "the dot is --status-reconnecting at --dot-size");
+            assert.equal(lost.ring, lost.on, "the dot is ringed with the fill its button stands on");
+            assert.equal(lost.pulse, "pulse", "the dot pulses, as the header's connection dot does while it reconnects");
+            for (const offset of lost.corner) assert.ok(Math.abs(offset) <= 4, `the dot hangs on the glyph's lower end corner: it is ${lost.corner.join(", ")}px from it`);
           } else {
+            await line.waitFor();
+            assert.equal(await line.getAttribute("role"), "status", "the line is a status");
+            const drawn = await line.evaluate((node) => {
+              const box = node.getBoundingClientRect();
+              const style = getComputedStyle(node);
+              // the two tokens as the browser computes them where the line stands
+              const probe = document.createElement("span");
+              probe.style.cssText = "color: var(--text-dim); font-size: var(--fs-xs)";
+              node.parentElement!.append(probe);
+              const want = { color: getComputedStyle(probe).color, size: getComputedStyle(probe).fontSize };
+              probe.remove();
+              // a round control of the same top row: what the line is drawn like where it floats over the rows
+              const control = document.querySelector(".mode-inbox .inbox-top .inbox-round");
+              const disc = control?.getBoundingClientRect();
+              const surface = (of: CSSStyleDeclaration) => ({ fill: of.backgroundColor, edge: `${of.borderTopWidth} ${of.borderTopStyle} ${of.borderTopColor}`, shadow: of.boxShadow });
+              return {
+                centre: box.left + box.width / 2, left: box.left, size: style.fontSize, color: style.color, want,
+                middle: box.top + box.height / 2, height: box.height, radius: Number.parseFloat(style.borderTopLeftRadius),
+                surface: surface(style), round: control ? surface(getComputedStyle(control)) : null, discMiddle: disc ? disc.top + disc.height / 2 : null,
+              };
+            });
+            assert.deepEqual([drawn.color, drawn.size], [drawn.want.color, drawn.want.size], "the line is --text-dim at --fs-xs");
             // over the rows it is a small round pill on the round controls' raised surface, on their centre line
             assert.deepEqual(drawn.surface, drawn.round, "a phone's line is drawn on the round controls' surface: their fill, hairline edge and shadow");
             assert.notEqual(drawn.surface.shadow, "none", "the pill casts the controls' shadow");
             assert.ok(drawn.radius >= drawn.height / 2, `the pill is fully round: a radius of ${drawn.radius} for a height of ${drawn.height}`);
             assert.ok(drawn.discMiddle !== null, "a round control stands in a phone's top row");
             near(drawn.middle, drawn.discMiddle, 0.5, "the pill stands on the round controls' centre line");
+            near(drawn.centre, viewport.width / 2, 1, "the line is centred between the two top controls");
           }
-          if (wide) near(drawn.left, 16, 1, "the line leads the column's top row");
-          else near(drawn.centre, viewport.width / 2, 1, "the line is centred between the two top controls");
           // Connected is said for two seconds: caught in the mutation that draws it, so a slow run cannot miss it. A
           // connection that never comes back fails the step by a deadline, and the page's observer goes either way
-          const back = await page.evaluate(() => new Promise<string>((resolve, reject) => {
-            const top = document.querySelector(".mode-inbox .inbox-top")!;
+          const back = await page.evaluate(([zone, word]) => new Promise<{ said: string; dot: string | null; name: string | null }>((resolve, reject) => {
+            const top = document.querySelector(zone!)!;
             const deadline = window.setTimeout(() => { observer.disconnect(); reject(new Error("the list never said Connected within 15 s")); }, 15_000);
             const observer = new MutationObserver(() => {
-              const said = top.querySelector(".inbox-connection")?.textContent ?? "";
-              if (said === "Connected") { observer.disconnect(); window.clearTimeout(deadline); resolve(said); }
+              const said = top.querySelector(word!)?.textContent ?? "";
+              if (said !== "Connected") return;
+              observer.disconnect();
+              window.clearTimeout(deadline);
+              resolve({ said, dot: top.querySelector(".inbox-rail-dot")?.className ?? null, name: top.querySelector(".inbox-rail-pcs")?.getAttribute("aria-label") ?? null });
             });
             observer.observe(top, { subtree: true, childList: true, characterData: true, attributes: true });
             window.herdrDemoRestoreConnection();
             window.inboxFixture.restoreRoster();
             window.dispatchEvent(new Event("online"));
-          }));
-          assert.equal(back, "Connected", "back, the line says so");
-          await line.waitFor({ state: "detached" });
-          console.log(`PASS on ${at} the list says Reconnecting… in one quiet line (${wide ? "a plain line leading the column's top row" : "a round pill on the round controls' surface and centre line"}) while the connection is lost, Connected when it is back, and then nothing`);
+          }), wide ? [".inbox-rail", '[role="status"]'] : [".mode-inbox .inbox-top", ".inbox-connection"]);
+          assert.equal(back.said, "Connected", "back, the line says so");
+          if (wide) {
+            assert.deepEqual([back.dot, back.name], ["inbox-rail-dot is-connected", "PC workstation · Connected"], "back, the rail's PC draws the connected dot for as long as the word is said");
+            await dot.waitFor({ state: "detached" });
+            assert.equal(await line.count(), 0, "and the wide list drew no line at any point");
+          } else await line.waitFor({ state: "detached" });
+          console.log(wide
+            ? `PASS on ${at} the rail's PC says Reconnecting… in its name, its tooltip and its status line, and draws its pulsing dot, while the connection is lost on the list alone; Connected with the connected dot when it is back, and then no dot; the wide list draws no line`
+            : `PASS on ${at} the list says Reconnecting… in one quiet line (a round pill on the round controls' surface and centre line) while the connection is lost, Connected when it is back, and then nothing`);
         }, viewport);
       }
 
@@ -1844,7 +1930,11 @@ try {
         await page.evaluate(() => { window.herdrDemoLoseConnection(); window.inboxFixture.dropRoster(); });
         await page.locator(".thread-chip-state.is-reconnecting").waitFor();
         assert.equal(await page.locator(".inbox-column .inbox-top .inbox-connection").count(), 0, "the column does not say what the thread's chip says");
-        console.log("PASS on a wide window a lost connection is said once, by the thread's chip, while the column's word would say the same");
+        // nor does the rail's PC, which says the list's word from 769px: no dot, and nothing in its status line, while
+        // the chip says the same word. Its name still says how the PC stands
+        assert.deepEqual(await page.locator(".inbox-rail").evaluate((rail) => [rail.querySelectorAll(".inbox-rail-dot").length, rail.querySelector('[role="status"]')?.textContent ?? null, rail.querySelector(".inbox-rail-pcs")?.getAttribute("aria-label") ?? null]),
+          [0, "", "PC workstation · Reconnecting…"], "the rail's PC draws no dot and announces nothing while the thread's chip says the same word");
+        console.log("PASS on a wide window a lost connection is said once, by the thread's chip: the list draws no line and the rail's PC no dot while they would say the same word");
       }, desktop);
 
       // ---- a list whose load failed ----
@@ -1951,7 +2041,10 @@ try {
         // the thread closed under its More: the list with no agent chosen, and no menu left over it
         await page.locator(".inbox-unchosen").waitFor();
         await page.locator(".row-menu").waitFor({ state: "detached" });
-        assert.equal(await page.locator(".inbox-column .inbox-more").getAttribute("aria-expanded"), "false", "the column's More does not claim the menu the pane's More left");
+        // the column has no More to claim the menu the pane's More left, and none of its controls that open a menu says it has one open
+        assert.equal(await page.locator(".inbox-column .inbox-more").count(), 0, "the column draws no More");
+        assert.deepEqual(await page.locator(".inbox-column [aria-haspopup]").evaluateAll((nodes) => [...new Set(nodes.map((node) => node.getAttribute("aria-expanded")))]), ["false"],
+          "no control of the column claims the menu the pane's More left");
         await addressIs(page, { app: "inbox", pane: null }, "Back from the thread is the list's address");
         console.log("PASS the system Back from a wide thread with the pane's More open closes the menu with its button, and shows the list with no agent chosen");
       }, desktop);
@@ -2007,7 +2100,7 @@ try {
         // fixed wait: nothing may be sent for any pane on the way in
         await page.waitForTimeout(NO_RESIZE_WAIT_MS);
         assert.deepEqual(await sent(before), [], "entering from a pane on its terminal sends no attach, detach, size or release");
-        await page.locator(".inbox-exit").click();
+        await page.locator(".inbox-rail .inbox-rail-exit").click();
         await page.locator(".app-header.is-zoned").waitFor();
         await page.locator('.view-switch .lens-option.is-terminal[aria-pressed="true"]').waitFor();
         await addressIs(page, { app: null, pane: WORKING }, "Back to Ovis shows the pane the classic app was on");
@@ -2084,7 +2177,7 @@ try {
         const listTop = await scrollOf(list);
 
         // the mode -> classic: the thread's pane, with its draft
-        await page.locator(".inbox-exit").click();
+        await page.locator(".inbox-rail .inbox-rail-exit").click();
         await page.locator(".app-header.is-zoned").waitFor();
         await addressIs(page, { app: null, pane: BLOCKED }, "Back to Ovis shows the thread's pane in the classic app");
         assert.ok(await draftIs(draftY), `the classic app's composer has the thread's draft: it has "${await composer.inputValue()}"`);
@@ -2165,7 +2258,7 @@ try {
           assert.equal(await page.locator('.mode-inbox .inbox-row[aria-current="true"]').count(), 0, "no row is open");
           // fixed wait: nothing may be sent for a pane under the list
           await page.waitForTimeout(NO_RESIZE_WAIT_MS);
-          await page.locator(".inbox-exit").click();
+          await page.locator(".inbox-rail .inbox-rail-exit").click();
           await page.locator(".mode-inbox").waitFor({ state: "detached" });
           await page.locator(".app-header.is-zoned").waitFor();
           // fixed wait: nothing may be sent for the panes shown again as they were
@@ -2221,7 +2314,7 @@ try {
         await page.locator(".inbox-column .mode-inbox").waitFor();
         await page.locator(".inbox-unchosen").waitFor();
         assert.equal(await page.locator(".thread-chip").count(), 0, "no thread is opened for a pane with no row");
-        await page.locator(".inbox-exit").click();
+        await page.locator(".inbox-rail .inbox-rail-exit").click();
         await page.locator(".app-header.is-zoned").waitFor();
         await addressIs(page, { app: null, pane: shell }, "Back to Ovis shows the shell's pane as it was");
         console.log(`PASS a pane with no row in the list (${shell}, a shell) is entered on the list with nothing chosen, and Back to Ovis shows it again`);
