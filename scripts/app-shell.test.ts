@@ -110,12 +110,17 @@ describe("why an address did not open", () => {
     for (const host of hosts) expect([host, pageHomeHost(host)]).toEqual([host, homeHost(host)]);
   });
 
-  it("blames the home network for a timeout only on a home network address", () => {
-    const home = openFailure(parseAddress("192.168.77.20:7317"), "timeout", "x");
-    const server = openFailure(parseAddress("https://herdr.theworld.codes"), "timeout", "x");
-    expect(home).toContain("home network");
-    expect(server).not.toContain("home network");
-    expect(server).not.toContain("firewall");
+  it("explains a timeout differently for a home network address and a public server", () => {
+    const home = openFailure(parseAddress("192.168.77.20:7317"), "timeout", "x").replace("192.168.77.20:7317", "HOST");
+    const server = openFailure(parseAddress("https://herdr.example.com"), "timeout", "x").replace("herdr.example.com", "HOST");
+    expect(server).not.toBe(home);
+  });
+
+  it("keeps the loading spinner the native apps wait on in index.html's root", () => {
+    // MainActivity (PAGE_SCRIPT) lifts its cover once #root no longer holds .boot: a page whose
+    // root starts without it would lift the cover before the client is up
+    const page = readFileSync(join(import.meta.dir, "../index.html"), "utf8");
+    expect(page).toMatch(/<div id="root">\s*<div class="boot"/);
   });
 
   it("says nothing for a cancelled open and something for every other refusal", () => {

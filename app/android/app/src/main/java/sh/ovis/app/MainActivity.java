@@ -121,6 +121,12 @@ public class MainActivity extends BridgeActivity {
     private String openingPc;
     private long pageBytes = -1;
 
+    /** Whether the PC's page and all it starts with have loaded: a stall after that is the client not starting, which waiting does not help. */
+    private boolean pageLoaded;
+
+    /** How often the PC's page, once shown, is asked whether the client is up: the cover lifts within this of its first frame. */
+    private static final long PAGE_POLL_MS = 200;
+
     /**
      * Asked of the PC's page each second while the cover is up: whether the client is up (its root
      * no longer holds index.html's loading spinner; null when the page has no root, so it is not
@@ -134,14 +140,14 @@ public class MainActivity extends BridgeActivity {
         "  const loading = document.readyState === 'loading';" +
         "  if (!loading && window.__ovisOpeningSize === undefined) {" +
         "    window.__ovisOpeningSize = -1;" +
-        "    const files = [location.href.split('#')[0], ...Array.from(document.querySelectorAll('script[src], link[rel=stylesheet][href], link[rel=modulepreload][href]'), (e) => e.src || e.href)];" +
+        "    const files = [location.origin + location.pathname, ...Array.from(document.querySelectorAll('script[src], link[rel=stylesheet][href], link[rel=modulepreload][href]'), (e) => e.src || e.href)];" +
         "    Promise.all(files.map((file) => fetch(file, { method: 'HEAD', credentials: 'include', cache: 'no-store' }).then((r) => {" +
         "      const size = Number(r.headers.get('content-length'));" +
         "      if (!r.ok || !(size > 0)) throw new Error('no size');" +
         "      return size;" +
         "    }))).then((sizes) => { window.__ovisOpeningSize = sizes.reduce((a, b) => a + b, 0); }, () => { window.__ovisOpeningSize = 0; });" +
         "  }" +
-        "  return JSON.stringify({ client: root ? !root.querySelector(':scope > .boot') && !loading : null, size: window.__ovisOpeningSize ?? -1 });" +
+        "  return JSON.stringify({ client: root ? !root.querySelector(':scope > .boot') && !loading : loading ? false : null, size: window.__ovisOpeningSize ?? -1 });" +
         "})()";
 
     /** The PC's name or address, as the cover names it, and its host:port, as the error page's reason names it. */
@@ -403,6 +409,8 @@ public class MainActivity extends BridgeActivity {
                         // loading spinner, for minutes on a slow link
                         pageShown = true;
                         if (url == null || !PCStore.belongs(url, pc)) hideOpening();
+                        // from here the cover lifts as soon as the client is up, not at the next tick
+                        else answerTimer.post(MainActivity.this::pollPage);
                     }
 
                     @Override
@@ -416,6 +424,7 @@ public class MainActivity extends BridgeActivity {
                         PCStore.pendingStart = null;
                         PCStore.fail(null, null);
                         PCStore.redirects = 0;
+                        pageLoaded = true;
                         keepIfOvis(pc, url);
                     }
                 }
@@ -572,6 +581,13 @@ public class MainActivity extends BridgeActivity {
         answerTimer.postDelayed(this::watchOpening, 1000);
     }
 
+    /** Every PAGE_POLL_MS once the PC's page is shown, while the cover is up and the app in front: is the client up yet. */
+    private void pollPage() {
+        if (openingView == null || isFinishing() || isDestroyed()) return;
+        askPage();
+        answerTimer.postDelayed(this::pollPage, PAGE_POLL_MS);
+    }
+
     /** Asks the PC's page, once it has answered, whether the client is up and how big its files are (PAGE_SCRIPT). */
     private void askPage() {
         WebView view = bridge.getWebView();
@@ -598,6 +614,7 @@ public class MainActivity extends BridgeActivity {
         if (openingView != null && watch != null) {
             answerTimer.removeCallbacksAndMessages(null);
             answerTimer.post(this::watchOpening);
+            if (pageShown) answerTimer.post(this::pollPage);
         }
     }
 
@@ -621,6 +638,11 @@ public class MainActivity extends BridgeActivity {
         String text;
         if (stage == OpeningWatch.Stage.SLOW) {
             text = (ko ? "연결이 느립니다. " + openingLabel + " 여는 중…" : "Slow connection. Still opening " + openingLabel + "…") + amount;
+        } else if (stage == OpeningWatch.Stage.STALLED && pageLoaded) {
+            // everything arrived, and the client still did not start: nothing more is coming
+            text = ko
+                ? openingLabel + "의 페이지는 받았지만 앱이 시작되지 않았습니다."
+                : "The page from " + openingLabel + " arrived, but the app did not start.";
         } else if (stage == OpeningWatch.Stage.STALLED) {
             long seconds = OpeningWatch.STALL_MS / 1000;
             text = ko
@@ -636,7 +658,7 @@ public class MainActivity extends BridgeActivity {
         openingBar.setIndeterminate(permille < 0);
         if (permille >= 0) openingBar.setProgress(permille);
         openingSpinner.setVisibility(bar ? View.GONE : stage == OpeningWatch.Stage.STALLED ? View.INVISIBLE : View.VISIBLE);
-        openingKeep.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.VISIBLE : View.GONE);
+        openingKeep.setVisibility(stage == OpeningWatch.Stage.STALLED && !pageLoaded ? View.VISIBLE : View.GONE);
         openingRetry.setVisibility(stage == OpeningWatch.Stage.STALLED ? View.VISIBLE : View.GONE);
     }
 
