@@ -142,13 +142,16 @@ export function sentenceHoles(tip: ScreenBox, controls: readonly ScreenBox[]): S
 
 /**
  * What a row's sentence must not lie on: the other rows' controls, and every other control in its dialog, as the
- * page's Back above the first row and a button in another row's condition. The pointer there is the control's.
+ * page's Back above the first row, a fold's toggle (a summary) and a button in another row's condition. The pointer
+ * there is the control's.
  */
 function sentenceControls(row: HTMLElement): HTMLElement[] {
   const rowControls = [...(row.closest(".modal-body") ?? document).querySelectorAll<HTMLElement>(".settings-row")].filter((other) => other !== row)
     .flatMap((other) => [...other.children].filter((child): child is HTMLElement => child instanceof HTMLElement && !child.classList.contains("settings-row-text")));
-  const others = [...(row.closest("[role='dialog']") ?? row.closest(".modal-body") ?? document).querySelectorAll<HTMLElement>("button, a[href], input, select, textarea")]
-    .filter((control) => !row.contains(control) && control.closest(".settings-help, .settings-help-copy") === null && !rowControls.some((side) => side.contains(control)));
+  const others = [...(row.closest("[role='dialog']") ?? row.closest(".modal-body") ?? document).querySelectorAll<HTMLElement>("button, a[href], input, select, textarea, summary")]
+    // a control in another row's own controls is counted with them; one in a row's text (its condition) is not
+    .filter((control) => !row.contains(control) && control.closest(".settings-help, .settings-help-copy") === null
+      && (control.closest(".settings-row") === null || control.closest(".settings-row > .settings-row-text") !== null));
   return [...rowControls, ...others];
 }
 
