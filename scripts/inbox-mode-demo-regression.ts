@@ -2514,6 +2514,13 @@ try {
           const button = open.controls[1]!.box;
           near(button.h, button.w, 0.1, "the field's button is round");
           assert.ok(button.w <= 44 && button.w >= 24, `the field's button is no larger than 44px and no smaller than a pointer's least target: ${button.w}px`);
+          assert.equal(await page.evaluate(() => document.activeElement?.classList.contains("inbox-search-input") === true), true, "the folded field opens with the focus in it");
+          // empty, Escape folds it again: the focus goes to Search, and the filter and New workspace are back in the row
+          await page.keyboard.press("Escape");
+          await page.locator(".mode-inbox .inbox-search").waitFor({ state: "hidden" });
+          await page.waitForFunction(() => document.activeElement?.classList.contains("inbox-search-toggle") === true, undefined, { timeout: 5_000 });
+          const folded = await topRow(page);
+          assert.deepEqual(folded.controls.map((each) => each.kind), ["inbox-search-toggle", "inbox-filter-toggle", "inbox-add"], "folded again, the row is Search, the filter and New workspace");
           console.log(`PASS in a list narrowed to ${171 - safe}px by a ${safe}px side safe area, under a coarse pointer with the sidebar at its least width, the three top controls shrink together to ${size.toFixed(1)}px, round, with their glyphs whole, inside the list and clear of the rail and of each other; an open search field (${Math.round(open.controls[0]!.box.w)}px) stands beside its ${button.w.toFixed(1)}px button; nothing scrolls sideways`);
         }, desktop, true);
       }
@@ -2718,14 +2725,13 @@ try {
         await page.keyboard.press("Shift+Tab");
         assert.equal(await stop(), "inbox-rail-exit", "Shift+Tab goes back up the rail");
 
-        // Enter presses a rail button: the bell, which switches this device's alerts and keeps the focus
-        const bell = page.locator(".inbox-rail .inbox-rail-alerts");
-        await bell.focus();
+        // Enter presses a rail button: the gear, whose Settings give the focus back to it when Escape closes them
+        await page.locator(".inbox-rail .inbox-rail-settings").focus();
         await page.keyboard.press("Enter");
-        await page.waitForFunction(() => document.querySelector(".inbox-rail .inbox-rail-alerts")?.getAttribute("aria-pressed") === "false");
-        await page.keyboard.press("Enter");
-        await page.waitForFunction(() => document.querySelector(".inbox-rail .inbox-rail-alerts")?.getAttribute("aria-pressed") === "true");
-        await focused("inbox-rail-alerts", "the bell pressed by Enter keeps the focus");
+        await page.locator(".settings-dialog").waitFor();
+        await page.keyboard.press("Escape");
+        await page.locator(".settings-dialog").waitFor({ state: "detached" });
+        await focused("inbox-rail-settings", "Settings closed gives the focus back to the rail's gear");
         // Space presses one too: the list of PCs, a menu that gives the focus back to its button when it closes
         const pcs = page.locator(".inbox-rail .inbox-rail-pcs");
         const menu = page.locator('.row-menu[role="menu"][aria-label="PCs"]');
@@ -2750,9 +2756,27 @@ try {
         await page.locator(".inbox-column .inbox-rail").waitFor();
         await page.locator(".thread-chip").waitFor();
         await addressIs(page, { app: "inbox", pane: WORKING }, "Back returns to the thread the mode was left on");
-        console.log(`PASS the keyboard's order is the rail's six buttons from the Ovis mark down to the PC, the list's search field, filter and New workspace, its ${listed.length} rows, the column's resize grip, then the thread, and Shift+Tab goes back; Enter and Space press a rail button; the palette and the list of PCs give the focus back to their buttons; Enter on the Ovis mark leaves the mode by one entry that Back undoes`);
+        console.log(`PASS the keyboard's order is the rail's six buttons from the Ovis mark down to the PC, the list's search field, filter and New workspace, its ${listed.length} rows, the column's resize grip, then the thread, and Shift+Tab goes back; Enter and Space press a rail button; Settings and the list of PCs give the focus back to their buttons; Enter on the Ovis mark leaves the mode by one entry that Back undoes`);
       }, desktop);
       // ---- each press of the rail ----
+      // with the list alone beside an empty pane, the pane's More holds the palette alone: its one way there for a
+      // pointer or a finger, the rest of the app's items being the rail's buttons
+      await withPage(browser, base, light, "/?app=inbox", "the palette from the pane's More with the list alone", async (page) => {
+        await page.locator(".inbox-column .mode-inbox").waitFor();
+        await rowCount(page, 6);
+        assert.equal(await page.locator(".thread-chip").count(), 0, "no thread is open");
+        await page.locator(".thread-top .header-more-button").click();
+        await page.locator(".row-menu").waitFor();
+        assert.deepEqual(await page.locator(".row-menu [data-item]").evaluateAll((items) => items.map((item) => item.getAttribute("data-item"))), ["palette"],
+          "the More over the empty pane holds the palette alone");
+        await page.locator('.row-menu [data-item="palette"]').click();
+        await page.locator(".command-palette").waitFor();
+        await page.keyboard.press("Escape");
+        await page.locator(".command-palette").waitFor({ state: "detached" });
+        await addressIs(page, { app: "inbox", pane: null }, "the list is still alone");
+        console.log("PASS with the list alone beside an empty pane the pane's More holds Search panes and actions alone, which opens the command palette");
+      }, desktop);
+
       await withPage(browser, base, light, "/?app=inbox", "the rail's presses: the palette, alerts, Settings and the list of PCs", async (page) => {
         // this device has answered the browser's question about notifications, with no: Alerts is then a plain switch
         await page.context().addInitScript(() => { Object.defineProperty(Notification, "permission", { configurable: true, get: () => "denied" }); });
