@@ -1015,14 +1015,17 @@ install_lock() {
   trap 'install_unlock; exit 129' HUP
   trap 'install_unlock; exit 130' INT
   trap 'install_unlock; exit 143' TERM
+  # a run cut off between its lock's rename and its removal left that folder: the holder removes it, before its own
+  # rename may need the same name
+  rm -rf "$lock".gone-*
 }
 install_unlock() {
   if [ -n "${lock:-}" ] && [ "$(cat "$lock/pid" 2>/dev/null || true)" = "$$" ]; then install_lock_drop; fi
   trap - EXIT HUP INT TERM
 }
 # The lock folder leaves in one rename, to a name of this run's own, and is removed there. rm -rf in place unlinks
-# the pid a moment before the folder: a waiter whose mkdir does not refuse could claim the lock in that moment, and
-# the folder it holds would then not be removed (Directory not empty), failing the run that let it go
+# the pid a moment before the folder: a waiter could claim the lock in that moment (its pid file is created wherever
+# none is), and the folder it holds would then not be removed (Directory not empty), failing the run that let it go
 install_lock_drop() {
   mv "$lock" "$lock.gone-$$" && rm -rf "$lock.gone-$$"
 }
