@@ -303,7 +303,8 @@ function readSaved(file: string, offFile: string): Saved | null {
       replaced_forgotten: value["replaced_forgotten"] === true,
       forgotten: typeof value["forgotten"] === "number" && Number.isSafeInteger(value["forgotten"]) && value["forgotten"] >= 0 ? value["forgotten"] : 0,
       visits_after_notice: true,
-      settings: seenVersion >= SETTINGS_NOTICE_VERSION ? telemetrySettings(value["settings"]) : null,
+      // an older build kept a snapshot told before its notice too: one from a file without the mark waits for a page to tell it again
+      settings: seenVersion >= SETTINGS_NOTICE_VERSION && value["visits_after_notice"] === true ? telemetrySettings(value["settings"]) : null,
       active: noticeSeenAt !== null && value["usage_after_notice"] === true ? active : withoutUsage(active),
       usage_after_notice: true,
       // counted only once the current notice was shown: a file whose notice is older keeps none
@@ -369,7 +370,7 @@ export class Telemetry {
     }
     // the environment forbids sending: as an off, whatever was kept and not sent is deleted, so none of it goes once the
     // variable is removed
-    if (this.blocked() && this.writable && (this.saved.active.length > 0 || this.saved.counts.length > 0 || this.saved.settings !== null)) {
+    if (this.blocked() && this.writable) {
       this.forgetUnsent();
       try { this.persist(); } catch (error) {
         console.error(`telemetry: ${this.file} could not be written (${error instanceof Error ? error.message : String(error)})`);
@@ -394,6 +395,16 @@ export class Telemetry {
 
   private persist(): void {
     mkdirSync(this.options.stateDir, { recursive: true, mode: 0o700 });
+    // an off another server wrote since this one read the file: what this one holds is from before it, so it is not
+    // written back, and the counter is never lowered
+    const onDisk = readSaved(this.file, this.offFile);
+    if (onDisk && onDisk.forgotten > this.saved.forgotten) {
+      this.saved.forgotten = onDisk.forgotten;
+      this.saved.active = [];
+      this.saved.counts = [];
+      this.saved.settings = null;
+      this.saved.replaced_forgotten = true;
+    }
     const temp = `${this.file}.${process.pid}.tmp`;
     writeFileSync(temp, JSON.stringify(this.saved), { mode: 0o600 });
     renameSync(temp, this.file);
@@ -494,7 +505,7 @@ export class Telemetry {
     if (clean.notice_seen && this.saved.notice_seen_at === null) this.saved.notice_seen_at = new Date(this.now()).toISOString();
     // kept for the next install/update event, only once the notice that names it was seen (the page sends it with its
     // acknowledgement) and while the counts are on; telling it sends nothing by itself
-    if (clean.settings !== undefined && this.saved.notice_seen_at !== null && this.saved.enabled) this.saved.settings = clean.settings;
+    if (clean.settings !== undefined && this.saved.notice_seen_at !== null && this.saved.enabled && !this.blocked()) this.saved.settings = clean.settings;
     this.persist();
     // and again after: an on from another server between the two writes cannot leave this off without its mark
     if (clean.enabled === false) this.markOff();
@@ -829,6 +840,7 @@ export class Telemetry {
     if (!event || !this.saved.enabled || Number.isNaN(seen) || this.blocked()) return Promise.resolve();
     const wait = seen + (this.options.noticeGraceMs ?? NOTICE_GRACE_MS) - this.now();
     if (wait > 0) { this.schedule(wait); return Promise.resolve(); }
+    const forgotten = this.saved.forgotten;
     const abort = new AbortController();
     this.abort = abort;
     this.sending = (async () => {
@@ -843,6 +855,8 @@ export class Telemetry {
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         this.refresh();
+        // an off since it was built: the event is from before it, and what it reported is not taken as the boundary
+        if (this.saved.forgotten !== forgotten) return;
         this.saved.reported_version = event.version;
         this.saved.replaced_forgotten = false;
         this.persist();
