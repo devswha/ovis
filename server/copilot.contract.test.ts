@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { testSocketPath } from "../scripts/test-herdr.ts";
 import { createServer } from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
-import { herdrRpc, paneProcessInfo, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { herdrRpc, paneProcessInfo, sessionSnapshot, subscribeEvents, type Subscription, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
 import { processEnviron } from "./omo.ts";
@@ -32,12 +32,37 @@ async function fixtureInFront(pane: string, session: string): Promise<number | u
   return (await paneProcessInfo(pane))?.foreground_processes?.find((process) => process.argv?.includes(executable) && process.argv.includes(session))?.pid;
 }
 
-/** The test herdr's last log lines without its per-request ones: why it kept or dropped an agent is told there or nowhere. */
+/**
+ * The test herdr's last log lines without its per-request ones: what its detection probes changed (`agent changed`)
+ * and its warnings. Not an agent's exit: herdr 0.9.3 reports that without a log line, so only the pane's agent events
+ * (`recordAgentEvents`) show it, and no `agent=None` line after a quit proves nothing.
+ */
 function herdrLogTail(): string {
   const log = join(dirname(testSocketPath()), "herdr-server.log");
   try {
     return fs.readFileSync(log, "utf8").split("\n").filter((line) => line && !line.includes('event="api.request.')).slice(-25).join("\n");
   } catch (error) { return `no herdr log at ${log}: ${error instanceof Error ? error.message : String(error)}`; }
+}
+
+/**
+ * herdr's agent events for `pane` from the moment herdr started the subscription, each with when it came. Only for a
+ * failure's message: it waits for herdr's acknowledgement at most 2 s and never fails a test itself.
+ */
+async function recordAgentEvents(pane: string): Promise<{ events: { at: number; text: string }[]; close: () => void }> {
+  const events: { at: number; text: string }[] = [];
+  const note = (text: string) => events.push({ at: performance.now(), text });
+  let subscription: Subscription | undefined;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => { note("herdr did not start the subscription within 2 s"); resolve(); }, 2_000);
+    const settle = () => { clearTimeout(timer); resolve(); };
+    subscription = subscribeEvents([{ type: "pane.agent_detected" }, { type: "pane.agent_status_changed", pane_id: pane }], {
+      onStarted: settle,
+      onEvent: ({ event, data }) => { if (data?.["pane_id"] === pane) note(`${event} ${JSON.stringify(data)}`); },
+      onError: (error) => { note(`subscription error: ${error.message}`); settle(); },
+      onClose: () => { note("herdr closed the subscription"); settle(); },
+    });
+  });
+  return { events, close: () => subscription?.close() };
 }
 
 async function startFixture(pane: string, session: string, flags = "") {
@@ -523,21 +548,27 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   // only herdr's detection of the exit drops the label and that session
   const quitting = await fixtureInFront(pane, id);
   if (quitting === undefined) throw new Error(`the stand-in for ${id} is not in front of ${pane}: ${JSON.stringify((await paneProcessInfo(pane))?.foreground_processes)}`);
-  await herdrRpc("pane.send_text", { pane_id: pane, text: ":quit\n" });
-  const quitState = async () => {
-    const label = (await sessionSnapshot()).panes.find((p) => p.pane_id === pane);
-    const state = (() => { try { return fs.readFileSync(`/proc/${quitting}/stat`, "utf8").split(") ")[1]?.split(" ")[0] ?? "?"; } catch { return "gone"; } })();
-    return JSON.stringify({ pid: quitting, state, front: (await paneProcessInfo(pane))?.foreground_processes?.map((process) => [process.pid, process.argv]), agent: label?.agent, status: label?.agent_status, session: label?.agent_session });
-  };
-  for (const deadline = Date.now() + 10_000; (await paneProcessInfo(pane))?.foreground_processes?.some((process) => process.pid === quitting);) {
-    if (Date.now() > deadline) throw new Error(`isolated fixture did not exit: ${await quitState()}\nherdr log:\n${herdrLogTail()}`);
-    await Bun.sleep(50);
-  }
-  const released = await herdrRpc("pane.release_agent", { pane_id: pane, source: "herdr:copilot", agent: "copilot" });
-  for (const deadline = Date.now() + 10_000; (await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot";) {
-    if (Date.now() > deadline) throw new Error(`herdr still names the quit stand-in: ${await quitState()}; pane.release_agent answered ${JSON.stringify(released)}\nherdr log:\n${herdrLogTail()}`);
-    await Bun.sleep(50);
-  }
+  // what herdr reports for the pane from before the quit: its exit shows there (the agent going to null), not in its log
+  const agentEvents = await recordAgentEvents(pane);
+  try {
+    const quitAt = performance.now();
+    await herdrRpc("pane.send_text", { pane_id: pane, text: ":quit\n" });
+    const quitState = async () => {
+      const label = (await sessionSnapshot()).panes.find((p) => p.pane_id === pane);
+      const state = (() => { try { return fs.readFileSync(`/proc/${quitting}/stat`, "utf8").split(") ")[1]?.split(" ")[0] ?? "?"; } catch { return "gone"; } })();
+      return JSON.stringify({ pid: quitting, state, front: (await paneProcessInfo(pane))?.foreground_processes?.map((process) => [process.pid, process.argv]), agent: label?.agent, status: label?.agent_status, session: label?.agent_session });
+    };
+    const recorded = () => `herdr agent events for ${pane}, ms from the quit:\n${agentEvents.events.map(({ at, text }) => `${Math.round(at - quitAt)} ${text}`).join("\n") || "none"}`;
+    for (const deadline = Date.now() + 10_000; (await paneProcessInfo(pane))?.foreground_processes?.some((process) => process.pid === quitting);) {
+      if (Date.now() > deadline) throw new Error(`isolated fixture did not exit: ${await quitState()}\n${recorded()}\nherdr log:\n${herdrLogTail()}`);
+      await Bun.sleep(50);
+    }
+    const released = await herdrRpc("pane.release_agent", { pane_id: pane, source: "herdr:copilot", agent: "copilot" });
+    for (const deadline = Date.now() + 10_000; (await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot";) {
+      if (Date.now() > deadline) throw new Error(`herdr still names the quit stand-in: ${await quitState()}; pane.release_agent answered ${JSON.stringify(released)}\n${recorded()}\nherdr log:\n${herdrLogTail()}`);
+      await Bun.sleep(50);
+    }
+  } finally { agentEvents.close(); }
   await startFixture(pane, other);
   await report(other, 4);
   expect((await read()).turns[0]?.parts[0]?.text).toBe("session B");
