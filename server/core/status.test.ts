@@ -2708,10 +2708,15 @@ describe("the status hub's GJC turn at rest under its background job", () => {
   async function gjcPane(records: string, h = hub()) {
     const path = join(root, `gjc-background-${++transcripts}.jsonl`);
     writeFileSync(path, records);
-    discovery = spyOn(gjc, "gjcPanes").mockResolvedValue(new Map([[pane.pane_id, { path, startedAt: null }]]));
+    let running = true;
+    discovery = spyOn(gjc, "gjcPanes").mockImplementation(async () => new Map(running ? [[pane.pane_id, { path, startedAt: null }]] : []));
     h.herdrSays(pane);
     await h.status.gjc.refresh([pane]);
-    return { ...h, append: (...records: string[]) => appendFileSync(path, records.join("")) };
+    return { ...h,
+      append: (...records: string[]) => appendFileSync(path, records.join("")),
+      /** whether discovery finds gjc in the pane from now on */
+      found: (now: boolean) => { running = now; },
+    };
   }
   /** a GJC pane whose turn started a background job and came to rest */
   async function waiting(h = hub()) {
@@ -2721,6 +2726,38 @@ describe("the status hub's GJC turn at rest under its background job", () => {
     await g.status.gjc.poll();
     return g;
   }
+
+  it("ends the wait when gjc leaves the pane, herdr telling it before discovery does", async () => {
+    // Given a GJC pane at rest on a job.
+    const h = await waiting();
+    expect(h.last()).toEqual({ status: "done", tasks: 1, bg: true });
+    // When gjc exits: herdr says the shell is back, and only then does discovery stop finding gjc.
+    const shell = { ...pane, agent: null, agent_status: "unknown" };
+    h.herdrSays(shell);
+    handlers.onStatus(pane.pane_id, "unknown", null);
+    h.found(false);
+    await h.status.gjc.refresh([shell]);
+    // Then nothing holds the pane, in frames or in the snapshot.
+    expect(h.last().bg).toBe(false);
+    expect((await h.snapshot()).panes[0]?.background_wait).toBeUndefined();
+  });
+
+  it("keeps the wait through a discovery that misses gjc while herdr still names it", async () => {
+    // Given a GJC pane at rest on a job.
+    const h = await waiting();
+    // When the next periodic discovery misses gjc (its process lookup failed) while herdr's snapshot still names it.
+    const from = Date.now();
+    h.found(false);
+    setSystemTime(from + 5_000);
+    await h.status.gjc.refresh([pane]);
+    expect(h.status.gjc.runs(pane.pane_id)).toBe(false);
+    // Then the wait stands, and goes on once the one after finds gjc again.
+    expect((await h.status.clientSnapshot()).panes[0]).toMatchObject({ background_wait: true });
+    h.found(true);
+    setSystemTime(from + 10_000);
+    await h.status.gjc.refresh([pane]);
+    expect((await h.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+  });
 
   it("reads BG, not DONE, while a job the turn started runs, and alerts the finish once its delivery is answered", async () => {
     // Given a GJC pane whose turn starts a background subagent and ends.

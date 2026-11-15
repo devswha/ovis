@@ -157,6 +157,14 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onChange: (paneId, derived, background, turn, rest) => gjcChanged(paneId, derived, turn, rest, "gjc", background),
     // what another agent's turn left waiting in the pane is not GJC's (owns)
     onFound: (paneId, again) => { completions.adopt(paneId, "gjc", []); if (!again) waits.forget(paneId); },
+    // gjc left the pane: what its turn waited on is over. One herdr still names gjc was only missed by
+    // this discovery, and goes on with its wait when found again (`again`)
+    onLost: (paneId, agent) => {
+      if (agent === "gjc") return;
+      const held = waits.waiting(paneId);
+      waits.forget(paneId);
+      if (held) waitEnded(paneId);
+    },
   }, omo);
   /** each Letta pane's status as its own title last said it, where nothing else gave one (letta-status.ts lettaTitleStatus) */
   const lettaTitled = new Map<string, AgentStatus>();
@@ -575,14 +583,17 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (changed) push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
   }
 
-  /** A wait ran out (its work ended and no turn followed, or it was held as long as one is): the status it stood for. */
+  /** A pane's wait ended with no status after it: the status it stood for. */
+  function waitEnded(paneId: string): void {
+    const status = completions.current(paneId);
+    if (status === undefined) return;
+    broadcastAll(paneStatus(paneId, status));
+    push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
+  }
+
+  /** A wait ran out (its work ended and no turn followed, or it was held as long as one is). */
   function waitsRanOut(): void {
-    for (const paneId of waits.tick()) {
-      const status = completions.current(paneId);
-      if (status === undefined) continue;
-      broadcastAll(paneStatus(paneId, status));
-      push.onStatus(paneId, alertStatus(status, waits.waiting(paneId))).catch(logPushError);
-    }
+    for (const paneId of waits.tick()) waitEnded(paneId);
   }
 
   /** A pane's plan moved on: keep its current status and background wait, and alert nothing. */

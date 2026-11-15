@@ -172,6 +172,8 @@ export interface OmoStatusDeps {
   onChange: (paneId: string, status: AgentStatus, background: number, turn: boolean, rest?: OmoRest) => void;
   /** a pane was found to run OmO: what herdr called it until now is the same agent */
   onFound?: (paneId: string, again: boolean) => void;
+  /** discovery no longer finds the agent in a pane it held: `agent` is what herdr's snapshot calls the pane now */
+  onLost?: (paneId: string, agent: string | null) => void;
   /** the identity the panes' status is reported under (`omo`), and the names herdr gave the agent before */
   agent?: string;
   aliases?: readonly string[];
@@ -339,6 +341,7 @@ export class OmoStatus {
         if (found.has(paneId)) continue;
         this.remember(paneId, gone);
         this.panes.delete(paneId);
+        this.deps.onLost?.(paneId, panes.find((pane) => pane.pane_id === paneId)?.agent ?? null);
       }
       for (const paneId of [...this.last.keys()]) if (!cwds.has(paneId)) this.last.delete(paneId);
       for (const [paneId, pane] of found) {
