@@ -676,6 +676,10 @@ try {
         await palette.waitFor();
         await page.keyboard.press("Escape");
         await palette.waitFor({ state: "detached" });
+        // the palette's Escape is the palette's alone: Files stays up under it on a phone too, and closes by its own
+        assert.equal(await files.count(), 1, "Files stays up under the palette that closed over it");
+        await page.keyboard.press("Escape");
+        await files.waitFor({ state: "detached" });
         await page.locator(".header-more-button").tap();
         await more.waitFor();
         await search.tap();
@@ -689,7 +693,8 @@ try {
       // closed by Cancel or by an item leaves no entry behind, so the next Back goes to the pane before
       const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
       try {
-        await phone.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+        // More carries the pane's actions where the tabs are in the header (Settings -> Tabs on a phone)
+        await phone.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
         const page = await phone.newPage();
         const errors: string[] = [];
         page.on("pageerror", (error) => errors.push(error.message));

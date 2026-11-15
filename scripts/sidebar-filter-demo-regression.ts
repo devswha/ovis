@@ -85,6 +85,14 @@ const patch = `(() => {
         const message = JSON.parse(event.data);
         if (message.type === "machines") { last = message.machines; message.machines = roster(last); }
         this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(message) }));
+        // the build PC is the laptop's roster under other names: a pane's own status change reaches both, as a roster does,
+        // and stays in the roster this fixture sends again after an edit
+        if (message.machine_id === "local" && message.message?.type === "pane-status") {
+          const { pane_id, agent_status, finish_id } = message.message;
+          const snap = last?.find((item) => item.id === "local")?.snapshot;
+          for (const entry of [...(snap?.panes ?? []), ...(snap?.agents ?? [])]) if (entry.pane_id === pane_id) Object.assign(entry, { agent_status, ...(finish_id === undefined ? {} : { finish_id }) });
+          this.onmessage?.(new MessageEvent("message", { data: JSON.stringify({ ...message, machine_id: "build" }) }));
+        }
       };
       this.inner.onerror = (event) => this.onerror?.(event);
       this.inner.onopen = (event) => this.onopen?.(event);
@@ -171,9 +179,14 @@ async function rosterView(page: Page) {
   });
 }
 
-/** Everything this page keeps: folds, pins and the rest, to prove a filter writes none of it and the query is nowhere. */
+/**
+ * Everything this page keeps: folds, pins and the rest, to prove a filter writes none of it and the query is nowhere.
+ * Two records are left out, since they follow the page's own life and not the filter: where each chat is scrolled to,
+ * and when each agent's state began (lib/agentStateSince.ts), written whenever a roster this script sends moves a state.
+ */
 const storageView = (page: Page) => page.evaluate(() => {
-  const read = (store: Storage) => Object.fromEntries(Object.keys(store).filter((key) => key !== "ovis:chat-positions").sort().map((key) => [key, store.getItem(key)]));
+  const apart = new Set(["ovis:chat-positions", "ovis:agent-state-since"]);
+  const read = (store: Storage) => Object.fromEntries(Object.keys(store).filter((key) => !apart.has(key)).sort().map((key) => [key, store.getItem(key)]));
   return { local: read(localStorage), session: read(sessionStorage) };
 });
 
@@ -220,6 +233,16 @@ async function waitWorkspaceIds(page: Page, predicate: string): Promise<void> {
 }
 
 interface Scene { phone: boolean; theme: Theme; language: Language }
+/**
+ * The demo ends the api pane's turn 4.5 s after each load (site/demo/transport.ts), on both PCs' rows (the fixture
+ * passes its status to the build PC's copy too) or already in the first roster when that comes later, and both rows
+ * leave for the resting part. Every roster a step compares with another is taken after that, never across it.
+ */
+async function turnEnded(page: Page): Promise<void> {
+  await page.waitForFunction((api) => ["local", "build"].every((machine) =>
+    document.querySelector(`.agents-sidebar .agent-item[data-machine="${machine}"][data-pane="${api}"] [data-status="done"]`) !== null), panes.api);
+}
+
 async function newPage(browser: Browser, scene: Scene, search: string, stored: Record<string, string> = {}): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
   const context = await browser.newContext(scene.phone
     ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: scene.language === "ko" ? "ko-KR" : "en-US", colorScheme: scene.theme }
@@ -237,6 +260,7 @@ async function newPage(browser: Browser, scene: Scene, search: string, stored: R
   if (scene.phone) await openDrawer(page, scene.language);
   await agentRows(page).first().waitFor({ state: "attached" });
   await page.waitForFunction(() => document.querySelectorAll(".machine-list .machine-group").length >= 2);
+  await turnEnded(page);
   await page.evaluate(() => document.fonts.ready);
   return { context, page, errors };
 }
@@ -447,9 +471,6 @@ async function happyPath(browser: Browser, scene: Scene): Promise<void> {
   const pins = JSON.stringify([`local:workspace:w1H`, `build:${panes.omp}`]);
   const { context, page, errors } = await newPage(browser, scene, `pane=${encodeURIComponent(WEB)}`, { "ovis:sidebar-agent-pins": pins });
   try {
-    // the demo ends the api pane's turn a few seconds after load (site/demo/transport.ts) and the Agents list reorders
-    // when it does: the roster every later step is compared with is the one after that, the Laptop's row done
-    await page.locator(`.agents-sidebar .agent-item[data-machine="local"][data-pane="${panes.api}"] [data-status="done"]`).waitFor({ state: "attached", timeout: 15_000 });
     const before = await rosterView(page);
     const storageBefore = await storageView(page);
     assert.equal(before.groups.map((group) => group.name).join(","), "Laptop,Build PC", `${name}: two connected PCs`);
@@ -586,6 +607,7 @@ async function selectedNonMatch(browser: Browser, scene: Scene): Promise<void> {
     if (scene.phone) await openDrawer(page, scene.language);
     await agentRows(page).first().waitFor({ state: "attached" });
     await page.waitForFunction(() => document.querySelectorAll(".machine-list .machine-group").length >= 2);
+    await turnEnded(page);
     assert.equal(await filterInput(page).inputValue(), "", `${name}: a reload starts with an empty filter`);
     assert.equal(await page.locator(".sidebar-filter-empty").count(), 0, `${name}: nothing says no match after a reload`);
     assert.deepEqual(await rosterView(page), before, `${name}: the roster is back after a reload`);

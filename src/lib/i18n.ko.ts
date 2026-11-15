@@ -2,6 +2,7 @@ import { SETTINGS_KO } from "./i18n/settings.ko.ts";
 import { SETTINGS_ACCESS_KO } from "./i18n/settings-access.ko.ts";
 import { SETTINGS_AGENTS_KO } from "./i18n/settings-agents.ko.ts";
 import { SETTINGS_COMPOSER_KO } from "./i18n/settings-composer.ko.ts";
+import { SETTINGS_HELP_KO } from "./i18n/settings-help.ko.ts";
 import { SETTINGS_LAYOUT_KO } from "./i18n/settings-layout.ko.ts";
 import { TERMINAL_KO } from "./i18n/terminal.ko.ts";
 import { COMPOSER_KO } from "./i18n/composer.ko.ts";
@@ -113,6 +114,8 @@ const BASE: Record<string, string> = {
   // ---- settings ----
   "Settings": "설정",
   "PCs": "PC",
+  "PC {name}": "PC {name}",
+  "PCs, {n} of {m} connected": "PC {m}대 중 {n}대 연결됨",
   "Chat": "채팅",
   "Agent default": "에이전트 기본값",
   "Devices and PCs": "기기와 PC",
@@ -198,6 +201,7 @@ const BASE: Record<string, string> = {
   "That agent has closed: its workspace is open": "그 에이전트는 닫혔습니다. 대신 워크스페이스를 열었습니다",
   "That link's workspace is closed": "그 링크의 워크스페이스는 닫혔습니다",
   "That link's PC is not set up here": "그 링크의 PC는 여기에 설정되어 있지 않습니다",
+  "That link's chat is closed": "그 링크의 채팅은 닫혔습니다",
   "Could not sign out. Try again.": "로그아웃하지 못했습니다. 다시 시도해 주세요.",
   "Retry": "다시 시도",
   "On, pushed to this device": "켜짐, 이 기기로 푸시",
@@ -402,6 +406,7 @@ const BASE: Record<string, string> = {
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "릴레이를 켜면 기기 게이트가 닫힙니다. 그 뒤 새 브라우저는 페어링 코드나 접속 토큰이 필요합니다.",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "새 탭",
+  "New tab with agent…": "에이전트로 새 탭…",
   "New worktree": "새 워크트리",
   "Open worktree…": "워크트리 열기…",
   "Earlier sessions…": "이전 세션…",
@@ -421,6 +426,8 @@ const BASE: Record<string, string> = {
   "Split pane right": "패널을 오른쪽으로 분할",
   "Split pane down": "패널을 아래로 분할",
   "Zoom or unzoom pane": "패널 확대 또는 해제",
+  "Close pane": "패널 닫기",
+  "Close tab": "탭 닫기",
   "Plan: {done} of {total} done": "계획: {total}개 중 {done}개 완료",
   "Plan": "계획",
   "Something went wrong": "문제가 발생했습니다",
@@ -540,6 +547,12 @@ const BASE: Record<string, string> = {
   "Add": "추가",
   "Update": "업데이트",
   "All": "전체",
+  "Search": "검색",
+  "Choose one from the list to open its chat here.": "목록에서 하나를 고르면 채팅이 여기에 열립니다.",
+  "Agent inbox": "에이전트 인박스",
+  "Inbox mode": "인박스 모드",
+  "Open agent inbox": "에이전트 인박스 열기",
+  "Back to Ovis": "Ovis로 돌아가기",
   "Remove PC": "PC 제거",
   "Remove PC {name}?": "{name} PC를 제거할까요?",
   "Removes this registration. Remote sessions keep running.": "이 등록만 지웁니다. 원격 세션은 계속 돕니다.",
@@ -572,12 +585,14 @@ const BASE: Record<string, string> = {
   "Plan · {plan}": "플랜 · {plan}",
   "{used}/{max} PCs": "PC {used}/{max}대",
   "{used} / {cap} relay data": "릴레이 데이터 {used} / {cap}",
+  "Agent": "에이전트",
+  "Install another agent ({count})": "다른 에이전트 설치 ({count})",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const KO_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO, ...SETTINGS_LAYOUT_KO, ...SETTINGS_AGENTS_KO },
+  settings: { ...SETTINGS_KO, ...SETTINGS_ACCESS_KO, ...SETTINGS_COMPOSER_KO, ...SETTINGS_LAYOUT_KO, ...SETTINGS_AGENTS_KO, ...SETTINGS_HELP_KO },
   terminal: TERMINAL_KO,
   composer: COMPOSER_KO,
   chat: CHAT_KO,

@@ -7,6 +7,18 @@
 export const SHEET_HISTORY_KEY = "ovis:sheet";
 /** the sheet's id on the entry it opened over, and on its own: one that takes the sheet's entry over can tell that entry */
 export const SHEET_UNDER_KEY = "ovis:sheet-under";
+/**
+ * where an entry lies in the tab's history: a key of its own and its count, written by
+ * lib/sheetHistory.ts on every entry where the browser tells neither (no Navigation API)
+ */
+export const PLACE_KEY = "ovis:place";
+
+/**
+ * an entry the app has stood on that carries nothing else (lib/inboxMode.ts writes it): the one a page loaded on,
+ * and one left without a state by the time the page is hidden. An entry with no state at all is then one no page
+ * of the app has stood on, which is how a fresh navigation is told from a restored tab (freshNavigation)
+ */
+export const SEEN_KEY = "ovis:seen";
 
 /** a file's own entry (lib/useFileViewer.ts) and a repository diff's (lib/repoDiff.ts) */
 export const FILE_PREVIEW_KEY = "ovis:file-preview";
@@ -65,8 +77,33 @@ export function withoutWebPanel(state: Record<string, unknown>): Record<string, 
 export const sheetStep: {
   lands: (event: Event) => boolean;
   /**
-   * Takes over the step back of a closed sheet whose entry `state` is, when that step has not run
-   * yet: whoever goes back from there steps over the sheet's entry too. sheetHistory answers it.
+   * Tells the sheets that the caller is about to go back by itself from the entry `state` is
+   * (Settings, a file, a diff or a web page closing by its own controls): no Back of the user's,
+   * so it closes no sheet and ends nothing a tap allowed. True when that entry is a sheet's own,
+   * made over the caller's, and the caller steps over it too: a closed sheet's, whose own step
+   * back has not run yet and is dropped, or the entry of a sheet that is up (Add PC, opened as
+   * Settings closed, over the sheet that closed with it), made again where the caller lands.
+   * sheetHistory answers it.
    */
-  takeLeaving: (state: unknown) => boolean;
-} = { lands: () => false, takeLeaving: () => false };
+  goingBack: (state: unknown) => boolean;
+  /** Tells the sheets that the step announced with goingBack did not happen (the browser dropped the traversal): the next Back is the user's. */
+  dropped: () => void;
+  /**
+   * Whether a popstate lands on the entry the user's Back left a moment ago, which a sheet that
+   * came back in front is taking for its own (the file list, once Back closed the file opened from
+   * it; a terminal peek, once Back closed Settings opened over it): the entry still holds what the
+   * file, the diff, Settings or the web page wrote, is rewritten as the sheet's, and is nothing to
+   * show again. Whoever keeps state by the history's entry asks; sheetHistory answers, whichever
+   * hears the event first.
+   */
+  taking: (event: Event) => boolean;
+  /**
+   * Whether a popstate is a step of a Back or a Forward that a phone sheet with no history entry
+   * of its own refused (a device's request to join, up with no tap behind it): the traversal
+   * itself, which the history is about to leave again, or its way back onto the entry the app is
+   * on. Nothing under the sheet moves, so whoever keeps state by the history's entry (Settings, a
+   * file, a diff, a web page) asks first and leaves its state as it is. sheetHistory answers, and
+   * hears the event then if its own listener has not run yet.
+   */
+  holds: (event: Event) => boolean;
+} = { lands: () => false, goingBack: () => false, dropped: () => {}, taking: () => false, holds: () => false };

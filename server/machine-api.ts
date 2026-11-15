@@ -10,7 +10,7 @@ import { TailnetPcError } from "./tailnet-pcs.ts";
 import { canSendSecret, sameOrigin } from "./machine-security.ts";
 import { isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { updateRequestAllowed } from "./update-api.ts";
-import { crossSiteFileRead } from "./file-view.ts";
+import { crossSiteFileRead, FILE_POLICY } from "./file-view.ts";
 import { snapshotWithoutHiddenTokens, withoutHiddenTokens } from "./herdr-sidebar.ts";
 import { parseJson, readCapped, REMOTE_LIMITS, RemoteResponseInvalid, RemoteResponseTooLarge } from "./remote-json.ts";
 import { answerCode, moveAll, moveAllPlans, PC_MOVE_PATH, PC_UPDATE_REQUIRED, tooOldToMove } from "./remote-move.ts";
@@ -115,7 +115,7 @@ export const slowMachinePath = (path: string): boolean => path === "worktree/cre
  * forwards, so such a path must be no route at all rather than "some other route".
  */
 export const nonCanonicalPath = (pathname: string): boolean => pathname.includes("//") || (pathname.length > 1 && pathname.endsWith("/")) || /%2f|%5c/i.test(pathname);
-export const MACHINE_PROXY_PATH = /^(?:session|sessions\/(?:history|resume)|agents|agent-catalog(?:\/(?:install|sign-in))?|integrations|system|usage\/statusline|pane\/(?:read|scroll|find|selection|conversation(?:\/image|\/tool-output)?|commands|files|docs|omo-tasks|background-agent|plan|artifacts|btw|prompt|prompt\/answer|input|keys|close|rename|image|split|zoom|swap|move|resize|clear|focus)|workspace\/(?:create|rename|move|close|directories|diff\/files|diff\/file|diff\/refs|git\/log|git\/branches|git\/show|pr|pr\/log|pr\/merge)|worktree\/(?:create|list|inventory|open|remove)|tab\/(?:create|rename|close|move|move-to-workspace)|layout\/ratio|agent\/(?:rename|commands)|plugins\/actions|plugin\/action|fs\/(?:stat|file|favicon|text))$/;
+export const MACHINE_PROXY_PATH = /^(?:session|sessions\/(?:history|resume)|agents|agent-catalog(?:\/(?:install|sign-in))?|integrations|system|usage\/statusline|pane\/(?:read|scroll|find|selection|conversation(?:\/image|\/tool-output)?|summary|commands|files|docs|omo-tasks|background-agent|plan|artifacts|btw|prompt|prompt\/answer|input|keys|close|rename|image|split|zoom|swap|move|resize|clear|focus)|workspace\/(?:create|rename|move|close|directories|diff\/files|diff\/file|diff\/refs|git\/log|git\/branches|git\/show|pr|pr\/log|pr\/merge)|worktree\/(?:create|list|inventory|open|remove)|tab\/(?:create|rename|close|move|move-to-workspace)|layout\/ratio|agent\/(?:rename|commands)|plugins\/actions|plugin\/action|fs\/(?:stat|file|favicon|text))$/;
 
 
 /**
@@ -512,11 +512,21 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         if (range) headers.set("range", range);
         try {
           const response = await fetch(`${endpoint.url}/api/${path}${url.search}`, { method: request.method, headers, redirect: "error", signal: request.signal });
-          const passed = new Headers({ "cache-control": "private, no-store" });
-          for (const name of ["content-type", "content-length", "content-range", "accept-ranges", "content-disposition", "content-security-policy", "x-content-type-options"]) {
+          const passed = new Headers({ "cache-control": "private, no-store", "x-content-type-options": "nosniff" });
+          for (const name of ["content-type", "content-length", "content-range", "accept-ranges", "content-disposition"]) {
             const value = response.headers.get(name);
             if (value) passed.set(name, value);
           }
+          // That PC's answer opens as this app's origin, so its own policy is never what holds here.
+          // A PDF is drawn by the browser's viewer (which refuses a sandbox), as the local route does;
+          // a page keeps that PC's policy under a sandbox of this server's, which no policy loosens;
+          // anything else gets the local route's policy.
+          const type = passed.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+          if (type === "application/pdf") passed.set("content-type", "application/pdf");
+          else if (url.searchParams.get("render") === "1") {
+            const theirs = response.headers.get("content-security-policy");
+            passed.set("content-security-policy", theirs ? `${theirs}, sandbox allow-scripts` : "sandbox allow-scripts");
+          } else passed.set("content-security-policy", FILE_POLICY);
           return new Response(response.body, { status: response.status, headers: passed });
         } catch (error) { return transportFailure(id, path, error); }
       }
@@ -563,6 +573,8 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
         }
         return new Response(body, { status: response.status, headers: {
           "content-type": response.headers.get("content-type") ?? "application/json", "cache-control": "no-store", ...(etag ? { etag } : {}),
+          // whatever type that PC names, its answer never runs as this app's origin
+          "x-content-type-options": "nosniff", "content-security-policy": "sandbox; default-src 'none'",
           ...(retryAfter ? { "retry-after": retryAfter } : {}), ...(serverTime ? { "x-server-time": serverTime } : {}),
         } });
       } catch (error) {

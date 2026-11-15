@@ -38,9 +38,6 @@ window.sentFrames = [];
 window.receiptMode = "normal";
 window.releaseReceipt = null;
 window.discardOnSteer = false;
-// traversals landed: a sheet's step off its entry, or a Back
-window.pops = 0;
-window.addEventListener("popstate", () => { window.pops += 1; });
 })();</script><script src="/demo-transport.js"></script><script>(() => {
 const Socket = window.WebSocket;
 window.WebSocket = function(...args) {
@@ -114,7 +111,7 @@ const browser = await chromium.launch({ executablePath: chromePath(), headless: 
 const owner = panes.flaky;
 const AUTO_NOTE = "Chat may come back when you close it";
 type Frame = { type: string; pane_id?: string; text?: string };
-type PeekWindow = Window & { sentFrames: Frame[]; chatLog?: Element | null; promptReads: number; pops: number };
+type PeekWindow = Window & { sentFrames: Frame[]; chatLog?: Element | null; promptReads: number };
 /** the pane's stack, whichever lens it shows */
 const stack = (page: Page) => page.locator(`.terminal-stack[data-pane-owner="${owner}"]`);
 /** the chat is mounted: the Chat lens, a peek over it included */
@@ -353,18 +350,21 @@ try {
         assert.equal(new URL(page.url()).searchParams.get("pane"), owner, "Back stays on the pane");
         console.log(`PASS ${tag}: a phone's Back ends the peek`);
 
-        // a sheet over the peek (the header's More) closes back onto it, by its Cancel or by Back:
-        // the peek's own entry is made again, and only the next Back is the peek's
+        // a sheet over the peek (the header's More) takes the peek's entry and closes back onto it,
+        // by its Cancel (the entry is handed back, with no step) or by Back (which goes onto the entry
+        // again): the entry is the peek's own again, and only the next Back is the peek's
         await send(page, "/doctor");
         await expectPeek(false, "/doctor");
+        const entrySheet = (): unknown => (history.state as Record<string, unknown> | null)?.["ovis:sheet"];
         const overPeek = async (way: string, close: () => Promise<unknown>) => {
+          await page.waitForFunction(() => typeof (history.state as Record<string, unknown> | null)?.["ovis:sheet"] === "string");
+          const peekEntry = await page.evaluate(entrySheet);
           await page.locator(".header-more-button").click();
           await page.locator(".row-sheet-cancel").waitFor();
-          const pops = await page.evaluate(() => (window as unknown as PeekWindow).pops);
+          await page.waitForFunction((entry) => { const now = (history.state as Record<string, unknown> | null)?.["ovis:sheet"]; return typeof now === "string" && now !== entry; }, peekEntry);
           await close();
           await page.locator(".row-sheet-cancel").waitFor({ state: "detached" });
-          await page.waitForFunction((pops) => (window as unknown as PeekWindow).pops > pops, pops);
-          await page.waitForFunction(() => typeof (history.state as Record<string, unknown> | null)?.["ovis:sheet"] === "string");
+          await page.waitForFunction((entry) => (history.state as Record<string, unknown> | null)?.["ovis:sheet"] === entry, peekEntry);
           assert.equal(await peek(page).count(), 1, `${way} leaves the peek under the menu`);
         };
         await overPeek("the menu's Cancel", () => page.locator(".row-sheet-cancel").click());
@@ -372,6 +372,33 @@ try {
         await page.goBack();
         await expectReturned();
         console.log(`PASS ${tag}: a sheet over the peek closes back onto it`);
+
+        // Settings over the peek takes the peek's entry, and a page of it is one entry more. Back goes
+        // from the page to the list with the peek still under Settings, then closes Settings, which
+        // gives the peek its entry back, and only then ends the peek: one thing each, on the same pane
+        await send(page, "/doctor");
+        await expectPeek(false, "/doctor");
+        const sheetEntry = (): boolean => typeof (history.state as Record<string, unknown> | null)?.["ovis:sheet"] === "string";
+        const settingsDepth = (depth: number): boolean => ((history.state as Record<string, { depth?: number } | undefined> | null)?.["ovis:settings"]?.depth ?? 0) === depth;
+        await page.waitForFunction(sheetEntry);
+        await page.locator(".drawer-toggle").click();
+        await page.locator("#workspace-drawer.is-open").waitFor();
+        await page.locator(".sidebar-footer-settings").click();
+        const settings = page.locator(".settings-dialog");
+        await settings.waitFor();
+        await settings.locator(".settings-tab").first().click();
+        await page.waitForFunction(settingsDepth, 2);
+        await page.goBack();
+        await page.waitForFunction(settingsDepth, 1);
+        assert.equal(await peek(page).count(), 1, "Back inside Settings leaves the peek under it");
+        await page.goBack();
+        await settings.waitFor({ state: "detached" });
+        assert.equal(await peek(page).count(), 1, "Back closes Settings and leaves the peek");
+        await page.waitForFunction(sheetEntry);
+        await page.goBack();
+        await expectReturned();
+        assert.equal(new URL(page.url()).searchParams.get("pane"), owner, "Back ends the peek after Settings, and stays on the pane");
+        console.log(`PASS ${tag}: Back closes Settings opened over the peek, then the peek`);
       }
 
       const keepWays: [string, () => Promise<void>][] = [

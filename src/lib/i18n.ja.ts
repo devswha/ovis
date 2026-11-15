@@ -2,6 +2,7 @@ import { SETTINGS_JA } from "./i18n/settings.ja.ts";
 import { SETTINGS_ACCESS_JA } from "./i18n/settings-access.ja.ts";
 import { SETTINGS_AGENTS_JA } from "./i18n/settings-agents.ja.ts";
 import { SETTINGS_COMPOSER_JA } from "./i18n/settings-composer.ja.ts";
+import { SETTINGS_HELP_JA } from "./i18n/settings-help.ja.ts";
 import { SETTINGS_LAYOUT_JA } from "./i18n/settings-layout.ja.ts";
 import { TERMINAL_JA } from "./i18n/terminal.ja.ts";
 import { COMPOSER_JA } from "./i18n/composer.ja.ts";
@@ -115,6 +116,8 @@ const BASE: Record<string, string> = {
   // ---- settings ----
   "Settings": "設定",
   "PCs": "PC",
+  "PC {name}": "PC {name}",
+  "PCs, {n} of {m} connected": "PC {m} 台のうち {n} 台が接続済み",
   "Chat": "チャット",
   "Agent default": "エージェントの既定",
   "Devices and PCs": "デバイスと PC",
@@ -200,6 +203,7 @@ const BASE: Record<string, string> = {
   "That agent has closed: its workspace is open": "そのエージェントは閉じられました。代わりにワークスペースを開きました",
   "That link's workspace is closed": "そのリンクのワークスペースは閉じられています",
   "That link's PC is not set up here": "そのリンクの PC はここに設定されていません",
+  "That link's chat is closed": "そのリンクのチャットは閉じられています",
   "Could not sign out. Try again.": "サインアウトできませんでした。もう一度お試しください。",
   "Retry": "再試行",
   "On, pushed to this device": "オン、この端末にプッシュ",
@@ -404,6 +408,7 @@ const BASE: Record<string, string> = {
   "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "リレーをオンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新しいタブ",
+  "New tab with agent…": "エージェントで新しいタブ…",
   "New worktree": "新しいワークツリー",
   "Open worktree…": "ワークツリーを開く…",
   "Earlier sessions…": "以前のセッション…",
@@ -423,6 +428,8 @@ const BASE: Record<string, string> = {
   "Split pane right": "ペインを右に分割",
   "Split pane down": "ペインを下に分割",
   "Zoom or unzoom pane": "ペインのズームまたは解除",
+  "Close pane": "ペインを閉じる",
+  "Close tab": "タブを閉じる",
   "Plan: {done} of {total} done": "計画: {total} 件中 {done} 件完了",
   "Plan": "計画",
   "Something went wrong": "問題が発生しました",
@@ -542,6 +549,12 @@ const BASE: Record<string, string> = {
   "Add": "追加",
   "Update": "更新",
   "All": "すべて",
+  "Search": "検索",
+  "Choose one from the list to open its chat here.": "リストから選ぶと、チャットがここに開きます。",
+  "Agent inbox": "エージェント受信トレイ",
+  "Inbox mode": "受信トレイモード",
+  "Open agent inbox": "エージェント受信トレイを開く",
+  "Back to Ovis": "Ovis に戻る",
   "Remove PC": "PC を削除",
   "Remove PC {name}?": "PC {name} を削除しますか？",
   "Removes this registration. Remote sessions keep running.": "この登録のみを削除します。リモートのセッションは実行されたままです。",
@@ -574,12 +587,14 @@ const BASE: Record<string, string> = {
   "Plan · {plan}": "プラン · {plan}",
   "{used}/{max} PCs": "PC {used}/{max}台",
   "{used} / {cap} relay data": "リレーデータ {used} / {cap}",
+  "Agent": "エージェント",
+  "Install another agent ({count})": "別のエージェントをインストール ({count})",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
 export const JA_PARTS: Record<string, Record<string, string>> = {
   base: BASE,
-  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA, ...SETTINGS_LAYOUT_JA, ...SETTINGS_AGENTS_JA },
+  settings: { ...SETTINGS_JA, ...SETTINGS_ACCESS_JA, ...SETTINGS_COMPOSER_JA, ...SETTINGS_LAYOUT_JA, ...SETTINGS_AGENTS_JA, ...SETTINGS_HELP_JA },
   terminal: TERMINAL_JA,
   composer: COMPOSER_JA,
   chat: CHAT_JA,

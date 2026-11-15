@@ -60,10 +60,14 @@ interface Props {
   onMoveToWorkspace?: (tabId: string, workspaceId: string) => Promise<void>;
   /** the Rename tab shortcut or palette action for the open pane: where the row is left out, its dialog stands in for the row's field (TabStrip clears it) */
   renameRequest?: RenameRequest | null;
+  /** the Close tab shortcut's press (App): taken here only where the open tab has no row and no header lists it; TabStrip takes it otherwise */
+  closeTabRequest?: RenameRequest | null;
   /** a phone's header title lists the tabs (App): no row is drawn, and its sheet holds New terminal and New tab with agent… */
   tabsInHeader?: boolean;
   /** a watching device sends no settings: it sees a locked pane's Unlock and cannot use it, as in the Agents list */
   watching?: boolean;
+  /** one pane at every width (an inbox mode thread, lib/inboxMode.ts), as a phone already shows a split tab: only what this browser draws */
+  solo?: boolean;
 }
 type Menu = { paneId: string; anchor: HTMLElement; point?: { x: number; y: number }; previousFocus: HTMLElement | null };
 interface Drag {
@@ -86,7 +90,7 @@ interface Drag {
 }
 
 /** The active tab, drawn from herdr's rectangles. No browser-owned layout or PTY state. */
-export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged, renderPane, actionsRef, onOpenInHalf, mirrored = false, onRecoverUnsent, onSearchConversation, onNewTab, onNewTerminal, onMoveToWorkspace, renameRequest = null, tabsInHeader = false, watching = false }: Props) {
+export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged, renderPane, actionsRef, onOpenInHalf, mirrored = false, onRecoverUnsent, onSearchConversation, onNewTab, onNewTerminal, onMoveToWorkspace, renameRequest = null, closeTabRequest = null, tabsInHeader = false, watching = false, solo = false }: Props) {
   const t = useT();
   const { settings, update: updateSettings } = useSettings();
   const narrowScreen = useMediaQuery(MIRROR_WRAP_QUERY);
@@ -100,7 +104,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
   const coarse = useMediaQuery("(pointer: coarse)");
   // at a phone's width the pane's menu is a bottom sheet, a dialog (RowMenu): its ellipsis says so (G-037)
   const popup = useMediaQuery(SHEET_QUERY) ? "dialog" : "menu";
-  const narrow = useMediaQuery(SOLO_PANE_QUERY);
+  const narrow = useMediaQuery(SOLO_PANE_QUERY) || solo;
   const cramped = useMediaQuery(CRAMPED_QUERY);
   const api = useMachineApi();
   const canvas = useRef<HTMLDivElement>(null);
@@ -178,6 +182,12 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     const tab = snapshot?.tabs.find((entry) => entry.tab_id === presented.tab_id);
     if (tab) setRenamingTab(tab);
   }, [renameRequest]);
+  // the Close tab shortcut where the open tab has no row and the header lists no tabs (a lone tab on a cramped screen):
+  // the pane menu's own Close tab runs, its confirmation included, and nothing where that menu has none (a locked tab)
+  useLayoutEffect(() => {
+    if (closeTabRequest === null || !loneRowHidden || tabsInHeader || !presented || watching) return;
+    rowItems(presented)?.tab.find((item) => item.id === "close-tab" && !item.disabled)?.run();
+  }, [closeTabRequest]);
   useEffect(() => { if (menu && !snapshot?.panes.some((item) => item.pane_id === menu.paneId)) setMenu(null); }, [snapshot, menu]);
 
   const run = (operation: () => Promise<unknown>): void => {
@@ -210,10 +220,25 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
     const made = await api.splitPane(target.pane_id, direction, true);
     if (alive.current && latest.current.tabId === tabId && latest.current.selection === selection) onSelect(made.pane_id);
   };
+  // a close herdr has not yet taken out of the roster, by workspace: until then the roster still counts
+  // the pane, so a second close there (another press of a bound key) would take the workspace's last pane
+  // without asking, or ask herdr for the same pane again; it waits for the roster instead
+  const closingIn = useRef(new Map<string, string>());
+  useEffect(() => {
+    for (const [workspace, paneId] of closingIn.current) if (!snapshot?.panes.some((item) => item.pane_id === paneId)) closingIn.current.delete(workspace);
+  }, [snapshot]);
+  const closePane = async (target: HerdrPane): Promise<void> => {
+    closingIn.current.set(target.workspace_id, target.pane_id);
+    try { await api.closePane(target.pane_id); } catch (reason) {
+      if (closingIn.current.get(target.workspace_id) === target.pane_id) closingIn.current.delete(target.workspace_id);
+      throw reason;
+    }
+  };
   const requestClose = (target: HerdrPane): void => {
+    if (closingIn.current.has(target.workspace_id)) return;
     const inWorkspace = snapshot?.panes.filter((item) => item.workspace_id === target.workspace_id).length ?? 1;
     if (inWorkspace === 1 || target.agent_status === "working" || target.agent_status === "blocked") setClosing(target);
-    else run(() => api.closePane(target.pane_id));
+    else run(() => closePane(target));
   };
   // the pane's zoom item and its title's zoom button: the mode the item names, never a toggle (lib/layoutMap.ts)
   const zoom = (target: HerdrPane): void => run(async () => {
@@ -522,7 +547,7 @@ export function PaneCanvas({ snapshot, pane, selectedPaneId, onSelect, onChanged
       }} />}
     {closing && <ConfirmDialog title={t("Close pane {name}?", { name: displayPaneTitle(closing) })}
       body={t("The pane's running processes will stop. Closing its last pane also closes the workspace.")}
-      confirmLabel={t("Close pane")} onClose={() => setClosing(null)} onConfirm={async () => { await api.closePane(closing.pane_id); setClosing(null); onChanged(); }} />}
+      confirmLabel={t("Close pane")} onClose={() => setClosing(null)} onConfirm={async () => { await closePane(closing); setClosing(null); onChanged(); }} />}
   </div></PaneSubmitContext.Provider>;
 }
 

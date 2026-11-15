@@ -31,10 +31,10 @@ const LANDSCAPE: Screen = { label: "landscape", width: 844, height: 390, insets:
 const evidence = process.env["UI_EVIDENCE_DIR"];
 if (evidence) mkdirSync(evidence, { recursive: true });
 
-async function open(browser: Browser, origin: string, screen: Screen, run: (page: Page) => Promise<void>, keyboard = false): Promise<void> {
+async function open(browser: Browser, origin: string, screen: Screen, run: (page: Page) => Promise<void>, keyboard = false, pane = panes.api): Promise<void> {
   const context = await browser.newContext({ viewport: { width: screen.width, height: screen.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, locale: "en-US" });
   try {
-    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+    await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
     // an iPhone's keyboard: the visual viewport shrinks under a layout viewport that stays (lib/viewport.ts)
     if (keyboard) await context.addInitScript(() => {
       const viewport = window.visualViewport!;
@@ -51,7 +51,7 @@ async function open(browser: Browser, origin: string, screen: Screen, run: (page
     const { top, right, bottom, left } = screen.insets;
     const cdp = await context.newCDPSession(page);
     await cdp.send("Emulation.setSafeAreaInsetsOverride" as never, { insets: { top, topMax: top, right, rightMax: right, bottom, bottomMax: bottom, left, leftMax: left } } as never);
-    await page.goto(`${origin}/?pane=${encodeURIComponent(panes.api)}`);
+    await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
     await page.locator(".conn-live").waitFor();
     await run(page);
     assert.deepEqual(errors, [], `${screen.label}: no page errors`);
@@ -169,7 +169,7 @@ try {
       await reachable(page.locator(".row-sheet .row-sheet-item").last(), UPRIGHT.insets, `${label}: the More sheet's last action`);
       await close(page, ".row-sheet");
 
-      await page.locator(".app-header .context-tabs").click();
+      await page.locator(".app-header .header-tabs-sheet").click();
       clear(await outside(page, ".row-sheet", UPRIGHT.insets), `${label}: the title's tab sheet clears the insets`);
       await reachable(page.locator(".row-sheet-cancel"), UPRIGHT.insets, `${label}: the tab sheet's Cancel`);
       await close(page, ".row-sheet");
@@ -233,6 +233,8 @@ try {
       }
     }, true);
 
+    // the web pane's agent waits on its question for good: closing its tab always asks first. The api pane's turn ends
+    // 4.5 s after load (site/demo/transport.ts), and an idle tab among others closes without a confirmation
     await open(browser, origin, LANDSCAPE, async (page) => {
       const label = LANDSCAPE.label;
       await page.locator(".sidebar").getByRole("button", { name: /^Settings/ }).first().click();
@@ -250,7 +252,7 @@ try {
       clear(await outside(page, "[role=alertdialog]", LANDSCAPE.insets), `${label}: a confirmation clears the insets`);
       await reachable(page.getByRole("alertdialog").getByRole("button", { name: "Close tab" }), LANDSCAPE.insets, `${label}: the confirmation's Close tab`);
       await close(page, "[role=alertdialog]");
-    });
+    }, false, panes.web);
   } finally {
     await browser.close();
     await server.stop(true);

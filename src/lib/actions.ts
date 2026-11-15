@@ -78,6 +78,8 @@ export interface AppActions {
   /** a PC's own setup dialog (Connect on a PC saved in herdr), from Settings → Devices and PCs; Settings closes first */
   connectPc: (machine: Machine) => void;
   toggleSidebar: () => void;
+  /** into the agent inbox (lib/inboxMode.ts) or, while `on`, back out of it; null where the mode is not offered */
+  inboxMode: { on: boolean; go: () => void } | null;
   /** the sidebar's Filter field, focused, with the drawer or the sidebar opened first: drawn even where Settings → Appearance leaves it out */
   openSidebarFilter: () => void;
   /** flips dark/light (a `system` setting becomes the opposite of the resolved theme) */
@@ -109,4 +111,16 @@ export interface AppActions {
    * nothing for a pane alone in its tab. null where zoomPane is
    */
   toggleZoom: (() => void) | null;
+  /**
+   * The Close pane shortcut and palette row: the selected pane's own menu's Close (PaneCanvas), with
+   * its confirmation for a busy pane or a workspace's last one, and nothing for a locked pane. null
+   * without a pane and on a watching device
+   */
+  closePane: (() => void) | null;
+  /**
+   * The Close tab shortcut and palette row: the open tab's own Close, as its row's menu has it (TabStrip), or the
+   * pane's menu where the tab has no row (PaneCanvas), with the same confirmation, and nothing for a tab holding a
+   * locked pane. null without a pane and on a watching device
+   */
+  closeTab: (() => void) | null;
 }

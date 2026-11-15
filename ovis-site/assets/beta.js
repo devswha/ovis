@@ -1,17 +1,13 @@
 // The links that let a tester join the phone app tests on the beta pages (/beta/, /zh/beta/,
-// /ja/beta/, /ko/beta/). Each page ships
-// its iPhone and Android sections hidden, with a note that the link is on its way; this shows a
-// section, and hides its note, once its link is set below, so no tester meets a link that leads
-// nowhere. scripts/ovis-site.test.ts checks each link's shape. It also runs the install commands'
+// /ja/beta/, /ko/beta/). The phone apps are on the App Store and Google Play, so their sections are
+// shown as shipped; each page ships its TestFlight line (upcoming iPhone builds) hidden, and this
+// shows it once its link is set below, so no tester meets a link that leads nowhere. scripts/ovis-site.test.ts checks each link's shape. It also runs the install commands'
 // Copy buttons and the language picker in the header.
 (() => {
   const BETA_LINKS = {
     // iPhone: the public link of the "Ovis Beta" TestFlight group,
     // https://testflight.apple.com/join/…
     testflight: "https://testflight.apple.com/join/dCVKYRA3",
-    // Android: the Google Group whose members may join the Google Play closed test,
-    // https://groups.google.com/g/…
-    play: "https://groups.google.com/g/ovis-beta",
   };
 
   if (typeof module === "object" && module.exports) {
@@ -23,7 +19,6 @@
     if (!link) continue;
     for (const a of document.querySelectorAll(`a[data-beta-link="${key}"]`)) a.href = link;
     for (const section of document.querySelectorAll(`[data-beta="${key}"]`)) section.hidden = false;
-    for (const note of document.querySelectorAll(`[data-beta-pending="${key}"]`)) note.hidden = true;
   }
 
   const COPIED = { "zh-CN": ["已复制", "复制失败"], ja: ["コピーしました", "コピーできませんでした"], ko: ["복사됨", "복사 실패"] };

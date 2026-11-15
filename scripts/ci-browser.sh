@@ -102,9 +102,11 @@ run_script scripts/key-bar-hold-repeat-regression.ts
 run_script scripts/settings-pages-demo-regression.ts
 run_script scripts/settings-palette-search-demo-regression.ts
 run_script scripts/settings-rows-demo-regression.ts
+run_script scripts/settings-segmented-demo-regression.ts
 run_script scripts/ideal-state-idle-regression.ts
 run_script scripts/agent-entry-points-demo-regression.ts
 run_script scripts/agents-sign-in-demo-regression.ts
+run_script scripts/setup-dialog-demo-regression.ts
 run_script scripts/interface-font-demo-regression.ts
 run_script scripts/file-text-size-demo-regression.ts
 run_script scripts/files-panel-demo-regression.ts
@@ -181,6 +183,7 @@ run_script scripts/file-viewer-mobile-regression.ts
 run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
 run_script scripts/phone-safe-area-demo-regression.ts
+run_script scripts/phone-back-demo-regression.ts
 run_script scripts/reconnect-header-demo-regression.ts
 run_script scripts/tab-agent-mark-demo-regression.ts
 run_script scripts/header-context-demo-regression.ts
@@ -210,6 +213,10 @@ run_script scripts/command-outcome-demo-regression.ts
 run_script scripts/chat-outcome-note-browser-qa.ts
 run_script scripts/prompt-card-lifetime-browser-qa.ts
 run_script scripts/sidebar-activity-demo-regression.ts
+run_script scripts/inbox-mode-demo-regression.ts
+run_script scripts/inbox-mode-panes-demo-regression.ts
+run_script scripts/inbox-mode-rail-demo-regression.ts
+run_script scripts/sheet-outside-tap-demo-regression.ts
 run_script scripts/sidebar-filter-demo-regression.ts
 run_script scripts/sidebar-declutter-demo-regression.ts
 run_script scripts/drawer-modal-regression.ts
@@ -229,8 +236,10 @@ run_script scripts/sidebar-context-ring-demo-regression.ts
 run_script scripts/sidebar-background-workspaces-demo-regression.ts
 run_script scripts/agent-helpers-fold-demo-regression.ts
 run_script scripts/sidebar-agent-tree-demo-regression.ts
+run_script scripts/sidebar-scrollbar-grip-demo-regression.ts
 run_script scripts/agent-lock-demo-regression.ts
 run_script scripts/agent-groups-demo-regression.ts
+run_script scripts/agent-state-groups-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
 run_script scripts/pane-mute-captures-demo-regression.ts
 run_script scripts/workspace-touch-reorder-demo-regression.ts

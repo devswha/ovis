@@ -283,6 +283,8 @@ interface Surface {
   pane?: string;
   /** No pane in the address: the app as a first run draws it. */
   plain?: boolean;
+  /** What the page shows once it has loaded, when not the setup guide or the connection chip. */
+  ready?: string;
   query?: string;
   /** The lens the pane opens in (chat by default). */
   view?: "chat" | "terminal";
@@ -454,6 +456,11 @@ const SURFACES: Surface[] = [
   },
   { id: "drawer-open", only: "phone", pane: panes.api, run: openDrawer },
   {
+    id: "phone-inbox", only: "phone", plain: true, ready: ".mode-inbox", storage: { "ovis:phone-inbox": "true" },
+    // the inbox mode's list also stands while it says Loading…: measured once a row is drawn
+    run: async (page) => { await page.locator(".mode-inbox .inbox-item").first().waitFor(); await settle(page); },
+  },
+  {
     id: "held-messages", pane: panes.web,
     storage: {
       // kept under the demo's herdr: with no record they would be an earlier release's and go to Recover unsent text
@@ -495,7 +502,7 @@ const SURFACES: Surface[] = [
   },
   {
     id: "welcome", plain: true, storage: { "ovis:setup-guide": JSON.stringify({ status: "open", state: { step: "welcome" } }) },
-    run: async (page) => { await page.locator(".setup-welcome").waitFor(); await settle(page); },
+    run: async (page) => { await page.locator(".setup-dialog .setup-choices").waitFor(); await settle(page); },
   },
   {
     id: "offline", pane: panes.flaky, query: "&demo_connection=switch",
@@ -519,7 +526,7 @@ const SURFACES: Surface[] = [
   {
     id: "setup-guide", plain: true, storage: { "ovis:setup-guide": JSON.stringify({ status: "open", state: { step: "setup" } }) },
     run: async (page) => {
-      await page.locator(".setup-guide .setup-tile").first().waitFor();
+      await page.locator(".setup-dialog .setup-tile").first().waitFor();
       await settle(page);
     },
   },
@@ -1122,7 +1129,7 @@ async function visit(browser: Browser, origin: string, surface: Surface, viewpor
     try {
       const url = surface.plain ? `${origin}${PREFIX}` : `${origin}${PREFIX}?pane=${encodeURIComponent(surface.pane ?? panes.api)}&view=${surface.view ?? "chat"}${surface.query ?? ""}`;
       await page.goto(url);
-      await page.locator(surface.plain ? ".setup-guide, .setup-welcome, .conn-live" : ".conn-live").first().waitFor({ state: "attached", timeout: 20_000 });
+      await page.locator(surface.ready ?? (surface.plain ? ".setup-dialog, .conn-live" : ".conn-live")).first().waitFor({ state: "attached", timeout: 20_000 });
       await appFaces(page, "가나다");
       await surface.run?.(page, env);
       if (SELF_TEST) await page.addStyleTag({ content: SELF_TEST_CSS });

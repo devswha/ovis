@@ -56,6 +56,21 @@ export function sessionCountsAcross<T extends PaneInfo>(rosters: readonly Machin
   return total;
 }
 
+/**
+ * How many sessions wait for the person other than the selected pane: what More counts over an inbox mode thread,
+ * whose own agent's question is on the screen already. The pane left out is the one nextWaitingTarget never opens.
+ */
+export function waitingElsewhere<T extends PaneInfo>(rosters: readonly MachineRoster<T>[], selected: { machineId: string; paneId: string | null }): number {
+  let waiting = 0;
+  for (const roster of rosters) {
+    for (const pane of rosterPanes(roster.panes)) {
+      if (roster.machineId === selected.machineId && pane.pane_id === selected.paneId) continue;
+      if (knownStatus(roster.status(pane)) === "blocked") waiting += 1;
+    }
+  }
+  return waiting;
+}
+
 function hiddenByTabZoom<T extends PaneInfo>(panes: readonly T[], layouts: Layouts, pane: T): boolean {
   const layout = layouts?.find((candidate) => candidate.tab_id === pane.tab_id);
   return !!layout?.zoomed && layout.focused_pane_id !== pane.pane_id && panes.some((other) => other.pane_id === layout.focused_pane_id);
@@ -94,6 +109,24 @@ export function nextWaitingTarget<T extends PaneInfo>(rosters: readonly MachineR
 }
 
 /**
+ * How many panes nextWaitingTarget can open from `selected`, pressed again and again: every waiting pane it walks,
+ * which leaves out the selected pane and any pane its tab's zoom hides. A control that draws a count on that jump
+ * counts these, never an agent its press cannot reach: the count is above zero exactly when nextWaitingTarget has a
+ * pane to give. (waitingElsewhere, which More counts, leaves out the selected pane alone.)
+ */
+export function waitingTargets<T extends PaneInfo>(rosters: readonly MachineRoster<T>[], selected: { machineId: string; paneId: string | null }): number {
+  let targets = 0;
+  for (const roster of rosters) {
+    const own = roster.machineId === selected.machineId;
+    for (const pane of rosterPanes(roster.panes)) {
+      if (own && pane.pane_id === selected.paneId) continue;
+      if (knownStatus(roster.status(pane)) === "blocked" && !hiddenByTabZoom(roster.panes, roster.layouts, pane)) targets += 1;
+    }
+  }
+  return targets;
+}
+
+/**
  * Every connected PC's roster as the header counts it, in the sidebar's stable PC order so repeated
  * next-waiting jumps walk every PC without cycling between two. A PC that is not connected has only a
  * cached roster, which its sidebar greys out: the header counts none of it. The selected PC counts whether
@@ -107,12 +140,15 @@ export function useWaitingRosters(shown: readonly Machine[], selected: Machine |
   }, [shown, selected, status]);
 }
 
-/** The header's controls drawn over the open drawer, its top row: the toggle that closes it and New workspace's +. */
-const drawerHeaderStops = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(".app-header .drawer-toggle, .app-header .new-workspace-button")];
+/** The header's control drawn over the open drawer, its top row: the toggle that closes it. */
+const drawerHeaderStops = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>(".app-header .drawer-toggle")];
+
+/** The header's button a closed drawer gives the focus back to: its toggle. */
+const drawerReturnButton = (): HTMLElement | null => document.querySelector<HTMLElement>(".app-header .drawer-toggle");
 
 /**
  * A phone's open drawer is a dialog over the pane (App.tsx gives it the role): Tab goes round its own controls
- * and the header's toggle and + drawn over it (its top row), the pane column is inert under it, and the focus
+ * and the header's toggle drawn over it (its top row), the pane column is inert under it, and the focus
  * goes back to the header toggle that opened it when it closes. It opens with the focus on its first control
  * that takes no typing: the filter's field would raise the keyboard on every open. Only a header control takes
  * the focus back: a terminal the drawer was swiped open over would raise the keyboard; a focus left in the
@@ -135,7 +171,7 @@ export function useDrawerDialog(open: boolean, setOpen: (open: boolean) => void,
     if (open || !wasOpen.current) return;
     const active = document.activeElement;
     const lost = active === null || active === document.body || (surface.current?.contains(active) ?? false);
-    const back = opener.current?.closest(".app-header") != null ? opener.current : escaped.current || lost ? document.querySelector<HTMLElement>(".app-header .drawer-toggle") : null;
+    const back = opener.current?.closest(".app-header") != null ? opener.current : escaped.current || lost ? drawerReturnButton() : null;
     opener.current = null;
     escaped.current = false;
     wasOpen.current = false;

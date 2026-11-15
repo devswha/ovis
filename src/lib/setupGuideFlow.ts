@@ -10,6 +10,7 @@ import type { AgentCatalogEntry, AgentCatalogRow } from "../../shared/agent-cata
 import type { HealthAuth, RelayStatus } from "../../shared/protocol.ts";
 import type { SetupStep } from "./agentSetup.ts";
 import type { ProviderUsage } from "../../shared/usage.ts";
+import { isSignIn } from "./usage.ts";
 
 export interface GuideState {
   step: "welcome" | "setup";
@@ -17,15 +18,17 @@ export interface GuideState {
   reopened?: true;
 }
 
-/** I'm new to Ovis */
-export type GuideEvent = { type: "begin" };
+/** I'm new to Ovis; Back from the first step to the welcome */
+export type GuideEvent = { type: "begin" } | { type: "back" };
 
 export const WELCOME: GuideState = { step: "welcome" };
 /** Settings → Agents' Open setup guide opens the setup screen itself */
 export const REOPENED: GuideState = { step: "setup", reopened: true };
 
 export function guideStep(state: GuideState, event: GuideEvent): GuideState {
-  return event.type === "begin" && state.step === "welcome" ? { step: "setup" } : state;
+  if (event.type === "begin") return state.step === "welcome" ? { step: "setup" } : state;
+  // a guide opened again from Settings has no welcome to go back to
+  return state.step === "setup" && state.reopened !== true ? WELCOME : state;
 }
 
 /** Plan usage turns on by itself for a signed-in account on a first run only: a reopened guide leaves the user's choice alone. */
@@ -204,9 +207,12 @@ export function readSignedIn<T>(read: () => Promise<T>, found: (answer: T) => vo
   return () => { live = false; cancelRetry(); };
 }
 
-/** The agents this PC is signed in to, from its plan usage: one whose sign-in expired is not counted. */
+/**
+ * The agents this PC is signed in to, from its plan usage: one whose sign-in expired is not counted, nor an account
+ * known only from another tool's record of it, which is that tool's sign-in and not the agent's.
+ */
 export function signedInAgents(providers: readonly ProviderUsage[]): string[] {
-  return [...new Set(providers.filter((usage) => usage.problem !== "expired").map((usage) => usage.id))];
+  return [...new Set(providers.filter((usage) => usage.problem !== "expired" && isSignIn(usage)).map((usage) => usage.id))];
 }
 
 export type CheckStatus = { kind: "looking" } | { kind: "installed"; version: string | null } | { kind: "missing" } | { kind: "unknown" };
