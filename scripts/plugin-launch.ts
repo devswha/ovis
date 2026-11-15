@@ -56,19 +56,25 @@ async function fromSource(command: string, args: string[]): Promise<number> {
   return 0;
 }
 
-/** The checkout's commit, or "" where git cannot tell (no git, or not a git checkout). */
-async function headCommit(): Promise<string> {
+/**
+ * The commit of the checkout in `dir`, or "" where git cannot tell: no git, not a git checkout, or a folder that is not
+ * a checkout's top level (git would read the repository around it, whose commit is not this checkout's; install.ps1 and
+ * install.sh read it by the same rule).
+ */
+export async function headCommit(dir = root): Promise<string> {
   try {
-    const git = Bun.spawn(["git", "-C", root, "rev-parse", "HEAD"], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    // the folder's path inside its repository, empty at the top level, then the commit
+    const git = Bun.spawn(["git", "-C", dir, "rev-parse", "--show-prefix", "HEAD"], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
     const [out, code] = await Promise.all([new Response(git.stdout).text(), git.exited]);
-    return code === 0 ? out.trim() : "";
+    const [prefix, commit = ""] = out.split(/\r?\n/);
+    return code === 0 && prefix === "" ? commit.trim() : "";
   } catch {
     return "";
   }
 }
 
 /** the tests': the install folder, what stands in for the source path, how a file is fetched, and how the commit is read */
-export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root), commit = headCommit }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees>; commit?: typeof headCommit } = {}): Promise<number> {
+export async function main(args: string[], { home = join(root, ".ovis", "server"), source = fromSource, fetchFile, sources = sourceTrees(root), commit = () => headCommit() }: { home?: string; source?: typeof fromSource; fetchFile?: typeof fetch; sources?: ReturnType<typeof sourceTrees>; commit?: () => Promise<string> } = {}): Promise<number> {
   const [command, ...rest] = args;
   if (command === undefined || ["--help", "-h", "help"].includes(command)) {
     console.log(USAGE);
