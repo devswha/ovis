@@ -122,6 +122,32 @@ describe("crates/ovis-tui/prepare.sh", () => {
         commitIn(sub(upstream), "mine.zig");
         git(sub(upstream), "switch", "--quiet", "--detach", "HEAD~1");
       }, (upstream) => refs(sub(upstream)).includes("refs/heads/mywork")],
+      ["a commit only a tag points to", (upstream) => {
+        const made = git(upstream, "rev-parse", "HEAD");
+        commitIn(upstream, "mine.md");
+        git(upstream, "tag", "mywork");
+        git(upstream, "reset", "--quiet", "--hard", made);
+      }, (upstream) => git(upstream, "log", "--format=%s", "-1", "mywork") === "mine"],
+      ["an edit to a file flagged skip-worktree", (upstream) => {
+        git(upstream, "update-index", "--skip-worktree", "README.md");
+        writeFileSync(join(upstream, "README.md"), "edited\n");
+      }, (upstream) => readFileSync(join(upstream, "README.md"), "utf8") === "edited\n"],
+      ["a Ghostty commit only a tag points to", (upstream) => {
+        const pin = git(sub(upstream), "rev-parse", "HEAD");
+        commitIn(sub(upstream), "mine.zig");
+        git(sub(upstream), "tag", "mywork");
+        git(sub(upstream), "checkout", "--quiet", "--detach", pin);
+      }, (upstream) => git(sub(upstream), "log", "--format=%s", "-1", "mywork") === "mine"],
+      ["a Ghostty commit only its reflog holds", (upstream) => {
+        const pin = git(sub(upstream), "rev-parse", "HEAD");
+        commitIn(sub(upstream), "mine.zig");
+        git(sub(upstream), "checkout", "--quiet", "--detach", pin);
+      }, (upstream) => git(sub(upstream), "log", "-g", "--format=%s").split("\n").includes("mine")],
+      ["a commit in a worktree added from the Ghostty submodule", (upstream) => {
+        const other = join(scratch, "ghostty-work");
+        git(sub(upstream), "worktree", "add", "--quiet", "--detach", other);
+        commitIn(other, "mine.zig");
+      }, () => git(join(scratch, "ghostty-work"), "log", "--format=%s", "-1") === "mine"],
     ];
     for (const [name, make, kept] of cases) {
       it(`keeps ${name}`, () => {

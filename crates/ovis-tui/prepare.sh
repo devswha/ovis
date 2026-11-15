@@ -45,9 +45,13 @@ work_in() {
   # the flags override a status.showUntrackedFiles=no in that checkout's config
   git -C "$d" status --porcelain --untracked-files=normal --ignore-submodules=all | grep -v -x '?? .ovis-prepared' | sed 's/^/changed: /'
   git -C "$d" status --porcelain --untracked-files=normal --ignored=matching --ignore-submodules=all | sed -n 's/^!! //p' | grep -v -E '^target/' | sed 's/^/ignored file kept: /'
-  # the script makes no branch, no stash and no other worktree: any is someone's
-  git -C "$d" for-each-ref --format='%(refname)' refs/heads refs/stash | sed 's/^/ref: /'
+  # the script makes no branch, tag, stash or other worktree: any is someone's
+  git -C "$d" for-each-ref --format='%(refname)' refs/heads refs/tags refs/stash | sed 's/^/ref: /'
   [ "$(git -C "$d" worktree list --porcelain | grep -c '^worktree ')" -le 1 ] || echo "another worktree of it"
+  # a commit only the reflog still holds (made, then reset away): the script's own are the pin and its commit
+  git -C "$d" rev-list --reflog --not "$HC_TUI_COMMIT" ${made:+"$made"} -- 2>/dev/null | head -1 | sed 's/^/commit only its reflog holds: /'
+  # a file flagged skip-worktree or assume-unchanged hides its edits from status
+  git -C "$d" ls-files -v | grep -E '^(S|[a-z]) ' | sed 's/^[^ ]* /file whose edits git hides: /'
   s="$d/vendor/ghostty"
   [ -e "$s/.git" ] || return 0
   sub=$(git -C "$s" rev-parse HEAD 2>/dev/null || true)
@@ -55,8 +59,11 @@ work_in() {
   git -C "$s" status --porcelain --untracked-files=normal | sed 's|^|vendor/ghostty changed: |'
   git -C "$s" status --porcelain --untracked-files=normal --ignored=matching | sed -n 's/^!! //p' | grep -v -E '^(zig-pkg|zig-out|\.zig-cache|zig-cache)/' | sed 's|^|vendor/ghostty ignored file kept: |'
   git -C "$s" for-each-ref --format='%(refname)' refs/stash | sed 's|^|vendor/ghostty: |'
-  # its clone makes a branch at the remote's head: only commits no remote has are work
-  git -C "$s" rev-list --branches --not --remotes | head -1 | sed 's|^|vendor/ghostty: unpushed commit |'
+  # its clone makes a branch at the remote's head and may follow its tags: only commits no remote
+  # has (on a branch, a tag, or held by the reflog alone) are work
+  git -C "$s" rev-list --branches --tags --reflog --not --remotes "$GHOSTTY_COMMIT" -- 2>/dev/null | head -1 | sed 's|^|vendor/ghostty: unpushed commit |'
+  [ "$(git -C "$s" worktree list --porcelain | grep -c '^worktree ')" -le 1 ] || echo "vendor/ghostty: another worktree of it"
+  git -C "$s" ls-files -v | grep -E '^(S|[a-z]) ' | sed 's|^[^ ]* |vendor/ghostty: file whose edits git hides: |'
 }
 
 refuse() {
