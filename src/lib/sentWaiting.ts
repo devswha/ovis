@@ -426,14 +426,19 @@ export function settleWaitingSends(key: string, turns: readonly Turn[], now = Da
 
 /** Release a pane's waiting sends, consumed-turn identities and shown turns (a replaced herdr, tests). */
 export function forgetWaitingSends(key: string): void {
+  const held = restoredSends.delete(key);
+  if (!releasePane(key) && !held) return;
+  stored();
+  announce();
+}
+
+/** What this page read of a pane, and its sends: whether it held any. Not the sends read back after a reload. */
+function releasePane(key: string): boolean {
   shown.delete(key);
   clocks.delete(key);
   rests.delete(key);
   reads.delete(key);
-  const held = restoredSends.delete(key);
-  if (!waiting.delete(key) && !held) return;
-  stored();
-  announce();
+  return waiting.delete(key);
 }
 
 /** The chat dropped its transcript for another history: the turns it showed are no baseline for its next send. */
@@ -464,7 +469,13 @@ export function clearMachineWaitingSends(machineId: string): void {
 // sends never reach the new panes, so a PC's waiting lines go with its herdr
 export function forgetMachineWaitingSends(machineId: string): void {
   listedPanes.delete(machineId);
-  for (const key of [...waiting.keys(), ...shown.keys(), ...clocks.keys()]) if (key.startsWith(`${machineId}:`)) forgetWaitingSends(key);
+  // the sends read back after a reload stay: they are shown under the herdr they were kept under alone, once the
+  // page knows it (adoptRestored), whatever the connection did before
+  let held = false;
+  for (const key of [...waiting.keys(), ...shown.keys(), ...clocks.keys()]) if (key.startsWith(`${machineId}:`) && releasePane(key)) held = true;
+  if (!held) return;
+  stored();
+  announce();
 }
 
 export function pruneWaitingSends(machines: readonly Machine[]): void {

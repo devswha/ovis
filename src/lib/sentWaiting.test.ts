@@ -547,6 +547,28 @@ describe("waitingText", () => {
     } finally { Reflect.deleteProperty(globalThis, "sessionStorage"); }
   });
 
+  it("keeps the sends read back after a reload through a lost connection, before the page knows the PC's herdr", async () => {
+    const tab = openTab();
+    const machine = "kept-offline";
+    try {
+      const before = await tab.load("kept-offline-before");
+      const key = before.waitingKey(machine, "w1:p1");
+      unanswered(before, machine, key, "said before the reload", Date.now() - WAITING_SEND_MS);
+      const kept = new Map(tab.items);
+      // a snapshot naming no herdr: the page does not know which herdr the PC runs, as before its first snapshot
+      paneLifetimes.observe([{ id: machine, snapshot: { panes: [] } } as unknown as Machine], (item) => item.pane_id);
+      // the page before the reload is gone and writes nothing after it; its copy here heard that snapshot too
+      for (const [name, value] of kept) tab.items.set(name, value);
+      const after = await tab.load("kept-offline-after");
+      expect(after.currentWaitingSends(key)).toEqual([]);
+      // the chat holds a read of the pane, then the connection goes
+      after.settleWaitingSends(key, [], Date.now(), true);
+      after.clearMachineWaitingSends(machine);
+      paneLifetimes.observe([{ id: machine, snapshot: { panes: [], herdr_lifetime: `${machine}-herdr` } } as unknown as Machine], (item) => item.pane_id);
+      expect(after.currentWaitingSends(key).map((send) => [send.text, send.unanswered])).toEqual([["said before the reload", true]]);
+    } finally { Reflect.deleteProperty(globalThis, "sessionStorage"); }
+  });
+
   it("lets a replaced herdr's waiting sends go: the new herdr gives the same pane ids to other panes", () => {
     const roster = (lifetime: string) => [{ id: "local", snapshot: { panes: [], herdr_lifetime: lifetime } } as unknown as Machine];
     const key = waitingKey("local", "w1:p1");
