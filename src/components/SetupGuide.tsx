@@ -31,7 +31,7 @@ import { isLoopbackHost, phonePlan } from "../lib/phone.ts";
 import { recentDirectories } from "../lib/recent-directories.ts";
 import { useSettings } from "../lib/settings.ts";
 import { agentRows, checkList, foundAgents, installedHere, phoneBoxMode, phoneBoxOpensFirst, phoneBoxStays, phoneWay, openInFolder, preferredAgent, relayStep, settleDelay, setupView, signedInAgents, turnsUsageOn, type CheckStatus, type GuideEvent, type GuideState, type PcCheck, type PhoneBoxOpening } from "../lib/setupGuideFlow.ts";
-import { focusInOtherModal, useFocusTrap } from "../lib/useFocusTrap.ts";
+import { focusInOtherModal, nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { inRelayShell, useRelay, type RelayState } from "../lib/useRelay.ts";
 import { useSignedInUsage } from "../lib/useSetupGuide.ts";
@@ -146,7 +146,8 @@ export function SetupGuide(props: SetupGuideProps) {
     if (hidden) return;
     const closeOnEscape = (event: KeyboardEvent): void => {
       if (event.key !== "Escape" || event.isComposing || event.keyCode === 229 || event.defaultPrevented) return;
-      if (focusInOtherModal(surface.current)) return;
+      // a dialog over it (a sign-in, a native one such as Add PC) takes its own Escape
+      if (focusInOtherModal(surface.current) || nativeModalOver(surface.current)) return;
       event.preventDefault();
       onClose();
     };
@@ -178,7 +179,8 @@ export function SetupGuide(props: SetupGuideProps) {
   }, [view, hidden, surface]);
 
   // the page's own line about usage counts would be under the scrim: each step carries it while the guide is shown
-  const notice = <TelemetryNotice inline enabled onOpen={props.onOpenTelemetry} />;
+  // a guide stepped aside (hidden) shows nothing, so its line neither shows nor counts as seen
+  const notice = <TelemetryNotice inline enabled={!hidden} onOpen={props.onOpenTelemetry} />;
   let body: ReactNode;
   if (state.step === "welcome") body = <Welcome dispatch={props.dispatch} onClose={onClose} notice={notice} firstFocus={firstFocus} />;
   else if (view === "agents" && catalog !== null) body = <Steps catalog={catalog} ready={ready} machineId={machineId} reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
@@ -518,7 +520,17 @@ function Steps({ catalog, ready, machineId, reopened, notice, dispatch, onClose,
               </ul>
               {usageNote}
             </>
-          ) : <p className="setup-muted">{t("Install one from its tile. Its official installer runs in a terminal tab, and you can go on meanwhile.")}</p>}
+          ) : (
+            <>
+              <p className="setup-muted">{t("Install one from its tile. Its official installer runs in a terminal tab, and you can go on meanwhile.")}</p>
+              {/* with nothing installed there is no Done yet: the phone can be connected from here meanwhile */}
+              <span className="setup-label" id="setup-phone-label">{t("On your phone")}</span>
+              <div className="setup-actions">
+                <button type="button" className="btn" aria-expanded={phone !== null} onClick={() => setPhone(phone === null ? "tap" : null)}><Smartphone aria-hidden="true" />{t("Connect your phone")}</button>
+              </div>
+              {phone !== null && <PhoneBox opening={phone} auth={auth} security={security} onOpenSettings={() => { setPhone(null); onOpenSettings("devices"); }} onPaired={onPaired} onWithdraw={() => setPhone(null)} />}
+            </>
+          )}
         </aside>
       </div>
       <footer className="modal-footer setup-foot">

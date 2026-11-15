@@ -173,9 +173,9 @@ try {
     await context.addInitScript((guide) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
       if (sessionStorage.getItem("seeded") === null) { localStorage.setItem("ovis:setup-guide", guide); sessionStorage.setItem("seeded", "1"); }
-      const counts = { gets: 0, seen: [] as unknown[] };
+      const counts = { gets: 0, seen: [] as unknown[], on: true, snapshotsAfterOff: 0 };
       (window as unknown as { counts: typeof counts }).counts = counts;
-      const status = (seen: boolean) => new Response(JSON.stringify({ enabled: true, blocked_by_env: false, notice_seen: seen, next: null,
+      const status = (seen: boolean) => new Response(JSON.stringify({ enabled: counts.on, blocked_by_env: false, notice_seen: seen, next: null,
         active: { event: "active", day: "2026-11-15", install_id: "demo", version: "0.0.0", os: "linux", arch: "x64", install_method: "source", harnesses: [], usage: {}, runtime: "herdr" } }), { headers: { "content-type": "application/json" } });
       const native = window.fetch.bind(window);
       let inner: typeof window.fetch = native;
@@ -185,7 +185,9 @@ try {
         if (!url.pathname.startsWith("/api/")) return native(input, init);
         if (url.pathname !== "/api/telemetry") return inner(input, init);
         if ((init?.method ?? "GET").toUpperCase() === "GET") { counts.gets += 1; return Promise.resolve(status(counts.seen.length > 0)); }
-        const body = JSON.parse(String(init?.body ?? "{}")) as { notice_seen?: boolean };
+        const body = JSON.parse(String(init?.body ?? "{}")) as { notice_seen?: boolean; enabled?: boolean; settings?: unknown };
+        if (body.enabled === false) counts.on = false;
+        else if (!counts.on && body.settings !== undefined) counts.snapshotsAfterOff += 1;
         if (body.notice_seen === true) counts.seen.push(body);
         return Promise.resolve(status(counts.seen.length > 0));
       }) as typeof window.fetch;
@@ -221,8 +223,26 @@ try {
       await page.keyboard.press("Escape");
       await settings.waitFor({ state: "detached" });
       await page.waitForFunction(() => (window as unknown as { counts: { seen: unknown[] } }).counts.seen.length === 1);
+      // recorded on the welcome, the line stays on the next step, its one-tap Turn off with it
+      await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+      await dialog.getByRole("heading", { name: "Pick your coding agent", exact: true }).waitFor();
+      await dialog.locator(".setup-note-usage").getByRole("button", { name: "Turn off", exact: true }).waitFor({ state: "attached" });
+      assert.equal(await seen(), 1, "the next step's copy does not record it again");
+      // Turn off in the guide's copy is every copy's: the guide closed, the page's own line does not come back and
+      // no settings snapshot is told while counts are off
+      await dialog.locator(".setup-note-usage").getByRole("button", { name: "Turn off", exact: true }).click();
+      await page.waitForFunction(() => !(window as unknown as { counts: { on: boolean } }).counts.on);
+      await dialog.locator(".setup-note-usage").waitFor({ state: "detached" });
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      await page.locator(".conn-live").waitFor({ state: "attached" });
+      await frames(4);
+      await page.evaluate(() => localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings") ?? "{}"), theme: "light" })));
+      await frames(4);
+      assert.equal(await page.locator(".update-notice.is-telemetry").count(), 0, "the page's line stays gone after Turn off in the guide");
+      assert.equal(await page.evaluate(() => (window as unknown as { counts: { snapshotsAfterOff: number } }).counts.snapshotsAfterOff), 0, "no settings snapshot while counts are off");
       assert.deepEqual(errors, [], "no page errors in the usage-counts case");
-      console.log("PASS the guide's usage-counts line is recorded only in view and uncovered, and the page's copy is not drawn under it");
+      console.log("PASS the guide's usage-counts line is recorded only in view and uncovered, once, stays with Turn off on the next step, and the page's copy is not drawn under it");
     } finally {
       await context.close();
     }

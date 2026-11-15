@@ -41,7 +41,14 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
   // an event may go out, so an install that is off, blocked or has not seen the notice keeps its
   // settings to itself. The first snapshot rides with the acknowledgement below.
   const [status, setStatus] = useState<TelemetryStatus | null>(null);
-  const allowed = status !== null && status.enabled && !status.blocked_by_env && status.notice_seen;
+  // Turn off in any copy on this page is every copy's: the others hide and tell the server nothing more
+  const [, offHeard] = useState(0);
+  useEffect(() => {
+    const heard = (): void => offHeard((count) => count + 1);
+    noticeOff.listeners.add(heard);
+    return () => { noticeOff.listeners.delete(heard); };
+  }, []);
+  const allowed = status !== null && status.enabled && !status.blocked_by_env && status.notice_seen && !noticeOff.current;
   useEffect(() => {
     if (!enabled || !allowed || submittedSettingsSignature.current === settingsSignature) return;
     submittedSettingsSignature.current = settingsSignature;
@@ -55,7 +62,9 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
     fetchTelemetry().then((current) => {
       if (!live || !current) return;
       setStatus(current);
-      if (!current.notice_seen && current.enabled && !current.blocked_by_env) setShown(true);
+      // shown on this page already (the guide's welcome), it stays on the next step's copy and the page's own, so its
+      // one-tap Turn off is not gone the moment it is recorded; a new page shows it only while unseen
+      if ((!current.notice_seen || noticeShownHere.current) && current.enabled && !current.blocked_by_env && !noticeOff.current) { noticeShownHere.current = true; setShown(true); }
     }, (error: unknown) => console.error("telemetry status", error));
     return () => { live = false; };
   }, [enabled]);
@@ -97,13 +106,17 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
     return () => { recorded = true; cancelAnimationFrame(frame); observer?.disconnect(); document.removeEventListener("visibilitychange", onVisibility); document.removeEventListener("focusin", afterPaint); };
   }, [shown, enabled, line]);
   // a disabled line is not drawn: under a dialog it would be neither read nor reachable
-  if (!shown || closed || !enabled) return null;
+  if (!shown || closed || !enabled || (noticeOff.current && !offFailed)) return null;
   const turnOff = () => {
     turnedOff.current = true;
     setTurningOff(true);
     setOffFailed(false);
     // a refusal brings the line back, even after a close, and says so: the off is never taken for granted
-    changeTelemetry({ enabled: false }).then((next) => { setStatus(next); setClosed(true); }, (error: unknown) => {
+    changeTelemetry({ enabled: false }).then((next) => {
+      setStatus(next); setClosed(true);
+      noticeOff.current = true;
+      for (const heard of noticeOff.listeners) heard();
+    }, (error: unknown) => {
       console.error("telemetry off", error);
       turnedOff.current = false;
       setTurningOff(false);
@@ -126,6 +139,10 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
 
 /** The settings snapshot last told along with the notice (TelemetryNotice), for every copy of the line on this page. */
 const submittedNotice: { current: string | null } = { current: null };
+/** The line was shown on this page (TelemetryNotice): later copies keep showing it, with Turn off, until it is dismissed. */
+const noticeShownHere = { current: false };
+/** Counts were turned off from a copy of the line on this page: every copy hides and sends no snapshot. */
+const noticeOff = { current: false, listeners: new Set<() => void>() };
 
 /** A modal surface open over `node` (one that does not hold it): what is under it can be neither read nor reached. */
 function coveredByModal(node: HTMLElement): boolean {

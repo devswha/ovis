@@ -53,6 +53,14 @@ describe("the setup guide closed in another tab", () => {
     await act(async () => { events.dispatchEvent(event); });
   }
 
+  it("is settled once another tab closes the guide, though this one never decided", async () => {
+    function Fresh() { hook = useSetupGuide({ enabled: true, workspaces: null, pairingGate: undefined, watching: false }); return null; }
+    await act(async () => { renderer = create(createElement(Fresh)); });
+    expect(hook.settled).toBe(false);
+    await otherTabWrites(JSON.stringify({ status: "closed" }));
+    expect(hook.settled).toBe(true);
+  });
+
   it("opens the first workspace's pane only when the user stayed on the guide", async () => {
     await resumeAt(REOPENED);
     const opened: string[] = [];

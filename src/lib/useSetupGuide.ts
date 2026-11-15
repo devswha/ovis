@@ -67,7 +67,7 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
   useEffect(() => {
     const reopen = () => {
       if (watchingRef.current || !enabledRef.current) return;
-      decided.current = true; openedHere.current = true; setGuide(REOPENED); setPaused(false);
+      decided.current = true; setSettled(true); openedHere.current = true; setGuide(REOPENED); setPaused(false);
     };
     // closed in another tab of this browser: closed here too, read from the event itself (storage may
     // already hold this tab's own later write)
@@ -77,7 +77,7 @@ export function useSetupGuide({ enabled, workspaces, pairingGate, watching }: Se
       // a close that arrives after this tab opened the guide again and wrote it is the older of the two
       const store = storage();
       if (store !== null && lastWrite.current !== null && store.getItem(GUIDE_STORAGE_KEY) === lastWrite.current) return;
-      decided.current = true; openedHere.current = false; setGuide(null); setPaused(false);
+      decided.current = true; setSettled(true); openedHere.current = false; setGuide(null); setPaused(false);
     };
     window.addEventListener("storage", onStorage);
     const stop = onSetupGuideRequest(reopen);
