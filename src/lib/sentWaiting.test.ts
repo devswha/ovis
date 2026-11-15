@@ -502,6 +502,51 @@ describe("waitingText", () => {
     } finally { Reflect.deleteProperty(globalThis, "sessionStorage"); }
   });
 
+  /** one tab's sessionStorage, and this module as each page of the tab loads it anew: a copy of its own, its state empty */
+  const openTab = () => {
+    const items = new Map<string, string>();
+    Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: (name: string) => items.get(name) ?? null, setItem: (name: string, value: string) => { items.set(name, value); }, removeItem: (name: string) => { items.delete(name); } } });
+    return { items, load: (page: string): Promise<typeof import("./sentWaiting.ts")> => import(`./sentWaiting.ts?${page}`) };
+  };
+  const readOn = (api: typeof import("./sentWaiting.ts"), key: string, turns: ConversationTurn[], at: number) => {
+    api.observeWaitingClock(key, new Date(at).toISOString(), 0, at);
+    api.settleWaitingSends(key, turns, at, true);
+  };
+
+  it("matches an unanswered send after a reload to no turn it would not have taken before", async () => {
+    const tab = openTab();
+    try {
+      const before = await tab.load("kept-turns-before");
+      paneLifetimes.observe([{ id: "kept-turns", snapshot: { panes: [], herdr_lifetime: "kept-turns-herdr" } } as unknown as Machine], (item) => item.pane_id);
+      const sent = Date.now() - 10 * WAITING_SEND_MS;
+      // two sends of the same words, and the agent wrote one: the turn is the first one's
+      const taken = before.waitingKey("kept-turns", "taken");
+      const takenTurns = [assistant("earlier"), user("yes", sent + 200)];
+      readOn(before, taken, [assistant("earlier")], sent - 50);
+      before.rememberWaitingSend(taken, "yes", sent, before.waitingBaseline(taken, 0, sent));
+      before.rememberWaitingSend(taken, "yes", sent + 100, before.waitingBaseline(taken, 0, sent + 100));
+      before.restingSince(taken, sent + 300);
+      readOn(before, taken, takenTurns, sent + WAITING_SEND_MS + 100);
+      before.markUnanswered(taken, sent + WAITING_SEND_MS + 101);
+      // the PC's clock runs ahead of this browser's: an older identical turn the chat held reads newer than the send
+      const held = before.waitingKey("kept-turns", "held");
+      const heldTurns = [user("go", sent + 3_000), assistant("ok")];
+      readOn(before, held, heldTurns, sent);
+      before.rememberWaitingSend(held, "go", sent + 10, before.waitingBaseline(held, 0, sent + 10));
+      before.restingSince(held, sent + 20);
+      readOn(before, held, heldTurns, sent + WAITING_SEND_MS + 100);
+      before.markUnanswered(held, sent + WAITING_SEND_MS + 101);
+      const after = await tab.load("kept-turns-after");
+      // the chat draws its sends before it settles its first read (ChatView)
+      after.currentWaitingSends(taken);
+      after.currentWaitingSends(held);
+      readOn(after, taken, takenTurns, sent + WAITING_SEND_MS + 500);
+      readOn(after, held, heldTurns, sent + WAITING_SEND_MS + 500);
+      expect(after.currentWaitingSends(taken).map((send) => [send.text, send.unanswered])).toEqual([["yes", true]]);
+      expect(after.currentWaitingSends(held).map((send) => [send.text, send.unanswered])).toEqual([["go", true]]);
+    } finally { Reflect.deleteProperty(globalThis, "sessionStorage"); }
+  });
+
   it("lets a replaced herdr's waiting sends go: the new herdr gives the same pane ids to other panes", () => {
     const roster = (lifetime: string) => [{ id: "local", snapshot: { panes: [], herdr_lifetime: lifetime } } as unknown as Machine];
     const key = waitingKey("local", "w1:p1");

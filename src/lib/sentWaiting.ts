@@ -121,10 +121,16 @@ function newerThanSend(send: WaitingSend, at: number, key: string, answeredAt: n
   return after.latest === null || at + coarse + (after.takenAt - after.latest) > send.at;
 }
 
+/** A user turn's words, as the terminal's copy of a send reads them. */
+const turnSaid = (parts: Turn["parts"]): string => said(parts.filter((part) => part.kind === "text").map((part) => part.text).join(" "));
+
+/** The words of the user turn a userTurns key names: only a turn with a send's words can be that send's. */
+const keySaid = (key: string): string => turnSaid((JSON.parse(key.slice(0, key.lastIndexOf(":"))) as [Turn["ts"], Turn["parts"]])[1]);
+
 function turnMatches(send: WaitingSend, turn: Turn, key: string, answeredAt: number, last: boolean): boolean {
   const at = turnTime(turn);
   if (turn.role !== "user" || !Number.isFinite(at) || !newerThanSend(send, at, key, answeredAt, last)) return false;
-  return said(turn.parts.filter((part) => part.kind === "text").map((part) => part.text).join(" ")) === said(send.text);
+  return turnSaid(turn.parts) === said(send.text);
 }
 
 interface WaitingPane {
@@ -303,13 +309,32 @@ let restored = false;
 function storage(): Storage | null {
   try { return typeof sessionStorage === "undefined" ? null : sessionStorage; } catch { return null; }
 }
+/**
+ * An unanswered send as the tab keeps it: with the turns the chat held when it was sent (its baseline) and the turns
+ * another send took, so a reload matches it to no turn it would not have taken before. Of both, only the turns with
+ * its words, the only ones that could be its own.
+ */
+function keptSend(key: string, send: WaitingSend, claimed: Iterable<string>) {
+  const words = said(send.text);
+  const own = (turn: string) => keySaid(turn) === words;
+  const after = send.after === null ? null : { ...send.after, keys: [...send.after.keys].filter(own) };
+  return { key, text: send.text, at: send.at, herdr: send.herdr, after, claimed: [...claimed].filter(own) };
+}
+/** A kept send's baseline read back: null for none, or for one this page cannot read (the send's time alone guards it then). */
+function keptBaseline(value: unknown): WaitingBaseline | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { keys, latest, takenAt, pcFloor, unread } = value as Record<string, unknown>;
+  const time = (item: unknown): item is number | null => item === null || typeof item === "number";
+  if (!Array.isArray(keys) || !keys.every((item) => typeof item === "string") || !time(latest) || typeof takenAt !== "number" || !time(pcFloor)) return null;
+  return { keys: new Set(keys), latest, takenAt, pcFloor, ...(unread === true ? { unread } : {}) };
+}
 /** The unanswered sends of every pane, written whole on each change. */
 function stored(): void {
   const store = storage();
   if (store === null) return;
   // only what names its herdr: after a reload, it is shown under that herdr alone (adoptRestored)
-  const kept = [...waiting.entries()].flatMap(([key, pane]) => pane.sends.filter((send) => send.unanswered === true && send.herdr !== undefined).map((send) => ({ key, text: send.text, at: send.at, herdr: send.herdr })))
-    .concat([...restoredSends.entries()].flatMap(([key, sends]) => sends.map((send) => ({ key, text: send.text, at: send.at, herdr: send.herdr }))));
+  const kept = [...waiting.entries()].flatMap(([key, pane]) => pane.sends.filter((send) => send.unanswered === true && send.herdr !== undefined).map((send) => keptSend(key, send, pane.claimed)))
+    .concat([...restoredSends.entries()].flatMap(([key, sends]) => sends.map(({ send, claimed }) => keptSend(key, send, claimed))));
   try {
     if (kept.length === 0) store.removeItem(STORE_KEY); else store.setItem(STORE_KEY, JSON.stringify(kept));
   } catch { /* full or refused: kept in memory only */ }
@@ -322,13 +347,18 @@ function restore(now = Date.now()): void {
   try { kept = JSON.parse(storage()?.getItem(STORE_KEY) ?? "[]"); } catch { return; }
   if (!Array.isArray(kept)) return;
   for (const item of kept) {
-    const { key, text, at, herdr } = (item ?? {}) as { key?: unknown; text?: unknown; at?: unknown; herdr?: unknown };
+    const { key, text, at, herdr, after, claimed } = (item ?? {}) as { key?: unknown; text?: unknown; at?: unknown; herdr?: unknown; after?: unknown; claimed?: unknown };
     if (typeof key !== "string" || typeof text !== "string" || typeof at !== "number" || typeof herdr !== "string" || !(now - at < UNANSWERED_KEEP_MS)) continue;
-    restoredSends.set(key, [...(restoredSends.get(key) ?? []), { id: ++nextId, pane: key, text, at, after: null, unanswered: true, herdr }]);
+    const send: WaitingSend = { id: ++nextId, pane: key, text, at, after: keptBaseline(after), unanswered: true, herdr };
+    const taken = Array.isArray(claimed) ? claimed.filter((turn): turn is string => typeof turn === "string") : [];
+    restoredSends.set(key, [...(restoredSends.get(key) ?? []), { send, claimed: taken }]);
   }
 }
-/** sends read back from the tab's storage, held until the page knows which herdr their PC runs now */
-const restoredSends = new Map<string, WaitingSend[]>();
+/**
+ * sends read back from the tab's storage, each with the turns of its words another send had taken, held until the
+ * page knows which herdr their PC runs now
+ */
+const restoredSends = new Map<string, { send: WaitingSend; claimed: readonly string[] }[]>();
 /** A pane's sends read back after a reload, shown once their PC's herdr is the one they were kept under; another's are dropped. */
 function adoptRestored(key: string): void {
   const sends = restoredSends.get(key);
@@ -336,10 +366,11 @@ function adoptRestored(key: string): void {
   const lifetime = paneLifetimes.generation(key.slice(0, key.indexOf(":")));
   if (typeof lifetime !== "string") return;
   restoredSends.delete(key);
-  const same = sends.filter((send) => send.herdr === lifetime);
+  const same = sends.filter(({ send }) => send.herdr === lifetime);
   if (same.length > 0) {
     const pane = waiting.get(key) ?? { sends: empty, claimed: new Set<string>() };
-    pane.sends = [...pane.sends, ...same];
+    pane.sends = [...pane.sends, ...same.map(({ send }) => send)];
+    for (const { claimed } of same) for (const turn of claimed) pane.claimed.add(turn);
     waiting.set(key, pane);
   }
   if (same.length !== sends.length) stored();
@@ -387,9 +418,9 @@ export function settleWaitingSends(key: string, turns: readonly Turn[], now = Da
     settled.add(send);
   }
   if (settled.size === 0) return;
-  const settledUnanswered = [...settled].some((send) => send.unanswered === true);
   pane.sends = pane.sends.filter((send) => !settled.has(send));
-  if (settledUnanswered) stored();
+  // a turn taken is kept with the unanswered sends of its words, and one of them may have been settled
+  stored();
   announce();
 }
 
