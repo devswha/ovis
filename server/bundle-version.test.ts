@@ -40,6 +40,16 @@ it("ignores UI, tests, docs, fixtures, app release numbers and generated Rust ta
   expect(sourceBundleVersion(root)).toBe(first);
 });
 
+it("ignores generated build output: dist directories and tsbuildinfo files", () => {
+  const { root, put } = fixture();
+  put("shared/vendor/x/src/a.ts", "export {};");
+  const first = sourceBundleVersion(root);
+  for (const path of ["shared/vendor/x/dist/a.d.ts", "shared/vendor/x/dist/a.d.ts.map", "shared/vendor/x/tsconfig.tsbuildinfo", "shared/vendor/x/dist/tsconfig.tsbuildinfo"]) put(path, "generated");
+  expect(sourceBundleVersion(root)).toBe(first);
+  put("shared/vendor/x/src/a.ts", "export const changed = 1;");
+  expect(sourceBundleVersion(root)).not.toBe(first);
+});
+
 it("starts from minimal source copies without CI configuration and still hashes pins when present", () => {
   const { root, put } = fixture();
   const pinned = sourceBundleVersion(root);

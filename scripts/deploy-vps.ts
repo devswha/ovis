@@ -21,6 +21,9 @@
  * 4. updates the Ovis of every PC this server reaches over SSH (`~/.local/share/ovis/app`, install.sh's checkout)
  *    to the same commit and restarts it, since this Ovis refuses a PC whose Ovis is older, and those PCs only
  *    update themselves to a release tag;
+ *    Each PC's source bundle identity (server/bundle-version.ts, what this server compares) is computed
+ *    after its build and must equal this checkout's, or that PC is reported as not updated: the same
+ *    commit can differ by files on disk, so a matching commit alone proves nothing;
  * 5. restarts the Ovis app on the Xiaomi over adb, since the Android app ignores a reload.
  *
  * It also sets OVIS_AUTO_UPDATE=1 in `~/.config/ovis/env`, which every start of the unit reads (this
@@ -36,6 +39,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
+import { sourceBundleVersion } from "../server/bundle-version.ts";
 import { onMainSteps, pullMainSteps, settingOf, withSetting } from "./deploy-helpers.ts";
 
 const repo = join(import.meta.dir, "..");
@@ -94,6 +98,10 @@ if (!process.argv.includes("--no-build")) {
   if (!run(["bun", "run", "build"], { quiet: false }).ok) fail("the build failed");
 }
 
+// What every PC must compute too, or this server refuses it: the identity of the files this checkout runs.
+const identity = sourceBundleVersion(repo);
+console.log(`deploy-vps: this checkout's bundle identity is ${identity}`);
+
 if (!run(["systemctl", "--user", "cat", service]).ok) fail(`no ${service} user service here: install it first (INSTALL.md, the herdr-core setup, with this checkout as the app)`);
 const before = existsSync(settingsFile) ? readFileSync(settingsFile, "utf8") : "";
 const after = withSetting(before, "OVIS_AUTO_UPDATE", "1");
@@ -131,6 +139,8 @@ for (const pc of pcs) {
     ". scripts/bun-path.sh",
     "bun install --frozen-lockfile",
     "bun run build",
+    // same function the servers compare; fail before restarting a PC this server would refuse anyway
+    `id=$(bun -e 'import { sourceBundleVersion } from "./server/bundle-version.ts"; console.log(sourceBundleVersion(process.cwd()))') && { test "$id" = ${identity} || { echo "deploy-vps: its bundle identity is $id, not ${identity}" >&2; exit 1; }; }`,
     "if systemctl --user cat ovis.service >/dev/null 2>&1; then systemctl --user restart ovis.service; elif launchctl print gui/$(id -u)/sh.ovis.server >/dev/null 2>&1; then HERDR_PLUGIN_STATE_DIR=$HOME/.local/state/ovis HERDR_PLUGIN_CONFIG_DIR=$HOME/.config/ovis bun scripts/plugin.ts stop && launchctl kickstart -k gui/$(id -u)/sh.ovis.server; else echo 'deploy-vps: no ovis.service or sh.ovis.server there' >&2; exit 1; fi",
     `port=$(sed -n 's/^PORT=//p' "$HOME/.config/ovis/env" 2>/dev/null | tail -1); for i in $(seq 90); do curl -s -m 2 "http://127.0.0.1:\${port:-7317}/api/updates" | grep -q '"current_revision":"${head}"' && exit 0; sleep 1; done; echo 'deploy-vps: its server does not run the new commit after 90s' >&2; exit 1`,
   ];

@@ -58,6 +58,7 @@ New devices use upstream behavior. Migrated devices retain the previous fork beh
 - `src/fork/omarchyTheme.ts`, the Omarchy row in `src/fork/SettingsRows.tsx`, and `server/fork/omarchy-themes.ts` implement Follow Omarchy. It is off by default and offered when this device has sent a theme. The hook stays in `scripts/omarchy-theme-hook.sh`. No theme colors were edited.
 - `scripts/deploy-vps.ts` and `scripts/deploy-helpers.ts` retain the VPS/Xiaomi deployment workflow. This work does not deploy, restart a service, contact a phone, or change the live checkout.
 - Fork source-bundle/release wiring and deployment documentation stay outside the UI extraction. They must not be proposed upstream with Ricardo's endpoints or service names.
+- The fork's source bundle identity (`sourceBundleVersion` in `server/bundle-version.ts`, the `47+<hash>` that servers compare as `REMOTE_BUNDLE_VERSION`) hashes the files under `BUNDLE_PATHSPECS` on disk, so `bundleInput` skips generated output (`dist` directories, `*.tsbuildinfo`, as `tsc -b` writes under `shared/vendor/*`): the same commit once hashed differently on the VPS than on the PCs, and Ovis refused them. `scripts/deploy-vps.ts` compares each PC's identity with the VPS checkout's after its build. Fork-only, not an upstream PR candidate.
 
 ## Settings and migration
 

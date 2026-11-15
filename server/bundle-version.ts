@@ -6,9 +6,10 @@ import { REMOTE_BUNDLE_VERSION as RELEASE_VERSION } from "../shared/machines.ts"
 
 // Shared with the release guards so adding an input cannot silently leave automatic updates behind.
 export const BUNDLE_PATHSPECS = ["server", "shared", "integrations", "patches", "bun.lock", "scripts/build-remote-bundle.ts", "scripts/server-artifact.ts", "scripts/install-gjc-integration.ts", "scripts/install-pi-integration.ts", "scripts/pty-sidecar.ts", "crates/pty-sidecar"];
+// Generated output (`tsc -b` writes shared/vendor/*/dist and *.tsbuildinfo, gitignored) differs between checkouts of the same commit, so it must not enter the identity.
 export const bundleInput = (path: string): boolean => BUNDLE_PATHSPECS.some((spec) => path === spec || path.startsWith(`${spec}/`))
   && !path.endsWith(".test.ts") && !path.endsWith(".md") && !path.startsWith("server/fixtures/")
-  && !path.split("/").some((part) => ["target", "node_modules", ".git"].includes(part));
+  && !path.split("/").some((part) => ["target", "node_modules", ".git", "dist"].includes(part)) && !path.endsWith(".tsbuildinfo");
 export const BUNDLE_WORKFLOW = ".github/workflows/remote-bundles.yml";
 export const bunPins = (workflow: string): string => [...workflow.matchAll(/bun-version:\s*(\S+)/g)].map((match) => match[1]).join(" ");
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "patchedDependencies", "overrides", "trustedDependencies"];
