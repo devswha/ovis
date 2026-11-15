@@ -36,12 +36,31 @@ export function tmuxWrapper(info: ProcessInfo | undefined, platform = process.pl
 
 const FORMAT = "#{client_pid}\t#{client_tty}\t#{pid}\t#{socket_path}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{pane_tty}\t#{client_control_mode}\t#{pane_dead}";
 const exec = promisify(execFile);
-async function clients(args: string[]): Promise<string> {
+async function run(args: readonly string[]): Promise<string> {
   // Neither the bridge's own TMUX nor the attach command's old -t selects the client's current pane.
   const env = { ...process.env };
   delete env["TMUX"]; delete env["TMUX_PANE"];
-  return (await exec("tmux", [...args, "list-clients", "-F", FORMAT],
-    { env, timeout: 2000, maxBuffer: 128 * 1024 })).stdout;
+  return (await exec("tmux", [...args], { env, timeout: 2000, maxBuffer: 2 * 1024 * 1024 })).stdout;
+}
+const clients = (args: string[]) => run([...args, "list-clients", "-F", FORMAT]);
+
+/** The pane a proven attach client shows: its server (the client's own -S/-L) and the pane's id there. */
+export type TmuxPane = { readonly args: readonly string[]; readonly id: string };
+
+/**
+ * What the proven pane itself shows, its last 400 lines as herdr reads a pane's, and the folder its foreground
+ * process runs in. Never the attach client's view, which may draw another pane beside it, the session tree with
+ * other sessions' previews, or a popup. null when either cannot be read.
+ */
+export async function tmuxPaneView(pane: TmuxPane, read: (args: readonly string[]) => Promise<string> = run): Promise<{ text: string; cwd: string } | null> {
+  try {
+    const [text, folder] = await Promise.all([
+      read([...pane.args, "capture-pane", "-p", "-t", pane.id, "-S", "-400"]),
+      read([...pane.args, "display-message", "-p", "-t", pane.id, "#{pane_current_path}"]),
+    ]);
+    const cwd = folder.endsWith("\n") ? folder.slice(0, -1) : folder;
+    return isAbsolute(cwd) ? { text, cwd } : null;
+  } catch { return null; }
 }
 
 const tty = (value: string) => value.replace(/^\/dev\//, "");
@@ -65,7 +84,7 @@ function processArgv(pid: number): string[] | null {
 export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform = process.platform,
   readClients = clients, readProcesses = processTable, birth = processStartIdentity,
   readArgv: (pid: number) => readonly string[] | null = processArgv,
-): Promise<{ pid: number; argv: string[]; identity: string } | null> {
+): Promise<{ pid: number; argv: string[]; identity: string; pane: TmuxPane } | null> {
   const reported = info?.foreground_processes ?? [];
   const attachments = reported.map(attachClient).filter((client) => client !== null);
   if (!tmuxWrapper(info, platform) || attachments.length !== 1) return null;
@@ -159,6 +178,6 @@ export async function tmuxCodexProcess(info: ProcessInfo | undefined, platform =
       || first.chain.some((row, index) => birth(row.pid) !== chainBirths[index])) return null;
     const argvKey = first.argvBirth === null ? "" : `:${createHash("sha256").update(JSON.stringify(first.argv)).digest("hex")}`;
     const identity = `${first.fields.join(":")}:${clientBirth}:${serverBirth}:${first.outerChain.map((row, index) => `${row.pid}:${outerBirths[index]}`).join(",")}:${first.chain.map((row, index) => `${row.pid}:${chainBirths[index]}`).join(",")}${argvKey}`;
-    return { pid: first.codex.pid, argv: first.argv, identity };
+    return { pid: first.codex.pid, argv: first.argv, identity, pane: { args: client.args, id: first.fields[6]! } };
   } catch { return null; }
 }

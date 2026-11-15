@@ -724,7 +724,7 @@ async function codexHolding(rollout: string): Promise<ReturnType<typeof Bun.spaw
 it.skipIf(process.platform !== "linux")("reads the native rollout behind a verified local tmux attach client", async () => {
   const child = await codexHolding(path);
   foreground = [{ pid: 2147483647, argv: ["/usr/bin/tmux", "-S", "/synthetic/tmux.sock", "attach-session", "-t", "work"] }];
-  const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: `client:1,pane:${child.pid}:1` });
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: `client:1,pane:${child.pid}:1`, pane: { args: [], id: "%1" } });
   try {
     expect(await resolve()).toBe(path);
     expect(await codexOpenRollout(root, root, home)).toBe(path);
@@ -804,7 +804,7 @@ ${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S node
   it.each(["chat", "background"])("refuses a rejected final identity read for %s without rejecting the lookup", async (reader) => {
     const child = await codexHolding(path);
     foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
-    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: "stable-fixture" });
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: "stable-fixture", pane: { args: [], id: "%1" } });
     failedReads.add(reader === "chat" ? 2 : 3);
     try { await expect(reader === "chat" ? resolve() : codexOpenRollout(root, root, home)).resolves.toBeNull(); }
     finally { nested.mockRestore(); }
@@ -813,7 +813,7 @@ ${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S node
   it.each(["missing", "switched", "reused"])("refuses a tmux binding that is %s after reading its held rollout", async (change) => {
     const child = await codexHolding(path);
     foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
-    const first = { pid: child.pid, argv: ["codex"], identity: "client:1,pane:1" };
+    const first = { pid: child.pid, argv: ["codex"], identity: "client:1,pane:1", pane: { args: [], id: "%1" } };
     const next = change === "missing" ? null : { ...first, ...(change === "switched" ? { pid: 2147483646 } : {}), identity: "client:1,pane:2" };
     const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValueOnce(first).mockResolvedValue(next);
     try { expect(await resolve()).toBeNull(); }
@@ -821,17 +821,111 @@ ${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S node
   });
 });
 
-it.skipIf(process.platform !== "linux")("does not replace a tmux Codex's missing open rollout with a screen or session hint", async () => {
-  const child = await runningCodex();
-  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
-  agentFolders = { cwd: root };
-  reportedSession = { source: "fixture", agent: "codex", kind: "native", value: thread };
-  screen = answer;
-  const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: "client:1,pane:1" });
-  try {
-    expect(await resolve()).toBeNull();
+// Since Codex 0.157 the shared app-server daemon, not the TUI, holds the rollout open: these Codex processes hold none
+describe.skipIf(process.platform !== "linux")("a Codex on the shared daemon behind a proven tmux attachment", () => {
+  const other = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc0b";
+  const otherAnswer = "The other tmux session's own conversation, whose long reply must never be shown for the selected pane.";
+  const header = "╭────────────────────────────╮\n│ >_ OpenAI Codex (v0.167.0) │\n╰────────────────────────────╯";
+  let otherPath: string;
+  /** Each tmux pane's own screen, as tmuxPaneView reads it. */
+  let views: Map<string, string>;
+  /** The pane this herdr pane's attach client shows; the Codex in each pane. */
+  let shown: "%1" | "%2";
+  let codexIn: Record<"%1" | "%2", number>;
+  /** The client moves to session 2's pane while the pane's screen is read. */
+  let switchWhileRead: boolean;
+  let proof: ReturnType<typeof spyOn>;
+  let view: ReturnType<typeof spyOn>;
+
+  /** A second session of the same folder, saying `replies`. */
+  function otherSession(...replies: string[]): void {
+    otherPath = join(home, "sessions", `rollout-${other}.jsonl`);
+    writeFileSync(otherPath, [{ type: "session_meta", payload: { id: other, cwd: root } },
+      ...replies.map((message) => ({ type: "event_msg", payload: { type: "agent_message", message } }))].map((entry) => JSON.stringify(entry)).join("\n"));
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2, 2, 'cli')").run(other, otherPath, root);
+    db.close();
+  }
+
+  beforeEach(async () => {
+    views = new Map();
+    shown = "%1";
+    switchWhileRead = false;
+    codexIn = { "%1": (await runningCodex()).pid, "%2": (await runningCodex()).pid };
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    // one tmux server: this pane's client on pts/1, another client on pts/3 showing session 2's pane
+    const pane = (id: "%1" | "%2") => id === "%1" ? "$1\t@1\t%1\t2147483646\t/dev/pts/2" : "$2\t@2\t%2\t2147483644\t/dev/pts/4";
+    const mapping = () => `2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t${pane(shown)}\t0\t0\n`
+      + `2147483640\t/dev/pts/3\t2147483645\t/fixture/tmux.sock\t${pane("%2")}\t0\t0\n`;
+    const rows = () => kiro.parseTerminalProcesses(`
+2147483647 1 2147483647 2147483647 pts/1 S tmux: client
+2147483640 1 2147483640 2147483640 pts/3 S tmux: client
+2147483646 2147483645 2147483646 ${codexIn["%1"]} pts/2 S /bin/bash
+${codexIn["%1"]} 2147483646 ${codexIn["%1"]} ${codexIn["%1"]} pts/2 S codex
+2147483644 2147483645 2147483644 ${codexIn["%2"]} pts/4 S /bin/bash
+${codexIn["%2"]} 2147483644 ${codexIn["%2"]} ${codexIn["%2"]} pts/4 S codex
+`);
+    const discover = tmux.tmuxCodexProcess;
+    proof = spyOn(tmux, "tmuxCodexProcess").mockImplementation((info) => discover(info, "linux", async () => mapping(), async () => rows(), (pid) => pid));
+    view = spyOn(tmux, "tmuxPaneView").mockImplementation(async (target) => {
+      if (switchWhileRead) shown = "%2";
+      return { text: views.get(target.id) ?? "", cwd: root };
+    });
+  });
+  afterEach(() => { proof.mockRestore(); view.mockRestore(); });
+
+  it("shows only the conversation of the pane its client shows, never another tmux session's", async () => {
+    otherSession(otherAnswer);
+    views.set("%1", `${header}\n${answer}`).set("%2", `${header}\n${otherAnswer}`);
+    // what the attach client draws (the session tree previewing session 2, a split, a popup) is not the pane's screen,
+    // and herdr's session report is a hint
+    screen = otherAnswer;
+    reportedSession = { source: "fixture", agent: "codex", kind: "native", value: other };
+    expect(await resolve()).toBe(path);
+    // proven once before the pane's screen is read and once after it: nothing held needs a third proof
+    expect(proof).toHaveBeenCalledTimes(2);
+    // the background reader never matches a screen
     expect(await codexOpenRollout(root, root, home)).toBeNull();
-  } finally { nested.mockRestore(); }
+    views.set("%1", header);
+    expect(await resolve()).toBeNull();
+  });
+
+  it.each([
+    ["the same reply", [answer], `${header}\n${answer}`],
+    ["both replies", [otherAnswer], `${header}\n${answer}\n${otherAnswer}`],
+  ])("refuses a pane showing what two sessions of its folder said: %s", async (_name, replies, text) => {
+    otherSession(...replies);
+    views.set("%1", text).set("%2", text);
+    expect(await resolve()).toBeNull();
+  });
+
+  it("follows the client to another session's pane, and never stays on the pane it left", async () => {
+    otherSession(otherAnswer);
+    views.set("%1", `${header}\n${answer}`).set("%2", `${header}\n${otherAnswer}`);
+    expect(await resolve()).toBe(path);
+    shown = "%2";
+    expect(await resolve()).toBe(otherPath);
+    views.set("%2", header);
+    expect(await resolve()).toBeNull();
+    // switched while the pane's screen was read: proven on %1 before that read and on %2 after it
+    shown = "%1";
+    switchWhileRead = true;
+    expect(await resolve()).toBeNull();
+  });
+
+  it("never shows an ended Codex's conversation for the one started after it in the same pane", async () => {
+    views.set("%1", `${header}\n${answer}`);
+    // herdr's report outlives the Codex that made it
+    reportedSession = { source: "fixture", agent: "codex", kind: "native", value: thread };
+    expect(await resolve()).toBe(path);
+    const ended = children.find((child) => child.pid === codexIn["%1"])!;
+    ended.kill();
+    await ended.exited;
+    codexIn["%1"] = (await runningCodex()).pid;
+    // the ended Codex's reply is still on the pane, above the header the new one drew
+    views.set("%1", `${header}\n${answer}\n${header}`);
+    expect(await resolve()).toBeNull();
+  });
 });
 
 // /proc on Linux, lsof -FnDi on macOS: both name the held file itself

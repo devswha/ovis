@@ -19,7 +19,7 @@ import type { AgentInfo } from "../shared/herdr-api.generated.ts";
 import { agentGet, HerdrError, paneGet, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { kiroCodexProcess, kiroNested, kiroWrapper } from "./kiro-terminal.ts";
 import { isCodexExecutable } from "./codex-executable.ts";
-import { tmuxCodexProcess, tmuxWrapper } from "./tmux-terminal.ts";
+import { type TmuxPane, tmuxCodexProcess, tmuxPaneView, tmuxWrapper } from "./tmux-terminal.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { FOOTER } from "./codex-steering.ts";
 import { codexStartScreenUnused } from "./start-screen.ts";
@@ -3045,7 +3045,7 @@ export async function paneCodexProcess(paneId: string, known?: ProcessInfo | nul
 }
 
 /** `known`: herdr's `pane.process_info` answer the caller's poll already read for this pane (null: no processes). */
-async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<{ list: { pid: number; argv?: string[] }[]; key: string }> {
+async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Promise<{ list: { pid: number; argv?: string[] }[]; key: string; tmux?: TmuxPane }> {
   const processInfo = known !== undefined ? known ?? undefined : await paneProcessInfo(paneId);
   // herdr's schema allows `argv: null`; this reader has always read argv as absent or a list
   // (the cast is the inline result type herdrRpc was given before the typed seam)
@@ -3064,7 +3064,7 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
     // A PID can be reused between reads: the verified births identify the whole nested chain.
     if (nested !== null) return { list: [nested], key: `kiro:${nested.identity}` };
     const attached = await tmuxCodexProcess(processInfo);
-    if (attached !== null) return { list: [attached], key: `tmux:${attached.identity}` };
+    if (attached !== null) return { list: [attached], key: `tmux:${attached.identity}`, tmux: attached.pane };
   }
   return { list, key: list.map((process) => process.pid).sort((left, right) => left - right).join(",") };
 }
@@ -3515,8 +3515,8 @@ async function freshReportedThread(
 }
 
 /** The pane's Codex processes, and the rollouts they hold open (lsof on macOS, /proc elsewhere): one alone is the pane's. */
-async function openRollouts(paneId: string, home: string, known?: ProcessInfo | null): Promise<{ codexProcesses: Awaited<ReturnType<typeof codexProcessesOf>>["list"]; processes: string; open: Set<string>; held: Map<string, string> }> {
-  const { list: codexProcesses, key: processes } = await codexProcessesOf(paneId, known);
+async function openRollouts(paneId: string, home: string, known?: ProcessInfo | null): Promise<{ codexProcesses: Awaited<ReturnType<typeof codexProcessesOf>>["list"]; processes: string; open: Set<string>; held: Map<string, string>; tmux?: TmuxPane }> {
+  const { list: codexProcesses, key: processes, tmux } = await codexProcessesOf(paneId, known);
   const open = new Set<string>();
   // the exact dev:ino of the file each held rollout is, as the process holds it: a rename over its path cannot change it (#3402)
   const held = new Map<string, string>();
@@ -3581,11 +3581,12 @@ async function openRollouts(paneId: string, home: string, known?: ProcessInfo | 
       } catch { /* A descriptor may close while enumerating it. */ }
     }
   }
-  // An attach client may switch its pane while the descriptor lookup awaits lsof or reads /proc.
-  if (processes.startsWith("tmux:") && (await codexProcessesOf(paneId).then((again) => again.key, () => null)) !== processes) {
+  // An attach client may switch its pane while the descriptor lookup awaits lsof or reads /proc. Nothing held proves
+  // nothing to keep: a screen read then is proven again after it (codexTranscriptPath)
+  if (tmux !== undefined && open.size > 0 && (await codexProcessesOf(paneId).then((again) => again.key, () => null)) !== processes) {
     return { codexProcesses: [], processes: "", open: new Set(), held: new Map() };
   }
-  return { codexProcesses, processes, open, held };
+  return { codexProcesses, processes, open, held, ...tmux === undefined ? {} : { tmux } };
 }
 
 /**
@@ -3823,7 +3824,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // binds the rollout to these processes, and one read before a Codex left (or before its pid came back) would
   // bind a conversation to the wrong one
   // (an answer without process facts is asked again, as before: a nested Codex may yet be proven from the next one)
-  const { codexProcesses, processes, open, held } = await openRollouts(paneId, home, agent.processRead?.info);
+  const { codexProcesses, processes, open, held, tmux } = await openRollouts(paneId, home, agent.processRead?.info);
   // no Codex process of the pane proven now: what its screen still shows (an earlier occupant's, or
   // a Codex gone since) ties it to no conversation, and the terminal stands in
   if (codexProcesses.length === 0) return null;
@@ -3845,8 +3846,11 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     proofs?.set(only, held.get(only) ?? "");
     return only;
   }
-  // A tmux screen/report/cwd alone cannot substitute for the active Codex's held rollout.
-  if (processes.startsWith("tmux:")) return null;
+  // Behind a proven tmux attachment (a Codex on the shared app-server daemon holds no rollout) only the proven pane's
+  // own screen tells, never what the attach client draws, weighed against the threads of the folder that Codex runs in
+  const view = tmux === undefined ? undefined : await tmuxPaneView(tmux);
+  if (view === null) return null;
+  const folder = view?.cwd ?? cwd;
   const resumed = resumedThread(codexProcesses.map((process) => process.argv ?? []));
 
   let db: Database | undefined;
@@ -3887,7 +3891,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     // the same guard for a match: after /new the process writes a thread begun since
     // (created_at has whole seconds, so one begun in the match's second counts too)
     if (boundHere !== undefined) boundNewer = newerThreads(db, cwd, Math.floor(boundHere.at / 1000), null, paneId, home, firsts);
-    const { where, params } = storedCwdCondition(cwd);
+    const { where, params } = storedCwdCondition(folder);
     const rows = db.query<{ rollout_path: string }, string[]>(
       // a burst of `codex exec` runs must not push the pane's own thread out of the 32
       `SELECT rollout_path FROM threads WHERE ${where} AND archived = 0 AND agent_role IS NULL${interactive(db)} ORDER BY updated_at DESC LIMIT 33`,
@@ -3917,12 +3921,16 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     boundHere = undefined;
     boundNewer = [];
   }
-  const screen = paths.length ? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }) : null;
+  const screen = paths.length === 0 ? null : view !== undefined ? { text: view.text } : await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true });
   const candidates = paths.flatMap((path) => {
     try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
   });
   const scrutinized = new Set(titledElsewhere === null ? [] : [titledElsewhere]);
   let matched = screen ? matchCodexTranscript(screen.text, candidates, scrutinized, new Map(), false, folderRollouts) : null;
+  // A tmux match holds only while the same proof holds after that screen was read (the client may have moved to
+  // another pane, or another Codex started in it). It is never kept as a binding, and no weaker way stands in for it:
+  // the next read asks the pane's screen again, so the chat follows the client or falls back to the terminal
+  if (tmux !== undefined) return matched !== null && await codexProcessesOf(paneId).then((again) => again.key, () => null) === processes ? matched : null;
   // a second Codex that only started in the folder raises no doubt about the turn a screen shows finished
   // (withoutStartedThreads). Its match came after other reads than the pane's: the pane is held to it once more
   if (matched === null && screen !== null) {

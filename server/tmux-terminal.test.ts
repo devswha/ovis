@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import type { ProcessInfo } from "./herdr/client.ts";
 import { parseTerminalProcesses, type TerminalProcess } from "./kiro-terminal.ts";
-import { tmuxCodexProcess as discoverTmux, tmuxWrapper } from "./tmux-terminal.ts";
+import { tmuxCodexProcess as discoverTmux, tmuxPaneView, tmuxWrapper } from "./tmux-terminal.ts";
 
 // Synthetic interpreter PIDs must never read the host's argv unless a test supplies its own reader.
 const tmuxCodexProcess: typeof discoverTmux = (info, platform, clients, rows, birth, argv = () => null) =>
@@ -230,6 +230,20 @@ describe("tmux native process proof", () => {
     expect(found).toMatchObject({ pid: 30, argv: ["/opt/bin/codex"] });
     expect(args).toEqual([["-S", "/fixture/tmux.sock"], ["-S", "/fixture/tmux.sock"]]);
     expect(found!.identity).toContain("$2:@3:%4");
+    expect(found!.pane).toEqual({ args: ["-S", "/fixture/tmux.sock"], id: "%4" });
+  });
+
+  it("reads the proven pane's own screen and folder from the client's server, never the client's view", async () => {
+    const pane = { args: ["-S", "/fixture/tmux.sock"], id: "%4" };
+    const asked: (readonly string[])[] = [];
+    expect(await tmuxPaneView(pane, async (args) => {
+      asked.push(args);
+      return args.includes("capture-pane") ? "Codex screen\n" : "/work/project\n";
+    })).toEqual({ text: "Codex screen\n", cwd: "/work/project" });
+    expect(asked).toContainEqual(["-S", "/fixture/tmux.sock", "capture-pane", "-p", "-t", "%4", "-S", "-400"]);
+    expect(asked).toContainEqual(["-S", "/fixture/tmux.sock", "display-message", "-p", "-t", "%4", "#{pane_current_path}"]);
+    expect(await tmuxPaneView(pane, async (args) => args.includes("capture-pane") ? "" : "relative\n")).toBeNull();
+    expect(await tmuxPaneView(pane, async () => { throw new Error("pane gone"); })).toBeNull();
   });
 
   it.each([
