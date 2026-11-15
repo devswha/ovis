@@ -2708,14 +2708,14 @@ describe("the status hub's GJC turn at rest under its background job", () => {
   async function gjcPane(records: string, h = hub()) {
     const path = join(root, `gjc-background-${++transcripts}.jsonl`);
     writeFileSync(path, records);
-    let running = true;
-    discovery = spyOn(gjc, "gjcPanes").mockImplementation(async () => new Map(running ? [[pane.pane_id, { path, startedAt: null }]] : []));
+    let running: { path: string | null; startedAt: number | null } | null = { path, startedAt: null };
+    discovery = spyOn(gjc, "gjcPanes").mockImplementation(async () => new Map(running ? [[pane.pane_id, running]] : []));
     h.herdrSays(pane);
     await h.status.gjc.refresh([pane]);
     return { ...h,
       append: (...records: string[]) => appendFileSync(path, records.join("")),
-      /** whether discovery finds gjc in the pane from now on */
-      found: (now: boolean) => { running = now; },
+      /** the gjc process discovery finds in the pane from now on (its start, and its transcript: this one unless said), or none */
+      runs: (process: { path?: string | null; startedAt: number | null } | null) => { running = process && { path, ...process }; },
     };
   }
   /** a GJC pane whose turn started a background job and came to rest */
@@ -2735,28 +2735,55 @@ describe("the status hub's GJC turn at rest under its background job", () => {
     const shell = { ...pane, agent: null, agent_status: "unknown" };
     h.herdrSays(shell);
     handlers.onStatus(pane.pane_id, "unknown", null);
-    h.found(false);
+    h.runs(null);
     await h.status.gjc.refresh([shell]);
     // Then nothing holds the pane, in frames or in the snapshot.
     expect(h.last().bg).toBe(false);
     expect((await h.snapshot()).panes[0]?.background_wait).toBeUndefined();
   });
 
-  it("keeps the wait through a discovery that misses gjc while herdr still names it", async () => {
-    // Given a GJC pane at rest on a job.
+  /** a GJC pane at rest on a job, whose process's start periodic discovery has read twice: the same process holds its wait */
+  async function waitingOnProcess() {
     const h = await waiting();
-    // When the next periodic discovery misses gjc (its process lookup failed) while herdr's snapshot still names it.
     const from = Date.now();
-    h.found(false);
-    setSystemTime(from + 5_000);
+    h.runs({ startedAt: at - 60_000 });
+    setSystemTime(from + 6_000);
     await h.status.gjc.refresh([pane]);
-    expect(h.status.gjc.runs(pane.pane_id)).toBe(false);
-    // Then the wait stands, and goes on once the one after finds gjc again.
-    expect((await h.status.clientSnapshot()).panes[0]).toMatchObject({ background_wait: true });
-    h.found(true);
-    setSystemTime(from + 10_000);
+    setSystemTime(from + 12_000);
     await h.status.gjc.refresh([pane]);
-    expect((await h.snapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+    expect((await h.status.clientSnapshot()).panes[0]).toMatchObject({ background_tasks: 1, background_wait: true });
+    return { ...h, from };
+  }
+
+  it("ends the wait when gjc exits and a new gjc starts in the pane before discovery looks again", async () => {
+    // Given a GJC pane at rest on a job.
+    const h = await waitingOnProcess();
+    // When gjc exits and a fresh gjc, with no transcript record yet, starts there before the next discovery:
+    // herdr's words for both come while the old one is still tracked.
+    handlers.onStatus(pane.pane_id, "unknown", null);
+    handlers.onStatus(pane.pane_id, "idle", "gjc");
+    h.runs({ path: null, startedAt: h.from + 14_000 });
+    setSystemTime(h.from + 18_000);
+    await h.status.gjc.refresh([pane]);
+    // Then nothing holds the new gjc, and none of the old one's work is counted.
+    expect(h.last().bg).toBe(false);
+    const after = (await h.status.clientSnapshot()).panes[0];
+    expect(after?.background_wait).toBeUndefined();
+    expect(after?.background_tasks ?? 0).toBe(0);
+  });
+
+  it("ends the wait when a new gjc started in the pane resumes the same session", async () => {
+    // Given a GJC pane at rest on a job.
+    const h = await waitingOnProcess();
+    // When gjc exits and a fresh gjc resumes that session before the next discovery.
+    h.runs({ startedAt: h.from + 14_000 });
+    setSystemTime(h.from + 18_000);
+    await h.status.gjc.refresh([pane]);
+    // Then the old process's job holds nothing: no wait, not even its grace.
+    expect(h.last().bg).toBe(false);
+    const after = (await h.status.clientSnapshot()).panes[0];
+    expect(after?.background_wait).toBeUndefined();
+    expect(after?.background_tasks ?? 0).toBe(0);
   });
 
   it("keeps the wait through herdr's word while the transcript's last record is half written", async () => {

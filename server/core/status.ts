@@ -157,10 +157,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     onChange: (paneId, derived, background, turn, rest) => gjcChanged(paneId, derived, turn, rest, "gjc", background),
     // what another agent's turn left waiting in the pane is not GJC's (owns)
     onFound: (paneId, again) => { completions.adopt(paneId, "gjc", []); if (!again) waits.forget(paneId); },
-    // gjc left the pane: what its turn waited on is over. One herdr still names gjc was only missed by
-    // this discovery, and goes on with its wait when found again (`again`)
-    onLost: (paneId, agent) => {
-      if (agent === "gjc") return;
+    // the gjc process the pane held is gone (left, or replaced by a new one): what its turn waited on is over
+    onLost: (paneId) => {
       const held = waits.waiting(paneId);
       waits.forget(paneId);
       if (held) waitEnded(paneId);
