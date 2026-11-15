@@ -362,6 +362,9 @@ function Steps({ page, setPage, catalog, ready, machineId, reopened, notice, dis
   const installed = agents.filter((agent) => installedHere(agent, ready));
   const [picked, setPicked] = useState<string | null>(null);
   const chosen = installed.find((agent) => agent.id === picked) ?? preferredAgent(installed, ready.at(-1) ?? null);
+  // no agent left to start (Look again found none): the later steps have nothing to finish, so the guide is back on
+  // the agents, and the next pick goes through the steps again rather than jumping to where it was (#3882)
+  useEffect(() => { if (chosen === null && page !== "agent") setPage("agent"); }, [chosen === null, page]); // eslint-disable-line react-hooks/exhaustive-deps
   // the step shown: the agents, or Done with its Start
   const pageBefore = useRef(page);
   useEffect(() => {
