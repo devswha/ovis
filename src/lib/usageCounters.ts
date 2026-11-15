@@ -180,7 +180,12 @@ if (typeof document !== "undefined") {
 
 /** `name` is drawn while `drawn`, for a pane of `machineId`: told once a day per width while it stays, only for this PC's own panes */
 export function useShownCount(name: TelemetryShown, drawn: boolean, machineId: string): void {
-  useEffect(() => drawn && machineId === LOCAL_MACHINE ? usageCounters.draw(name) : undefined, [name, drawn, machineId]);
+  useEffect(() => {
+    if (!drawn || machineId !== LOCAL_MACHINE) return undefined;
+    let undo: (() => void) | undefined;
+    tally(() => { undo = usageCounters.draw(name); });
+    return () => tally(() => undo?.());
+  }, [name, drawn, machineId]);
 }
 
 /** The ways into the agent inbox and out of it, each counted (`inbox_enter`, `inbox_leave`) wherever a person asked. */
