@@ -36,7 +36,7 @@ interface PillOptions {
   connected: boolean;
   sending: boolean;
   isWorking: boolean;
-  agentStatus: AgentStatus;
+  agentStatus?: AgentStatus;
   onCommand?: (text: string) => boolean;
   onRefused: (note: string) => void;
 }

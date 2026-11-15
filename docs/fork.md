@@ -110,8 +110,10 @@ Counts compare against `upstream/main` with `git diff --shortstat upstream/main.
 | `src/lib/notifications.test.ts` | +11/−3 | +3/−3 | Friend characterization moved under src/fork; existing return-Promise assertions retained |
 | `server/pi.ts` | +82/−2 | +53/−1 | Removed Pi-name-only function/imports; other existing Pi integrations unchanged |
 | `server/herdr-core/adapter.test.ts` | +19/−1 | +0/−0 | Removed fork-only naming test; upstream file restored |
-| `server/herdr-core/snapshot.test.ts` | +44/−1 | +22/−1 | Removed naming tests; runner-hiding tests remain |
+| `server/herdr-core/snapshot.test.ts` | +44/−1 | +21/−0 | Removed naming tests and their unused import; runner-hiding tests remain |
 | `server/pi.test.ts` | +17/−1 | +0/−0 | Removed fork-only name lookup test; upstream file restored |
+| `src/components/AgentSidebar.test.tsx` | +32/−7 | +7/−7 | Removed the fork-only Pi session name test and its snapshot import |
+| `src/lib/i18n.test.ts` | +0/−0 | +1/−1 | Register the extracted pill as a composer dictionary owner; translations unchanged |
 
 `src/fork/api.ts` owns incremental turn fetching/merging, PR checkout and Pi live voice requests. It reuses upstream's authenticated JSON/error helpers: remote-machine routing, cancellation, conditional reads and cache accounting remain unchanged. `src/fork/notifications.ts` owns Android shell alerts/permission state and friend-picture lookup; callers no longer thread a friend through upstream APIs. Browser and native alerts still honor permission, visibility and the existing Agent friends setting. The App hook also supplies the live agent-pane set: a cached assignment must not decorate a shell after its agent exits, matching the old callers' `pane.agent` guard.
 
@@ -123,9 +125,35 @@ TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" bun test src/fork/*.test.ts src/fork/*
 
 Exit 0: 675 tests across 32 files, including both upstream conventions suites and fork conventions. Core naming followed a red/green regression; browser extraction reused existing tests and added pill/default/observe and Android alert characterization tests. A first test fixture lacked a browser language; setting its language explicitly fixed the fixture, not production code. An earlier notification run exposed stale friend arguments and a SettingsProvider dependency in the upstream notification hook; moving initialization into useForkApp and restoring the signatures fixed both. No known-flaky allowance was used. Final self-audit also found and migrated InboxMode's two shared-avatar callers. The new stale-friend regression failed first (`TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" bun test src/fork/AgentAvatar.test.tsx`, exit 1: an agentless pane still showed `/friends/neko.png`), then passed with the fork-local eligibility check (`TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" bun test src/fork/AgentAvatar.test.tsx src/components/InboxMode.test.tsx`, exit 0, 18 tests).
 
-Self-audit: correctness (naming fallback, exact runner label, upstream disabled/observe pill, stale friends), security (unchanged JSON/origin/auth/remote-routing helpers; no new endpoints/dependencies/secrets), performance (incremental merge/cache bounds and retained viewer preserved), clarity/conventions and diff whitespace reviewed. New tests exercise public notification/pill/avatar behavior. The generic Bigpowers audit output/state-file instructions were not used: this task forbids new planning/state artifacts. No independent review has run in this job.
+Self-audit: correctness (naming fallback, exact runner label, upstream disabled/observe pill, stale friends), security (unchanged JSON/origin/auth/remote-routing helpers; no new endpoints/dependencies/secrets), performance (incremental merge/cache bounds and retained viewer preserved), clarity/conventions and diff whitespace reviewed. New tests exercise public notification/pill/avatar behavior. The generic Bigpowers audit output/state-file instructions were not used: this task forbids new planning/state artifacts. At this implementation checkpoint, no independent review had run; the subsequent review is recorded below.
 
-`bun run check fast`, `bun run build` and project-wide type checking were deliberately skipped under the implementer's scoped-check restriction, despite the task's broad Verify list. Browser/native/device checks were not run. Required browser regressions remain for the review gate; the maintainer deploys and tests before merging.
+At the implementation checkpoint, `bun run check fast`, `bun run build` and project-wide type checking were deliberately skipped under the implementer's scoped-check restriction. Browser/native/device checks were not run. Required browser regressions remain for the review gate; the maintainer deploys and tests before merging.
+
+### Approved pre-push follow-up
+
+Independent review by `openai-codex/gpt-6.1-terra`, one round: no concrete problems found; the reviewer reproduced all 675 scoped tests and `git diff --check`. No review-requested fixes remained.
+
+The repository's mandatory pre-push `check fast` then caught an overly strict fork-hook `agentStatus` type, an unused naming-test import, a stale AgentSidebar Pi-name test and the extracted pill's missing i18n ownership entry. These were fixed without runtime behavior changes. They were found after the independent review, not in a second review round.
+
+```sh
+TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" bun test src/fork/ComposerPill.test.tsx server/herdr-core/snapshot.test.ts src/components/AgentSidebar.test.tsx src/lib/i18n.test.ts
+```
+
+Exit 0: 135 tests across four files after those fixes. `git diff --check` also exited 0.
+
+```sh
+TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" CHECK_DIR="$HOME/.cache/ovis-tmp/fh-push" bun run check fast
+```
+
+Final exit 1: workflow syntax, generated types/themes, type checking and build all passed; unit tests reported **17,746 pass, 14 fail, 57 skip in 1,005 files**. All 14 failures were in untouched `server/omp.test.ts`, including `ConversationUnavailable: no_session_path`. The first run stopped at the two type errors; the next exposed the stale test and dictionary ownership entry as well as these baseline failures. No full-fast pass is claimed.
+
+Base evidence: in a disposable detached checkout at parent commit `30d046a4`, with the same locked dependencies:
+
+```sh
+TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" bun test server/omp.test.ts src/components/AgentSidebar.test.tsx src/lib/i18n.test.ts
+```
+
+Exit 1: 145 pass, the **same 14 omp failures**, across three files. The sidebar and i18n tests passed on the base. No omp files were changed. Browser/native/device checks and deployment remain outstanding; the pre-push type/test fixes have not had a second independent review.
 
 ## Size measurement
 
