@@ -19,7 +19,8 @@ import { noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type HerdrUpdat
 import { USAGE_PROVIDERS, UsageService } from "./usage.ts";
 import { VoiceService } from "./voice.ts";
 import { Telemetry } from "./telemetry.ts";
-import { NOTICE_VERSION, telemetryHarnesses, type TelemetryActive, type TelemetryEvent, type TelemetryStatus } from "../shared/telemetry.ts";
+import { telemetryHarnesses, type TelemetryActive, type TelemetryEvent, type TelemetryStatus } from "../shared/telemetry.ts";
+import { NOTICE_VERSION } from "../shared/telemetry-notice.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "../src/lib/settings.ts";
 import { HerdrSocket } from "../src/lib/ws.ts";
 import { HerdrError, herdrRpc, paneRead, paneSplit, ping, sessionSnapshot, subscribeEvents, tabCreate, workspaceCreate, workspaceClose } from "./herdr/client.ts";
@@ -6061,12 +6062,14 @@ describe("access facts on /api/health", () => {
         expect([serveOnly, headers, body.security?.observed_ingress]).toEqual([serveOnly, headers, ingress]);
       } finally { secured.stop(); }
     }
-    // and a local sign-in is not "direct" because of its via: a rewritten Host is a proxy on this PC
+    // and a local sign-in is not "direct" because of its via: a forwarded request is a proxy on this PC
     const open = serve();
     try {
-      const body = (await open.read({ host: "pc.example.com" })).body;
+      const body = (await open.read({ "x-forwarded-for": "203.0.113.7" })).body;
       expect(body.auth).toMatchObject({ authenticated: true, via: "open" });
       expect(body.security?.observed_ingress).toBe("proxy");
+      // a Host this server does not know, from loopback, is a rebound name, never the open LAN
+      expect((await open.read({ host: "pc.example.com" })).body.auth).toMatchObject({ authenticated: false, reason: "pairing_required" });
     } finally { open.stop(); }
   });
 

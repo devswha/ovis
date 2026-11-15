@@ -1,55 +1,7 @@
 /**
- * How a streamed reply is revealed (useRevealedTurns in liveTurn.ts): at an even pace across the
- * time until its next update is expected, a whole word at a time, and short of markdown it has
- * opened but not closed yet, so a half-written `**bold` or link never shows its marks.
+ * How much of a streamed reply is drawn (heldBackTurns in liveTurn.ts): whole words, short of
+ * markdown it has opened but not closed yet, so a half-written `**bold` or link never shows its marks.
  */
-
-/** the reveal moves on this often: about 15 frames a second */
-export const REVEAL_TICK_MS = 66;
-/** the fastest a reveal reads while it is behind: about 500 characters a second */
-const FAST_CHARS_PER_MS = 0.5;
-/** a backlog is revealed within at most this long, however large */
-const MAX_HORIZON_MS = 1500;
-/** further behind than this (a phone back from a dead spot) and the reveal jumps */
-const MAX_BACKLOG = 1500;
-/** the expected time between updates, learned from the last ones within these bounds */
-const GAP_MIN_MS = REVEAL_TICK_MS;
-const GAP_MAX_MS = 500;
-const FIRST_GAP_MS = 200;
-
-export interface Pace {
-  /** how far the reveal has got, in characters of the source text (a fraction between words) */
-  readonly shown: number;
-  /** how long the source text is */
-  readonly length: number;
-  /** when the source text last grew */
-  readonly arrived: number;
-  /** how long its updates are apart, smoothed */
-  readonly gap: number;
-}
-
-export function startPace(length: number, shown: number, now: number): Pace {
-  return { shown, length, arrived: now, gap: FIRST_GAP_MS };
-}
-
-/** The pace once the source text grew to `length`. */
-export function paceGrew(pace: Pace, length: number, now: number): Pace {
-  if (length <= pace.length) return pace;
-  const gap = Math.min(GAP_MAX_MS, Math.max(GAP_MIN_MS, 0.7 * pace.gap + 0.3 * (now - pace.arrived)));
-  return { shown: Math.max(pace.shown, length - MAX_BACKLOG), length, arrived: now, gap };
-}
-
-/**
- * Where the reveal is one tick on: what is left is spread over the time until the next update is
- * expected, so it ends as that one lands, and never faster than FAST_CHARS_PER_MS unless the
- * backlog would take longer than MAX_HORIZON_MS at that pace.
- */
-export function paceStep(pace: Pace, now: number): Pace {
-  const backlog = pace.length - pace.shown;
-  if (backlog <= 0) return pace;
-  const horizon = Math.max(pace.arrived + pace.gap - now, Math.min(backlog / FAST_CHARS_PER_MS, MAX_HORIZON_MS), REVEAL_TICK_MS);
-  return { ...pace, shown: Math.min(pace.length, pace.shown + backlog * REVEAL_TICK_MS / horizon) };
-}
 
 /** The end of the last whole word at or before `at`; past the text's end only once it is done. */
 export function wordCut(text: string, at: number, done: boolean): number {

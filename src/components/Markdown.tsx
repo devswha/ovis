@@ -177,6 +177,12 @@ export const MarkdownImageContext = createContext<MarkdownImageResolver | null>(
 export const MarkdownImageOpenContext = createContext<((image: GalleryImage) => void) | null>(null);
 /** A reconnect retries only failed images; decoded images and pending stats stay as they are. */
 export const MarkdownImageRetryContext = createContext(0);
+/**
+ * Draws a run of plain text in place of the text itself, given an id unique to the run's place in
+ * the tree (stable while that place is drawn): a streaming answer can draw each new word in its own
+ * element. Null, the default, draws the text as it is.
+ */
+export const MarkdownTextContext = createContext<((text: string, place: string) => ReactNode) | null>(null);
 
 /**
  * An image that holds its box until it decodes (lib/imageBox.ts). With `slot`, the wrapper is the
@@ -306,6 +312,8 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
   const skillMatcher = useContext(SkillMatcherContext);
   const openWebPage = useContext(WebPanelContext);
   const machineId = useContext(MachineContext);
+  const drawText = useContext(MarkdownTextContext);
+  const place = useId();
   const { settings } = useSettings();
   // a plain or Shift click may open the address beside the pane; Ctrl, Cmd and Alt keep the browser's own meaning
   const webClick = (href: string) => (event: MouseEvent<HTMLAnchorElement>): void => {
@@ -322,8 +330,9 @@ function Inline({ nodes, interactive = true, standalone = false }: { nodes: Inli
         // a skill chip carries its raw text, so a selection copies what the agent wrote; not inside a link or file label
         return <span key={key}>{(interactive && skillMatcher !== null ? skillMatcher(node.value) : [node.value]).map((piece, p) => {
           if (typeof piece !== "string") return <span key={p} className="markdown-skill"><BookOpen aria-hidden="true" />{piece.raw}</span>;
-          if (open === null) return piece;
-          return <Fragment key={p}>{splitFilePaths(piece).map((part, n) => typeof part === "string" ? part : <FilePathLink key={n} path={part.path} code={false} open={open} />)}</Fragment>;
+          if (open === null) return drawText === null ? piece : <Fragment key={p}>{drawText(piece, `${place}${key}.${p}`)}</Fragment>;
+          return <Fragment key={p}>{splitFilePaths(piece).map((part, n) => typeof part !== "string" ? <FilePathLink key={n} path={part.path} code={false} open={open} />
+            : drawText === null ? part : <Fragment key={n}>{drawText(part, `${place}${key}.${p}.${n}`)}</Fragment>)}</Fragment>;
         })}</span>;
       case "code": {
         const file = fileUriPath(node.value);

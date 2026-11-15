@@ -21,6 +21,7 @@ import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { composerDraftKey, composerDrafts, underSendLock } from "../lib/composerDraft.ts";
 import { piVoiceLabel, startPiVoice, usePiVoiceAvailable } from "../lib/piVoiceSession.ts";
+import { tally, usageCounters, useShownCount } from "../lib/usageCounters.ts";
 import { onQuoted } from "../lib/chatQuote.ts";
 import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
@@ -741,6 +742,7 @@ export function Composer({
       setTextAndCaret(completed.text, completed.caret);
       setMenuDismissed(true);
       if (typeof choice !== "string") {
+        if (currentTrigger.kind === "slash") tally(() => usageCounters.paneUse("composer_slash", machineId));
         if (terminalCommand(choice) && choice.name === "resume") onOpenHistory?.();
         const name = choice.name;
         setSlashUsage((current) => {
@@ -754,7 +756,7 @@ export function Composer({
         });
       }
     },
-    [agent, onOpenHistory, setTextAndCaret, text],
+    [agent, machineId, onOpenHistory, setTextAndCaret, text],
   );
 
   const pumpUploads = useCallback(() => {
@@ -867,6 +869,14 @@ export function Composer({
     const sentAttachments = attachments;
     let sendId: number | undefined;
     const settle = (result: boolean | string | DraftRefusal): void => {
+      // counted once taken: a refused or failed send is no send. A count that fails is logged and never stands in the
+      // send's way: the draft's lease is released after this
+      if (result === true) {
+        try {
+          usageCounters.paneUse("chat_send", machineId);
+          if (hold) tally(() => usageCounters.paneUse("composer_hold", machineId));
+        } catch (error) { console.error("usage counts", error); }
+      }
       // a send for a pane another herdr has replaced since leaves the new pane's box alone (#1608)
       const acknowledged = result === true ? composerDrafts.settle(draftKey, sent, sendId) : null;
       // the comments it carried are sent: any written meanwhile wait for the next message
@@ -923,7 +933,7 @@ export function Composer({
     return underSendLock(draftKey, () => {
       try { return claim(); } finally { release(); }
     });
-  }, [attachments, carried, commentsKey, connected, dictation.forget, draftKey, onClaim, onOpenHistory, onSend, roomless, sending, t, terminalTyped, text, uploading, viewOnly]);
+  }, [attachments, carried, commentsKey, connected, dictation.forget, draftKey, machineId, onClaim, onOpenHistory, onSend, roomless, sending, t, terminalTyped, text, uploading, viewOnly]);
   const sendRef = useRef(send);
   sendRef.current = send;
   const connectedRef = useRef(connected);
@@ -1201,6 +1211,17 @@ export function Composer({
   // comments waiting to go (#511) count as something to send
   // an orb where there is nothing to send: a live call with the Pi in this pane, from a phone or a PC alike
   const primaryAction = composerPrimaryAction({ sending: sending || carried.length > 0, working: isWorking, text, hasAttachments: attachments.length > 0, canStartVoice: voiceAvailable && role !== "observe" && connected });
+  const sendShown = primaryAction !== "stop";
+  // what of the composer was drawn today, so a count of zero can be told from a control nobody saw
+  useShownCount("composer", true, machineId);
+  useShownCount("composer_stop", !sendShown, machineId);
+  useShownCount("composer_voice", dictation.shown, machineId);
+  useShownCount("composer_paste_send", settings.composerPasteSend && !viewOnly, machineId);
+  useShownCount("composer_quick_reply", quickOpen && quickReplies.length > 0, machineId);
+  useShownCount("composer_suggestion", settings.suggestionChip && offered !== null && text === "", machineId);
+  // a take started, by the mic or its shortcut
+  const dictating = dictation.voice.state === "starting" || dictation.voice.state === "recording";
+  useEffect(() => { if (dictating) tally(() => usageCounters.paneUse("composer_voice", machineId)); }, [dictating, machineId]);
   const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined });
   const models = settings.piModelPicker && agent === "pi" && role !== "observe" && metadata?.models?.length ? metadata.models : undefined;
   // a switch shows at once: pi applies it in a moment, but its transcript reaches the pill a read later
@@ -1320,7 +1341,7 @@ export function Composer({
           on the grey words in the box only focuses it, so the tap that starts the user's own reply never takes it */}
       {settings.suggestionChip && offered !== null && text === "" && (
         <div className="composer-quick composer-suggestion-row">
-          <button type="button" className="composer-quick-reply composer-suggestion" title={t("Use the suggestion")} onClick={acceptSuggestion}>
+          <button type="button" className="composer-quick-reply composer-suggestion" title={t("Use the suggestion")} onClick={() => { tally(() => usageCounters.paneUse("composer_suggestion", machineId)); acceptSuggestion(); }}>
             <span aria-hidden="true">↹ </span>{offered}
           </button>
         </div>
@@ -1335,7 +1356,7 @@ export function Composer({
               className="composer-quick-reply"
               title={t("Send “{reply}”", { reply })}
               disabled={viewOnly || !connected || sending}
-              onClick={() => sendQuick(reply)}
+              onClick={() => { tally(() => usageCounters.paneUse("composer_quick_reply", machineId)); sendQuick(reply); }}
             >
               {reply}
             </button>
@@ -1609,7 +1630,7 @@ export function Composer({
             aria-label={t("Attach files")}
             title={t("Attach files")}
             disabled={viewOnly || !connected || uploading}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => { tally(() => usageCounters.paneUse("composer_attach", machineId)); fileInputRef.current?.click(); }}
           >
             <Plus aria-hidden="true" />
           </button>
@@ -1623,7 +1644,7 @@ export function Composer({
               aria-busy={pasteReading || undefined}
               disabled={!connected || sending || uploading || pasteReading || text !== "" || attachments.length > 0}
               onPointerDown={(event) => event.preventDefault()}
-              onClick={pasteAndSend}
+              onClick={() => { tally(() => usageCounters.paneUse("composer_paste_send", machineId)); pasteAndSend(); }}
             >
               <ClipboardPaste aria-hidden="true" />
             </button>
@@ -1682,7 +1703,7 @@ export function Composer({
               // focus stays in the text box, as for Send: this button turns into a disabled Send in
               // the same node when the turn stops, and a focused node that is disabled drops focus
               onPointerDown={(event) => event.preventDefault()}
-              onClick={onAbort}
+              onClick={() => { tally(() => usageCounters.paneUse("composer_stop", machineId)); onAbort(); }}
             >
               <Square aria-hidden="true" />
             </button>
