@@ -5,7 +5,6 @@
 /* Semantic discs used by fork-owned components, independent of box corners. */
 :root {
   --radius-circle: 50%;
-  --radius-round: 999px;
 }
 
 :root[data-fork-square-corners="true"] {

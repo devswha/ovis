@@ -1,6 +1,4 @@
 [data-fork-pi-live-voice="true"] .composer-voice { --composer-action-fill: var(--primary); }
-[data-fork-pi-live-voice="true"] .composer-voice { border-radius: var(--radius-round); }
-[data-fork-square-corners="true"] .composer-send { border-radius: var(--radius-round); }
 [data-fork-pi-model-picker="true"] .composer-pill-menu {
   display: flex;
   flex: 0 1 auto;

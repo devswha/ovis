@@ -5,7 +5,7 @@
 [data-fork-chat-motion="true"] .chat-turn-new .chat-bubble,
 [data-fork-chat-motion="true"] .chat-turn-sent .chat-bubble {
   transform-origin: bottom right;
-  animation: chat-bubble-pop 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  animation: chat-bubble-pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 @keyframes chat-bubble-pop { from { opacity: 0; transform: translateY(6px) scale(0.96); } }
 [data-fork-chat-motion="true"] ::highlight(live-fade-1) { color: color-mix(in srgb, var(--text) 12%, transparent); }
