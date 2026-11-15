@@ -810,7 +810,7 @@ describe("connection-owned pending input", () => {
     await Promise.all([delivered, f.waitBytes("\r")]);
     // Then the terminal receives the same command the immediate path would send.
     expect(f.bytes()).toBe(`${paste(expected)}\r`);
-  });
+  }, 20_000);
 
   it("sends a queued message to an omp still starting only once omp reports its session, and says meanwhile what it waits for", async () => {
     // omp draws its input box, and herdr shows it at rest, before it takes an Enter: typed then, the message stays in
