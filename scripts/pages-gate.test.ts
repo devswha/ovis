@@ -319,7 +319,7 @@ describe("Extracted UI checks", () => {
     }
   });
 
-  for (const [script, mode] of ["ui-contexts-regression.ts", "ui-contexts-layout-regression.ts"].flatMap((script) => (["unit", "live"] as const).map((mode) => [script, mode] as const))) {
+  for (const [script, mode] of ["ui-contexts-regression.ts", "ui-contexts-layout-regression.ts", "ui-terminal-regression.ts", "ui-ime-regression.ts", "ui-access-regression.ts"].flatMap((script) => (["unit", "live"] as const).map((mode) => [script, mode] as const))) {
     it(`${script} refuses ${mode} execution before touching a herdr daemon`, () => {
       const root = mkdtempSync(join(tmpdir(), "ui-context-guard-"));
       try {

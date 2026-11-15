@@ -1213,8 +1213,10 @@ The [CI workflow](../.github/workflows/ci.yml) runs on every PR and `main` push:
     `scripts/ui-contexts-layout-regression.ts`, two at a time. The core's stateful flow stays serial
     in `scripts/ui-regression.ts`; its terminal's keys, input line, held drafts and attach
     (`terminal`), its Safari, iPad and Linux IME replays (`ime`) and its sign out and relay panel
-    (`access`) run as parts of it (`UI_REGRESSION_PART`), each from its own herdr session, server and
-    browser, so no part nears the per-script cap; the extracted feature checks own a separate
+    (`access`) run as parts of it, each from its own server and browser, so no part nears the
+    per-script cap. `scripts/ui-regression.ts` run itself is always the main flow, on the lane's
+    herdr session; each other part's entry file runs it on a herdr session of its own
+    (`scripts/own-herdr.ts`), so two parts side by side share no session or workspace label; the extracted feature checks own a separate
     temporary herdr config/session, Chromium process, server and fixture panes. Those helpers stay
     sequential within their own fixture. The two slowest (split view, a background tab's terminal
     size) run in the layout script, on a fixture of their own, so neither context script nears

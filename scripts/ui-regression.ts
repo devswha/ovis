@@ -1,5 +1,5 @@
 /** Real-browser regressions against owned herdr panes. Run after `bun run build`. */
-import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
+import { TEST_SESSION } from "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
 import assert from "node:assert/strict";
 import { copyFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -55,13 +55,17 @@ const evidenceDirectory = process.env.CHECK_BROWSER_EVIDENCE_DIR;
 const evidenceTrace = process.env.CHECK_BROWSER_EVIDENCE_TRACE === "1";
 /**
  * The part of the script that runs, so each part fits the browser lane's limit for one script (600 s), each from its
- * own herdr session, server and browser: `main` (this file: the desktop page's stateful flow and the phone pages that
- * follow it), `terminal` (scripts/ui-terminal-regression.ts: the terminal's keys, input line, held drafts and attach),
- * `ime` (scripts/ui-ime-regression.ts: the Safari, iPad and Linux IME replays) and `access`
- * (scripts/ui-access-regression.ts: sign out on a server with a token, and the relay panel).
+ * own server and browser: `main` (this file: the desktop page's stateful flow and the phone pages that follow it),
+ * `terminal` (scripts/ui-terminal-regression.ts: the terminal's keys, input line, held drafts and attach), `ime`
+ * (scripts/ui-ime-regression.ts: the Safari, iPad and Linux IME replays) and `access` (scripts/ui-access-regression.ts:
+ * sign out on a server with a token, and the relay panel). This file run itself is always `main`, on the session the
+ * environment names (the lane's), so an inherited UI_REGRESSION_PART cannot skip the main flow; each other part's
+ * entry file sets it and imports this one on a herdr session of its own (scripts/own-herdr.ts), so two parts side by
+ * side in the lane share no session, workspace label or socket.
  */
-const part = process.env["UI_REGRESSION_PART"] ?? "main";
-if (!["main", "terminal", "ime", "access"].includes(part)) throw new Error(`UI_REGRESSION_PART is main, terminal, ime or access, not ${part}`);
+const part = import.meta.main ? "main" : process.env["UI_REGRESSION_PART"] ?? "";
+if (!["main", "terminal", "ime", "access"].includes(part)) throw new Error(`UI_REGRESSION_PART is terminal, ime or access when a part's entry file imports this script, not "${part}"`);
+console.log(`ui-regression part ${part}: herdr session ${TEST_SESSION}, socket ${process.env["HERDR_SOCKET"]}`);
 async function watchBrowserEvidence(context: BrowserContext, page: Page, scenario: string): Promise<BrowserEvidenceSession | undefined> {
   if (!evidenceDirectory) return undefined;
   const evidence = await startBrowserEvidence({
