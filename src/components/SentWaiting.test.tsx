@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, jest, setSystemTime, test } from "bun:test";
-import { createElement } from "react";
+import { createElement, useLayoutEffect, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
+import type { ConversationTurn } from "../../shared/protocol.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { currentWaitingSends, forgetWaitingSends, observeWaitingClock, rememberWaitingSend, settleWaitingSends, WAITING_HINT_MS, WAITING_SEND_MS, waitingBaseline, waitingKey, type WaitingSend } from "../lib/sentWaiting.ts";
@@ -65,6 +66,13 @@ describe("SentWaitingList", () => {
     expect(render(at + WAITING_HINT_MS)).not.toMatch(/role="(?:status|alert|log)"|aria-live/u);
   });
 });
+
+/** `signal`, or a failure once `ms` have passed without it */
+async function within(signal: Promise<void>, ms: number, what: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not come within ${ms} ms`)), ms); });
+  try { await Promise.race([signal, late]); } finally { clearTimeout(timer); }
+}
 
 describe("mounted", () => {
   let renderers: ReactTestRenderer[];
@@ -157,6 +165,39 @@ describe("mounted", () => {
       act(() => { jest.advanceTimersByTime(1); observeWaitingClock(key, new Date().toISOString(), 0, Date.now()); settleWaitingSends(key, [{ role: "user", ts: null, parts: [{ kind: "text", text: "do the thing" }] }], Date.now(), true); });
       await act(async () => { await Promise.resolve(); });
       expect(currentWaitingSends(key)).toEqual([]);
+    } finally { forgetWaitingSends(key); }
+  });
+
+  test("clears the rest in the commit that shows the agent at work, before the read that commit settles is judged", async () => {
+    // React's own scheduling, as in a browser: real timers and no act
+    jest.useRealTimers();
+    setSystemTime();
+    const key = waitingKey("local", "rest-order");
+    let show!: (next: readonly ConversationTurn[]) => void;
+    let settled!: () => void;
+    const read = new Promise<void>((resolve) => { settled = resolve; });
+    // wired as ChatView wires it: the list's rest from the chat's state, the chat's read settled in its own layout
+    function Chat() {
+      const [turns, setTurns] = useState<readonly ConversationTurn[]>([]);
+      show = setTurns;
+      useLayoutEffect(() => {
+        settleWaitingSends(key, turns, Date.now(), true);
+        if (turns.length > 0) settled();
+      }, [turns]);
+      return createElement(SentWaitingList, { sends: useWaitingSends("local", "rest-order", true), paneKey: key, resting: turns.length === 0 });
+    }
+    try {
+      const sent = Date.now() - 2 * WAITING_SEND_MS;
+      settleWaitingSends(key, [], sent - 1, true);
+      rememberWaitingSend(key, "next, run the tests", sent);
+      mount(createElement(Chat));
+      Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: false });
+      // a read's answer arrives after the rest began, and the chat shows the agent at work in the same commit
+      observeWaitingClock(key, new Date().toISOString(), 0, Date.now() + 1);
+      show([{ role: "assistant", ts: new Date(sent - 10_000).toISOString(), parts: [{ kind: "text", text: "earlier" }] }]);
+      // that commit's layout settled the read, after it queued its judgement: this resumes once the judgement ran
+      await within(read, 5_000, "the chat's render of the read");
+      expect(currentWaitingSends(key).map((item) => item.unanswered)).toEqual([undefined]);
     } finally { forgetWaitingSends(key); }
   });
 

@@ -43,7 +43,9 @@ export function SentWaitingList({ sends, paneKey, resting = false, agent = null,
   }, Number.POSITIVE_INFINITY);
   // the clock as it is now: an agent that comes to rest long after the minute makes the send unanswered at once
   // since when the agent rests, as this chat saw it: a send is said unanswered only after a read that came since then
-  useEffect(() => {
+  // a layout effect: the rest is cleared in the commit that shows the agent at work, before a read settled in that
+  // commit's layout (ChatView) is judged, whatever else updates in it
+  useLayoutEffect(() => {
     if (paneKey === undefined) return;
     restingSince(paneKey, resting ? Date.now() : null);
     // a chat opened again judges its sends by a read since then, not by the one its last visit settled
