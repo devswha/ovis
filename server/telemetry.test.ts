@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -664,6 +664,33 @@ describe("daily active message", () => {
     // this server writes what it held before that off (as a write racing the other server's would)
     (telemetry as unknown as { persist(): void }).persist();
     expect(savedFile(stateDir)).toMatchObject({ forgotten: before + 2, active: [] });
+  });
+
+  test("a 0.5.4 file's delivered day is cut back to what was delivered: what was added after it is not sent", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "telemetry-"));
+    dirs.push(stateDir);
+    const sentUsage = { ...emptyUsage(), surfaces: ["browser"] };
+    // delivered with claude; codex, three answers and the iOS app added since (perhaps before an off 0.5.4 did not purge)
+    writeFileSync(join(stateDir, "telemetry.json"), JSON.stringify({
+      install_id: "0b5f3c2e-8a51-4c47-9d0e-3f6a2b1c9e84", enabled: true, notice_seen_at: "2026-10-01T00:00:00.000Z", notice_version: NOTICE_VERSION, reported_version: "0.4.1", settings: null, usage_after_notice: true, counts: [],
+      active: [{ day: "2026-10-08", harnesses: ["claude", "codex"], sent: ["claude"], visited: true, usage: { ...emptyUsage(), surfaces: ["browser", "ios-app"], prompt_answers: 3 }, sent_usage: sentUsage, wire_usage: sentUsage, sent_at: Date.parse("2026-10-08T09:00:00Z") }],
+    }));
+    const { telemetry, actives } = setup({ stateDir });
+    telemetry.change({ enabled: true });
+    await settled();
+    expect(actives).toEqual([]);
+    expect(savedFile(stateDir).active).toEqual([expect.objectContaining({ day: "2026-10-08", harnesses: ["claude"], usage: sentUsage })]);
+  });
+
+  test("a start with sending forbidden whose deletion cannot be written removes the state file instead", async () => {
+    const { telemetry, stateDir } = setup({ grace: 600_000 });
+    seen(telemetry);
+    await telemetry.active(["claude"]);
+    // the write fails: its temporary file's name is taken by a folder
+    mkdirSync(join(stateDir, `telemetry.json.${process.pid}.tmp`));
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try { setup({ stateDir, env: { DO_NOT_TRACK: "1" } }); } finally { errors.mockRestore(); }
+    expect(existsSync(join(stateDir, "telemetry.json"))).toBe(false);
   });
 
   test("(k) an install that was never visited sends no active message", async () => {

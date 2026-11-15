@@ -293,7 +293,8 @@ function readSaved(file: string, offFile: string): Saved | null {
     // the notice that was seen, if any: what was kept under it stays only as far as it said so
     const seenVersion = typeof value["notice_seen_at"] === "string" && typeof value["notice_version"] === "number" ? value["notice_version"] : 0;
     // days an older build kept may have been recorded before the notice: only the ones it delivered stay, so none is sent again
-    const active = seenVersion < VISITS_NOTICE_VERSION ? [] : value["visits_after_notice"] === true ? readActive(value["active"]) : readActive(value["active"]).filter((entry) => entry.sent !== null);
+    // and a delivered one is cut back to what was delivered of it: what was added since may be from before an off
+    const active = seenVersion < VISITS_NOTICE_VERSION ? [] : value["visits_after_notice"] === true ? readActive(value["active"]) : readActive(value["active"]).flatMap((entry) => entry.sent === null ? [] : [{ ...entry, harnesses: [...entry.sent], usage: entry.sent_usage ?? emptyUsage(), sent_usage: entry.sent_usage ?? emptyUsage(), wire_usage: entry.sent_usage ?? emptyUsage() }]);
     return {
       install_id: value["install_id"],
       enabled: value["enabled"] !== false && !offMarked(offFile),
@@ -373,7 +374,12 @@ export class Telemetry {
     if (this.blocked() && this.writable) {
       this.forgetUnsent();
       try { this.persist(); } catch (error) {
-        console.error(`telemetry: ${this.file} could not be written (${error instanceof Error ? error.message : String(error)})`);
+        // the deletion could not be written: the old file would send what it holds once the variable is gone, so the file
+        // goes instead (a removal usually still works on a full disk; the next start makes a new install ID)
+        console.error(`telemetry: ${this.file} could not be written, so it is removed (${error instanceof Error ? error.message : String(error)})`);
+        try { rmSync(this.file, { force: true }); } catch (removal) {
+          console.error(`telemetry: ${this.file} could not be removed either (${removal instanceof Error ? removal.message : String(removal)})`);
+        }
       }
     }
   }
@@ -786,6 +792,8 @@ export class Telemetry {
           going.wire_usage = active.usage;
           if (fresh) going.sent_at = this.now();
           this.persist();
+          // the write found an off another server made after the re-read above: this message is from before it
+          if (this.saved.forgotten !== forgotten) return;
           // last, right before it goes: turned off here or by another server on the same state directory meanwhile
           if (offMarked(this.offFile)) return;
           try {
