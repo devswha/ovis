@@ -15,7 +15,6 @@ export interface ForkSettings {
   liveVoice: PiVoice | "pi";
   squareCorners: boolean;
   moreViewToggle: boolean;
-  agentNamedTabs: boolean;
   agentFriends: boolean;
   composerExtras: boolean;
   chatMotion: boolean;
@@ -28,7 +27,7 @@ export interface ForkSettings {
 export const FORK_DEFAULTS: ForkSettings = {
   followOmarchy: false, contextCircle: true, openLiveWork: true,
   speechVoice: SPEECH_DEFAULT_VOICE, liveVoice: "pi",
-  squareCorners: false, moreViewToggle: false, agentNamedTabs: false, agentFriends: false,
+  squareCorners: false, moreViewToggle: false, agentFriends: false,
   composerExtras: false, chatMotion: false, piLiveVoice: false,
   computerView: false, pullRequests: false, readAloud: false,
 };
@@ -57,7 +56,7 @@ export function migrateForkSettings(raw: unknown): unknown {
   const keyBarDefaults = Object.hasOwn(record, "keyBarItems") || Object.hasOwn(record, "keyBarExtras")
     ? {} : { keyBarItems: legacyKeyBarItems };
   // Once a new setting is explicit it always wins, including false and a reset to upstream defaults.
-  return { phoneTabs: "header", ...keyBarDefaults, contextCircle: true, squareCorners: true, moreViewToggle: true, agentNamedTabs: true,
+  return { phoneTabs: "header", ...keyBarDefaults, contextCircle: true, squareCorners: true, moreViewToggle: true,
     agentFriends: true, composerExtras: true, chatMotion: true,
     piLiveVoice: true, computerView: true, pullRequests: true, readAloud: true, ...record };
 }

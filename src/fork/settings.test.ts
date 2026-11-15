@@ -23,7 +23,7 @@ describe("fork settings compatibility", () => {
     expect(DEFAULT_SETTINGS.phoneTabs).toBe("row");
     expect(loadSettings().keyBarItems).not.toContainEqual({ type: "modifier", modifier: "super" });
     expect(loadSettings()).toMatchObject({ phoneTabs: "row", contextCircle: true,
-      squareCorners: false, moreViewToggle: false, agentNamedTabs: false, agentFriends: false,
+      squareCorners: false, moreViewToggle: false, agentFriends: false,
       composerExtras: false, chatMotion: false, piLiveVoice: false,
       computerView: false, pullRequests: false, readAloud: false });
   });
@@ -32,7 +32,7 @@ describe("fork settings compatibility", () => {
     const raw = JSON.stringify({ contextCircle: true, speechVoice: "af_heart", openLiveWork: true });
     records.set("ovis:settings", raw);
     expect(loadSettings()).toMatchObject({ phoneTabs: "header", contextCircle: true,
-      squareCorners: true, moreViewToggle: true, agentNamedTabs: true, agentFriends: true,
+      squareCorners: true, moreViewToggle: true, agentFriends: true,
       composerExtras: true, chatMotion: true, piLiveVoice: true,
       computerView: true, pullRequests: true, readAloud: true });
     expect(loadSettings().keyBarItems).toContainEqual({ type: "modifier", modifier: "super" });

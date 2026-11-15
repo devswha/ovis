@@ -182,27 +182,6 @@ describe("AgentSidebar phone sheet live row", () => {
     ]);
   });
 
-  it("reorders a name-sorted group when agent tab names are enabled", async () => {
-    (window as unknown as { localStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> }).localStorage = {
-      getItem: (key) => key === "ovis:settings" ? JSON.stringify({ agentGroups: true, agentGroupSort: "name", sidebarRows: "two" }) : null, setItem() {}, removeItem() {},
-    };
-    const machine = structuredClone(fixture[0]!);
-    machine.snapshot!.agents = [];
-    machine.snapshot!.panes = machine.snapshot!.panes.slice(0, 2).map((pane, index) => ({ ...pane, label: null, agent_status: "idle", title: index === 0 ? "Alpha" : "Zulu" }));
-    machine.snapshot!.tabs.forEach((tab, index) => { tab.label = index === 0 ? "Zebra" : "Apple"; });
-    let enable = () => {};
-    function Toggle() {
-      const { update } = useSettings();
-      enable = () => update({ agentNamedTabs: true });
-      return null;
-    }
-    await act(async () => { renderer = create(<SettingsProvider><Toggle /><AgentSidebar machines={[machine]} selectedMachineId="local" selectedPaneId={paneId} stateWord={(entry) => entry.state} onSelect={() => {}} /></SettingsProvider>); });
-    const titles = () => renderer!.root.findAllByProps({ className: "agent-title" }).map((node) => node.children.join(""));
-    expect(titles()).toEqual(["Alpha", "Zulu"]);
-    await act(async () => { enable(); });
-    expect(titles()).toEqual(["Apple", "Zebra"]);
-  });
-
   it("offers no lock, and holds none, until Lock pinned agents is turned on (#2432)", async () => {
     lockSetting(false, [`local:${paneId}`]);
     setSidebarPins([`local:${paneId}`]);

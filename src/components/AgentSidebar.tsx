@@ -16,7 +16,7 @@ import { knownStatus } from "../lib/status.ts";
 import { assignAgentGroup, liveGroupKeys, loadFoldedAgentGroups, rowAgentGroup, saveFoldedAgentGroups, splitNamedGroups } from "../lib/namedAgentGroups.ts";
 import { currentPaneMutes, paneMuteKey, prunePaneMutes, setPaneMutes, subscribePaneMutes, togglePaneMute } from "../lib/paneMutes.ts";
 import { lockedPinKeys, locksAfterPinToggle, toggleAgentLock } from "../lib/paneLocks.ts";
-import { agentContext, agentTabName, paneMark, givenTabName, titleOnlyNamesAgent } from "../lib/sidebarAgents.ts";
+import { agentContext, agentTabName, paneMark, titleOnlyNamesAgent } from "../lib/sidebarAgents.ts";
 import { agentName } from "../lib/runtimeMove.ts";
 import { customTabLabel } from "../lib/tabName.ts";
 import { useSettings } from "../lib/settings.ts";
@@ -186,14 +186,13 @@ function workspaceTabs({ machine, entry }: AgentRow): TabInfo[] {
  * A one-line row leads with what the agent is on (the pane's label, else a tab the user named, else that title): that
  * is `drawn` there, and `title` in a two-line row.
  */
-export function agentRowTitle(row: AgentRow, oneLine: boolean, namedTabs = false): { own: string; title: string; replaced: boolean; drawn: string } {
+export function agentRowTitle(row: AgentRow, oneLine: boolean): { own: string; title: string; replaced: boolean; drawn: string } {
   const { pane, workspace, tab } = row.entry;
   const own = rowTitle(row.entry);
   const label = pane.label?.trim() || null;
   const worktree = workspace.worktree?.is_linked_worktree === true;
-  const tabTitle = namedTabs && label === null ? givenTabName(tab, workspaceTabs(row)) : null;
-  const replaced = label === null && tabTitle === null && titleOnlyNamesAgent(own, markNames(row.entry));
-  const title = tabTitle ?? (replaced ? worktree ? compactWorktreeName(workspace.label) : workspace.label : own);
+  const replaced = label === null && titleOnlyNamesAgent(own, markNames(row.entry));
+  const title = replaced ? worktree ? compactWorktreeName(workspace.label) : workspace.label : own;
   if (!oneLine) return { own, title, replaced, drawn: title };
   // a tab herdr only numbers ("Tab 2") never stands in for what the agent is on: only one the user named does
   const place = workspaceTabs(row).findIndex((candidate) => candidate.tab_id === tab?.tab_id) + 1 || tab?.number;
@@ -349,9 +348,9 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     sort: settings.agentGroupSort,
     status: rowStatus,
     // by the title the row draws, not the one it gave way to
-    name: (row) => agentRowTitle(row, settings.sidebarRows === "one", settings.agentNamedTabs).drawn,
+    name: (row) => agentRowTitle(row, settings.sidebarRows === "one").drawn,
     seqs: activity.seqs,
-  }), [settings.agentGroupSort, settings.sidebarRows, settings.agentNamedTabs, rowStatus, activity]);
+  }), [settings.agentGroupSort, settings.sidebarRows, rowStatus, activity]);
   // Settings → Named agent groups (shared): the unpinned rows in the groups the user named, the ungrouped last
   // (lib/namedAgentGroups.ts); grouped by state as well, each named group lists its rows needs-you first, without headings
   const groupNames = settings.agentNamedGroups ? settings.agentGroupNames : [];
@@ -524,14 +523,12 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const tabs = workspaceTabs(row);
     const mark = paneMark(entry);
     const markAgent = mark && hasAgentMark(mark) ? mark : null;
-    const { own: said, title, replaced, drawn } = agentRowTitle(row, compact, settings.agentNamedTabs);
-    const tabTitle = !settings.agentNamedTabs || pane.label?.trim() ? null : givenTabName(tab, tabs);
+    const { own: said, title, replaced, drawn } = agentRowTitle(row, compact);
     // the title the row gave way from, which its tooltip still says
-    const ownTitle = replaced || tabTitle !== null ? said : null;
+    const ownTitle = replaced ? said : null;
     // nor does the line spend words on the agent's kind beside its mark (a screen reader still hears it, as markKind):
     // a plugin's own line for the agent says more than its kind or product name, and stays
-    const parts = { agentLabel: kindLabel !== null && titleOnlyNamesAgent(kindLabel, markNames(entry)) ? null : kindLabel, title, markAgent, machineName: machineName(machine), workspaceLabel: workspace.label,
-      tabName: tabTitle === null ? agentTabName(tab, tabs, t) : null, agentTitle: tabTitle !== null && (tab?.pane_count ?? 1) > 1 ? said : null };
+    const parts = { agentLabel: kindLabel !== null && titleOnlyNamesAgent(kindLabel, markNames(entry)) ? null : kindLabel, title, markAgent, machineName: machineName(machine), workspaceLabel: workspace.label, tabName: agentTabName(tab, tabs, t) };
     // the workspace a title already names is not said again after it, under the whole name of a worktree either
     const contextParts = agentContext(parts).filter((part) => part !== title && !(replaced && part === workspace.label));
     const context = contextParts.join(" · ");

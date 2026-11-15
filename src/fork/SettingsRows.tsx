@@ -11,7 +11,6 @@ export function ForkFeatures() {
   const choices = [
     ["squareCorners", t("Square corners")],
     ["moreViewToggle", t("View toggle in More")],
-    ["agentNamedTabs", t("Agent names on tabs")],
     ["agentFriends", t("Agent friends")],
     ["composerExtras", t("Composer extras")],
     ["chatMotion", t("Animated replies")],

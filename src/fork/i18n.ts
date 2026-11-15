@@ -3,7 +3,6 @@ export const FORK_I18N = {
   ja: {
     "Square corners": "角を直角にする",
     "View toggle in More": "その他メニューで表示を切り替える",
-    "Agent names on tabs": "タブにエージェント名を表示",
     "Agent friends": "エージェントのフレンド",
     "Composer extras": "入力欄の追加機能",
     "Animated replies": "返信のアニメーション",
@@ -15,7 +14,6 @@ export const FORK_I18N = {
   ko: {
     "Square corners": "직각 모서리",
     "View toggle in More": "더 보기에서 화면 전환",
-    "Agent names on tabs": "탭에 에이전트 이름 표시",
     "Agent friends": "에이전트 친구",
     "Composer extras": "입력창 추가 기능",
     "Animated replies": "답변 애니메이션",
@@ -27,7 +25,6 @@ export const FORK_I18N = {
   zh: {
     "Square corners": "直角边框",
     "View toggle in More": "在更多菜单中切换视图",
-    "Agent names on tabs": "在标签页显示代理名称",
     "Agent friends": "代理好友",
     "Composer extras": "输入框扩展",
     "Animated replies": "回复动画",

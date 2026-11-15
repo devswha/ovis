@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentInfo, HerdrPane, SessionSnapshot, TabInfo, WorkspaceInfo } from "../../shared/protocol.ts";
-import { agentContext, agentTabName, givenTabName, paneMark, sidebarAgents, titleOnlyNamesAgent, workspaceAgentLabels } from "./sidebarAgents.ts";
+import { agentContext, agentTabName, paneMark, sidebarAgents, titleOnlyNamesAgent, workspaceAgentLabels } from "./sidebarAgents.ts";
 
 function workspace(id: string): WorkspaceInfo {
   return { workspace_id: id, active_tab_id: `${id}:t1`, label: id, number: 1, tab_count: 1, pane_count: 1, focused: false, agent_status: "idle" };
@@ -111,12 +111,6 @@ describe("workspaceAgentLabels", () => {
 describe("agentContext", () => {
   const base = { agentLabel: "claude", title: "Idempotent payments", markAgent: null, machineName: null, workspaceLabel: "checkout-api", tabName: null };
 
-  it("says first whose a row is when it is called by a tab it shares", () => {
-    const shared = { ...base, title: "Auth work", agentTitle: "Idempotent payments" };
-    expect(agentContext(shared)).toEqual(["Idempotent payments", "claude", "checkout-api"]);
-    expect(agentContext({ ...shared, agentLabel: "Idempotent payments" })).toEqual(["Idempotent payments", "checkout-api"]);
-  });
-
   it("leaves a lone PC unnamed, as herdr does", () => {
     expect(agentContext(base)).toEqual(["claude", "checkout-api"]);
     expect(agentContext({ ...base, machineName: "workstation" })).toEqual(["claude", "workstation", "checkout-api"]);
@@ -133,19 +127,6 @@ describe("agentContext", () => {
     expect(agentContext({ ...base, markAgent: "claude", tabName: "Review" })).toEqual(["checkout-api", "Review"]);
     expect(agentContext({ ...base, agentLabel: "Claude", markAgent: "claude" })).toEqual(["checkout-api"]);
     expect(agentContext({ ...base, agentLabel: "reviewer-bot", markAgent: "claude" })).toEqual(["reviewer-bot", "checkout-api"]);
-  });
-});
-
-describe("givenTabName", () => {
-  it("calls a row by its tab only once the tab was named, by its place as the strip does", () => {
-    const first = { ...tab("w1:t1", "w1"), label: "1" };
-    const second = { ...tab("w1:t2", "w1"), label: "2", number: 3 };
-    expect(givenTabName(first, [first])).toBeNull();
-    expect(givenTabName({ ...first, label: " " }, [first])).toBeNull();
-    // herdr kept number 3 after a close, but the tab is second: "2" is still its place, not a name
-    expect(givenTabName(second, [first, second])).toBeNull();
-    expect(givenTabName({ ...first, label: "Auth work" }, [first])).toBe("Auth work");
-    expect(givenTabName(null, [])).toBeNull();
   });
 });
 

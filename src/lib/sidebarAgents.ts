@@ -99,23 +99,14 @@ export function workspaceAgentLabels(agents: readonly SidebarAgent[]): Map<strin
  */
 export function agentTabName(tab: TabInfo | null | undefined, workspaceTabs: readonly TabInfo[], t: Parameters<typeof tabLabel>[1]): string | null {
   if (!tab) return null;
-  const place = tabPlace(tab, workspaceTabs);
+  const place = workspaceTabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1 || tab.number;
   return workspaceTabs.length > 1 || customTabLabel(tab, place) ? tabLabel(tab, t, place) : null;
 }
-
-/** The name a tab was given, null while herdr still names it by its place: an agent row is called by it. */
-export function givenTabName(tab: TabInfo | null | undefined, workspaceTabs: readonly TabInfo[]): string | null {
-  return tab ? customTabLabel(tab, tabPlace(tab, workspaceTabs)) : null;
-}
-
-const tabPlace = (tab: TabInfo, workspaceTabs: readonly TabInfo[]): number => workspaceTabs.findIndex((candidate) => candidate.tab_id === tab.tab_id) + 1 || tab.number;
 
 export interface AgentContextParts {
   agentLabel: string | null;
   /** the row's first line; an agent named like it is not said twice */
   title: string;
-  /** the agent's own title, said first when the row is called by a tab it shares with another pane */
-  agentTitle?: string | null;
   /** the agent the row's mark draws, null for the generic mark: a kind the mark already says is not written again */
   markAgent: string | null;
   /** null with a single PC: herdr does not name a lone machine either */
@@ -125,13 +116,11 @@ export interface AgentContextParts {
 }
 
 /** An agent row's second line: who it is, then where it runs, without repeating a word the row already says. */
-export function agentContext({ agentLabel, title, agentTitle = null, markAgent, machineName, workspaceLabel, tabName }: AgentContextParts): string[] {
+export function agentContext({ agentLabel, title, markAgent, machineName, workspaceLabel, tabName }: AgentContextParts): string[] {
   const agent = nonblank(agentLabel);
-  const own = nonblank(agentTitle);
   const tab = nonblank(tabName);
   return [
-    own,
-    agent && agent !== title.trim() && agent !== own && agent.toLowerCase() !== markAgent?.toLowerCase() ? agent : null,
+    agent && agent !== title.trim() && agent.toLowerCase() !== markAgent?.toLowerCase() ? agent : null,
     nonblank(machineName),
     workspaceLabel,
     tab && tab !== workspaceLabel ? tab : null,
