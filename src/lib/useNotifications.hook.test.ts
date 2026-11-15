@@ -133,6 +133,27 @@ describe("what Turn on alerts leaves this device", () => {
     expect(hook.pushOn).toBe(true);
   });
 
+  it("leaves a permission granted in the site's settings to the next tap, in view or on return to the page", async () => {
+    permission = "default";
+    await mount();
+    permission = "granted";
+    await act(async () => { permissionEvents.dispatchEvent(new Event("change")); });
+    expect(hook.notifications).toBe("default");
+    await act(async () => { documentEvents.dispatchEvent(new Event("visibilitychange")); });
+    expect(hook.notifications).toBe("default");
+  });
+
+  it("reads a permission given back after a refusal as not asked yet, so the next tap turns alerts on", async () => {
+    permission = "denied";
+    await mount();
+    expect(hook.notifications).toBe("denied");
+    permission = "granted";
+    await act(async () => { permissionEvents.dispatchEvent(new Event("change")); });
+    expect(hook.notifications).toBe("default");
+    expect(await enable()).toBe("sent");
+    expect(hook.notifications).toBe("granted");
+  });
+
   it("reads a permission taken back while the page stays in view", async () => {
     await mount();
     await enable();

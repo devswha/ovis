@@ -29,20 +29,25 @@ export function useNotificationState() {
   const [notifications, setNotifications] = useState<NotificationState>(() => notificationState());
   // in the phone app the permission is the app's (lib/notifications.ts): read from the app at load,
   // and again whenever the page comes back, as it may have been changed in the phone's Settings
-  // meanwhile. A browser page reads its own again when it comes back too: it may have been taken back
-  // in the site's settings, and alerts are then not on (#3907 review).
+  // meanwhile. A browser page hears a permission taken back (in the site's settings: alerts are then not on,
+  // #3907 review), when it comes back and while it stays in view. A grant there is not taken as alerts on: it
+  // reads as not asked yet, so the Alerts item's tap still turns alerts on (Turn on alerts subscribes this device),
+  // rather than becoming Turn off just before the user's finger lands (ui-regression's More menu Alerts step).
   useEffect(() => {
     const native = hasNativePlugin(PUSH_PLUGIN);
     let current = true;
+    const taken = (): void => {
+      const next = notificationState();
+      setNotifications((known) => next !== "granted" ? next : known === "denied" ? "default" : known);
+    };
     const read = () => {
-      if (!native) { setNotifications(notificationState()); return; }
+      if (!native) { taken(); return; }
       refreshNotificationState().then(() => { if (current) setNotifications(notificationState()); }, (err) => console.warn("could not read the notification permission", err));
     };
     const onVisible = () => { if (document.visibilityState === "visible") read(); };
     if (native) read();
     document.addEventListener("visibilitychange", onVisible);
-    // a browser page also hears a change made while it stays in view (the address bar's site settings): a read of the
-    // permission, never a request
+    // while it stays in view: the permission's change event (the address bar's site settings), a read, never a request
     let permissionStatus: PermissionStatus | null = null;
     if (!native && typeof navigator !== "undefined" && navigator.permissions?.query) {
       // a webview that throws rather than rejects is the same as one that cannot answer
@@ -50,13 +55,13 @@ export function useNotificationState() {
         navigator.permissions.query({ name: "notifications" }).then((status) => {
           if (!current) return;
           permissionStatus = status;
-          status.addEventListener("change", read);
+          status.addEventListener("change", taken);
         }, () => { /* not answerable here: visibilitychange still reads it */ });
       } catch { /* as above */ }
     }
     return () => {
       current = false;
-      permissionStatus?.removeEventListener("change", read);
+      permissionStatus?.removeEventListener("change", taken);
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
