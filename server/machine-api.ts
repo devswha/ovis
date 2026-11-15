@@ -519,15 +519,16 @@ export async function handleMachineRequest(request: Request, manager: MachineMan
           }
           // That PC's answer opens as this app's origin, so its own policy is never what holds here.
           // A PDF is drawn by the browser's viewer (which refuses a sandbox), as the local route does;
-          // only an HTML answer asked to render is a page: it keeps that PC's policy under a sandbox of
-          // this server's, which no policy loosens, and one that names none gets the page policy this
-          // server gives its own pages (as that PC's bridge answers, with no media address); anything
-          // else, an SVG asked to render too, gets the local route's policy.
+          // only an HTML answer asked to render is a page, named as HTML and nothing else: whatever
+          // policy that PC names, the page policy this server gives its own pages (as that PC's bridge
+          // answers, with no media address) is added after it, and of two policies the stricter holds;
+          // anything else, an SVG asked to render too, gets the local route's policy.
           const type = passed.get("content-type")?.split(";")[0]?.trim().toLowerCase();
           if (type === "application/pdf") passed.set("content-type", "application/pdf");
           else if (type === "text/html" && url.searchParams.get("render") === "1") {
             const theirs = response.headers.get("content-security-policy");
-            passed.set("content-security-policy", theirs ? `${theirs}, sandbox allow-scripts` : pagePolicy(null));
+            passed.set("content-type", "text/html; charset=utf-8");
+            passed.set("content-security-policy", theirs ? `${theirs}, ${pagePolicy(null)}` : pagePolicy(null));
           } else passed.set("content-security-policy", FILE_POLICY);
           return new Response(response.body, { status: response.status, headers: passed });
         } catch (error) { return transportFailure(id, path, error); }
