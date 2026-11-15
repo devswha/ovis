@@ -556,6 +556,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * turn's finish, told then.
    */
   function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null, resetHold = false, agent: string | null = null, settled = false, capped = true): void {
+    // a GJC pane's wait is its own transcript's (gjcChanged): no Claude count replaces it
+    if (gjc.tracks(paneId)) return;
     const changed = waits.running(paneId, turnRunning, promptAt, capped, settled) || resetHold;
     if (paneId === settling) return;
     // a pane herdr reads as working: its session's turn came to rest under its subagents' spinner, or moved on again
