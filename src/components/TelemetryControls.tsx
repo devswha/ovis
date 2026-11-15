@@ -74,6 +74,7 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
   useEffect(() => {
     if (!shown || !enabled || line === null) return;
     let recorded = false;
+    let failures = 0;
     let frame = 0;
     // wholly inside the viewport and every scrolling box around it (a guide's body scrolled past it is not);
     // where the page cannot tell, as drawn
@@ -95,7 +96,14 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
         settings: snapshot,
       }).then((next) => { submittedSettingsSignature.current = JSON.stringify(snapshot); if (!turnedOff.current) setStatus(next); },
         // a failed record is tried again on the next paint, return to the tab or focus (#3882)
-        (error: unknown) => { recorded = false; noticeRecorded.current = false; console.error("telemetry notice", error); });
+        (error: unknown) => {
+          noticeRecorded.current = false;
+          console.error("telemetry notice", error);
+          // tried again only when it may yet succeed: a network error or a server error, a few times; a refusal
+          // (a watching device's 403) is final
+          failures += 1;
+          if ((!(error instanceof ApiError) || error.status >= 500) && failures < 3) recorded = false;
+        });
     };
     const onVisibility = () => { if (document.visibilityState === "visible") afterPaint(); };
     const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(([entry]) => {

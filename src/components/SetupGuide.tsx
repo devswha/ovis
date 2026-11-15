@@ -49,6 +49,8 @@ import { OvisMark } from "./OvisMark.tsx";
 import { ChipToggles, Segmented } from "./SettingsControls.tsx";
 import { ThemeCard, THEME_NAMES } from "./ThemeCard.tsx";
 import { themeLabel } from "./ThemeFiles.tsx";
+import { repairFailureText } from "./PushHealthNotice.tsx";
+import { inNativeApp } from "../lib/nativeApp.ts";
 import { chosenTheme } from "../lib/customThemes.ts";
 import { TelemetryNotice } from "./TelemetryControls.tsx";
 import { UsageSignInDialog } from "./UsageSignInDialog.tsx";
@@ -82,6 +84,8 @@ export interface SetupGuideProps {
   onPaired: () => void;
   /** turns this device's alerts on, asking the browser first (App's enableNotifications) */
   onEnableAlerts: () => Promise<PushActionResult>;
+  /** Settings is open over the guide: the paired devices are read again when it closes */
+  settingsOpen?: boolean;
   /** this device's notification permission as App keeps it: it changes with the browser's answer */
   notifications: NotificationState;
   /** Start pressed: a tab the guide asked to show before it is not shown over what Start opens */
@@ -200,7 +204,7 @@ export function SetupGuide(props: SetupGuideProps) {
   const notice = <TelemetryNotice inline enabled={!hidden} onOpen={props.onOpenTelemetry} />;
   let body: ReactNode;
   if (state.step === "welcome") body = <Welcome dispatch={props.dispatch} onClose={onClose} notice={notice} firstFocus={firstFocus} />;
-  else if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} catalog={catalog} ready={ready} machineId={machineId} reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
+  else if (view === "agents" && catalog !== null) body = <Steps page={page} setPage={setPage} onEnableAlerts={props.onEnableAlerts} notifications={props.notifications} settingsOpen={props.settingsOpen} catalog={catalog} ready={ready} machineId={machineId} reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} onInstalled={agentInstalled} onLookAgain={loadCatalog} onOpenTerminal={props.onOpenTerminal} onOpened={props.onOpened} onOpenSettings={props.onOpenSettings} auth={props.auth} security={props.security} onStarting={props.onStarting} onPaired={props.onPaired} usageOn={turnsUsageOn(props.state)} phoneFirst={!phoneClosed && phoneBoxOpensFirst(props.state, isLoopbackHost(window.location.hostname))} onPhoneClosed={() => setPhoneClosed(true)} notice={notice} firstFocus={firstFocus} />;
   else body = <CheckStep reopened={state.reopened === true} dispatch={props.dispatch} onClose={onClose} notice={notice} firstFocus={firstFocus}>{view === "failed" ? <CheckFailed error={catalogError} onLookAgain={loadCatalog} /> : <Checking known={known} catalog={catalog} />}</CheckStep>;
 
   return (
@@ -344,7 +348,7 @@ function CheckFailed({ error, onLookAgain }: { error: string | null; onLookAgain
   );
 }
 
-interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuideProps, "onEnableAlerts" | "notifications" | "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "security" | "onStarting" | "onPaired" | "onClose" | "dispatch"> {
+interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuideProps, "onEnableAlerts" | "notifications" | "settingsOpen" | "onOpenTerminal" | "onOpened" | "onOpenSettings" | "auth" | "security" | "onStarting" | "onPaired" | "onClose" | "dispatch"> {
   /** opened again from Settings: no welcome to go back to */
   reopened: boolean;
   /** the line about usage counts, at the end of the step's column */
@@ -365,7 +369,7 @@ interface StepsProps extends Pick<StepState, "page" | "setPage">, Pick<SetupGuid
 }
 
 /** The agent step and the Done screen: one place keeps the agent picked and what Start did, for both. */
-function Steps({ page, setPage, onEnableAlerts, notifications, catalog, ready, machineId, reopened, notice, dispatch, onClose, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, security, onStarting, onPaired, usageOn, phoneFirst, onPhoneClosed, firstFocus }: StepsProps) {
+function Steps({ page, setPage, onEnableAlerts, notifications, settingsOpen = false, catalog, ready, machineId, reopened, notice, dispatch, onClose, onInstalled, onLookAgain, onOpenTerminal, onOpened, onOpenSettings, auth, security, onStarting, onPaired, usageOn, phoneFirst, onPhoneClosed, firstFocus }: StepsProps) {
   const t = useT();
   const { settings, update } = useSettings();
   const agents = agentRows(catalog, ready);
@@ -466,14 +470,16 @@ function Steps({ page, setPage, onEnableAlerts, notifications, catalog, ready, m
   const themeSummary = [t(settings.theme === "system" ? "System" : settings.theme === "dark" ? "Dark" : "Light"), drawnThemeName(t, settings, drawnSide)].filter(Boolean).join(" · ");
   // a device other than this browser: paired before the guide (the server's list), or from its box just now.
   // This browser pairing itself (onPaired) is not one
-  const pairedBefore = useOtherDevice(page === "phone" || page === "done");
+  // read again on each step that shows it, and when Settings closes (a device paired or removed there, opened from the box)
+  const pairedBefore = useOtherDevice((page === "phone" || page === "done") && !settingsOpen, page);
+  const [alertsFailure, setAlertsFailure] = useState<string | null>(null);
   const [pairedNow, setPairedNow] = useState<string | null>(null);
   const phoneName = pairedNow ?? pairedBefore;
   const alertFilters = useAlertFilters();
   // what alerts this computer gets, as Done names them: Settings → Alerts' chips that are on; none while alerts are off or refused
   // Any turn finished takes in the long ones, so the summary names it alone
   const alertKinds = alertMeWhenChips(t, settings, alertFilters, update, true).filter((chip) => chip.on && !(settings.alertDone === "always" && chip.label === t("Long turn finished"))).map((chip) => chip.label);
-  const alertsSummary = settings.alertsOn && notifications === "granted" && alertKinds.length > 0 ? alertKinds.join(", ") : null;
+  const alertsSummary = settings.alertsOn && notifications === "granted" && alertsFailure === null && alertKinds.length > 0 ? alertKinds.join(", ") : null;
   const usageNote = signedIn.length > 0 && (settings.showUsage || usageOn) && <p className="setup-note"><Gauge aria-hidden="true" />{t("Plan usage will show in the sidebar for your signed-in accounts.")}</p>;
   const errorLine = error !== null && <p className="setup-error" role="alert">{error}</p>;
   const signInDialog = signingIn && <UsageSignInDialog request={signingIn} onOpenTerminal={(paneId) => { setSigningIn(null); onOpenTerminal(paneId); }} onSignedIn={() => setSignedHere((done) => [...done, signingIn.provider])} onClose={() => setSigningIn(null)} />;
@@ -497,7 +503,7 @@ function Steps({ page, setPage, onEnableAlerts, notifications, catalog, ready, m
         <div className="setup-main">
           <StepTitle firstFocus={firstFocus}>{t("Stay in touch with your agents")}</StepTitle>
           <p className="setup-lead">{t("Get alerts on this computer. Connect your phone to get them there too.")}</p>
-          <AlertsHere onEnable={onEnableAlerts} notifications={notifications} />
+          <AlertsHere onEnable={onEnableAlerts} notifications={notifications} failure={alertsFailure} onFailure={setAlertsFailure} />
           {errorLine}
           {notice}
         </div>
@@ -690,7 +696,7 @@ function ThemePreview() {
  * once. The test is the page's own notification, as an open tab of Ovis shows its alerts, so it works in the
  * desktop app too, where web push does not reach; Settings → Alerts' test goes through the push service.
  */
-function AlertsHere({ onEnable, notifications: state }: { onEnable: () => Promise<PushActionResult>; notifications: NotificationState }) {
+function AlertsHere({ onEnable, notifications: state, failure, onFailure }: { onEnable: () => Promise<PushActionResult>; notifications: NotificationState; failure: string | null; onFailure: (text: string | null) => void }) {
   const t = useT();
   const { settings, update } = useSettings();
   const filters = useAlertFilters();
@@ -698,20 +704,29 @@ function AlertsHere({ onEnable, notifications: state }: { onEnable: () => Promis
   const [line, setLine] = useState<"sent" | "failed" | null>(null);
   const enable = async (): Promise<void> => {
     setBusy("enable");
-    try { await onEnable(); } finally { setBusy(null); }
+    onFailure(null);
+    // what Turn on alerts reports back: a push subscription that failed is said, as Settings → Alerts says it, and
+    // the button stays to try again; alerts are not on while only an open tab could show them
+    try { onFailure(repairFailureText(t, await onEnable())); } finally { setBusy(null); }
   };
   const test = async (): Promise<void> => {
     setBusy("test");
     setLine(null);
     try { setLine(await showTestNotification(t("Test alert"), t("This is how an alert from Ovis looks on this computer.")) ? "sent" : "failed"); } finally { setBusy(null); }
   };
-  const on = settings.alertsOn && state === "granted";
+  const on = settings.alertsOn && state === "granted" && failure === null;
   return (
     <div className="setup-field setup-alerts">
       <span className="setup-label">{t("On this computer")}</span>
       {state === "unsupported" ? <p className="setup-note"><Info aria-hidden="true" />{t("Push alerts need HTTPS or localhost, and on iPhone the home-screen app.")}</p>
         : state === "denied" ? (
-          <p className="setup-note setup-note-blocked"><TriangleAlert aria-hidden="true" /><span><strong>{t("This computer blocks alerts from Ovis.")}</strong> {t("Allow notifications in your browser settings, then try again.")}</span></p>
+          <>
+            <p className="setup-note setup-note-blocked"><TriangleAlert aria-hidden="true" /><span><strong>{t("This computer blocks alerts from Ovis.")}</strong> {inNativeApp() ? t("Allow notifications for Ovis in the phone's Settings, then try again.") : t("Allow notifications in your browser settings, then try again.")}</span></p>
+            {/* the try again: the browser's answer is read anew */}
+            <div className="setup-actions">
+              <button type="button" className="btn" disabled={busy !== null} onClick={() => void enable()}><Bell aria-hidden="true" />{busy === "enable" ? t("Turning alerts on…") : t("Try again")}</button>
+            </div>
+          </>
         ) : !on && (
           <div className="setup-actions">
             <button type="button" className="btn" disabled={busy !== null} onClick={() => void enable()}><Bell aria-hidden="true" />{busy === "enable" ? t("Turning alerts on…") : t("Turn on alerts")}</button>
@@ -725,7 +740,7 @@ function AlertsHere({ onEnable, notifications: state }: { onEnable: () => Promis
         </div>
       )}
       {/* always in the document, empty until there is something to say: a live region */}
-      <p className="setup-muted" role="status">{line === "sent" ? t("Test alert sent. It should be on your screen now.") : line === "failed" ? t("Could not send the test notification. Try again.") : null}</p>
+      <p className="setup-muted" role="status">{failure !== null ? failure : line === "sent" ? t("Test alert sent. It should be on your screen now.") : line === "failed" ? t("Could not send the test notification. Try again.") : null}</p>
     </div>
   );
 }
@@ -759,7 +774,7 @@ function ThemeStep({ firstFocus, children }: { firstFocus: FirstFocus; children:
   // a theme saved outside the first six keeps its card for as long as the step is open, though the keyboard moves off it
   const kept = useRef(new Set<ThemeId>());
   if (current !== null && !own.slice(0, THEMES_FIRST).includes(current)) kept.current.add(current);
-  const shown = all ? [...own, ...others] : own.slice(0, THEMES_FIRST).concat(own.slice(THEMES_FIRST).filter((id) => kept.current.has(id)));
+  const shown = all ? [...own, ...others] : own.slice(0, THEMES_FIRST).concat([...own.slice(THEMES_FIRST), ...others].filter((id) => kept.current.has(id)));
   const pick = (id: ThemeId): void => update((latest) => ({ ...pickTheme(latest, side, id), customThemes: { ...latest.customThemes, [side]: null } }));
   // a radio group's arrows pick as they move
   const step = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -816,7 +831,7 @@ function ThemeStep({ firstFocus, children }: { firstFocus: FirstFocus; children:
       <aside className="setup-side" aria-labelledby="setup-theme-preview">
         <span className="setup-label" id="setup-theme-preview">{t("Preview")}</span>
         <ThemePreview />
-        <p className="setup-text">{[t(side === "dark" ? "Dark" : "Light"), drawnThemeName(t, settings, side)].filter(Boolean).join(" · ") || sideLabel}</p>
+        <p className="setup-text">{[t(side === "dark" ? "Dark" : "Light"), drawnThemeName(t, settings, side)].filter(Boolean).join(" · ")}</p>
       </aside>
     </div>
   );

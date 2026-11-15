@@ -619,6 +619,7 @@ const BASE: Record<string, string> = {
   "Send test": "发送测试",
   "Push alerts need HTTPS or localhost, and on iPhone the home-screen app.": "推送通知需要 HTTPS 或 localhost。在 iPhone 上请使用添加到主屏幕的应用。",
   "Allow notifications in your browser settings, then try again.": "请在浏览器设置中允许通知，然后重试。",
+  "Allow notifications for Ovis in the phone's Settings, then try again.": "请在手机的设置中允许 Ovis 的通知，然后重试。",
   "Could not send the test notification. Try again.": "无法发送测试通知。请重试。",
   "Needs input": "需回应",
   "Phone": "手机",

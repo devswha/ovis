@@ -121,7 +121,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "With no names, every unexpired link you issue opens it. Add names to accept only links issued to them.": "没有名称时，你签发的所有未过期链接都能打开。添加名称后，只接受签发给这些名称的链接。",
   "Test notification": "测试通知",
   "Sends one alert to this device now, so you can check that push alerts arrive here. If it cannot be sent, the line under the name says so.": "立即向此设备发送一条通知，以便确认推送通知能否送达这里。无法发送时，名称下方的一行会给出提示。",
-  "Allow notifications for Ovis in the phone's Settings, then try again.": "请在手机的设置中允许 Ovis 的通知，然后重试。",
   "Test notification sent. Check this device for the alert.": "测试通知已发送。请检查此设备是否收到通知。",
   "Allow notifications to test alerts on this device.": "请允许通知，以便在此设备上测试提醒。",
   "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "上一条提醒未能送达此设备；下一条会照常发送。请发送测试以确认。",

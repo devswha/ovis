@@ -121,7 +121,6 @@ export const DEVICES_JA: Record<string, string> = {
   "With no names, every unexpired link you issue opens it. Add names to accept only links issued to them.": "名前がなければ、発行した有効期限内のリンクはすべて開けます。名前を追加すると、その宛先に発行したリンクだけを受け付けます。",
   "Test notification": "テスト通知",
   "Sends one alert to this device now, so you can check that push alerts arrive here. If it cannot be sent, the line under the name says so.": "このデバイスに今すぐ通知を 1 件送り、プッシュ通知がここに届くか確認できます。送れないときは、名前の下の行でお知らせします。",
-  "Allow notifications for Ovis in the phone's Settings, then try again.": "スマートフォンの設定で Ovis の通知を許可してから、もう一度お試しください。",
   "Test notification sent. Check this device for the alert.": "テスト通知を送信しました。このデバイスに通知が届いたか確認してください。",
   "Allow notifications to test alerts on this device.": "このデバイスで通知をテストするには、通知を許可してください。",
   "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "最後の通知はこのデバイスに届きませんでした。次の通知は通常どおり送られます。テストを送って確認してください。",

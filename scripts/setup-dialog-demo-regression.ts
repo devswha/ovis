@@ -80,7 +80,10 @@ try {
       await context.addInitScript(() => {
         const shown: string[] = [];
         (window as unknown as { shownAlerts: string[] }).shownAlerts = shown;
-        class RecordedNotification { static permission = "granted"; static requestPermission = () => Promise.resolve("granted"); constructor(title: string) { shown.push(title); } addEventListener() {} close() {} }
+        // not yet asked: the guide asks only on Turn on alerts, and each ask is counted
+        const asked = { count: 0 };
+        (window as unknown as { permissionAsks: typeof asked }).permissionAsks = asked;
+        class RecordedNotification { static permission: NotificationPermission = "default"; static requestPermission = () => { asked.count += 1; RecordedNotification.permission = "granted"; return Promise.resolve("granted" as NotificationPermission); }; constructor(title: string) { shown.push(title); } addEventListener() {} close() {} }
         Object.defineProperty(window, "Notification", { value: RecordedNotification, configurable: true });
         if (typeof ServiceWorkerRegistration !== "undefined") ServiceWorkerRegistration.prototype.showNotification = function (title: string) { shown.push(title); return Promise.resolve(); };
       });
@@ -163,6 +166,12 @@ try {
         await settled(page);
         assert.equal(await focusedName(page), "Stay in touch with your agents", `the phone and alerts step's title takes the keyboard ${at}`);
         assert.equal((await steps.locator('[aria-current="step"]').textContent())?.replace(/\s+/g, ""), "3Phoneandalerts", `the head marks Phone and alerts as the current step ${at}`);
+        // nothing asked the browser for permission on the way here; Turn on alerts asks it once
+        const asks = () => page.evaluate(() => (window as unknown as { permissionAsks: { count: number } }).permissionAsks.count);
+        assert.equal(await asks(), 0, `no permission asked before Turn on alerts ${at}`);
+        await dialog.getByRole("button", { name: "Turn on alerts", exact: true }).click();
+        await dialog.getByRole("button", { name: "Send test", exact: true }).waitFor();
+        assert.equal(await asks(), 1, `Turn on alerts asks for permission once ${at}`);
         const chips = dialog.getByRole("group", { name: "Alert me when", exact: true });
         assert.deepEqual((await chips.getByRole("button", { pressed: true }).allInnerTexts()).map((text) => text.trim()), ["Needs input", "Needs permission", "Long turn finished"], `the default alerts ${at}`);
         await dialog.getByRole("button", { name: "Send test", exact: true }).click();

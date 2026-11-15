@@ -622,6 +622,7 @@ const BASE: Record<string, string> = {
   "Send test": "テスト送信",
   "Push alerts need HTTPS or localhost, and on iPhone the home-screen app.": "プッシュ通知には HTTPS または localhost が必要です。iPhone ではホーム画面に追加したアプリを使ってください。",
   "Allow notifications in your browser settings, then try again.": "ブラウザーの設定で通知を許可してから、もう一度お試しください。",
+  "Allow notifications for Ovis in the phone's Settings, then try again.": "スマートフォンの設定で Ovis の通知を許可してから、もう一度お試しください。",
   "Could not send the test notification. Try again.": "テスト通知を送信できませんでした。もう一度お試しください。",
   "Alert me when": "通知するとき",
   "Long turn finished": "長いターンの完了",

@@ -121,7 +121,6 @@ export const DEVICES_KO: Record<string, string> = {
   "With no names, every unexpired link you issue opens it. Add names to accept only links issued to them.": "이름이 없으면 발급한 링크 중 만료되지 않은 것은 모두 열 수 있습니다. 이름을 추가하면 그 이름 앞으로 발급한 링크만 받습니다.",
   "Test notification": "테스트 알림",
   "Sends one alert to this device now, so you can check that push alerts arrive here. If it cannot be sent, the line under the name says so.": "지금 이 기기로 알림을 하나 보내 푸시 알림이 여기에 도착하는지 확인합니다. 보낼 수 없으면 이름 아래 줄에서 알려 줍니다.",
-  "Allow notifications for Ovis in the phone's Settings, then try again.": "휴대폰 설정에서 Ovis 알림을 허용한 뒤 다시 시도하세요.",
   "Test notification sent. Check this device for the alert.": "테스트 알림을 보냈습니다. 이 기기에 알림이 도착했는지 확인하세요.",
   "Allow notifications to test alerts on this device.": "이 기기에서 알림을 테스트하려면 알림을 허용하세요.",
   "The last alert did not reach this device; the next one is tried as usual. Send a test to check.": "마지막 알림이 이 기기에 닿지 않았습니다. 다음 알림은 평소처럼 다시 보냅니다. 테스트를 보내 확인하세요.",

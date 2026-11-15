@@ -615,6 +615,7 @@ const BASE: Record<string, string> = {
   "Send test": "테스트 보내기",
   "Push alerts need HTTPS or localhost, and on iPhone the home-screen app.": "푸시 알림은 HTTPS 또는 localhost가 필요하고, iPhone에서는 홈 화면 앱이어야 합니다.",
   "Allow notifications in your browser settings, then try again.": "브라우저 설정에서 알림을 허용한 뒤 다시 시도하세요.",
+  "Allow notifications for Ovis in the phone's Settings, then try again.": "휴대폰 설정에서 Ovis 알림을 허용한 뒤 다시 시도하세요.",
   "Could not send the test notification. Try again.": "테스트 알림을 보내지 못했습니다. 다시 시도하세요.",
   "Alert me when": "이럴 때 알림",
   "Long turn finished": "1분 이상 작업 완료",
