@@ -44,8 +44,6 @@ export interface Machine {
   enabled: boolean;
   state: MachineState;
   error: string | null;
-  /** Tailscale says this PC is offline (server/tailnet.ts): the sidebar keeps it out of the way */
-  tailnet_offline?: boolean;
   /** Attention needed; windows_login retries, windows_start_failed waits for a startup decision. */
   action_required?: MachineAction | null;
   /** herdr daemons found on the PC before this bridge was started */

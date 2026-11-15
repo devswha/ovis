@@ -34,20 +34,6 @@ export interface WorkspaceBranch {
 
 interface CheckoutIdentity { repoKey: string; checkoutPath: string }
 interface StoredBranch extends WorkspaceBranch { repoKey: string | null }
-/** What a cache last read, kept on the device so the next start names branches before it reads git again. */
-export interface SavedBranches { records: [string, StoredBranch][]; unmarked: [string, WorkspaceBranch][] }
-
-const isBranch = (value: unknown): value is WorkspaceBranch => {
-  const branch = value as Partial<WorkspaceBranch> | null;
-  return typeof branch === "object" && branch !== null && typeof branch.checkoutPath === "string"
-    && (branch.branch === null || typeof branch.branch === "string") && typeof branch.isDetached === "boolean";
-};
-const isStoredBranch = (value: unknown): value is StoredBranch => {
-  const repoKey = (value as Partial<StoredBranch> | null)?.repoKey;
-  return isBranch(value) && (repoKey === null || typeof repoKey === "string");
-};
-const entries = <T>(value: unknown, valid: (item: unknown) => item is T): [string, T][] =>
-  Array.isArray(value) ? value.filter((entry): entry is [string, T] => Array.isArray(entry) && typeof entry[0] === "string" && valid(entry[1])) : [];
 export interface WorktreeRepository { repoKey: string; workspaceId: string }
 
 /** Compare API checkout paths without changing meaningful spaces or POSIX backslashes. */
@@ -108,22 +94,6 @@ export class WorkspaceBranchCache {
   private revision = 0;
 
   get generation(): number { return this.revision; }
-
-  /**
-   * Branches saved by an earlier start, shown until the first inventory: each one only while its
-   * workspace's checkout is still the one it was read from (branchesFor, reconcile). Anything
-   * malformed is dropped.
-   */
-  restore(saved: unknown): void {
-    const value = saved as Partial<SavedBranches> | null;
-    if (typeof value !== "object" || value === null) return;
-    for (const [id, branch] of entries(value.records, isStoredBranch)) if (!this.records.has(id)) this.records.set(id, branch);
-    for (const [id, branch] of entries(value.unmarked, isBranch)) if (!this.unmarked.has(id)) this.unmarked.set(id, branch);
-  }
-
-  saved(): SavedBranches {
-    return { records: [...this.records], unmarked: [...this.unmarked] };
-  }
 
   invalidate(): void { this.revision++; }
 

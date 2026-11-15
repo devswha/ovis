@@ -1695,7 +1695,7 @@ export function Composer({
           )}
         </div>
       </div>
-      {!settings.headerBranch && <ComposerContext cwd={cwd} branch={branch} repo={worktreeRepo} mobile={mobile} facesLoaded={facesLoaded} />}
+      <ComposerContext cwd={cwd} branch={branch} repo={worktreeRepo} mobile={mobile} facesLoaded={facesLoaded} />
       {/* above the whole composer: inside the surface it would cover the text being dictated */}
       {dictation.shown && <VoiceRecordingPill dictation={dictation} align="start" />}
     </div>

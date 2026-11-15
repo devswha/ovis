@@ -54,22 +54,6 @@
 }
 
 /* src/components/Machines.css */
-[data-fork-collapse-offline-pcs="true"] .machine-offline-toggle {
-  margin: var(--space-4) 0 0 var(--side-gutter);
-  gap: var(--space-2);
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
-}
-
-[data-fork-collapse-offline-pcs="true"] .machine-offline-toggle + .machine-group {
-  margin-top: var(--space-2);
-}
-
-[data-fork-collapse-offline-pcs="true"] .machine-offline-toggle svg {
-  width: 14px;
-  height: 14px;
-}
-
 [data-fork-square-corners="true"] .machine-dot {
   border-radius: var(--radius-circle);
 }
@@ -136,18 +120,8 @@
 }
 
 /* src/components/PromptCard.css */
-[data-fork-expanded-prompts="true"] .prompt-card {
-  max-height: max(calc(var(--app-height, 100dvh) * 0.6), calc(var(--touch-target) * 6));
-}
-
 [data-fork-square-corners="true"] .prompt-card-step-mark {
   border-radius: var(--radius-circle);
-}
-
-@media (min-width: 769px) {
-[data-fork-expanded-prompts="true"] .prompt-card {
-  max-height: max(calc((var(--app-height, 100dvh) - var(--control-h)) * 0.6), calc(var(--touch-target) * 6));
-}
 }
 
 /* src/components/RowMenu.css */
@@ -218,15 +192,6 @@
 
 [data-fork-agent-friends="true"] .tab-strip-faces.is-split > * + * {
   margin-left: -4px;
-}
-
-[data-fork-compact-tab-menus="true"] .tab-menu-place {
-  display: block;
-  overflow: hidden;
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* src/components/UsageSettings.css */

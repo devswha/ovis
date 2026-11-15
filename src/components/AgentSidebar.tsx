@@ -1,5 +1,5 @@
 import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Bell, BellOff, ChevronDown, ChevronRight, Ellipsis, FolderInput, FolderOutput, Lock, LockOpen, Pin, PinOff, Terminal, X } from "lucide-react";
+import { Bell, BellOff, ChevronDown, ChevronRight, Ellipsis, FolderInput, FolderOutput, Lock, LockOpen, Pin, PinOff, Terminal } from "lucide-react";
 
 import type { Machine } from "../../shared/machines.ts";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -34,8 +34,6 @@ import { AgentFriend } from "./AgentFriend.tsx";
 import type { Friend } from "../../shared/friends.ts";
 import { friendKey } from "../../shared/friends.ts";
 import { useFriends } from "../lib/friends.ts";
-import { closePane } from "../lib/api.ts";
-import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { RowMenu } from "./RowMenu.tsx";
 import { BackgroundBadge, compactWorktreeName, ContextBadge, displayPaneTitle, onRowContextMenu, PlanBadge, StatusBadge } from "./Sidebar.tsx";
 import "./AgentSidebar.css";
@@ -328,7 +326,6 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const rowTokens = useSyncExternalStore(subscribeAgentRowTokens, currentAgentRowTokens, currentAgentRowTokens);
   const activity = useSidebarActivity();
   const friends = useFriends();
-  const [closing, setClosing] = useState<{ machineId: string; paneId: string; title: string } | null>(null);
   // Settings → Agents order: herdr's order, or Activity within each PC (each herdr counts its own changes);
   // the pinned rows stand first, in the order they were pinned (lib/agentRoster.ts)
   // grouped by state, the groups order their own rows: their ties keep herdr's order, never Activity's
@@ -901,14 +898,6 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         id: "mute", label: menuMuted ? t("Unmute alerts") : t("Mute alerts"), icon: menuMuted ? Bell : BellOff, checked: menuMuted, disabled: watching,
         run: () => toggleMute(menuRow.machine.id, menuRow.entry.pane.pane_id),
       }]),
-      // the pane's own close (PaneCanvas), behind the same confirm: the agent stops mid-turn
-      ...(!settings.sidebarActions || menuRow === undefined ? [] : [{
-        id: "close", label: t("Close pane"), icon: X, danger: true, divider: true, disabled: watching,
-        run: () => setClosing({ machineId: menuRow.machine.id, paneId: menuRow.entry.pane.pane_id, title: menuShown.title }),
-      }]),
     ]} />}
-    {closing && <ConfirmDialog title={t("Close pane {name}?", { name: closing.title })}
-      body={t("The pane's running processes will stop. Closing its last pane also closes the workspace.")}
-      confirmLabel={t("Close pane")} onClose={() => setClosing(null)} onConfirm={async () => { await closePane(closing.paneId, closing.machineId); setClosing(null); }} />}
   </section>;
 }

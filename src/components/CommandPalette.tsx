@@ -135,8 +135,7 @@ function storeRecent(recent: RecentPane[]): RecentPane[] {
 interface BranchInventory { signature: string; branches: ReadonlyMap<string, WorkspaceBranch> }
 /** One owner-bound hook per PC. Closed/offline palettes never poll inventories. */
 function PaletteBranchReader({ machine, onChange }: { machine: Machine; onChange(machineId: string, inventory: BranchInventory): void }) {
-  const { settings } = useSettings();
-  const { branches } = useWorktreeBranches(machine.snapshot, machine.state === "connected", false, undefined, false, undefined, settings.headerBranch);
+  const { branches } = useWorktreeBranches(machine.snapshot, machine.state === "connected");
   const signature = worktreeWorkspaceSignature(machine.snapshot?.workspaces ?? []);
   useEffect(() => { onChange(machine.id, { signature, branches }); }, [machine.id, signature, branches, onChange]);
   return null;

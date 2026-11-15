@@ -33,5 +33,21 @@
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
-:root[data-fork-header-branch="true"] .context.has-branch { max-height: none; }
-:root[data-fork-header-branch="true"] .context.has-branch .context-title { min-height: 0; }
+/* Those tabs stand on the strip's bottom edge while the + and the More button keep upstream's
+ * middle, so the + floats a few pixels above the tab it belongs to. They drop to the strip's end
+ * too, each raised by half the height it lacks, which puts them back on the tab's middle. Only a
+ * mouse's layout has the tabs taller than those controls: where upstream sizes them for a finger
+ * (a coarse pointer, or a narrow window) both are one height and the strip's end lines them up. */
+:root[data-fork-square-corners="true"] .header-tabs :is(.tab-strip-add, .tab-strip-more) {
+  align-self: flex-end;
+}
+
+@media (pointer: fine) and (min-width: 769px) {
+  :root[data-fork-square-corners="true"] .header-tabs .tab-strip-add {
+    margin-bottom: calc((var(--tab-h) - (var(--control-h) - var(--space-2))) / 2);
+  }
+
+  :root[data-fork-square-corners="true"] .header-tabs .tab-strip-more {
+    margin-bottom: calc((var(--tab-h) - var(--bar-control-h)) / 2);
+  }
+}

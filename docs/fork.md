@@ -22,8 +22,6 @@ A file can contain more than one pile. The inventory below lists every upstream-
 | Compact work runs | `src/fork/workRuns.tsx` | Settings: Compact work runs. Upstream work blocks remain the default. |
 | Live previews, reveal pacing and send motion | `src/fork/liveTurn.ts`, `src/fork/streamReveal.ts`, `src/fork/chatPresentation.ts` | Settings: Animated replies. Upstream accepted-send follow remains the default. |
 | Agent friends and optional tab naming | `src/fork/AgentFriend.tsx`, `src/fork/AgentAvatar.tsx`, `src/fork/TabFriends.tsx`, `src/fork/friends.ts`, `server/fork/friends.ts` | Settings: Agent friends and Agent names on tabs. Existing explicitly named tabs are never renamed. With Agent friends on, every place that shows a running agent (inbox, sidebar, tabs, palette, header, chat, composer) shows its friend alone, no harness logo, through `AgentAvatar`; the harness `AgentMark` stays where it names a harness (picker, settings, usage, setup) and where a pane has no friend. Fork-only. |
-| Persistent branch names in the header | `src/fork/HeaderBranch.tsx`, `src/fork/branchStorage.ts` | Settings: Branch in the header. Branch storage is neither read nor written with this option off. |
-| Offline-PC collapsing and extra sidebar actions | Small guarded branches in `src/components/MachineSidebar.tsx` and `src/components/AgentSidebar.tsx` | Settings: Collapse offline PCs and Sidebar pane actions. |
 | Generic runtime fixes | Conversation deltas, receipt whitespace, hidden-page throttling, independent machine reconnect, source bridges, favicon discovery, terminal/IME fixes | These fix transport or data interpretation, not personal layout. Their coupled upstream integrations and tests are retained; see limits below. |
 | Copilot partial-log truncation within one timestamp tick | `server/copilot-store.ts`; existing regression in `server/copilot.test.ts` | Compare truncations against both complete-line and observed sizes. Coarse file timestamps can stay unchanged when a partial line is appended and removed. Generic upstream bug fix, no setting or test exclusion. |
 | Portable native improvements | Android call lifecycle, notification permissions, friend pictures and multi-window handling | Native-app contribution candidates. They are not Xiaomi-only changes. Native files were not rewritten by this refactor. |
@@ -43,12 +41,7 @@ New devices use upstream behavior. Migrated devices retain the previous fork beh
 | Work blocks | Upstream blocks | Counted compact runs | Compact work runs |
 | Chat previews and send-follow | Upstream transcript/follow rules | Live reveal, pop animation and immediate follow | Animated replies |
 | Extra views/actions | Absent | Pi voice, Computer, PRs and read-aloud available | Their individual feature switches |
-| Header context | Upstream workspace context | Branch and repository context | Branch in the header |
-| Offline PCs | Listed | Folded | Collapse offline PCs |
-| Prompt cards | Upstream height | Taller | Taller prompt cards |
 | Phone tab row during keyboard resize | Upstream cramped-height media query | Hold the pre-keyboard cramped state | Keep tabs while keyboard opens |
-| Tab menus | Upstream pane actions and title | One-pane tabs omit duplicate Rename/Close and show repository context | Compact tab menus |
-| Sidebar pane close action | Upstream actions | Additional pane-close action | Sidebar pane actions |
 | Terminal key bar | Upstream layout without Super | Existing saved layout, or the old fork layout including Super | Existing Key bar editor; adding Super is offered with Computer view |
 | Context ring visibility | Visible, as upstream | Existing choice | Existing Context circle control |
 | Running work starts open | Open, as upstream | Existing choice | Existing Open work while the agent runs control |
@@ -60,6 +53,10 @@ New devices use upstream behavior. Migrated devices retain the previous fork beh
 - Fork source-bundle/release wiring and deployment documentation stay outside the UI extraction. They must not be proposed upstream with Ricardo's endpoints or service names.
 - The fork's source bundle identity (`sourceBundleVersion` in `server/bundle-version.ts`, the `47+<hash>` that servers compare as `REMOTE_BUNDLE_VERSION`) hashes the files under `BUNDLE_PATHSPECS` on disk, so `bundleInput` skips generated output (`dist` directories, `*.tsbuildinfo`, as `tsc -b` writes under `shared/vendor/*`): the same commit once hashed differently on the VPS than on the PCs, and Ovis refused them. `scripts/deploy-vps.ts` compares each PC's identity with the VPS checkout's after its build. Fork-only, not an upstream PR candidate.
 - `scripts/deploy-vps.ts` updates every PC's own Ovis before it restarts the VPS's `ovis.service`, then waits up to 60s for each updated PC (tracked by machine id, each request bounded) to show `connected` in `/api/machines`: a server started while a PC still ran the old code parked it in `error` and never retried (the reconnect API is owner-only). The PC list is read from the still-running server. Fork-only, not an upstream PR candidate.
+
+### Dropped fork features
+
+Branch in the header, Collapse offline PCs, Taller prompt cards, Compact tab menus and Sidebar pane actions were deleted, with no setting left behind: those screens behave as upstream's do. The tailnet presence pipeline (`server/tailnet.ts`, `tailnet_offline`) went with Collapse offline PCs: the fork no longer polls Tailscale presence. Upstream's own `server/tailscale.ts` (the `/api/access` reads) is untouched. A migrated device's stored values for those keys are ignored and dropped on the next save. The validation appendix below is a record of the earlier refactor and still names them.
 
 ## Settings and migration
 
@@ -84,7 +81,7 @@ Translations added by fork features are collected in `src/fork/featureI18n.ts` a
 
 A small import-and-call is possible for a self-contained component, not for every addition to an existing state machine. These remaining diffs are recorded rather than hidden behind new abstractions:
 
-1. `src/App.tsx`, `src/components/Sidebar.tsx`, `src/components/PaneCanvas.tsx` and `src/components/PaneTerminal.tsx` retain view selection, retained Computer state, voice mount points, branch props and menu wiring. They share selection/focus, restored-pane and responsive-header state. A single catch-all fork hook would need most of App's state and callbacks, increasing the integration surface rather than reducing it.
+1. `src/App.tsx`, `src/components/Sidebar.tsx`, `src/components/PaneCanvas.tsx` and `src/components/PaneTerminal.tsx` retain view selection, retained Computer state, voice mount points and menu wiring. They share selection/focus, restored-pane and responsive-header state. A single catch-all fork hook would need most of App's state and callbacks, increasing the integration surface rather than reducing it.
 2. `src/components/Composer.tsx` retains the Pi model/reasoning menu and a few branch/context props. Their lifecycle is coupled to existing metadata, send state and menus. Rendering/context components and CSS are extracted; the remaining state was not rewritten.
 3. `src/components/ChatView.tsx` and `src/components/ChatTimeline.tsx` retain live-row identity, read reconciliation, footer/scroll anchoring and transcript-layout fixes. Compact runs, speech, motion and reveal helpers are extracted. Moving the remaining timeline changes would require replacing the upstream reader/virtualizer, not a behavior-preserving module move. The upstream stopped-send effect and selection are restored verbatim, including their source-level test.
 4. Machine connection/retry/update code, source-bundle handling, herdr-core adapters, Pi transcript/receipt parsing, native notifications and terminal lifecycle fixes retain their existing upstream integration and tests. These are portable correctness changes, not fork visual defaults. They need separate upstream correctness PRs; no new transport, cache, session ownership or RPC mechanism was invented here.

@@ -239,11 +239,6 @@ export function MachineSidebar(props: Props) {
   // the roster's wait is a live region that is in the list from its first render, clipped while empty (never
   // display: none), and its words land a frame after it (lib/useAnnouncedText.ts)
   const loadingWords = useAnnouncedText(props.machines.length === 0 ? t("Loading PCs…") : null);
-  // PCs Tailscale says are offline wait behind one row, unless one of them is the PC in view
-  const [showOffline, setShowOffline] = useState(false);
-  const collapseOffline = useSettings().settings.collapseOfflinePcs;
-  const offline = collapseOffline ? props.machines.filter((machine) => machine.tailnet_offline && machine.id !== props.selectedMachineId) : [];
-  const online = props.machines.filter((machine) => !offline.includes(machine));
   // a PC whose roster has not come was not searched: the line says the answer is only of the PCs that answered
   const unanswered = props.machines.some((machine) => machine.snapshot === null);
   const noMatchWords = useAnnouncedText(filter.active && filter.matches === 0 && props.machines.length > 0 ? `${t(unanswered ? "No workspaces or agents match on the PCs that answered" : "No workspaces or agents match")}\n${t("Try other words, or clear the filter.")}` : null);
@@ -268,12 +263,7 @@ export function MachineSidebar(props: Props) {
     <section className="pcs-sidebar" aria-label={t("PCs")}>
       <div ref={machineList} className="machine-list" id={listId} aria-label={t("PCs and workspaces")}>
         <p className={noMatchWords === null ? "visually-hidden" : "tree-state sidebar-filter-empty"} role="status">{noMatchWords}</p>
-        {online.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
-        {offline.length > 0 && <button className="btn btn-ghost machine-offline-toggle" aria-expanded={showOffline} onClick={() => setShowOffline(!showOffline)}>
-          {showOffline ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
-          {showOffline ? t("Hide offline PCs") : t("Show offline ({count})", { count: offline.length })}
-        </button>}
-        {showOffline && offline.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
+        {props.machines.map((machine) => <MachineGroup key={machine.id} {...props} machine={machine} headerless={machine.id === loneHost} canHide={canHideMachine(roster, hiddenIds, machine.id)} onHide={() => hideMachine(machine.id)} />)}
         <p className={loadingWords === null ? "visually-hidden" : "tree-state"} role="status">{loadingWords}</p>
       </div>
     </section>

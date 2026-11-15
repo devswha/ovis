@@ -48,8 +48,8 @@ try {
           if (legacy) await toggle.waitFor({ state: "detached" });
           else await toggle.waitFor();
           assert.equal(await page.locator(".header-tabs-sheet").count() > 0, legacy, "only the saved fork device has phone tabs in the header");
-          const preferences = await page.evaluate(() => ({ compact: document.documentElement.dataset["forkCompactTabMenus"], steady: document.documentElement.dataset["forkSteadyKeyboardTabs"] }));
-          assert.deepEqual(preferences, { compact: String(legacy), steady: String(legacy) }, "menu and keyboard behavior preserve migrated device choices");
+          const preferences = await page.evaluate(() => ({ steady: document.documentElement.dataset["forkSteadyKeyboardTabs"] }));
+          assert.deepEqual(preferences, { steady: String(legacy) }, "keyboard behavior preserves the migrated device choice");
           const radius = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--radius-lg").trim());
           assert.equal(radius, legacy ? "0" : "12px", "corners follow the migrated preference");
           await page.keyboard.press("ControlOrMeta+Shift+Comma");

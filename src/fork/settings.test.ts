@@ -25,7 +25,7 @@ describe("fork settings compatibility", () => {
     expect(loadSettings()).toMatchObject({ phoneTabs: "row", contextCircle: true,
       squareCorners: false, moreViewToggle: false, agentNamedTabs: false, agentFriends: false,
       composerExtras: false, compactWorkRuns: false, chatMotion: false, piLiveVoice: false,
-      computerView: false, pullRequests: false, readAloud: false, headerBranch: false, sidebarActions: false });
+      computerView: false, pullRequests: false, readAloud: false });
   });
 
   it("preserves implicit fork defaults without changing storage while loading", () => {
@@ -34,7 +34,7 @@ describe("fork settings compatibility", () => {
     expect(loadSettings()).toMatchObject({ phoneTabs: "header", contextCircle: true,
       squareCorners: true, moreViewToggle: true, agentNamedTabs: true, agentFriends: true,
       composerExtras: true, compactWorkRuns: true, chatMotion: true, piLiveVoice: true,
-      computerView: true, pullRequests: true, readAloud: true, headerBranch: true, sidebarActions: true });
+      computerView: true, pullRequests: true, readAloud: true });
     expect(loadSettings().keyBarItems).toContainEqual({ type: "modifier", modifier: "super" });
     expect(records.get("ovis:settings")).toBe(raw);
     expect(records.size).toBe(1);

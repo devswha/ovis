@@ -26,21 +26,6 @@ function opened(id: string, path: string, branch: string | null): WorktreeOpened
 }
 
 describe("worktree branch metadata", () => {
-  it("names a saved branch at once on the next start, only while its checkout is the same one", () => {
-    const first = new WorkspaceBranchCache();
-    first.reconcile([workspace("a"), workspace("b")]);
-    first.applyListing("repo", listing([entry("a", "/repo/a", "feat/a"), entry("b", "/repo/b", "feat/b")]), first.generation);
-    const saved = JSON.parse(JSON.stringify(first.saved()));
-
-    const next = new WorkspaceBranchCache();
-    next.restore(saved);
-    // b now runs in another checkout: its old branch is not named
-    expect([...next.branchesFor([workspace("a"), workspace("b", "/repo/elsewhere")])]).toEqual([["a", { checkoutPath: "/repo/a", branch: "feat/a", isDetached: false }]]);
-    const damaged = new WorkspaceBranchCache();
-    damaged.restore({ records: [["a", { checkoutPath: 1 }], "x"], unmarked: null });
-    expect(damaged.branchesFor([workspace("a")]).size).toBe(0);
-  });
-
   it("normalizes trailing checkout separators and Windows paths without trimming names", () => {
     expect(normalizeCheckoutPath("/repo/feature///")).toBe("/repo/feature");
     expect(normalizeCheckoutPath("/")).toBe("/");

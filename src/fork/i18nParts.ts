@@ -5,12 +5,10 @@ const OWNERS: Record<string, string> = {
   "Switch model": "composer",
   "Switch the model once the agent is idle": "composer",
   "Start live voice": "composer",
-  "Show offline ({count})": "machines",
-  "Hide offline PCs": "machines",
   "Pull requests…": "sidebar",
 };
 // Extracted components also use these upstream labels, so they are no longer private to one part.
-const SHARED = ["No microphone found", "Working folder", "Worktree", "Draft", "Close pane {name}?", "The pane's running processes will stop. Closing its last pane also closes the workspace."];
+const SHARED = ["No microphone found", "Working folder", "Worktree", "Draft"];
 
 /** Extend upstream dictionaries without changing their files or their ownership tests. */
 export function withForkI18n<T extends Parts>(parts: T, fork: Record<string, string>): T {

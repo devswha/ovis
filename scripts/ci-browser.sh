@@ -183,6 +183,7 @@ run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
 run_script scripts/fork-preferences-regression.ts
 run_script scripts/fork-features-regression.ts
+run_script scripts/fork-tab-alignment-demo-regression.ts
 run_script scripts/split-view-regression.ts
 run_script scripts/chat-size-regression.ts
 run_script scripts/phone-safe-area-demo-regression.ts

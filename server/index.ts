@@ -227,8 +227,6 @@ export function createServer(
     localFiles?: boolean;
     /** Read-only saved profiles from the local herdr client; tests supply their own catalog. */
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
-    /** marks the PCs Tailscale says are offline (server/tailnet.ts); tests leave Tailscale alone */
-    tailnetPresence?: boolean;
     /** herdr's config.toml, for its sidebar rows (server/herdr-sidebar.ts) and its copy_on_select (server/herdr-ui.ts); unset, where herdr itself reads it. Tests pass a temp file. */
     herdrConfigPath?: string;
     registerBridge?: boolean;
@@ -664,8 +662,7 @@ export async function serve(): Promise<void> {
     instance = createServer({ updates, herdrUpdate: new HerdrUpdater(), herdrCoreFacts, herdrCoreInstaller: herdrCoreInstaller(),
       launchAccepted: () => launchAccepted,
       runtimeService: runtimeService({ stateDir, port: Number(startEnv["PORT"] || DEFAULT_PORT), serving: choice.runtime, source: choice.source, ...(fallback ? { fallback } : {}), env: startEnv, core: herdrCoreFacts, accepted: () => launchAccepted, restart: (id) => process.send?.({ type: "runtime-restart", id }) }),
-      tailnet,
-      portal, relay, telemetry, registerBridge: true, herdrProfiles: readHerdrProfiles, tailnetPresence: true, shellAgents: new ShellAgentLocator(), agentDetector: new AgentDetector({ locate: catalogLocator({ probe: defaultLoginProbe() }) }), stateDir, siblingStateDir: siblingStateDir(stateDir),
+      portal, relay, tailnet, telemetry, registerBridge: true, herdrProfiles: readHerdrProfiles, shellAgents: new ShellAgentLocator(), agentDetector: new AgentDetector({ locate: catalogLocator({ probe: defaultLoginProbe() }) }), stateDir, siblingStateDir: siblingStateDir(stateDir),
       desktopActivity: process.env["OVIS_DESKTOP_APP"] === "1",
       ...(lanConfig !== null && !("error" in lanConfig) ? { lanHttps: lanConfig } : {}) });
     instance.warmAgentCatalog();

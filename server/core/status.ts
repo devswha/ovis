@@ -74,7 +74,6 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     tailnetPcs?: TailnetPcsOptions;
     sshCandidates?: SshCandidatesOptions;
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
-    tailnetPresence?: boolean;
     alertTiming?: Partial<AlertTiming>;
     /** this PC's relay ID, where it has one (server/relay/service.ts serverId): devices turn its alerts off by it */
     serverId?: () => string | undefined;
@@ -490,7 +489,6 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     ({ type: "pane-status", pane_id: paneId, agent_status: status, ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
   const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { restoreReplaced: () => preferences.get().settings.restoreReplacedServer === true, bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket, relayDirectSocket: options.relayPcDirectSocket, serverId: options.serverId, tailnet: options.tailnetPcs, sshCandidates: options.sshCandidates, ...(options.pcUpdateTimings ? { ownUpdate: options.pcUpdateTimings } : {}) });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
-  if (machines && options.tailnetPresence) machines.watchTailnet();
   // on herdr-core, the core's other machines are PCs too, each reached through this PC's core
   if (machines && capabilities().machines) machines.watchHcMachines(() => listHcMachines(coreConnection()), (machine) => startMachineBridge(machine, options.stateDir ?? defaultStateDir()));
 

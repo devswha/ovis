@@ -39,13 +39,11 @@ import { useAppLayout, useMachineApi, useMachineId } from "../lib/machineContext
 import { PanePressContext } from "../lib/paneSubmitContext.ts";
 import { usePaneLocked } from "../lib/paneLocks.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
-import { DETACHED, usePaneBranch } from "../lib/paneBranch.ts";
 import { SHEET_QUERY } from "../lib/sheets.ts";
 import { useTabReorder } from "../lib/useTabReorder.ts";
 import { indicatorGlyph, paneStatus, rollupStatus, STATUS_WORD, type KnownStatus } from "../lib/status.ts";
 import { useSettings } from "../lib/settings.ts";
 import { TabFriends } from "../fork/TabFriends.tsx";
-import { paneMenuItems, tabMenuHeader } from "../fork/tabMenus.tsx";
 import { AgentMark } from "./AgentMark.tsx";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { displayPaneTitle } from "./Sidebar.tsx";
@@ -122,10 +120,6 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
   const t = useT();
   const { settings } = useSettings();
   const machineId = useMachineId();
-  // where a tab's menu says it is: the header gave this up to the tabs (a phone's sheet says it under the tab's name)
-  const branch = usePaneBranch(machineId, workspace.workspace_id);
-  const place = branch === null ? workspace.label : `${workspace.label} · ${branch === DETACHED ? t("Detached HEAD") : branch}`;
-  const sheetWidth = useMediaQuery(SHEET_QUERY);
   // a tab holding a locked pinned agent (lib/paneLocks.ts) is closed from no button, key or click here
   const paneLocked = usePaneLocked(machineId);
   const pressPane = useContext(PanePressContext);
@@ -629,7 +623,8 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
     // the pane's menu can carry the tab's own actions too (where More holds them): the tab's group says them once
     const tabItems = tabActions(tab);
     const paneItems = touch && tab.tab_id === selectedPane.tab_id
-      ? paneMenuItems(paneActions?.(selectedPane.pane_id) ?? [], tabItems, settings.compactTabMenus, panesOf(tab).length === 1, soloPanes, Boolean(layout?.zoomed)) : [];
+      ? (paneActions?.(selectedPane.pane_id) ?? []).filter((item) => !tabItems.some((own) => own.id === item.id) && (!soloPanes
+        || (item.id === "zoom" ? layout?.zoomed : item.id !== "split-right" && item.id !== "split-down"))) : [];
     const groups: RowMenuItem[][] = [
       own.length < 2 ? [] : own.map((pane): RowMenuItem => ({
         id: `pane:${pane.pane_id}`, label: displayPaneTitle(pane), icon: Terminal,
@@ -852,7 +847,7 @@ export function TabStrip({ snapshot, workspace, selectedPane, onSelectPane, onNe
       {rowShown && error && popup === "dialog" && <p className="pane-notice tab-strip-notice" role="alert">{error}</p>}
       {picker && <RowMenu key={picker.workspaces ? "workspaces" : "tab"} anchor={picker.anchor} point={picker.point} restoreFocusTo={picker.previousFocus}
         title={picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab)}
-        {...tabMenuHeader(settings.compactTabMenus, picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab), place, picker.workspaces === true, sheetWidth)}
+        header={<span className="tab-strip-menu-target">{picker.workspaces ? t("Move {tab} to", { tab: nameOf(picker.tab) }) : nameOf(picker.tab)}</span>}
         items={picker.workspaces ? workspaceItems(picker.tab) : pickerItems(picker.tab, picker.touch)} align="start" onClose={() => setPicker(null)} />}
       {moreAnchor && leftOut.length > 0 && <RowMenu anchor={moreAnchor} restoreFocusTo={moreAnchor} title={t("More tabs")} items={leftOut.map(tabItem)} align="start" onClose={() => setMoreAnchor(null)} />}
       {sheet && onSheetClose && <RowMenu anchor={sheet} title={t("Tabs of {workspace}", { workspace: workspace.label })} items={sheetItems()} onClose={onSheetClose} />}

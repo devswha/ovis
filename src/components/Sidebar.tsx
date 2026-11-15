@@ -308,7 +308,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // the unmarked workspaces git answers for: a repository's folder, where the first worktree starts
   // (lib/repositoryWorkspaces.ts, shared with the palette)
   const { repositoryWorkspaces, notCheckout } = useRepositoryWorkspaces({ machineId, snapshot, online, watching, offered: worktreesOffered, listWorktrees });
-  const { branches, rememberOpened } = useWorktreeBranches(snapshot, online, true, repositoryWorkspaces, watching, notCheckout, settings.headerBranch);
+  const { branches, rememberOpened } = useWorktreeBranches(snapshot, online, true, repositoryWorkspaces, watching, notCheckout);
   // the sidebar's filter (lib/sidebarFilter.ts): which rows stay, which are context; it learns the branch
   // each row says from here, since the inventory is this roster's. What it last said outlives a fold of the
   // PC (which unmounts this roster), so a branch stays findable on a PC drawn folded

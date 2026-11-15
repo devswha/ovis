@@ -32,7 +32,6 @@ import { SshConnection, sshClient } from "./ssh.ts";
 import { WAITING_FOR_WINDOWS_LOGIN } from "./windows-herdr-start.ts";
 import { decodeOffer, SERVER_ID_PATTERN, isWssOrigin, type RelayOffer } from "../shared/relay-offer.ts";
 import { offerFromCode, TypedCodeError } from "../shared/relay-code-offer.ts";
-import { TailnetPresence } from "./tailnet.ts";
 import { TailnetPcError, TailnetPcs, type TailnetPcsOptions } from "./tailnet-pcs.ts";
 import { sshCandidates, type SshCandidatesOptions } from "./ssh-candidates.ts";
 import { followOwnUpdate, offerFromStatus, readOwnStatus, cancelledWords, cancelOwnUpdate, installIdOf, OwnUpdateCancelled } from "./pc-update.ts";
@@ -424,7 +423,6 @@ export class MachineManager {
   private hcTwins = "";
   private hcSyncing = false;
   private settingsPath: string;
-  private tailnet?: TailnetPresence;
   private preferences: MachineSettings = { ...DEFAULT_SETTINGS };
   /** automatic bridge updates run one at a time: they share one bundle download */
   private autoChain: Promise<void> = Promise.resolve();
@@ -475,14 +473,14 @@ export class MachineManager {
   /** this server's own relay ID, where it has one: the local PC's `server_id` */
   private serverId?: () => string | undefined;
   /** other PCs of this PC's Tailscale login, added through the relay with one tap (server/tailnet-pcs.ts) */
-  private readonly tailnetPcs: TailnetPcs;
+  private readonly tailnet: TailnetPcs;
   /** where the SSH tab's list is read from (server/ssh-candidates.ts) */
   private readonly sshCandidateOptions: SshCandidatesOptions;
 
   constructor(readonly stateDir: string, private push: PushService, private completions: CompletionTracker, private readLocal: () => Promise<SessionSnapshot> = () => this.completions.readSnapshot(sessionSnapshot, labelOmoPanes),
     options: { /** Settings -> Experimental -> PCs: start a replaced server again (PcInstaller) */ restoreReplaced?: () => boolean; bootId?: string; localFinishEpoch?: () => string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number; offerMs?: number }; moveOfferMs?: { idle: number; active: number }; relaySocket?: (url: string) => RelaySocket; relayDirectSocket?: (url: string) => RelaySocket; serverId?: () => string | undefined; tailnet?: TailnetPcsOptions; sshCandidates?: SshCandidatesOptions } = {}) {
     this.bootId = options.bootId;
-    this.tailnetPcs = new TailnetPcs(options.tailnet);
+    this.tailnet = new TailnetPcs(options.tailnet);
     this.sshCandidateOptions = options.sshCandidates ?? (options.tailnet?.readStatus === undefined ? {} : { readStatus: options.tailnet.readStatus });
     this.serverId = options.serverId;
     this.relaySocket = options.relaySocket;
@@ -738,17 +736,7 @@ export class MachineManager {
       runtime.machine.runtime = runtime.machine.state === "connected" && runtime.machine.herdr ? runtime.machine.herdr.runtime ?? "herdr" : undefined;
       if (runtime.machine.kind !== "hc") runtime.machine.ovis_update = this.updateOffer(runtime);
     }
-    return [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => this.withPresence(r.machine))];
-  }
-  /** Marks the PCs Tailscale says are offline, which the sidebar keeps out of the way (server/tailnet.ts). */
-  watchTailnet(presence = new TailnetPresence(() => this.emit())): void {
-    if (this.tailnet || this.stopped) return;
-    this.tailnet = presence;
-    presence.start();
-  }
-  // a PC this server reaches is online, whatever Tailscale last said
-  private withPresence(machine: Machine): Machine {
-    return machine.state !== "connected" && this.tailnet?.offline(machine.target?.destination) ? { ...machine, tailnet_offline: true } : machine;
+    return [own ? { ...this.local, server_id: own } : this.local, ...[...this.machines.values()].map((r) => r.machine)];
   }
   /**
    * The update a PC can take from here (Machine.ovis_update): a connected PC's own Ovis's offer, else what its last
@@ -2673,7 +2661,7 @@ export class MachineManager {
 
   /** Settings → Connect a device → PCs on your Tailscale: those not added yet (server/tailnet-pcs.ts). */
   listTailnet() {
-    return this.tailnetPcs.list(this.relayServerIds());
+    return this.tailnet.list(this.relayServerIds());
   }
 
   /**
@@ -2682,9 +2670,9 @@ export class MachineManager {
    * code typed by hand. A code left unspent ends at its own expiry: cancelling it could end a newer one that PC shows.
    */
   async addTailnet(url: unknown): Promise<Machine> {
-    const name = this.tailnetPcs.foundAt(url);
+    const name = this.tailnet.foundAt(url);
     if (name === null) throw new TailnetPcError("not_found", "That PC is not among those found on Tailscale. Look again.");
-    const asked = await this.tailnetPcs.code(url as string, this.relayServerIds());
+    const asked = await this.tailnet.code(url as string, this.relayServerIds());
     const found = await this.relayFoundByCode(asked.code);
     if (found.server_id !== asked.server_id) {
       this.foundByCode.delete(found.ticket);
@@ -2880,7 +2868,6 @@ export class MachineManager {
   }
   stop(): void {
     this.stopped = true; clearTimeout(this.discoveryTimer); clearTimeout(this.hcTimer); clearInterval(this.localTimer); clearTimeout(this.saveTimer);
-    this.tailnet?.stop();
     for (const id of this.jobs.keys()) this.cancelJob(id);
     this.installer.stop();
     for (const runtime of this.machines.values()) { runtime.ownJob?.abort.abort(); this.disconnect(runtime); }

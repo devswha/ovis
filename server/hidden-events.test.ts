@@ -35,7 +35,7 @@ describe("hiddenEvents", () => {
 
 describe("rosterShape", () => {
   it("is the same for two rosters that differ in what an alert never reads", () => {
-    expect(rosterShape([machine({}, "p1")])).toBe(rosterShape([machine({ name: "Other", tailnet_offline: undefined }, "p1")]));
+    expect(rosterShape([machine({}, "p1")])).toBe(rosterShape([machine({ name: "Other" }, "p1")]));
     expect(rosterShape([machine({}, "p1")])).not.toBe(rosterShape([machine({ snapshot: null }, "p1")]));
   });
 });

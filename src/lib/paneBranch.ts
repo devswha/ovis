@@ -3,7 +3,7 @@ import type { WorkspaceBranch } from "./worktreeBranches.ts";
 
 /**
  * The branch of each workspace's checkout, as the sidebar's roster read it (useWorktreeBranches),
- * for the header's line under a pane's title. The roster stays the one reader of the git inventory:
+ * for the strip under a pane's composer. The roster stays the one reader of the git inventory:
  * a second reader per pane would ask every repository twice. A PC whose roster is folded away
  * publishes nothing, and its panes name their folder alone.
  */

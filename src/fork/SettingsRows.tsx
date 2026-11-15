@@ -20,12 +20,7 @@ export function ForkFeatures() {
     ["computerView", t("Computer view")],
     ["pullRequests", t("Pull requests")],
     ["readAloud", t("Read aloud")],
-    ["headerBranch", t("Branch in the header")],
-    ["collapseOfflinePcs", t("Collapse offline PCs")],
-    ["expandedPrompts", t("Taller prompt cards")],
-    ["compactTabMenus", t("Compact tab menus")],
     ["steadyKeyboardTabs", t("Keep tabs while keyboard opens")],
-    ["sidebarActions", t("Sidebar pane actions")],
   ] as const;
   return <SettingsGroup title={t("Fork features")} section="fork-features">
     {choices.map(([key, label]) => <SettingsRow key={key} label={label} reset={[key]}>

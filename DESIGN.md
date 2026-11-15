@@ -3367,9 +3367,6 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   title may shorten with an ellipsis; the crumb never does: when it does not fit whole beside the
   whole title it is not drawn, and the title has the row. The full path is in the context's
   tooltip and at the top of the More menu. With no selection, the brand fills the context slot.
-  When the pane's checkout has a known branch, the branch takes the crumb's place on a dim line
-  under the title (`HeaderBranch.tsx`), on a phone and a desktop alike, within the one-line
-  header's height; a cut name opens whole in a bubble on a press.
 - After the crumb, from `769px`, the selected chat's session totals (`.context-session`,
   `lib/sessionStats.ts`, #2017) in the crumb's face: **Worked 2h 5m** (the sum of the agent turns'
   own durations, each one's "Worked for"; **Worked at least …** until the chat has loaded back to the

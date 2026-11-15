@@ -29,7 +29,7 @@ export function hiddenEvents() {
 /** The part of a roster an alert can miss: which PCs there are in which state, and which panes each one holds. */
 export function rosterShape(machines: Machine[]): string {
   return JSON.stringify(machines.map((machine) => [
-    machine.id, machine.state, machine.enabled, machine.error, machine.action_required ?? null, machine.tailnet_offline ?? false,
+    machine.id, machine.state, machine.enabled, machine.error, machine.action_required ?? null,
     machine.snapshot?.panes.map((pane) => pane.pane_id) ?? null,
   ]));
 }
