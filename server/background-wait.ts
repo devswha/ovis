@@ -85,6 +85,16 @@ export class BackgroundWait {
     return this.settle(pane);
   }
 
+  /**
+   * A count that rose while the pane was at rest, with no status between: a whole turn began and came to rest
+   * between two reads (a GJC transcript read at once), seen only in the work it left running. That rest is now.
+   * A pane with no status seen yet is a baseline, which starts no hold. Called before `running` takes the count.
+   */
+  restedUnseen(paneId: string, turnRunning: number): void {
+    const pane = this.panes.get(paneId);
+    if (pane?.statusSeen && !pane.busy && turnRunning > pane.turnRunning) pane.restAt = this.now();
+  }
+
   /** The panes whose wait ran out since last asked. */
   tick(): string[] {
     return [...this.panes].filter(([, pane]) => this.settle(pane)).map(([paneId]) => paneId);

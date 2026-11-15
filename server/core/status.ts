@@ -155,7 +155,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     discover: (panes) => gjcPanes(panes),
     snapshot: omoSnapshot,
     onChange: (paneId, derived, background, turn, rest) => gjcChanged(paneId, derived, turn, rest, "gjc", background),
-    onFound: (paneId) => completions.adopt(paneId, "gjc", []),
+    // what another agent's turn left waiting in the pane is not GJC's (owns)
+    onFound: (paneId, again) => { completions.adopt(paneId, "gjc", []); if (!again) waits.forget(paneId); },
   }, omo);
   /** each Letta pane's status as its own title last said it, where nothing else gave one (letta-status.ts lettaTitleStatus) */
   const lettaTitled = new Map<string, AgentStatus>();
@@ -318,7 +319,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * read the snapshot yet, and would keep the wait of the agent it ran for from being dropped.
    */
   function owns(paneId: string, tracker: "claude" | "opencode"): boolean {
-    if (omo.runs(paneId)) return false;
+    // an OmO or GJC pane's count and wait are its own transcript's (omoChanged, gjcChanged)
+    if (omo.runs(paneId) || gjc.runs(paneId)) return false;
     const agent = agentNow.get(paneId);
     const other = tracker === "claude" ? "opencode" : "claude";
     if (agent !== undefined && agent !== other) return true;
@@ -533,7 +535,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * its form has had its answer, and an idle read after work is the finish — one ended in an error
    * is not (#687). A GJC turn that ended while background jobs it started still run (gjc-status.ts
    * `gjcJobsAfter`) waits on them as an OmO one does: BG, not DONE, and a finish alerted once
-   * they are over. A job's end wakes gjc, so no time limit either.
+   * they are over. A job's end wakes gjc, but nothing proves a job gjc wrote no end for is still
+   * running, so the wait is held at most WAIT_LIMIT_MS, as a Claude one is. A whole turn read at
+   * once shows only in the jobs it left running: their rise at rest is its rest (`restedUnseen`).
    */
   function gjcChanged(paneId: string, derived: AgentStatus, turn: boolean, rest: OmoRest | undefined, agent: "gjc" | "letta" = "gjc", background = 0): void {
     if (turn && derived === "working") promptWaitEnded(paneId);
@@ -541,7 +545,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     if (turn) { pending.status(paneId, status); drainPending(paneId); }
     const held = waits.waiting(paneId);
     if (agent === "gjc") {
-      waits.running(paneId, background, null, false);
+      if (!turn && derived === "idle") waits.restedUnseen(paneId, background);
+      waits.running(paneId, background, null, true);
       if (turn) waits.status(paneId, status);
     }
     broadcastAll(paneStatus(paneId, status, agent === "gjc" ? { background_tasks: background } : {}));
@@ -556,8 +561,6 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * turn's finish, told then.
    */
   function claudeAgentsChanged(paneId: string, running: number, turnRunning: number, promptAt: number | null, resetHold = false, agent: string | null = null, settled = false, capped = true): void {
-    // a GJC pane's wait is its own transcript's (gjcChanged): no Claude count replaces it
-    if (gjc.tracks(paneId)) return;
     const changed = waits.running(paneId, turnRunning, promptAt, capped, settled) || resetHold;
     if (paneId === settling) return;
     // a pane herdr reads as working: its session's turn came to rest under its subagents' spinner, or moved on again
