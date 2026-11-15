@@ -1,43 +1,78 @@
-import { afterEach, describe, expect, it } from "bun:test";
-import {
-  herdrRpc,
-  herdrRpcCounts,
-  resetHerdrRpcCounts,
-  setHerdrRpcCounting,
-} from "./herdr/client.ts";
+import { afterAll, afterEach, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { herdrRpc, herdrRpcCountRequested, herdrRpcCounts, herdrRpcCountingForTests } from "./herdr/client.ts";
 
 // A path no herdr is listening on: herdrRpc still counts the attempt on entry, which is the
-// whole reason the counter is taken there. So none of these cases needs a live herdr — which is
+// whole reason the counter is taken there. So none of these cases needs a live herdr, which is
 // why they live here rather than in server/herdr/, where the unit lane does not look.
-const DEAD_SOCKET = "/tmp/herdr-rpc-count-no-such-socket.sock";
-const callDead = (method: string) => herdrRpc(method, {}, DEAD_SOCKET, 200).catch(() => undefined);
+const dir = mkdtempSync(join(tmpdir(), "herdr-rpc-count-"));
+const DEAD_SOCKET = join(dir, "no-such-herdr.sock");
+const call = (method: string, socket = DEAD_SOCKET, guard?: () => boolean) => herdrRpc(method, {}, socket, 2000, guard);
+const callDead = (method: string) => call(method).catch(() => undefined);
 
-afterEach(() => {
-  setHerdrRpcCounting(false);
-  resetHerdrRpcCounts();
-});
+/** client.ts loaded in a process of its own with `env`, as the server loads it: one call, then process.exit as the server's shutdown does. */
+async function loadAlone(env: Record<string, string | undefined>) {
+  const script = `const before = process.listenerCount("exit");
+const client = await import(${JSON.stringify(join(import.meta.dir, "herdr", "client.ts"))});
+const added = process.listenerCount("exit") - before;
+await client.herdrRpc("pane.read", {}, ${JSON.stringify(DEAD_SOCKET)}, 2000).catch(() => undefined);
+console.log(JSON.stringify({ added, counts: client.herdrRpcCounts() }));
+process.exit(0);`;
+  const child = Bun.spawn([process.execPath, "-e", script], { env, stdout: "pipe", stderr: "pipe", timeout: 20_000 });
+  const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(code).toBe(0);
+  const lines = stderr.split("\n").filter((line) => line.includes("\"herdr.rpc.counts\"")).map((line) => JSON.parse(line) as Record<string, unknown>);
+  return { ...(JSON.parse(stdout.trim()) as { added: number; counts: Record<string, number> }), lines };
+}
+const { HERDR_RPC_COUNT: _callerSetting, ...withoutSetting } = process.env;
+
+afterEach(() => herdrRpcCountingForTests(false));
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("herdr rpc counter", () => {
-  it("is off by default and stays empty however many calls are made", async () => {
-    await callDead("pane.read");
-    await callDead("pane.read");
-    expect(herdrRpcCounts()).toEqual({});
+  it.each([
+    [undefined, false], ["1", true], ["0", false], ["", false], ["true", false], [" 1", false], ["01", false], ["yes", false],
+  ] as const)("HERDR_RPC_COUNT=%p turns it on: %p", (value, on) => {
+    expect(herdrRpcCountRequested(value === undefined ? {} : { HERDR_RPC_COUNT: value })).toBe(on);
+  });
+
+  it("is off without HERDR_RPC_COUNT, whatever the caller's shell sets: nothing counted, no exit handler, no log line", async () => {
+    expect(await loadAlone(withoutSetting)).toEqual({ added: 0, counts: {}, lines: [] });
+  });
+
+  it("with HERDR_RPC_COUNT=1, writes the tally as one log line when the process exits", async () => {
+    const run = await loadAlone({ ...withoutSetting, HERDR_RPC_COUNT: "1" });
+    expect(run.added).toBe(1);
+    expect(run.counts).toEqual({ "pane.read": 1 });
+    expect(run.lines).toEqual([{ time: expect.any(String), event: "herdr.rpc.counts", counts: { "pane.read": 1 } }]);
   });
 
   it("counts attempts, not successes: a call that fails is still tallied", async () => {
-    setHerdrRpcCounting(true);
+    herdrRpcCountingForTests(true);
     await callDead("session.snapshot");
     expect(herdrRpcCounts()).toEqual({ "session.snapshot": 1 });
   });
 
   it("counts a call refused by the guard before the request is written", async () => {
-    setHerdrRpcCounting(true);
-    await herdrRpc("pane.read", {}, DEAD_SOCKET, 200, () => false).catch(() => undefined);
-    expect(herdrRpcCounts()).toEqual({ "pane.read": 1 });
+    const socket = join(dir, "herdr.sock");
+    let received = 0;
+    const stub = Bun.listen({ unix: socket, socket: { data() { received++; } } });
+    try {
+      herdrRpcCountingForTests(true);
+      let asked = 0;
+      await expect(call("pane.read", socket, () => { asked++; return false; })).rejects.toMatchObject({ code: "cancelled" });
+      expect(asked).toBe(1);
+      expect(received).toBe(0);
+      expect(herdrRpcCounts()).toEqual({ "pane.read": 1 });
+    } finally {
+      stub.stop(true);
+    }
   });
 
   it("tallies a known number of calls per method exactly", async () => {
-    setHerdrRpcCounting(true);
+    herdrRpcCountingForTests(true);
     await callDead("pane.read");
     await callDead("pane.read");
     await callDead("pane.read");
@@ -45,17 +80,8 @@ describe("herdr rpc counter", () => {
     expect(herdrRpcCounts()).toEqual({ "pane.read": 3, "session.snapshot": 1 });
   });
 
-  it("resets to empty and keeps counting afterwards", async () => {
-    setHerdrRpcCounting(true);
-    await callDead("pane.read");
-    resetHerdrRpcCounts();
-    expect(herdrRpcCounts()).toEqual({});
-    await callDead("pane.read");
-    expect(herdrRpcCounts()).toEqual({ "pane.read": 1 });
-  });
-
   it("hands back a copy: mutating the result cannot corrupt the tally", async () => {
-    setHerdrRpcCounting(true);
+    herdrRpcCountingForTests(true);
     await callDead("pane.read");
     const first = herdrRpcCounts();
     (first as { "pane.read": number })["pane.read"] = 999;
@@ -63,9 +89,9 @@ describe("herdr rpc counter", () => {
   });
 
   it("turning it back off discards the tally and stops counting", async () => {
-    setHerdrRpcCounting(true);
+    herdrRpcCountingForTests(true);
     await callDead("pane.read");
-    setHerdrRpcCounting(false);
+    herdrRpcCountingForTests(false);
     expect(herdrRpcCounts()).toEqual({});
     await callDead("pane.read");
     expect(herdrRpcCounts()).toEqual({});

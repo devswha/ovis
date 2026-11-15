@@ -102,39 +102,36 @@ function nextId(): string {
   return `br-${Date.now().toString(36)}-${requestCounter}`;
 }
 
-// Opt-in per-method tally of herdrRpc traffic, for measuring what a poll actually costs.
-// Off unless HERDR_RPC_COUNT=1, read once at module load rather than per call so a
-// measurement window cannot flip mid-run.
-let rpcCounting = false;
-let rpcCounts: Map<string, number> | null = null;
-
-/**
- * The public counter interface, kept as three named calls rather than inlined expressions
- * because another consumer reads it as a report: toggling, reading a copy, and delimiting a
- * measurement window.
- *
- * `setHerdrRpcCounting` is the only place the tally is switched; module load calls it once
- * with the env flag, never per call, so a window cannot flip mid-run.
- */
-export function setHerdrRpcCounting(enabled: boolean): void {
-  rpcCounting = enabled;
-  rpcCounts = enabled ? new Map() : null;
+/** Whether the environment asks for the herdr RPC tally: HERDR_RPC_COUNT set to exactly `1`. */
+export function herdrRpcCountRequested(env: Record<string, string | undefined> = process.env): boolean {
+  return env["HERDR_RPC_COUNT"] === "1";
 }
 
-/**
- * Calls made per method since the last reset, as a plain object: the consumer is a report,
- * not a Map user, and handing back a copy stops a caller from mutating the tally.
- */
+// Opt-in per-method tally of herdrRpc traffic, for measuring what a poll actually costs: null
+// (off) unless HERDR_RPC_COUNT=1 when this module loads. Only tests switch it after that
+// (herdrRpcCountingForTests), so a running server cannot flip it mid-run.
+let rpcCounts: Map<string, number> | null = null;
+
+/** Calls made per method so far, as a plain copy the caller cannot use to change the tally. */
 export function herdrRpcCounts(): Readonly<Record<string, number>> {
   return Object.fromEntries(rpcCounts ?? []);
 }
 
-/** Zeroes the tally so a measurement can delimit its own window. */
-export function resetHerdrRpcCounts(): void {
-  rpcCounts?.clear();
+/** Turns the tally on, empty, or off for a test; module load alone sets it in the server. */
+export function herdrRpcCountingForTests(enabled: boolean): void {
+  rpcCounts = enabled ? new Map() : null;
 }
 
-setHerdrRpcCounting(process.env["HERDR_RPC_COUNT"] === "1");
+/**
+ * The tally's one reader: as the process exits (the server's shutdown ends in process.exit), one
+ * JSON line on stderr, the sink herdr.rpc's ConnectionDiagnostics writes to, e.g.
+ * {"time":"…","event":"herdr.rpc.counts","counts":{"pane.read":42}}. Counts and method names
+ * only, which are code-owned literals; nothing else reads them or sends them anywhere.
+ */
+if (herdrRpcCountRequested()) {
+  rpcCounts = new Map();
+  process.once("exit", () => console.warn(JSON.stringify({ time: new Date().toISOString(), event: "herdr.rpc.counts", counts: herdrRpcCounts() })));
+}
 
 /**
  * The most bytes one herdr line may hold before its newline, checked before anything is decoded.
@@ -299,7 +296,7 @@ export async function herdrRpc(
 ): Promise<unknown> {
   // Counted on entry, not on success: a call that times out or is refused by `guard` still
   // costs the bridge an attempt, and a report that omitted them would understate the load.
-  if (rpcCounting) rpcCounts?.set(method, (rpcCounts?.get(method) ?? 0) + 1);
+  if (rpcCounts) rpcCounts.set(method, (rpcCounts.get(method) ?? 0) + 1);
   const id = nextId();
   const started = performance.now();
   const key = JSON.stringify([socketPath, method]); // private bookkeeping only; never logged
