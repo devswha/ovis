@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 $installer = Join-Path $PSScriptRoot '..\install.ps1'
 $originalPath = $env:PATH
+Write-Host "DEBUG PATH at start: $($env:PATH.Length) chars, $(($env:PATH -split ';').Count) entries"
 $originalLocalAppData = $env:LOCALAPPDATA
 $originalUserProfile = $env:USERPROFILE
 # The cases below install from source (Bun and herdr's plugin checkout); the release's binary has its own cases,
@@ -537,8 +538,7 @@ exit /b 1
     # given here, or null where nobody is at the terminal and the installer's own wait is what ended.
     $answering = 'function Read-Answer { $star.asked++; if ($star.failAsk) { throw "Read-Answer has no console to read from" }; $star.answer }'
     $atTerminal = $source.Replace($decision, "function Test-Terminal { `$true }; $answering; $decision")
-    $atTerminal = $atTerminal.Replace("`$starred = Invoke-GhApi 'user/starred/devswha/ovis'", "`$starred = Invoke-GhApi 'user/starred/devswha/ovis'; Write-Host ""DEBUG installer starred: `$(`$starred | ConvertTo-Json -Compress) mode=[`$((Get-Content -Raw (Join-Path `$ghStandIn 'mode.txt')).Trim())] lastexit=`$LASTEXITCODE gh=`$((Get-Command gh -CommandType Application | Select-Object -First 1).Source)""")
-    Write-Host "DEBUG injected: $($atTerminal.Contains('DEBUG installer starred'))"
+    $atTerminal = $atTerminal.Replace("`$starred = Invoke-GhApi 'user/starred/devswha/ovis'", "`$starred = Invoke-GhApi 'user/starred/devswha/ovis'; Write-Host ""DEBUG installer starred: `$(`$starred | ConvertTo-Json -Compress) PATH=`$(`$env:PATH.Length)""")
     $nobodyThere = $source.Replace($decision, "function Test-Terminal { `$true }; function Read-Answer { `$null }; $decision")
     $star.answer = 'y'
     $said = & $firstInstall 'not' $nobodyThere
@@ -555,10 +555,8 @@ exit /b 1
     $star.answer = 'y'
     $said = & $firstInstall 'not' $atTerminal
     Assert ($star.asked -eq 1 -and (& $given) -eq 1 -and $said -match 'starred\. Thank you') "A yes must star once: $said"
-    Write-Host "DEBUG before refuses: CI=$env:CI XDG=[$env:XDG_STATE_HOME] standin=[$((Get-ChildItem -Force $ghStandIn | ForEach-Object Name) -join ', ')] star=$($star | ConvertTo-Json -Compress)"
+    Write-Host "DEBUG PATH before refuses: $($env:PATH.Length) chars, $(($env:PATH -split ';').Count) entries"
     $said = & $firstInstall 'refuses' $atTerminal
-    Write-Host "DEBUG said (refuses): [$said]"
-    Write-Host "DEBUG calls.txt: [$(Get-Content -Raw $ghCalls -ErrorAction SilentlyContinue)]"
     Assert ($said -match 'could not star it' -and $state.installed) "A star gh refuses must be said, not thrown: $said"
     $star.failAsk = $true
     $said = & $firstInstall 'not' $atTerminal
