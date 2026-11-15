@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resolveLink } from "./deepLink.ts";
-import { machineGone, machineMissing, notificationLanding, notificationTargetFromSearch, notificationTargets, notificationViewForPane, sameLink } from "./notificationTarget.ts";
+import { linkTarget, machineGone, machineMissing, notificationLanding, notificationTargetFromSearch, notificationTargets, notificationViewForPane, sameLink } from "./notificationTarget.ts";
 
 function messages() {
   let receive!: (event: MessageEvent) => void;
@@ -171,5 +171,45 @@ describe("notification landing", () => {
     expect(sameLink({ ...link, pane: "w1:p8" }, link)).toBe(false);
     expect(sameLink({ ...link, machine: "pc2" }, link)).toBe(false);
     expect(sameLink({ ...link, view: null }, link)).toBe(false);
+  });
+});
+
+describe("desktop link delivery", () => {
+  function links() {
+    let open!: (query: string) => void;
+    const subscribe = notificationTargets(undefined, { onOpen: (listener) => { open = listener; } });
+    return { subscribe, open: (query: string) => open(query) };
+  }
+
+  it("reads a link's pane, view, workspace and PC with the deep link's own reading", () => {
+    expect(linkTarget("?ws=3-my-app&pane=t3&view=terminal")).toEqual({ machine_id: "local", pane_id: "t3", view: "terminal", workspace_id: "3" });
+    expect(linkTarget("?machine=home%20pc&pane=p2")).toEqual({ machine_id: "home pc", pane_id: "p2" });
+    expect(linkTarget("?pane=p2&view=files")).toEqual({ machine_id: "local", pane_id: "p2" });
+    expect(linkTarget("?ws=3")).toBeNull();
+    expect(linkTarget("")).toBeNull();
+  });
+
+  it("keeps the newest link until the app listens, then delivers each one at once", () => {
+    const source = links();
+    source.open("?pane=older");
+    source.open("?ws=3&pane=t3&view=chat");
+    source.open("?ws=4");
+    const selected: unknown[] = [];
+    source.subscribe((target) => selected.push(target));
+    expect(selected).toEqual([{ machine_id: "local", pane_id: "t3", view: "chat", workspace_id: "3" }]);
+    source.open("?pane=t4&view=terminal");
+    expect(selected).toEqual([
+      { machine_id: "local", pane_id: "t3", view: "chat", workspace_id: "3" },
+      { machine_id: "local", pane_id: "t4", view: "terminal" },
+    ]);
+  });
+
+  it("lands a link to a closed pane on its workspace, as a notification's does", () => {
+    const target = linkTarget("?ws=w1&pane=gone&view=terminal")!;
+    expect(notificationLanding([{ id: "local", snapshot: { panes: [{ pane_id: "w1:p1" }] } }], target)).toEqual({
+      kind: "link",
+      link: { machine: "local", workspace: "w1", pane: "gone", view: "terminal", settings: null },
+      stale: false,
+    });
   });
 });

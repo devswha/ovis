@@ -1,4 +1,4 @@
-import type { AppLink } from "./deepLink.ts";
+import { readLink, type AppLink } from "./deepLink.ts";
 
 export type NotificationPaneView = "chat" | "terminal";
 /** `workspace_id`: the workspace the pane was last seen in (server/push.ts), so an ended pane's tap opens it. */
@@ -55,10 +55,34 @@ export function sameLink(a: AppLink | null, b: AppLink): boolean {
 
 type MessageSource = { addEventListener: (type: "message", listener: (event: MessageEvent) => void) => void };
 
-/** Keep the newest target until App is ready, then deliver new selections directly. */
-export function notificationTargets(source?: MessageSource): (select: Select) => () => void {
+/**
+ * What the desktop app's preload offers its server's page for an `ovis://open` link
+ * (app/electron/src/openLink.ts): the query of the place it names, in the deep link's own names.
+ */
+export type DesktopLinks = { onOpen(listener: (query: string) => void): void };
+
+/**
+ * The pane a desktop link names, landing as a tapped notification's does (the workspace for when
+ * the pane has closed). A link that names no pane is no target.
+ */
+export function linkTarget(query: string): NotificationTarget | null {
+  const link = readLink(query);
+  if (!link.pane) return null;
+  return { machine_id: link.machine, pane_id: link.pane, ...(link.view ? { view: link.view } : {}), ...(link.workspace ? { workspace_id: link.workspace } : {}) };
+}
+
+/** Keep the newest target until App is ready, then deliver new selections directly: a tapped notification's, or a desktop link's. */
+export function notificationTargets(source?: MessageSource, links?: DesktopLinks): (select: Select) => () => void {
   let pending: Target | null = null;
   let consumer: Select | null = null;
+  const take = (target: Target): void => {
+    if (consumer) consumer(target);
+    else pending = target;
+  };
+  links?.onOpen((query) => {
+    const target = linkTarget(query);
+    if (target) take(target);
+  });
   source?.addEventListener("message", (event) => {
     const data = event.data as { type?: unknown; pane_id?: unknown; machine_id?: unknown; view?: unknown; workspace_id?: unknown } | null;
     if (data?.type !== "select-pane" || typeof data.pane_id !== "string") return;
@@ -68,8 +92,7 @@ export function notificationTargets(source?: MessageSource): (select: Select) =>
     };
     if (data.view === "chat" || data.view === "terminal") target.view = data.view;
     if (typeof data.workspace_id === "string" && data.workspace_id !== "") target.workspace_id = data.workspace_id;
-    if (consumer) consumer(target);
-    else pending = target;
+    take(target);
   });
   return (select) => {
     consumer = select;
@@ -80,8 +103,15 @@ export function notificationTargets(source?: MessageSource): (select: Select) =>
   };
 }
 
+/** The desktop app's links, in its own window only: a browser tab has no such bridge. */
+function desktopLinks(): DesktopLinks | undefined {
+  const bridge = typeof window === "undefined" ? undefined : (window as Window & { ovisLink?: Partial<DesktopLinks> }).ovisLink;
+  return typeof bridge?.onOpen === "function" ? bridge as DesktopLinks : undefined;
+}
+
 // Browser messages can arrive after document loading but before React's effect.
 // Install this listener while App's module loads, before creating its root.
 export const onNotificationTarget = notificationTargets(
   typeof navigator !== "undefined" && "serviceWorker" in navigator ? navigator.serviceWorker : undefined,
+  desktopLinks(),
 );

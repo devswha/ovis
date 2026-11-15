@@ -48,6 +48,20 @@ when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English 
   default browser. A blank window a page opens for a sign-in sends its address to the default
   browser and closes. Only the microphone (dictation, never the camera), the clipboard,
   notifications and full screen are granted, and only to the server's own pages.
+- **Links to a pane**: another program on the PC shows a pane in the window, instead of a browser
+  tab, with an `ovis://open` link: `ws` (the workspace's id), `pane`, and optionally `view`
+  (`terminal` or `chat`) and `machine` (another PC), as the server's own deep links name them. The
+  window comes forward and selects the pane without reloading, as a tapped notification does; a pane
+  that has closed opens its workspace. A link starts the app when it is not running.
+
+  ```sh
+  open "ovis://open?ws=3&pane=t3&view=terminal"                      # macOS
+  xdg-open "ovis://open?ws=3&pane=t3&view=terminal"                  # Linux (.deb; an AppImage: ./Ovis-linux-x64.AppImage "ovis://open?…")
+  start "" "ovis://open?ws=3&pane=t3&view=terminal"                  # Windows (cmd)
+  ```
+
+  The link is passed on as those four names alone (`src/openLink.ts`): it never sends the window to
+  another address, a file, a dialog or Settings, and one that names no pane does nothing.
 - **Open files**: the core and the server start through `/bin/bash`, which closes every descriptor
   Chromium left open before it becomes the program, so the core (which outlives the app) holds none
   of the app's files or sockets.

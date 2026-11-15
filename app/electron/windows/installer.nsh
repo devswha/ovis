@@ -57,6 +57,8 @@ Var pid
       DetailPrint "Stopping the herdr-core server: $0"
     ${endIf}
     RMDir /r "$LOCALAPPDATA\${APP_PACKAGE_NAME}-updater"
+    ; the ovis:// links the app registered for itself as it started (src/main.ts setAsDefaultProtocolClient)
+    DeleteRegKey HKCU "Software\Classes\ovis"
   ${endIf}
 !macroend
 

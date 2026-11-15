@@ -27,6 +27,24 @@ if (location.protocol === "file:") {
     showLogs: () => ipcRenderer.send("ovis:logs"),
   });
 } else {
+  // the pane an ovis:// link names (main.ts openLink, openLink.ts), as a query of the deep link's
+  // names: main tells only its own server's page, as soon as it has loaded, so the one link that
+  // came before the page listens is held for it
+  let heldLink: string | null = null;
+  let onLink: ((query: string) => void) | null = null;
+  ipcRenderer.on("ovis:open-link", (_event, query: unknown) => {
+    if (typeof query !== "string") return;
+    if (onLink) onLink(query);
+    else heldLink = query;
+  });
+  contextBridge.exposeInMainWorld("ovisLink", {
+    onOpen: (listener: (query: string) => void): void => {
+      onLink = listener;
+      const held = heldLink;
+      heldLink = null;
+      if (held !== null) listener(held);
+    },
+  });
   // the server's pages sign in to the account through the system browser (src/accountSignIn.ts);
   // main answers only its own server's pages, and only while an account service is named
   const named = ipcRenderer.sendSync("ovis:account-service") as { service?: unknown; providers?: unknown } | null;
