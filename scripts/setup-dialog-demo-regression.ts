@@ -265,7 +265,20 @@ try {
             await dialog.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
             await mode.getByRole("button", { name: "Dark", exact: true }).click();
             await grid.waitFor();
-            console.log(`PASS the theme step's Home and End, Show all themes, a saved theme beyond the first six, and the mode switch (${at})`);
+            // on System, the computer turning light under a focused dark card: the keyboard goes to the light side's cards
+            await mode.getByRole("button", { name: "System", exact: true }).click();
+            // Black is drawn on the dark side only, so it is gone once the computer turns light
+            await grid.locator("[data-theme-card='black']").click();
+            await grid.locator("[data-theme-card='black']").focus();
+            assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-theme-card")), "black", `Black has the keyboard ${at}`);
+            await page.emulateMedia({ colorScheme: "light" });
+            const lightGrid = dialog.getByRole("radiogroup", { name: "Light theme", exact: true });
+            await lightGrid.waitFor();
+            await page.waitForFunction(() => document.activeElement?.closest("[role='radiogroup']")?.getAttribute("aria-label") === "Light theme");
+            await page.emulateMedia({ colorScheme: "dark" });
+            await mode.getByRole("button", { name: "Dark", exact: true }).click();
+            await grid.waitFor();
+            console.log(`PASS the theme step's Home and End, Show all themes, a saved theme beyond the first six, the mode switch, and the keyboard kept when the computer turns light (${at})`);
           }
 
           // a device paired before the guide (the demo's list) is the phone: the step and Done name it. That this

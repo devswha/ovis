@@ -782,6 +782,17 @@ function ThemeStep({ firstFocus, children }: { firstFocus: FirstFocus; children:
     const first = shown.find((id) => !own.slice(0, THEMES_FIRST).includes(id) && id !== current);
     if (first !== undefined) cards.current?.querySelector<HTMLElement>(`[data-theme-card="${first}"]`)?.focus({ preventScroll: false });
   }, [all]); // eslint-disable-line react-hooks/exhaustive-deps
+  // the computer switching between light and dark under System redraws the other side's cards: a card that had the
+  // keyboard and is gone hands it to the new side's checked card, or its first (#3885 review)
+  const cardsHadFocus = useRef(false);
+  const sideBefore = useRef(side);
+  useLayoutEffect(() => {
+    if (sideBefore.current === side) return;
+    sideBefore.current = side;
+    const group = cards.current;
+    if (!cardsHadFocus.current || group === null || group.contains(document.activeElement)) return;
+    (group.querySelector<HTMLElement>("[aria-checked='true']") ?? group.querySelector<HTMLElement>("[data-theme-card]"))?.focus();
+  }, [side]);
   const sideLabel = t(side === "dark" ? "Dark theme" : "Light theme");
   return (
     <div className="modal-body setup-body">
@@ -795,7 +806,7 @@ function ThemeStep({ firstFocus, children }: { firstFocus: FirstFocus; children:
         </div>
         <div className="setup-field">
           <span className="setup-label" aria-hidden="true">{sideLabel}</span>
-          <div ref={cards} className="setup-theme-cards" role="radiogroup" aria-label={sideLabel} onKeyDown={step}>
+          <div ref={cards} className="setup-theme-cards" role="radiogroup" aria-label={sideLabel} onKeyDown={step} onFocus={() => { cardsHadFocus.current = true; }} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null) && event.relatedTarget !== null) cardsHadFocus.current = false; }}>
             {shown.map((id, index) => <ThemeCard key={id} card={id} name={t(THEME_NAMES[id])} row={rowFor(id, side)} side={side} checked={current === id} focusable={current === null ? index === 0 : current === id} onPick={() => pick(id)} />)}
           </div>
           {!all && <button type="button" className="setup-link" onClick={() => setAll(true)}>{t("Show all themes")}</button>}
