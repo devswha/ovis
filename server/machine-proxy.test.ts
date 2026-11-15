@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 
+import { pagePolicy } from "./file-view.ts";
 import { agentRowTokens } from "./herdr-sidebar.ts";
 import { handleMachineRequest } from "./machine-api.ts";
 import type { MachineManager } from "./machines.ts";
@@ -27,6 +28,18 @@ const remote = Bun.serve({
     // a PDF's type with another one after it: not a PDF
     if (path === "/api/fs/file" && new URL(request.url).searchParams.get("path")?.endsWith(".mixed")) {
       return new Response("<script>document.title = 'ran'</script>", { headers: { "content-type": "application/pdf, text/html" } });
+    }
+    // a PDF's type with a parameter, then another type: a PDF, by its first type
+    if (path === "/api/fs/file" && new URL(request.url).searchParams.get("path")?.endsWith(".pdfparams")) {
+      return new Response("%PDF-1.7", { headers: { "content-type": "application/pdf;x=y, text/html" } });
+    }
+    // a picture that runs a script, asked for as a page
+    if (path === "/api/fs/file" && new URL(request.url).searchParams.get("path")?.endsWith(".svg")) {
+      return new Response("<svg xmlns='http://www.w3.org/2000/svg'><script>parent.document.title = 'ran'</script></svg>", { headers: { "content-type": "image/svg+xml", "content-security-policy": "script-src *" } });
+    }
+    // a page that names no policy of its own
+    if (path === "/api/fs/file" && new URL(request.url).searchParams.get("path")?.endsWith(".bare")) {
+      return new Response("<script>fetch('https://example.invalid/')</script>", { headers: { "content-type": "text/html; charset=utf-8" } });
     }
     if (path === "/api/fs/file" && new URL(request.url).searchParams.get("path")?.endsWith(".html")) {
       return new Response("<script>parent.document.title = 'ran'</script>", { headers: { "content-type": "text/html", "content-security-policy": "script-src *", "x-content-type-options": "sniff" } });
@@ -273,6 +286,23 @@ it("regression: a PC's answer never runs as this app's origin, whatever type and
   expect(pdf.headers.get("content-type")).toBe("application/pdf");
   expect(pdf.headers.get("content-security-policy")).toBeNull();
   expect(pdf.headers.get("x-content-type-options")).toBe("nosniff");
+  // a PDF type with a parameter and another type after it is passed on as the PDF type alone
+  for (const method of ["GET", "HEAD"]) {
+    const named = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/pc1/fs/file?path=%2Ftmp%2Freport.pdfparams", { method }), manager);
+    expect(named.status).toBe(200);
+    expect(named.headers.get("content-type")).toBe("application/pdf");
+    expect(named.headers.get("content-security-policy")).toBeNull();
+    expect(named.headers.get("x-content-type-options")).toBe("nosniff");
+  }
+  // only an HTML answer is drawn as a page: a picture asked to render keeps the file policy
+  const svg = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/pc1/fs/file?path=%2Ftmp%2Fchart.svg&render=1"), manager);
+  expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+  expect(svg.headers.get("content-security-policy")).toBe("sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'");
+  expect(svg.headers.get("x-content-type-options")).toBe("nosniff");
+  // a page that names no policy gets this server's own page policy, which reaches no network
+  const bare = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/pc1/fs/file?path=%2Ftmp%2Freport.bare&render=1"), manager);
+  expect(bare.headers.get("content-security-policy")).toBe(pagePolicy(null));
+  expect(bare.headers.get("content-security-policy")).toStartWith("sandbox allow-scripts; default-src 'none';");
   for (const method of ["GET", "HEAD"]) {
     const mixed = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/pc1/fs/file?path=%2Ftmp%2Freport.mixed", { method }), manager);
     expect(mixed.headers.get("content-security-policy")).toBe("sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'");
