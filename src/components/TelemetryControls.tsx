@@ -83,15 +83,17 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
       frame = requestAnimationFrame(() => { frame = requestAnimationFrame(record); });
     };
     const record = () => {
-      if (recorded || document.visibilityState !== "visible" || !inView || coveredByModal(line)) return;
+      // recorded once a page: the next step's copy of the same line shows it without telling it again
+      if (recorded || noticeRecorded.current || document.visibilityState !== "visible" || !inView || coveredByModal(line)) return;
       recorded = true;
+      noticeRecorded.current = true;
       const snapshot = settingsSnapshotRef.current;
       changeTelemetry({
         notice_seen: true,
         notice_version: NOTICE_VERSION,
         settings: snapshot,
       }).then((next) => { submittedSettingsSignature.current = JSON.stringify(snapshot); if (!turnedOff.current) setStatus(next); },
-        (error: unknown) => console.error("telemetry notice", error));
+        (error: unknown) => { noticeRecorded.current = false; console.error("telemetry notice", error); });
     };
     const onVisibility = () => { if (document.visibilityState === "visible") afterPaint(); };
     const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(([entry]) => {
@@ -141,6 +143,8 @@ export function TelemetryNotice({ enabled, onOpen, inline = false }: { enabled: 
 const submittedNotice: { current: string | null } = { current: null };
 /** The line was shown on this page (TelemetryNotice): later copies keep showing it, with Turn off, until it is dismissed. */
 const noticeShownHere = { current: false };
+/** The line was recorded as seen from this page: another copy does not record it again. */
+const noticeRecorded = { current: false };
 /** Counts were turned off from a copy of the line on this page: every copy hides and sends no snapshot. */
 const noticeOff = { current: false, listeners: new Set<() => void>() };
 

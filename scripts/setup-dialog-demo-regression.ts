@@ -146,6 +146,23 @@ try {
           assert.equal(JSON.parse((await page.evaluate(() => localStorage.getItem("ovis:setup-guide"))) ?? "{}").status, "closed", `the fast path closes the guide ${at}`);
           await shot("4-started");
           console.log(`PASS the guide is a 1200x675 dialog, keyboard inside it, and the fast path opens the first workspace in two clicks (${at})`);
+
+          // stepped aside (a pane picked from the palette over it) the guide is no modal: the app's own check for one
+          // (modalOpen: the terminal's focus, the drawer, Escape) finds nothing, and Back to setup brings it back
+          await page.evaluate((guide) => localStorage.setItem("ovis:setup-guide", guide), WELCOME);
+          await page.reload();
+          await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
+          await title.waitFor();
+          await page.keyboard.press("Control+Shift+K");
+          await page.getByRole("searchbox").fill("Guard the export button");
+          await page.getByRole("option").filter({ hasText: "Guard the export button" }).first().click();
+          await page.locator(".setup-scrim").waitFor({ state: "hidden" });
+          assert.equal(await page.evaluate(() => document.querySelector("[aria-modal='true'], dialog[open]") === null), true, `a stepped-aside guide leaves no modal for the app's checks ${at}`);
+          assert.equal(await page.locator(".setup-dialog[role='dialog']").count(), 0, `a stepped-aside guide is no dialog ${at}`);
+          await page.getByRole("button", { name: "Back to setup", exact: true }).click();
+          await dialog.waitFor();
+          assert.equal(await dialog.getAttribute("aria-modal"), "true", `resumed, the guide is a modal dialog again ${at}`);
+          console.log(`PASS a stepped-aside guide is no modal dialog, and Back to setup makes it one again (${at})`);
         } else {
           // Escape closes it and records it closed: a reload shows no guide
           await page.keyboard.press("Escape");

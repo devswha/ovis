@@ -188,7 +188,9 @@ export function SetupGuide(props: SetupGuideProps) {
 
   return (
     <div className="modal-scrim setup-scrim" hidden={hidden}>
-      <section ref={surface} className="modal setup-dialog" role="dialog" aria-modal="true" aria-labelledby="setup-dialog-name" tabIndex={-1}>
+      {/* stepped aside (hidden) it is no dialog: the app's checks for an open modal (typing, the drawer, Escape) must not
+          find it, as the drawer and the docked WebPanel drop theirs */}
+      <section ref={surface} className="modal setup-dialog" role={hidden ? undefined : "dialog"} aria-modal={hidden ? undefined : true} aria-labelledby={hidden ? undefined : "setup-dialog-name"} tabIndex={-1}>
         <header className="modal-header setup-head">
           <span className="setup-brand" id="setup-dialog-name"><OvisMark width={24} height={24} />{t("Set up Ovis")}</span>
           {/* the steps' list sits here once the guide has more than one step */}
