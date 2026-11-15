@@ -376,15 +376,19 @@ export function settleWaitingSends(key: string, turns: readonly Turn[], now = Da
   if (!pane || pane.sends.length === 0) return;
   // a send this read did not settle may be unanswered now, the agent having come to rest before it
   if (loaded) queueMicrotask(() => markUnanswered(key));
-  const remaining = pane.sends.filter((send) => {
+  // the sends still on their way take their turns first: the same words sent again after one went unanswered are
+  // the new send's turn, and the one the agent never wrote stays said so
+  const settled = new Set<WaitingSend>();
+  const order = [...pane.sends.filter((send) => send.unanswered !== true), ...pane.sends.filter((send) => send.unanswered === true)];
+  for (const send of order) {
     const match = candidates.find((candidate) => !pane.claimed.has(candidate.key) && turnMatches(send, candidate.turn, candidate.key, candidate.answeredAt, candidate.last));
-    if (!match) return true;
+    if (!match) continue;
     pane.claimed.add(match.key);
-    return false;
-  });
-  if (remaining.length === pane.sends.length) return;
-  const settledUnanswered = pane.sends.some((send) => send.unanswered === true && !remaining.includes(send));
-  pane.sends = remaining;
+    settled.add(send);
+  }
+  if (settled.size === 0) return;
+  const settledUnanswered = [...settled].some((send) => send.unanswered === true);
+  pane.sends = pane.sends.filter((send) => !settled.has(send));
   if (settledUnanswered) stored();
   announce();
 }

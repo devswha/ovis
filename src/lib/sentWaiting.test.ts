@@ -404,6 +404,30 @@ describe("waitingText", () => {
     } finally { forgetWaitingSends(key); }
   });
 
+  it("gives the same words sent again after one went unanswered their own turn, and keeps the first said unanswered", () => {
+    const key = waitingKey("local", "resent");
+    const earlier = assistant("earlier");
+    try {
+      readAt(key, [earlier], 900);
+      rememberWaitingSend(key, "fix the bug", 1_000, waitingBaseline(key, 0, 1_000));
+      restingSince(key, 1_500);
+      readAt(key, [earlier], 1_000 + WAITING_SEND_MS);
+      markUnanswered(key, 1_000 + WAITING_SEND_MS + 1);
+      // the user fixed the agent's sign-in and sends the same words again: the agent writes them this time
+      const again = 1_000 + 2 * WAITING_SEND_MS;
+      restingSince(key, null);
+      rememberWaitingSend(key, "fix the bug", again, waitingBaseline(key, 0, again));
+      const answered = [earlier, user("fix the bug", again + 100), { ...user("fixed", again + 200), role: "assistant" as const }];
+      readAt(key, answered, again + 300);
+      expect(currentWaitingSends(key).map((send) => [send.at, send.unanswered])).toEqual([[1_000, true]]);
+      // a minute on, at rest: the resend is not said unanswered beside its own turn
+      restingSince(key, again + 400);
+      readAt(key, answered, again + WAITING_SEND_MS + 500);
+      markUnanswered(key, again + WAITING_SEND_MS + 501);
+      expect(currentWaitingSends(key).map((send) => [send.at, send.unanswered])).toEqual([[1_000, true]]);
+    } finally { forgetWaitingSends(key); }
+  });
+
   it("lets a send go, not unanswered, when the agent wrote a turn for it the chat does not match", () => {
     for (const written of [user("the turn, as the agent rewrote it", 2_000), { ...user("the turn"), ts: null }]) {
       const key = waitingKey("local", "rewritten");
