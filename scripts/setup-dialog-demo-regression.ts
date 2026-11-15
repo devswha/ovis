@@ -272,7 +272,7 @@ try {
     await context.addInitScript((guide) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
       if (sessionStorage.getItem("seeded") === null) { localStorage.setItem("ovis:setup-guide", guide); sessionStorage.setItem("seeded", "1"); }
-      const counts = { gets: 0, seen: [] as unknown[], on: true, snapshotsAfterOff: 0 };
+      const counts = { gets: 0, seen: [] as unknown[], on: true, snapshotsAfterOff: 0, failNext: 1, failed: 0 };
       (window as unknown as { counts: typeof counts }).counts = counts;
       const status = (seen: boolean) => new Response(JSON.stringify({ enabled: counts.on, blocked_by_env: false, notice_seen: seen, next: null,
         active: { event: "active", day: "2026-11-15", install_id: "demo", version: "0.0.0", os: "linux", arch: "x64", install_method: "source", harnesses: [], usage: {}, runtime: "herdr" } }), { headers: { "content-type": "application/json" } });
@@ -287,6 +287,8 @@ try {
         const body = JSON.parse(String(init?.body ?? "{}")) as { notice_seen?: boolean; enabled?: boolean; settings?: unknown };
         if (body.enabled === false) counts.on = false;
         else if (!counts.on && body.settings !== undefined) counts.snapshotsAfterOff += 1;
+        // the first acknowledgement fails, as a dropped request would
+        if (body.notice_seen === true && counts.failNext > 0) { counts.failNext -= 1; counts.failed += 1; return Promise.resolve(new Response("{}", { status: 500 })); }
         if (body.notice_seen === true) counts.seen.push(body);
         return Promise.resolve(status(counts.seen.length > 0));
       }) as typeof window.fetch;
@@ -311,6 +313,15 @@ try {
       await frames(4);
       assert.equal(await seen(), 0, "a line below the fold is not recorded as seen");
       assert.equal(await page.locator(".update-notice.is-telemetry").count(), 0, "the page's own line is not drawn under the guide");
+      // a native showModal() dialog over the guide (as Add PC opens) covers the line too, though it has no aria-modal (#3882)
+      await page.evaluate(() => { const native = document.createElement("dialog"); native.id = "native-over"; native.textContent = "native"; document.body.append(native); native.showModal(); });
+      await line.evaluate((node) => node.scrollIntoView({ block: "nearest" }));
+      await frames(4);
+      assert.equal(await page.evaluate(() => (window as unknown as { counts: { seen: unknown[]; failed: number } }).counts.seen.length + (window as unknown as { counts: { failed: number } }).counts.failed), 0, "a line under a native modal dialog is not recorded");
+      // put back as it was: the line below the fold again, the native dialog gone
+      await line.evaluate((node) => { node.closest(".modal-body")!.scrollTop = 0; });
+      await page.evaluate(() => { const native = document.getElementById("native-over") as HTMLDialogElement; native.close(); native.remove(); });
+      await frames(4);
       // Settings over the guide, then the line scrolled into view under it: still not seen
       await page.keyboard.press("Control+Shift+Comma");
       const settings = page.getByRole("dialog", { name: "Settings", exact: true });
@@ -321,6 +332,10 @@ try {
       // Settings closed: the line is in view and uncovered, and is recorded
       await page.keyboard.press("Escape");
       await settings.waitFor({ state: "detached" });
+      // its first record fails, and the same line tries again on the next focus move rather than never (#3882)
+      await page.waitForFunction(() => (window as unknown as { counts: { failed: number } }).counts.failed === 1);
+      assert.equal(await seen(), 0, "a failed record is not counted");
+      await page.keyboard.press("Tab");
       await page.waitForFunction(() => (window as unknown as { counts: { seen: unknown[] } }).counts.seen.length === 1);
       // recorded on the welcome, the line stays on the next step, its one-tap Turn off with it
       await dialog.getByRole("button", { name: /^I'm new to Ovis/ }).click();
