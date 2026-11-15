@@ -470,7 +470,6 @@ it("takes no thread herdr reports for a nested pane on the report alone, however
   foreground = [{ pid: 2147483647, argv: ["zsh (kiro-cli-term)"] }];
   shellPid = 2147483647;
   screen = "";
-  screenReads = [];
   const db = new Database(join(home, "state_5.sqlite"));
   db.query("UPDATE threads SET created_at = 1001").run();
   db.close();
@@ -636,7 +635,6 @@ it("does not reuse a nested conversation binding after a process birth changes w
       screen = answer;
       expect(await resolve()).toBe(path);
       screen = "";
-  screenReads = [];
       expect(await resolve()).toBe(path);
       expect(await codexOpenRollout(root, root, home)).toBe(path);
       // Resuming an existing thread need not create a newer database row or change the PID.
@@ -784,7 +782,6 @@ it("binds a conversation with a spaced local file link and keeps it when its scr
   screen = `• ${answer} Daily report (Daily notes/report.md)`;
   expect(await resolve()).toBe(path);
   screen = "";
-  screenReads = [];
   expect(await resolve()).toBe(path);
 });
 
@@ -794,7 +791,6 @@ it.skipIf(process.platform !== "linux")("keeps the screen binding with recovered
   screen = answer;
   expect(await resolve()).toBe(path);
   screen = "";
-  screenReads = [];
   expect(await resolve()).toBe(path);
 });
 
@@ -806,7 +802,6 @@ it.skipIf(process.platform !== "linux")("drops the recovered binding when its pr
   child.kill();
   await child.exited;
   screen = "";
-  screenReads = [];
   expect(await resolve()).toBeNull();
 });
 
@@ -831,7 +826,6 @@ it("gives a background reader the chat's binding only while no newer thread may 
   expect(await codexOpenRollout(root, root, home)).toBeNull();
   expect(await resolve()).toBe(path);
   screen = "";
-  screenReads = [];
   expect(await codexOpenRollout(root, root, home)).toBe(path);
   const db = new Database(join(home, "state_5.sqlite"));
   const now = Math.floor(Date.now() / 1000);
@@ -1033,7 +1027,6 @@ describe("the thread id a Codex pane's terminal title shows, from another folder
     db.close();
     title = `Another one | elsewhere | ${next.slice(0, 29)}...`;
     screen = "";
-  screenReads = [];
     expect(await codexOpenRollout(root, root, home)).toBeNull();
     expect(await resolve()).toBeNull();
     title = shortened;
@@ -1160,7 +1153,6 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     screen = `• ${otherAnswer}\nOpenAI Codex (v0.164.0)\n\n› hello\n\n• Ready.\n\n› `;
     expect(await resolve()).toBeNull();
     screen = "";
-  screenReads = [];
     expect(await resolve()).toBeNull();
   });
 
@@ -3493,7 +3485,6 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     expect(await resolve()).toBe(path);
     // no turn runs and the screen proves nothing: the long answer's binding holds as it always did
     screen = "";
-  screenReads = [];
     expect(await resolve()).toBe(path);
     expect(await codexOpenRollout(root, root, home)).toBe(path);
   });
@@ -3510,7 +3501,6 @@ describe("a Codex pane whose last answer is shorter than 64 letters and digits b
     got.push(await resolve());
     // Then a screen that proves nothing no longer answers B
     screen = "";
-  screenReads = [];
     got.push(await resolve());
     expect(got).toEqual([fileB, path, null]);
   });
@@ -4220,7 +4210,6 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
   });
 });
 
-
 describe("Codex status-line thread identity", () => {
   const other = "01a16b22-7e1f-7072-8897-d5e46a0d5f61";
   const footer = (id: string) => `• Ran a command\n  └ tool output only\n\n› Ask Codex to do anything\n\n  GPT-6.1-Sol medium · ${id} · /repo\n  ← for agents · ? for shortcuts`;
@@ -4236,6 +4225,27 @@ describe("Codex status-line thread identity", () => {
     expect(await resolve()).toBe(path);
     // A cold read still identifies it; no answer-based binding was created.
     expect(await codexOpenRollout(root, root, home)).toBeNull();
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("finds the displayed loaded thread beyond the folder's 32-candidate limit", async () => {
+    foreground = [{ pid: 99999999, argv: ["codex"] }];
+    for (let index = 0; index < 40; index++) {
+      elsewhereThread(`01a16b22-7e1f-7072-8897-${index.toString(16).padStart(12, "0")}`, []);
+    }
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("UPDATE threads SET cwd = ?").run(root);
+    db.close();
+    await loaded(thread);
+    screen = footer(thread);
+    expect(await resolve()).toBe(path);
+  });
+
+  heldIt("identifies a local unlabelled Codex pane from its current footer", async () => {
+    unlabelled = true;
+    foreground = [{ pid: 99999999, argv: ["codex"] }];
+    await loaded(thread);
+    screen = footer(thread);
     expect(await resolve()).toBe(path);
   });
 

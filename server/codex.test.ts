@@ -1,11 +1,10 @@
-import { statusLineThread } from "./codex.ts";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { appendFileSync, chmodSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexLastTurnEnd, codexTurnEnd, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexLastTurnEnd, codexTurnEnd, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, statusLineThread, storedCwdCondition, storedCwds, unansweredCodexQuestions, footedShortTranscript, footedTailTranscript, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
