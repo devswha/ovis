@@ -8,6 +8,7 @@ $originalUserProfile = $env:USERPROFILE
 # against a local release folder, near the end
 $originalFromSource = $env:OVIS_FROM_SOURCE
 $env:OVIS_FROM_SOURCE = '1'
+$originalStateHome = $env:XDG_STATE_HOME
 $state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running = $true; started = $false; failInstall = $false; bunVersion = '1.4.2'; failBun = $false; windowsRelease = $true; refId = 'devswha.ovis'; installedId = ''; manifestBlocked = $false; startedLegacy = $false; legacyInstalled = $false; stopStateDirs = @(); handStarted = $false; pluginSource = ''; launcherCalls = @(); failBuild = $false; cutBuild = $null; annotated = @(); moved = @(); offline = $false; releaseDown = $false; noGit = $false; serverRecord = ''; builtUnderServer = $false }
 $global:herdrInstallOpened = @()
 # gh is a stand-in .cmd, first on PATH: the installer runs gh as a process, and no real star is read or given.
@@ -196,6 +197,9 @@ echo gh: Not Found (HTTP 404) 1>&2
 exit /b 1
 '@
     $env:PATH = "$ghStandIn;$env:PATH"
+    # herdr's state dir is the test's own (a section that needs another sets it and puts this back): the installer reads
+    # a server a start recorded there (scripts/plugin.ts's server.pid and server.owner), and none of this PC's
+    $env:XDG_STATE_HOME = Join-Path $ghStandIn 'state home'
     $ghCalls = Join-Path $ghStandIn 'calls.txt'
     # a first install with this gh; then what the installer said, and how often it starred
     $firstInstall = {
@@ -245,17 +249,15 @@ exit /b 1
     Set-Content -LiteralPath (Join-Path $pluginRoot 'package.json') -Value '{ "version": "1.2.3" }'
     $fromSource = Join-Path $pluginRoot '.ovis\server\from-source'
     $sourceBuild = Join-Path $pluginRoot '.ovis\server\source-build'
-    # herdr's state dir is the test's own: the server a start recorded (scripts/plugin.ts's server.pid and server.owner)
-    # is in plugins\devswha.ovis there, and none of this PC's is read
-    $savedStateHome = $env:XDG_STATE_HOME
-    $env:XDG_STATE_HOME = Join-Path $ghStandIn 'state home'
+    # the server a start recorded (scripts/plugin.ts's server.pid and server.owner), in the test's own herdr state dir
     $state.serverRecord = Join-Path $env:XDG_STATE_HOME 'herdr\plugins\devswha.ovis\server.pid'
     # a server of this plugin running as this very process, recorded as start records it: its pid, and its creation time
-    # (or another, for a record whose pid another process has taken since)
+    # (or another, for a record whose pid another process has taken since; or none, 'none', as a start before server.owner)
     $serverRuns = {
         param([string]$Birth)
         New-Item -ItemType Directory -Force -Path (Split-Path $state.serverRecord) | Out-Null
         Set-Content -LiteralPath $state.serverRecord -Value $PID
+        if ($Birth -eq 'none') { return }
         if (-not $Birth) { $Birth = "$(([DateTimeOffset](Get-CimInstance Win32_Process -Filter "ProcessId=$PID").CreationDate).ToUnixTimeMilliseconds())" }
         Set-Content -LiteralPath (Join-Path (Split-Path $state.serverRecord) 'server.owner') -Value (@{ pid = $PID; birth = @{ platform = 'win32'; value = $Birth } } | ConvertTo-Json -Compress)
     }
@@ -363,30 +365,42 @@ exit /b 1
     # what a source build left, the marker naming this version: only all the packages and the client, under a stamp that
     # says the build finished at the installed commit (or the version alone, where git could not tell it), or under none
     # (an older launcher), need no build, and the installed commit is said. With no release binary the stop goes to the
-    # sources at once, not asking the release; a stop that fails is passed over only with neither a client, nor a release
-    # binary, nor a server recorded as running (an earlier build's, here this process).
+    # sources at once, not asking the release; a stop that fails is passed over only with neither a release binary nor a
+    # server recorded as running (an earlier build's, here this process), whose process is named, with how to stop it
+    # only when its creation time matched.
     $finished = "1.2.3 $(Get-TestCommit 'feat/windows-install')"
     foreach ($case in @(
         @{ name = 'a build cut off in bun install'; packages = 'some'; stamp = 'started'; calls = 'stop,install 1' },
         @{ name = 'a build cut off over the packages and client of an earlier one'; packages = 'all'; client = $true; stamp = 'started'; calls = 'stop,install 1' },
         @{ name = 'a finished build of another commit'; packages = 'all'; client = $true; stamp = "1.2.3 $(Get-TestCommit 'earlier')"; calls = 'stop,install 1' },
-        @{ name = 'a build cut off in bun install over the client of an earlier one'; packages = 'some'; client = $true; stamp = 'started'; calls = 'stop'; refused = $true },
+        @{ name = 'a build cut off in bun install over the client of an earlier one'; packages = 'some'; client = $true; stamp = 'started'; calls = 'stop,install 1' },
+        @{ name = 'a build cut off in bun install over the client of an earlier one, its server running'; packages = 'some'; client = $true; stamp = 'started'; server = 'alive'; calls = 'stop'; refused = $true },
+        @{ name = 'the same, the server recorded without its creation time'; packages = 'some'; client = $true; stamp = 'started'; server = 'unverified'; calls = 'stop'; refused = $true },
         @{ name = 'a finished build of an older launcher'; packages = 'all'; client = $true; calls = '' },
         @{ name = 'a finished build'; packages = 'all'; client = $true; stamp = $finished; calls = '' },
         @{ name = 'a finished build whose packages or client were removed since'; packages = 'all'; stamp = $finished; calls = 'stop,install 1' },
-        @{ name = 'a finished build git could not tell the commit of'; packages = 'all'; client = $true; stamp = '1.2.3'; calls = '' },
+        @{ name = 'a finished build git could not tell the commit of, which this installer can'; packages = 'all'; client = $true; stamp = '1.2.3'; calls = 'stop,install 1' },
+        @{ name = 'a finished build git could not tell the commit of, nor can this installer'; packages = 'all'; client = $true; stamp = '1.2.3'; noGit = $true; calls = '' },
         @{ name = 'a finished build in a folder that is no git checkout'; packages = 'all'; client = $true; noGit = $true; calls = '' },
         @{ name = 'an earlier server running, the release out of reach, and dist emptied by a build cut off'; packages = 'all'; stamp = 'started'; server = 'alive'; releaseDown = $true; calls = 'stop,install 1' },
         @{ name = 'an earlier server running over a build cut off after vite emptied dist, then another in bun install'; packages = 'some'; stamp = 'started'; server = 'alive'; calls = 'stop'; refused = $true },
-        @{ name = 'a server record whose pid another process has taken since'; packages = 'some'; stamp = 'started'; server = 'gone'; calls = 'stop,install 1' }
+        @{ name = 'a server record whose pid another process has taken since'; packages = 'some'; stamp = 'started'; server = 'gone'; calls = 'stop,install 1' },
+        @{ name = 'a server recorded as running with nothing here to stop it with (no packages, no release binary)'; stamp = 'started'; server = 'alive'; calls = ''; refused = $true },
+        @{ name = "a release binary's server recorded as running, stopped by its stop"; binary = $true; server = 'alive'; calls = 'stop,install 1' },
+        @{ name = 'a failed build after a stop that could not run, a server no record names maybe running'; packages = 'some'; stamp = 'started'; failBuild = $true; calls = 'stop,install 1' }
     )) {
         & $unbuilt; $state.launcherCalls = @(); $state.builtUnderServer = $false
         $state.releaseDown = [bool]$case.releaseDown; $state.noGit = [bool]$case.noGit
-        if ($case.server) { & $serverRuns $(if ($case.server -eq 'gone') { '1' }) }
+        if ($case.server) { & $serverRuns $(switch ($case.server) { 'gone' { '1' } 'unverified' { 'none' } }) }
         New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot '.ovis\server') | Out-Null
         Set-Content -LiteralPath $fromSource -Value '1.2.3'
         if ($case.stamp) { Set-Content -LiteralPath $sourceBuild -Value $case.stamp }
-        New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot 'node_modules') | Out-Null
+        if ($case.packages) { New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot 'node_modules') | Out-Null }
+        if ($case.binary) {
+            New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot '.ovis\server\bin') | Out-Null
+            Set-Content -LiteralPath (Join-Path $pluginRoot '.ovis\server\bin\ovis-server.exe') -Value ''
+        }
+        $state.failBuild = [bool]$case.failBuild
         if ($case.packages -eq 'all') { Set-Content -LiteralPath (Join-Path $pluginRoot 'node_modules\all-installed') -Value '' }
         if ($case.client) {
             New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot 'dist') | Out-Null
@@ -394,14 +408,15 @@ exit /b 1
         }
         $message = ''; $said = ''
         try { $said = & $installer -Ref 'feat/windows-install' 6>&1 | Out-String } catch { $message = $_.Exception.Message }
-        $state.releaseDown = $false; $state.noGit = $false
+        $state.releaseDown = $false; $state.noGit = $false; $state.failBuild = $false
         Assert (($state.launcherCalls -join ',') -eq $case.calls) "$($case.name): the launcher must get '$($case.calls)', not '$($state.launcherCalls -join ',')': $message"
-        if ($case.refused) { Assert ($message -match 'Could not stop' -and -not (Test-Path -LiteralPath $fromSource) -and (-not $case.server -or $message.Contains("process $PID"))) "$($case.name): a stop that fails where something may run must stop the run, naming a running server's process: $message" }
+        if ($case.failBuild) { Assert ($message.Contains($pluginRoot) -and -not (Test-Path -LiteralPath $fromSource)) "$($case.name): a failed build no stop preceded must say how to find a server still running from the checkout, and take the marker back: $message" }
+        elseif ($case.refused) { Assert ($message -and -not (Test-Path -LiteralPath $fromSource) -and $message.Contains("process $PID") -and $message.Contains("Stop-Process -Id $PID") -eq ($case.server -eq 'alive')) "$($case.name): a stop that fails under a recorded server must stop the run, naming its process, with Stop-Process only for a verified one: $message" }
         elseif ($case.calls) { Assert (-not $message -and (Get-Content -Raw -LiteralPath $sourceBuild).Trim() -eq $finished -and -not ($case.server -eq 'alive' -and $state.builtUnderServer)) "$($case.name): must be built and stamped, with no server left running under the build: $message" }
         else { Assert (-not $message -and ($case.noGit -or $said.Contains($finished.Substring(6, 12)))) "$($case.name): must be kept, saying the installed commit: $message $said" }
     }
     Remove-Item -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts'), (Join-Path $pluginRoot 'package.json') -Force; & $unbuilt
-    $env:XDG_STATE_HOME = $savedStateHome; $state.serverRecord = ''
+    $state.serverRecord = ''
     $state.running = $false
     $env:OVIS_FROM_SOURCE = '1'
 
@@ -872,6 +887,7 @@ try { $null = Install-OvisBinary $Version; exit 0 } catch { Write-Output $_.Exce
     $env:LOCALAPPDATA = $originalLocalAppData
     $env:USERPROFILE = $originalUserProfile
     $env:OVIS_FROM_SOURCE = $originalFromSource
+    if ($null -eq $originalStateHome) { Remove-Item Env:\XDG_STATE_HOME -ErrorAction SilentlyContinue } else { $env:XDG_STATE_HOME = $originalStateHome }
     Remove-Item Env:\OVIS_RELEASES_URL -ErrorAction SilentlyContinue
     if ($binaryScratch) { Remove-Item -LiteralPath $binaryScratch -Recurse -Force -ErrorAction SilentlyContinue }
     if ($herdrStandIn) { Set-Item Function:\herdr $herdrStandIn }
