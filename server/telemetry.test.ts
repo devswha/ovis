@@ -122,11 +122,26 @@ describe("telemetry events", () => {
     expect(next.sent).toEqual([expect.objectContaining({ event: "update", version: "0.4.2", previous_version: "0.4.1", install_id: first.sent[0]!.install_id })]);
   });
 
-  test("the first event of an install updated from before telemetry is an update", async () => {
+  test("the first event of an install updated from before telemetry is an update that names no replaced version", async () => {
+    // the updater's record of the version it replaced is from before this state file: not sent
     const { telemetry, sent } = setup({ previous: "0.4.0" });
     telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION });
     await telemetry.report();
-    expect(sent).toEqual([expect.objectContaining({ event: "update", previous_version: "0.4.0" })]);
+    expect(sent).toEqual([expect.objectContaining({ event: "update", previous_version: null })]);
+  });
+
+  test("after a blocked start removed the state file, the next event names no version the updater says it replaced", async () => {
+    const { telemetry, stateDir } = setup({ grace: 600_000, previous: "0.5.4" });
+    seen(telemetry);
+    mkdirSync(join(stateDir, `telemetry.json.${process.pid}.tmp`));
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try { setup({ stateDir, env: { OVIS_TELEMETRY: "0" }, previous: "0.5.4" }); } finally { errors.mockRestore(); }
+    expect(existsSync(join(stateDir, "telemetry.json"))).toBe(false);
+    rmSync(join(stateDir, `telemetry.json.${process.pid}.tmp`), { recursive: true });
+    const restarted = setup({ stateDir, previous: "0.5.4" });
+    restarted.telemetry.change({ notice_seen: true, notice_version: NOTICE_VERSION });
+    await restarted.telemetry.report();
+    expect(restarted.sent).toEqual([expect.objectContaining({ event: "update", previous_version: null })]);
   });
 
   test("the switch off sends nothing, and on again sends what is owed", async () => {
