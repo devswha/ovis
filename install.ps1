@@ -600,13 +600,13 @@ if (-not $plugin) {
             (Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'dist\index.html'))
         if (-not $sourceBuilt) {
             # herdr checks the ref out detached, so the checkout knows its commit, not the branch: the ref is the installed
-            # checkout only when it names that commit (a commit id, short ones too, resolved in the checkout, or a branch or
-            # tag whose commit on GitHub is it). A rerun keeps the installed plugin, so another ref, or a branch that moved
-            # since, is said and nothing is touched.
+            # checkout only when it names that commit (a commit id, short ones too, among the checkout's objects, never a ref
+            # of that name there, or a branch or tag whose commit on GitHub is it). A rerun keeps the installed plugin, so
+            # another ref, or a branch that moved since, is said and nothing is touched.
             $installedCommit = "$(Run-Tool git @('-C', $plugin.plugin_root, 'rev-parse', 'HEAD'))".Trim()
             $commitId = $Ref -match '^[0-9a-fA-F]{4,40}$'
-            $named = if ($commitId) { "$(& git -C $plugin.plugin_root rev-parse --verify --quiet "$Ref^{commit}")".Trim() } else { '' }
-            if ($named -ne $installedCommit) {
+            $objects = if ($commitId) { @(& git -C $plugin.plugin_root rev-parse "--disambiguate=$($Ref.ToLowerInvariant())") } else { @() }
+            if ($installedCommit -notin $objects) {
                 # an annotated tag lists its tag object under its name and its commit under <name>^{}
                 $listed = & git ls-remote 'https://github.com/devswha/ovis.git' -- $Ref "$Ref^{}"
                 if ($LASTEXITCODE -ne 0) { throw "Could not ask GitHub which commit $Ref is, so nothing was stopped or changed by this run. Check your connection and run this again." }
@@ -626,18 +626,25 @@ if (-not $plugin) {
                 # a marker a build cut off left would send the stop below to the sources it never built
                 Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
                 # the binary's stop: under the caller's OVIS_FROM_SOURCE=1 the launcher would hand it to scripts/plugin.ts,
-                # which cannot run without the packages
-                $env:OVIS_FROM_SOURCE = $null
-                & bun $launcherScript stop | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "Could not stop the Ovis the release's binary runs, so the branch was not built. Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again." }
+                # which cannot run without the packages. With neither the release's binary nor the packages, nothing of this
+                # checkout can be running, and the launcher's stop would ask the release and, for sources it was not built
+                # from (or offline), fail in those sources: there is nothing to stop.
+                $kept = Join-Path $plugin.plugin_root '.ovis\server\bin'
+                if ((Test-Path -LiteralPath (Join-Path $kept 'ovis-server.exe')) -or (Test-Path -LiteralPath (Join-Path $plugin.plugin_root 'node_modules'))) {
+                    $env:OVIS_FROM_SOURCE = $null
+                    & bun $launcherScript stop | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "Could not stop the Ovis the release's binary runs, so the branch was not built. Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again." }
+                }
                 $env:OVIS_FROM_SOURCE = '1'
                 & bun $launcherScript install
                 if ($LASTEXITCODE -ne 0) {
                     $code = $LASTEXITCODE
                     # without the marker (taken back below), the launcher's start runs the release's binary where the checkout
-                    # keeps it (scripts/server-install.ts verifiedInstall), as before this run
-                    $kept = Join-Path $plugin.plugin_root '.ovis\server\bin'
-                    $back = if ((Test-Path -LiteralPath (Join-Path $kept 'ovis-server.exe')) -and (Test-Path -LiteralPath (Join-Path $kept 'dist\index.html'))) {
+                    # keeps this version's (scripts/server-install.ts verifiedInstall, which also checks its signature), as
+                    # before this run
+                    $keptManifest = Join-Path $kept 'ovis-server.json'
+                    $keptVersion = if (Test-Path -LiteralPath $keptManifest) { try { (Get-Content -Raw -LiteralPath $keptManifest | ConvertFrom-Json).version } catch { '' } } else { '' }
+                    $back = if ($keptVersion -eq $checkoutVersion -and (Test-Path -LiteralPath (Join-Path $kept 'ovis-server.exe')) -and (Test-Path -LiteralPath (Join-Path $kept 'dist\index.html'))) {
                         " Until then, herdr plugin action invoke $pluginId.start-windows starts the release's binary this checkout ran before."
                     } else { '' }
                     throw "bun failed (exit $code) building the installed branch, and Ovis is stopped. Fix the error above, then run this again with OVIS_REF=$Ref to build it and start Ovis.$back"

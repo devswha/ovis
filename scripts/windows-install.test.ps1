@@ -34,7 +34,8 @@ function git {
     if ($args[0] -eq '-C' -and $args[2] -eq 'rev-parse') {
         $head = Get-TestCommit $state.ref
         if ($args[-1] -eq 'HEAD') { return $head }
-        $id = $args[-1] -replace '\^\{commit\}$'
+        $id = $args[-1] -replace '\^\{commit\}$' -replace '^--disambiguate='
+        if ($args[-1] -like '--disambiguate=*' -and -not $head.StartsWith($id)) { return }
         if ($id -match '^[0-9a-f]{4,40}$' -and $head.StartsWith($id)) { return $head }
         $global:LASTEXITCODE = 1; return
     }
@@ -68,15 +69,17 @@ function bun {
         if ($state.handStarted -and $env:HERDR_PLUGIN_STATE_DIR) { 'herdr web ui is not running' } else { 'stopped herdr web ui (pid 1234)' }
     }
     # the plugin's launcher: its command, and whether it was told to build from source. As scripts/plugin-launch.ts does,
-    # a stop under OVIS_FROM_SOURCE=1, or with a marker naming this version, goes to scripts/plugin.ts, which fails without
-    # the packages, and an install under it names the version in .ovis/server/from-source before it builds the packages
-    # and the client
+    # a stop under OVIS_FROM_SOURCE=1, with a marker naming this version, or without the release's binary in
+    # .ovis/server/bin (a branch's sources are not the release's) goes to scripts/plugin.ts, which fails without the
+    # packages, and an install under it names the version in .ovis/server/from-source before it builds the packages and
+    # the client
     elseif ($args[0] -like '*\scripts\plugin-launch.ts') {
         $state.launcherCalls += "$($args[-1]) $env:OVIS_FROM_SOURCE".Trim()
         $root = Split-Path (Split-Path $args[0])
         $serverDir = Join-Path $root '.ovis\server'
         $marked = (Test-Path -LiteralPath (Join-Path $serverDir 'from-source')) -and (Get-Content -Raw -LiteralPath (Join-Path $serverDir 'from-source')).Trim() -eq '1.2.3'
-        if ($args[-1] -eq 'stop' -and ($env:OVIS_FROM_SOURCE -eq '1' -or ($marked -and -not (Test-Path -LiteralPath (Join-Path $root 'node_modules'))))) { $global:LASTEXITCODE = 1 }
+        $toSource = $marked -or -not (Test-Path -LiteralPath (Join-Path $serverDir 'bin\ovis-server.exe'))
+        if ($args[-1] -eq 'stop' -and ($env:OVIS_FROM_SOURCE -eq '1' -or ($toSource -and -not (Test-Path -LiteralPath (Join-Path $root 'node_modules'))))) { $global:LASTEXITCODE = 1 }
         if ($env:OVIS_FROM_SOURCE -eq '1' -and $args[-1] -eq 'install') {
             New-Item -ItemType Directory -Force -Path $serverDir | Out-Null
             Set-Content -LiteralPath (Join-Path $serverDir 'from-source') -Value '1.2.3'
@@ -227,11 +230,19 @@ exit /b 1
     $state.running = $true; $state.started = $false; $state.launcherCalls = @(); $installs = $state.installs
     Set-Content -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts') -Value ''
     Set-Content -LiteralPath (Join-Path $pluginRoot 'package.json') -Value '{ "version": "1.2.3" }'
+    $fromSource = Join-Path $pluginRoot '.ovis\server\from-source'
+    # no build of this checkout: no marker, packages or built client
+    $unbuilt = { foreach ($name in '.ovis', 'node_modules', 'dist') { Remove-Item -LiteralPath (Join-Path $pluginRoot $name) -Recurse -Force -ErrorAction SilentlyContinue } }
+    # a checkout on the release's binary: unbuilt, with that version's binary and client kept in .ovis/server/bin
+    $onBinary = {
+        & $unbuilt
+        New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot '.ovis\server\bin\dist') | Out-Null
+        Set-Content -LiteralPath (Join-Path $pluginRoot '.ovis\server\bin\ovis-server.exe'), (Join-Path $pluginRoot '.ovis\server\bin\dist\index.html') -Value ''
+        Set-Content -LiteralPath (Join-Path $pluginRoot '.ovis\server\bin\ovis-server.json') -Value '{ "version": "1.2.3" }'
+    }
+    & $onBinary
     & $installer -Ref 'feat/windows-install'
     Assert (($state.launcherCalls -join ',') -eq 'stop,install 1' -and $state.installs -eq $installs -and $state.started -and -not $env:OVIS_FROM_SOURCE) "A rerun over a branch on the release's binary must stop it and build it from source in place (launcher: $($state.launcherCalls -join ','))"
-    $fromSource = Join-Path $pluginRoot '.ovis\server\from-source'
-    # a checkout on the release's binary: no marker, packages or built client
-    $onBinary = { foreach ($name in '.ovis', 'node_modules', 'dist') { Remove-Item -LiteralPath (Join-Path $pluginRoot $name) -Recurse -Force -ErrorAction SilentlyContinue } }
     # the same with OVIS_FROM_SOURCE=1 set by the caller: the stop still goes to the binary, and the variable is the caller's again
     & $onBinary; $state.launcherCalls = @(); $env:OVIS_FROM_SOURCE = '1'
     & $installer -Ref 'feat/windows-install'
@@ -239,12 +250,16 @@ exit /b 1
     # a build that fails takes back the marker the launcher wrote before it, so the next rerun builds again; it hands over
     # the rerun, and the start of the release's binary the checkout keeps
     & $onBinary; $state.launcherCalls = @(); $env:OVIS_FROM_SOURCE = ''; $state.failBuild = $true
-    New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot '.ovis\server\bin\dist') | Out-Null
-    Set-Content -LiteralPath (Join-Path $pluginRoot '.ovis\server\bin\ovis-server.exe'), (Join-Path $pluginRoot '.ovis\server\bin\dist\index.html') -Value ''
     $message = ''
     try { & $installer -Ref 'feat/windows-install' } catch { $message = $_.Exception.Message }
     Assert ($message -match 'bun failed' -and -not (Test-Path -LiteralPath $fromSource) -and -not $env:OVIS_FROM_SOURCE) "A failed build must stop the install and leave no from-source marker: $message"
     Assert ($message.Contains('OVIS_REF=feat/windows-install') -and $message.Contains('herdr plugin action invoke devswha.ovis.start-windows')) "A failed build must hand over the rerun and the start of the release's binary: $message"
+    # a kept binary of another version is not what the launcher's start runs: no start is handed over then
+    Set-Content -LiteralPath (Join-Path $pluginRoot '.ovis\server\bin\ovis-server.json') -Value '{ "version": "1.2.2" }'
+    $message = ''
+    try { & $installer -Ref 'feat/windows-install' } catch { $message = $_.Exception.Message }
+    Assert ($message -match 'bun failed' -and -not $message.Contains('start-windows')) "A failed build must not hand over the start of a kept binary of another version: $message"
+    Set-Content -LiteralPath (Join-Path $pluginRoot '.ovis\server\bin\ovis-server.json') -Value '{ "version": "1.2.3" }'
     $state.failBuild = $false; $state.launcherCalls = @()
     & $installer -Ref 'feat/windows-install'
     Assert (($state.launcherCalls -join ',') -eq 'stop,install 1' -and (Test-Path -LiteralPath $fromSource)) "A rerun after a failed build must build again (launcher: $($state.launcherCalls -join ','))"
@@ -277,6 +292,14 @@ exit /b 1
     $message = ''
     try { & $installer -Ref 'feat/windows-install' } catch { $message = $_.Exception.Message }
     Assert (($state.launcherCalls -join ',') -eq 'stop,install 1' -and (Test-Path -LiteralPath (Join-Path $pluginRoot 'dist\index.html'))) "A marker without the packages and the client must be built again (launcher: $($state.launcherCalls -join ',')): $message"
+    # the same with no release binary kept (a source build herdr ran itself, cut off): nothing of this checkout can be
+    # running, and the launcher's stop would fail in the sources it never built, so the rerun builds without a stop
+    & $unbuilt; $state.launcherCalls = @()
+    New-Item -ItemType Directory -Force -Path (Join-Path $pluginRoot '.ovis\server') | Out-Null
+    Set-Content -LiteralPath $fromSource -Value '1.2.3'
+    $message = ''
+    try { & $installer -Ref 'feat/windows-install' } catch { $message = $_.Exception.Message }
+    Assert (($state.launcherCalls -join ',') -eq 'install 1' -and (Test-Path -LiteralPath (Join-Path $pluginRoot 'dist\index.html'))) "A cut-off build with no release binary kept must be built again without a stop (launcher: $($state.launcherCalls -join ',')): $message"
     # the ref must name the installed commit: another branch, a branch that moved since, or another commit is said, with the
     # commits, and nothing is stopped or built; offline, nothing is either
     $installedAt = (Get-TestCommit 'feat/windows-install').Substring(0, 12)
@@ -309,7 +332,7 @@ exit /b 1
     Set-Content -LiteralPath (Join-Path $pluginRoot '.ovis\server\from-source') -Value '1.2.3'
     & $installer -Ref 'feat/windows-install'
     Assert ($state.launcherCalls.Count -eq 0 -and $state.installs -eq $installs) "Nothing must be rebuilt for a release tag or a branch built from source (launcher: $($state.launcherCalls -join ','))"
-    Remove-Item -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts'), (Join-Path $pluginRoot 'package.json') -Force; & $onBinary
+    Remove-Item -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts'), (Join-Path $pluginRoot 'package.json') -Force; & $unbuilt
     $state.running = $false
     $env:OVIS_FROM_SOURCE = '1'
 
@@ -334,9 +357,10 @@ exit /b 1
     Assert ($state.ref -eq 'V1.2.3' -and $state.pluginSource -eq '1') "V1.2.3 is no release tag and must be built from source (herdr's build was told '$($state.pluginSource)')"
     Set-Content -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts') -Value ''
     Set-Content -LiteralPath (Join-Path $pluginRoot 'package.json') -Value '{ "version": "1.2.3" }'
+    & $onBinary
     & $installer -Ref 'V1.2.3'
     Assert (($state.launcherCalls -join ',') -eq 'stop,install 1' -and -not $env:OVIS_FROM_SOURCE) "A rerun at V1.2.3 must build the checkout from source (launcher: $($state.launcherCalls -join ','))"
-    Remove-Item -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts'), (Join-Path $pluginRoot 'package.json') -Force; & $onBinary
+    Remove-Item -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts'), (Join-Path $pluginRoot 'package.json') -Force; & $unbuilt
     $env:OVIS_FROM_SOURCE = '1'
     Write-Host 'PASS native installer release selection, rerun, Bun bootstrap, explicit ref, stopped herdr, install failure and a copy without Windows support'
 
