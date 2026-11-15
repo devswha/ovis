@@ -6,7 +6,7 @@ export type NotificationPaneView = "chat" | "terminal";
 /**
  * `workspace_id`: the workspace the pane was last seen in (server/push.ts), so an ended pane's tap opens it.
  * `link`: a desktop link's place, as the address's own link reads it (lib/desktopLink.ts): it lands as
- * that link does (linkLanding), never by its pane id alone.
+ * that link does (linkLanding).
  */
 export type NotificationTarget = { machine_id: string; pane_id: string; view?: NotificationPaneView; workspace_id?: string; link?: AppLink };
 type Target = NotificationTarget;
@@ -54,18 +54,21 @@ export function notificationLanding(roster: readonly RosterMachine[], target: No
   return { kind: "link", link, stale: machineMissing(roster, target.machine_id) };
 }
 
-type LinkRoster = { id: string; snapshot?: Pick<SessionSnapshot, "workspaces" | "panes" | "layouts"> | null };
+type LinkRoster = { id: string; state?: string; snapshot?: Pick<SessionSnapshot, "workspaces" | "panes" | "layouts"> | null };
 
 /**
  * Where a desktop link lands: as the address's own link does (lib/deepLink.ts resolveLink, as
- * lib/useAddressBar.ts lands a Back), its pane is selected only when its PC's roster lists it in the
- * workspace the link names, by id and slug. Anything else selects no pane yet: the link waits as the
- * address's does, settled once its PC's roster is in, with its note (lib/useSelection.ts). `stale`:
- * as notificationLanding's.
+ * lib/useAddressBar.ts lands a Back). Its pane is selected at once only when its PC is connected and
+ * resolveLink places it with no note: in the workspace the link's id names, or the one its slug
+ * names when the id was handed out again (a slug no open workspace has does not overrule the id);
+ * a link with no workspace by its pane id. Anything else selects no pane yet: the link waits as the
+ * address's does, settled once its PC is connected with its roster in, with its note
+ * (lib/useSelection.ts), since an offline PC's cached roster may list a pane that has closed.
+ * `stale`: as notificationLanding's.
  */
 export function linkLanding(roster: readonly LinkRoster[], link: AppLink): { kind: "select"; pane: string } | { kind: "wait"; stale: boolean } {
-  const snapshot = roster.find((candidate) => candidate.id === link.machine)?.snapshot;
-  const landed = snapshot ? resolveLink(snapshot, link) : null;
+  const machine = roster.find((candidate) => candidate.id === link.machine);
+  const landed = machine?.state === "connected" && machine.snapshot ? resolveLink(machine.snapshot, link) : null;
   if (landed?.pane && !landed.note) return { kind: "select", pane: landed.pane };
   return { kind: "wait", stale: machineMissing(roster, link.machine) };
 }

@@ -2,8 +2,8 @@
  * Links that show a pane in the app's window: `ovis://open?ws=<workspace>&pane=<pane>&view=terminal|chat`,
  * with `machine=<pc>` for another PC, as the server's own deep links name them (src/lib/deepLink.ts).
  * Another program on this computer opens one (`open "ovis://open?…"` on a Mac, the URL as the
- * app's argument elsewhere) and the window selects that pane, as a tapped notification does,
- * without reloading the page.
+ * app's argument elsewhere) and the window selects that pane, as the same address opened in the
+ * window would (src/lib/deepLink.ts resolveLink), without reloading the page.
  *
  * A link is read here only to be passed on: it becomes a query of the deep link's own names, which
  * the window's page reads as any address of its own. Nothing else of it is kept, so a link can never

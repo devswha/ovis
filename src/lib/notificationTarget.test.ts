@@ -185,6 +185,7 @@ describe("desktop link delivery", () => {
   // workspace 3 is "alpha"; herdr handed pane t3 to workspace 4 ("beta"), and t1 is alpha's
   const roster = [{
     id: "local",
+    state: "connected",
     snapshot: {
       workspaces: [{ workspace_id: "3", label: "alpha", active_tab_id: "3:1" }, { workspace_id: "4", label: "beta", active_tab_id: "4:1" }],
       panes: [{ pane_id: "t1", workspace_id: "3", focused: true }, { pane_id: "t3", workspace_id: "4", focused: true }],
@@ -235,6 +236,13 @@ describe("desktop link delivery", () => {
     expect(linkLanding([], link)).toEqual({ kind: "wait", stale: false });
     expect(linkLanding([{ id: "local", snapshot: null }], link)).toEqual({ kind: "wait", stale: false });
     expect(linkLanding(roster, { ...link, machine: "pc-gone" })).toEqual({ kind: "wait", stale: true });
+  });
+
+  it("selects nothing from an offline PC's cached roster: the link waits until the PC is connected", () => {
+    const link = linkTarget("?ws=4-beta&pane=t3")!.link!;
+    for (const state of ["disconnected", "reconnecting", "connecting", undefined]) {
+      expect(linkLanding([{ ...roster[0]!, state }], link)).toEqual({ kind: "wait", stale: false });
+    }
   });
 
   it("tells a link from one to the same pane id in another workspace by its slug", () => {

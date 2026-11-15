@@ -86,6 +86,13 @@ describe("a desktop link's landing", () => {
     expect(pending.current).toMatchObject({ workspace: "4", workspaceSlug: "beta", pane: "t3" });
   });
 
+  it("selects nothing but the PC from an offline PC's cached roster", async () => {
+    await mount([{ ...roster[0]!, state: "disconnected" }] as Machine[]);
+    await act(async () => { take(linkTarget("?ws=4-beta&pane=t3")!); });
+    expect(selected).toEqual([["local", null, undefined]]);
+    expect(pending.current).toMatchObject({ workspace: "4", workspaceSlug: "beta", pane: "t3" });
+  });
+
   it("takes a link to the same pane id under another slug as a new place, and the same link once", async () => {
     await mount([]);
     await act(async () => { take(linkTarget("?ws=3-alpha&pane=t3")!); });
