@@ -8,6 +8,7 @@ import type { AgentStatus, HerdrPane, SessionSnapshot } from "../shared/protocol
 import { CompletionTracker, type OmoRest } from "./completion.ts";
 import { Finishes } from "./finishes.ts";
 import { createGjcStatus, gjcPanes, gjcTurnAfter, readOmoSnapshot, reconcileProviderStatus } from "./gjc-status.ts";
+import { noTurn, OMO_ALIASES, OmoStatus, type OmoLine, type OmoPane, type OmoTurn } from "./omo-status.ts";
 
 // a background job's start and end, as gjc's task, bash, job and subagent tools write them
 const JOB_AT = "2026-10-02T00:00:15.000Z";
@@ -16,7 +17,6 @@ const taskStarted = (...ids: string[]) => result("task", { async: { state: "runn
   `Started ${ids.length} background task jobs using executor.\n${ids.map((id) => `- \`${id}\` (job \`${id}\`)`).join("\n")}`);
 const bashStarted = (id: string) => result("bash", { async: { state: "running", jobId: id, type: "bash" } }, `Background job ${id} started: x`);
 const delivered = (...ids: string[]) => JSON.stringify({ type: "custom_message", customType: "async-result", display: true, content: "…", timestamp: "2026-10-02T00:00:40.000Z", details: { jobs: ids.map((jobId) => ({ jobId, type: "task" })) } });
-import { noTurn, OMO_ALIASES, OmoStatus, type OmoLine, type OmoPane, type OmoTurn } from "./omo-status.ts";
 
 // records as gjc's native transcript writes them: a message envelope with the pi family's roles
 const message = (role: string, stopReason?: string, at = "2026-10-02T00:00:10.000Z", text = "") => JSON.stringify({ type: "message", id: "x", parentId: null, timestamp: at, message: { role, content: [{ type: "text", text }], ...(stopReason ? { stopReason } : {}) } });
