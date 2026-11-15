@@ -1,254 +1,3 @@
-# Run with: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-install.test.ps1
-$ErrorActionPreference = 'Stop'
-$installer = Join-Path $PSScriptRoot '..\install.ps1'
-$originalPath = $env:PATH
-$originalLocalAppData = $env:LOCALAPPDATA
-$originalUserProfile = $env:USERPROFILE
-# The cases below install from source (Bun and herdr's plugin checkout); the release's binary has its own cases,
-# against a local release folder, near the end
-$originalFromSource = $env:OVIS_FROM_SOURCE
-$env:OVIS_FROM_SOURCE = '1'
-$state = @{ installed = $false; installs = 0; uninstalls = 0; ref = ''; running = $true; started = $false; failInstall = $false; bunVersion = '1.4.2'; failBun = $false; windowsRelease = $true; refId = 'devswha.ovis'; installedId = ''; manifestBlocked = $false; startedLegacy = $false; legacyInstalled = $false; stopStateDirs = @(); handStarted = $false; pluginSource = ''; launcherCalls = @(); failBuild = $false; cutBuild = $null; annotated = @(); moved = @(); offline = $false; releaseDown = $false; noGit = $false; serverRecord = ''; builtUnderServer = $false }
-$global:herdrInstallOpened = @()
-# gh is a stand-in .cmd, first on PATH: the installer runs gh as a process, and no real star is read or given.
-# mode.txt beside it is what it answers: starred, not, refuses (the star itself), upstream, signed-out, hangs or
-# lingering (it answers, and leaves a child holding its output; child.txt gets that child's PID).
-$star = @{ asked = 0; answer = ''; failAsk = $false }
-$ghStandIn = Join-Path ([IO.Path]::GetTempPath()) "herdr-installer-gh-$PID"
-# A real directory: the installer reads the installed copy to tell whether it can run on Windows.
-$pluginRoot = Join-Path ([IO.Path]::GetTempPath()) "herdr plugin with spaces $PID"
-$launcher = Join-Path $pluginRoot 'scripts\plugin.ps1'
-function Assert([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
-function Start-Process { $global:herdrInstallOpened += ($args -join ' ') }
-
-# Tool boundaries only: no downloads, installed plugins, processes or user settings are changed.
-# The commit a ref names: a commit id itself, or a stand-in id for a branch or tag
-function Get-TestCommit {
-    param([string]$Ref)
-    if ($Ref -match '^[0-9a-f]{7,40}$') { return $Ref.PadRight(40, '0') }
-    -join ([Security.Cryptography.SHA1]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($Ref)) | ForEach-Object { $_.ToString('x2') })
-}
-function git {
-    $global:LASTEXITCODE = 0
-    # herdr's checkout, detached at the commit of the ref it was installed at, which a prefix of it names there
-    if ($args[0] -eq '-C' -and $args[2] -eq 'rev-parse') {
-        # a plugin linked from a folder that is no git checkout
-        if ($state.noGit) { $global:LASTEXITCODE = 128; return }
-        $head = Get-TestCommit $state.ref
-        if ($args[-1] -eq 'HEAD') { return $head }
-        $id = $args[-1] -replace '\^\{commit\}$' -replace '^--disambiguate='
-        if ($args[-1] -like '--disambiguate=*' -and -not $head.StartsWith($id)) { return }
-        if ($id -match '^[0-9a-f]{4,40}$' -and $head.StartsWith($id)) { return $head }
-        $global:LASTEXITCODE = 1; return
-    }
-    # GitHub's refs by name: a branch at its tip ($state.moved: a commit after the one installed), an annotated tag as its
-    # tag object and, asked for <name>^{}, its commit; nothing for a commit id, and exit 128 offline
-    if ($args[0] -eq 'ls-remote' -and $args[1] -ne '--tags') {
-        if ($state.offline) { $global:LASTEXITCODE = 128; return }
-        foreach ($pattern in $args[2..($args.Count - 1)] | Where-Object { $_ -ne '--' }) {
-            $name = $pattern -replace '\^\{\}$'
-            if ($state.annotated -contains $name) {
-                if ($pattern -ne $name) { "$(Get-TestCommit $name)`trefs/tags/$name^{}" } else { "$(Get-TestCommit "tag object $name")`trefs/tags/$name" }
-            } elseif ($pattern -eq $name -and $name -notmatch '^[0-9a-f]{4,40}$') {
-                "$(Get-TestCommit $(if ($state.moved -contains $name) { "$name, moved" } else { $name }))`trefs/heads/$name"
-            }
-        }
-        return
-    }
-    "aaa`trefs/tags/v1.9.0"
-    "bbb`trefs/tags/v1.10.0"
-    "ccc`trefs/tags/v2.0.0-rc.1"
-    "ddd`trefs/tags/remote-v99"
-}
-function bun {
-    $global:LASTEXITCODE = 0
-    if ($args[0] -eq '--version') { $state.bunVersion }
-    elseif ($args[-1] -eq 'status') { 'running http://127.0.0.1:7317 (pid 1234)'; 'config: none' }
-    # the old id's stop: where it was told to look for its server's pid
-    # (a server started by hand from the checkout is found only without one)
-    elseif ($args[-1] -eq 'stop' -and $args[0] -like '*legacy root*') {
-        $state.stopStateDirs += "$env:HERDR_PLUGIN_STATE_DIR"
-        if ($state.handStarted -and $env:HERDR_PLUGIN_STATE_DIR) { 'herdr web ui is not running' } else { 'stopped herdr web ui (pid 1234)' }
-    }
-    # the plugin's launcher: its command, and whether it was told to build from source. As scripts/plugin-launch.ts does,
-    # a stop asks the release first unless OVIS_FROM_SOURCE=1 or a marker naming this version chose the sources (and
-    # fails when the release cannot be reached); under either, or without the release's binary in .ovis/server/bin (a
-    # branch's sources are not the release's), it goes to scripts/plugin.ts, which fails without all the packages
-    # (node_modules\all-installed stands for bun install's end). A stop that succeeds takes the server's pid record with it,
-    # as scripts/plugin.ts's does. An install under it says `started` in .ovis/server/source-build and names the version
-    # in .ovis/server/from-source before it builds the packages and the client, and the version and commit in
-    # source-build once they are built; it notes when a server's pid record is still there as it builds
-    elseif ($args[0] -like '*\scripts\plugin-launch.ts') {
-        # a stop by its outcome alone (where it went is what the server-record cases assert), an install with the variable
-        $state.launcherCalls += if ($args[-1] -eq 'stop') { 'stop' } else { "$($args[-1]) $env:OVIS_FROM_SOURCE".Trim() }
-        $root = Split-Path (Split-Path $args[0])
-        $serverDir = Join-Path $root '.ovis\server'
-        $marked = (Test-Path -LiteralPath (Join-Path $serverDir 'from-source')) -and (Get-Content -Raw -LiteralPath (Join-Path $serverDir 'from-source')).Trim() -eq '1.2.3'
-        $toSource = $marked -or -not (Test-Path -LiteralPath (Join-Path $serverDir 'bin\ovis-server.exe'))
-        if ($args[-1] -eq 'stop') {
-            if ($env:OVIS_FROM_SOURCE -ne '1' -and -not $marked -and $state.releaseDown) { $global:LASTEXITCODE = 1; return }
-            if (($env:OVIS_FROM_SOURCE -eq '1' -or $toSource) -and -not (Test-Path -LiteralPath (Join-Path $root 'node_modules\all-installed'))) { $global:LASTEXITCODE = 1; return }
-            if ($state.serverRecord) { Remove-Item -LiteralPath $state.serverRecord -Force -ErrorAction SilentlyContinue }
-        }
-        if ($env:OVIS_FROM_SOURCE -eq '1' -and $args[-1] -eq 'install') {
-            if ($state.serverRecord -and (Test-Path -LiteralPath $state.serverRecord)) { $state.builtUnderServer = $true }
-            New-Item -ItemType Directory -Force -Path $serverDir | Out-Null
-            Set-Content -LiteralPath (Join-Path $serverDir 'source-build') -Value 'started'
-            Set-Content -LiteralPath (Join-Path $serverDir 'from-source') -Value '1.2.3'
-            if ($state.failBuild) { $global:LASTEXITCODE = 1; return }
-            # a build cut off: it says the marker is written, then runs until the test stops the installer, as Ctrl+C does
-            if ($state.cutBuild) { $null = $state.cutBuild.Set(); Start-Sleep -Seconds 60 }
-            New-Item -ItemType Directory -Force -Path (Join-Path $root 'node_modules'), (Join-Path $root 'dist') | Out-Null
-            Set-Content -LiteralPath (Join-Path $root 'node_modules\all-installed'), (Join-Path $root 'dist\index.html') -Value ''
-            Set-Content -LiteralPath (Join-Path $serverDir 'source-build') -Value "1.2.3 $(Get-TestCommit $state.ref)"
-        }
-    }
-    else { throw "Unexpected Bun command: $args" }
-}
-function herdr {
-    $global:LASTEXITCODE = 0
-    switch ($args -join ' ') {
-        '--version' { 'herdr 0.9.3' }
-        'plugin list --json' {
-            $plugins = @()
-            if ($state.installed) { $plugins = @(@{ plugin_id = $state.installedId; plugin_root = $pluginRoot }) }
-            if ($state.linkedRoot) { $plugins = @(@{ plugin_id = 'devswha.ovis'; plugin_root = $state.linkedRoot }) }
-            if ($state.legacyInstalled) { $plugins += @{ plugin_id = 'devswha.herdr-web-ui'; plugin_root = (Join-Path $ghStandIn 'legacy root') } }
-            @{ result = @{ plugins = $plugins } } | ConvertTo-Json -Depth 4 -Compress
-        }
-        'status server --json' { @{ running = $state.running } | ConvertTo-Json -Compress }
-        'plugin action invoke devswha.ovis.start-windows' { $state.started = $true; '{}' }
-        'plugin action invoke devswha.herdr-web-ui.start-windows' { $state.started = $true; $state.startedLegacy = $true; '{}' }
-        'plugin uninstall devswha.ovis' { $state.installed = $false; $state.uninstalls++; 'Uninstalled' }
-        'plugin uninstall devswha.herdr-web-ui' { $state.legacyInstalled = $false; 'Uninstalled' }
-        'plugin config-dir devswha.ovis' { Join-Path $ghStandIn 'config\devswha.ovis' }
-        'plugin config-dir devswha.herdr-web-ui' { Join-Path $ghStandIn 'config\devswha.herdr-web-ui' }
-        default {
-            if ($args[0] -eq 'plugin' -and $args[1] -eq 'link') { $state.linkedRoot = $args[2]; return 'Linked' }
-            if ($args[0] -eq 'plugin' -and $args[1] -eq 'install') {
-                if ($state.failInstall) { $global:LASTEXITCODE = 1; return }
-                # under the id the ref's manifest names
-                $state.installed = $true; $state.installs++; $state.ref = $args[4]; $state.installedId = $state.refId
-                # what herdr's build step (scripts/plugin-launch.ts install) is told: source, or the release's binary
-                $state.pluginSource = "$env:OVIS_FROM_SOURCE"
-                Remove-Item -LiteralPath $pluginRoot -Recurse -Force -ErrorAction SilentlyContinue
-                New-Item -ItemType Directory -Force -Path (Split-Path $launcher) | Out-Null
-                if ($state.windowsRelease) { Set-Content -LiteralPath $launcher -Value '' }
-                'Installed Ovis'
-            } else { throw "Unexpected herdr command: $args" }
-        }
-    }
-}
-function Invoke-WebRequest {
-    # the manifest of the ref being installed: what its id is, or a network that blocks the host
-    if ("$($args[-1])" -like 'https://raw.githubusercontent.com/devswha/ovis/*/herdr-plugin.toml') {
-        if ($state.manifestBlocked) { throw 'Unable to connect to the remote server' }
-        return @{ Content = "name = `"Ovis`"`nid = `"$($state.refId)`"" }
-    }
-    # herdr's installer, as the stand-in the test wrote: -OutFile is the last argument
-    if ($args[0] -eq 'https://herdr.dev/install.cmd') { Set-Content -LiteralPath $args[-1] -Value $state.herdrInstaller -Encoding Ascii; return }
-    if ($args[0] -ne 'https://bun.sh/install.ps1') { throw "Unexpected download: $args" }
-    if ($state.failBun) { return @{ Content = 'param($Version)' } }
-    # as Bun's installer does: the session is left with the user's PATH and nothing of the machine's
-    @{ Content = 'param($Version) $state.bunVersion = $Version; $env:PATH = "C:\Users\someone\.bun\bin"' }
-}
-
-try {
-    New-Item -ItemType Directory -Force -Path $ghStandIn | Out-Null
-    Set-Content -LiteralPath (Join-Path $ghStandIn 'gh.cmd') -Encoding Ascii -Value @'
-@echo off
-echo %*>>"%~dp0calls.txt"
-set /p mode=<"%~dp0mode.txt"
-echo %* | findstr /C:"--method PUT" >nul
-if not errorlevel 1 goto star
-if "%mode%"=="starred" goto starred
-if "%mode%"=="hangs" goto hangs
-if "%mode%"=="signed-out" goto signedout
-if "%mode%"=="upstream" goto upstream
-if "%mode%"=="lingering" goto lingering
-echo HTTP/2.0 404 Not Found
-echo gh: Not Found (HTTP 404) 1>&2
-exit /b 1
-:starred
-echo HTTP/2.0 204 No Content
-exit /b 0
-:hangs
-ping -n 16 127.0.0.1 >nul
-exit /b 0
-:signedout
-echo To get started with GitHub CLI, please run:  gh auth login 1>&2
-exit /b 4
-:lingering
-powershell -NoProfile -Command "(Start-Process ping -ArgumentList '-n','47','127.0.0.1' -NoNewWindow -PassThru).Id | Set-Content -Encoding Ascii '%~dp0child.txt'"
-echo HTTP/2.0 404 Not Found
-exit /b 1
-:upstream
-echo HTTP/2.0 500 Internal Server Error
-echo gh: upstream answered HTTP 404 (HTTP 500) 1>&2
-exit /b 1
-:star
-if "%mode%"=="refuses" goto refused
-echo HTTP/2.0 204 No Content
-exit /b 0
-:refused
-echo HTTP/2.0 404 Not Found
-echo gh: Not Found (HTTP 404) 1>&2
-exit /b 1
-'@
-    $env:PATH = "$ghStandIn;$env:PATH"
-    $ghCalls = Join-Path $ghStandIn 'calls.txt'
-    # a first install with this gh; then what the installer said, and how often it starred
-    $firstInstall = {
-        param([string]$Gh, [string]$Source)
-        $state.installed = $false; $star.asked = 0
-        Set-Content -LiteralPath (Join-Path $ghStandIn 'mode.txt') -Encoding Ascii -Value $Gh
-        Remove-Item -LiteralPath $ghCalls -Force -ErrorAction SilentlyContinue
-        if ($Source) { Invoke-Expression $Source 6>&1 | Out-String } else { & $installer -Ref '' 6>&1 | Out-String }
-    }
-    $given = { @(Get-Content -LiteralPath $ghCalls -ErrorAction SilentlyContinue | Where-Object { $_ -match '--method PUT' }).Count }
-    # the status read: the installer's own launcher must reach the stand-in, or a wrong launcher would pass as "already starred"
-    $read = { @(Get-Content -LiteralPath $ghCalls -ErrorAction SilentlyContinue | Where-Object { $_ -match 'user/starred' -and $_ -notmatch '--method PUT' }).Count }
-    Set-Content -LiteralPath (Join-Path $ghStandIn 'mode.txt') -Encoding Ascii -Value 'signed-out'
-
-    & $installer -Ref ''
-    Assert ($state.installed -and $state.ref -eq 'v1.10.0' -and $state.started) 'Install must choose the highest stable release and start a running server'
-    & $installer -Ref ''
-    Assert ($state.installs -eq 1) 'Rerun must preserve the installed plugin'
-    & {
-        $ErrorActionPreference = 'Continue'
-        Invoke-Expression (Get-Content -Raw $installer)
-        Assert ($ErrorActionPreference -eq 'Continue') 'The one-line installer must preserve the caller error preference'
-        Assert (-not (Test-Path Function:\Run-Tool)) 'The one-line installer must keep helper functions in its own scope'
-    }
-
-    $state.bunVersion = '1.3.0'
-    & $installer -Ref ''
-    Assert ($state.bunVersion -eq '1.4.2') 'An old Bun must be updated through its installer'
-    Assert ($env:PATH.EndsWith($originalPath)) "Bun's installer must not leave the session without the machine PATH"
-    $state.bunVersion = '1.3.0'; $state.failBun = $true
-    $failed = $false
-    try { & $installer -Ref '' } catch { $failed = $_.Exception.Message -match 'Needs Bun' }
-    Assert $failed 'An unsuccessful Bun bootstrap must stop installation'
-    $state.bunVersion = '1.4.2'; $state.failBun = $false
-
-    $state.installed = $false; $state.running = $false; $state.started = $false
-    & $installer -Ref 'feat/windows-install'
-    Assert ($state.ref -eq 'feat/windows-install' -and -not $state.started) 'Explicit ref must install without starting herdr'
-    # without OVIS_FROM_SOURCE, herdr still builds a branch from its own sources, and the caller's variable is left as it was
-    $state.installed = $false; $env:OVIS_FROM_SOURCE = ''
-    & $installer -Ref 'feat/windows-install'
-    Assert ($state.pluginSource -eq '1' -and -not $env:OVIS_FROM_SOURCE) "A branch must be built from its own sources (herdr's build was told '$($state.pluginSource)')"
-    # a branch an earlier installer left on the release's binary (a launcher, no from-source marker): with herdr running,
-    # a rerun stops that server and builds the checkout from its own sources before the start and the status read
-    $state.running = $true; $state.started = $false; $state.launcherCalls = @(); $installs = $state.installs
-    Set-Content -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts') -Value ''
-    Set-Content -LiteralPath (Join-Path $pluginRoot 'package.json') -Value '{ "version": "1.2.3" }'
-    $fromSource = Join-Path $pluginRoot '.ovis\server\from-source'
-    $sourceBuild = Join-Path $pluginRoot '.ovis\server\source-build'
-    # herdr's state dir is the test's own: the server a start recorded (scripts/plugin.ts's server.pid and server.owner)
-    # is in plugins\devswha.ovis there, and none of this PC's is read
-    $savedStateHome = $env:XDG_STATE_HOME
-    $env:XDG_STATE_HOME = Join-Path $ghStandIn 'state home'
     $state.serverRecord = Join-Path $env:XDG_STATE_HOME 'herdr\plugins\devswha.ovis\server.pid'
     # a server of this plugin running as this very process, recorded as start records it: its pid, and its creation time
     # (or another, for a record whose pid another process has taken since)
@@ -553,7 +302,23 @@ exit /b 1
     $star.answer = 'y'
     $said = & $firstInstall 'not' $atTerminal
     Assert ($star.asked -eq 1 -and (& $given) -eq 1 -and $said -match 'starred\. Thank you') "A yes must star once: $said"
+    Write-Host "DEBUG env CI=$env:CI XDG=[$env:XDG_STATE_HOME] LOCALAPPDATA=$env:LOCALAPPDATA ComSpec=$env:ComSpec PSVersion=$($PSVersionTable.PSVersion)"
+    Write-Host "DEBUG gh: $((Get-Command gh -All -ErrorAction SilentlyContinue | ForEach-Object { "$($_.CommandType):$($_.Source)" }) -join ' | ')"
+    Write-Host "DEBUG PATH head: $(($env:PATH -split ';' | Select-Object -First 8) -join ';')"
+    Write-Host "DEBUG standin dir: $((Get-ChildItem -Force $ghStandIn | ForEach-Object Name) -join ', ')"
+    Write-Host "DEBUG mode.txt before: [$(Get-Content -Raw (Join-Path $ghStandIn 'mode.txt'))]"
+    $dbgParsed = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $installer).Path, [ref]$null, [ref]$null)
+    Invoke-Expression ($dbgParsed.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-GhApi' }, $true).Extent.Text)
+    Set-Content -LiteralPath (Join-Path $ghStandIn 'mode.txt') -Encoding Ascii -Value 'refuses'
+    $dbg = Invoke-GhApi 'user/starred/devswha/ovis'
+    Write-Host "DEBUG direct Invoke-GhApi (refuses): $($dbg | ConvertTo-Json -Compress)"
+    $dbgPlain = & cmd /d /c "`"$(Join-Path $ghStandIn 'gh.cmd')`" api --hostname github.com --include user/starred/devswha/ovis" 2>&1
+    Write-Host "DEBUG plain gh.cmd: [$(($dbgPlain | ForEach-Object { "$_" }) -join ' / ')] exit=$LASTEXITCODE"
+    Write-Host "DEBUG lastexit=$LASTEXITCODE EAP=$ErrorActionPreference star=$($star | ConvertTo-Json -Compress)"
     $said = & $firstInstall 'refuses' $atTerminal
+    Write-Host "DEBUG said (refuses): [$said]"
+    Write-Host "DEBUG calls.txt: [$(Get-Content -Raw $ghCalls -ErrorAction SilentlyContinue)]"
+    Write-Host "DEBUG star after: $($star | ConvertTo-Json -Compress)"
     Assert ($said -match 'could not star it' -and $state.installed) "A star gh refuses must be said, not thrown: $said"
     $star.failAsk = $true
     $said = & $firstInstall 'not' $atTerminal
@@ -879,3 +644,5 @@ try { $null = Install-OvisBinary $Version; exit 0 } catch { Write-Output $_.Exce
     Remove-Item -LiteralPath $ghStandIn -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $pluginRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+[Showing lines 252-881 of 881; earlier output dropped]
