@@ -30,7 +30,7 @@ import { FileTextSizeRow } from "./FileTextSizeRow.tsx";
 import { FoldHelpersRow } from "./FoldHelpersRow.tsx";
 import { FilesPanelRow } from "./FilesPanelRow.tsx";
 import { onSettingsHistory, recordSettings, settingsEntry, settingsLevels, type SettingsLevel } from "../lib/settingsHistory.ts";
-import { ContextCircleRow, ForkFeatures, LiveVoiceRow, OmarchyRow, OpenLiveWorkRow, ReadAloudVoiceRow } from "../fork/SettingsRows.tsx";
+import { ForkFeatures, LiveVoiceRow, OmarchyRow, OpenLiveWorkRow, ReadAloudVoiceRow } from "../fork/SettingsRows.tsx";
 import { ThemeFiles, themeLabel } from "./ThemeFiles.tsx";
 import { ChipToggles, SettingsBare, Segmented, SettingsFold, SettingsGroup, SettingsQuery, SettingsRow, SettingsSelect, Stepper, Toggle, settingsQueryWords, useSettingsRowSentence } from "./SettingsControls.tsx";
 import { PcLoadSetting } from "./MachineStats.tsx";
@@ -666,7 +666,6 @@ function ChatPage() {
         <SettingsRow icon={CornerDownLeft} label={touch ? t("Return inserts a new line") : t("Enter sends")} description={touch ? t("On, Return starts a new line on this device and the Send button sends. Off, Return sends the message.") : t("On, Enter sends the message on this device and Shift+Enter starts a new line. Off, Enter starts a new line and Ctrl+Enter (⌘+Enter on a Mac) sends.")} reset={["enterSends"]}>
           <Toggle label={touch ? t("Return inserts a new line") : t("Enter sends")} checked={touch ? !enterSendsOn(settings, touch) : enterSendsOn(settings, touch)} onChange={(checked) => update({ enterSends: touch ? !checked : checked })} />
         </SettingsRow>
-        <ContextCircleRow />
         {/* the message box's optional buttons and chips, each off by default; the suggestion chip is drawn on a touch screen only (Composer.tsx) */}
         <SettingsRow icon={TextCursorInput} label={t("Composer buttons")} description={touch
           ? t("Optional buttons for the message box, each off until you turn it on. Paste and send sends the text copied on this device as a message; Artifacts lists the pages a Claude Code session published; Suggestion offers the prompt the agent suggests next.")

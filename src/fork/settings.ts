@@ -9,6 +9,7 @@ const legacyKeyBarItems: KeyBarItem[] = DEFAULT_KEY_BAR_ITEMS.flatMap((item): Ke
 /** Fork choices. New devices keep upstream's behavior. */
 export interface ForkSettings {
   followOmarchy: boolean;
+  /** retired with the Context circle setting; kept until shared/preferences.ts drops the key, which changes the bundle identity */
   contextCircle: boolean;
   openLiveWork: boolean;
   speechVoice: SpeechVoice;
@@ -16,7 +17,7 @@ export interface ForkSettings {
   squareCorners: boolean;
   moreViewToggle: boolean;
   agentFriends: boolean;
-  composerExtras: boolean;
+  piModelPicker: boolean;
   chatMotion: boolean;
   piLiveVoice: boolean;
   computerView: boolean;
@@ -28,7 +29,7 @@ export const FORK_DEFAULTS: ForkSettings = {
   followOmarchy: false, contextCircle: true, openLiveWork: true,
   speechVoice: SPEECH_DEFAULT_VOICE, liveVoice: "pi",
   squareCorners: false, moreViewToggle: false, agentFriends: false,
-  composerExtras: false, chatMotion: false, piLiveVoice: false,
+  piModelPicker: false, chatMotion: false, piLiveVoice: false,
   computerView: false, pullRequests: false, readAloud: false,
 };
 
@@ -43,6 +44,8 @@ export function sanitizeForkSettings(record: Record<string, unknown>): ForkSetti
     if (key === "speechVoice" || key === "liveVoice") continue;
     settings[key] = typeof record[key] === "boolean" ? record[key] : FORK_DEFAULTS[key];
   }
+  // Composer extras was renamed Pi model picker once it held only the pi model menu
+  if (typeof record["piModelPicker"] !== "boolean" && typeof record["composerExtras"] === "boolean") settings.piModelPicker = record["composerExtras"];
   settings.speechVoice = SPEECH_VOICES.find((voice) => voice === record["speechVoice"]) ?? FORK_DEFAULTS.speechVoice;
   settings.liveVoice = isPiVoice(record["liveVoice"]) ? record["liveVoice"] : FORK_DEFAULTS.liveVoice;
   return settings;
@@ -56,8 +59,8 @@ export function migrateForkSettings(raw: unknown): unknown {
   const keyBarDefaults = Object.hasOwn(record, "keyBarItems") || Object.hasOwn(record, "keyBarExtras")
     ? {} : { keyBarItems: legacyKeyBarItems };
   // Once a new setting is explicit it always wins, including false and a reset to upstream defaults.
-  return { phoneTabs: "header", ...keyBarDefaults, contextCircle: true, squareCorners: true, moreViewToggle: true,
-    agentFriends: true, composerExtras: true, chatMotion: true,
+  return { phoneTabs: "header", ...keyBarDefaults, squareCorners: true, moreViewToggle: true,
+    agentFriends: true, piModelPicker: true, chatMotion: true,
     piLiveVoice: true, computerView: true, pullRequests: true, readAloud: true, ...record };
 }
 

@@ -12,9 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { flushSync } from "react-dom";
-import { ContextRing } from "../fork/ContextRing.tsx";
-import { ComposerContext } from "../fork/ComposerContext.tsx";
-import { ArrowUp, ClipboardPaste, FileText, FolderGit2, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon, AudioLines, ChevronDown, Cpu } from "lucide-react";
+import { ArrowUp, ClipboardPaste, FileText, Folder, FolderGit2, GitBranch, LoaderCircle, Package, Plus, Puzzle, Square, TriangleAlert, UserRound, X, type LucideIcon, AudioLines, ChevronDown, Cpu } from "lucide-react";
 
 import "./Composer.css";
 
@@ -40,8 +38,10 @@ import {
   composerStatusCompact,
   composerStatusHint,
   composerStatusWord,
+  contextLeftPercent,
   type DraftRefusal,
   draftSendNote,
+  formatTokens,
   imageMention,
   insertLeadingMention,
   MAX_COMPOSER_CHARS,
@@ -53,10 +53,11 @@ import {
   terminalCommand,
   typedTerminalCommand,
 } from "../lib/compose.ts";
+import { composerStrip } from "../lib/composerStrip.ts";
 import { composerLabelDraw } from "../lib/composerLabelFit.ts";
 import { composerFull, formatChars, pasteOverflow } from "../lib/composerLength.ts";
 import { normalizeComposerImageFile } from "../lib/composerImageMime.ts";
-import { knownStatus, paneStatus } from "../lib/status.ts";
+import { paneStatus } from "../lib/status.ts";
 import { modelLabel } from "../lib/modelName.ts";
 import { useFacesArrived } from "../lib/fontFaces.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "../lib/mentions.ts";
@@ -76,7 +77,6 @@ import { useT } from "../lib/i18n.ts";
 import { offersRetry, userFailure, type UserFailure } from "../lib/userError.ts";
 import { AttachmentTooLargeError } from "../lib/api.ts";
 import { modalOpen } from "../lib/focus.ts";
-import { AgentAvatar } from "../fork/AgentAvatar.tsx";
 
 export interface ComposerProps {
   connected: boolean;
@@ -179,6 +179,29 @@ function readSlashUsage(): Record<string, number> {
   } catch {
     return {};
   }
+}
+
+/**
+ * What is left of the context, as a ring filled by what is used (as Codex's app shows it):
+ * red when little is left. It only shows: the number is in its tooltip and read to a screen
+ * reader, and a press does nothing. A window the transcript does not name draws no ring.
+ */
+function ContextRing({ context }: { context: NonNullable<ConversationMetadata["context"]> }) {
+  const t = useT();
+  const left = contextLeftPercent(context);
+  if (left === null || context.window === null) return null;
+  const label = t("Context {percent}% left", { percent: left });
+  const detail = t("{used} of {window} tokens", { used: formatTokens(context.used), window: formatTokens(context.window) });
+  const radius = 6;
+  const circumference = 2 * Math.PI * radius;
+  return <span className={`composer-context${left <= 20 ? " is-low" : ""}`} title={`${label} · ${detail}`}>
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <circle className="composer-context-track" cx="8" cy="8" r={radius} />
+      <circle className="composer-context-used" cx="8" cy="8" r={radius}
+        strokeDasharray={`${circumference * (100 - left) / 100} ${circumference}`} transform="rotate(-90 8 8)" />
+    </svg>
+    <span className="visually-hidden">{label} · {detail}</span>
+  </span>;
 }
 
 /** a model's maker's mark for the model menu; the menu's chip icon stands for a maker without one */
@@ -1179,7 +1202,7 @@ export function Composer({
   // an orb where there is nothing to send: a live call with the Pi in this pane, from a phone or a PC alike
   const primaryAction = composerPrimaryAction({ sending: sending || carried.length > 0, working: isWorking, text, hasAttachments: attachments.length > 0, canStartVoice: voiceAvailable && role !== "observe" && connected });
   const hint = composerStatusHint({ uploading, connected, text, noRoom: roomless !== undefined });
-  const models = settings.composerExtras && agent === "pi" && role !== "observe" && metadata?.models?.length ? metadata.models : undefined;
+  const models = settings.piModelPicker && agent === "pi" && role !== "observe" && metadata?.models?.length ? metadata.models : undefined;
   // a switch shows at once: pi applies it in a moment, but its transcript reaches the pill a read later
   // (seconds for a long one or a far phone). The pick holds until the transcript says the same, or 8s
   const recordedModel = models?.find((entry) => entry.current);
@@ -1195,8 +1218,6 @@ export function Composer({
   }, [picked, settled]);
   const modelId = pickedModel ? pickedModel.id.slice(pickedModel.id.indexOf("/") + 1) : metadata?.model;
   const modelShown = Boolean(modelId || effort);
-  // the ring leads the pill, in the place a maker's mark had: the header already says which agent this is
-  const ring = metadata?.context && settings.contextCircle ? <ContextRing context={metadata.context} interactive={settings.composerExtras} /> : null;
   // an id modelLabel cannot name takes the name pi gives it, where pi's extension recorded one
   const label = modelId ? modelLabel(modelId) : null;
   const model = label && !label.named && currentModel ? { ...label, text: currentModel.name, named: true } : label;
@@ -1219,13 +1240,62 @@ export function Composer({
     : hint === "near-limit" ? composerFull(text.length, MAX_COMPOSER_CHARS) ? t("{max}-character limit", { max: formatChars(MAX_COMPOSER_CHARS) }) : t("{count} characters left", { count: MAX_COMPOSER_CHARS - text.length })
     : hint === "uploading" ? t("Uploading file…") : offlineSentence;
   /** an upload's failure as one line: what failed and the cause it knows, then what the pick left out */
+  const pillBody = <>
+    {modelShown && <span className="composer-model-info" aria-label={t("Model and reasoning")}>
+      {/* a name only for an id modelLabel can name for certain; any other id is drawn as received, in the identifier face */}
+      <span className={`composer-model${model ? model.named ? "" : " is-id" : " is-none"}`} title={modelId ?? t("Model not available")}>{model?.text ?? t("Model —")}</span>
+      {/* behind a name the id as received is still read; a touch cannot reach the title */}
+      {model?.named && <span className="composer-model-id visually-hidden">{modelId}</span>}
+      {/* no level recorded: nothing is drawn for it, no dot and no dash; the sentence is still read */}
+      <span className={`composer-reasoning${effort ? "" : " visually-hidden"}`} title={effort ? t("Reasoning effort: {effort}", { effort: effort }) : t("Reasoning effort not available")}>
+        <span className="composer-reasoning-full visually-hidden">{t("Reasoning {effort}", { effort: effort ?? "—" })}</span>
+        {effort && <>
+          <span className="composer-reasoning-dot" aria-hidden="true">·</span>
+          <span className="composer-reasoning-short" aria-hidden="true">{effort}</span>
+        </>}
+      </span>
+    </span>}
+    {metadata?.context && <ContextRing context={metadata.context} />}
+    {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
+      className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}
+      title={`${usageName(usage)}${usageRecorded ? `\n${usageRecorded.join("\n")}` : ""}\n${usageDetail}`}
+    >
+      <span aria-hidden="true">{usageCaption}</span>
+      <span className="visually-hidden">{usageAccessible}</span>
+    </span>}
+  </>;
   const noteLine = note === null ? null : typeof note === "string" ? note : "failure" in note
     ? [note.failure.cause === null ? t("{name} could not be attached", { name: note.attachment.file.name }) : t("{name} could not be attached: {reason}", { name: note.attachment.file.name, reason: note.failure.cause }), note.attachment.leftOut].filter((part) => part !== null).join(" ")
     : note.note;
-  // Fit only changes to drawn content. Streaming context usage is a fixed-size ring unless
-  // its number is open on desktop; transcript/status refreshes need no measurement layout.
+  /** the strip under the card: the folder and the branch the caller knows; none, or a phone's screen, no strip */
+  const strip = mobile ? null : composerStrip({ cwd, branch, repo: worktreeRepo });
+  const worktree = worktreeRepo !== null;
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const stripElement = stripRef.current;
+    if (!stripElement) return;
+    const fit = (): void => {
+      const folder = stripElement.querySelector<HTMLElement>(".composer-strip-folder");
+      if (!folder) return;
+      const branch = stripElement.querySelector<HTMLElement>(".composer-strip-branch");
+      // Measure the full path at its natural width, then expose just the label that fits.
+      stripElement.dataset.fullPath = "";
+      stripElement.dataset.measuring = "";
+      const styles = getComputedStyle(stripElement);
+      const available = stripElement.clientWidth - parseFloat(styles.paddingLeft) - parseFloat(styles.paddingRight);
+      const needed = folder.getBoundingClientRect().width + (branch ? branch.getBoundingClientRect().width + parseFloat(styles.columnGap) : 0);
+      stripElement.toggleAttribute("data-full-path", strip?.path != null && needed <= available);
+      delete stripElement.dataset.measuring;
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(stripElement);
+    return () => observer.disconnect();
+  }, [strip?.branch, strip?.folder, strip?.path, worktree, facesLoaded, t]);
+  // Fit only changes to drawn content. Streaming context usage is a fixed-size ring;
+  // transcript/status refreshes need no measurement layout.
   useLayoutEffect(fitStatus, [fitStatus, agent, modelId, effort,
-    metadata?.context?.window, settings.contextCircle, metadata?.models, mobile, usageCaption, usage?.problem, hintText, dictation.shown, backgroundTasks,
+    metadata?.context?.window, metadata?.models, mobile, usageCaption, usage?.problem, hintText, dictation.shown, backgroundTasks,
     plan?.done, plan?.total, plan?.current, statusCompact, facesLoaded, t]);
   const menuId = `composer-menu-${paneId}`;
   // the suggestions' own close, for a pointer or a phone, which has no Escape: it does what Escape does, and the
@@ -1574,68 +1644,19 @@ export function Composer({
             <span className="composer-agent-label visually-hidden">{agentLabel}</span>
             <span className="composer-status-separator visually-hidden" aria-hidden="true">·</span>
             <strong className="visually-hidden">{t(composerStatusWord(shownStatus))}</strong>
-            {/* the context ring, the model and the level as one quiet pill. The header names the agent, so the
-                pill draws no mark. A pane that names no model draws no fill (.is-bare) */}
-            {/* pi with its ovis-model extension names the models it may switch to: the pill opens them, and the
-                thinking slider, while pi is idle; any other pane's pill only shows */}
-            {models ? (
-              <span className={`composer-pill${metadata?.model ? "" : " is-bare"}`}>
-              {ring}
-              <button type="button" className="composer-pill-menu" aria-haspopup="menu" aria-expanded={modelMenu !== null}
+            {/* the mark, the model, the level and the context ring as one quiet pill. It only shows: no role,
+                no focus, nothing to press but the ring inside it. A pane that names no model draws no pill
+                (.is-bare): the mark, a level if it has one, and the ring stand in the row as they are.
+                Fork: with Pi model picker on, a pi pane's model, level and ring open its model menu while pi is idle */}
+            <span className={`composer-pill${metadata?.model ? "" : " is-bare"}`}>
+              {agent && <AgentMark agent={agent} size={14} />}
+              {models ? <button type="button" className="composer-pill-menu" aria-haspopup="menu" aria-expanded={modelMenu !== null}
                 disabled={!switchable} title={switchable ? t("Switch model") : t("Switch the model once the agent is idle")}
                 onClick={(event) => setModelMenu(modelMenu ? null : event.currentTarget)}>
-              {modelShown && <span className="composer-model-info" aria-label={t("Model and reasoning")}>
-                {/* a name only for an id modelLabel can name for certain; any other id is drawn as received, in the identifier face */}
-                <span className={`composer-model${model ? model.named ? "" : " is-id" : " is-none"}`} title={modelId ?? t("Model not available")}>{model?.text ?? t("Model —")}</span>
-                {/* behind a name the id as received is still read; a touch cannot reach the title */}
-                {model?.named && <span className="composer-model-id visually-hidden">{modelId}</span>}
-                {/* no level recorded: nothing is drawn for it, no dot and no dash; the sentence is still read */}
-                <span className={`composer-reasoning${effort ? "" : " visually-hidden"}`} title={effort ? t("Reasoning effort: {effort}", { effort: effort }) : t("Reasoning effort not available")}>
-                  <span className="composer-reasoning-full visually-hidden">{t("Reasoning {effort}", { effort: effort ?? "—" })}</span>
-                  {effort && <>
-                    <span className="composer-reasoning-dot" aria-hidden="true">·</span>
-                    <span className="composer-reasoning-short" aria-hidden="true">{effort}</span>
-                  </>}
-                </span>
-              </span>}
-              {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
-                className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.recorded ? " is-recorded" : ""}`}
-                title={`${usageName(usage)}${usageRecorded ? `\n${usageRecorded.join("\n")}` : ""}\n${usageDetail}`}
-              >
-                <span aria-hidden="true">{usageCaption}</span>
-                <span className="visually-hidden">{usageAccessible}</span>
-              </span>}
-              <ChevronDown className="composer-pill-chevron" aria-hidden="true" />
-              </button>
-              </span>
-            ) : (
-              <span className={`composer-pill${metadata?.model ? "" : " is-bare"}`}>
-              {!settings.composerExtras && agent && <AgentAvatar agent={agent} size={14} paneId={paneId} status={knownStatus(agentStatus)} />}
-              {settings.composerExtras && ring}
-              {modelShown && <span className="composer-model-info" aria-label={t("Model and reasoning")}>
-                {/* a name only for an id modelLabel can name for certain; any other id is drawn as received, in the identifier face */}
-                <span className={`composer-model${model ? model.named ? "" : " is-id" : " is-none"}`} title={modelId ?? t("Model not available")}>{model?.text ?? t("Model —")}</span>
-                {/* behind a name the id as received is still read; a touch cannot reach the title */}
-                {model?.named && <span className="composer-model-id visually-hidden">{modelId}</span>}
-                {/* no level recorded: nothing is drawn for it, no dot and no dash; the sentence is still read */}
-                <span className={`composer-reasoning${effort ? "" : " visually-hidden"}`} title={effort ? t("Reasoning effort: {effort}", { effort: effort }) : t("Reasoning effort not available")}>
-                  <span className="composer-reasoning-full visually-hidden">{t("Reasoning {effort}", { effort: effort ?? "—" })}</span>
-                  {effort && <>
-                    <span className="composer-reasoning-dot" aria-hidden="true">·</span>
-                    <span className="composer-reasoning-short" aria-hidden="true">{effort}</span>
-                  </>}
-                </span>
-              </span>}
-              {!settings.composerExtras && ring}
-              {usage !== undefined && isCurrent(usage) && usageLimit !== undefined && <span
-                className={`composer-usage${usageLimit.used_percent >= HIGH_PERCENT ? " is-high" : ""}${usage.problem ? " has-problem" : ""}`}
-                title={`${usageName(usage)}\n${usageDetail}`}
-              >
-                <span aria-hidden="true">{usageCaption}</span>
-                <span className="visually-hidden">{usageAccessible}</span>
-              </span>}
-              </span>
-            )}
+                {pillBody}
+                <ChevronDown className="composer-pill-chevron" aria-hidden="true" />
+              </button> : pillBody}
+            </span>
             {modelMenu && models && <RowMenu anchor={modelMenu} title={t("Model")} onClose={() => setModelMenu(null)}
               items={models.map((entry) => ({ id: entry.id, label: entry.name, icon: Cpu, glyph: markGlyph(entry.id), checked: entry.id === currentModel?.id,
                 run: () => { if (entry.id !== currentModel?.id) switchTo(entry.id); } }))}
@@ -1695,7 +1716,24 @@ export function Composer({
           )}
         </div>
       </div>
-      <ComposerContext cwd={cwd} branch={branch} repo={worktreeRepo} mobile={mobile} facesLoaded={facesLoaded} />
+      {/* the strip tucked under the card (t3code's composer context strip): the pane's working folder and its
+          branch, each drawn only when the caller passes it. It only names them; nothing in it is pressed */}
+      {strip !== null && (
+        <div ref={stripRef} className="composer-strip">
+          {strip.folder !== null && <span className="composer-strip-item composer-strip-folder" title={strip.path ?? undefined}>
+            {worktree ? <FolderGit2 aria-hidden="true" /> : <Folder aria-hidden="true" />}
+            <span className="visually-hidden">{t("Working folder")}: </span>
+            <span className="composer-strip-text composer-strip-folder-name">{strip.folder}</span>
+            {strip.path !== null && <span className="composer-strip-text composer-strip-path">{strip.path}</span>}
+            {worktree && <span className="composer-strip-kind">{t("Worktree")}</span>}
+          </span>}
+          {strip.branch !== null && <span className="composer-strip-item composer-strip-branch" title={strip.branch}>
+            <GitBranch aria-hidden="true" />
+            <span className="visually-hidden">{t("Branch")}: </span>
+            <span className="composer-strip-text">{strip.branch}</span>
+          </span>}
+        </div>
+      )}
       {/* above the whole composer: inside the surface it would cover the text being dictated */}
       {dictation.shown && <VoiceRecordingPill dictation={dictation} align="start" />}
     </div>

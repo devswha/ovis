@@ -8,8 +8,6 @@ import { FORK_FEATURE_I18N } from "./featureI18n.ts";
 export const FORK_KO: Record<string, string> = {
   ...FORK_FEATURE_I18N.ko,
   ...FORK_I18N.ko,
-  "Context circle": "컨텍스트 링",
-  "A ring beside the model shows how full its context is. Tap it for the numbers.": "모델 옆의 링이 컨텍스트 사용량을 보여 줍니다. 탭하면 숫자가 나옵니다.",
   "Follow Omarchy": "Omarchy 따라가기",
   "This device has not sent its Omarchy theme. Its theme-set hook (scripts/omarchy-theme-hook.sh) sends it whenever the theme changes.": "이 기기는 아직 Omarchy 테마를 보내지 않았습니다. theme-set 훅(scripts/omarchy-theme-hook.sh)이 테마가 바뀔 때마다 보냅니다.",
   "Draws this device in its Omarchy theme, {name}, and changes with it. Only on this device: the themes above stay for the others.": "이 기기를 Omarchy 테마 {name}(으)로 그리고 테마가 바뀌면 따라 바꿉니다. 이 기기에서만: 다른 기기는 위의 테마를 유지합니다.",

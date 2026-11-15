@@ -8,8 +8,6 @@ import { FORK_FEATURE_I18N } from "./featureI18n.ts";
 export const FORK_ZH: Record<string, string> = {
   ...FORK_FEATURE_I18N.zh,
   ...FORK_I18N.zh,
-  "Context circle": "上下文圆环",
-  "A ring beside the model shows how full its context is. Tap it for the numbers.": "模型旁的圆环显示上下文用量。点按可查看数字。",
   "Follow Omarchy": "跟随 Omarchy",
   "This device has not sent its Omarchy theme. Its theme-set hook (scripts/omarchy-theme-hook.sh) sends it whenever the theme changes.": "这台设备还没有发送它的 Omarchy 主题。它的 theme-set 钩子 (scripts/omarchy-theme-hook.sh) 会在每次换主题时发送。",
   "Draws this device in its Omarchy theme, {name}, and changes with it. Only on this device: the themes above stay for the others.": "用这台设备的 Omarchy 主题 {name} 绘制界面，并随它变化。只在这台设备上：其他设备保留上面的主题。",

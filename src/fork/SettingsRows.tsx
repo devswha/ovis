@@ -12,7 +12,7 @@ export function ForkFeatures() {
     ["squareCorners", t("Square corners")],
     ["moreViewToggle", t("View toggle in More")],
     ["agentFriends", t("Agent friends")],
-    ["composerExtras", t("Composer extras")],
+    ["piModelPicker", t("Pi model picker")],
     ["chatMotion", t("Animated replies")],
     ["piLiveVoice", t("Pi live voice")],
     ["computerView", t("Computer view")],
@@ -42,16 +42,6 @@ export function OmarchyRow() {
   return (
     <SettingsRow label={t("Follow Omarchy")} description={description}>
       <Toggle label={t("Follow Omarchy")} checked={settings.followOmarchy} onChange={(followOmarchy) => update({ followOmarchy })} />
-    </SettingsRow>
-  );
-}
-
-export function ContextCircleRow() {
-  const { settings, update } = useSettings();
-  const t = useT();
-  return (
-    <SettingsRow label={t("Context circle")} description={t("A ring beside the model shows how full its context is. Tap it for the numbers.")}>
-      <Toggle label={t("Context circle")} checked={settings.contextCircle} onChange={(contextCircle) => update({ contextCircle })} />
     </SettingsRow>
   );
 }
