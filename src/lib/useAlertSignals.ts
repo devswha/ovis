@@ -117,7 +117,7 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
       dropIn(machine, pane, kind);
       chime(machine, pane, kind);
     }
-    if (pane && !muted && shouldNotifyStatus(previous, status) && alertsOnRef.current && !pushOnRef.current && alertsAllow(alertsRef.current, status, pane.agent_kind)) showPaneStatusNotification(message.pane_id, `${machine.name} · ${alertPaneTitle(pane)}`, status, () => takeNotificationTargetRef.current({ machine_id: machine.id, pane_id: message.pane_id, view: "chat", workspace_id: pane.workspace_id }), machine.id, pane.workspace_id, pane.agent ? paneFriend(machine.id, pane.pane_id) : undefined);
+    if (pane && !muted && shouldNotifyStatus(previous, status) && alertsOnRef.current && !pushOnRef.current && alertsAllow(alertsRef.current, status, pane.agent_kind)) showPaneStatusNotification(message.pane_id, `${machine.name} · ${alertPaneTitle(pane)}`, status, () => takeNotificationTargetRef.current({ machine_id: machine.id, pane_id: message.pane_id, view: "chat", workspace_id: pane.workspace_id }), machine.id, pane.workspace_id);
   }, []);
   const onPaneExited = useCallback((machine: Machine, message: PaneExitedMessage, takeNotificationTargetRef: TakeNotificationTargetRef) => {
     const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
@@ -129,7 +129,7 @@ export function useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRe
     }
     if (message.type === "pane-exited" && alertsOnRef.current && !pushOnRef.current && alertsRef.current.done !== "off" && !paneAlertsMuted(currentPaneMutes(), machine.id, message.pane_id)) {
       const pane = machine.snapshot?.panes.find((p) => p.pane_id === message.pane_id);
-      if (pane) showPaneEndedNotification(message.pane_id, `${machine.name} · ${alertPaneTitle(pane)}`, () => takeNotificationTargetRef.current({ machine_id: machine.id, pane_id: message.pane_id, view: "chat", workspace_id: pane.workspace_id }), machine.id, pane.workspace_id, pane.agent ? paneFriend(machine.id, pane.pane_id) : undefined);
+      if (pane) showPaneEndedNotification(message.pane_id, `${machine.name} · ${alertPaneTitle(pane)}`, () => takeNotificationTargetRef.current({ machine_id: machine.id, pane_id: message.pane_id, view: "chat", workspace_id: pane.workspace_id }), machine.id, pane.workspace_id);
     }
   }, []);
   return { dropIn, chime, onRoster, onPaneStatus, onPaneExited };

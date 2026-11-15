@@ -18,7 +18,7 @@ A file can contain more than one pile. The inventory below lists every upstream-
 | Computer view | `src/fork/ComputerView.tsx`, `src/fork/computerSettings.ts`, `server/fork/screen.ts` | Settings: Computer view. Bridge configuration remains `OVIS_SCREEN_*`; a browser toggle is not an authorization boundary. |
 | Repository pull requests | `src/fork/PullRequestsDialog.tsx`, `server/fork/pull-requests.ts` | Settings: Pull requests. Reuses repository/worktree routes and `gh`; no GitHub account or remote changes. |
 | Reply read-aloud | `src/fork/SpeakButton.tsx`, `src/fork/speech.ts`, `server/fork/speech.ts` | Settings: Read aloud, with the existing voice selector. No engine/model download until requested. |
-| Pi model picker | `src/fork/modelMark.ts`, the `models` branch of `src/components/Composer.tsx` | Settings: Pi model picker. On a pi pane with the ovis-model extension, the composer pill opens a model and thinking menu while pi is idle; every other pane, and the pill's mark, model and ring, stay upstream's. |
+| Pi model picker | `src/fork/ComposerPill.tsx`, `src/fork/modelMark.ts` | Settings: Pi model picker. On a pi pane with the ovis-model extension, the composer pill opens a model and thinking menu while pi is idle; every other pane, and the pill's mark, model and ring, stay upstream's. |
 | Live previews, word fade and send motion | `src/fork/liveTurn.ts`, `src/fork/streamReveal.ts`, `src/fork/wordFade.ts`, `src/fork/chatPresentation.ts`; the `MarkdownTextContext` hook in `src/components/Markdown.tsx` | Settings: Animated replies. The last reply's new words fade in as they arrive, Streamdown's way (a span and CSS fade per word, 350ms, staggered 100ms, an update's words started within 1000ms; slower than Streamdown's 150/40/320); a half-written word or markdown mark is held back. Upstream accepted-send follow remains the default. `MarkdownTextContext` is a small extension point worth offering upstream. |
 | Agent friends | `src/fork/AgentFriend.tsx`, `src/fork/AgentAvatar.tsx`, `src/fork/TabFriends.tsx`, `src/fork/friends.ts`, `server/fork/friends.ts` | Settings: Agent friends. With Agent friends on, every place that shows a running agent (inbox, sidebar, tabs, palette, header, chat) shows its friend alone, no harness logo, through `AgentAvatar`; the harness `AgentMark` stays where it names a harness (picker, settings, usage, setup) and where a pane has no friend. Fork-only. |
 | Generic runtime fixes | Conversation deltas, receipt whitespace, hidden-page throttling, independent machine reconnect, source bridges, favicon discovery, terminal/IME fixes | These fix transport or data interpretation, not personal layout. Their coupled upstream integrations and tests are retained; see limits below. |
@@ -77,8 +77,8 @@ Translations added by fork features are collected in `src/fork/featureI18n.ts` a
 
 A small import-and-call is possible for a self-contained component, not for every addition to an existing state machine. These remaining diffs are recorded rather than hidden behind new abstractions:
 
-1. `src/App.tsx`, `src/components/Sidebar.tsx`, `src/components/PaneCanvas.tsx` and `src/components/PaneTerminal.tsx` retain view selection, retained Computer state, voice mount points and menu wiring. They share selection/focus, restored-pane and responsive-header state. A single catch-all fork hook would need most of App's state and callbacks, increasing the integration surface rather than reducing it.
-2. `src/components/Composer.tsx` retains the Pi model/reasoning menu and a few branch/context props. Their lifecycle is coupled to existing metadata, send state and menus. Rendering/context components and CSS are extracted; the remaining state was not rewritten.
+1. `src/fork/useForkApp.tsx` now owns retained Computer state/rendering, phone voice, friend loading, native alert initialization, link routing and the desktop-script title contract. `src/App.tsx` calls it once and retains mount points, explicit `screenMachineId === null` guards and selection/menu callbacks. Existing `src/fork/HeaderLens.tsx` owns the header lens controls; upstream owns phone/header tab placement through `useTabSheet`. Sidebar, pane and terminal selection/focus integrations remain with their upstream owners. No Coding/Work browser split existed at this checkpoint; only the server-side runner filter remains.
+2. `src/fork/ComposerPill.tsx` owns the Pi model/reasoning menu, optimistic selection/expiry and context ring. `src/components/Composer.tsx` calls its hook and mounts its renderer around upstream's usage meter; the hook returns the displayed model/effort for the existing fit measurement. Voice-action/send arbitration and existing branch/context props remain integrated. An upstream pill-renderer extension point would avoid moving upstream's display markup; a shared App view extension point would reduce the remaining guards. Both are upstream PR candidates, not submitted.
 3. `src/components/ChatView.tsx` and `src/components/ChatTimeline.tsx` retain live-row identity, read reconciliation, footer/scroll anchoring and transcript-layout fixes. Compact runs, speech, motion and reveal helpers are extracted. Moving the remaining timeline changes would require replacing the upstream reader/virtualizer, not a behavior-preserving module move. The upstream stopped-send effect and selection are restored verbatim, including their source-level test.
 4. Machine connection/retry/update code, source-bundle handling, herdr-core adapters, Pi transcript/receipt parsing, native notifications and terminal lifecycle fixes retain their existing upstream integration and tests. These are portable correctness changes, not fork visual defaults. They need separate upstream correctness PRs; no new transport, cache, session ownership or RPC mechanism was invented here.
 5. `server/fork/core-terminals.ts` owns `ovis.view=work` hiding. `server/herdr-core/snapshot.ts` imports and calls its predicate in the live projection; `server/herdr-core/adapter.ts` imports and calls it in event filtering. There is no separate Coding/Work browser grouping. Pi session naming is dropped: snapshots use upstream terminal names/titles and never read Pi session metadata for tab names. The shared metadata reader remains for session history.
@@ -93,18 +93,39 @@ The browser runner uses the CI image and a `git ls-files` tar, isolated test ses
 
 ## One-line hook extraction (PR #84 follow-up)
 
-Counts compare against `upstream/main` with `git diff --shortstat upstream/main...HEAD -- <file>`; `+/-` means insertions/deletions. This table is updated alongside each extraction. The first row is complete; the browser rows still show their starting counts.
+Counts compare against `upstream/main` with `git diff --shortstat upstream/main...HEAD -- <file>`; `+/-` means insertions/deletions. Before is commit `30d046a4` (PR #84). This table is updated alongside each extraction. Deleted upstream display lines still count: moving the Composer pill removes inline fork logic, but cannot make those upstream deletions disappear.
 
 | Upstream file | Before +/− | After +/− | Fork hook |
 | --- | --- | --- | --- |
 | `server/herdr-core/adapter.ts` | +30/−6 | +8/−3 | Import and predicate call for event hiding; existing subscription bookkeeping remains |
 | `server/herdr-core/snapshot.ts` | +51/−12 | +3/−1 | Import and predicate call in live-terminal projection |
-| `src/App.tsx` | +65/−57 | +65/−57 | Pending extraction |
-| `src/components/Composer.tsx` | +101/−39 | +101/−39 | Pending extraction |
-| `src/components/InboxList.tsx` | +5/−5 | +5/−5 | Pending extraction |
-| `src/lib/api.ts` | +30/−7 | +30/−7 | Pending extraction |
-| `src/lib/notifications.ts` | +27/−12 | +27/−12 | Pending extraction |
-| `src/lib/useNotifications.ts` | +12/−3 | +12/−3 | Pending extraction |
+| `src/App.tsx` | +65/−57 | +43/−62 | One `useForkApp` import/call; Computer/voice mounts and selection/header guards; existing HeaderLens and AgentAvatar mounts remain |
+| `src/components/Composer.tsx` | +101/−39 | +31/−63 | One `useForkComposer` import/call plus `renderPill` mount; model/effort fit dependencies; existing voice/send integration remains |
+| `src/components/InboxList.tsx` | +5/−5 | +2/−1 | One import plus `<ForkInboxAvatar row={row} />`; original InboxAvatar restored |
+| `src/components/InboxMode.tsx` | +3/−2 | +3/−3 | Same avatar import and one-line mounts for phone thread title and wide thread chip |
+| `src/lib/api.ts` | +30/−7 | +7/−17 | Fork API compatibility re-export, delta-reader import/call, exported shared JSON helpers and delta-size cache guard |
+| `src/lib/notifications.ts` | +27/−12 | +9/−3 | Fork import, native permission hooks, one `forkAlert` call and friend-icon lookup; upstream signatures restored |
+| `src/lib/useNotifications.ts` | +12/−3 | +3/−2 | Native permission-source predicate only; upstream signature restored, auto-request owned by useForkApp |
+| `src/lib/useAlertSignals.ts` | +4/−2 | +2/−0 | No friend arguments on upstream notification calls; existing friend lookup for chimes/drop-ins stays |
+| `src/lib/notifications.test.ts` | +11/−3 | +3/−3 | Friend characterization moved under src/fork; existing return-Promise assertions retained |
+| `server/pi.ts` | +82/−2 | +53/−1 | Removed Pi-name-only function/imports; other existing Pi integrations unchanged |
+| `server/herdr-core/adapter.test.ts` | +19/−1 | +0/−0 | Removed fork-only naming test; upstream file restored |
+| `server/herdr-core/snapshot.test.ts` | +44/−1 | +22/−1 | Removed naming tests; runner-hiding tests remain |
+| `server/pi.test.ts` | +17/−1 | +0/−0 | Removed fork-only name lookup test; upstream file restored |
+
+`src/fork/api.ts` owns incremental turn fetching/merging, PR checkout and Pi live voice requests. It reuses upstream's authenticated JSON/error helpers: remote-machine routing, cancellation, conditional reads and cache accounting remain unchanged. `src/fork/notifications.ts` owns Android shell alerts/permission state and friend-picture lookup; callers no longer thread a friend through upstream APIs. Browser and native alerts still honor permission, visibility and the existing Agent friends setting. The App hook also supplies the live agent-pane set: a cached assignment must not decorate a shell after its agent exits, matching the old callers' `pane.agent` guard.
+
+Follow-up validation (local, no browser, push, deployment or merge):
+
+```sh
+TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" bun test src/fork/*.test.ts src/fork/*.test.tsx server/fork/core-terminals.test.ts server/herdr-core/adapter.test.ts server/herdr-core/snapshot.test.ts server/pi.test.ts src/conventions.test.ts server/conventions.test.ts src/lib/notifications.test.ts src/lib/useNotifications.hook.test.ts src/lib/api.test.ts src/lib/api-request-id.test.ts src/lib/api-signin.test.ts src/lib/conversationFetch.test.ts src/lib/sentWaiting.test.ts src/lib/compose.test.ts src/components/Composer*.test.tsx src/components/InboxList.test.tsx src/components/InboxMode.test.tsx src/components/TabStrip.appLayout.test.tsx src/components/PaneCanvas.appLayout.test.tsx scripts/changelog-fold.test.ts
+```
+
+Exit 0: 675 tests across 32 files, including both upstream conventions suites and fork conventions. Core naming followed a red/green regression; browser extraction reused existing tests and added pill/default/observe and Android alert characterization tests. A first test fixture lacked a browser language; setting its language explicitly fixed the fixture, not production code. An earlier notification run exposed stale friend arguments and a SettingsProvider dependency in the upstream notification hook; moving initialization into useForkApp and restoring the signatures fixed both. No known-flaky allowance was used. Final self-audit also found and migrated InboxMode's two shared-avatar callers. The new stale-friend regression failed first (`TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" bun test src/fork/AgentAvatar.test.tsx`, exit 1: an agentless pane still showed `/friends/neko.png`), then passed with the fork-local eligibility check (`TMPDIR="$HOME/.cache/ovis-tmp/fork-hooks" bun test src/fork/AgentAvatar.test.tsx src/components/InboxMode.test.tsx`, exit 0, 18 tests).
+
+Self-audit: correctness (naming fallback, exact runner label, upstream disabled/observe pill, stale friends), security (unchanged JSON/origin/auth/remote-routing helpers; no new endpoints/dependencies/secrets), performance (incremental merge/cache bounds and retained viewer preserved), clarity/conventions and diff whitespace reviewed. New tests exercise public notification/pill/avatar behavior. The generic Bigpowers audit output/state-file instructions were not used: this task forbids new planning/state artifacts. No independent review has run in this job.
+
+`bun run check fast`, `bun run build` and project-wide type checking were deliberately skipped under the implementer's scoped-check restriction, despite the task's broad Verify list. Browser/native/device checks were not run. Required browser regressions remain for the review gate; the maintainer deploys and tests before merging.
 
 ## Size measurement
 

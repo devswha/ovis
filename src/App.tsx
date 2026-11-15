@@ -5,7 +5,7 @@ import type { HerdrPane, PaneDirection } from "../shared/protocol.ts";
 import { authenticate, createTab, movePaneBeside, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
 import { openGroupItems, useGroupClosedWhenEmpty, useMoreMenu } from "./lib/moreMenu.ts";
 import { layoutActions } from "./lib/layoutActions.ts";
-import { displayPaneTitle, storedBackgroundFolded, storedWorktreeCollapsed, tabPaneTitle } from "./components/Sidebar.tsx";
+import { displayPaneTitle, storedBackgroundFolded, storedWorktreeCollapsed } from "./components/Sidebar.tsx";
 import { endSignIn } from "./lib/signOut.ts";
 import { PaneCanvas } from "./components/PaneCanvas.tsx";
 import { MachineSessionsProvider } from "./lib/machineSessionContext.tsx";
@@ -15,10 +15,7 @@ import { worktreeRepoName } from "./lib/composerStrip.ts";
 import { programReadsDrags } from "./lib/programDrags.ts";
 import { PANE_TABPANEL_ID, paneTabPanelLabel } from "./lib/paneRegion.ts";
 import { AccessGate } from "./components/AccessGate.tsx";
-import { useAgentFriends } from "./lib/friends.ts";
-import { PiVoiceView } from "./components/PiVoiceView.tsx";
-import { ComputerView } from "./components/ComputerView.tsx";
-import { forgetComputerLogins, useComputerView } from "./lib/computerSettings.ts";
+import { useForkApp } from "./fork/useForkApp.tsx";
 import { NewSessionDialog } from "./components/NewSessionDialog.tsx";
 import { SetupGuide, SetupGuideResume } from "./components/SetupGuide.tsx";
 import { useOtherDevice, useSetupGuide } from "./lib/useSetupGuide.ts";
@@ -96,7 +93,7 @@ import { FilesDialog } from "./components/FilesDialog.tsx";
 import { folderQueryFor } from "./lib/paletteFolders.ts";
 import { FileViewer } from "./components/FileViewer.tsx";
 import { WebPanel } from "./components/WebPanel.tsx";
-import { usePaneLinkOpener, WebPanelContext } from "./lib/webPanel.ts";
+import { WebPanelContext } from "./lib/webPanel.ts";
 import { RepoDiffViewer } from "./components/RepoDiffViewer.tsx";
 import { noteBlock, noteBlockWord } from "./lib/diffLineNotes.ts";
 import { directHostOf, useDirectNotice } from "./lib/directNotice.ts";
@@ -132,7 +129,7 @@ import { useSidebarLayout } from "./lib/useSidebarLayout.ts";
 import { useSidebarPeek } from "./lib/sidebarPeek.ts";
 import { useAlertPrefs, useAlertRefs } from "./lib/useAlerts.ts";
 import { useAlertSignals } from "./lib/useAlertSignals.ts";
-import { useNotificationState, useNotificationSwitch } from "./lib/useNotifications.ts";
+import { useNotificationSwitch } from "./lib/useNotifications.ts";
 import { alertsBell } from "./lib/alertsBell.ts";
 import { Droplet } from "./components/Droplet.tsx";
 import { MarkdownLinkMenu } from "./components/MarkdownLinkMenu.tsx";
@@ -161,8 +158,6 @@ import { catchTypeAhead } from "./lib/typeAhead.ts";
 import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
 import { AgentAvatar } from "./fork/AgentAvatar.tsx";
 import { paneStatus } from "./lib/status.ts";
-
-const APP_TITLE = "Ovis";
 
 /** how soon after a key press a focus counts as the user's own (lastKeyAtRef) */
 const KEY_FOCUS_MS = 1000;
@@ -279,9 +274,6 @@ export function App() {
   const updates = useUpdates(locked === false);
   const desktopUpdate = useDesktopUpdate();
   const { selectedPaneId, setSelectedPaneId, notificationViewTarget, setNotificationViewTarget, terminalPeek, setTerminalPeek, endPeek, pendingLink, linkLanded, setLinkLanded, rosterSeq, linkSince, selectionSince, rosterTick, setRosterTick, linkTick, setLinkTick } = useSelectionState({ initialLink });
-  // a PC's desktop (ComputerView) over the pane area, opened from its sidebar header; any pick closes it
-  const [screenMachineId, setScreenMachineId, keptScreenId] = useComputerView();
-  const machineName = (id: string) => machines.find((item) => item.id === id)?.name ?? id;
   const { otherRecheck, otherRosterTick, setOtherRosterTick } = useSplitRecheck();
   const { rosterIn, pendingFile, selectionHint, headerNote, setHeaderNote, note: linkNote, autoSelected, setAutoSelected } = useLinkLanding({ initialLink, otherRecheck, setOtherRosterTick, pendingLink, rosterSeq, setRosterTick, linkLanded, t });
   // the inbox mode (lib/inboxMode.ts): the list and the thread a row opens in the shell's place, which then has no drawer.
@@ -323,13 +315,12 @@ export function App() {
   // a locked pinned agent's menu has no Close (PaneCanvas): neither has the Close pane shortcut or palette row
   const paneLocked = usePaneLocked(selectedMachineId);
   const { filesOpen, setFilesOpen, filesDocked, filesCovered, revealFiles, viewing, openFile, closeFile, hideFile, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
-  const openPaneLink = usePaneLinkOpener(machines, openWebPage);
   // a diff's line notes go to its own pane: none while this window only watches that pane
   const diffPaneObserving = usePaneObserving(diffViewing?.paneId ? paneStorageId(diffViewing.machineId, diffViewing.paneId) : null);
   const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, setSettingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
   const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newSessionPending, newTab, setNewTab, sessionHistory, setSessionHistory, worktreeFor, setWorktreeFor } = useNewSessionState({ initialLink, watching: auth?.role === "watch" });
   const { connected, setConnected, connectedBefore, setConnectedBefore, paneLost, outputStopped, setOutputStopped, reportedBy, setReportedBy } = useConnectionChip();
-  const { notifications, setNotifications, pushOn, setPushOn, pushOnRef } = useNotificationState(alertsOn);
+  const { notifications, setNotifications, pushOn, setPushOn, pushOnRef, screenMachineId, setScreenMachineId, machineName, openPaneLink, forgetComputerLogins, computerView, phoneVoice } = useForkApp({ machines, selectedMachine, selectedMachineId, selectedPaneId, snapshot, inboxShown: inbox.shown, openWebPage });
   // the shared settings and pins, the same in every browser of this server, once the app is in
   const { receive: receivePreferences, saveError: settingsSaveError, paused: settingsSavePaused, retrying: settingsSaveRetrying, retry: retrySettingsSave, resubscribed: preferencesResubscribed, disconnected: preferencesDisconnected, closed: preferencesClosed } = usePreferencesSync(locked === false);
   useTabLabelLearning(machines, settings.autoTabNames, auth?.role === "watch");
@@ -599,24 +590,6 @@ export function App() {
     : null;
   const tabPlace = snapshot ? tabPosition(snapshot, selectedPaneId) : null;
   const position = tabPlace && { ...tabPlace, words: t("Tab {index} of {count}", { index: tabPlace.index, count: tabPlace.count }) };
-
-  // App asks the server for the agents' friends (lib/friends.ts); the sidebar and the tabs read them
-  useAgentFriends(machines);
-  const tabTitle = selectedPane && !inbox.shown ? tabPaneTitle(selectedPane) : null;
-  const screenName = screenMachineId !== null ? machineName(screenMachineId) : null;
-  useEffect(() => {
-    // the PC's host and the pane close the title, for the desktop's scripts (zed-here, screen-here, a Touch Bar).
-    // While the Computer view shows, the title opens with "Screen · ": Hyprland on omarchy switches to a
-    // pass-through keymap (every shortcut goes to the remote PC) on that prefix, and screen-here treats
-    // such a window as a remote view and goes back to the previous window
-    const host = selectedMachine?.kind === "local" ? selectedMachine.name : selectedMachine?.target?.destination;
-    const suffix = host && selectedPaneId ? ` [${host} ${selectedPaneId}]` : "";
-    document.title = screenName !== null
-      ? `Screen · ${screenName} · Ovis${suffix}`
-      : tabTitle
-        ? `${tabTitle} · ${selectedMachine?.name ?? selectedMachineId} · Ovis${suffix}`
-        : APP_TITLE;
-  }, [tabTitle, screenName, selectedMachine, selectedMachineId, selectedPaneId]);
 
   // A new tab's workspace: the named one, else the selected pane's. Its folder is the workspace's:
   // a worktree's checkout, else where the pane in front (the selected one, else the one herdr has
@@ -1387,7 +1360,7 @@ export function App() {
             if (agentStarted && setupGuide.guide?.reopened !== true) { try { armHints(window.localStorage); } catch { /* no storage: no hints */ } } setupGuide.finish(() => selectTarget("local", paneId)); void load(); }} /></MachineContext.Provider>}
         {guideShown ? null :
         <div ref={paneAreaRef} className={`pane-split${paneSplit ? " is-split" : ""}${inbox.shown ? " is-under-inbox" : ""}`} onDragEnterCapture={paneDragOver} onDragOverCapture={paneDragOver} onDragLeave={paneDragLeave} onDropCapture={paneDrop}>
-          {(screenMachineId ?? keptScreenId) !== null && <ComputerView key={screenMachineId ?? keptScreenId} machineId={(screenMachineId ?? keptScreenId)!} machineName={machineName((screenMachineId ?? keptScreenId)!)} hidden={screenMachineId === null} />}
+          {computerView}
           {/* the wide thread's zone comes before its pane, after the column: the keyboard follows the drawn order */}
           {inboxWide && <ThreadTop note={<HeaderNote note={herdrPrefixWaiting ? t("herdr prefix: press a key") : note} />}
             thread={!inbox.shown && selectedPane !== null && note === null ? { machines, activity, machineId: selectedMachineId, pane: selectedPane, connection: headerConnection, watching: auth?.role === "watch", severalPcs: sidebarMachines.length > 1 } : null}
@@ -1678,7 +1651,7 @@ export function App() {
         selectTarget(worktreeFor.machineId, opened.pane_id);
       }} />}
       {unsentFor && <UnsentTextDialog machines={machines} target={unsentFor} canRecover={unsentFor.pane.agent != null} onClose={closeUnsent} onRecover={recover} />}
-      <PiVoiceView />
+      {phoneVoice}
       <CommandPalette key={selectedMachineId} machines={sidebarMachines} onSelect={selectTarget} open={paletteOpen} initialQuery={paletteQuery} onClose={() => setPaletteOpen(false)} snapshot={snapshot} online={selectedMachine?.state === "connected"} selectedPaneId={selectedPaneId}
         // a peek shows the terminal: its toggle says Switch to chat, which ends the peek
         view={terminalPeek !== null ? "terminal" : view} actions={actions} watching={auth?.role === "watch"} inboxMode={inMode} />

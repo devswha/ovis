@@ -4,8 +4,11 @@ import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { showPaneEndedNotification, showPaneStatusNotification } from "../lib/notifications.ts";
 import { AgentAvatar, friendMood } from "./AgentAvatar.tsx";
 import { useAgentFriends } from "./friends.ts";
+import { ForkInboxAvatar } from "./InboxAvatar.tsx";
+import { useForkNotificationState } from "./notifications.ts";
 
 const machine = { id: "m1", state: "connected", snapshot: { panes: [{ pane_id: "p1", agent: "claude" }, { pane_id: "p2", agent: "codex" }] } } as unknown as Machine;
 
@@ -26,6 +29,7 @@ function device(agentFriends: boolean, friends: Record<string, string>) {
 
 function Asking({ children }: { children: React.ReactNode }) {
   useAgentFriends([machine]);
+  useForkNotificationState("unsupported", () => {}, [machine]);
   return <>{children}</>;
 }
 
@@ -89,6 +93,45 @@ describe("AgentAvatar", () => {
     const none = await draw(<><AgentAvatar agent="codex" machineId="m1" paneId="p2" /><AgentAvatar agent="claude" machineId="m1" /></>);
     expect(none).not.toContain("agent-friend");
     expect(none.match(/agent-mark/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("looks up an alert's friend by PC and pane, and obeys Agent friends", async () => {
+    const notification = Object.getOwnPropertyDescriptor(globalThis, "Notification");
+    const pane = machine.snapshot!.panes[0]!;
+    const agent = pane.agent;
+    try {
+      device(true, { "m1:p1": "neko" });
+      await draw(<AgentAvatar agent="claude" machineId="m1" paneId="p1" />);
+      const shown: NotificationOptions[] = [];
+      Object.defineProperty(globalThis, "Notification", { configurable: true, value: { permission: "granted" } });
+      Object.assign(document, { hidden: true });
+      Object.defineProperty(globalThis, "navigator", { configurable: true, value: { serviceWorker: { getRegistration: async () => ({ active: {}, showNotification: async (_title: string, options: NotificationOptions) => { shown.push(options); } }) } } });
+      await showPaneStatusNotification("p1", "Pi", "done", undefined, "m1");
+      await showPaneEndedNotification("p1", "Pi", undefined, "another-pc");
+      pane.agent = null;
+      await act(async () => { renderer!.update(<SettingsProvider><Asking><span /></Asking></SettingsProvider>); });
+      await showPaneEndedNotification("p1", "Terminal", undefined, "m1");
+      device(false, {});
+      await showPaneStatusNotification("p1", "Pi", "done", undefined, "m1");
+      expect(shown.map((entry) => entry.icon)).toEqual(["/friends/neko.png", "/icons/icon-192.png?v=sheep1", "/icons/icon-192.png?v=sheep1", "/icons/icon-192.png?v=sheep1"]);
+    } finally {
+      pane.agent = agent;
+      if (notification) Object.defineProperty(globalThis, "Notification", notification);
+      else Reflect.deleteProperty(globalThis, "Notification");
+    }
+  });
+
+  it("keeps the inbox's original face without a friend and uses the same friend in threads", async () => {
+    const row = { machine, pane: machine.snapshot!.panes[0]!, mark: "claude" };
+    device(false, {});
+    const original = await draw(<ForkInboxAvatar row={row} />);
+    expect(original).toContain("inbox-avatar-face");
+    expect(original).not.toContain("agent-friend");
+    await act(async () => renderer?.unmount());
+    device(true, { "m1:p1": "neko" });
+    const friend = await draw(<ForkInboxAvatar row={row} />);
+    expect(friend).toContain("agent-friend");
+    expect(friend).not.toContain("agent-mark");
   });
 
   it("maps a pane's status to its friend's mood", () => {
