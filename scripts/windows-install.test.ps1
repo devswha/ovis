@@ -35,12 +35,14 @@ function git {
     if ($args[0] -eq '-C' -and $args[2] -eq 'rev-parse') {
         # a plugin linked from a folder that is no git checkout, as git says it (the installer asks it untranslated)
         if ($state.noGit) { Write-Error 'fatal: not a git repository (or any of the parent directories): .git' -ErrorAction Continue; $global:LASTEXITCODE = 128; return }
-        # git failing at the checkout's top level ($state.gitFails): as it does, on every call, for a folder another account
-        # owns (naming the command that trusts it, the folder as git writes it), or ('other') as for a broken repository
+        # git failing at the checkout's top level ($state.gitFails): as Git for Windows does, on every call, for a folder
+        # another account owns (its lines as it prints them, the empty one included, and the command quoted for a POSIX
+        # shell where the folder has a space or a quote), or ('other') as for a broken repository
         if ('other' -eq $state.gitFails) { Write-Error 'fatal: bad object HEAD' -ErrorAction Continue; $global:LASTEXITCODE = 128; return }
         if ($state.gitFails) {
             $folder = $args[1] -replace '\\', '/'
-            foreach ($line in "fatal: detected dubious ownership in repository at '$folder'", 'To add an exception for this directory, call:', "`tgit config --global --add safe.directory $folder") { Write-Error $line -ErrorAction Continue }
+            $quoted = if ($folder -match "[ ']") { "'$($folder -replace "'", "'\''")'" } else { $folder }
+            foreach ($line in "fatal: detected dubious ownership in repository at '$folder'", "'$folder' is owned by:", "`tNT AUTHORITY/SYSTEM (S-1-5-18)", 'but the current user is:', "`tWINVM/someone (S-1-5-21-1-2-3-1000)", 'To add an exception for this directory, call:', '', "`tgit config --global --add safe.directory $quoted") { Write-Error $line -ErrorAction Continue }
             $global:LASTEXITCODE = 128; return
         }
         # a plugin folder inside another repository ($state.gitPrefix: its path there): git reads the repository around it
@@ -452,10 +454,12 @@ exit /b 1
         # a working install git distrusts every time (a folder another account owns), stamped with the version alone by a
         # launcher that read no commit there: refused, naming the command that trusts the folder; once it is run (the
         # stand-in answering again), the next run rebuilds once and stamps the commit
-        @{ name = 'a finished build stamped with the version alone, in a folder git does not trust'; packages = 'all'; client = $true; stamp = '1.2.3'; gitFails = $true; calls = ''; refused = $true; untouched = $true; names = { 'dubious ownership'; "git config --global --add safe.directory '$($pluginRoot -replace '\\', '/')'" }; recover = { <# git trusts the folder #> } },
-        @{ name = 'a finished build of another commit, in a folder git does not trust'; packages = 'all'; client = $true; stamp = "1.2.3 $(Get-TestCommit 'earlier')"; gitFails = $true; calls = ''; refused = $true; untouched = $true; names = { 'dubious ownership'; 'safe.directory' }; recover = { <# git trusts the folder #> } },
+        @{ name = 'a finished build stamped with the version alone, in a folder git does not trust'; packages = 'all'; client = $true; stamp = '1.2.3'; gitFails = $true; trust = $true; calls = ''; refused = $true; untouched = $true; names = { 'dubious ownership' }; recover = { <# git trusts the folder #> } },
+        @{ name = 'a finished build of another commit, in a folder git does not trust'; packages = 'all'; client = $true; stamp = "1.2.3 $(Get-TestCommit 'earlier')"; gitFails = $true; trust = $true; calls = ''; refused = $true; untouched = $true; names = { 'dubious ownership' }; recover = { <# git trusts the folder #> } },
         # both ids installed: the old id's server, stopped for the move before the checkout is read, is said, with its start
-        @{ name = 'the same, the old id installed too and its server stopped for the move'; packages = 'all'; client = $true; stamp = "1.2.3 $(Get-TestCommit 'earlier')"; gitFails = $true; legacy = $true; calls = ''; refused = $true; untouched = $true; names = { 'safe.directory'; 'server of the old id was stopped'; 'herdr plugin action invoke devswha.herdr-web-ui.start-windows' } },
+        @{ name = 'the same, the old id installed too and its server stopped for the move'; packages = 'all'; client = $true; stamp = "1.2.3 $(Get-TestCommit 'earlier')"; gitFails = $true; trust = $true; legacy = $true; calls = ''; refused = $true; untouched = $true; names = { 'dubious ownership'; 'server of the old id was stopped'; 'herdr plugin action invoke devswha.herdr-web-ui.start-windows' } },
+        # and by a refusal after this checkout's own stop: a failed build
+        @{ name = 'a failed build, the old id installed too and its server stopped for the move'; packages = 'some'; stamp = 'started'; failBuild = $true; legacy = $true; calls = 'stop,install 1'; hint = $true },
         @{ name = 'a finished build of an older launcher (no stamp), git failing at the checkout'; packages = 'all'; client = $true; gitFails = $true; calls = '' },
         # scripts/plugin.ts's stop, told the new id's state dir, stops a live server recorded under the old id alone
         @{ name = 'a live server recorded under the old id only, with packages that load the stop'; packages = 'all'; stamp = 'started'; server = 'alive'; legacyRecord = $true; calls = 'stop,install 1' },
@@ -515,6 +519,15 @@ exit /b 1
             $state.serverRecord = $herdrRecord
         }
         Assert (($state.launcherCalls -join ',') -eq $case.calls) "$($case.name): the launcher must get '$($case.calls)', not '$($state.launcherCalls -join ',')': $message"
+        if ($case.trust) {
+            # the command the refusal ends with, read as PowerShell reads it: git config with the folder as one argument
+            $command = ($message -split "`n")[-1]
+            $parseErrors = $null
+            $parsed = [System.Management.Automation.Language.Parser]::ParseInput($command, [ref]$null, [ref]$parseErrors)
+            $words = @($parsed.EndBlock.Statements[0].PipelineElements[0].CommandElements | ForEach-Object { $_.Value })
+            Assert (-not $parseErrors -and ($words -join '|') -eq "git|config|--global|--add|safe.directory|$($pluginRoot -replace '\\', '/')") "$($case.name): the refusal must end with a git config command that trusts the folder, as PowerShell reads it: $command"
+        }
+        if ($case.legacy) { Assert ($message.Contains('herdr plugin action invoke devswha.herdr-web-ui.start-windows')) "$($case.name): the old id's server, stopped for the move, must be said with its start: $message" }
         if ($case.failBuild) { Assert ($message -match 'bun failed' -and $message.Contains($pluginRoot) -eq [bool]$case.hint -and -not (Test-Path -LiteralPath $fromSource)) "$($case.name): a failed build must take the marker back, and name the checkout to find a server by only where a server no stop stopped may run ($([bool]$case.hint)): $message" }
         elseif ($case.refused) {
             # a refusal before anything is stopped or changed (untouched) keeps the marker; one after the stop took it back
@@ -536,6 +549,16 @@ exit /b 1
     }
     Remove-Item -LiteralPath (Join-Path $pluginRoot 'scripts\plugin-launch.ts'), (Join-Path $pluginRoot 'package.json') -Force; & $unbuilt
     $state.serverRecord = ''; $state.gitPrefix = ''
+    # the trust command for folders with a space and with an apostrophe (git prints its own with '\'' for a quote, which
+    # PowerShell reads otherwise), from the installer's own text: read as PowerShell reads it, it names the folder whole
+    $trustAst = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $installer).Path, [ref]$null, [ref]$null).Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-TrustCommand' }, $true)
+    Invoke-Expression $trustAst.Extent.Text
+    foreach ($folder in 'C:/Users/John Doe/AppData/Local/herdr/plugins/devswha.ovis', "C:/Users/John O'Brien/plugin", "C:/it's/a ''quoted'' one") {
+        $parseErrors = $null
+        $parsed = [System.Management.Automation.Language.Parser]::ParseInput((Get-TrustCommand $folder), [ref]$null, [ref]$parseErrors)
+        $words = @($parsed.EndBlock.Statements[0].PipelineElements[0].CommandElements | ForEach-Object { $_.Value })
+        Assert (-not $parseErrors -and $words.Count -eq 6 -and $words[5] -eq $folder) "The trust command for $folder must name it as one PowerShell argument: $(Get-TrustCommand $folder)"
+    }
     $state.running = $false
     $env:OVIS_FROM_SOURCE = '1'
 

@@ -62,9 +62,19 @@ async function fromSource(command: string, args: string[]): Promise<number> {
  * What git answers for the checkout in a folder, by one rule that install.ps1 (Read-InstalledCommit) and install.sh
  * (ref_not_moved) read it by too: a checkout's top level has its commit; a folder inside another repository
  * (`--show-prefix` names its path there) or one git says is no repository has none of its own; anything else (git's
- * own error, a lock, no git on PATH) is git failing, on which nothing may be decided.
+ * own error, a lock, no git on PATH) is git failing, on which nothing may be decided. A folder git distrusts (another
+ * account owns it) fails on every call: `trust` is the command that trusts it, for this platform's shell, built from the
+ * folder git names on its first line (the command git prints is quoted for a POSIX shell).
  */
-export type CheckoutCommit = { commit: string } | { none: "nested" | "no checkout" } | { failed: string };
+export type CheckoutCommit = { commit: string } | { none: "nested" | "no checkout" } | { failed: string; trust?: string };
+
+function gitFailed(err: string): CheckoutCommit {
+  const first = err.split(/\r?\n/)[0]!;
+  const owned = /^fatal: detected dubious ownership in repository at '(.*)'$/.exec(first);
+  if (!owned) return { failed: err };
+  const quoted = process.platform === "win32" ? `'${owned[1]!.replaceAll("'", "''")}'` : `'${owned[1]!.replaceAll("'", "'\\''")}'`;
+  return { failed: first, trust: `git config --global --add safe.directory ${quoted}` };
+}
 
 export async function checkoutCommit(dir = root): Promise<CheckoutCommit> {
   // git's own words, untranslated: "not a git repository" is told from its other errors by them
@@ -75,10 +85,10 @@ export async function checkoutCommit(dir = root): Promise<CheckoutCommit> {
   };
   try {
     const prefix = await git("rev-parse", "--show-prefix");
-    if (prefix.code !== 0) return /not a git repository/.test(prefix.err) ? { none: "no checkout" } : { failed: prefix.err };
+    if (prefix.code !== 0) return /not a git repository/.test(prefix.err) ? { none: "no checkout" } : gitFailed(prefix.err);
     if (prefix.out !== "") return { none: "nested" };
     const head = await git("rev-parse", "HEAD");
-    return head.code === 0 && head.out !== "" ? { commit: head.out } : { failed: head.err };
+    return head.code === 0 && head.out !== "" ? { commit: head.out } : gitFailed(head.err);
   } catch (error) {
     return { failed: (error as NodeJS.ErrnoException).code === "ENOENT" ? "git is not on PATH" : String(error) };
   }
@@ -115,8 +125,11 @@ export async function main(args: string[], { home = join(root, ".ovis", "server"
     const code = await source("install", rest);
     if (code !== 0) return code;
     const now = await commit();
-    const failed = "failed" in builtFrom ? builtFrom.failed : "failed" in now ? now.failed : null;
-    if (failed !== null) console.error(`Ovis: git could not read the checkout's commit (${failed}), so the build is not marked finished`);
+    const failed = "failed" in builtFrom ? builtFrom : "failed" in now ? now : null;
+    if (failed !== null) {
+      console.error(`Ovis: git could not read the checkout's commit (${failed.failed}), so the build is not marked finished`);
+      if (failed.trust) console.error(`Ovis: git does not trust this folder (another account owns it); to trust it, run:\n${failed.trust}`);
+    }
     else if (JSON.stringify(now) !== JSON.stringify(builtFrom)) console.error("Ovis: the checkout moved to another commit while it was built, so the build is not marked finished");
     else writeFileSync(stamp, `${"commit" in builtFrom ? `${version} ${builtFrom.commit}` : version}\n`);
     return code;

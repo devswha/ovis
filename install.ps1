@@ -566,16 +566,21 @@ function Get-RecordedServer {
     }
 }
 # What a refusal says of one live record Get-RecordedServer found, by what is known of it: its process verified as the
-# server by the creation time its start recorded; a process that started after the record was written (another creation
-# time), so not the server recorded there, whatever it is; or one nothing recorded can verify (no server.owner, or none
+# server by the creation time its start recorded; a process whose creation time differs from the one recorded, so not
+# the server recorded there, whatever it is; or one nothing recorded can verify (no server.owner, or none
 # read now), which the herdr stop action cannot stop either, since it stops only a server it verifies. A record in
 # ~\.local\state is of an Ovis started by hand, from any checkout.
 function Get-RecordAdvice($Record) {
     $id = $Record.Id
     if ($Record.Verified) { return "It runs as process $id (Stop-Process -Id $id stops it)." }
-    if ($Record.Reused) { return "Its record $($Record.File) names process $id, which started after that record was written, so it is not the server recorded there, whatever it is: delete that file, then run this again." }
+    if ($Record.Reused) { return "Its record $($Record.File) names process $id, whose creation time differs from the one recorded for the server, so it is not the server recorded there, whatever it is: delete that file, then run this again." }
     $whose = if ($Record.ByHand) { '; its command line names the checkout it runs from, which may be another than this one' } else { '' }
     "Its record $($Record.File) names process $id, which could not be verified as the Ovis server. Get-CimInstance Win32_Process -Filter 'ProcessId=$id' | Select-Object Name, CommandLine shows what it is: if it is Ovis (ovis-server, or bun running Ovis's server$whose), Stop-Process -Id $id stops it; if it is not, delete that file. Then run this again."
+}
+# git's command that trusts a folder, as one PowerShell literal (git prints its own for a POSIX shell, with '\'' for a
+# quote, which PowerShell reads otherwise)
+function Get-TrustCommand([string]$Path) {
+    "git config --global --add safe.directory '$($Path -replace "'", "''")'"
 }
 $legacyStopped = $false
 if ($legacy) {
@@ -601,6 +606,8 @@ if ($legacy) {
 # What a refusal below says this run changed: nothing, or the old id's server, stopped above for the move, which a refusal
 # does not start again
 $unchanged = if ($legacyStopped) { "nothing of the installed plugin was changed by this run, but the server of the old id was stopped for the move: herdr plugin action invoke $legacyId.start-windows starts it again" } else { 'nothing was stopped or changed by this run' }
+# the same, said by a refusal that comes after this checkout's own stop
+$legacyNote = if ($legacyStopped) { " The server of the old id was stopped for the move as well: herdr plugin action invoke $legacyId.start-windows starts it again." } else { '' }
 function Test-WindowsPlugin($Plugin) {
     $Plugin.plugin_root -and (Test-Path -LiteralPath (Join-Path $Plugin.plugin_root 'scripts\plugin.ps1'))
 }
@@ -645,10 +652,12 @@ if (-not $plugin) {
     # repository (--show-prefix names its path there: git would read that repository's commit, not the plugin's) or one
     # git says is no repository (a plugin linked from such a folder); anything else is git failing ($gitFailed: what it
     # said), and nothing is decided on it below. git runs untranslated (LC_ALL=C), so its "not a git repository" can be
-    # told by its words; what it says is kept off the console, and from the error stream a host under Stop could turn
-    # native stderr into (as Run-HerdrInstaller does).
+    # told by its words, and so can a folder it distrusts ($distrusted: the folder as git names it on its first line); what
+    # it says is kept off the console, and from the error stream a host under Stop could turn native stderr into (as
+    # Run-HerdrInstaller does). Each stderr line is its exception's message: an empty one prints as the exception's type.
     $installedCommit = ''
     $gitFailed = ''
+    $distrusted = ''
     if ($Ref) {
         $read = & {
             $ErrorActionPreference = 'Continue'
@@ -657,10 +666,12 @@ if (-not $plugin) {
                 foreach ($question in '--show-prefix', 'HEAD') {
                     $said = @(& git -C $plugin.plugin_root rev-parse $question 2>&1)
                     $out = "$($said | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] })".Trim()
-                    $err = "$($said | Where-Object { $_ -is [Management.Automation.ErrorRecord] })".Trim()
+                    $lines = @($said | Where-Object { $_ -is [Management.Automation.ErrorRecord] } | ForEach-Object { "$($_.Exception.Message)".Trim() } | Where-Object { $_ })
+                    $err = $lines -join ' '
                     if ($LASTEXITCODE -ne 0 -or ($question -eq 'HEAD' -and -not $out)) {
                         if ($question -eq '--show-prefix' -and $err -match 'not a git repository') { return @{} }
-                        return @{ Failed = $(if ($err) { $err } else { "git exited with $LASTEXITCODE" }) }
+                        $owned = if ("$($lines[0])" -match "^fatal: detected dubious ownership in repository at '(.*)'$") { $Matches[1] }
+                        return @{ Failed = $(if ($err) { $err } else { "git exited with $LASTEXITCODE" }); Distrusted = $owned; First = "$($lines[0])" }
                     }
                     if ($question -eq '--show-prefix' -and $out) { return @{} }
                 }
@@ -669,6 +680,7 @@ if (-not $plugin) {
         }
         $installedCommit = "$($read.Commit)"
         $gitFailed = "$($read.Failed)"
+        $distrusted = "$($read.Distrusted)"
     }
     if ($Ref -and $Ref -cnotmatch '^v\d+\.\d+\.\d+$' -and (Test-Path -LiteralPath $launcherScript)) {
         $checkoutVersion = (Get-Content -Raw -LiteralPath (Join-Path $plugin.plugin_root 'package.json') | ConvertFrom-Json).version
@@ -696,11 +708,9 @@ if (-not $plugin) {
             # a broken repository) a retry would only hide. Said with git's words, nothing changed; the next run decides
             # by the commit again.
             # git distrusting a folder another account owns (installed from an elevated prompt, a network drive) answers so
-            # on every run, and names the folder as it wants it trusted
-            if ($gitFailed -match 'dubious ownership') {
-                $trusted = [regex]::Match($gitFailed, 'safe\.directory (.+)$').Groups[1].Value.Trim()
-                if (-not $trusted) { $trusted = $plugin.plugin_root -replace '\\', '/' }
-                throw "git does not trust the folder of the installed plugin, $($plugin.plugin_root): it belongs to another account (git said: $gitFailed). So this installer cannot read its commit, nor tell whether its build is the one of that commit; $unchanged. To trust the folder, run: git config --global --add safe.directory '$trusted', then run this again."
+            # on every run, its first line naming the folder as it wants it trusted
+            if ($distrusted) {
+                throw "git does not trust the folder of the installed plugin, $($plugin.plugin_root): it belongs to another account (git said: $($read.First)). So this installer cannot read its commit, nor tell whether its build is the one of that commit; $unchanged. To trust the folder, run this, then run the installer again:`n$(Get-TrustCommand $distrusted)"
             }
             if ($gitFailed) { throw "git could not read the commit of the installed plugin in $($plugin.plugin_root) (git said: $gitFailed), so this installer cannot tell whether its build is the one of that commit; $unchanged. Run this again; if git says the same, fix what it says first." }
             # a build to finish in a folder whose commit cannot be read: built as it is by its own launcher, which stamps the
@@ -775,7 +785,7 @@ if (-not $plugin) {
                                 $(if ($byHand) { " An Ovis started by hand is also recorded as running in $(Split-Path $byHand.File), and the next run refuses for it while it runs. $(Get-RecordAdvice $byHand)" })
                             }
                             else { "Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again. $(Get-RecordAdvice $herdrRecords[0])" }
-                        throw "Could not stop the Ovis the release's binary runs, so the branch was not built. $recovery"
+                        throw "Could not stop the Ovis the release's binary runs, so the branch was not built. $recovery$legacyNote"
                     }
                 }
                 # Whether the stop ran, failed or had nothing to run: a server recorded as running would be left serving
@@ -789,7 +799,7 @@ if (-not $plugin) {
                     # a record in ~\.local\state is any hand-started Ovis's, from whichever checkout
                     $what = if ($running.ByHand) { "An Ovis started by hand is recorded as running in $(Split-Path $running.File), so the branch was not built. Stop it, then run this again." }
                         else { "Ovis still runs from this checkout, so the branch was not built. Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again." }
-                    throw "$what $(Get-RecordAdvice $running)"
+                    throw "$what $(Get-RecordAdvice $running)$legacyNote"
                 }
                 if ($stopped -eq $false) { Write-Host 'Ovis: the stop failed; with no release binary and no server recorded as running here, the checkout is built' }
                 $env:OVIS_FROM_SOURCE = '1'
@@ -807,7 +817,7 @@ if (-not $plugin) {
                     $how = if ($stoppedOne) { 'and Ovis is stopped' }
                         elseif ($null -eq $stopped) { 'with no server recorded as running, nor packages or a release binary here to run one' }
                         else { "and an Ovis no stop reached may still run from this checkout, holding its files open: Get-CimInstance Win32_Process | Where-Object CommandLine -like '*$($plugin.plugin_root)*' finds it, and Stop-Process -Id <its ProcessId> stops it" }
-                    throw "bun failed (exit $code) building the installed branch, $how. Fix the error above, then run this again with OVIS_REF=$Ref to build it and start Ovis.$back"
+                    throw "bun failed (exit $code) building the installed branch, $how. Fix the error above, then run this again with OVIS_REF=$Ref to build it and start Ovis.$back$legacyNote"
                 }
                 $built = $true
                 # the launcher leaves its stamp `started` after a build whose checkout moved to another commit meanwhile (a
