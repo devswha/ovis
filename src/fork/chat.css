@@ -2,12 +2,13 @@
 [data-fork-read-aloud="true"] .chat-speak-progress { animation: chat-speak-spin var(--dur-spin) steps(8) infinite; }
 @keyframes chat-speak-spin { to { transform: rotate(360deg); } }
 
-[data-fork-chat-motion="true"] .chat-turn-new .chat-bubble,
-[data-fork-chat-motion="true"] .chat-turn-sent .chat-bubble {
+[data-fork-chat-motion="true"] .chat-turn-pop .chat-bubble {
   transform-origin: bottom right;
   animation: chat-bubble-pop 140ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 @keyframes chat-bubble-pop { from { opacity: 0; transform: translateY(6px) scale(0.96); } }
+/* a sent message its turn has not replaced yet: the same row, its words faded until the turn has them */
+[data-fork-chat-motion="true"] .chat-turn-sending .chat-bubble { color: var(--text-dim); }
 [data-fork-chat-motion="true"] ::highlight(live-fade-1) { color: color-mix(in srgb, var(--text) 12%, transparent); }
 [data-fork-chat-motion="true"] ::highlight(live-fade-2) { color: color-mix(in srgb, var(--text) 38%, transparent); }
 [data-fork-chat-motion="true"] ::highlight(live-fade-3) { color: color-mix(in srgb, var(--text) 64%, transparent); }
@@ -15,6 +16,5 @@
 
 @media (prefers-reduced-motion: reduce) {
   [data-fork-read-aloud="true"] .chat-speak-progress,
-  [data-fork-chat-motion="true"] .chat-turn-new .chat-bubble,
-  [data-fork-chat-motion="true"] .chat-turn-sent .chat-bubble { animation: none; }
+  [data-fork-chat-motion="true"] .chat-turn-pop .chat-bubble { animation: none; }
 }
