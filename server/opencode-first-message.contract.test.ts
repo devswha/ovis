@@ -105,24 +105,28 @@ async function openCodePane(label: string, session: string | null, cwd: string, 
   const pane = created.root_pane.pane_id;
   // herdr names the pane's agent from its foreground process: heard as it happens, not polled
   const watching = Promise.withResolvers<void>();
-  const detected = Promise.withResolvers<void>();
+  // true once herdr names the stand-in; false when the subscription ends first, leaving the snapshot to say
+  const detected = Promise.withResolvers<boolean>();
   const subscription = subscribeEvents([{ type: "pane.agent_status_changed", pane_id: pane }], {
     onStarted: () => watching.resolve(),
-    onEvent: (frame) => { if (frame.data?.agent === "opencode") detected.resolve(); },
+    onEvent: (frame) => { if (frame.data?.agent === "opencode") detected.resolve(true); },
     onError: (error) => { watching.reject(error); detected.reject(error); },
+    // a close before the acknowledgement calls this, not onError
+    onClose: () => { watching.reject(new Error("herdr closed the agent-status subscription before acknowledging it")); detected.resolve(false); },
   });
+  // one deadline for the acknowledgement and the stand-in's start, running before either is awaited
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<"expired">((done) => { timer = setTimeout(() => done("expired"), 10_000); });
   try {
-    await watching.promise;
+    if (await Promise.race([watching.promise, expired]) === "expired") throw new Error("herdr did not acknowledge the agent-status subscription");
     await herdrRpc("pane.send_text", { pane_id: pane, text: `exec ${standIn} ${label}\n` });
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const started = await Promise.race([detected.promise.then(() => true), new Promise<false>((done) => { timer = setTimeout(() => done(false), 10_000); })]);
-    clearTimeout(timer);
-    if (!started) {
+    if (await Promise.race([detected.promise, expired]) !== true) {
       // what herdr last said of the pane, so a CI failure tells a slow start from a stand-in that never ran
       const seen = (await sessionSnapshot()).panes.find((candidate) => candidate.pane_id === pane);
       if (seen?.agent !== "opencode") throw new Error(`the OpenCode stand-in did not start: ${JSON.stringify(seen)} ${await paneProcesses(pane, cwd)}`);
     }
   } finally {
+    clearTimeout(timer);
     subscription.close();
   }
   if (session) await herdrRpc("pane.report_agent_session", { pane_id: pane, source: "herdr:opencode", agent: "opencode", agent_session_id: session, session_start_source: "select" });
