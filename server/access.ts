@@ -2,7 +2,7 @@
  * Who a request is and whether it gets in. There is no user database: a request is trusted
  * for where it comes from (this PC, with no proxy in front), for who Tailscale says it is
  * (the PC's own login, which `tailscale serve` states in a header it strips from what it
- * receives, counted only at this PC's full tailnet name or IPv4 address), or for what it holds
+ * receives, counted only under a name this PC knows as its own), or for what it holds
  * (a paired device's cookie, or the shared token). A token, when one is configured, is required
  * of everything but a paired device, this PC and its own Tailscale login included: a plain local
  * connection, since the remote-PC bridge runs on a loopback port of a PC other people may use,
@@ -24,7 +24,8 @@
  * through, while a rebinding page can only ever present its own origin.
  * A PC whose own node is tagged has no login to compare with: its proxied requests pair, the
  * owner's included, unless OVIS_TAILSCALE_OWNER names the login to let in. That login, too, counts
- * only at this PC's tailnet name or IPv4 address, which are still read from `tailscale status`.
+ * only under a name `knownAuthority` accepts: a loopback name, or this PC's tailnet name or IPv4
+ * address, which are still read from `tailscale status`.
  *
  * A proxy on this PC connects from loopback like a local client does, so it is known only by
  * what it sends: a forwarding header, or a Host that is not a loopback name (`cameThroughProxy`).
