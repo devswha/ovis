@@ -51,3 +51,14 @@
     margin-bottom: calc((var(--tab-h) - var(--bar-control-h)) / 2);
   }
 }
+
+/* The status bar already names the folder and the branch, so the composer's own folder/branch strip
+ * under the input card would say the same thing in a second bar right above it. The strip stays
+ * wherever the status bar is not shown, and the prompt card stops reserving room for it. */
+:root:has(.status-bar) .composer-strip {
+  display: none;
+}
+
+:root:has(.status-bar) .prompt-dock > .prompt-card {
+  --prompt-card-strip: 0px;
+}
