@@ -11,19 +11,19 @@ describe("splitWords", () => {
 });
 
 describe("takePass", () => {
-  test("a few words are 40ms apart from now", () => {
-    expect(takePass(0, 3, 1000)).toEqual({ pass: { base: 0, step: 40, count: 3 }, cursor: 1120 });
+  test("a few words are 70ms apart from now", () => {
+    expect(takePass(0, 3, 1000)).toEqual({ pass: { base: 0, step: 70, count: 3 }, cursor: 1210 });
   });
 
-  test("a burst is squeezed into 320ms", () => {
+  test("a burst is squeezed into 700ms", () => {
     const { pass } = takePass(0, 33, 1000);
     expect(pass.base).toBe(0);
-    expect(pass.step).toBe(10);
+    expect(pass.step).toBe(700 / 32);
   });
 
-  test("the next update starts where the last one's words stop, never past 320ms out", () => {
+  test("the next update starts where the last one's words stop, never past 700ms out", () => {
     expect(takePass(1120, 2, 1050).pass.base).toBe(70);
-    expect(takePass(5000, 2, 1000).pass.base).toBe(320);
+    expect(takePass(5000, 2, 1000).pass.base).toBe(700);
   });
 });
 
@@ -34,7 +34,7 @@ describe("WordFade", () => {
     expect(fade.delay("a")).toBeNull();
     expect(fade.update(0, 4, false, false, 100)).toBe(true);
     expect(fade.delay("b")).toBe(0);
-    expect(fade.delay("c")).toBe(40);
+    expect(fade.delay("c")).toBe(70);
     expect(fade.delay("d")).toBeNull();
     expect(fade.delay("b")).toBe(0);
   });
