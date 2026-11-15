@@ -18,7 +18,6 @@ export interface ForkSettings {
   agentNamedTabs: boolean;
   agentFriends: boolean;
   composerExtras: boolean;
-  compactWorkRuns: boolean;
   chatMotion: boolean;
   piLiveVoice: boolean;
   computerView: boolean;
@@ -31,7 +30,7 @@ export const FORK_DEFAULTS: ForkSettings = {
   followOmarchy: false, contextCircle: true, openLiveWork: true,
   speechVoice: SPEECH_DEFAULT_VOICE, liveVoice: "pi",
   squareCorners: false, moreViewToggle: false, agentNamedTabs: false, agentFriends: false,
-  composerExtras: false, compactWorkRuns: false, chatMotion: false, piLiveVoice: false,
+  composerExtras: false, chatMotion: false, piLiveVoice: false,
   computerView: false, pullRequests: false, readAloud: false, steadyKeyboardTabs: false,
 };
 
@@ -60,7 +59,7 @@ export function migrateForkSettings(raw: unknown): unknown {
     ? {} : { keyBarItems: legacyKeyBarItems };
   // Once a new setting is explicit it always wins, including false and a reset to upstream defaults.
   return { phoneTabs: "header", ...keyBarDefaults, contextCircle: true, squareCorners: true, moreViewToggle: true, agentNamedTabs: true,
-    agentFriends: true, composerExtras: true, compactWorkRuns: true, chatMotion: true,
+    agentFriends: true, composerExtras: true, chatMotion: true,
     piLiveVoice: true, computerView: true, pullRequests: true, readAloud: true, steadyKeyboardTabs: true, ...record };
 }
 

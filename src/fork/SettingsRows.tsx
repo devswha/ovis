@@ -14,7 +14,6 @@ export function ForkFeatures() {
     ["agentNamedTabs", t("Agent names on tabs")],
     ["agentFriends", t("Agent friends")],
     ["composerExtras", t("Composer extras")],
-    ["compactWorkRuns", t("Compact work runs")],
     ["chatMotion", t("Animated replies")],
     ["piLiveVoice", t("Pi live voice")],
     ["computerView", t("Computer view")],

@@ -13,31 +13,6 @@
 [data-fork-chat-motion="true"] ::highlight(live-fade-3) { color: color-mix(in srgb, var(--text) 64%, transparent); }
 [data-fork-chat-motion="true"] ::highlight(live-fade-4) { color: color-mix(in srgb, var(--text) 86%, transparent); }
 
-[data-fork-compact-work-runs="true"] .work-run-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: calc(100% + 2 * var(--space-1));
-  margin-inline: calc(-1 * var(--space-1));
-  min-height: calc(var(--control-h) - var(--space-2));
-  padding: 0 var(--space-1);
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  text-align: left;
-  cursor: pointer;
-}
-[data-fork-compact-work-runs="true"] .work-run-counts { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
-[data-fork-compact-work-runs="true"] .work-run-mark { font-weight: var(--fw-semibold); }
-[data-fork-compact-work-runs="true"] .work-run-done .work-run-mark { color: var(--status-done); }
-[data-fork-compact-work-runs="true"] .work-run-failed .work-run-mark { color: var(--status-blocked); }
-[data-fork-compact-work-runs="true"] .work-run-running .work-run-mark { color: var(--status-working); }
-[data-fork-compact-work-runs="true"] .work-run-rows { display: flex; flex-direction: column; padding-left: var(--space-3); }
-@media (hover: hover) { [data-fork-compact-work-runs="true"] .work-run-head:hover { background: var(--bg-hover); } }
-@media (pointer: coarse) { [data-fork-compact-work-runs="true"] .work-run-head { min-height: var(--touch-target); } }
 @media (prefers-reduced-motion: reduce) {
   [data-fork-read-aloud="true"] .chat-speak-progress,
   [data-fork-chat-motion="true"] .chat-turn-new .chat-bubble,
