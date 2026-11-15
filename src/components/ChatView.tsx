@@ -11,7 +11,7 @@ import "./ChatView.css";
 import "./ChatTimeline.css";
 
 import { AnimatedHeight } from "./AnimatedHeight.tsx";
-import { Markdown, ReservedImage } from "./Markdown.tsx";
+import { Markdown, MarkdownTextContext, ReservedImage } from "./Markdown.tsx";
 import { ChatMarkdownImages } from "./ChatMarkdownImages.tsx";
 import { ImageLightbox } from "./ImageLightbox.tsx";
 import { PromptCard } from "./PromptCard.tsx";
@@ -22,7 +22,7 @@ import { minimapTurns } from "../lib/chatMinimap.ts";
 import type { LegendListRef } from "@legendapp/list/react";
 import { appendChatRowSlots, continuesHistory, createChatRowSlots, growChatRowSlots, prependChatRowSlots } from "../lib/chatRows.ts";
 import { ChatDetails, ChatRowMemoryContext, chatRowMemory, useChatRowToggle, useRowFocus, type ChatRowMemory } from "../lib/chatRowState.tsx";
-import { useFadeIn, useHeldLive, useRevealedTurns, withLiveTurn } from "../lib/liveTurn.ts";
+import { heldBackTurns, useHeldLive, withLiveTurn } from "../lib/liveTurn.ts";
 import { turnRevision } from "../lib/turnRevision.ts";
 import { conversationFinishEvidence, conversationFinishPresented } from "../lib/panePresentation.ts";
 import { seenKey } from "../lib/seenFinishes.ts";
@@ -32,6 +32,7 @@ import { ApiError, pinPaneConversation, unpinPaneConversation } from "../lib/api
 import { copyText } from "../lib/clipboard.ts";
 import { SpeakButton } from "../fork/SpeakButton.tsx";
 import { useSendMotion, withoutEmptyLiveTurn } from "../fork/chatPresentation.ts";
+import { useWordFade } from "../fork/wordFade.ts";
 import type { GalleryImage } from "../lib/imageViewer.ts";
 import { toolGalleryImage, userGalleryImages } from "../lib/chatImages.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
@@ -1270,9 +1271,7 @@ function GoalWaitRow({ wait }: { wait: GoalWait }) {
 // a turn that did not change keeps its object across polls: skip re-rendering it
 export const Turn = memo(function Turn({ paneId, turn, rowKey, fresh = false, live, streaming = false, waiting, showThinking, openLiveWork = true, expandThinking = false, foldWork = false, requestDetails = false, skills = null, userSkills = null, outcome = null, outcomeActions = null }: TurnProps) {
   const t = useT();
-  const article = useRef<HTMLElement>(null);
   const { settings: fork } = useSettings();
-  useFadeIn(article, fork.chatMotion && streaming, turn);
   const memory = useContext(ChatRowMemoryContext);
   // what the drawn runs, and the runs that drew no block, were named, by part index; the row's
   // memory takes it once the turn is drawn
@@ -1384,7 +1383,7 @@ export const Turn = memo(function Turn({ paneId, turn, rowKey, fresh = false, li
         : workBlockStartsOpen({ live: live && isHead, waiting: waiting && isHead, last: run !== null && run === segments.at(-1) }, turn.parts, foldWork)}
       showThinking={showThinking} expandThinking={expandThinking} pendingHead={isHead && answer.length === 0} />;
   };
-  return <article ref={article} className="chat-turn chat-turn-agent">
+  return <article className="chat-turn chat-turn-agent">
     <SkillActivityList parts={turn.parts} />
     {goal !== null && <GoalActivity goal={goal} />}
     {/* the pending head stands only above no answer: one above words would leave a gap when the turn ends */}
@@ -2636,8 +2635,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     return state.source === "conversation" ? withLiveTurn(read, liveShown) : read;
   }, [older, state.turns, state.source, liveShown]);
   const popFrom = useSendMotion(sentKey, shownCount, scrollToBottom, settings.chatMotion);
-  const { turns: revealedTurns, revealing: typing } = useRevealedTurns(mergedTurns, settings.chatMotion && state.source === "conversation" ? live : null, visible, settings.showThinking);
-  const streamingLast = typing || (state.source === "conversation" && liveShown !== null);
+  const revealedTurns = useMemo(() => heldBackTurns(mergedTurns, settings.chatMotion && state.source === "conversation" ? live : null, settings.showThinking), [mergedTurns, settings.chatMotion, state.source, live, settings.showThinking]);
+  const streamingLast = state.source === "conversation" && liveShown !== null;
   const turns = useMemo(() => withoutEmptyLiveTurn(revealedTurns, streamingLast, settings.showThinking), [revealedTurns, streamingLast, settings.showThinking]);
   // A cancelled send back in the agent's input box is no sent turn: the transcript still holds it
   // (empty, blank, held and onRead keep the turns as read), but the rendered list drops it while
@@ -2651,6 +2650,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     ?? (goneOut && endsWithTurn(turns, goingCancel.turn) ? goingCancel.turn : null);
   const hiddenSend = restored ?? hiddenTurn?.text ?? null;
   const shownTurns = useMemo(() => hiddenTurn !== null ? turns.slice(0, -1) : turns, [turns, hiddenTurn]);
+  const wordFade = useWordFade(shownTurns, settings.chatMotion, visible);
   heldPage.current = state.turns;
   shownCount.current = shownTurns.length;
   const popRow = popFrom === null ? -1 : shownTurns.findIndex((turn, index) => index >= popFrom && turn.role === "user");
@@ -2923,12 +2923,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (row.turn === null) return <OutcomeRow outcome={row.outcome} actions={outcomeActions} skills={skillMatcher} />;
     const { turn } = row;
     const live = isLiveWorkTurn(turn, row.index === shownTurns.length - 1, workStatus, finishedBeforeSend);
-    return <RenderBoundary resetKey={turnRevision(turn, true)} fallback={() => <p className="chat-inline-state chat-inline-error" data-pane-content-error>{t("This message can't be shown here. The terminal has it.")}</p>}>
+    return <MarkdownTextContext.Provider value={row.index === wordFade.row ? wordFade.draw : null}><RenderBoundary resetKey={turnRevision(turn, true)} fallback={() => <p className="chat-inline-state chat-inline-error" data-pane-content-error>{t("This message can't be shown here. The terminal has it.")}</p>}>
       <Turn paneId={paneId} turn={turn} rowKey={row.key} fresh={row.index === popRow} live={live} streaming={streamingLast && turn.role === "assistant" && row.index === shownTurns.length - 1} waiting={isWaitingWorkTurn(live, agentStatus)} showThinking={settings.showThinking} openLiveWork={settings.openLiveWork}
         expandThinking={settings.expandThinking} foldWork={settings.foldWork} requestDetails skills={skillMatcher} userSkills={skillMatcher} outcome={row.outcome} outcomeActions={outcomeActions}
       />
-    </RenderBoundary>;
-  }, [shownTurns.length, popRow, workStatus, finishedBeforeSend, t, paneId, agentStatus, settings.showThinking, settings.openLiveWork, settings.expandThinking, settings.foldWork, skillMatcher, outcomeActions, streamingLast]);
+    </RenderBoundary></MarkdownTextContext.Provider>;
+  }, [wordFade.row, wordFade.draw, shownTurns.length, popRow, workStatus, finishedBeforeSend, t, paneId, agentStatus, settings.showThinking, settings.openLiveWork, settings.expandThinking, settings.foldWork, skillMatcher, outcomeActions, streamingLast]);
   // displayPaneTitle falls back to the pane id for a pane with nothing else to call it
   const shownTitle = title?.trim() ?? "";
   const logLabel = shownTitle !== "" && shownTitle !== paneId ? t("conversation of {pane}", { pane: shownTitle }) : t("Conversation");
