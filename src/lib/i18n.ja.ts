@@ -118,6 +118,8 @@ const BASE: Record<string, string> = {
   // ---- settings ----
   "Settings": "設定",
   "PCs": "PC",
+  "PC {name}": "PC {name}",
+  "PCs, {n} of {m} connected": "PC {m} 台のうち {n} 台が接続済み",
   "Chat": "チャット",
   "Agent default": "エージェントの既定",
   "Devices and PCs": "デバイスと PC",
@@ -552,6 +554,7 @@ const BASE: Record<string, string> = {
   "Search": "検索",
   "Choose one from the list to open its chat here.": "リストから選ぶと、チャットがここに開きます。",
   "Agent inbox": "エージェント受信トレイ",
+  "Inbox mode": "受信トレイモード",
   "Open agent inbox": "エージェント受信トレイを開く",
   "Back to Ovis": "Ovis に戻る",
   "Remove PC": "PC を削除",
