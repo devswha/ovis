@@ -596,12 +596,19 @@ if (-not $plugin) {
         $chosen = if (Test-Path -LiteralPath $marker) { (Get-Content -Raw -LiteralPath $marker).Trim() } else { '' }
         if ($chosen -ne $checkoutVersion) {
             Write-Host "Ovis: the installed branch runs the release's binary; building it from its own sources"
-            & bun $launcherScript stop | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Could not stop the Ovis the release's binary runs, so the branch was not built. Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again." }
             $givenSource = $env:OVIS_FROM_SOURCE
-            $env:OVIS_FROM_SOURCE = '1'
-            try { Run-Tool bun @($launcherScript, 'install') }
-            finally { $env:OVIS_FROM_SOURCE = $givenSource }
+            try {
+                # the binary's stop: under the caller's OVIS_FROM_SOURCE=1 the launcher would hand it to scripts/plugin.ts,
+                # which cannot run without the packages
+                $env:OVIS_FROM_SOURCE = $null
+                & bun $launcherScript stop | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "Could not stop the Ovis the release's binary runs, so the branch was not built. Stop it (herdr plugin action invoke $pluginId.stop-windows, or restart herdr), then run this again." }
+                $env:OVIS_FROM_SOURCE = '1'
+                # the launcher names this version in the marker before it builds: a build that fails takes it back, so
+                # the next run tries again instead of starting sources that were never built
+                try { Run-Tool bun @($launcherScript, 'install') }
+                catch { Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue; throw }
+            } finally { $env:OVIS_FROM_SOURCE = $givenSource }
         }
     }
 }
