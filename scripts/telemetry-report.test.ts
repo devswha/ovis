@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COUNTER_SHARES, COUNTS_BUCKETS, COUNTS_INSTALLS, COUNTS_SHOWN, counterShares, html, QUERIES, table } from "./telemetry-report.ts";
+import { COUNTER_SHARES, COUNTS_BUCKETS, COUNTS_INSTALLS, COUNTS_SHOWN, SWITCH_DAYS_BY_VERSION, SWITCHES_BY_AGENT, counterShares, html, QUERIES, table } from "./telemetry-report.ts";
 
 /** scripts/telemetry-report.ts with a stand-in bunx on a private PATH: no wrangler, no D1. */
 
@@ -94,12 +94,12 @@ describe("telemetry report: button counts", () => {
       { width: "wide", counter: "chat_send", installs: 1, days_1_2: 1, days_3_9: 0, days_10_29: 0, days_30_up: 0 },
     ]);
     expect(rows(COUNTS_SHOWN)).toEqual([{ width: "narrow", control: "composer", installs: 2 }, { width: "narrow", control: "composer_voice", installs: 1 }]);
-    expect(rows(QUERIES[13]!.title)).toEqual([
+    expect(rows(SWITCHES_BY_AGENT)).toEqual([
       { width: "narrow", agent: "claude", running: 2, switched: 1 },
       { width: "narrow", agent: "codex", running: 1, switched: 0 },
       { width: "wide", agent: "claude", running: 1, switched: 0 },
     ]);
-    expect(rows(QUERIES[14]!.title)).toEqual([{ version: "0.5.5", days: 2, days_switched: 1 }, { version: "0.5.6", days: 1, days_switched: 0 }]);
+    expect(rows(SWITCH_DAYS_BY_VERSION)).toEqual([{ version: "0.5.5", days: 2, days_switched: 1 }, { version: "0.5.6", days: 1, days_switched: 0 }]);
     expect(counterShares(rows(COUNTS_INSTALLS), buckets)).toEqual([
       { width: "narrow", counter: "chat_send", installs: 1, percent: 50, median_day: "3-9" },
       { width: "narrow", counter: "view_terminal_by_header", installs: 1, percent: 50, median_day: "1-2" },
@@ -143,7 +143,7 @@ describe.skipIf(process.platform === "win32")("telemetry report", () => {
       "SELECT country, COUNT(*) FROM (SELECT (SELECT country FROM events WHERE install_id = e.install_id AND country IS NOT NULL ORDER BY rowid DESC LIMIT 1) AS country FROM events e GROUP BY install_id) GROUP BY country ORDER BY 2 DESC;",
       "SELECT day, country, COUNT(*) FROM active WHERE day >= date('now', '-27 days') GROUP BY day, country ORDER BY day, country;",
       // the button counts' tables, checked against stored rows above (telemetry report: button counts)
-      ...QUERIES.slice(10).map((query) => query.sql),
+      ...[COUNTS_INSTALLS, COUNTS_BUCKETS, COUNTS_SHOWN, SWITCHES_BY_AGENT, SWITCH_DAYS_BY_VERSION].map((title) => QUERIES.find((query) => query.title === title)!.sql),
     ]);
     expect(QUERIES).toHaveLength(15);
     // from telemetry/, where wrangler finds wrangler.toml and the database's id
@@ -164,7 +164,7 @@ describe.skipIf(process.platform === "win32")("telemetry report", () => {
       "Prompt answers and pane alerts per day",
       "Installs per country (last country seen)",
       "Daily active installs per country, the last 28 days",
-      ...QUERIES.slice(10).map((query) => query.title),
+      ...[COUNTS_INSTALLS, COUNTS_BUCKETS, COUNTS_SHOWN, SWITCHES_BY_AGENT, SWITCH_DAYS_BY_VERSION],
       COUNTER_SHARES,
     ]);
     expect(result.report).toContain("| 2026-10-18 | 5 |");
@@ -178,6 +178,13 @@ describe.skipIf(process.platform === "win32")("telemetry report", () => {
     const page = readFileSync(scratchPage, "utf8");
     expect([...page.matchAll(/<h2>/g)]).toHaveLength(16);
     expect(page).toContain(`<h2>${COUNTER_SHARES}</h2>`);
+  });
+
+  it("refuses --html with no file after it, writing nothing", async () => {
+    const result = await run(false, undefined, ["--html"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain("Usage: bun scripts/telemetry-report.ts");
+    expect(result.calls).toEqual([]);
   });
 
   it("stops with the login hint when wrangler cannot read the database", async () => {

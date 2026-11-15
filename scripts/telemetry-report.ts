@@ -15,6 +15,8 @@ import { join } from "node:path";
 export const COUNTS_INSTALLS = "Installs that sent button counts, per width, the last 7 finished days";
 export const COUNTS_BUCKETS = "Button counts per width: installs that used each, and days per range, the last 7 finished days";
 export const COUNTS_SHOWN = "Controls shown, per width: installs that saw each at least once, the last 7 finished days";
+export const SWITCHES_BY_AGENT = "Chat/terminal switches by kind of agent and width: installs running it that switched on its panes, the last 7 finished days";
+export const SWITCH_DAYS_BY_VERSION = "Install-days with a chat/terminal switch, per version, the last 7 finished days";
 export const COUNTER_SHARES = "Button counts per width: share of installs that used each, and the median range of a day it was used";
 
 export const QUERIES: ReadonlyArray<{ title: string; sql: string }> = [
@@ -31,8 +33,8 @@ export const QUERIES: ReadonlyArray<{ title: string; sql: string }> = [
   { title: COUNTS_INSTALLS, sql: "SELECT w.width, COUNT(DISTINCT c.install_id) AS installs FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width ORDER BY w.width;" },
   { title: COUNTS_BUCKETS, sql: "SELECT w.width, item.key AS counter, COUNT(DISTINCT c.install_id) AS installs, SUM(item.value = 1) AS days_1_2, SUM(item.value = 2) AS days_3_9, SUM(item.value = 3) AS days_10_29, SUM(item.value = 4) AS days_30_up FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS item WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, item.key ORDER BY w.width, installs DESC, item.key;" },
   { title: COUNTS_SHOWN, sql: "SELECT w.width, item.value AS control, COUNT(DISTINCT c.install_id) AS installs FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL CROSS JOIN json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.shown') AS item WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, item.value ORDER BY w.width, installs DESC, item.value;" },
-  { title: "Chat/terminal switches by kind of agent and width: installs running it that switched on its panes, the last 7 finished days", sql: "SELECT w.width, h.value AS agent, COUNT(DISTINCT c.install_id) AS running, COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS x WHERE x.key IN ('view_chat_' || h.value, 'view_terminal_' || h.value)) THEN c.install_id END) AS switched FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL JOIN active a ON a.day = c.day AND a.install_id = c.install_id CROSS JOIN json_each(a.harnesses) AS h WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, h.value ORDER BY w.width, running DESC, h.value;" },
-  { title: "Install-days with a chat/terminal switch, per version, the last 7 finished days", sql: "SELECT c.version, COUNT(*) AS days, SUM(EXISTS (SELECT 1 FROM json_each(c.narrow, '$.counts') AS x WHERE x.key LIKE 'view%by%') OR EXISTS (SELECT 1 FROM json_each(c.wide, '$.counts') AS x WHERE x.key LIKE 'view%by%')) AS days_switched FROM counts c WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY c.version ORDER BY c.version;" },
+  { title: SWITCHES_BY_AGENT, sql: "SELECT w.width, h.value AS agent, COUNT(DISTINCT c.install_id) AS running, COUNT(DISTINCT CASE WHEN EXISTS (SELECT 1 FROM json_each(CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END, '$.counts') AS x WHERE x.key IN ('view_chat_' || h.value, 'view_terminal_' || h.value)) THEN c.install_id END) AS switched FROM (SELECT 'narrow' AS width UNION ALL SELECT 'wide') AS w JOIN counts c ON (CASE w.width WHEN 'narrow' THEN c.narrow ELSE c.wide END) IS NOT NULL JOIN active a ON a.day = c.day AND a.install_id = c.install_id CROSS JOIN json_each(a.harnesses) AS h WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY w.width, h.value ORDER BY w.width, running DESC, h.value;" },
+  { title: SWITCH_DAYS_BY_VERSION, sql: "SELECT c.version, COUNT(*) AS days, SUM(EXISTS (SELECT 1 FROM json_each(c.narrow, '$.counts') AS x WHERE x.key GLOB 'view_*_by_*') OR EXISTS (SELECT 1 FROM json_each(c.wide, '$.counts') AS x WHERE x.key GLOB 'view_*_by_*')) AS days_switched FROM counts c WHERE c.day >= date('now', '-7 days') AND c.day < date('now') GROUP BY c.version ORDER BY c.version;" },
 ];
 
 /** A bucket's range, as the counts message names it (shared/telemetry.ts countBucket). */
@@ -92,7 +94,14 @@ async function d1(sql: string): Promise<Array<Record<string, unknown>> | null> {
 }
 
 if (import.meta.main) {
-  const option = (name: string) => { const at = process.argv.indexOf(name); return at >= 0 ? process.argv[at + 1] : undefined; };
+  // a flag is followed by its file: a flag with none (or another flag in its place) is a usage error, not a silent skip
+  const option = (name: string): string | undefined => {
+    const at = process.argv.indexOf(name);
+    if (at < 0) return undefined;
+    const value = process.argv[at + 1];
+    if (value === undefined || value.startsWith("--")) { console.error("Usage: bun scripts/telemetry-report.ts --out <file.md> [--html <file.html>]"); process.exit(1); }
+    return value;
+  };
   const out = option("--out");
   const page = option("--html");
   if (!out) {
