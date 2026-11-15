@@ -58,14 +58,15 @@ beforeAll(async () => {
     onEvent: (frame) => { if (frame.data?.agent === "pi") detected.resolve(); },
     onError: (error) => { watching.reject(error); detected.reject(error); },
   });
-  await watching.promise;
-  const piReady = herdrRpc("pane.wait_for_output", {
-    pane_id: piPane, source: "visible", match: { type: "substring", value: "pi_ready_contract" }, timeout_ms: 10000,
-  }, undefined, 12000);
-  await herdrRpc("pane.send_text", { pane_id: piPane, text: `clear; printf '%s\\n' '~/project' '0.0%/262k (auto)          pi-contract-model \u2022 high' 'pi_ready_contract'; HOME=${root} PI_CODING_AGENT_DIR=${piAgentDir} exec -a pi cat\n` });
-  await piReady;
-  const undetected = setTimeout(() => detected.reject(new Error("test pi was not detected")), 10_000);
+  let undetected: ReturnType<typeof setTimeout> | undefined;
   try {
+    await watching.promise;
+    const piReady = herdrRpc("pane.wait_for_output", {
+      pane_id: piPane, source: "visible", match: { type: "substring", value: "pi_ready_contract" }, timeout_ms: 10000,
+    }, undefined, 12000);
+    await herdrRpc("pane.send_text", { pane_id: piPane, text: `clear; printf '%s\\n' '~/project' '0.0%/262k (auto)          pi-contract-model \u2022 high' 'pi_ready_contract'; HOME=${root} PI_CODING_AGENT_DIR=${piAgentDir} exec -a pi cat\n` });
+    await piReady;
+    undetected = setTimeout(() => detected.reject(new Error("test pi was not detected")), 10_000);
     await detected.promise;
   } finally {
     clearTimeout(undetected);
