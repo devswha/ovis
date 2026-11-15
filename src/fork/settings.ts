@@ -9,8 +9,6 @@ const legacyKeyBarItems: KeyBarItem[] = DEFAULT_KEY_BAR_ITEMS.flatMap((item): Ke
 /** Fork choices. New devices keep upstream's behavior. */
 export interface ForkSettings {
   followOmarchy: boolean;
-  /** retired with the Context circle setting; kept until shared/preferences.ts drops the key, which changes the bundle identity */
-  contextCircle: boolean;
   openLiveWork: boolean;
   speechVoice: SpeechVoice;
   liveVoice: PiVoice | "pi";
@@ -26,7 +24,7 @@ export interface ForkSettings {
 }
 
 export const FORK_DEFAULTS: ForkSettings = {
-  followOmarchy: false, contextCircle: true, openLiveWork: true,
+  followOmarchy: false, openLiveWork: true,
   speechVoice: SPEECH_DEFAULT_VOICE, liveVoice: "pi",
   squareCorners: false, moreViewToggle: false, agentFriends: false,
   piModelPicker: false, chatMotion: false, piLiveVoice: false,
@@ -35,7 +33,6 @@ export const FORK_DEFAULTS: ForkSettings = {
 
 export const FORK_SCOPE = {
   ...(Object.fromEntries(Object.keys(FORK_DEFAULTS).map((key) => [key, "device"])) as Record<keyof ForkSettings, "device">),
-  contextCircle: "shared",
 } as const;
 
 export function sanitizeForkSettings(record: Record<string, unknown>): ForkSettings {
