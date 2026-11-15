@@ -36,8 +36,8 @@ describe("openLinkQuery", () => {
     ]) expect(openLinkQuery(value)).toBeNull();
   });
 
-  it("refuses a view the page does not draw, a control character and an overlong value", () => {
-    expect(openLinkQuery("ovis://open?pane=t3&view=files")).toBeNull();
+  it("leaves the view to the page, and refuses a control character and an overlong value", () => {
+    expect(openLinkQuery("ovis://open?pane=t3&view=files")).toBe("?pane=t3&view=files");
     expect(openLinkQuery("ovis://open?pane=t3%0A")).toBe("?pane=t3");
     expect(openLinkQuery("ovis://open?pane=t%0A3")).toBeNull();
     expect(openLinkQuery(`ovis://open?pane=${"a".repeat(257)}`)).toBeNull();

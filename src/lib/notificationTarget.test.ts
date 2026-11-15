@@ -182,7 +182,7 @@ describe("desktop link delivery", () => {
   }
 
   it("reads a link's pane, view, workspace and PC with the deep link's own reading", () => {
-    expect(linkTarget("?ws=3-my-app&pane=t3&view=terminal")).toEqual({ machine_id: "local", pane_id: "t3", view: "terminal", workspace_id: "3" });
+    expect(linkTarget("?ws=3-my-app&pane=t3&view=terminal")).toEqual({ machine_id: "local", pane_id: "t3", view: "terminal", workspace_id: "3", workspace_slug: "my-app" });
     expect(linkTarget("?machine=home%20pc&pane=p2")).toEqual({ machine_id: "home pc", pane_id: "p2" });
     expect(linkTarget("?pane=p2&view=files")).toEqual({ machine_id: "local", pane_id: "p2" });
     expect(linkTarget("?ws=3")).toBeNull();
@@ -202,6 +202,16 @@ describe("desktop link delivery", () => {
       { machine_id: "local", pane_id: "t3", view: "chat", workspace_id: "3" },
       { machine_id: "local", pane_id: "t4", view: "terminal" },
     ]);
+  });
+
+  it("settles a link that names its workspace by slug as a deep link does, even when its pane is listed", () => {
+    const roster = [{ id: "local", snapshot: { panes: [{ pane_id: "t3" }] } }];
+    expect(notificationLanding(roster, linkTarget("?ws=3-my-app&pane=t3&view=terminal")!)).toEqual({
+      kind: "link",
+      link: { machine: "local", workspace: "3", workspaceSlug: "my-app", pane: "t3", view: "terminal", settings: null },
+      stale: false,
+    });
+    expect(notificationLanding(roster, linkTarget("?ws=3&pane=t3")!)).toEqual({ kind: "select" });
   });
 
   it("lands a link to a closed pane on its workspace, as a notification's does", () => {

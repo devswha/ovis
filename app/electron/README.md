@@ -61,7 +61,15 @@ when the Ovis pages have it (Korean, Japanese, Chinese; `src/text.ts`), English 
   ```
 
   The link is passed on as those four names alone (`src/openLink.ts`): it never sends the window to
-  another address, a file, a dialog or Settings, and one that names no pane does nothing.
+  another address, a file, a dialog or Settings, and one that names no pane does nothing. `ws` may
+  carry the workspace's slug (`3-my-app`), as the address bar writes it: herdr hands its ids out
+  again, and the slug picks the workspace meant, as a deep link's does.
+
+  The scheme is shared by host: `ovis://open` is the desktop app's, `ovis://account/callback` the
+  phone apps' sign-in (`src/lib/account/native.ts`); any other host only brings the window forward.
+  A web page can open the link too, once its browser has asked to open Ovis (and not again, when
+  that was allowed for good): it brings the window forward with a pane selected, and can do
+  nothing else.
 - **Open files**: the core and the server start through `/bin/bash`, which closes every descriptor
   Chromium left open before it becomes the program, so the core (which outlives the app) holds none
   of the app's files or sockets.

@@ -8,11 +8,18 @@
  * A link is read here only to be passed on: it becomes a query of the deep link's own names, which
  * the window's page reads as any address of its own. Nothing else of it is kept, so a link can never
  * send the window to another address, path or scheme, and one that names no pane is no link.
+ *
+ * The scheme is shared by host: `ovis://open` is this, the desktop app's; `ovis://account/callback`
+ * is the phone apps' sign-in (src/lib/account/native.ts), which only brings this window forward.
  */
 
 export const LINK_SCHEME = "ovis";
 
-/** the names a link passes on: the place of a pane, nothing that opens a file, a dialog or Settings */
+/**
+ * the names a link passes on: the place of a pane, nothing that opens a file, a dialog or Settings.
+ * The page reads them as src/lib/deepLink.ts readLink does (src/lib/notificationTarget.ts linkTarget),
+ * which also drops a `view` it does not draw; a name added there is not passed on until it is added here.
+ */
 const NAMES = ["machine", "ws", "pane", "view"] as const;
 /** no name a link passes on is longer: herdr's ids and a PC's name are short */
 const VALUE_MAX = 256;
@@ -20,7 +27,7 @@ const VALUE_MAX = 256;
 /**
  * The query an `ovis://open?…` link names (`?machine=…&ws=…&pane=…&view=…`, in that order and
  * only those), or null when `value` is not such a link: another scheme or host, a user, port or
- * path, no pane, a view other than `chat` or `terminal`, or a value too long or holding a control character.
+ * path, no pane, or a value too long or holding a control character.
  */
 export function openLinkQuery(value: string): string | null {
   let url: URL;
@@ -34,8 +41,7 @@ export function openLinkQuery(value: string): string | null {
     if (named.length > VALUE_MAX || /[\u0000-\u001f\u007f]/.test(named)) return null;
     query.set(name, named);
   }
-  const view = query.get("view");
-  if (!query.has("pane") || (view !== null && view !== "chat" && view !== "terminal")) return null;
+  if (!query.has("pane")) return null;
   return `?${query.toString()}`;
 }
 

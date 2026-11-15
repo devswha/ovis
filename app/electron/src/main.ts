@@ -131,11 +131,13 @@ function openLink(query: string): void {
 
 /**
  * To the server's page alone, once it has loaded (`loaded`: its did-finish-load): a page still loading
- * would lose it. preload.ts holds it until the page listens.
+ * would lose it. preload.ts holds it until the page listens. Only the page itself counts as loading:
+ * a frame in it (a web panel, a file's preview) may load for long after, and did-finish-load, which
+ * would tell the link then, is the page's alone.
  */
 function tellLink(loaded = false): void {
   const contents = window?.webContents;
-  if (pendingLink === null || !contents || (!loaded && contents.isLoading()) || !ours(contents.getURL())) return;
+  if (pendingLink === null || !contents || (!loaded && contents.isLoadingMainFrame()) || !ours(contents.getURL())) return;
   contents.send("ovis:open-link", pendingLink);
   pendingLink = null;
 }

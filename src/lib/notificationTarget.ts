@@ -1,8 +1,12 @@
 import { readLink, type AppLink } from "./deepLink.ts";
+import { desktopLinks, type DesktopLinks } from "./desktopLink.ts";
 
 export type NotificationPaneView = "chat" | "terminal";
-/** `workspace_id`: the workspace the pane was last seen in (server/push.ts), so an ended pane's tap opens it. */
-export type NotificationTarget = { machine_id: string; pane_id: string; view?: NotificationPaneView; workspace_id?: string };
+/**
+ * `workspace_id`: the workspace the pane was last seen in (server/push.ts), so an ended pane's tap opens it.
+ * `workspace_slug`: a desktop link's slug of that workspace (lib/deepLink.ts `ws`), a check of its id.
+ */
+export type NotificationTarget = { machine_id: string; pane_id: string; view?: NotificationPaneView; workspace_id?: string; workspace_slug?: string };
 type Target = NotificationTarget;
 type Select = (target: Target) => void;
 
@@ -43,8 +47,13 @@ type RosterMachine = { id: string; snapshot?: { panes: readonly { pane_id: strin
  */
 export function notificationLanding(roster: readonly RosterMachine[], target: NotificationTarget): { kind: "select" } | { kind: "link"; link: AppLink; stale: boolean } {
   const machine = roster.find((candidate) => candidate.id === target.machine_id);
-  if (machine?.snapshot?.panes.some((pane) => pane.pane_id === target.pane_id)) return { kind: "select" };
-  const link: AppLink = { machine: target.machine_id, workspace: target.workspace_id ?? null, pane: target.pane_id, view: target.view ?? null, settings: null };
+  // a desktop link that names its workspace by slug always settles as a deep link does (resolveLink):
+  // herdr hands its short ids out again, and the slug says which workspace, and so which pane, was meant
+  if (!target.workspace_slug && machine?.snapshot?.panes.some((pane) => pane.pane_id === target.pane_id)) return { kind: "select" };
+  const link: AppLink = {
+    machine: target.machine_id, workspace: target.workspace_id ?? null, ...(target.workspace_slug ? { workspaceSlug: target.workspace_slug } : {}),
+    pane: target.pane_id, view: target.view ?? null, settings: null,
+  };
   return { kind: "link", link, stale: machineMissing(roster, target.machine_id) };
 }
 
@@ -56,19 +65,16 @@ export function sameLink(a: AppLink | null, b: AppLink): boolean {
 type MessageSource = { addEventListener: (type: "message", listener: (event: MessageEvent) => void) => void };
 
 /**
- * What the desktop app's preload offers its server's page for an `ovis://open` link
- * (app/electron/src/openLink.ts): the query of the place it names, in the deep link's own names.
- */
-export type DesktopLinks = { onOpen(listener: (query: string) => void): void };
-
-/**
  * The pane a desktop link names, landing as a tapped notification's does (the workspace for when
  * the pane has closed). A link that names no pane is no target.
  */
 export function linkTarget(query: string): NotificationTarget | null {
   const link = readLink(query);
   if (!link.pane) return null;
-  return { machine_id: link.machine, pane_id: link.pane, ...(link.view ? { view: link.view } : {}), ...(link.workspace ? { workspace_id: link.workspace } : {}) };
+  return {
+    machine_id: link.machine, pane_id: link.pane, ...(link.view ? { view: link.view } : {}),
+    ...(link.workspace ? { workspace_id: link.workspace } : {}), ...(link.workspace && link.workspaceSlug ? { workspace_slug: link.workspaceSlug } : {}),
+  };
 }
 
 /** Keep the newest target until App is ready, then deliver new selections directly: a tapped notification's, or a desktop link's. */
@@ -101,12 +107,6 @@ export function notificationTargets(source?: MessageSource, links?: DesktopLinks
     if (target) select(target);
     return () => { if (consumer === select) consumer = null; };
   };
-}
-
-/** The desktop app's links, in its own window only: a browser tab has no such bridge. */
-function desktopLinks(): DesktopLinks | undefined {
-  const bridge = typeof window === "undefined" ? undefined : (window as Window & { ovisLink?: Partial<DesktopLinks> }).ovisLink;
-  return typeof bridge?.onOpen === "function" ? bridge as DesktopLinks : undefined;
 }
 
 // Browser messages can arrive after document loading but before React's effect.
