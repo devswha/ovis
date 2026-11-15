@@ -267,4 +267,25 @@ describe("usage counters", () => {
     expect([actionUse("split", "button", here({}, "pc-2")), actionUse("close_pane", "menu", here({}, "pc-2")), actionUse("new_tab", "shortcut", here({}, "pc-2"))]).toEqual([null, null, null]);
     expect(actionUse("sidebar", "shortcut", here({}, "pc-2"))).toBe("sidebar_by_shortcut");
   });
+
+  test("after a refusal nothing kept goes, not even what was counted while the refused batch was on its way", async () => {
+    const sent: TelemetryCountsChange[] = [];
+    let answer: (() => void) | null = null;
+    const counters = createUsageCounters({
+      on: true, narrow: () => false, now: () => Date.parse("2026-11-15T10:00:00Z"), setTimer: () => () => {},
+      status: async () => status(),
+      send: (counts) => { sent.push(counts); return new Promise((_resolve, reject) => { answer = () => reject(Object.assign(new Error("read_only"), { status: 403 })); }); },
+    });
+    counters.heard(status());
+    counters.count("chat_send");
+    counters.flush(false);
+    // counted while the batch is on its way, then the refusal, then a later yes (Settings asking the status)
+    counters.count("composer_voice");
+    answer!();
+    await settle();
+    counters.heard(status());
+    counters.flush(false);
+    await settle();
+    expect(sent.map((counts) => Object.keys(counts.add))).toEqual([["chat_send"]]);
+  });
 });
